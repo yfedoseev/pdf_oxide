@@ -6,7 +6,7 @@ This document provides a comprehensive, TDD-driven implementation plan for addin
 
 **Target Completion**: 3 implementation phases
 **Dependencies**: `ort` crate (ONNX Runtime), `image` crate
-**Models**: PaddleOCR PP-OCRv4 (detection + recognition)
+**Models**: PaddleOCR PP-OCRv5 English (detection + recognition) - 13% more accurate than v4
 
 ---
 
@@ -252,22 +252,24 @@ ocr = ["dep:ort", "dep:image", "dep:imageproc", "dep:ndarray"]
 
 ### 3.2 Model Files
 
-**Detection Model (DBNet++ PP-OCRv4)**:
-- File: `ch_PP-OCRv4_det_infer.onnx`
+**Detection Model (DBNet++ PP-OCRv5 English)**:
+- File: `en_PP-OCRv5_det_infer.onnx`
 - Size: ~4.5 MB
 - Input: `[1, 3, H, W]` float32, normalized
 - Output: `[1, 1, H, W]` probability map
+- Note: PP-OCRv5 has 13% better accuracy than v4
 
-**Recognition Model (SVTR PP-OCRv4)**:
-- File: `ch_PP-OCRv4_rec_infer.onnx`
+**Recognition Model (SVTR PP-OCRv5 English)**:
+- File: `en_PP-OCRv5_rec_infer.onnx`
 - Size: ~10 MB
 - Input: `[B, 3, 48, W]` float32, normalized
 - Output: `[B, W/4, num_chars]` logits
+- Note: Requires ONNX conversion via `paddle2onnx` from PaddleOCR repo
 
 **Character Dictionary**:
-- File: `ppocr_keys_v1.txt`
-- Size: ~100 KB
-- Contains 6623 characters for Chinese/English/symbols
+- File: `en_dict.txt` (English-focused)
+- Size: ~10 KB
+- Contains Latin characters, numbers, and common symbols
 
 ### 3.3 Model Distribution Strategy
 
@@ -844,6 +846,49 @@ pub struct OcrResult {
 
 ### 7.2 Phase 2: PDF Integration
 
+#### Task 2.0: Implement PdfImage.to_dynamic_image() (PREREQUISITE)
+- **Dependencies**: None (can start immediately)
+- **Effort**: 2 hours
+- **Location**: `src/extractors/images.rs`
+- **Why**: The existing `PdfImage` struct lacks a method to convert to `image::DynamicImage`,
+  which is required for OCR input. This is a **blocking prerequisite** for the OCR pipeline.
+- **Tests First**:
+  - [ ] `test_pdfimage_to_dynamic_image_rgb`
+  - [ ] `test_pdfimage_to_dynamic_image_grayscale`
+  - [ ] `test_pdfimage_to_dynamic_image_jpeg`
+- **Implementation**:
+  - [ ] Add `image` crate as optional dependency (gated by `ocr` feature)
+  - [ ] Implement `PdfImage::to_dynamic_image(&self) -> Result<DynamicImage>`
+  - [ ] Handle different color spaces (RGB, Grayscale, CMYK → RGB)
+  - [ ] Handle JPEG-encoded data (decode with `image` crate)
+
+```rust
+// Expected API addition to src/extractors/images.rs
+#[cfg(feature = "ocr")]
+impl PdfImage {
+    /// Convert PdfImage to image::DynamicImage for OCR processing
+    pub fn to_dynamic_image(&self) -> Result<image::DynamicImage> {
+        match self.color_space {
+            ColorSpace::DeviceRGB => {
+                let img = image::RgbImage::from_raw(
+                    self.width, self.height, self.data.clone()
+                ).ok_or_else(|| /* error */)?;
+                Ok(image::DynamicImage::ImageRgb8(img))
+            }
+            ColorSpace::DeviceGray => {
+                let img = image::GrayImage::from_raw(
+                    self.width, self.height, self.data.clone()
+                ).ok_or_else(|| /* error */)?;
+                Ok(image::DynamicImage::ImageLuma8(img))
+            }
+            // Handle JPEG, CMYK, etc.
+        }
+    }
+}
+```
+
+---
+
 #### Task 2.1: Scanned Page Detection (TDD)
 - **Dependencies**: Phase 1 complete
 - **Effort**: 4 hours
@@ -872,8 +917,8 @@ pub fn analyze_page(doc: &PdfDocument, page: usize) -> Result<PageAnalysis>;
 ```
 
 #### Task 2.2: Extract Page Images for OCR
-- **Dependencies**: Task 2.1
-- **Effort**: 4 hours
+- **Dependencies**: Task 2.0 (PdfImage.to_dynamic_image), Task 2.1
+- **Effort**: 2 hours (reduced - Task 2.0 handles conversion)
 - **Tests First**:
   - [ ] `test_extract_page_image_from_scanned_pdf`
   - [ ] `test_extract_largest_image`
@@ -1011,14 +1056,33 @@ for span in result.spans:
 - **Effort**: 8 hours
 - **Deliverables**:
   - [ ] Batch recognition optimization
-  - [ ] Multi-threaded detection
+  - [ ] Multi-threaded detection (using `Arc<Session>` pattern)
   - [ ] Model quantization (INT8)
   - [ ] Memory usage optimization
 
+**Thread Safety Note**: `ort::Session` is `Send + Sync`, enabling safe multi-threaded access:
+
 ```rust
-// Optimization targets
+use std::sync::Arc;
+
+// Thread-safe OCR engine
+pub struct OcrEngine {
+    detector: Arc<Session>,    // Safe to share across threads
+    recognizer: Arc<Session>,  // Safe to share across threads
+    config: OcrConfig,
+}
+
 impl OcrEngine {
-    /// Process multiple crops in single inference call
+    /// Process multiple pages in parallel using rayon
+    pub fn ocr_pages_parallel(&self, images: &[DynamicImage]) -> Result<Vec<OcrResult>> {
+        use rayon::prelude::*;
+
+        images.par_iter()
+            .map(|img| self.ocr_image(img))
+            .collect()
+    }
+
+    /// Process multiple crops in single inference call (batched)
     pub fn recognize_batch(&self, crops: &[DynamicImage]) -> Result<Vec<RecognitionResult>>;
 }
 
@@ -1057,10 +1121,11 @@ impl OcrConfig {
 | Risk | Probability | Impact | Mitigation |
 |------|-------------|--------|------------|
 | Model size too large | Medium | Medium | Quantization, model download option |
-| Accuracy below target | Low | High | Use PP-OCRv4 (proven accuracy), fallback to v5 |
+| Accuracy below target | Low | High | Use PP-OCRv5 English (13% better than v4), proven accuracy |
 | ONNX Runtime compatibility | Low | High | Pin ort version, test on multiple platforms |
 | Memory usage spikes | Medium | Medium | Streaming inference, batch size limits |
 | Image extraction fails | Low | Medium | Validate image exists before OCR, clear error messages |
+| PdfImage conversion missing | Low | High | Implement `to_dynamic_image()` method as prerequisite |
 
 ### 8.2 Mitigation Strategies
 
@@ -1172,7 +1237,84 @@ def preprocess_rec(crop, target_height=48):
     return tensor.astype(np.float32)
 ```
 
-### B. CTC Decoding Algorithm
+### B. DBNet++ Postprocessing Algorithm
+
+DBNet++ outputs a probability map that needs postprocessing to extract text bounding boxes:
+
+```rust
+/// DBNet++ postprocessing: probability map → text bounding boxes
+pub fn dbnet_postprocess(
+    prob_map: &Array2<f32>,
+    threshold: f32,        // Default: 0.3
+    box_threshold: f32,    // Default: 0.5
+    max_candidates: usize, // Default: 1000
+    unclip_ratio: f32,     // Default: 1.5
+) -> Vec<DetectedBox> {
+    // Step 1: Binarization - threshold the probability map
+    let binary_map: Array2<u8> = prob_map.mapv(|p| if p > threshold { 255 } else { 0 });
+
+    // Step 2: Connected Components - find contiguous text regions
+    let contours = find_contours(&binary_map);
+
+    // Step 3: Filter and process each contour
+    let mut boxes = Vec::new();
+    for contour in contours.iter().take(max_candidates) {
+        // Calculate contour score (mean probability inside contour)
+        let score = calculate_contour_score(prob_map, contour);
+        if score < box_threshold {
+            continue;
+        }
+
+        // Step 4: Get minimum bounding box (rotated rectangle)
+        let min_rect = min_area_rect(contour);
+
+        // Step 5: Unclip - expand box to cover full text (Vatti clipping algorithm)
+        let expanded = unclip_polygon(&min_rect, unclip_ratio);
+
+        // Step 6: Convert to quadrilateral points
+        let polygon = rect_to_polygon(&expanded);
+
+        boxes.push(DetectedBox {
+            polygon,
+            confidence: score,
+        });
+    }
+
+    boxes
+}
+
+/// Connected component labeling for binary image
+fn find_contours(binary: &Array2<u8>) -> Vec<Vec<Point>> {
+    // Use OpenCV-style contour finding or implement flood-fill based approach
+    // Returns list of contours, each contour is a list of points
+    todo!("Implement connected components")
+}
+
+/// Expand polygon using Vatti clipping algorithm
+fn unclip_polygon(polygon: &[Point; 4], ratio: f32) -> [Point; 4] {
+    // Area = polygon area
+    // Perimeter = polygon perimeter
+    // Distance = Area * ratio / Perimeter
+    // Offset each edge outward by Distance
+    todo!("Implement Vatti clipping")
+}
+```
+
+**Key Parameters**:
+- `threshold = 0.3`: Binarization threshold for probability map
+- `box_threshold = 0.5`: Minimum confidence to keep a detected box
+- `unclip_ratio = 1.5`: How much to expand detected boxes (text often extends beyond high-probability regions)
+
+**Alternative: Use `imageproc` crate**:
+```rust
+use imageproc::contours::find_contours;
+use imageproc::geometry::min_area_rect;
+// These provide optimized implementations of the algorithms above
+```
+
+---
+
+### C. CTC Decoding Algorithm
 
 ```rust
 /// Greedy CTC decoding

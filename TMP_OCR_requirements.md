@@ -20,22 +20,25 @@ Add PaddleOCR-based text extraction for scanned PDFs, integrated seamlessly with
 
 | Model | Purpose | Size | CPU Speed |
 |-------|---------|------|-----------|
-| **DBNet++ (PP-OCRv4 det)** | Text detection | ~4 MB | 20-50ms/page |
-| **SVTR-LCNet (PP-OCRv4 rec)** | Text recognition | ~10 MB | 1-3ms/word |
+| **DBNet++ (PP-OCRv5 English det)** | Text detection | ~4 MB | 20-50ms/page |
+| **SVTR-LCNet (PP-OCRv5 English rec)** | Text recognition | ~10 MB | 1-3ms/word |
 
 **Total: ~14 MB** (can be compressed further with quantization)
 
-### Why These Models?
+### Why PP-OCRv5?
 
+- **13% more accurate** than PP-OCRv4 for English text
 - **DBNet++**: Best detection accuracy/speed ratio, handles rotated text
 - **SVTR-LCNet**: Lightweight transformer-CNN hybrid, excellent accuracy
 - **Skip angle classifier**: DBNet++ handles rotation, not needed for most documents
+- **English-optimized**: Smaller dictionary, better Latin script performance
 
 ### Model Sources
 
-Pre-converted ONNX models available:
-- https://github.com/PaddlePaddle/PaddleOCR/blob/main/doc/doc_en/models_list_en.md
-- Or convert using `paddle2onnx`
+Models need ONNX conversion from PaddleOCR:
+- Source: https://github.com/PaddlePaddle/PaddleOCR/blob/main/doc/doc_en/models_list_en.md
+- Convert using `paddle2onnx` tool
+- English models: `en_PP-OCRv5_det`, `en_PP-OCRv5_rec`
 
 ---
 
@@ -380,12 +383,27 @@ let result = doc.ocr_page_detailed(0, OcrOptions {
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Model licensing** - PaddleOCR is Apache 2.0, compatible with our MIT/Apache-2.0
-2. **ONNX Runtime version** - Use `ort` v2.0 (newest) or v1.x (more stable)?
-3. **Image rendering** - Use `pdfium` or pure-Rust solution for PDF→image?
-4. **Crate size limit** - Is 14 MB models acceptable for bundling?
+1. **Model licensing** ✅ RESOLVED
+   - PaddleOCR is Apache 2.0, compatible with our MIT/Apache-2.0
+   - No licensing concerns
+
+2. **ONNX Runtime version** ✅ RESOLVED
+   - Use `ort` v2.0 (latest stable)
+   - Wraps ONNX Runtime 1.22 with safe Rust API
+   - Used by production systems (Hugging Face, Google Magika)
+   - `Session` is `Send + Sync` for thread safety
+
+3. **Image rendering** ✅ RESOLVED
+   - **No pdfium needed** - use existing `extract_images()` from pdf_oxide
+   - Scanned PDFs are just PDF wrappers around embedded images
+   - Pure Rust, no C++ dependencies
+   - Need to implement `PdfImage::to_dynamic_image()` method
+
+4. **Crate size limit** ✅ RESOLVED
+   - 14 MB models acceptable for bundling (Option A)
+   - Can add download-on-first-use later (Option B) if needed
 
 ---
 
@@ -393,5 +411,6 @@ let result = doc.ocr_page_detailed(0, OcrOptions {
 
 - [PaddleOCR GitHub](https://github.com/PaddlePaddle/PaddleOCR)
 - [PaddleOCR Model List](https://github.com/PaddlePaddle/PaddleOCR/blob/main/doc/doc_en/models_list_en.md)
-- [ONNX Runtime Rust](https://github.com/pykeio/ort)
-- [PP-OCRv4 Technical Report](https://arxiv.org/abs/2206.03001)
+- [PP-OCRv5 Release](https://github.com/PaddlePaddle/PaddleOCR/releases) - 13% accuracy improvement
+- [ONNX Runtime Rust (ort crate)](https://github.com/pykeio/ort)
+- [paddle2onnx Converter](https://github.com/PaddlePaddle/Paddle2ONNX)

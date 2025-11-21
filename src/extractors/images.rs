@@ -196,6 +196,64 @@ impl PdfImage {
             },
         }
     }
+
+    /// Convert the PDF image to a `DynamicImage` for further processing.
+    ///
+    /// This is useful for OCR and other image analysis tasks.
+    /// For JPEG images, decodes the JPEG data. For raw images, creates
+    /// an image from the pixel data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the image cannot be decoded.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use pdf_oxide::extractors::images::PdfImage;
+    ///
+    /// let dynamic_image = pdf_image.to_dynamic_image()?;
+    /// // Now can be used with image processing or OCR
+    /// ```
+    #[cfg(feature = "ocr")]
+    pub fn to_dynamic_image(&self) -> Result<image::DynamicImage> {
+        use image::{DynamicImage, GrayImage, RgbImage};
+
+        match &self.data {
+            ImageData::Jpeg(jpeg_data) => {
+                // Decode JPEG data
+                image::load_from_memory_with_format(jpeg_data, image::ImageFormat::Jpeg)
+                    .map_err(|e| Error::Image(format!("Failed to decode JPEG: {}", e)))
+            },
+            ImageData::Raw { pixels, format } => {
+                match format {
+                    PixelFormat::RGB => {
+                        let img = RgbImage::from_raw(self.width, self.height, pixels.clone())
+                            .ok_or_else(|| {
+                                Error::Image("Invalid RGB image dimensions".to_string())
+                            })?;
+                        Ok(DynamicImage::ImageRgb8(img))
+                    },
+                    PixelFormat::Grayscale => {
+                        let img = GrayImage::from_raw(self.width, self.height, pixels.clone())
+                            .ok_or_else(|| {
+                                Error::Image("Invalid grayscale image dimensions".to_string())
+                            })?;
+                        Ok(DynamicImage::ImageLuma8(img))
+                    },
+                    PixelFormat::CMYK => {
+                        // Convert CMYK to RGB
+                        let rgb_pixels = cmyk_to_rgb(pixels);
+                        let img = RgbImage::from_raw(self.width, self.height, rgb_pixels)
+                            .ok_or_else(|| {
+                                Error::Image("Invalid CMYK->RGB image dimensions".to_string())
+                            })?;
+                        Ok(DynamicImage::ImageRgb8(img))
+                    },
+                }
+            },
+        }
+    }
 }
 
 /// Image data representation.

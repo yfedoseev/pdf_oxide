@@ -35,7 +35,7 @@
 //!
 //! - **ML Integration**: Advanced layout analysis with ONNX models
 //! - **Table Detection**: Production-ready ML-based table extraction
-//! - **OCR**: Text extraction from scanned PDFs via Tesseract
+//! - **OCR**: Text extraction from scanned PDFs via PaddleOCR (ONNX)
 //! - **WASM Target**: Run in browsers via WebAssembly
 //! - **Digital Signatures**: Signature verification and creation
 //!
@@ -133,6 +133,11 @@ pub mod config;
 #[cfg(feature = "ml")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ml")))]
 pub mod ml;
+
+// OCR integration (optional) - PaddleOCR via ONNX Runtime
+#[cfg(feature = "ocr")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ocr")))]
+pub mod ocr;
 
 // Hybrid classical + ML orchestration (Phase 8)
 pub mod hybrid;
