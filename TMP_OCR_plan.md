@@ -61,20 +61,25 @@ let session = Session::builder()?
 let outputs = session.run(ort::inputs![input_tensor]?)?;
 ```
 
-### 1.3 PDF-to-Image Rendering
+### 1.3 Image Source for OCR
 
-**Options Evaluated**:
+**Key Insight**: Scanned PDFs are typically just PDF wrappers around embedded images. We don't need to *render* the PDF - we just need to **extract the embedded images**.
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| `pdfium-render` | Feature-rich, battle-tested | Requires C++ library |
-| Pure Rust render | No dependencies | Would need to build from scratch |
-| Existing image extraction | Already implemented | Only extracts embedded images |
+**Decision**: Use existing `extract_images()` from pdf_oxide
+- Already implemented in `src/extractors/images.rs`
+- Pure Rust, no external dependencies
+- Works for 99% of scanned PDF use cases
+- `PdfImage` struct already has width, height, pixel data
 
-**Decision**: Use `pdfium-render` with optional feature flag
-- Best quality rendering
-- Already used in production PDF workflows
-- Can be made optional (users provide pre-rendered images if they prefer)
+**How it works**:
+```rust
+// Scanned PDF = PDF wrapper around a full-page image
+let images = doc.extract_images(page)?;
+let page_image = images.first(); // This IS the scan
+let ocr_result = engine.ocr_image(page_image)?;
+```
+
+**No pdfium needed** - keeps pdf_oxide pure Rust with no C++ dependencies.
 
 ### 1.4 Integration Points in pdf_oxide
 
@@ -238,14 +243,12 @@ image = { version = "0.25", optional = true }
 imageproc = { version = "0.24", optional = true }
 ndarray = { version = "0.15", optional = true }
 
-# Optional: PDF rendering (for full pipeline)
-pdfium-render = { version = "0.8", optional = true }
-
 [features]
 default = []
 ocr = ["dep:ort", "dep:image", "dep:imageproc", "dep:ndarray"]
-ocr-render = ["ocr", "dep:pdfium-render"]  # Full pipeline with rendering
 ```
+
+**Note**: No external C++ dependencies needed! We use existing `extract_images()` to get page images from scanned PDFs.
 
 ### 3.2 Model Files
 
@@ -316,7 +319,7 @@ impl OcrEngine {
 
 **Deliverables**:
 - [ ] `PageAnalyzer` for scanned page detection
-- [ ] PDF page rendering (via pdfium or user-provided images)
+- [ ] Extract page images using existing `extract_images()`
 - [ ] `OcrSpan` to `TextSpan` conversion
 - [ ] Style inference (font size, bold detection)
 - [ ] `doc.extract_text_with_ocr()` API
@@ -868,26 +871,31 @@ pub struct PageAnalysis {
 pub fn analyze_page(doc: &PdfDocument, page: usize) -> Result<PageAnalysis>;
 ```
 
-#### Task 2.2: PDF Page Rendering
+#### Task 2.2: Extract Page Images for OCR
 - **Dependencies**: Task 2.1
-- **Effort**: 6 hours
+- **Effort**: 4 hours
 - **Tests First**:
-  - [ ] `test_render_page_to_image`
-  - [ ] `test_render_dpi_scaling`
-  - [ ] `test_render_specific_region`
+  - [ ] `test_extract_page_image_from_scanned_pdf`
+  - [ ] `test_extract_largest_image`
+  - [ ] `test_pdfimage_to_dynamic_image_conversion`
 - **Implementation**:
-  - [ ] Integration with `pdfium-render` (optional)
-  - [ ] Fallback: extract largest image from page
-  - [ ] DPI configuration
+  - [ ] Use existing `extract_images()` to get embedded images
+  - [ ] Select largest image (covers full page for scans)
+  - [ ] Convert `PdfImage` → `image::DynamicImage` for OCR input
 
 ```rust
-// Expected API
-#[cfg(feature = "ocr-render")]
-pub fn render_page_to_image(doc: &PdfDocument, page: usize, dpi: u32) -> Result<DynamicImage>;
-
-// Fallback when pdfium not available
-pub fn extract_page_image(doc: &mut PdfDocument, page: usize) -> Result<Option<DynamicImage>>;
+// Expected API - leverages existing pdf_oxide functionality
+pub fn extract_page_image(doc: &mut PdfDocument, page: usize) -> Result<Option<DynamicImage>> {
+    let images = doc.extract_images(page)?;
+    // Return largest image (typically the full-page scan)
+    images.into_iter()
+        .max_by_key(|img| img.width() * img.height())
+        .map(|img| img.to_dynamic_image())
+        .transpose()
+}
 ```
+
+**Note**: No external rendering library needed - scanned PDFs contain embedded images.
 
 #### Task 2.3: OCR to TextSpan Conversion (TDD)
 - **Dependencies**: Task 2.2
@@ -1050,9 +1058,9 @@ impl OcrConfig {
 |------|-------------|--------|------------|
 | Model size too large | Medium | Medium | Quantization, model download option |
 | Accuracy below target | Low | High | Use PP-OCRv4 (proven accuracy), fallback to v5 |
-| pdfium linking issues | Medium | Medium | Make rendering optional, support image input |
 | ONNX Runtime compatibility | Low | High | Pin ort version, test on multiple platforms |
 | Memory usage spikes | Medium | Medium | Streaming inference, batch size limits |
+| Image extraction fails | Low | Medium | Validate image exists before OCR, clear error messages |
 
 ### 8.2 Mitigation Strategies
 
@@ -1071,7 +1079,7 @@ let engine = OcrEngine::with_model_dir("/custom/path")?;
 strategy:
   matrix:
     os: [ubuntu-latest, macos-latest, windows-latest]
-    features: [ocr, ocr-render]
+# All platforms use the same pure-Rust OCR feature
 ```
 
 **Accuracy Fallback**:
