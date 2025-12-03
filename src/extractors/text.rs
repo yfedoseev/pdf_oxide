@@ -177,6 +177,33 @@ pub struct SpanMergingConfig {
     /// - Less negative (-0.2, -0.1): More conservative on overlaps
     /// - More negative (-1.0, -2.0): Allow some overlap to merge adjacent text
     pub severe_overlap_threshold_pt: f32,
+
+    /// Enable adaptive threshold analysis (default: false for backward compatibility).
+    ///
+    /// When true, the `conservative_threshold_pt` is automatically calculated
+    /// based on the gap distribution within the document. This overrides the fixed
+    /// threshold value and adapts to different document types.
+    ///
+    /// **Default**: false (backward compatible)
+    /// **Note**: Enabling this may change extraction behavior for existing documents.
+    ///
+    /// # Performance
+    ///
+    /// Adaptive analysis adds minimal overhead (O(n log n) for gap analysis where n = spans).
+    /// Expected overhead: <5% of total extraction time.
+    pub use_adaptive_threshold: bool,
+
+    /// Configuration for adaptive threshold analysis.
+    ///
+    /// Only used when `use_adaptive_threshold` is true.
+    /// If None, uses `AdaptiveThresholdConfig::default()`.
+    ///
+    /// Allows fine-tuning the adaptive analysis for specific document types:
+    /// - `AdaptiveThresholdConfig::policy_documents()` - For tight spacing
+    /// - `AdaptiveThresholdConfig::academic()` - For standard spacing
+    /// - `AdaptiveThresholdConfig::aggressive()` - For dense layouts
+    /// - `AdaptiveThresholdConfig::conservative()` - For formal documents
+    pub adaptive_config: Option<crate::extractors::gap_statistics::AdaptiveThresholdConfig>,
 }
 
 impl Default for SpanMergingConfig {
@@ -186,6 +213,8 @@ impl Default for SpanMergingConfig {
             conservative_threshold_pt: 0.1,  // Reverted from 0.3 after regression testing
             column_boundary_threshold_pt: 5.0,
             severe_overlap_threshold_pt: -0.5,
+            use_adaptive_threshold: false,    // Backward compatible: disabled by default
+            adaptive_config: None,
         }
     }
 }
@@ -226,6 +255,8 @@ impl SpanMergingConfig {
             conservative_threshold_pt: 0.1,
             column_boundary_threshold_pt: 5.0,
             severe_overlap_threshold_pt: -0.5,
+            use_adaptive_threshold: false,
+            adaptive_config: None,
         }
     }
 
@@ -253,6 +284,8 @@ impl SpanMergingConfig {
             conservative_threshold_pt: 0.3,  // Reduced from 0.5 (was too aggressive for policy docs)
             column_boundary_threshold_pt: 5.0,
             severe_overlap_threshold_pt: -0.5,
+            use_adaptive_threshold: false,
+            adaptive_config: None,
         }
     }
 
@@ -283,6 +316,75 @@ impl SpanMergingConfig {
             conservative_threshold_pt: conservative_pt,
             column_boundary_threshold_pt: column_boundary_pt,
             severe_overlap_threshold_pt: overlap_pt,
+            use_adaptive_threshold: false,
+            adaptive_config: None,
+        }
+    }
+
+    /// Create a configuration with adaptive threshold enabled (default settings).
+    ///
+    /// This enables automatic threshold calculation based on the document's gap
+    /// distribution. Uses conservative base settings for reliable defaults:
+    /// - space_threshold_em_ratio: 0.25
+    /// - conservative_threshold_pt: 0.1 (overridden by adaptive calculation)
+    /// - column_boundary_threshold_pt: 5.0
+    /// - severe_overlap_threshold_pt: -0.5
+    /// - adaptive_config: AdaptiveThresholdConfig::default()
+    ///
+    /// The adaptive threshold is computed as: median_gap * 1.5, clamped to [0.05, 1.0] points.
+    ///
+    /// # Benefits
+    ///
+    /// - Automatically adapts to different document types
+    /// - Reduces word fusion in policy documents with tight spacing
+    /// - Minimizes spurious spaces in other document types
+    /// - Maintains backward compatibility (disabled by default)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::extractors::SpanMergingConfig;
+    ///
+    /// let config = SpanMergingConfig::adaptive();
+    /// assert!(config.use_adaptive_threshold);
+    /// ```
+    pub fn adaptive() -> Self {
+        Self {
+            space_threshold_em_ratio: 0.25,
+            conservative_threshold_pt: 0.1,
+            column_boundary_threshold_pt: 5.0,
+            severe_overlap_threshold_pt: -0.5,
+            use_adaptive_threshold: true,
+            adaptive_config: Some(crate::extractors::gap_statistics::AdaptiveThresholdConfig::default()),
+        }
+    }
+
+    /// Create a configuration with adaptive threshold and custom settings.
+    ///
+    /// # Arguments
+    ///
+    /// * `adaptive_config` - Custom adaptive threshold configuration
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::extractors::{SpanMergingConfig, AdaptiveThresholdConfig};
+    ///
+    /// let config = SpanMergingConfig::adaptive_with_config(
+    ///     AdaptiveThresholdConfig::policy_documents()
+    /// );
+    /// assert!(config.use_adaptive_threshold);
+    /// ```
+    pub fn adaptive_with_config(
+        adaptive_config: crate::extractors::gap_statistics::AdaptiveThresholdConfig,
+    ) -> Self {
+        Self {
+            space_threshold_em_ratio: 0.25,
+            conservative_threshold_pt: 0.1,
+            column_boundary_threshold_pt: 5.0,
+            severe_overlap_threshold_pt: -0.5,
+            use_adaptive_threshold: true,
+            adaptive_config: Some(adaptive_config),
         }
     }
 }
@@ -854,6 +956,9 @@ impl TextExtractor {
         // Deduplicate overlapping spans
         self.deduplicate_overlapping_spans();
 
+        // Apply adaptive threshold analysis if enabled (before merge, so we analyze raw spans)
+        self.apply_adaptive_threshold();
+
         // Merge adjacent spans on the same line to reconstruct complete words
         self.merge_adjacent_spans();
 
@@ -1172,6 +1277,60 @@ impl TextExtractor {
         );
 
         self.spans = deduplicated;
+    }
+
+    /// Apply adaptive threshold analysis to compute optimal gap detection threshold.
+    ///
+    /// When `use_adaptive_threshold` is enabled in the configuration, this method
+    /// analyzes the distribution of gaps between spans and computes an optimal
+    /// threshold for span merging. This threshold is then used instead of the
+    /// fixed `conservative_threshold_pt` value.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Extract gaps between consecutive spans on the same line
+    /// 2. Compute statistical measures (median, percentiles, etc.)
+    /// 3. Determine adaptive threshold using configuration
+    /// 4. Apply the computed threshold by updating `conservative_threshold_pt`
+    ///
+    /// # Fallback Behavior
+    ///
+    /// If the document has insufficient gaps (< min_samples) for reliable analysis,
+    /// the original fixed threshold is retained.
+    fn apply_adaptive_threshold(&mut self) {
+        if !self.merging_config.use_adaptive_threshold {
+            return;
+        }
+
+        use crate::extractors::gap_statistics::analyze_document_gaps;
+
+        let adaptive_config = self
+            .merging_config
+            .adaptive_config
+            .clone()
+            .unwrap_or_default();
+
+        let result = analyze_document_gaps(&self.spans, Some(adaptive_config));
+
+        if result.stats.is_some() {
+            // Adaptive analysis succeeded - use computed threshold
+            log::info!(
+                "Adaptive threshold: {:.3}pt (median: {:.3}pt, samples: {})",
+                result.threshold_pt,
+                result.stats.as_ref().map(|s| s.median).unwrap_or(0.0),
+                result.stats.as_ref().map(|s| s.count).unwrap_or(0)
+            );
+
+            // Override the conservative threshold with the computed value
+            self.merging_config.conservative_threshold_pt = result.threshold_pt;
+        } else {
+            // Adaptive analysis fell back to default - log reason
+            log::debug!(
+                "Adaptive threshold fallback: {} (using fixed threshold: {:.3}pt)",
+                result.reason,
+                self.merging_config.conservative_threshold_pt
+            );
+        }
     }
 
     /// Merge adjacent text spans on the same line to reconstruct complete words.
