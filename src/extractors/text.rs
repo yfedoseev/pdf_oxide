@@ -93,6 +93,193 @@ impl TextExtractionConfig {
     }
 }
 
+/// Configuration for span merging behavior.
+///
+/// These thresholds control how adjacent text spans are merged together and when
+/// spaces are inserted between them. All thresholds are in PDF points (1/72 inch).
+///
+/// # Rationale
+///
+/// PDF content streams don't explicitly mark word boundaries - text can be rendered
+/// with arbitrary gaps. These configurable thresholds allow tuning extraction to
+/// different document types:
+/// - Academic papers: tight column spacing, small gaps between words
+/// - Documents with tables: larger gaps to preserve structure
+/// - Dense grids (author lists): very small gaps that are still word boundaries
+///
+/// # References
+///
+/// Typography standards: word spacing typically 0.25-0.33em (25-33% of font size)
+/// See: SPAN_SPACING_INVESTIGATION.md for empirical measurements
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpanMergingConfig {
+    /// Minimum gap (in multiples of font size) to trigger space insertion.
+    ///
+    /// When the gap between two spans exceeds this threshold, a space is inserted.
+    /// Expressed as a ratio of font size (em).
+    ///
+    /// **Default**: 0.25
+    /// - Based on typography standards: typical word spacing is 0.25-0.33em
+    /// - For 12pt font: 0.25em * 12pt = 3pt
+    /// - For 10pt font: 0.25em * 10pt = 2.5pt
+    ///
+    /// **Tuning guidance**:
+    /// - Lower values (0.15-0.20): More aggressive space insertion, catches dense layouts
+    /// - Higher values (0.33-0.50): Conservative, only clear word boundaries
+    pub space_threshold_em_ratio: f32,
+
+    /// Conservative threshold for font transitions (in points).
+    ///
+    /// Below this gap, don't insert a space even if gap > 0, to avoid spurious spaces
+    /// from font metric changes or very tight kerning.
+    ///
+    /// **Default**: 0.3
+    /// - Avoids spaces from font metric alignment issues
+    /// - Smaller than typical letter spacing in justified text
+    /// - Catches actual overlaps/reversals while preserving character adjacency
+    ///
+    /// **Tuning guidance**:
+    /// - Lower values (0.1-0.2): More aggressive, inserts more spaces
+    /// - Higher values (0.5-1.0): Conservative, only clear separations
+    pub conservative_threshold_pt: f32,
+
+    /// Column boundary threshold (in points).
+    ///
+    /// Gaps larger than this indicate column separation and prevent span merging.
+    /// Used to preserve document structure (e.g., multi-column layouts, tables).
+    ///
+    /// **Default**: 5.0
+    /// - Typical character width for 10-12pt font: 4-6pt
+    /// - Word spacing: 2-4pt
+    /// - Column gaps in academic papers: 5-15pt
+    /// - Table column gaps: 10-50pt
+    ///
+    /// **Tuning guidance**:
+    /// - Lower values (3.0-4.0): Merge more spans, risk merging across columns
+    /// - Higher values (8.0-10.0): Keep columns separate, preserve structure
+    pub column_boundary_threshold_pt: f32,
+
+    /// Negative gap threshold for severe overlaps (in points).
+    ///
+    /// When gaps are negative (spans overlap), values more severe than this
+    /// indicate genuine overlap and should prevent merging.
+    ///
+    /// **Default**: -0.5
+    /// - Typical font metric variations: 0 to -0.3pt
+    /// - Small overlaps from kerning: -0.3 to -0.5pt
+    /// - Real overlap errors: worse than -0.5pt
+    ///
+    /// **Tuning guidance**:
+    /// - Less negative (-0.2, -0.1): More conservative on overlaps
+    /// - More negative (-1.0, -2.0): Allow some overlap to merge adjacent text
+    pub severe_overlap_threshold_pt: f32,
+}
+
+impl Default for SpanMergingConfig {
+    fn default() -> Self {
+        Self {
+            space_threshold_em_ratio: 0.25,
+            conservative_threshold_pt: 0.3,
+            column_boundary_threshold_pt: 5.0,
+            severe_overlap_threshold_pt: -0.5,
+        }
+    }
+}
+
+impl SpanMergingConfig {
+    /// Create a new configuration with default values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::extractors::SpanMergingConfig;
+    ///
+    /// let config = SpanMergingConfig::new();
+    /// assert_eq!(config.space_threshold_em_ratio, 0.25);
+    /// ```
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a configuration with aggressive space insertion (for dense layouts).
+    ///
+    /// Uses lower thresholds to insert spaces more readily:
+    /// - space_threshold_em_ratio: 0.15 (instead of 0.25)
+    /// - conservative_threshold_pt: 0.1 (instead of 0.3)
+    ///
+    /// Good for documents with many short words close together (author lists, grids).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::extractors::SpanMergingConfig;
+    ///
+    /// let config = SpanMergingConfig::aggressive();
+    /// ```
+    pub fn aggressive() -> Self {
+        Self {
+            space_threshold_em_ratio: 0.15,
+            conservative_threshold_pt: 0.1,
+            column_boundary_threshold_pt: 5.0,
+            severe_overlap_threshold_pt: -0.5,
+        }
+    }
+
+    /// Create a configuration with conservative space insertion (for formal documents).
+    ///
+    /// Uses higher thresholds to insert spaces less readily:
+    /// - space_threshold_em_ratio: 0.33 (instead of 0.25)
+    /// - conservative_threshold_pt: 0.5 (instead of 0.3)
+    ///
+    /// Good for formal documents where spacing is reliable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::extractors::SpanMergingConfig;
+    ///
+    /// let config = SpanMergingConfig::conservative();
+    /// ```
+    pub fn conservative() -> Self {
+        Self {
+            space_threshold_em_ratio: 0.33,
+            conservative_threshold_pt: 0.5,
+            column_boundary_threshold_pt: 5.0,
+            severe_overlap_threshold_pt: -0.5,
+        }
+    }
+
+    /// Create a configuration with custom thresholds.
+    ///
+    /// # Arguments
+    ///
+    /// * `space_threshold_em` - Space threshold as em ratio
+    /// * `conservative_pt` - Conservative gap threshold in points
+    /// * `column_boundary_pt` - Column boundary threshold in points
+    /// * `overlap_pt` - Severe overlap threshold in points
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::extractors::SpanMergingConfig;
+    ///
+    /// let config = SpanMergingConfig::custom(0.2, 0.2, 6.0, -0.3);
+    /// ```
+    pub fn custom(
+        space_threshold_em: f32,
+        conservative_pt: f32,
+        column_boundary_pt: f32,
+        overlap_pt: f32,
+    ) -> Self {
+        Self {
+            space_threshold_em_ratio: space_threshold_em,
+            conservative_threshold_pt: conservative_pt,
+            column_boundary_threshold_pt: column_boundary_pt,
+            severe_overlap_threshold_pt: overlap_pt,
+        }
+    }
+}
+
 /// Buffer for accumulating text from TJ array elements into a single span.
 ///
 /// Per PDF Spec ISO 32000-1:2008, Section 9.4.4 NOTE 6:
@@ -458,6 +645,8 @@ pub struct TextExtractor {
     processed_xobjects: HashSet<ObjectRef>,
     /// Configuration for text extraction heuristics
     config: TextExtractionConfig,
+    /// Configuration for span merging behavior
+    merging_config: SpanMergingConfig,
     /// Current marked content ID (for Tagged PDFs)
     ///
     /// Tracks the MCID of the currently active marked content sequence.
@@ -517,11 +706,35 @@ impl TextExtractor {
             document: None,
             processed_xobjects: HashSet::new(),
             config,
+            merging_config: SpanMergingConfig::default(),
             current_mcid: None,
             extract_spans: true,      // Default to span mode (PDF spec compliant)
             tj_span_buffer: None,     // No buffer initially
             span_sequence_counter: 0, // Initialize sequence counter
         }
+    }
+
+    /// Create a new text extractor with custom merging configuration.
+    ///
+    /// This allows fine-tuning how adjacent spans are merged and when spaces
+    /// are inserted, useful for documents with unusual spacing patterns.
+    ///
+    /// # Arguments
+    ///
+    /// * `merging_config` - Configuration for span merging thresholds
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::extractors::{TextExtractor, SpanMergingConfig};
+    ///
+    /// // Use aggressive space insertion for dense layouts
+    /// let config = SpanMergingConfig::aggressive();
+    /// let extractor = TextExtractor::new().with_merging_config(config);
+    /// ```
+    pub fn with_merging_config(mut self, merging_config: SpanMergingConfig) -> Self {
+        self.merging_config = merging_config;
+        self
     }
 
     /// Set the resources dictionary for this extractor.
@@ -990,53 +1203,28 @@ impl TextExtractor {
             let gap = span.bbox.x - current_end_x;
 
             // COLUMN BOUNDARY CHECK: Don't merge spans with large gaps
-            // Academic papers (2-column) typically have 5-15pt gaps between columns
-            // Government docs with tables may have 20-50pt gaps
-            // Word spacing is typically 2-4pt
-            // Using 5pt threshold: covers tight academic columns while preserving word boundaries
-            let large_gap_indicates_column = gap > 5.0;
+            // Use configured threshold to detect column separation
+            let large_gap_indicates_column = gap > self.merging_config.column_boundary_threshold_pt;
 
-            // Merge threshold: 3pt (typical char width for 10pt font is ~5pt)
-            // This captures fragments within words but preserves word boundaries
-            // BUT: Don't merge across column boundaries (gaps > 5pt)
-            let should_merge =
-                same_line && (-0.5..3.0).contains(&gap) && !large_gap_indicates_column;
+            // Merge threshold: Use configured values
+            // Negative gaps: use severe_overlap_threshold_pt (default -0.5pt)
+            // Positive gaps: use 3pt default (0.25em * 12pt)
+            let should_merge = same_line
+                && (self.merging_config.severe_overlap_threshold_pt..3.0).contains(&gap)
+                && !large_gap_indicates_column;
 
             if should_merge {
                 // Merge spans: concatenate text and extend bbox
                 let old_text = current.text.clone();
 
                 // Per PDF Spec ISO 32000-1:2008, Section 9.4.3:
-                // Determine space threshold based on span characteristics
-                //
-                // FIX: Use 0.25em (25% of font size) threshold per typography standards
-                // and industry best practices (PyMuPDF4LLM, Adobe Acrobat).
-                //
-                // Previous threshold was too conservative (15-20%), causing missing spaces
-                // in author names like "WangZhenyu" instead of "Wang Zhenyu".
-                //
-                // Typography reference: word spacing is typically 0.25-0.33em
-                //
-                // KNOWN LIMITATION: Dense grid layouts (e.g., 6 authors in 3×2 grid)
-                // with gaps <0.25em everywhere will still create mega-spans that get
-                // incorrectly split during layout analysis. This is a pipeline issue
-                // (spans are correct, but markdown/layout breaks them incorrectly).
-                // See SPAN_SPACING_INVESTIGATION.md for details.
-                // TODO: Fix span splitting in layout/markdown conversion to preserve
-                // internal spaces when breaking up mega-spans.
-                let space_threshold = current.font_size * 0.25;
+                // Determine space threshold based on span characteristics using config
+                let space_threshold = current.font_size * self.merging_config.space_threshold_em_ratio;
 
                 // FIX #1 COMPREHENSIVE: Conservative space insertion for dense layouts
                 //
-                // Root cause: The merge condition (gap < 3pt) and space condition (gap > 3pt)
-                // created a paradox where gaps in [0, 3pt) would merge without spaces.
-                //
-                // For dense layouts with 1-2pt gaps between words:
-                // - BEFORE: gap < 3pt → merge, gap < 3pt → no space → "email@example.comfinancial"
-                // - AFTER: gap < 3pt → merge, gap > 1.5pt → insert space → "email@example.com financial"
-                //
-                // The fix: Use a conservative threshold (50% of space_threshold) to catch
-                // word boundaries in dense layouts while preserving tight kerning within words.
+                // Uses configurable thresholds to handle different document types.
+                // Default settings work well for most PDFs; adjust config for edge cases.
 
                 // Check if space should be inserted based on:
                 // 1. Gap-based detection (geometric spacing)
@@ -1049,14 +1237,28 @@ impl TextExtractor {
                 // In dense layouts, even 0pt gaps can be word boundaries (names in grids).
                 //
                 // Strategy:
-                // 1. If gap >= space_threshold (3pt): Always insert space
-                // 2. If heuristic detects boundary: Always insert space
-                // 3. If gap > 0.1pt: Insert space (even tiny gaps are usually intentional)
+                // 1. If gap >= space_threshold: Always insert space (primary geometric detection)
+                // 2. If heuristic detects boundary: Always insert space (character transition detection)
+                // 3. If gap > conservative_threshold_pt: Insert space (even tiny gaps are usually intentional)
                 //
-                // Why gap > 0.1pt? In PDF, a gap of 0pt means characters are truly adjacent.
-                // Any positive gap, even 0.1pt, indicates the PDF author intended separation.
-                // This catches dense layouts where word spacing is 0.5-2pt.
-                let needs_space = needs_space_by_gap || needs_space_by_heuristic || gap > 0.1;
+                // The conservative_threshold avoids spaces from font metric changes while
+                // still catching word boundaries in layouts with 0.3-2pt spacing.
+                let needs_space = needs_space_by_gap
+                    || needs_space_by_heuristic
+                    || gap > self.merging_config.conservative_threshold_pt;
+
+                // Add comprehensive logging for gap analysis
+                log::debug!(
+                    "Gap analysis: gap={:.2}pt, conservative={:.2}pt, space_threshold={:.2}pt, \
+                     em_ratio={:.2}, needs_space={}, heuristic={}, by_gap={}",
+                    gap,
+                    self.merging_config.conservative_threshold_pt,
+                    space_threshold,
+                    self.merging_config.space_threshold_em_ratio,
+                    needs_space,
+                    needs_space_by_heuristic,
+                    needs_space_by_gap
+                );
 
                 let merged_text = if needs_space {
                     // Gap or heuristic indicates intentional word spacing
@@ -1066,17 +1268,26 @@ impl TextExtractor {
                             current.text,
                             span.text
                         );
-                    } else if gap > 0.1 && gap <= space_threshold {
+                    } else if gap > self.merging_config.conservative_threshold_pt
+                        && gap <= space_threshold
+                    {
                         log::trace!(
-                            "Aggressive space insertion (gap={:.2}pt < threshold): '{}' | '{}'",
+                            "Conservative space insertion (gap={:.2}pt in [{:.2}pt, {:.2}pt]): '{}' | '{}'",
                             gap,
+                            self.merging_config.conservative_threshold_pt,
+                            space_threshold,
                             current.text,
                             span.text
                         );
                     }
                     format!("{} {}", current.text, span.text)
                 } else {
-                    // Gap ≤ 0.1pt: truly adjacent characters within same word
+                    // Gap is below conservative threshold: adjacent characters within same word
+                    log::trace!(
+                        "No space insertion: gap={:.2}pt <= conservative_threshold={:.2}pt",
+                        gap,
+                        self.merging_config.conservative_threshold_pt
+                    );
                     format!("{}{}", current.text, span.text)
                 };
 

@@ -13,4 +13,4 @@ pub use structured::{
     BoundingBox, DocumentElement, DocumentMetadata, ExtractorConfig, ListItem, StructuredDocument,
     StructuredExtractor, TextAlignment, TextStyle,
 };
-pub use text::{TextExtractionConfig, TextExtractor};
+pub use text::{SpanMergingConfig, TextExtractionConfig, TextExtractor};

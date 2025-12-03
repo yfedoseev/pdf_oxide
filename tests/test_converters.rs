@@ -3,7 +3,7 @@
 //! Phase 6, Task 6.7
 
 use pdf_oxide::converters::{
-    ConversionOptions, HtmlConverter, MarkdownConverter, ReadingOrderMode,
+    BoldMarkerBehavior, ConversionOptions, HtmlConverter, MarkdownConverter, ReadingOrderMode,
 };
 use pdf_oxide::geometry::Rect;
 use pdf_oxide::layout::{Color, FontWeight, TextChar};
@@ -394,6 +394,7 @@ fn test_comprehensive_document_conversion() {
         extract_tables: false,
         image_output_dir: None,
         reading_order_mode: ReadingOrderMode::TopToBottomLeftToRight,
+        bold_marker_behavior: BoldMarkerBehavior::Conservative,
     };
 
     let mut chars = Vec::new();

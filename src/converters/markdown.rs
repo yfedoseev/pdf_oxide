@@ -7,7 +7,7 @@
 //! - Reading order determination
 
 use crate::converters::whitespace::cleanup_markdown;
-use crate::converters::{ConversionOptions, ReadingOrderMode};
+use crate::converters::{BoldMarkerBehavior, ConversionOptions, ReadingOrderMode};
 use crate::error::Result;
 use crate::geometry::Rect;
 use crate::layout::clustering::{cluster_chars_into_words, cluster_words_into_lines};
@@ -317,8 +317,24 @@ impl MarkdownConverter {
                 let can_insert_close =
                     should_insert_bold_marker(last_char_in_group, next_char_after_group);
 
-                // Only insert markers if BOTH positions are valid (to maintain balance)
-                let should_insert_markers = is_bold && can_insert_open && can_insert_close;
+                // FIX #2: Skip bold markers for whitespace-only spans in conservative mode
+                // Determine if content warrants bold markers based on behavior setting
+                let should_render_bold_markers = match options.bold_marker_behavior {
+                    BoldMarkerBehavior::Aggressive => true,
+                    BoldMarkerBehavior::Conservative => is_content_block(&group_text),
+                };
+
+                // Only insert markers if BOTH positions are valid AND content check passes
+                let should_insert_markers = is_bold && can_insert_open && can_insert_close && should_render_bold_markers;
+
+                // Log the bold marker decision for debugging
+                log::debug!(
+                    "Bold marker decision: text='{}', is_content={}, behavior={:?}, render_markers={}",
+                    group_text.chars().take(20).collect::<String>(),
+                    is_content_block(&group_text),
+                    options.bold_marker_behavior,
+                    should_render_bold_markers
+                );
 
                 if should_insert_markers {
                     markdown.push_str("**");
@@ -854,6 +870,34 @@ impl Default for MarkdownConverter {
 /// // Should NOT insert (mid-word)
 /// assert!(!should_insert_bold_marker(Some('r'), Some('I')));
 /// ```
+/// Determine if a text block contains meaningful content (not just whitespace).
+///
+/// This helper identifies whether a span represents actual content or just
+/// layout spacing. Used to decide whether to apply bold markers in conservative mode.
+///
+/// # Arguments
+///
+/// * `text` - The text content to analyze
+///
+/// # Returns
+///
+/// `true` if the text contains at least one non-whitespace character, `false` otherwise.
+///
+/// # Examples
+///
+/// ```ignore
+/// assert!(is_content_block("text"));       // true - has content
+/// assert!(is_content_block("a"));          // true - single character
+/// assert!(is_content_block(" a "));        // true - has non-whitespace
+/// assert!(!is_content_block(""));          // false - empty
+/// assert!(!is_content_block("   "));       // false - spaces only
+/// assert!(!is_content_block("\t\n"));      // false - whitespace only
+/// ```
+pub fn is_content_block(text: &str) -> bool {
+    // Check if any character is not whitespace
+    text.chars().any(|c| !c.is_whitespace())
+}
+
 fn should_insert_bold_marker(prev_char: Option<char>, next_char: Option<char>) -> bool {
     match (prev_char, next_char) {
         // Don't insert if both sides are alphanumeric (mid-word)

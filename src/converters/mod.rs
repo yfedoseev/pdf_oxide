@@ -43,6 +43,47 @@ pub use html::HtmlConverter;
 pub use markdown::MarkdownConverter;
 pub use whitespace::{cleanup_markdown, normalize_whitespace, remove_page_artifacts};
 
+/// Control how bold markers are applied in markdown conversion.
+///
+/// Determines whether bold formatting markers (**text**) should be applied to
+/// whitespace-only content or only to content-bearing text spans.
+///
+/// # Examples
+///
+/// ```
+/// use pdf_oxide::converters::BoldMarkerBehavior;
+///
+/// // Default conservative mode - no bold markers for whitespace
+/// let behavior = BoldMarkerBehavior::default();
+/// assert_eq!(behavior, BoldMarkerBehavior::Conservative);
+///
+/// // Aggressive mode - apply markers even for whitespace
+/// let aggressive = BoldMarkerBehavior::Aggressive;
+/// ```
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub enum BoldMarkerBehavior {
+    /// Apply bold markers to all styled text, even whitespace-only content.
+    ///
+    /// This produces "** **" for bold whitespace, which clutters markdown output
+    /// and may indicate layout spacing rather than actual formatting.
+    /// Generally not recommended for document conversion.
+    Aggressive,
+
+    /// Skip bold markers for whitespace-only content (default).
+    ///
+    /// Only applies bold markers when the styled text contains actual content characters.
+    /// Whitespace-only content like "   " or "\t" renders without markers.
+    /// This is the recommended mode for clean, semantic markdown output.
+    Conservative,
+}
+
+impl Default for BoldMarkerBehavior {
+    /// Default behavior is Conservative mode.
+    fn default() -> Self {
+        Self::Conservative
+    }
+}
+
 /// Options for converting PDF pages to different formats.
 ///
 /// These options control how the conversion is performed, including
@@ -51,7 +92,7 @@ pub use whitespace::{cleanup_markdown, normalize_whitespace, remove_page_artifac
 /// # Examples
 ///
 /// ```
-/// use pdf_oxide::converters::{ConversionOptions, ReadingOrderMode};
+/// use pdf_oxide::converters::{BoldMarkerBehavior, ConversionOptions, ReadingOrderMode};
 ///
 /// // Default options
 /// let opts = ConversionOptions::default();
@@ -64,6 +105,7 @@ pub use whitespace::{cleanup_markdown, normalize_whitespace, remove_page_artifac
 ///     include_images: true,
 ///     image_output_dir: Some("images/".to_string()),
 ///     reading_order_mode: ReadingOrderMode::ColumnAware,
+///     bold_marker_behavior: BoldMarkerBehavior::Conservative,
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq)]
@@ -101,6 +143,13 @@ pub struct ConversionOptions {
     ///
     /// Controls how text blocks are ordered in the output.
     pub reading_order_mode: ReadingOrderMode,
+
+    /// Control how bold markers are applied in markdown conversion.
+    ///
+    /// Determines whether bold formatting markers are applied to whitespace-only
+    /// content (Aggressive) or only to content-bearing text (Conservative).
+    /// See BoldMarkerBehavior for details.
+    pub bold_marker_behavior: BoldMarkerBehavior,
 }
 
 impl Default for ConversionOptions {
@@ -113,6 +162,7 @@ impl Default for ConversionOptions {
     /// - include_images: true
     /// - image_output_dir: None
     /// - reading_order_mode: StructureTreeFirst (PDF-spec-compliant for Tagged PDFs, falls back to XY-Cut for untagged)
+    /// - bold_marker_behavior: Conservative (no bold markers for whitespace-only content)
     fn default() -> Self {
         Self {
             preserve_layout: false,
@@ -121,6 +171,7 @@ impl Default for ConversionOptions {
             include_images: true,
             image_output_dir: None,
             reading_order_mode: ReadingOrderMode::StructureTreeFirst { mcid_order: vec![] },
+            bold_marker_behavior: BoldMarkerBehavior::Conservative,
         }
     }
 }
@@ -185,6 +236,7 @@ mod tests {
             include_images: false,
             image_output_dir: Some("output/".to_string()),
             reading_order_mode: ReadingOrderMode::ColumnAware,
+            bold_marker_behavior: BoldMarkerBehavior::Aggressive,
         };
 
         assert!(opts.preserve_layout);
@@ -192,6 +244,7 @@ mod tests {
         assert!(!opts.include_images);
         assert_eq!(opts.image_output_dir, Some("output/".to_string()));
         assert_eq!(opts.reading_order_mode, ReadingOrderMode::ColumnAware);
+        assert_eq!(opts.bold_marker_behavior, BoldMarkerBehavior::Aggressive);
     }
 
     #[test]
@@ -215,5 +268,34 @@ mod tests {
         let opts = ConversionOptions::default();
         let debug_str = format!("{:?}", opts);
         assert!(debug_str.contains("ConversionOptions"));
+    }
+
+    #[test]
+    fn test_bold_marker_behavior_default() {
+        assert_eq!(BoldMarkerBehavior::default(), BoldMarkerBehavior::Conservative);
+    }
+
+    #[test]
+    fn test_bold_marker_behavior_equality() {
+        assert_eq!(
+            BoldMarkerBehavior::Conservative,
+            BoldMarkerBehavior::Conservative
+        );
+        assert_eq!(
+            BoldMarkerBehavior::Aggressive,
+            BoldMarkerBehavior::Aggressive
+        );
+        assert_ne!(
+            BoldMarkerBehavior::Conservative,
+            BoldMarkerBehavior::Aggressive
+        );
+    }
+
+    #[test]
+    fn test_bold_marker_behavior_copy_clone() {
+        let behavior = BoldMarkerBehavior::Aggressive;
+        let cloned = behavior.clone();
+        let copied = behavior;
+        assert_eq!(cloned, copied);
     }
 }
