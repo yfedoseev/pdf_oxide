@@ -133,10 +133,14 @@ pub struct SpanMergingConfig {
     /// Below this gap, don't insert a space even if gap > 0, to avoid spurious spaces
     /// from font metric changes or very tight kerning.
     ///
-    /// **Default**: 0.3
-    /// - Avoids spaces from font metric alignment issues
+    /// **Default**: 0.1
+    /// - Avoids spaces from font metric alignment issues (very tight threshold)
     /// - Smaller than typical letter spacing in justified text
     /// - Catches actual overlaps/reversals while preserving character adjacency
+    ///
+    /// **Note (Phase 4)**: Changed from 0.3 to 0.1 after regression testing revealed
+    /// that 0.3pt was too conservative for policy documents (0.1-0.3pt word spacing),
+    /// causing word fusion. Adaptive threshold analysis recommended for future improvement.
     ///
     /// **Tuning guidance**:
     /// - Lower values (0.1-0.2): More aggressive, inserts more spaces
@@ -179,7 +183,7 @@ impl Default for SpanMergingConfig {
     fn default() -> Self {
         Self {
             space_threshold_em_ratio: 0.25,
-            conservative_threshold_pt: 0.3,
+            conservative_threshold_pt: 0.1,  // Reverted from 0.3 after regression testing
             column_boundary_threshold_pt: 5.0,
             severe_overlap_threshold_pt: -0.5,
         }
@@ -229,9 +233,12 @@ impl SpanMergingConfig {
     ///
     /// Uses higher thresholds to insert spaces less readily:
     /// - space_threshold_em_ratio: 0.33 (instead of 0.25)
-    /// - conservative_threshold_pt: 0.5 (instead of 0.3)
+    /// - conservative_threshold_pt: 0.3 (instead of 0.1)
     ///
     /// Good for formal documents where spacing is reliable.
+    ///
+    /// **Note**: After regression testing, 0.5pt threshold was found to cause
+    /// excessive word fusion in policy documents. Reduced to 0.3pt.
     ///
     /// # Examples
     ///
@@ -243,7 +250,7 @@ impl SpanMergingConfig {
     pub fn conservative() -> Self {
         Self {
             space_threshold_em_ratio: 0.33,
-            conservative_threshold_pt: 0.5,
+            conservative_threshold_pt: 0.3,  // Reduced from 0.5 (was too aggressive for policy docs)
             column_boundary_threshold_pt: 5.0,
             severe_overlap_threshold_pt: -0.5,
         }

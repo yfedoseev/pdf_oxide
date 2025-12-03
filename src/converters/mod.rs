@@ -36,12 +36,100 @@
 
 pub mod html;
 pub mod markdown;
+pub mod table_formatter;
 pub mod whitespace;
 
 // Re-export main types
 pub use html::HtmlConverter;
 pub use markdown::MarkdownConverter;
+pub use table_formatter::MarkdownTableFormatter;
 pub use whitespace::{cleanup_markdown, normalize_whitespace, remove_page_artifacts};
+
+/// Configuration for table formatting in markdown.
+///
+/// All formatting parameters are configurable with no magic numbers.
+#[derive(Debug, Clone)]
+pub struct TableFormatConfig {
+    /// Include markdown table header separator (default: true)
+    pub include_header_separator: bool,
+    /// Spaces around cell content (default: 1)
+    pub cell_padding: usize,
+    /// Minimum column width in characters (default: 3)
+    pub min_column_width: usize,
+    /// Merge adjacent empty cells (default: true)
+    pub merge_adjacent_empty_cells: bool,
+    /// Preserve bold/italic formatting in cells (default: true)
+    pub preserve_cell_formatting: bool,
+    /// Text to use for empty cells (default: "-")
+    pub empty_cell_text: String,
+}
+
+impl TableFormatConfig {
+    /// Create a standard markdown table configuration.
+    pub fn default() -> Self {
+        Self {
+            include_header_separator: true,
+            cell_padding: 1,
+            min_column_width: 3,
+            merge_adjacent_empty_cells: true,
+            preserve_cell_formatting: true,
+            empty_cell_text: "-".to_string(),
+        }
+    }
+
+    /// Create a compact markdown table configuration.
+    pub fn compact() -> Self {
+        Self {
+            include_header_separator: true,
+            cell_padding: 0,
+            min_column_width: 1,
+            merge_adjacent_empty_cells: true,
+            preserve_cell_formatting: false,
+            empty_cell_text: String::new(),
+        }
+    }
+
+    /// Create a detailed markdown table configuration.
+    pub fn detailed() -> Self {
+        Self {
+            include_header_separator: true,
+            cell_padding: 2,
+            min_column_width: 5,
+            merge_adjacent_empty_cells: false,
+            preserve_cell_formatting: true,
+            empty_cell_text: "—".to_string(),
+        }
+    }
+
+    /// Create a custom markdown table configuration.
+    pub fn custom() -> Self {
+        Self::default()
+    }
+
+    /// Set cell padding (builder pattern).
+    pub fn with_cell_padding(mut self, padding: usize) -> Self {
+        self.cell_padding = padding;
+        self
+    }
+
+    /// Set minimum column width (builder pattern).
+    pub fn with_min_column_width(mut self, width: usize) -> Self {
+        self.min_column_width = width;
+        self
+    }
+
+    /// Set empty cell text (builder pattern).
+    pub fn with_empty_cell_text(mut self, text: &str) -> Self {
+        self.empty_cell_text = text.to_string();
+        self
+    }
+}
+
+impl Default for TableFormatConfig {
+    fn default() -> Self {
+        TableFormatConfig::default()
+    }
+}
 
 /// Control how bold markers are applied in markdown conversion.
 ///
