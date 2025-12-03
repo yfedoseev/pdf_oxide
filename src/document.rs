@@ -1953,6 +1953,64 @@ impl PdfDocument {
         extractor.extract_text_spans(&content_data)
     }
 
+    /// Extract text spans from a page with custom configuration.
+    ///
+    /// This method allows controlling span merging behavior through configuration,
+    /// including adaptive threshold settings for improved extraction quality.
+    ///
+    /// # Arguments
+    ///
+    /// * `page_index` - Zero-based page index
+    /// * `config` - SpanMergingConfig controlling extraction parameters
+    ///
+    /// # Returns
+    ///
+    /// A vector of TextSpan objects extracted from the page with applied configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use pdf_oxide::document::PdfDocument;
+    /// # use pdf_oxide::extractors::SpanMergingConfig;
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut doc = PdfDocument::open("example.pdf")?;
+    ///
+    /// // Use adaptive threshold configuration
+    /// let config = SpanMergingConfig::adaptive();
+    /// let spans = doc.extract_spans_with_config(0, config)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn extract_spans_with_config(&mut self, page_index: usize, config: crate::extractors::SpanMergingConfig) -> Result<Vec<crate::layout::TextSpan>> {
+        use crate::extractors::TextExtractor;
+
+        // Get page object
+        let page = self.get_page(page_index)?;
+        let page_dict = page.as_dict().ok_or_else(|| Error::ParseError {
+            offset: 0,
+            reason: "Page is not a dictionary".to_string(),
+        })?;
+
+        // Get content stream data
+        let content_data = self.get_page_content_data(page_index)?;
+
+        // Create text extractor with merged configuration
+        let mut extractor = TextExtractor::new()
+            .with_merging_config(config);
+
+        // Load fonts from page resources and set resources for XObject access
+        if let Some(resources) = page_dict.get("Resources") {
+            extractor.set_resources(resources.clone());
+            extractor.set_document(self as *mut PdfDocument);
+
+            // Load fonts
+            self.load_fonts(resources, &mut extractor)?;
+        }
+
+        // Extract text spans
+        extractor.extract_text_spans(&content_data)
+    }
+
     /// Get the raw content stream data for a page.
     ///
     /// This returns the decoded content stream bytes for the specified page.
