@@ -252,11 +252,7 @@ impl TableDetector {
         debug!("Found {} potential columns", x_clusters.len());
 
         if x_clusters.len() < self.config.min_columns {
-            debug!(
-                "Insufficient columns: {} < {}",
-                x_clusters.len(),
-                self.config.min_columns
-            );
+            debug!("Insufficient columns: {} < {}", x_clusters.len(), self.config.min_columns);
             return vec![];
         }
 
@@ -265,11 +261,7 @@ impl TableDetector {
         debug!("Found {} potential rows", y_clusters.len());
 
         if y_clusters.len() < self.config.min_rows {
-            debug!(
-                "Insufficient rows: {} < {}",
-                y_clusters.len(),
-                self.config.min_rows
-            );
+            debug!("Insufficient rows: {} < {}", y_clusters.len(), self.config.min_rows);
             return vec![];
         }
 
@@ -386,7 +378,11 @@ impl TableDetector {
     /// # Visibility
     ///
     /// This method is public to support testing and advanced use cases.
-    pub fn is_grid_like(&self, x_clusters: &[Vec<TextBlock>], y_clusters: &[Vec<TextBlock>]) -> bool {
+    pub fn is_grid_like(
+        &self,
+        x_clusters: &[Vec<TextBlock>],
+        y_clusters: &[Vec<TextBlock>],
+    ) -> bool {
         trace!(
             "Validating grid pattern: {} x-clusters, {} y-clusters",
             x_clusters.len(),
@@ -409,8 +405,7 @@ impl TableDetector {
         if total_cells < self.config.min_cells_for_grid {
             trace!(
                 "Validation failed: insufficient cells ({} < {})",
-                total_cells,
-                self.config.min_cells_for_grid
+                total_cells, self.config.min_cells_for_grid
             );
             return false;
         }
@@ -488,7 +483,12 @@ impl TableDetector {
 
         debug!("Extracted grid: {}x{} with bbox {:?}", rows, cols, bbox);
 
-        DetectedTable { cells, bbox, rows, cols }
+        DetectedTable {
+            cells,
+            bbox,
+            rows,
+            cols,
+        }
     }
 }
 
@@ -616,10 +616,7 @@ mod tests {
         let detector = TableDetector::new(config);
 
         // Only 2 blocks - forms 2x1 grid with 2 cells (< 6 required)
-        let blocks = vec![
-            mock_block("A", 0.0, 0.0),
-            mock_block("B", 50.0, 0.0),
-        ];
+        let blocks = vec![mock_block("A", 0.0, 0.0), mock_block("B", 50.0, 0.0)];
 
         let x_clusters = detector.cluster_by_x(&blocks);
         let y_clusters = detector.cluster_by_y(&blocks);
@@ -643,10 +640,7 @@ mod tests {
         let config = TableDetectorConfig::default();
         let detector = TableDetector::new(config);
 
-        let blocks = vec![
-            mock_block("A", 0.0, 0.0),
-            mock_block("B", 50.0, 0.0),
-        ];
+        let blocks = vec![mock_block("A", 0.0, 0.0), mock_block("B", 50.0, 0.0)];
 
         let tables = detector.detect_tables(&blocks);
         assert_eq!(tables.len(), 0); // Need at least 4 blocks for 2x2

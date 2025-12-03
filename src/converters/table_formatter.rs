@@ -13,11 +13,7 @@ pub struct MarkdownTableFormatter;
 
 impl MarkdownTableFormatter {
     /// Format a table as markdown.
-    pub fn format_table(
-        table: &Table,
-        blocks: &[TextBlock],
-        config: &TableFormatConfig,
-    ) -> String {
+    pub fn format_table(table: &Table, blocks: &[TextBlock], config: &TableFormatConfig) -> String {
         info!("Formatting table with {} rows and {} columns", table.num_rows, table.num_cols);
         trace!("Table formatting config: {:?}", config);
 
@@ -27,8 +23,11 @@ impl MarkdownTableFormatter {
         }
 
         let cell_contents = Self::extract_cell_contents(table, blocks, config);
-        debug!("Extracted cell contents: {} rows × {} columns", cell_contents.len(),
-               cell_contents.iter().map(|r| r.len()).max().unwrap_or(0));
+        debug!(
+            "Extracted cell contents: {} rows × {} columns",
+            cell_contents.len(),
+            cell_contents.iter().map(|r| r.len()).max().unwrap_or(0)
+        );
 
         let column_widths = Self::calculate_column_widths(&cell_contents, config);
         debug!("Calculated column widths: {:?}", column_widths);
@@ -101,7 +100,10 @@ impl MarkdownTableFormatter {
             .replace("_", "")
     }
 
-    fn calculate_column_widths(cell_contents: &[Vec<String>], config: &TableFormatConfig) -> Vec<usize> {
+    fn calculate_column_widths(
+        cell_contents: &[Vec<String>],
+        config: &TableFormatConfig,
+    ) -> Vec<usize> {
         if cell_contents.is_empty() {
             return vec![];
         }
@@ -122,16 +124,15 @@ impl MarkdownTableFormatter {
         widths
     }
 
-    fn format_row(
-        row: &[String],
-        column_widths: &[usize],
-        config: &TableFormatConfig,
-    ) -> String {
+    fn format_row(row: &[String], column_widths: &[usize], config: &TableFormatConfig) -> String {
         let mut result = String::from("|");
         let padding = " ".repeat(config.cell_padding);
 
         for (col_idx, cell) in row.iter().enumerate() {
-            let width = column_widths.get(col_idx).copied().unwrap_or(config.min_column_width);
+            let width = column_widths
+                .get(col_idx)
+                .copied()
+                .unwrap_or(config.min_column_width);
             result.push_str(&padding);
             result.push_str(&format!("{:<width$}", cell, width = width));
             result.push_str(&padding);
@@ -327,7 +328,8 @@ mod tests {
         ];
 
         let config_preserve = TableFormatConfig::default();
-        let markdown_preserve = MarkdownTableFormatter::format_table(&table, &blocks, &config_preserve);
+        let markdown_preserve =
+            MarkdownTableFormatter::format_table(&table, &blocks, &config_preserve);
         assert!(markdown_preserve.contains("**Bold**"));
 
         let config_strip = TableFormatConfig::compact();
@@ -360,10 +362,7 @@ mod tests {
             num_cols: 2,
         };
 
-        let blocks = vec![
-            mock_block("Col1", 0.0, 0.0),
-            mock_block("Col2", 50.0, 0.0),
-        ];
+        let blocks = vec![mock_block("Col1", 0.0, 0.0), mock_block("Col2", 50.0, 0.0)];
 
         let config = TableFormatConfig::default();
         let markdown = MarkdownTableFormatter::format_table(&table, &blocks, &config);
@@ -388,8 +387,7 @@ mod tests {
             mock_block("D", 50.0, 25.0),
         ];
 
-        let config = TableFormatConfig::custom()
-            .with_min_column_width(5);
+        let config = TableFormatConfig::custom().with_min_column_width(5);
 
         let markdown = MarkdownTableFormatter::format_table(&table, &blocks, &config);
 

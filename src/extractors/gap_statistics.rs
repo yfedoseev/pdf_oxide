@@ -423,25 +423,15 @@ pub fn calculate_statistics(mut gaps: Vec<f32>) -> Option<GapStatistics> {
     let count = gaps.len();
 
     // Compute min and max
-    let min = gaps
-        .iter()
-        .copied()
-        .fold(f32::INFINITY, f32::min);
-    let max = gaps
-        .iter()
-        .copied()
-        .fold(f32::NEG_INFINITY, f32::max);
+    let min = gaps.iter().copied().fold(f32::INFINITY, f32::min);
+    let max = gaps.iter().copied().fold(f32::NEG_INFINITY, f32::max);
 
     // Compute mean
     let sum: f32 = gaps.iter().sum();
     let mean = sum / count as f32;
 
     // Compute standard deviation
-    let variance: f32 = gaps
-        .iter()
-        .map(|&g| (g - mean).powi(2))
-        .sum::<f32>()
-        / count as f32;
+    let variance: f32 = gaps.iter().map(|&g| (g - mean).powi(2)).sum::<f32>() / count as f32;
     let std_dev = variance.sqrt();
 
     // Sort for percentile calculations
@@ -526,7 +516,9 @@ pub fn determine_adaptive_threshold(
     };
 
     // Clamp to configured bounds
-    base_threshold.max(config.min_threshold_pt).min(config.max_threshold_pt)
+    base_threshold
+        .max(config.min_threshold_pt)
+        .min(config.max_threshold_pt)
 }
 
 /// Analyze gap statistics for an entire document and compute adaptive threshold.
@@ -610,11 +602,7 @@ pub fn analyze_document_gaps(
     // Extract gaps
     let gaps = extract_gaps(spans);
 
-    debug!(
-        "Extracted {} gaps from {} spans",
-        gaps.len(),
-        spans.len()
-    );
+    debug!("Extracted {} gaps from {} spans", gaps.len(), spans.len());
 
     // Check if we have sufficient samples
     if gaps.len() < config.min_samples {
@@ -645,7 +633,7 @@ pub fn analyze_document_gaps(
                 stats: None,
                 reason,
             };
-        }
+        },
     };
 
     // Determine threshold
@@ -659,7 +647,9 @@ pub fn analyze_document_gaps(
 
     let reason = format!(
         "Computed from {} gaps: {} * {:.1} = {:.3}pt (clamped to {:.3}pt)",
-        stats.count, base_value, config.median_multiplier,
+        stats.count,
+        base_value,
+        config.median_multiplier,
         if config.use_iqr {
             stats.iqr() * config.median_multiplier
         } else {

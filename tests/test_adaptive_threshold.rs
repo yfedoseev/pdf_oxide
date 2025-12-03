@@ -12,9 +12,7 @@
 //! - Backward compatibility
 //! - Edge cases and error conditions
 
-use pdf_oxide::extractors::{
-    AdaptiveThresholdConfig, SpanMergingConfig, TextExtractionConfig,
-};
+use pdf_oxide::extractors::{AdaptiveThresholdConfig, SpanMergingConfig, TextExtractionConfig};
 use pdf_oxide::geometry::Rect;
 use pdf_oxide::layout::{Color, FontWeight, TextSpan};
 
@@ -62,13 +60,7 @@ fn create_spans_with_gaps(gaps: &[f32]) -> Vec<TextSpan> {
     let height = 12.0; // Typical font size
 
     for (i, &gap) in gaps.iter().enumerate() {
-        let span = create_test_span(
-            &format!("word{}", i),
-            x_pos,
-            y_pos,
-            span_width,
-            height,
-        );
+        let span = create_test_span(&format!("word{}", i), x_pos, y_pos, span_width, height);
         spans.push(span);
         x_pos += span_width + gap;
     }
@@ -79,10 +71,7 @@ fn create_spans_with_gaps(gaps: &[f32]) -> Vec<TextSpan> {
 /// Create a synthetic document with multiple lines and specified gap patterns.
 ///
 /// Useful for testing multi-line gap extraction.
-fn create_multiline_document(
-    gaps_per_line: Vec<Vec<f32>>,
-    line_spacing: f32,
-) -> Vec<TextSpan> {
+fn create_multiline_document(gaps_per_line: Vec<Vec<f32>>, line_spacing: f32) -> Vec<TextSpan> {
     let mut spans = vec![];
     let mut y_pos = 0.0;
     let height = 12.0;
@@ -150,8 +139,8 @@ mod gap_extraction_tests {
     #[test]
     fn test_extract_gaps_multi_line() {
         let gaps_per_line = vec![
-            vec![2.0, 3.0],    // Line 1: gaps of 2.0 and 3.0
-            vec![1.5, 2.5],    // Line 2: gaps of 1.5 and 2.5
+            vec![2.0, 3.0], // Line 1: gaps of 2.0 and 3.0
+            vec![1.5, 2.5], // Line 2: gaps of 1.5 and 2.5
         ];
         let spans = create_multiline_document(gaps_per_line, 20.0); // 20pt line spacing
         assert_eq!(spans.len(), 4); // 2 lines, 2 spans per line + gaps
@@ -213,7 +202,6 @@ mod gap_extraction_tests {
 // ============================================================================
 // Statistics Calculation Tests
 // ============================================================================
-
 
 mod statistics_calculation_tests {
     use super::*;
@@ -324,7 +312,6 @@ mod statistics_calculation_tests {
 // ============================================================================
 // Threshold Determination Tests
 // ============================================================================
-
 
 mod threshold_determination_tests {
     use super::*;
@@ -452,7 +439,6 @@ mod threshold_determination_tests {
 // Factory Method Tests
 // ============================================================================
 
-
 mod factory_method_tests {
     use super::*;
 
@@ -550,7 +536,6 @@ mod factory_method_tests {
 // Document Type Integration Tests
 // ============================================================================
 
-
 mod policy_document_tests {
     use super::*;
     use pdf_oxide::extractors::analyze_document_gaps;
@@ -563,9 +548,7 @@ mod policy_document_tests {
     #[test]
     fn test_policy_document_gap_profile() {
         // Simulate policy doc with tight spacing
-        let gaps = vec![
-            0.1, 0.15, 0.12, 0.2, 0.13, 0.18, 0.11, 0.19, 0.14, 0.22,
-        ];
+        let gaps = vec![0.1, 0.15, 0.12, 0.2, 0.13, 0.18, 0.11, 0.19, 0.14, 0.22];
         let spans = create_spans_with_gaps(&gaps);
 
         let config = AdaptiveThresholdConfig::policy_documents();
@@ -610,7 +593,6 @@ mod policy_document_tests {
     }
 }
 
-
 mod academic_document_tests {
     use super::*;
     use pdf_oxide::extractors::analyze_document_gaps;
@@ -623,9 +605,7 @@ mod academic_document_tests {
     #[test]
     fn test_academic_paper_gap_profile() {
         // Simulate academic paper with standard spacing
-        let gaps = vec![
-            0.3, 0.35, 0.32, 0.4, 0.33, 0.38, 0.31, 0.39, 0.34, 0.42,
-        ];
+        let gaps = vec![0.3, 0.35, 0.32, 0.4, 0.33, 0.38, 0.31, 0.39, 0.34, 0.42];
         let spans = create_spans_with_gaps(&gaps);
 
         let config = AdaptiveThresholdConfig::academic();
@@ -670,7 +650,6 @@ mod academic_document_tests {
         }
     }
 }
-
 
 mod mixed_document_tests {
     use super::*;
@@ -719,13 +698,7 @@ mod mixed_document_tests {
             let x = (i * 10) as f32;
             spans.push(create_test_span(&format!("w{}", i), x, 0.0, 10.0, 12.0));
             if i < 2 {
-                let gap_span = create_test_span(
-                    " ",
-                    x + 10.0 + 0.3,
-                    0.0,
-                    0.0,
-                    12.0,
-                );
+                let gap_span = create_test_span(" ", x + 10.0 + 0.3, 0.0, 0.0, 12.0);
                 spans.push(gap_span);
             }
         }
@@ -735,13 +708,7 @@ mod mixed_document_tests {
             let x = 50.0 + (i * 8) as f32;
             spans.push(create_test_span(&format!("v{}", i), x, 20.0, 8.0, 10.0));
             if i < 2 {
-                let gap_span = create_test_span(
-                    " ",
-                    x + 8.0 + 0.25,
-                    20.0,
-                    0.0,
-                    10.0,
-                );
+                let gap_span = create_test_span(" ", x + 8.0 + 0.25, 20.0, 0.0, 10.0);
                 spans.push(gap_span);
             }
         }
@@ -757,7 +724,6 @@ mod mixed_document_tests {
 // ============================================================================
 // Edge Case Tests
 // ============================================================================
-
 
 mod edge_case_tests {
     use super::*;
@@ -801,7 +767,7 @@ mod edge_case_tests {
         let spans = vec![
             create_test_span("word1", 0.0, 0.0, 12.0, 12.0),
             create_test_span("word2", 10.0, 0.0, 12.0, 12.0), // Overlap: -2
-            create_test_span("word3", 8.0, 0.0, 12.0, 12.0), // Overlap: -4
+            create_test_span("word3", 8.0, 0.0, 12.0, 12.0),  // Overlap: -4
             create_test_span("word4", 30.0, 0.0, 12.0, 12.0), // Large gap: 18
         ];
 
@@ -892,7 +858,6 @@ mod edge_case_tests {
 // Backward Compatibility Tests
 // ============================================================================
 
-
 mod backward_compatibility_tests {
     use super::*;
 
@@ -967,7 +932,6 @@ mod backward_compatibility_tests {
 // Integration Tests
 // ============================================================================
 
-
 mod integration_tests {
     use super::*;
 
@@ -1025,7 +989,6 @@ mod integration_tests {
 // Performance and Stress Tests
 // ============================================================================
 
-
 mod performance_tests {
     use super::*;
     use pdf_oxide::extractors::analyze_document_gaps;
@@ -1040,13 +1003,7 @@ mod performance_tests {
         let mut spans = vec![];
         for i in 0..1000 {
             let x = (i * 11) as f32; // 10pt width + 1pt gap
-            spans.push(create_test_span(
-                &format!("w{}", i),
-                x,
-                0.0,
-                10.0,
-                12.0,
-            ));
+            spans.push(create_test_span(&format!("w{}", i), x, 0.0, 10.0, 12.0));
         }
 
         let start = std::time::Instant::now();

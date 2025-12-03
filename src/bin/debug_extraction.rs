@@ -24,7 +24,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let page_count = doc.page_count()?;
 
     // Analyze spans for first page (or specified page)
-    let page_num = args.get(2).and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
+    let page_num = args
+        .get(2)
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
 
     if page_num >= page_count {
         eprintln!("Page {} out of range (0-{})", page_num, page_count - 1);
@@ -41,17 +44,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Analyze each span
             for (i, span) in spans.iter().enumerate() {
-                let bold_status = if span.font_weight.is_bold() { "BOLD" } else { "normal" };
+                let bold_status = if span.font_weight.is_bold() {
+                    "BOLD"
+                } else {
+                    "normal"
+                };
 
-                println!(
-                    "[{}] Text: '{}'",
-                    i,
-                    span.text.chars().take(50).collect::<String>()
-                );
-                println!(
-                    "    Font: {} {}pt {}",
-                    span.font_name, span.font_size, bold_status
-                );
+                println!("[{}] Text: '{}'", i, span.text.chars().take(50).collect::<String>());
+                println!("    Font: {} {}pt {}", span.font_name, span.font_size, bold_status);
                 println!(
                     "    Position: ({:.1}, {:.1}), Size: {:.1}×{:.1}",
                     span.bbox.x, span.bbox.y, span.bbox.width, span.bbox.height
@@ -80,10 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let gap = span.bbox.x - (prev.bbox.x + prev.bbox.width);
                         let space_threshold = prev.font_size * 0.25;
 
-                        println!(
-                            "Gap {} → {}: {:.2}pt",
-                            prev_i, i, gap
-                        );
+                        println!("Gap {} → {}: {:.2}pt", prev_i, i, gap);
                         println!(
                             "  Spans: '{}' | '{}'",
                             prev.text.chars().take(30).collect::<String>(),
@@ -98,16 +95,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if prev.font_weight.is_bold() { "Y" } else { "N" },
                             if span.font_weight.is_bold() { "Y" } else { "N" }
                         );
-                        println!(
-                            "  Space threshold: {:.2}pt (font_size * 0.25)",
-                            space_threshold
-                        );
+                        println!("  Space threshold: {:.2}pt (font_size * 0.25)", space_threshold);
 
                         if gap < 0.0 {
-                            println!(
-                                "  ⚠️  NEGATIVE GAP: Spans overlap by {:.2}pt",
-                                -gap
-                            );
+                            println!("  ⚠️  NEGATIVE GAP: Spans overlap by {:.2}pt", -gap);
                         } else if gap < 0.1 {
                             println!("  ⚠️  Very small gap (< 0.1pt)");
                         } else if gap < space_threshold {
@@ -123,7 +114,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         // Font transition detection
                         if prev.font_name != span.font_name {
-                            println!("  🔴 Font transition: {} → {}", prev.font_name, span.font_name);
+                            println!(
+                                "  🔴 Font transition: {} → {}",
+                                prev.font_name, span.font_name
+                            );
                         }
                         if (prev.font_size - span.font_size).abs() > 0.5 {
                             println!(
@@ -134,8 +128,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if prev.font_weight.is_bold() != span.font_weight.is_bold() {
                             println!(
                                 "  🔴 Bold transition: {} → {}",
-                                if prev.font_weight.is_bold() { "bold" } else { "normal" },
-                                if span.font_weight.is_bold() { "bold" } else { "normal" }
+                                if prev.font_weight.is_bold() {
+                                    "bold"
+                                } else {
+                                    "normal"
+                                },
+                                if span.font_weight.is_bold() {
+                                    "bold"
+                                } else {
+                                    "normal"
+                                }
                             );
                         }
 
@@ -147,32 +149,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Font analysis
             println!("=== FONT ANALYSIS ===\n");
-            let mut fonts_used: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-            let mut font_weights: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+            let mut fonts_used: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            let mut font_weights: std::collections::BTreeMap<String, Vec<String>> =
+                std::collections::BTreeMap::new();
 
             for span in spans.iter() {
                 *fonts_used.entry(span.font_name.clone()).or_insert(0) += 1;
                 font_weights
                     .entry(span.font_name.clone())
                     .or_insert_with(Vec::new)
-                    .push(if span.font_weight.is_bold() { "bold".to_string() } else { "normal".to_string() });
+                    .push(if span.font_weight.is_bold() {
+                        "bold".to_string()
+                    } else {
+                        "normal".to_string()
+                    });
             }
 
             for (font, count) in fonts_used {
                 let weights = &font_weights[&font];
                 let bold_count = weights.iter().filter(|w| w.as_str() == "bold").count();
-                println!(
-                    "Font: {} (used {} times, {} bold spans)",
-                    font, count, bold_count
-                );
+                println!("Font: {} (used {} times, {} bold spans)", font, count, bold_count);
             }
 
             println!();
-        }
+        },
         Err(e) => {
             eprintln!("Error extracting spans: {}", e);
             std::process::exit(1);
-        }
+        },
     }
 
     Ok(())

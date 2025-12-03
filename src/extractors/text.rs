@@ -210,10 +210,10 @@ impl Default for SpanMergingConfig {
     fn default() -> Self {
         Self {
             space_threshold_em_ratio: 0.25,
-            conservative_threshold_pt: 0.1,  // Reverted from 0.3 after regression testing
+            conservative_threshold_pt: 0.1, // Reverted from 0.3 after regression testing
             column_boundary_threshold_pt: 5.0,
             severe_overlap_threshold_pt: -0.5,
-            use_adaptive_threshold: false,    // Backward compatible: disabled by default
+            use_adaptive_threshold: false, // Backward compatible: disabled by default
             adaptive_config: None,
         }
     }
@@ -281,7 +281,7 @@ impl SpanMergingConfig {
     pub fn conservative() -> Self {
         Self {
             space_threshold_em_ratio: 0.33,
-            conservative_threshold_pt: 0.3,  // Reduced from 0.5 (was too aggressive for policy docs)
+            conservative_threshold_pt: 0.3, // Reduced from 0.5 (was too aggressive for policy docs)
             column_boundary_threshold_pt: 5.0,
             severe_overlap_threshold_pt: -0.5,
             use_adaptive_threshold: false,
@@ -355,7 +355,9 @@ impl SpanMergingConfig {
             column_boundary_threshold_pt: 5.0,
             severe_overlap_threshold_pt: -0.5,
             use_adaptive_threshold: true,
-            adaptive_config: Some(crate::extractors::gap_statistics::AdaptiveThresholdConfig::default()),
+            adaptive_config: Some(
+                crate::extractors::gap_statistics::AdaptiveThresholdConfig::default(),
+            ),
         }
     }
 
@@ -1385,7 +1387,8 @@ impl TextExtractor {
 
                 // Per PDF Spec ISO 32000-1:2008, Section 9.4.3:
                 // Determine space threshold based on span characteristics using config
-                let space_threshold = current.font_size * self.merging_config.space_threshold_em_ratio;
+                let space_threshold =
+                    current.font_size * self.merging_config.space_threshold_em_ratio;
 
                 // FIX #1 COMPREHENSIVE: Conservative space insertion for dense layouts
                 //

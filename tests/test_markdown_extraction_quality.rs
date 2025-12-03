@@ -31,7 +31,14 @@ fn mock_char(c: char, x: f32, y: f32, width: f32, font_size: f32, bold: bool) ->
 }
 
 // Helper: Create a word with proper character spacing
-fn mock_word(text: &str, x: f32, y: f32, font_size: f32, bold: bool, char_width: f32) -> Vec<TextChar> {
+fn mock_word(
+    text: &str,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    bold: bool,
+    char_width: f32,
+) -> Vec<TextChar> {
     let mut chars = Vec::new();
     let mut current_x = x;
 
@@ -75,12 +82,18 @@ fn test_text_spacing_fused_words_no_gap() {
     let result = converter.convert_page(&chars, &options).unwrap();
 
     // Should preserve word boundaries
-    assert!(result.contains("the") && result.contains("following"),
-        "Words should be separate but got: {}", result);
+    assert!(
+        result.contains("the") && result.contains("following"),
+        "Words should be separate but got: {}",
+        result
+    );
 
     // Should NOT produce fused word
-    assert!(!result.contains("thefollowingtypesof"),
-        "Should not have fused words, got: {}", result);
+    assert!(
+        !result.contains("thefollowingtypesof"),
+        "Should not have fused words, got: {}",
+        result
+    );
 }
 
 #[test]
@@ -109,9 +122,12 @@ fn test_text_spacing_words_with_proper_gap() {
     let result = converter.convert_page(&chars, &options).unwrap();
 
     // Should have space between words
-    assert!(result.contains("the following") ||
-            (result.contains("the") && result.contains("following")),
-        "Words should be separated by space, got: {}", result);
+    assert!(
+        result.contains("the following")
+            || (result.contains("the") && result.contains("following")),
+        "Words should be separated by space, got: {}",
+        result
+    );
 }
 
 // ============================================================================
@@ -143,14 +159,21 @@ fn test_text_spacing_extra_spaces_in_word() {
     // This causes the space detection to trigger incorrectly
     let organis_width = 7.0 * normal_char_width;
     let large_gap = 8.0; // Triggers space threshold
-    chars.extend(mock_word("ations", organis_width + large_gap, 100.0, 12.0, false, normal_char_width));
+    chars.extend(mock_word(
+        "ations",
+        organis_width + large_gap,
+        100.0,
+        12.0,
+        false,
+        normal_char_width,
+    ));
 
     let result = converter.convert_page(&chars, &options).unwrap();
 
     // The current bug produces: "organis ations"
     // We want to detect this and fix it
-    let contains_bad_spacing = result.contains("organis ations") ||
-                               result.contains("organis  ations");
+    let contains_bad_spacing =
+        result.contains("organis ations") || result.contains("organis  ations");
 
     if contains_bad_spacing {
         // This test documents the BUG - when fixed, this should fail
@@ -243,15 +266,24 @@ fn test_table_detection_simple_2x2() {
     chars.extend(mock_word("Oversee", col2_x, 100.0 - row_height, 12.0, false, char_width));
 
     // Row 3: Data 2
-    chars.extend(mock_word("CTO", col1_x, 100.0 - 2.0*row_height, 12.0, false, char_width));
-    chars.extend(mock_word("Technical", col2_x, 100.0 - 2.0*row_height, 12.0, false, char_width));
+    chars.extend(mock_word("CTO", col1_x, 100.0 - 2.0 * row_height, 12.0, false, char_width));
+    chars.extend(mock_word(
+        "Technical",
+        col2_x,
+        100.0 - 2.0 * row_height,
+        12.0,
+        false,
+        char_width,
+    ));
 
     let result = converter.convert_page(&chars, &options).unwrap();
 
     // When table detection is implemented, should have markdown table format
-    assert!(result.contains("|Role|Responsibility|") ||
-            result.contains("| Role | Responsibility |"),
-        "Should detect and format as markdown table, got: {}", result);
+    assert!(
+        result.contains("|Role|Responsibility|") || result.contains("| Role | Responsibility |"),
+        "Should detect and format as markdown table, got: {}",
+        result
+    );
 }
 
 // ============================================================================
@@ -288,8 +320,11 @@ fn test_section_heading_detection() {
     let result = converter.convert_page(&chars, &options).unwrap();
 
     // When implemented, should detect numbered section as heading
-    assert!(result.contains("##") || result.contains("1. Introduction"),
-        "Should preserve section heading structure, got: {}", result);
+    assert!(
+        result.contains("##") || result.contains("1. Introduction"),
+        "Should preserve section heading structure, got: {}",
+        result
+    );
 }
 
 // ============================================================================
@@ -332,8 +367,11 @@ fn test_empty_bold_markers_not_created() {
     let result = converter.convert_page(&chars, &options).unwrap();
 
     // Should not have empty bold markers
-    assert!(!result.contains("** **") || !result.contains("**\n**"),
-        "Should not create empty bold markers, got: {}", result);
+    assert!(
+        !result.contains("** **") || !result.contains("**\n**"),
+        "Should not create empty bold markers, got: {}",
+        result
+    );
 }
 
 // ============================================================================
@@ -364,16 +402,31 @@ use pdf_oxide::converters::BoldMarkerBehavior;
 #[test]
 fn test_is_content_block_empty_string() {
     //! Test: Empty string should not be considered content
-    assert!(!pdf_oxide::converters::markdown::is_content_block(""), "Empty string has no content");
+    assert!(
+        !pdf_oxide::converters::markdown::is_content_block(""),
+        "Empty string has no content"
+    );
 }
 
 #[test]
 fn test_is_content_block_whitespace_only() {
     //! Test: Whitespace-only strings should not be content
-    assert!(!pdf_oxide::converters::markdown::is_content_block("   "), "Spaces only - no content");
-    assert!(!pdf_oxide::converters::markdown::is_content_block("\t"), "Tab only - no content");
-    assert!(!pdf_oxide::converters::markdown::is_content_block("\n"), "Newline only - no content");
-    assert!(!pdf_oxide::converters::markdown::is_content_block("\t\n   "), "Mixed whitespace - no content");
+    assert!(
+        !pdf_oxide::converters::markdown::is_content_block("   "),
+        "Spaces only - no content"
+    );
+    assert!(
+        !pdf_oxide::converters::markdown::is_content_block("\t"),
+        "Tab only - no content"
+    );
+    assert!(
+        !pdf_oxide::converters::markdown::is_content_block("\n"),
+        "Newline only - no content"
+    );
+    assert!(
+        !pdf_oxide::converters::markdown::is_content_block("\t\n   "),
+        "Mixed whitespace - no content"
+    );
 }
 
 #[test]
@@ -381,9 +434,15 @@ fn test_is_content_block_with_content() {
     //! Test: Text with at least one non-whitespace character is content
     assert!(pdf_oxide::converters::markdown::is_content_block("text"), "Normal text");
     assert!(pdf_oxide::converters::markdown::is_content_block("a"), "Single character");
-    assert!(pdf_oxide::converters::markdown::is_content_block("  a  "), "Character with surrounding whitespace");
+    assert!(
+        pdf_oxide::converters::markdown::is_content_block("  a  "),
+        "Character with surrounding whitespace"
+    );
     assert!(pdf_oxide::converters::markdown::is_content_block("*"), "Special character");
-    assert!(pdf_oxide::converters::markdown::is_content_block("\t\nabc\n\t"), "Text with whitespace around it");
+    assert!(
+        pdf_oxide::converters::markdown::is_content_block("\t\nabc\n\t"),
+        "Text with whitespace around it"
+    );
 }
 
 #[test]
@@ -413,13 +472,23 @@ fn test_bold_marker_whitespace_conservative_mode() {
     chars.push(mock_char(' ', spaces_x + char_width, 100.0, char_width, 12.0, true));
 
     // More content
-    chars.extend(mock_word("More", spaces_x + 2.0 * char_width + 10.0, 100.0, 12.0, false, char_width));
+    chars.extend(mock_word(
+        "More",
+        spaces_x + 2.0 * char_width + 10.0,
+        100.0,
+        12.0,
+        false,
+        char_width,
+    ));
 
     let result = converter.convert_page(&chars, &options).unwrap();
 
     // Conservative mode: No empty bold markers
-    assert!(!result.contains("** **"),
-        "Conservative mode should not create empty bold markers, got: {}", result);
+    assert!(
+        !result.contains("** **"),
+        "Conservative mode should not create empty bold markers, got: {}",
+        result
+    );
 
     // Should still have the content words
     assert!(result.contains("Word"), "Should contain first word");
@@ -600,8 +669,10 @@ mod gap_classification_tests {
         //! - verbose_logging: false (silent by default)
 
         let config = TextExtractionConfig::default();
-        assert_eq!(config.space_insertion_threshold, -120.0,
-            "Default space insertion threshold should be -120.0");
+        assert_eq!(
+            config.space_insertion_threshold, -120.0,
+            "Default space insertion threshold should be -120.0"
+        );
     }
 
     #[test]
@@ -611,8 +682,7 @@ mod gap_classification_tests {
         //! Verifies that configuration is flexible for different document types.
 
         let config = TextExtractionConfig::with_space_threshold(-80.0);
-        assert_eq!(config.space_insertion_threshold, -80.0,
-            "Custom threshold should be applied");
+        assert_eq!(config.space_insertion_threshold, -80.0, "Custom threshold should be applied");
     }
 }
 
@@ -656,13 +726,18 @@ fn test_negative_gap_handling_no_fusion() {
     let result = converter.convert_page(&chars, &options).unwrap();
 
     // With negative gap handling, should merge without erroneous space
-    assert!(result.contains("Hello") || result.contains("World"),
-        "Should preserve text, got: {}", result);
+    assert!(
+        result.contains("Hello") || result.contains("World"),
+        "Should preserve text, got: {}",
+        result
+    );
 
     // The critical test: no fused "HelloWorld" that loses meaning
     // With explicit negative gap handling, overlaps are treated as adjacent
-    assert!(!result.contains("** **"),
-        "Should not have empty bold markers from negative gap");
+    assert!(
+        !result.contains("** **"),
+        "Should not have empty bold markers from negative gap"
+    );
 }
 
 #[test]
@@ -743,8 +818,11 @@ fn test_small_positive_gap_merged() {
     let has_intr = result.contains("Intr") || result.contains("Introduction");
     let has_oduction = result.contains("oduction") || result.contains("Introduction");
 
-    assert!(has_intr && has_oduction,
-        "Should merge fragments into complete word, got: {}", result);
+    assert!(
+        has_intr && has_oduction,
+        "Should merge fragments into complete word, got: {}",
+        result
+    );
 }
 
 #[test]
@@ -782,8 +860,11 @@ fn test_severe_overlap_logged_as_warning() {
 
     // Should handle without crashing
     assert!(!result.is_empty(), "Should produce output even with severe overlap");
-    assert!(result.contains("Text") || result.contains("More"),
-        "Should preserve text from overlapping spans, got: {}", result);
+    assert!(
+        result.contains("Text") || result.contains("More"),
+        "Should preserve text from overlapping spans, got: {}",
+        result
+    );
 }
 
 #[test]
@@ -809,8 +890,10 @@ fn test_gap_classification_respects_configuration() {
     let converter1 = MarkdownConverter::new();
     let converter2 = MarkdownConverter::new();
 
-    assert!(!std::ptr::eq(&converter1, &converter2),
-        "Different converter instances should be created");
+    assert!(
+        !std::ptr::eq(&converter1, &converter2),
+        "Different converter instances should be created"
+    );
 }
 
 // ============================================================================
@@ -823,21 +906,29 @@ fn test_gap_threshold_config_default() {
     //!
     //! Verifies that default thresholds are based on typography standards:
     //! - space_threshold_em_ratio: 0.25 (25% of font size, typical word spacing)
-    //! - conservative_threshold_pt: 0.3 (avoids font metric artifacts)
+    //! - conservative_threshold_pt: 0.1 (Phase 4 fix: reverted from 0.3 to prevent word fusion)
     //! - column_boundary_threshold_pt: 5.0 (standard document columns)
     //! - severe_overlap_threshold_pt: -0.5 (font metrics tolerance)
 
     let config = SpanMergingConfig::default();
 
     // Verify default values match spec
-    assert_eq!(config.space_threshold_em_ratio, 0.25,
-        "Default space threshold should be 0.25em (25% of font size)");
-    assert_eq!(config.conservative_threshold_pt, 0.3,
-        "Default conservative threshold should be 0.3pt");
-    assert_eq!(config.column_boundary_threshold_pt, 5.0,
-        "Default column boundary should be 5.0pt");
-    assert_eq!(config.severe_overlap_threshold_pt, -0.5,
-        "Default overlap threshold should be -0.5pt");
+    assert_eq!(
+        config.space_threshold_em_ratio, 0.25,
+        "Default space threshold should be 0.25em (25% of font size)"
+    );
+    assert_eq!(
+        config.conservative_threshold_pt, 0.1,
+        "Default conservative threshold should be 0.1pt (Phase 4: reverted from 0.3 to fix word fusion)"
+    );
+    assert_eq!(
+        config.column_boundary_threshold_pt, 5.0,
+        "Default column boundary should be 5.0pt"
+    );
+    assert_eq!(
+        config.severe_overlap_threshold_pt, -0.5,
+        "Default overlap threshold should be -0.5pt"
+    );
 }
 
 #[test]
@@ -848,8 +939,11 @@ fn test_gap_threshold_config_new() {
 
     let config = SpanMergingConfig::new();
 
-    assert_eq!(config, SpanMergingConfig::default(),
-        "new() should return default configuration");
+    assert_eq!(
+        config,
+        SpanMergingConfig::default(),
+        "new() should return default configuration"
+    );
 }
 
 #[test]
@@ -861,14 +955,19 @@ fn test_gap_threshold_config_aggressive() {
 
     let config = SpanMergingConfig::aggressive();
 
-    assert_eq!(config.space_threshold_em_ratio, 0.15,
-        "Aggressive should use 0.15em threshold (vs 0.25)");
-    assert_eq!(config.conservative_threshold_pt, 0.1,
-        "Aggressive should use 0.1pt conservative (vs 0.3)");
-    assert_eq!(config.column_boundary_threshold_pt, 5.0,
-        "Column boundary unchanged at 5.0pt");
-    assert_eq!(config.severe_overlap_threshold_pt, -0.5,
-        "Overlap threshold unchanged at -0.5pt");
+    assert_eq!(
+        config.space_threshold_em_ratio, 0.15,
+        "Aggressive should use 0.15em threshold (vs 0.25)"
+    );
+    assert_eq!(
+        config.conservative_threshold_pt, 0.1,
+        "Aggressive should use 0.1pt conservative (same as default after Phase 4)"
+    );
+    assert_eq!(config.column_boundary_threshold_pt, 5.0, "Column boundary unchanged at 5.0pt");
+    assert_eq!(
+        config.severe_overlap_threshold_pt, -0.5,
+        "Overlap threshold unchanged at -0.5pt"
+    );
 }
 
 #[test]
@@ -880,14 +979,19 @@ fn test_gap_threshold_config_conservative() {
 
     let config = SpanMergingConfig::conservative();
 
-    assert_eq!(config.space_threshold_em_ratio, 0.33,
-        "Conservative should use 0.33em threshold (vs 0.25)");
-    assert_eq!(config.conservative_threshold_pt, 0.5,
-        "Conservative should use 0.5pt conservative (vs 0.3)");
-    assert_eq!(config.column_boundary_threshold_pt, 5.0,
-        "Column boundary unchanged at 5.0pt");
-    assert_eq!(config.severe_overlap_threshold_pt, -0.5,
-        "Overlap threshold unchanged at -0.5pt");
+    assert_eq!(
+        config.space_threshold_em_ratio, 0.33,
+        "Conservative should use 0.33em threshold (vs 0.25)"
+    );
+    assert_eq!(
+        config.conservative_threshold_pt, 0.3,
+        "Conservative should use 0.3pt conservative (Phase 4: reduced from 0.5pt to prevent word fusion)"
+    );
+    assert_eq!(config.column_boundary_threshold_pt, 5.0, "Column boundary unchanged at 5.0pt");
+    assert_eq!(
+        config.severe_overlap_threshold_pt, -0.5,
+        "Overlap threshold unchanged at -0.5pt"
+    );
 }
 
 #[test]
@@ -909,23 +1013,25 @@ fn test_conservative_threshold_with_font_transitions() {
     //! Test: Conservative threshold handles font metric transitions
     //!
     //! When fonts change, metrics may shift slightly (±0.3pt).
-    //! Conservative threshold avoids inserting spaces for these metrics changes.
+    //! Default baseline (0.1pt) avoids inserting spaces for these metrics changes.
     //!
     //! Scenario: Two spans with font metrics causing small gap
-    //! - Gap = 0.15pt (typical font metrics variance)
-    //! - Default conservative_threshold_pt = 0.3
+    //! - Gap = 0.05pt (font metrics variance)
+    //! - Default conservative_threshold_pt = 0.1 (Phase 4 fix)
     //! - Should NOT insert space (gap < threshold)
 
     let config = SpanMergingConfig::default();
 
-    // Font metrics transition gap
-    let gap = 0.15;
+    // Font metrics transition gap (smaller than threshold)
+    let gap = 0.05;
 
     // Should not trigger space insertion
     let should_space = gap > config.conservative_threshold_pt;
-    assert!(!should_space,
+    assert!(
+        !should_space,
         "Gap {:.2}pt should be below conservative threshold {:.2}pt",
-        gap, config.conservative_threshold_pt);
+        gap, config.conservative_threshold_pt
+    );
 }
 
 #[test]
@@ -933,12 +1039,12 @@ fn test_conservative_threshold_with_word_boundary() {
     //! Test: Conservative threshold catches word boundaries
     //!
     //! Even small intentional gaps (0.3-0.5pt) are word boundaries.
-    //! Conservative threshold must allow these through while still
+    //! Default baseline (0.1pt) allows these through while still
     //! filtering out font metrics artifacts.
     //!
     //! Scenario: Dense layout with 0.4pt word spacing
     //! - Gap = 0.4pt (intentional word spacing)
-    //! - Default conservative_threshold_pt = 0.3
+    //! - Default conservative_threshold_pt = 0.1 (Phase 4 fix)
     //! - Should insert space (gap > threshold)
 
     let config = SpanMergingConfig::default();
@@ -948,9 +1054,11 @@ fn test_conservative_threshold_with_word_boundary() {
 
     // Should trigger space insertion
     let should_space = gap > config.conservative_threshold_pt;
-    assert!(should_space,
+    assert!(
+        should_space,
         "Gap {:.2}pt should exceed conservative threshold {:.2}pt for word boundaries",
-        gap, config.conservative_threshold_pt);
+        gap, config.conservative_threshold_pt
+    );
 }
 
 #[test]
@@ -971,23 +1079,29 @@ fn test_negative_gap_handling() {
     // Minor overlap from font metrics (e.g., italic baseline shift)
     let minor_overlap = -0.2;
     let should_merge_minor = minor_overlap >= config.severe_overlap_threshold_pt;
-    assert!(should_merge_minor,
+    assert!(
+        should_merge_minor,
         "Minor overlap {:.2}pt should be mergeable (>= {:.2}pt threshold)",
-        minor_overlap, config.severe_overlap_threshold_pt);
+        minor_overlap, config.severe_overlap_threshold_pt
+    );
 
     // Severe overlap (real error)
     let severe_overlap = -1.0;
     let should_merge_severe = severe_overlap >= config.severe_overlap_threshold_pt;
-    assert!(!should_merge_severe,
+    assert!(
+        !should_merge_severe,
         "Severe overlap {:.2}pt should NOT be mergeable (< {:.2}pt threshold)",
-        severe_overlap, config.severe_overlap_threshold_pt);
+        severe_overlap, config.severe_overlap_threshold_pt
+    );
 
     // Exact threshold
     let at_threshold = -0.5;
     let should_merge_exact = at_threshold >= config.severe_overlap_threshold_pt;
-    assert!(should_merge_exact,
+    assert!(
+        should_merge_exact,
         "Gap exactly at threshold {:.2}pt should be mergeable",
-        at_threshold);
+        at_threshold
+    );
 }
 
 #[test]
@@ -1008,17 +1122,23 @@ fn test_space_threshold_em_ratio_calculation() {
 
     // Default config calculations
     let threshold_12pt = 12.0 * default_config.space_threshold_em_ratio;
-    assert!((threshold_12pt - 3.0).abs() < 0.01,
-        "12pt font should calculate to ~3.0pt threshold");
+    assert!(
+        (threshold_12pt - 3.0).abs() < 0.01,
+        "12pt font should calculate to ~3.0pt threshold"
+    );
 
     let threshold_10pt = 10.0 * default_config.space_threshold_em_ratio;
-    assert!((threshold_10pt - 2.5).abs() < 0.01,
-        "10pt font should calculate to ~2.5pt threshold");
+    assert!(
+        (threshold_10pt - 2.5).abs() < 0.01,
+        "10pt font should calculate to ~2.5pt threshold"
+    );
 
     // Aggressive config calculations
     let threshold_aggressive = 12.0 * aggressive_config.space_threshold_em_ratio;
-    assert!((threshold_aggressive - 1.8).abs() < 0.01,
-        "12pt font with aggressive should calculate to ~1.8pt threshold");
+    assert!(
+        (threshold_aggressive - 1.8).abs() < 0.01,
+        "12pt font with aggressive should calculate to ~1.8pt threshold"
+    );
 }
 
 #[test]
@@ -1037,22 +1157,25 @@ fn test_column_boundary_detection() {
     // Same column
     let same_column_gap = 3.0;
     let is_column = same_column_gap > config.column_boundary_threshold_pt;
-    assert!(!is_column,
+    assert!(
+        !is_column,
         "Gap {:.1}pt should not be treated as column boundary",
-        same_column_gap);
+        same_column_gap
+    );
 
     // Different columns
     let different_columns_gap = 7.0;
     let is_column = different_columns_gap > config.column_boundary_threshold_pt;
-    assert!(is_column,
+    assert!(
+        is_column,
         "Gap {:.1}pt should be treated as column boundary",
-        different_columns_gap);
+        different_columns_gap
+    );
 
     // At threshold
     let at_boundary = 5.0;
     let is_column = at_boundary > config.column_boundary_threshold_pt;
-    assert!(!is_column,
-        "Gap exactly at threshold should not trigger column boundary");
+    assert!(!is_column, "Gap exactly at threshold should not trigger column boundary");
 }
 
 #[test]
@@ -1067,7 +1190,7 @@ fn test_config_implementation_of_default_trait() {
     };
 
     assert_eq!(custom.space_threshold_em_ratio, 0.2);
-    assert_eq!(custom.conservative_threshold_pt, 0.3);
+    assert_eq!(custom.conservative_threshold_pt, 0.1, "Default should be 0.1pt (Phase 4 fix)");
     assert_eq!(custom.column_boundary_threshold_pt, 5.0);
     assert_eq!(custom.severe_overlap_threshold_pt, -0.5);
 }
@@ -1108,14 +1231,8 @@ fn test_table_detector_config_default() {
 
     assert_eq!(config.x_tolerance_pt, 5.0, "X tolerance should be 5.0pt");
     assert_eq!(config.y_tolerance_pt, 2.0, "Y tolerance should be 2.0pt");
-    assert_eq!(
-        config.min_cells_for_grid, 4,
-        "Minimum cells should allow 2x2 tables"
-    );
-    assert_eq!(
-        config.min_columns, 2,
-        "Minimum columns should be 2"
-    );
+    assert_eq!(config.min_cells_for_grid, 4, "Minimum cells should allow 2x2 tables");
+    assert_eq!(config.min_columns, 2, "Minimum columns should be 2");
     assert_eq!(config.min_rows, 2, "Minimum rows should be 2");
     assert_eq!(config.cell_merge_threshold_pt, 1.0, "Cell merge threshold should be 1.0pt");
 }
@@ -1128,14 +1245,8 @@ fn test_table_detector_config_loose() {
 
     let config = TableDetectorConfig::loose();
 
-    assert_eq!(
-        config.x_tolerance_pt, 10.0,
-        "Loose mode should use larger X tolerance"
-    );
-    assert_eq!(
-        config.y_tolerance_pt, 5.0,
-        "Loose mode should use larger Y tolerance"
-    );
+    assert_eq!(config.x_tolerance_pt, 10.0, "Loose mode should use larger X tolerance");
+    assert_eq!(config.y_tolerance_pt, 5.0, "Loose mode should use larger Y tolerance");
     assert_eq!(
         config.cell_merge_threshold_pt, 3.0,
         "Loose mode should use larger cell merge threshold"
@@ -1151,14 +1262,8 @@ fn test_table_detector_config_strict() {
 
     let config = TableDetectorConfig::strict();
 
-    assert_eq!(
-        config.x_tolerance_pt, 2.0,
-        "Strict mode should use tight X tolerance"
-    );
-    assert_eq!(
-        config.y_tolerance_pt, 1.0,
-        "Strict mode should use tight Y tolerance"
-    );
+    assert_eq!(config.x_tolerance_pt, 2.0, "Strict mode should use tight X tolerance");
+    assert_eq!(config.y_tolerance_pt, 1.0, "Strict mode should use tight Y tolerance");
     assert_eq!(
         config.cell_merge_threshold_pt, 0.5,
         "Strict mode should use tight cell merge threshold"
@@ -1200,21 +1305,9 @@ fn test_table_detector_column_clustering() {
 
     let clusters = detector.cluster_by_x(&blocks);
 
-    assert_eq!(
-        clusters.len(),
-        2,
-        "Should create 2 column clusters"
-    );
-    assert_eq!(
-        clusters[0].len(),
-        2,
-        "First column should have 2 blocks"
-    );
-    assert_eq!(
-        clusters[1].len(),
-        2,
-        "Second column should have 2 blocks"
-    );
+    assert_eq!(clusters.len(), 2, "Should create 2 column clusters");
+    assert_eq!(clusters[0].len(), 2, "First column should have 2 blocks");
+    assert_eq!(clusters[1].len(), 2, "Second column should have 2 blocks");
 }
 
 #[test]
@@ -1235,21 +1328,9 @@ fn test_table_detector_row_clustering() {
 
     let clusters = detector.cluster_by_y(&blocks);
 
-    assert_eq!(
-        clusters.len(),
-        2,
-        "Should create 2 row clusters"
-    );
-    assert_eq!(
-        clusters[0].len(),
-        2,
-        "First row should have 2 blocks"
-    );
-    assert_eq!(
-        clusters[1].len(),
-        2,
-        "Second row should have 2 blocks"
-    );
+    assert_eq!(clusters.len(), 2, "Should create 2 row clusters");
+    assert_eq!(clusters[0].len(), 2, "First row should have 2 blocks");
+    assert_eq!(clusters[1].len(), 2, "Second row should have 2 blocks");
 }
 
 #[test]
@@ -1322,10 +1403,7 @@ fn test_table_detector_grid_validation_insufficient_cells() {
     let detector = TableDetector::new(config);
 
     // Only 2 blocks - forms 2x1 grid with 2 cells (< 6 required)
-    let blocks = vec![
-        mock_block("A", 0.0, 0.0),
-        mock_block("B", 50.0, 0.0),
-    ];
+    let blocks = vec![mock_block("A", 0.0, 0.0), mock_block("B", 50.0, 0.0)];
 
     let x_clusters = detector.cluster_by_x(&blocks);
     let y_clusters = detector.cluster_by_y(&blocks);
@@ -1348,11 +1426,7 @@ fn test_table_detector_end_to_end_empty_blocks() {
     let blocks = vec![];
     let tables = detector.detect_tables(&blocks);
 
-    assert_eq!(
-        tables.len(),
-        0,
-        "Empty block list should return no tables"
-    );
+    assert_eq!(tables.len(), 0, "Empty block list should return no tables");
 }
 
 #[test]
@@ -1365,17 +1439,10 @@ fn test_table_detector_end_to_end_insufficient_blocks() {
     let detector = TableDetector::new(config);
 
     // Only 2 blocks - can't form 2x2 table
-    let blocks = vec![
-        mock_block("A", 0.0, 0.0),
-        mock_block("B", 50.0, 0.0),
-    ];
+    let blocks = vec![mock_block("A", 0.0, 0.0), mock_block("B", 50.0, 0.0)];
 
     let tables = detector.detect_tables(&blocks);
-    assert_eq!(
-        tables.len(),
-        0,
-        "Insufficient blocks should return no tables"
-    );
+    assert_eq!(tables.len(), 0, "Insufficient blocks should return no tables");
 }
 
 #[test]
@@ -1504,11 +1571,7 @@ fn test_table_detector_non_grid_pattern() {
 
     let tables = detector.detect_tables(&blocks);
 
-    assert_eq!(
-        tables.len(),
-        0,
-        "Random pattern should not be detected as table"
-    );
+    assert_eq!(tables.len(), 0, "Random pattern should not be detected as table");
 }
 
 #[test]

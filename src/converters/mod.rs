@@ -365,18 +365,9 @@ mod tests {
 
     #[test]
     fn test_bold_marker_behavior_equality() {
-        assert_eq!(
-            BoldMarkerBehavior::Conservative,
-            BoldMarkerBehavior::Conservative
-        );
-        assert_eq!(
-            BoldMarkerBehavior::Aggressive,
-            BoldMarkerBehavior::Aggressive
-        );
-        assert_ne!(
-            BoldMarkerBehavior::Conservative,
-            BoldMarkerBehavior::Aggressive
-        );
+        assert_eq!(BoldMarkerBehavior::Conservative, BoldMarkerBehavior::Conservative);
+        assert_eq!(BoldMarkerBehavior::Aggressive, BoldMarkerBehavior::Aggressive);
+        assert_ne!(BoldMarkerBehavior::Conservative, BoldMarkerBehavior::Aggressive);
     }
 
     #[test]

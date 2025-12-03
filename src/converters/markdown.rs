@@ -325,7 +325,8 @@ impl MarkdownConverter {
                 };
 
                 // Only insert markers if BOTH positions are valid AND content check passes
-                let should_insert_markers = is_bold && can_insert_open && can_insert_close && should_render_bold_markers;
+                let should_insert_markers =
+                    is_bold && can_insert_open && can_insert_close && should_render_bold_markers;
 
                 // Log the bold marker decision for debugging
                 log::debug!(
