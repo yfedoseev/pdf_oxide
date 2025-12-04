@@ -18,7 +18,7 @@
 //! Phase 6 Objective: Verify that adaptive threshold maintains academic document quality
 //! with no regression from Phase 4 baseline.
 
-use pdf_oxide::extractors::{analyze_document_gaps, AdaptiveThresholdConfig, SpanMergingConfig};
+use pdf_oxide::extractors::{AdaptiveThresholdConfig, SpanMergingConfig, analyze_document_gaps};
 use pdf_oxide::geometry::Rect;
 use pdf_oxide::layout::{Color, FontWeight, TextSpan};
 
@@ -134,8 +134,7 @@ fn test_academic_gap_statistics() {
     }
 
     // Document 2: Standard academic spacing (0.4-0.5pt)
-    let standard_academic_gaps =
-        vec![0.40, 0.45, 0.42, 0.48, 0.41, 0.46, 0.43, 0.47, 0.39, 0.44];
+    let standard_academic_gaps = vec![0.40, 0.45, 0.42, 0.48, 0.41, 0.46, 0.43, 0.47, 0.39, 0.44];
     let standard_spans = create_academic_spans(&standard_academic_gaps);
 
     let result2 = analyze_document_gaps(&standard_spans, None);
@@ -160,8 +159,7 @@ fn test_academic_gap_statistics() {
     }
 
     // Document 3: Generous academic spacing (0.5pt+)
-    let generous_academic_gaps =
-        vec![0.50, 0.55, 0.52, 0.58, 0.51, 0.56, 0.53, 0.57, 0.49, 0.54];
+    let generous_academic_gaps = vec![0.50, 0.55, 0.52, 0.58, 0.51, 0.56, 0.53, 0.57, 0.49, 0.54];
     let generous_spans = create_academic_spans(&generous_academic_gaps);
 
     let result3 = analyze_document_gaps(&generous_spans, None);
@@ -178,10 +176,7 @@ fn test_academic_gap_statistics() {
         println!("    Min: {:.3}pt", stats.min);
         println!("    Max: {:.3}pt", stats.max);
 
-        assert!(
-            stats.median >= 0.50,
-            "Generous academic median should be >= 0.50pt"
-        );
+        assert!(stats.median >= 0.50, "Generous academic median should be >= 0.50pt");
         println!("  ✓ Gap statistics within academic range");
     }
 }
@@ -236,10 +231,7 @@ fn test_adaptive_threshold_for_academic() {
     // Verify academic config parameters
     assert_eq!(academic_config.median_multiplier, 1.6, "Academic multiplier should be 1.6");
     assert_eq!(academic_config.min_threshold_pt, 0.2, "Academic min threshold should be 0.2pt");
-    assert_eq!(
-        academic_config.max_threshold_pt, 1.0,
-        "Academic max threshold should be 1.0pt"
-    );
+    assert_eq!(academic_config.max_threshold_pt, 1.0, "Academic max threshold should be 1.0pt");
     println!("  ✓ Academic config parameters verified");
 }
 
@@ -260,7 +252,7 @@ fn test_word_spacing_quality() {
     let gaps = vec![
         0.30, 0.35, 0.32, 0.38, // Tight academic (0.3-0.38pt)
         0.40, 0.45, 0.42, 0.48, // Standard academic (0.4-0.48pt)
-        0.50, 0.55,             // Generous academic (0.5-0.55pt)
+        0.50, 0.55, // Generous academic (0.5-0.55pt)
     ];
 
     let spans = create_academic_spans(&gaps);
@@ -274,8 +266,11 @@ fn test_word_spacing_quality() {
 
     println!("\nWord Spacing Analysis:");
     println!("  Total gaps: {}", gaps.len());
-    println!("  Gap range: {:.2}pt - {:.2}pt", gaps.iter().copied().fold(f32::INFINITY, f32::min),
-        gaps.iter().copied().fold(f32::NEG_INFINITY, f32::max));
+    println!(
+        "  Gap range: {:.2}pt - {:.2}pt",
+        gaps.iter().copied().fold(f32::INFINITY, f32::min),
+        gaps.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+    );
 
     println!("\n  With Adaptive Threshold (academic):");
     println!("    Computed threshold: {:.3}pt", adaptive_result.threshold_pt);
@@ -420,10 +415,7 @@ fn test_paragraph_integrity() {
 
         // All gaps should be word spacing, none should be inter-line transitions
         // (we'd see much larger gaps if line breaks were being counted)
-        assert!(
-            stats.max < 1.0,
-            "Max gap should be word spacing (<1.0pt), not line breaks"
-        );
+        assert!(stats.max < 1.0, "Max gap should be word spacing (<1.0pt), not line breaks");
 
         println!("  ✓ All gaps are intra-line word spacing");
         println!("  ✓ Paragraph boundaries are implicit in data structure");
@@ -448,10 +440,7 @@ fn test_adaptive_configuration_options() {
     println!("\nSpanMergingConfig::adaptive():");
     let config = SpanMergingConfig::adaptive();
     assert!(config.use_adaptive_threshold, "adaptive() should enable adaptive threshold");
-    assert!(
-        config.adaptive_config.is_some(),
-        "adaptive() should include config"
-    );
+    assert!(config.adaptive_config.is_some(), "adaptive() should include config");
     println!("  ✓ Adaptive mode enabled");
     println!("  ✓ Config present: {:?}", config.adaptive_config.is_some());
 
@@ -459,10 +448,7 @@ fn test_adaptive_configuration_options() {
     println!("\nSpanMergingConfig::adaptive_with_config(academic):");
     let academic_config = AdaptiveThresholdConfig::academic();
     let config = SpanMergingConfig::adaptive_with_config(academic_config.clone());
-    assert!(
-        config.use_adaptive_threshold,
-        "adaptive_with_config() should enable adaptive"
-    );
+    assert!(config.use_adaptive_threshold, "adaptive_with_config() should enable adaptive");
     assert_eq!(
         config.adaptive_config.as_ref().unwrap().median_multiplier,
         1.6,
@@ -474,10 +460,7 @@ fn test_adaptive_configuration_options() {
     // Test backward compatibility
     println!("\nBackward Compatibility Check:");
     let default_config = SpanMergingConfig::default();
-    assert!(
-        !default_config.use_adaptive_threshold,
-        "default() should NOT enable adaptive"
-    );
+    assert!(!default_config.use_adaptive_threshold, "default() should NOT enable adaptive");
     println!("  ✓ Adaptive disabled by default (backward compatible)");
 }
 
@@ -513,10 +496,7 @@ fn test_comparison_adaptive_vs_fixed() {
     println!("\n  Expected behavior:");
     println!("    Both thresholds should be above word spacing (>0.35pt)");
 
-    assert!(
-        adaptive_result.threshold_pt > 0.35,
-        "Adaptive should detect word boundaries"
-    );
+    assert!(adaptive_result.threshold_pt > 0.35, "Adaptive should detect word boundaries");
     println!("    ✓ Adaptive threshold correctly detects word boundaries");
 }
 

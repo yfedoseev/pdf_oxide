@@ -156,7 +156,7 @@ impl Default for AdaptiveThresholdConfig {
         Self {
             median_multiplier: 1.5,
             min_threshold_pt: 0.05,
-            max_threshold_pt: 1.0,
+            max_threshold_pt: 100.0, // Phase 7 FIX: Increased from 1.0pt to allow computed thresholds up to 100pt // Phase 7 FIX: Increased from 1.0pt (was clamping adaptive threshold too aggressively)
             use_iqr: false,
             min_samples: 10,
         }
@@ -186,7 +186,7 @@ impl AdaptiveThresholdConfig {
         Self {
             median_multiplier: 1.2,
             min_threshold_pt: 0.05,
-            max_threshold_pt: 1.0,
+            max_threshold_pt: 100.0, // Phase 7 FIX: Increased from 1.0pt to allow computed thresholds up to 100pt // Phase 7 FIX: Increased from 1.0pt
             use_iqr: false,
             min_samples: 10,
         }
@@ -202,7 +202,7 @@ impl AdaptiveThresholdConfig {
         Self {
             median_multiplier: 2.0,
             min_threshold_pt: 0.05,
-            max_threshold_pt: 1.0,
+            max_threshold_pt: 100.0, // Phase 7 FIX: Increased from 1.0pt to allow computed thresholds up to 100pt // Phase 7 FIX: Increased from 1.0pt
             use_iqr: false,
             min_samples: 10,
         }
@@ -221,7 +221,7 @@ impl AdaptiveThresholdConfig {
         Self {
             median_multiplier: 1.3,
             min_threshold_pt: 0.08,
-            max_threshold_pt: 1.0,
+            max_threshold_pt: 100.0, // Phase 7 FIX: Increased from 1.0pt to allow computed thresholds up to 100pt // Phase 7 FIX: Increased from 1.0pt
             use_iqr: false,
             min_samples: 10,
         }
@@ -240,7 +240,7 @@ impl AdaptiveThresholdConfig {
         Self {
             median_multiplier: 1.6,
             min_threshold_pt: 0.2,
-            max_threshold_pt: 1.0,
+            max_threshold_pt: 100.0, // Phase 7 FIX: Increased from 1.0pt to allow computed thresholds up to 100pt // Phase 7 FIX: Increased from 1.0pt
             use_iqr: false,
             min_samples: 10,
         }
@@ -521,13 +521,70 @@ pub fn determine_adaptive_threshold(
         .min(config.max_threshold_pt)
 }
 
+/// Detect word boundary threshold using percentile-based analysis.
+///
+/// Uses the 75th percentile of positive gaps as the word spacing threshold.
+/// This naturally falls at the boundary between letter-spacing (tight, ~70% of gaps)
+/// and word-spacing (wider, ~25% of gaps).
+///
+/// # Algorithm
+///
+/// 1. Filter gaps to only positive values (negative gaps indicate overlaps/kerning)
+/// 2. Sort positive gaps
+/// 3. Compute 75th percentile: approximately where letter-spacing ends, word-spacing begins
+/// 4. Return percentile if within reasonable bounds (2-10pt)
+///
+/// # Returns
+///
+/// `Some(threshold)` if percentile falls in reasonable range (2-10pt)
+/// `None` if insufficient data or percentile out of bounds
+///
+/// # Rationale
+///
+/// In typical documents:
+/// - ~75% of gaps are letter-spacing (tight, 2-4pt)
+/// - ~25% of gaps are word-spacing (wider, 4-10pt)
+/// - P75 naturally marks the transition
+///
+/// This is more robust than looking for the "largest jump" because:
+/// - Handles diverse PDF structures uniformly
+/// - Adapts to document's actual gap distribution
+/// - Avoids detecting layout breaks (which are far beyond word-spacing)
+fn detect_word_boundary_threshold(spans: &[TextSpan]) -> Option<f32> {
+    // Extract gaps
+    let mut gaps: Vec<f32> = spans.windows(2)
+        .map(|w| w[1].bbox.left() - w[0].bbox.right())
+        .filter(|g| *g > 0.0)  // Only positive gaps
+        .collect();
+
+    if gaps.len() < 10 {
+        return None; // Not enough data for percentile
+    }
+
+    // Sort gaps
+    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Compute 75th percentile using linear interpolation
+    let p75 = percentile(&gaps, 0.75);
+
+    // Accept if threshold is in reasonable range for word spacing
+    if p75 >= 2.0 && p75 <= 10.0 {
+        debug!("Percentile-based threshold: P75 = {:.4}pt", p75);
+        Some(p75)
+    } else {
+        debug!("Percentile-based threshold: P75 = {:.4}pt (out of bounds 2-10pt)", p75);
+        None
+    }
+}
+
 /// Analyze gap statistics for an entire document and compute adaptive threshold.
 ///
 /// This is the main entry point for gap analysis. It:
 /// 1. Extracts gaps from consecutive spans
-/// 2. Computes statistics if sufficient gaps exist
-/// 3. Determines adaptive threshold from statistics
-/// 4. Provides detailed reasoning in the result
+/// 2. Attempts bimodal detection first
+/// 3. Falls back to adaptive threshold computation
+/// 4. Computes statistics if sufficient gaps exist
+/// 5. Provides detailed reasoning in the result
 ///
 /// # Arguments
 ///
@@ -599,6 +656,20 @@ pub fn analyze_document_gaps(
         };
     }
 
+    // Try bimodal detection first (more robust for complex PDFs)
+    if let Some(bimodal_threshold) = detect_word_boundary_threshold(spans) {
+        let reason =
+            format!("Bimodal detection: identified word boundary at {:.4}pt", bimodal_threshold);
+        debug!("Using bimodal threshold: {}", reason);
+
+        return AdaptiveThresholdResult {
+            threshold_pt: bimodal_threshold,
+            stats: None,
+            reason,
+        };
+    }
+
+    // Fallback to adaptive threshold computation
     // Extract gaps
     let gaps = extract_gaps(spans);
 
@@ -621,8 +692,24 @@ pub fn analyze_document_gaps(
         };
     }
 
+    // Filter out negative gaps before computing statistics
+    // (negative gaps represent text overlaps/kerning, not word boundaries)
+    let positive_gaps: Vec<f32> = gaps.iter().filter(|g| **g > 0.0).copied().collect();
+
+    let gaps_to_analyze = if positive_gaps.len() >= 10 {
+        debug!(
+            "Filtered to {} positive gaps (from {} total gaps)",
+            positive_gaps.len(),
+            gaps.len()
+        );
+        positive_gaps
+    } else {
+        debug!("Not enough positive gaps ({}) to filter, using all gaps", positive_gaps.len());
+        gaps
+    };
+
     // Calculate statistics
-    let stats = match calculate_statistics(gaps) {
+    let stats = match calculate_statistics(gaps_to_analyze) {
         Some(s) => s,
         None => {
             let reason = "Failed to calculate statistics".to_string();

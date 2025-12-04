@@ -9,6 +9,9 @@ pub mod structured;
 pub mod table_detector;
 pub mod text;
 
+#[cfg(feature = "debug-span-merging")]
+pub mod debug_span_merging;
+
 pub use forms::{FieldType, FieldValue, FormExtractor, FormField};
 pub use gap_statistics::{
     AdaptiveThresholdConfig, AdaptiveThresholdResult, GapStatistics, analyze_document_gaps,

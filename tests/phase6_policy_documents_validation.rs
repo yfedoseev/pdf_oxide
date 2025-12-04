@@ -16,7 +16,6 @@ use pdf_oxide::extractors::AdaptiveThresholdConfig;
 use pdf_oxide::geometry::Rect;
 use pdf_oxide::layout::{Color, FontWeight, TextSpan};
 
-
 // ============================================================================
 // Gap Analysis and Test Utilities
 // ============================================================================
@@ -58,7 +57,10 @@ fn test_synthetic_policy_documents() {
         create_synthetic_span("date", 95.0 + 0.1),
     ];
 
-    println!("\nCreated {} synthetic spans with policy document spacing", synthetic_spans.len());
+    println!(
+        "\nCreated {} synthetic spans with policy document spacing",
+        synthetic_spans.len()
+    );
 
     // Analyze with adaptive threshold (policy_documents config)
     let policy_config = AdaptiveThresholdConfig::policy_documents();

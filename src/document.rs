@@ -1981,7 +1981,11 @@ impl PdfDocument {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn extract_spans_with_config(&mut self, page_index: usize, config: crate::extractors::SpanMergingConfig) -> Result<Vec<crate::layout::TextSpan>> {
+    pub fn extract_spans_with_config(
+        &mut self,
+        page_index: usize,
+        config: crate::extractors::SpanMergingConfig,
+    ) -> Result<Vec<crate::layout::TextSpan>> {
         use crate::extractors::TextExtractor;
 
         // Get page object
@@ -1995,8 +1999,7 @@ impl PdfDocument {
         let content_data = self.get_page_content_data(page_index)?;
 
         // Create text extractor with merged configuration
-        let mut extractor = TextExtractor::new()
-            .with_merging_config(config);
+        let mut extractor = TextExtractor::new().with_merging_config(config);
 
         // Load fonts from page resources and set resources for XObject access
         if let Some(resources) = page_dict.get("Resources") {

@@ -15,8 +15,8 @@
 #[path = "quality_metrics.rs"]
 mod quality_metrics;
 
-use pdf_oxide::document::PdfDocument;
 use pdf_oxide::converters::{ConversionOptions, MarkdownConverter};
+use pdf_oxide::document::PdfDocument;
 use pdf_oxide::extractors::SpanMergingConfig;
 use quality_metrics::*;
 use std::path::PathBuf;
@@ -40,7 +40,10 @@ impl TestMode {
 }
 
 /// Extract markdown from a PDF file
-fn extract_markdown(pdf_path: &str, config: SpanMergingConfig) -> Result<String, Box<dyn std::error::Error>> {
+fn extract_markdown(
+    pdf_path: &str,
+    config: SpanMergingConfig,
+) -> Result<String, Box<dyn std::error::Error>> {
     let mut doc = PdfDocument::open(pdf_path)?;
     let converter = MarkdownConverter::new();
     let options = ConversionOptions::default();
@@ -68,7 +71,10 @@ fn run_regression_tests(pdfs: &[&str], mode: TestMode) {
     println!("\n╔══════════════════════════════════════════════════════════════╗");
     println!("║  PDF Extraction Quality Regression Suite                    ║");
     println!("║  Mode: {}                                            ║", mode.name());
-    println!("║  PDFs to test: {}                                               ║", pdfs.len());
+    println!(
+        "║  PDFs to test: {}                                               ║",
+        pdfs.len()
+    );
     println!("╚══════════════════════════════════════════════════════════════╝\n");
 
     for (i, pdf_name) in pdfs.iter().enumerate() {
@@ -85,16 +91,25 @@ fn run_regression_tests(pdfs: &[&str], mode: TestMode) {
 
                 // Check for true regressions (High/Medium confidence fusions)
                 // PDF structure defects (PdfStructure confidence) are allowed
-                let true_regressions: Vec<_> = metrics.word_fusions.iter()
-                    .filter(|f| matches!(f.confidence, FusionConfidence::High | FusionConfidence::Medium))
+                let true_regressions: Vec<_> = metrics
+                    .word_fusions
+                    .iter()
+                    .filter(|f| {
+                        matches!(f.confidence, FusionConfidence::High | FusionConfidence::Medium)
+                    })
                     .collect();
 
-                let pdf_defects: Vec<_> = metrics.word_fusions.iter()
+                let pdf_defects: Vec<_> = metrics
+                    .word_fusions
+                    .iter()
                     .filter(|f| matches!(f.confidence, FusionConfidence::PdfStructure))
                     .collect();
 
                 if !true_regressions.is_empty() {
-                    eprintln!("  ❌ FAIL: {} word fusion regressions detected (Fix #1 regression)", true_regressions.len());
+                    eprintln!(
+                        "  ❌ FAIL: {} word fusion regressions detected (Fix #1 regression)",
+                        true_regressions.len()
+                    );
                     for fusion in true_regressions.iter().take(3) {
                         eprintln!("      Line {}: \"{}\"", fusion.line_number, fusion.text);
                     }
@@ -102,19 +117,31 @@ fn run_regression_tests(pdfs: &[&str], mode: TestMode) {
                 }
 
                 if !pdf_defects.is_empty() {
-                    println!("  ℹ️  INFO: {} PDF structure defects (expected, not regressions)", pdf_defects.len());
+                    println!(
+                        "  ℹ️  INFO: {} PDF structure defects (expected, not regressions)",
+                        pdf_defects.len()
+                    );
                     for defect in pdf_defects.iter().take(2) {
-                        println!("      Line {}: \"{}\" (single-string TJ encoding)", defect.line_number, defect.text);
+                        println!(
+                            "      Line {}: \"{}\" (single-string TJ encoding)",
+                            defect.line_number, defect.text
+                        );
                     }
                 }
 
                 if metrics.empty_bold_markers > 0 {
-                    eprintln!("  ❌ FAIL: {} empty bold markers detected (Fix #2 regression)", metrics.empty_bold_markers);
+                    eprintln!(
+                        "  ❌ FAIL: {} empty bold markers detected (Fix #2 regression)",
+                        metrics.empty_bold_markers
+                    );
                     pdf_failed = true;
                 }
 
                 if metrics.quality_score < 8.0 {
-                    eprintln!("  ❌ FAIL: Quality score {:.1} < 8.0 (below threshold)", metrics.quality_score);
+                    eprintln!(
+                        "  ❌ FAIL: Quality score {:.1} < 8.0 (below threshold)",
+                        metrics.quality_score
+                    );
                     pdf_failed = true;
                 }
 
@@ -124,12 +151,12 @@ fn run_regression_tests(pdfs: &[&str], mode: TestMode) {
                     all_passed = false;
                     failed_pdfs.push(*pdf_name);
                 }
-            }
+            },
             Err(e) => {
                 eprintln!("  ❌ ERROR: {}", e);
                 all_passed = false;
                 failed_pdfs.push(*pdf_name);
-            }
+            },
         }
         println!();
     }
@@ -143,19 +170,17 @@ fn run_regression_tests(pdfs: &[&str], mode: TestMode) {
     println!("════════════════════════════════════════════════════════════════\n");
 
     if !all_passed {
-        panic!(
-            "Regression suite failed on {} PDFs. See details above.",
-            failed_pdfs.len()
-        );
+        panic!("Regression suite failed on {} PDFs. See details above.", failed_pdfs.len());
     }
 }
 
 /// Extract and analyze a single PDF
-fn extract_and_analyze(pdf_path: &PathBuf, _pdf_name: &str) -> Result<QualityMetrics, Box<dyn std::error::Error>> {
-    let markdown = extract_markdown(
-        pdf_path.to_str().ok_or("Invalid path")?,
-        SpanMergingConfig::adaptive(),
-    )?;
+fn extract_and_analyze(
+    pdf_path: &PathBuf,
+    _pdf_name: &str,
+) -> Result<QualityMetrics, Box<dyn std::error::Error>> {
+    let markdown =
+        extract_markdown(pdf_path.to_str().ok_or("Invalid path")?, SpanMergingConfig::adaptive())?;
 
     Ok(analyze_quality(&markdown))
 }
@@ -182,7 +207,7 @@ fn test_core_regression_suite() {
         "policy/Diligent Security Policy.pdf",                         // Fix #1, Phase 3
         "policy/Code of Conduct Policy Template (EU).pdf",             // Fix #2, Fix #3
         "academic/arxiv_2510.21165v1.pdf",                             // Phase 5, Phase 6
-        "mixed/7A3MBRLFC6OU5KGMFIDEQPUOQTROBYUS.pdf",                   // Quick test
+        "mixed/7A3MBRLFC6OU5KGMFIDEQPUOQTROBYUS.pdf",                  // Quick test
     ];
 
     run_regression_tests(&pdfs, TestMode::Quick);
@@ -240,17 +265,17 @@ fn test_word_fusion_regression_policy() {
 
     for pdf_name in policy_pdfs {
         let pdf_path = PathBuf::from(FIXTURES_DIR).join(pdf_name);
-        let markdown = extract_markdown(
-            pdf_path.to_str().unwrap(),
-            SpanMergingConfig::adaptive(),
-        ).expect("Failed to extract markdown");
+        let markdown = extract_markdown(pdf_path.to_str().unwrap(), SpanMergingConfig::adaptive())
+            .expect("Failed to extract markdown");
 
         let metrics = analyze_quality(&markdown);
 
         assert_eq!(
-            metrics.word_fusions.len(), 0,
+            metrics.word_fusions.len(),
+            0,
             "Found {} word fusions in {}. Fix #1 regression!",
-            metrics.word_fusions.len(), pdf_name
+            metrics.word_fusions.len(),
+            pdf_name
         );
     }
 }
@@ -267,10 +292,8 @@ fn test_empty_bold_markers_regression() {
 
     for pdf_name in styled_pdfs {
         let pdf_path = PathBuf::from(FIXTURES_DIR).join(pdf_name);
-        let markdown = extract_markdown(
-            pdf_path.to_str().unwrap(),
-            SpanMergingConfig::adaptive(),
-        ).expect("Failed to extract markdown");
+        let markdown = extract_markdown(pdf_path.to_str().unwrap(), SpanMergingConfig::adaptive())
+            .expect("Failed to extract markdown");
 
         let metrics = analyze_quality(&markdown);
 
@@ -295,21 +318,23 @@ fn test_adaptive_threshold_effectiveness() {
 
     for (pdf_name, min_score, doc_type) in test_cases {
         let pdf_path = PathBuf::from(FIXTURES_DIR).join(pdf_name);
-        let markdown = extract_markdown(
-            pdf_path.to_str().unwrap(),
-            SpanMergingConfig::adaptive(),
-        ).expect("Failed to extract markdown");
+        let markdown = extract_markdown(pdf_path.to_str().unwrap(), SpanMergingConfig::adaptive())
+            .expect("Failed to extract markdown");
 
         let metrics = analyze_quality(&markdown);
 
         assert!(
             metrics.quality_score >= min_score,
             "{} document '{}' quality score {:.1} < minimum {:.1}",
-            doc_type, pdf_name, metrics.quality_score, min_score
+            doc_type,
+            pdf_name,
+            metrics.quality_score,
+            min_score
         );
 
         assert_eq!(
-            metrics.word_fusions.len(), 0,
+            metrics.word_fusions.len(),
+            0,
             "{} document should have 0 word fusions",
             doc_type
         );
@@ -321,7 +346,8 @@ fn test_adaptive_threshold_effectiveness() {
 /// Validates that default configuration still works (adaptive is opt-in).
 #[test]
 fn test_backward_compatibility_default_config() {
-    let pdf_path = PathBuf::from(FIXTURES_DIR).join("policy/Anti-bribery and Corruption Policy Template (UK).pdf");
+    let pdf_path = PathBuf::from(FIXTURES_DIR)
+        .join("policy/Anti-bribery and Corruption Policy Template (UK).pdf");
 
     // Default configuration should not use adaptive threshold
     let default_config = SpanMergingConfig::default();
@@ -331,15 +357,11 @@ fn test_backward_compatibility_default_config() {
     );
 
     // Both default and adaptive should extract some text
-    let default_md = extract_markdown(
-        pdf_path.to_str().unwrap(),
-        SpanMergingConfig::default(),
-    ).expect("Failed with default config");
+    let default_md = extract_markdown(pdf_path.to_str().unwrap(), SpanMergingConfig::default())
+        .expect("Failed with default config");
 
-    let adaptive_md = extract_markdown(
-        pdf_path.to_str().unwrap(),
-        SpanMergingConfig::adaptive(),
-    ).expect("Failed with adaptive config");
+    let adaptive_md = extract_markdown(pdf_path.to_str().unwrap(), SpanMergingConfig::adaptive())
+        .expect("Failed with adaptive config");
 
     assert!(!default_md.is_empty(), "Default config should extract text");
     assert!(!adaptive_md.is_empty(), "Adaptive config should extract text");

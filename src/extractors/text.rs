@@ -2577,7 +2577,7 @@ impl TextExtractor {
         let mut buffer = TjBuffer::new(self.state_stack.current(), self.current_mcid);
         let mut _element_count = 0;
 
-        for element in array {
+        for (idx, element) in array.iter().enumerate() {
             _element_count += 1;
             match element {
                 TextElement::String(s) => {
@@ -2640,8 +2640,26 @@ impl TextExtractor {
                         // Flush buffer before space
                         self.flush_tj_buffer(&buffer)?;
 
-                        // Insert space character as separate span
-                        self.insert_space_as_span()?;
+                        // Phase 7.2 Fix: Check if the next element in the TJ array is a string
+                        // that starts with whitespace. If so, DON'T insert a space to avoid doubling.
+                        // This prevents patterns like "word " + " next" = "word  next" (double space)
+                        let next_element_starts_with_space = if idx + 1 < array.len() {
+                            if let TextElement::String(next_s) = &array[idx + 1] {
+                                next_s.first().is_some_and(|&byte| {
+                                    byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D
+                                })
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                        // Only insert space if the next string doesn't start with whitespace
+                        if !next_element_starts_with_space {
+                            // Insert space character as separate span
+                            self.insert_space_as_span()?;
+                        }
 
                         // Start new buffer with current state
                         buffer = TjBuffer::new(self.state_stack.current(), self.current_mcid);

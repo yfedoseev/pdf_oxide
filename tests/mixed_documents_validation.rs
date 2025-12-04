@@ -12,9 +12,7 @@
 //! 5. **Table Handling**: Verifying tables aren't merged into text
 //! 6. **Layout Preservation**: Document structure maintained
 
-use pdf_oxide::extractors::{
-    analyze_document_gaps, AdaptiveThresholdConfig, SpanMergingConfig,
-};
+use pdf_oxide::extractors::{AdaptiveThresholdConfig, SpanMergingConfig, analyze_document_gaps};
 use pdf_oxide::geometry::Rect;
 use pdf_oxide::layout::{Color, FontWeight, TextSpan};
 
@@ -292,8 +290,9 @@ fn create_extreme_bimodal_document() -> Vec<TextSpan> {
     let y = 0.0;
 
     // Very tight text spacing (0.1-0.15pt) - 15 samples
-    let tight_gaps = vec![0.10, 0.12, 0.11, 0.14, 0.13, 0.12, 0.11, 0.13, 0.12, 0.14,
-                          0.10, 0.12, 0.11, 0.14, 0.13];
+    let tight_gaps = vec![
+        0.10, 0.12, 0.11, 0.14, 0.13, 0.12, 0.11, 0.13, 0.12, 0.14, 0.10, 0.12, 0.11, 0.14, 0.13,
+    ];
     for (i, &gap) in tight_gaps.iter().enumerate() {
         let start_x = x;
         let width = 6.0;
@@ -368,7 +367,11 @@ fn print_gap_stats(name: &str, spans: &[TextSpan]) {
         if stats.count >= 10 {
             let q1_to_med = stats.median - stats.p25;
             let med_to_q3 = stats.p75 - stats.median;
-            let ratio = if q1_to_med > 0.0 { med_to_q3 / q1_to_med } else { 1.0 };
+            let ratio = if q1_to_med > 0.0 {
+                med_to_q3 / q1_to_med
+            } else {
+                1.0
+            };
 
             println!("\nDistribution Shape:");
             println!("  Q1-Median:    {:.4}pt", q1_to_med);
@@ -429,10 +432,18 @@ fn validate_word_fusion(name: &str, spans: &[TextSpan], expected_text_gaps: Vec<
 
     if fusion_count == 0 {
         println!("  ✓ No word fusion detected");
-        println!("    All text gaps ({:.4}pt - {:.4}pt) < threshold ({:.4}pt)",
-                 expected_text_gaps.iter().cloned().fold(f32::INFINITY, f32::min),
-                 expected_text_gaps.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
-                 result.threshold_pt);
+        println!(
+            "    All text gaps ({:.4}pt - {:.4}pt) < threshold ({:.4}pt)",
+            expected_text_gaps
+                .iter()
+                .cloned()
+                .fold(f32::INFINITY, f32::min),
+            expected_text_gaps
+                .iter()
+                .cloned()
+                .fold(f32::NEG_INFINITY, f32::max),
+            result.threshold_pt
+        );
     } else {
         println!("  ✗ {} gaps at risk of fusion", fusion_count);
     }
@@ -456,10 +467,18 @@ fn validate_table_separation(name: &str, spans: &[TextSpan], expected_table_gaps
 
     if separation_count == 0 {
         println!("  ✓ Tables properly separated");
-        println!("    All table gaps ({:.4}pt - {:.4}pt) > threshold ({:.4}pt)",
-                 expected_table_gaps.iter().cloned().fold(f32::INFINITY, f32::min),
-                 expected_table_gaps.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
-                 result.threshold_pt);
+        println!(
+            "    All table gaps ({:.4}pt - {:.4}pt) > threshold ({:.4}pt)",
+            expected_table_gaps
+                .iter()
+                .cloned()
+                .fold(f32::INFINITY, f32::min),
+            expected_table_gaps
+                .iter()
+                .cloned()
+                .fold(f32::NEG_INFINITY, f32::max),
+            result.threshold_pt
+        );
     } else {
         println!("  ✗ {} gaps at risk of merging", separation_count);
     }
@@ -484,33 +503,56 @@ fn phase6_validation_mixed_documents() {
     let gov_doc = create_government_document();
     print_gap_stats("Government Document", &gov_doc);
     test_adaptive_variations("Government Document", &gov_doc);
-    validate_word_fusion("Government Document", &gov_doc, vec![0.15, 0.18, 0.16, 0.17, 0.19, 0.14, 0.16, 0.18, 0.15, 0.17]);
-    validate_table_separation("Government Document", &gov_doc, vec![1.5, 2.0, 1.8, 2.2, 1.9, 2.1, 1.7, 2.0, 1.6, 2.3]);
+    validate_word_fusion(
+        "Government Document",
+        &gov_doc,
+        vec![0.15, 0.18, 0.16, 0.17, 0.19, 0.14, 0.16, 0.18, 0.15, 0.17],
+    );
+    validate_table_separation(
+        "Government Document",
+        &gov_doc,
+        vec![1.5, 2.0, 1.8, 2.2, 1.9, 2.1, 1.7, 2.0, 1.6, 2.3],
+    );
 
     // Test 2: Newspaper Document
     let newspaper = create_newspaper_document();
     print_gap_stats("Newspaper Document", &newspaper);
     test_adaptive_variations("Newspaper Document", &newspaper);
-    validate_word_fusion("Newspaper Document", &newspaper,
-                        vec![0.30, 0.35, 0.32, 0.40, 0.38, 0.33, 0.37, 0.34, 0.39, 0.36]);
+    validate_word_fusion(
+        "Newspaper Document",
+        &newspaper,
+        vec![0.30, 0.35, 0.32, 0.40, 0.38, 0.33, 0.37, 0.34, 0.39, 0.36],
+    );
 
     // Test 3: Technical Manual
     let technical = create_technical_manual();
     print_gap_stats("Technical Manual", &technical);
     test_adaptive_variations("Technical Manual", &technical);
-    validate_word_fusion("Technical Manual", &technical,
-                        vec![0.38, 0.40, 0.35, 0.42, 0.37, 0.39, 0.36, 0.41, 0.38, 0.40]);
-    validate_table_separation("Technical Manual", &technical,
-                             vec![1.0, 1.2, 0.95, 1.3, 1.1, 1.15, 0.98, 1.25, 1.05, 1.35]);
+    validate_word_fusion(
+        "Technical Manual",
+        &technical,
+        vec![0.38, 0.40, 0.35, 0.42, 0.37, 0.39, 0.36, 0.41, 0.38, 0.40],
+    );
+    validate_table_separation(
+        "Technical Manual",
+        &technical,
+        vec![1.0, 1.2, 0.95, 1.3, 1.1, 1.15, 0.98, 1.25, 1.05, 1.35],
+    );
 
     // Test 4: Extreme Bimodal Distribution
     let extreme = create_extreme_bimodal_document();
     print_gap_stats("Extreme Bimodal Document", &extreme);
     test_adaptive_variations("Extreme Bimodal Document", &extreme);
-    validate_word_fusion("Extreme Bimodal Document", &extreme,
-                        vec![0.10, 0.12, 0.11, 0.14, 0.13, 0.12, 0.11, 0.13, 0.12, 0.14]);
-    validate_table_separation("Extreme Bimodal Document", &extreme,
-                             vec![8.5, 10.0, 9.2, 11.0, 8.8, 10.5, 9.5, 11.5, 8.3, 12.0]);
+    validate_word_fusion(
+        "Extreme Bimodal Document",
+        &extreme,
+        vec![0.10, 0.12, 0.11, 0.14, 0.13, 0.12, 0.11, 0.13, 0.12, 0.14],
+    );
+    validate_table_separation(
+        "Extreme Bimodal Document",
+        &extreme,
+        vec![8.5, 10.0, 9.2, 11.0, 8.8, 10.5, 9.5, 11.5, 8.3, 12.0],
+    );
 
     // Comparative analysis
     println!("\n");
@@ -562,7 +604,9 @@ fn phase6_validation_mixed_documents() {
 fn phase6_synthetic_validation_api() {
     // Verify that the adaptive threshold API works correctly
     // Use at least 10 gaps for statistics
-    let gaps = vec![0.2, 0.25, 0.22, 0.28, 0.23, 0.26, 0.24, 0.27, 0.21, 0.29, 0.22, 0.25];
+    let gaps = vec![
+        0.2, 0.25, 0.22, 0.28, 0.23, 0.26, 0.24, 0.27, 0.21, 0.29, 0.22, 0.25,
+    ];
     let spans = create_spans_with_gaps(&gaps);
 
     // Test that SpanMergingConfig::adaptive() is available
