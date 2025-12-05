@@ -14,8 +14,8 @@ pub mod debug_span_merging;
 
 pub use forms::{FieldType, FieldValue, FormExtractor, FormField};
 pub use gap_statistics::{
-    AdaptiveThresholdConfig, AdaptiveThresholdResult, GapStatistics, analyze_document_gaps,
-    calculate_statistics, determine_adaptive_threshold, extract_gaps,
+    AdaptiveThresholdConfig, AdaptiveThresholdResult, DocumentProfile, GapStatistics,
+    analyze_document_gaps, calculate_statistics, determine_adaptive_threshold, extract_gaps,
 };
 pub use images::{ColorSpace, ImageData, PdfImage, PixelFormat, extract_image_from_xobject};
 pub use structured::{

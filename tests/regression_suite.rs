@@ -341,30 +341,37 @@ fn test_adaptive_threshold_effectiveness() {
     }
 }
 
-/// Test Backward Compatibility
+/// Test Default Configuration is Adaptive (Phase 8)
 ///
-/// Validates that default configuration still works (adaptive is opt-in).
+/// Validates that default configuration now uses adaptive threshold for better quality.
 #[test]
-fn test_backward_compatibility_default_config() {
+fn test_default_configuration_uses_adaptive() {
     let pdf_path = PathBuf::from(FIXTURES_DIR)
         .join("policy/Anti-bribery and Corruption Policy Template (UK).pdf");
 
-    // Default configuration should not use adaptive threshold
+    // Default configuration is now adaptive (Phase 8 change)
     let default_config = SpanMergingConfig::default();
     assert!(
-        !default_config.use_adaptive_threshold,
-        "Adaptive threshold should be opt-in by default"
+        default_config.use_adaptive_threshold,
+        "Default should use adaptive threshold (Phase 8)"
     );
 
-    // Both default and adaptive should extract some text
+    // Legacy mode available for backward compatibility
+    let legacy_config = SpanMergingConfig::legacy();
+    assert!(
+        !legacy_config.use_adaptive_threshold,
+        "Legacy mode should disable adaptive threshold"
+    );
+
+    // Both default and legacy should extract text
     let default_md = extract_markdown(pdf_path.to_str().unwrap(), SpanMergingConfig::default())
         .expect("Failed with default config");
 
-    let adaptive_md = extract_markdown(pdf_path.to_str().unwrap(), SpanMergingConfig::adaptive())
-        .expect("Failed with adaptive config");
+    let legacy_md = extract_markdown(pdf_path.to_str().unwrap(), SpanMergingConfig::legacy())
+        .expect("Failed with legacy config");
 
     assert!(!default_md.is_empty(), "Default config should extract text");
-    assert!(!adaptive_md.is_empty(), "Adaptive config should extract text");
+    assert!(!legacy_md.is_empty(), "Legacy config should extract text");
 }
 
 /// Test Configuration Factory Methods
@@ -380,4 +387,34 @@ fn test_configuration_factories() {
 
     // Verify adaptive config is set
     assert!(adaptive.adaptive_config.is_some());
+}
+
+/// Debug test to inspect spurious space detection
+///
+/// This test verifies that Phase 7.2 double-space fix is working.
+/// After the fix, Pattern 1 (multiple consecutive spaces) should find 0 matches.
+#[test]
+#[ignore]
+fn test_debug_spurious_spaces() {
+    use regex::Regex;
+
+    let pdf_path = PathBuf::from(FIXTURES_DIR).join("academic/arxiv_2510.21165v1.pdf");
+    let markdown = extract_markdown(pdf_path.to_str().unwrap(), SpanMergingConfig::adaptive())
+        .expect("Failed to extract markdown");
+
+    // Check for double spaces with Pattern 1
+    let re1 = Regex::new(r"[a-zA-Z]+\s{2,}[a-zA-Z]+").unwrap();
+    let mut count1 = 0;
+    for (_line_num, line) in markdown.lines().enumerate() {
+        for _m in re1.find_iter(line) {
+            count1 += 1;
+        }
+    }
+
+    // Phase 7.2 fix should eliminate all double spaces
+    assert_eq!(
+        count1, 0,
+        "Phase 7.2 fix should eliminate double spaces, but found {} instances",
+        count1
+    );
 }

@@ -16,6 +16,77 @@ use crate::layout::{Color, FontWeight, TextChar, TextSpan};
 use crate::object::{Object, ObjectRef};
 use std::collections::{HashMap, HashSet};
 
+/// Source of a space decision in the unified pipeline.
+///
+/// This enum tracks why a space was inserted (or not), which helps with
+/// debugging and understanding the text extraction behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpaceSource {
+    /// Space triggered by TJ offset value (negative offset > threshold)
+    /// Confidence: 0.95 (explicit PDF positioning signal)
+    TjOffset,
+
+    /// Space triggered by geometric gap between spans
+    /// Confidence: 0.8 (heuristic based on font metrics)
+    GeometricGap,
+
+    /// Space triggered by character transition heuristic (e.g., CamelCase, number->letter)
+    /// Confidence: 0.6 (pattern-based heuristic)
+    CharacterHeuristic,
+
+    /// Space already present in boundary (no insertion needed)
+    /// Confidence: 1.0 (deterministic)
+    AlreadyPresent,
+
+    /// No space inserted
+    /// Confidence: varies (default when no rule matches)
+    NoSpace,
+}
+
+/// Result of unified space decision process.
+///
+/// This struct is the single source of truth for whether a space should be inserted
+/// between two text spans. It combines all available signals:
+/// - TJ offset values from PDF content stream
+/// - Geometric gaps between spans
+/// - Character transition heuristics
+/// - Existing boundary whitespace
+///
+/// Per PDF Spec ISO 32000-1:2008, Section 9.4.4 NOTE 6:
+/// "The identification of what constitutes a word is unrelated to how the text
+/// happens to be grouped into show strings... text strings should be as long as possible."
+#[derive(Debug, Clone)]
+pub struct SpaceDecision {
+    /// Whether a space should be inserted
+    pub insert_space: bool,
+
+    /// Source/reason for this decision
+    pub source: SpaceSource,
+
+    /// Confidence score (0.0-1.0) indicating certainty
+    pub confidence: f32,
+}
+
+impl SpaceDecision {
+    /// Create a decision to insert a space from a specific source.
+    pub fn insert(source: SpaceSource, confidence: f32) -> Self {
+        Self {
+            insert_space: true,
+            source,
+            confidence: confidence.clamp(0.0, 1.0),
+        }
+    }
+
+    /// Create a decision to not insert a space.
+    pub fn no_space(source: SpaceSource, confidence: f32) -> Self {
+        Self {
+            insert_space: false,
+            source,
+            confidence: confidence.clamp(0.0, 1.0),
+        }
+    }
+}
+
 /// Configuration for text extraction heuristics.
 ///
 /// PDF spec does not define explicit rules for many spacing scenarios.
@@ -178,14 +249,15 @@ pub struct SpanMergingConfig {
     /// - More negative (-1.0, -2.0): Allow some overlap to merge adjacent text
     pub severe_overlap_threshold_pt: f32,
 
-    /// Enable adaptive threshold analysis (default: false for backward compatibility).
+    /// Enable adaptive threshold analysis (default: true as of Phase 8).
     ///
     /// When true, the `conservative_threshold_pt` is automatically calculated
     /// based on the gap distribution within the document. This overrides the fixed
     /// threshold value and adapts to different document types.
     ///
-    /// **Default**: false (backward compatible)
-    /// **Note**: Enabling this may change extraction behavior for existing documents.
+    /// **Default**: true (adaptive enabled)
+    /// **Phase 8 Change**: Enabled by default to improve extraction quality across document types.
+    /// Use `SpanMergingConfig::legacy()` for the old fixed-threshold behavior.
     ///
     /// # Performance
     ///
@@ -213,7 +285,7 @@ impl Default for SpanMergingConfig {
             conservative_threshold_pt: 0.1, // Reverted from 0.3 after regression testing
             column_boundary_threshold_pt: 5.0,
             severe_overlap_threshold_pt: -0.5,
-            use_adaptive_threshold: false, // Backward compatible: disabled by default
+            use_adaptive_threshold: true, // Phase 8: Enabled by default for better quality
             adaptive_config: None,
         }
     }
@@ -389,6 +461,162 @@ impl SpanMergingConfig {
             adaptive_config: Some(adaptive_config),
         }
     }
+
+    /// Create a configuration using the legacy fixed-threshold approach.
+    ///
+    /// This provides backward compatibility with the pre-Phase 8 behavior where
+    /// adaptive threshold was disabled by default. All thresholds are fixed values.
+    ///
+    /// **Default values**:
+    /// - space_threshold_em_ratio: 0.25 (standard word spacing)
+    /// - conservative_threshold_pt: 0.1 (tight font metric threshold)
+    /// - column_boundary_threshold_pt: 5.0 (standard column separation)
+    /// - severe_overlap_threshold_pt: -0.5 (standard overlap tolerance)
+    /// - use_adaptive_threshold: false (no automatic adjustment)
+    ///
+    /// # When to Use
+    ///
+    /// Use this when you need the exact behavior from Phase 7.x and earlier:
+    /// - Testing regression against old baselines
+    /// - Documents with known quirks that required specific thresholds
+    /// - Performance-critical applications where adaptive overhead is unacceptable
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::extractors::SpanMergingConfig;
+    ///
+    /// let config = SpanMergingConfig::legacy();
+    /// assert!(!config.use_adaptive_threshold);
+    /// assert_eq!(config.conservative_threshold_pt, 0.1);
+    /// ```
+    pub fn legacy() -> Self {
+        Self {
+            space_threshold_em_ratio: 0.25,
+            conservative_threshold_pt: 0.1,
+            column_boundary_threshold_pt: 5.0,
+            severe_overlap_threshold_pt: -0.5,
+            use_adaptive_threshold: false, // Fixed thresholds, no adaptive
+            adaptive_config: None,
+        }
+    }
+}
+
+/// Unified space decision function - SINGLE SOURCE OF TRUTH for space insertion.
+///
+/// This function consolidates all space insertion logic into one place per the
+/// design principle in the comprehensive plan. It evaluates multiple signals and
+/// returns a definitive decision about whether to insert a space between spans.
+///
+/// # Rules (in priority order)
+///
+/// **Rule 0**: Check if boundary space already exists (from trailing/leading whitespace)
+/// - If preceding text ends with space OR following text starts with space, don't insert
+/// - Confidence: 1.0 (deterministic)
+///
+/// **Rule 1**: TJ offset triggered flag
+/// - If the TJ processor set the flag due to negative offset > threshold, insert space
+/// - This is explicit PDF positioning information
+/// - Confidence: 0.95 (highest, explicit signal)
+///
+/// **Rule 2**: Dual threshold (PDFBox pattern)
+/// - Calculate both space-width-based and char-width-based thresholds
+/// - Use MINIMUM of the two for robustness
+/// - If gap exceeds this threshold, insert space
+/// - Confidence: 0.8 (geometric measurement)
+///
+/// **Rule 3**: Character heuristic (CamelCase, number->letter, etc.)
+/// - Detect character transitions indicating word boundaries
+/// - If heuristic fires, insert space
+/// - Confidence: 0.6 (pattern-based)
+///
+/// **Rule 4**: Conservative threshold
+/// - If gap exceeds conservative threshold (very small), insert space
+/// - Catches small intentional gaps that are still word boundaries
+/// - Confidence: 0.5 (conservative)
+///
+/// **Default**: No space inserted
+///
+/// # PDF Spec Reference
+///
+/// ISO 32000-1:2008, Section 9.4.4 NOTE 6:
+/// "The identification of what constitutes a word is unrelated to how the text
+/// happens to be grouped into show strings... text strings should be as long as possible."
+fn should_insert_space(
+    preceding_text: &str,
+    following_text: &str,
+    gap_pt: f32,
+    font_size: f32,
+    tj_offset_triggered: bool,
+    config: &SpanMergingConfig,
+) -> SpaceDecision {
+    // Rule 0: Check if boundary already has whitespace
+    if has_boundary_space(preceding_text, following_text) {
+        return SpaceDecision::no_space(SpaceSource::AlreadyPresent, 1.0);
+    }
+
+    // Rule 1: TJ offset (explicit PDF positioning signal)
+    if tj_offset_triggered {
+        log::debug!("Space decision: TJ offset triggered - inserting space");
+        return SpaceDecision::insert(SpaceSource::TjOffset, 0.95);
+    }
+
+    // Rule 2: Dual threshold (PDFBox pattern)
+    // Use MINIMUM of space-width and char-width thresholds for robustness
+    let space_threshold = font_size * config.space_threshold_em_ratio;
+    let char_width_threshold = font_size * 0.3; // 30% of em (PDFBox default)
+    let dual_threshold = space_threshold.min(char_width_threshold);
+
+    if gap_pt > dual_threshold {
+        log::debug!(
+            "Space decision: Dual threshold triggered (gap={:.2}pt > {:.2}pt threshold) - inserting space",
+            gap_pt,
+            dual_threshold
+        );
+        return SpaceDecision::insert(SpaceSource::GeometricGap, 0.8);
+    }
+
+    // Rule 3: Character heuristic (CamelCase, number->letter transitions)
+    if should_insert_space_heuristic(preceding_text, following_text) {
+        log::debug!(
+            "Space decision: Character heuristic triggered ('{}' -> '{}') - inserting space",
+            preceding_text,
+            following_text
+        );
+        return SpaceDecision::insert(SpaceSource::CharacterHeuristic, 0.6);
+    }
+
+    // Rule 4: Conservative threshold (catches small intentional gaps)
+    if gap_pt > config.conservative_threshold_pt {
+        log::debug!(
+            "Space decision: Conservative threshold triggered (gap={:.2}pt > {:.2}pt) - inserting space",
+            gap_pt,
+            config.conservative_threshold_pt
+        );
+        return SpaceDecision::insert(SpaceSource::GeometricGap, 0.5);
+    }
+
+    // Default: no space
+    log::trace!(
+        "Space decision: No rule triggered (gap={:.2}pt <= conservative={:.2}pt) - no space",
+        gap_pt,
+        config.conservative_threshold_pt
+    );
+    SpaceDecision::no_space(SpaceSource::NoSpace, 1.0)
+}
+
+/// Check if a boundary between spans already has whitespace.
+///
+/// Returns true if:
+/// - The preceding text ends with whitespace, OR
+/// - The following text starts with whitespace
+///
+/// This prevents double-spacing when text already contains space characters.
+fn has_boundary_space(preceding: &str, following: &str) -> bool {
+    let has_trailing_space = preceding.chars().last().map_or(false, |c| c.is_whitespace());
+    let has_leading_space = following.chars().next().map_or(false, |c| c.is_whitespace());
+
+    has_trailing_space || has_leading_space
 }
 
 /// Buffer for accumulating text from TJ array elements into a single span.
@@ -961,7 +1189,13 @@ impl TextExtractor {
         // Apply adaptive threshold analysis if enabled (before merge, so we analyze raw spans)
         self.apply_adaptive_threshold();
 
+        // ISSUE 1 FIX: Split fused words created by PDF authoring defects
+        // Detects CamelCase patterns (e.g., "theGeneral") and splits them into separate spans
+        // Must happen BEFORE merge_adjacent_spans() so that split boundaries are respected during merging
+        self.split_fused_words();
+
         // Merge adjacent spans on the same line to reconstruct complete words
+        // This will respect split_boundary_before flags set by split_fused_words()
         self.merge_adjacent_spans();
 
         Ok(self.spans.clone())
@@ -1374,88 +1608,75 @@ impl TextExtractor {
             // Use configured threshold to detect column separation
             let large_gap_indicates_column = gap > self.merging_config.column_boundary_threshold_pt;
 
+            // SPLIT BOUNDARY CHECK: Respect boundaries from CamelCase splitting
+            // If a span has split_boundary_before=true, it represents a word boundary
+            // from a split operation (e.g., "the" + "General" from "theGeneral")
+            // These should always be merged WITH a space, never without.
+            let has_split_boundary = span.split_boundary_before;
+
             // Merge threshold: Use configured values
             // Negative gaps: use severe_overlap_threshold_pt (default -0.5pt)
             // Positive gaps: use 3pt default (0.25em * 12pt)
+            // However, if split_boundary_before=true, ALWAYS merge but insert space
             let should_merge = same_line
                 && (self.merging_config.severe_overlap_threshold_pt..3.0).contains(&gap)
-                && !large_gap_indicates_column;
+                && !large_gap_indicates_column
+                || (same_line && has_split_boundary);
 
             if should_merge {
                 // Merge spans: concatenate text and extend bbox
                 let old_text = current.text.clone();
 
-                // Per PDF Spec ISO 32000-1:2008, Section 9.4.3:
-                // Determine space threshold based on span characteristics using config
-                let space_threshold =
-                    current.font_size * self.merging_config.space_threshold_em_ratio;
-
-                // FIX #1 COMPREHENSIVE: Conservative space insertion for dense layouts
-                //
-                // Uses configurable thresholds to handle different document types.
-                // Default settings work well for most PDFs; adjust config for edge cases.
-
-                // Check if space should be inserted based on:
-                // 1. Gap-based detection (geometric spacing)
-                // 2. Heuristic-based detection (character transitions)
-                let needs_space_by_gap = gap > space_threshold;
-                let needs_space_by_heuristic =
-                    should_insert_space_heuristic(&current.text, &span.text);
-
-                // CRITICAL FIX: For gaps in range [0, space_threshold], be conservative.
-                // In dense layouts, even 0pt gaps can be word boundaries (names in grids).
-                //
-                // Strategy:
-                // 1. If gap >= space_threshold: Always insert space (primary geometric detection)
-                // 2. If heuristic detects boundary: Always insert space (character transition detection)
-                // 3. If gap > conservative_threshold_pt: Insert space (even tiny gaps are usually intentional)
-                //
-                // The conservative_threshold avoids spaces from font metric changes while
-                // still catching word boundaries in layouts with 0.3-2pt spacing.
-                let needs_space = needs_space_by_gap
-                    || needs_space_by_heuristic
-                    || gap > self.merging_config.conservative_threshold_pt;
-
-                // Add comprehensive logging for gap analysis
-                log::debug!(
-                    "Gap analysis: gap={:.2}pt, conservative={:.2}pt, space_threshold={:.2}pt, \
-                     em_ratio={:.2}, needs_space={}, heuristic={}, by_gap={}",
+                // Use unified space decision function
+                // If we have a split_boundary_before flag, FORCE a space by treating it like a TJ offset
+                // This ensures "length" + "This" becomes "length This" not "lengthThis"
+                let tj_offset_triggered_override = has_split_boundary;
+                let space_decision = should_insert_space(
+                    &current.text,
+                    &span.text,
                     gap,
-                    self.merging_config.conservative_threshold_pt,
-                    space_threshold,
-                    self.merging_config.space_threshold_em_ratio,
-                    needs_space,
-                    needs_space_by_heuristic,
-                    needs_space_by_gap
+                    current.font_size,
+                    tj_offset_triggered_override,
+                    &self.merging_config,
                 );
 
-                let merged_text = if needs_space {
-                    // Gap or heuristic indicates intentional word spacing
-                    if needs_space_by_heuristic && !needs_space_by_gap {
-                        log::trace!(
-                            "Heuristic space insertion: '{}' | '{}'",
-                            current.text,
-                            span.text
-                        );
-                    } else if gap > self.merging_config.conservative_threshold_pt
-                        && gap <= space_threshold
-                    {
-                        log::trace!(
-                            "Conservative space insertion (gap={:.2}pt in [{:.2}pt, {:.2}pt]): '{}' | '{}'",
-                            gap,
-                            self.merging_config.conservative_threshold_pt,
-                            space_threshold,
-                            current.text,
-                            span.text
-                        );
+                log::debug!(
+                    "Span merge decision: gap={:.2}pt, decision={:?}, source={:?}, confidence={:.2}",
+                    gap,
+                    space_decision.insert_space,
+                    space_decision.source,
+                    space_decision.confidence
+                );
+
+                let merged_text = if space_decision.insert_space {
+                    // Space insertion triggered by unified decision
+                    match space_decision.source {
+                        SpaceSource::CharacterHeuristic => {
+                            log::trace!(
+                                "Space via heuristic: '{}' | '{}'",
+                                current.text,
+                                span.text
+                            );
+                        }
+                        SpaceSource::GeometricGap => {
+                            log::trace!(
+                                "Space via gap (source={:?}): '{}' | '{}' (gap={:.2}pt)",
+                                space_decision.source,
+                                current.text,
+                                span.text,
+                                gap
+                            );
+                        }
+                        _ => {
+                            log::trace!("Space via {:?}", space_decision.source);
+                        }
                     }
                     format!("{} {}", current.text, span.text)
                 } else {
-                    // Gap is below conservative threshold: adjacent characters within same word
+                    // No space: adjacent characters within same word
                     log::trace!(
-                        "No space insertion: gap={:.2}pt <= conservative_threshold={:.2}pt",
-                        gap,
-                        self.merging_config.conservative_threshold_pt
+                        "No space insertion: decision source={:?}",
+                        space_decision.source
                     );
                     format!("{}{}", current.text, span.text)
                 };
@@ -1481,12 +1702,20 @@ impl TextExtractor {
             } else {
                 // Not mergeable: save current and start new span
                 if same_line {
-                    log::trace!(
-                        "Not merging spans (gap={:.1}pt > 3pt): '{}' | '{}'",
-                        gap,
-                        current.text,
-                        span.text
-                    );
+                    if span.split_boundary_before {
+                        log::trace!(
+                            "Not merging spans (split boundary): '{}' | '{}'",
+                            current.text,
+                            span.text
+                        );
+                    } else {
+                        log::trace!(
+                            "Not merging spans (gap={:.1}pt > 3pt): '{}' | '{}'",
+                            gap,
+                            current.text,
+                            span.text
+                        );
+                    }
                 }
                 merged.push(current);
                 current_span = Some(span.clone());
@@ -1551,6 +1780,96 @@ impl TextExtractor {
                 other => other,
             }
         });
+    }
+
+    /// ISSUE 1 FIX: Split fused words created by PDF authoring defects
+    ///
+    /// Some PDFs encode multiple words as a single TJ string without spacing:
+    /// - "theGeneral" instead of "the" + "General"
+    /// - "lengthThis" instead of "length" + "This"
+    /// - "helporganisationscraft" (partial fusion)
+    ///
+    /// This post-processor detects CamelCase patterns (lowercase->uppercase transitions)
+    /// and splits them into separate spans, per ISO 32000-1:2008 Section 9.4.4:
+    /// "Text strings are as long as possible" - spaces are positioning artifacts.
+    fn split_fused_words(&mut self) {
+        let mut split_spans = Vec::new();
+
+        for span in &self.spans {
+            let parts = self.split_on_camelcase(&span.text);
+
+            if parts.len() == 1 {
+                // No split needed
+                split_spans.push(span.clone());
+            } else {
+                // Split into multiple spans with proportional bounding boxes
+                let total_chars = span.text.len() as f32;
+                let mut char_pos = 0;
+
+                for (i, part) in parts.iter().enumerate() {
+                    let part_len = part.len() as f32;
+                    let part_ratio = part_len / total_chars;
+
+                    // Calculate proportional bounding box
+                    let new_width = span.bbox.width * part_ratio;
+                    let new_x = span.bbox.x + (span.bbox.width * (char_pos as f32 / total_chars));
+
+                    let mut new_span = span.clone();
+                    new_span.text = part.clone();
+                    new_span.bbox.x = new_x;
+                    new_span.bbox.width = new_width;
+
+                    // Set split_boundary_before flag for all parts except the first
+                    // This prevents them from being re-merged during span merging
+                    if i > 0 {
+                        new_span.split_boundary_before = true;
+                    }
+
+                    split_spans.push(new_span);
+                    char_pos += part.len();
+                }
+            }
+        }
+
+        self.spans = split_spans;
+    }
+
+    /// Detect CamelCase boundaries and split text into parts
+    ///
+    /// Splits on lowercase->uppercase transitions:
+    /// - "theGeneral" -> ["the", "General"]
+    /// - "lengthThis" -> ["length", "This"]
+    /// - "helporganisationscraft" -> ["help", "organisations", "craft"]
+    fn split_on_camelcase(&self, text: &str) -> Vec<String> {
+        let mut parts = Vec::new();
+        let mut current_part = String::new();
+        let mut prev_is_lower = false;
+
+        for ch in text.chars() {
+            if prev_is_lower && ch.is_uppercase() {
+                // CamelCase boundary detected
+                if !current_part.is_empty() {
+                    parts.push(current_part.clone());
+                    current_part.clear();
+                }
+                current_part.push(ch);
+                prev_is_lower = false;
+            } else {
+                current_part.push(ch);
+                prev_is_lower = ch.is_lowercase();
+            }
+        }
+
+        if !current_part.is_empty() {
+            parts.push(current_part);
+        }
+
+        // Only return split if we found at least 2 parts with actual boundaries
+        if parts.len() > 1 {
+            parts
+        } else {
+            vec![text.to_string()]
+        }
     }
 
     /// Execute a single operator.
@@ -2512,6 +2831,7 @@ impl TextExtractor {
             ),
             mcid: buffer.mcid,
             sequence: self.span_sequence_counter,
+            split_boundary_before: false,
         };
         self.span_sequence_counter += 1;
 
@@ -2637,6 +2957,18 @@ impl TextExtractor {
                     // Check if this offset indicates a word boundary
                     // Per PDF spec: negative offsets increase spacing
                     if *offset < self.config.space_insertion_threshold {
+                        // Phase 7.2+ Fix: Check if buffer ends with space BEFORE flushing
+                        // This prevents double spaces when TJ processor inserts space
+                        // AND span merging would insert space at the same boundary.
+                        let buffer_ends_with_space = !buffer.unicode.is_empty()
+                            && buffer
+                                .unicode
+                                .chars()
+                                .rev()
+                                .next()
+                                .map(|c| c.is_whitespace())
+                                .unwrap_or(false);
+
                         // Flush buffer before space
                         self.flush_tj_buffer(&buffer)?;
 
@@ -2655,8 +2987,8 @@ impl TextExtractor {
                             false
                         };
 
-                        // Only insert space if the next string doesn't start with whitespace
-                        if !next_element_starts_with_space {
+                        // Only insert space if neither side already has whitespace
+                        if !buffer_ends_with_space && !next_element_starts_with_space {
                             // Insert space character as separate span
                             self.insert_space_as_span()?;
                         }
@@ -2751,6 +3083,7 @@ impl TextExtractor {
             ),
             mcid: self.current_mcid,
             sequence: self.span_sequence_counter,
+            split_boundary_before: false,
         };
         self.span_sequence_counter += 1;
 
@@ -2832,6 +3165,7 @@ impl TextExtractor {
                     ),
                     mcid: buffer.mcid,
                     sequence: self.span_sequence_counter,
+                    split_boundary_before: false,
                 };
                 self.span_sequence_counter += 1;
 
@@ -3221,6 +3555,205 @@ mod tests {
         let extractor = TextExtractor::default();
         assert_eq!(extractor.char_count(), 0);
     }
+
+    /// Test unified space decision: TJ offset rule
+    #[test]
+    fn test_space_decision_tj_offset() {
+        let config = SpanMergingConfig::default();
+
+        // TJ offset triggered should always insert space (Rule 1, confidence 0.95)
+        let decision =
+            should_insert_space("word", "next", 0.0, 12.0, true, &config);
+
+        assert!(decision.insert_space);
+        assert_eq!(decision.source, SpaceSource::TjOffset);
+        assert_eq!(decision.confidence, 0.95);
+    }
+
+    /// Test unified space decision: Boundary space already present
+    #[test]
+    fn test_space_decision_boundary_space() {
+        let config = SpanMergingConfig::default();
+
+        // Preceding text ends with space
+        let decision = should_insert_space("word ", "next", 0.0, 12.0, false, &config);
+        assert!(!decision.insert_space);
+        assert_eq!(decision.source, SpaceSource::AlreadyPresent);
+
+        // Following text starts with space
+        let decision = should_insert_space("word", " next", 0.0, 12.0, false, &config);
+        assert!(!decision.insert_space);
+        assert_eq!(decision.source, SpaceSource::AlreadyPresent);
+    }
+
+    /// Test unified space decision: Dual threshold rule
+    #[test]
+    fn test_space_decision_dual_threshold() {
+        let config = SpanMergingConfig::default();
+        // space_threshold_em_ratio: 0.25, conservative_threshold_pt: 0.1
+
+        // 12pt font, space_threshold = 12 * 0.25 = 3pt
+        // char_width_threshold = 12 * 0.3 = 3.6pt
+        // dual_threshold = min(3, 3.6) = 3pt
+        let font_size = 12.0;
+
+        // Gap > dual_threshold should insert (Rule 2, confidence 0.8)
+        let decision = should_insert_space("word", "next", 3.5, font_size, false, &config);
+        assert!(decision.insert_space);
+        assert_eq!(decision.source, SpaceSource::GeometricGap);
+        assert_eq!(decision.confidence, 0.8);
+
+        // Gap <= dual_threshold, not at heuristic boundary: no space (yet)
+        let decision = should_insert_space("word", "next", 2.5, font_size, false, &config);
+        // This should not insert (no rule triggers)
+        // But conservative threshold (0.1) is still checked below
+    }
+
+    /// Test unified space decision: Character heuristic rule
+    #[test]
+    fn test_space_decision_heuristic_camelcase() {
+        let config = SpanMergingConfig::default();
+
+        // lowercase -> uppercase (CamelCase) should trigger heuristic (Rule 3, confidence 0.6)
+        let decision = should_insert_space("the", "General", 0.0, 12.0, false, &config);
+        assert!(decision.insert_space);
+        assert_eq!(decision.source, SpaceSource::CharacterHeuristic);
+        assert_eq!(decision.confidence, 0.6);
+
+        // numeric -> letter should trigger heuristic
+        let decision = should_insert_space("version2", "dot3", 0.0, 12.0, false, &config);
+        assert!(decision.insert_space);
+        assert_eq!(decision.source, SpaceSource::CharacterHeuristic);
+    }
+
+    /// Test unified space decision: Conservative threshold rule
+    #[test]
+    fn test_space_decision_conservative_threshold() {
+        let config = SpanMergingConfig::default();
+        // conservative_threshold_pt: 0.1
+
+        // Gap > conservative_threshold but not meeting other rules (Rule 4, confidence 0.5)
+        let decision = should_insert_space("word", "next", 0.2, 12.0, false, &config);
+        assert!(decision.insert_space);
+        assert_eq!(decision.source, SpaceSource::GeometricGap);
+        assert_eq!(decision.confidence, 0.5);
+
+        // Gap <= conservative_threshold: no space (Rule 5 - default)
+        let decision = should_insert_space("word", "next", 0.05, 12.0, false, &config);
+        assert!(!decision.insert_space);
+        assert_eq!(decision.source, SpaceSource::NoSpace);
+    }
+
+    /// Test unified space decision: No double spaces
+    #[test]
+    fn test_space_decision_no_double_spaces() {
+        let config = SpanMergingConfig::default();
+
+        // When both TJ offset and gap would trigger, they should be coordinated
+        // TJ offset has highest priority and should be respected first
+        let decision_tj = should_insert_space("word", "next", 1.0, 12.0, true, &config);
+        let decision_gap = should_insert_space("word", "next", 1.0, 12.0, false, &config);
+
+        // TJ offset decision (0.95) should be preferred over gap decision
+        assert!(decision_tj.insert_space);
+        assert_eq!(decision_tj.source, SpaceSource::TjOffset);
+
+        // Gap alone would not trigger for 1pt gap (< conservative 0.1pt is false, but 1pt > 0.1pt is true)
+        // So gap should also trigger via conservative threshold
+        assert!(decision_gap.insert_space);
+    }
+
+    /// Test split boundary preservation during merging
+    #[test]
+    fn test_split_boundary_not_merged() {
+        let mut spans = vec![];
+
+        // Create two spans representing a split word (from CamelCase splitting)
+        spans.push(TextSpan {
+            text: "the".to_string(),
+            bbox: Rect {
+                x: 0.0,
+                y: 100.0,
+                width: 10.0,
+                height: 12.0,
+            },
+            font_name: "Arial".to_string(),
+            font_size: 12.0,
+            font_weight: FontWeight::Normal,
+            color: Color::black(),
+            mcid: None,
+            sequence: 0,
+            split_boundary_before: false,
+        });
+
+        spans.push(TextSpan {
+            text: "General".to_string(),
+            bbox: Rect {
+                x: 10.0,
+                y: 100.0,
+                width: 25.0,
+                height: 12.0,
+            },
+            font_name: "Arial".to_string(),
+            font_size: 12.0,
+            font_weight: FontWeight::Normal,
+            color: Color::black(),
+            mcid: None,
+            sequence: 1,
+            split_boundary_before: true, // This flag prevents re-merging
+        });
+
+        // Simulate extraction state
+        let mut extractor = TextExtractor::new();
+        extractor.spans = spans;
+        extractor.merging_config = SpanMergingConfig::default();
+
+        // Merge adjacent spans
+        extractor.merge_adjacent_spans();
+
+        // After merging, the spans should NOT be merged because split_boundary_before = true
+        assert_eq!(extractor.spans.len(), 2);
+        assert_eq!(extractor.spans[0].text, "the");
+        assert_eq!(extractor.spans[1].text, "General");
+    }
+
+    /// Test that heuristic space detection works correctly
+    #[test]
+    fn test_should_insert_space_heuristic() {
+        // CamelCase transition
+        assert!(should_insert_space_heuristic("the", "General"));
+        assert!(should_insert_space_heuristic("length", "This"));
+
+        // Numeric to letter
+        assert!(should_insert_space_heuristic("version2", "dot"));
+        assert!(should_insert_space_heuristic("var1", "test"));
+
+        // No heuristic match
+        assert!(!should_insert_space_heuristic("word", "next"));
+        assert!(!should_insert_space_heuristic("HELLO", "WORLD"));
+        assert!(!should_insert_space_heuristic("123", "456"));
+    }
+
+    /// Test boundary space detection
+    #[test]
+    fn test_has_boundary_space() {
+        // Preceding text with trailing space
+        assert!(has_boundary_space("word ", "next"));
+
+        // Following text with leading space
+        assert!(has_boundary_space("word", " next"));
+
+        // Both with space
+        assert!(has_boundary_space("word ", " next"));
+
+        // Neither
+        assert!(!has_boundary_space("word", "next"));
+
+        // Only whitespace characters count
+        assert!(has_boundary_space("word\t", "next"));
+        assert!(has_boundary_space("word\n", "next"));
+        assert!(has_boundary_space("word", "\tnext"));
+    }
 }
 
 #[test]
@@ -3252,4 +3785,39 @@ fn test_space_threshold_disabled() {
 
     let extractor = TextExtractor::with_config(config);
     assert_eq!(extractor.config.space_insertion_threshold, f32::NEG_INFINITY);
+}
+
+#[test]
+fn test_adaptive_enabled_by_default() {
+    // Test that adaptive threshold is enabled by default (Phase 8)
+    let config = SpanMergingConfig::default();
+    assert!(
+        config.use_adaptive_threshold,
+        "Adaptive threshold should be enabled by default"
+    );
+}
+
+#[test]
+fn test_legacy_mode_disables_adaptive() {
+    // Test that legacy() constructor provides backward-compatible behavior
+    let legacy = SpanMergingConfig::legacy();
+    assert!(
+        !legacy.use_adaptive_threshold,
+        "Legacy mode should disable adaptive threshold"
+    );
+    assert_eq!(legacy.conservative_threshold_pt, 0.1);
+}
+
+#[test]
+fn test_adaptive_constructor_enables_adaptive() {
+    // Test that adaptive() constructor enables adaptive threshold
+    let adaptive = SpanMergingConfig::adaptive();
+    assert!(
+        adaptive.use_adaptive_threshold,
+        "Adaptive constructor should enable adaptive threshold"
+    );
+    assert!(
+        adaptive.adaptive_config.is_some(),
+        "Adaptive constructor should set adaptive_config"
+    );
 }

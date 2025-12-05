@@ -754,6 +754,152 @@ pub fn analyze_document_gaps(
     }
 }
 
+/// Document profile for adaptive threshold tuning.
+///
+/// Detects the document type based on gap statistics to apply profile-specific
+/// threshold configurations. This pattern follows pdfminer.six's approach of
+/// analyzing document characteristics and adapting extraction parameters accordingly.
+///
+/// # Profiles
+///
+/// - **Academic**: Papers with standard spacing and column layouts.
+///   - Typical gap variance: high (columns create wide gaps)
+///   - Threshold: slightly conservative (1.6x multiplier)
+///
+/// - **Policy**: Formal documents with tight, justified spacing.
+///   - Typical median gap: very small (<0.5pt)
+///   - Threshold: more aggressive (1.2x multiplier)
+///
+/// - **Default**: Mixed or uncertain document type.
+///   - Balanced profile (1.5x multiplier)
+///
+/// # References
+///
+/// Based on patterns from pdfminer.six:
+/// - [pdfminer.six LAParams](https://pdfminersix.readthedocs.io/en/latest/topic/converting_pdf_to_text.html)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentProfile {
+    /// Academic papers: standard spacing, column layouts
+    Academic,
+    /// Policy documents: tight spacing, justified text
+    Policy,
+    /// Mixed/unknown: balanced defaults
+    Default,
+}
+
+impl DocumentProfile {
+    /// Detect document profile from gap statistics.
+    ///
+    /// Uses gap distribution analysis to infer document type:
+    /// - Tight median gap (< 0.5pt) → Policy document
+    /// - High gap variance (CV > 0.8) → Academic with columns
+    /// - Otherwise → Default/balanced
+    ///
+    /// # Arguments
+    ///
+    /// * `spans` - Text spans from document (for analysis)
+    /// * `existing_stats` - Optional pre-computed gap statistics (optimization)
+    ///
+    /// # Returns
+    ///
+    /// The detected DocumentProfile
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use pdf_oxide::extractors::gap_statistics::DocumentProfile;
+    ///
+    /// let profile = DocumentProfile::detect(&spans, None);
+    /// println!("Detected profile: {:?}", profile);
+    /// ```
+    pub fn detect(spans: &[TextSpan], existing_stats: Option<&GapStatistics>) -> Self {
+        // If stats provided, use them; otherwise analyze gaps
+        let stats = if let Some(s) = existing_stats {
+            s.clone()
+        } else {
+            // Quick analysis: extract gaps and compute basic stats
+            let gaps = extract_gaps(spans);
+            if gaps.len() < 10 {
+                // Not enough data for reliable detection
+                return Self::Default;
+            }
+
+            match calculate_statistics(gaps) {
+                Some(s) => s,
+                None => return Self::Default,
+            }
+        };
+
+        // Heuristic 1: Tight median gap suggests policy document
+        if stats.median < 0.5 {
+            debug!("Detected Policy profile: median gap {:.3}pt < 0.5pt", stats.median);
+            return Self::Policy;
+        }
+
+        // Heuristic 2: High gap variance suggests academic document (columns)
+        let cv = stats.coefficient_of_variation();
+        if cv > 0.8 {
+            debug!(
+                "Detected Academic profile: coefficient of variation {:.3} > 0.8",
+                cv
+            );
+            return Self::Academic;
+        }
+
+        debug!("Using Default profile: median={:.3}pt, CV={:.3}", stats.median, cv);
+        Self::Default
+    }
+
+    /// Get profile-specific adaptive threshold configuration.
+    ///
+    /// Returns tuned thresholds for this document profile.
+    /// Based on pdfminer.six's LAParams approach:
+    /// - Aggressive for tight-spaced documents
+    /// - Conservative for loose-spaced documents
+    ///
+    /// # Returns
+    ///
+    /// AdaptiveThresholdConfig optimized for this profile
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use pdf_oxide::extractors::gap_statistics::{DocumentProfile, AdaptiveThresholdConfig};
+    ///
+    /// let profile = DocumentProfile::Academic;
+    /// let config = profile.get_config();
+    /// assert_eq!(config.median_multiplier, 1.6);
+    /// ```
+    pub fn get_config(&self) -> AdaptiveThresholdConfig {
+        match self {
+            Self::Academic => AdaptiveThresholdConfig {
+                median_multiplier: 1.6,
+                min_threshold_pt: 0.1,
+                max_threshold_pt: 100.0,
+                use_iqr: false,
+                min_samples: 10,
+            },
+            Self::Policy => AdaptiveThresholdConfig {
+                median_multiplier: 1.2, // More aggressive (sensitive to gaps)
+                min_threshold_pt: 0.05,
+                max_threshold_pt: 100.0,
+                use_iqr: false,
+                min_samples: 10,
+            },
+            Self::Default => AdaptiveThresholdConfig::balanced(),
+        }
+    }
+
+    /// Get human-readable profile name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Academic => "Academic",
+            Self::Policy => "Policy",
+            Self::Default => "Default",
+        }
+    }
+}
+
 /// Helper function to compute percentiles using linear interpolation.
 ///
 /// Uses the NIST-recommended method:
@@ -830,6 +976,7 @@ mod tests {
                 color: crate::layout::Color::new(0.0, 0.0, 0.0),
                 mcid: None,
                 sequence: 0,
+                split_boundary_before: false,
             },
             TextSpan {
                 text: "World".to_string(),
@@ -840,6 +987,7 @@ mod tests {
                 color: crate::layout::Color::new(0.0, 0.0, 0.0),
                 mcid: None,
                 sequence: 1,
+                split_boundary_before: false,
             },
         ];
 
@@ -884,7 +1032,9 @@ mod tests {
         let config = AdaptiveThresholdConfig::default();
         assert_eq!(config.median_multiplier, 1.5);
         assert_eq!(config.min_threshold_pt, 0.05);
-        assert_eq!(config.max_threshold_pt, 1.0);
+        // Phase 7 FIX: max_threshold_pt was increased from 1.0 to 100.0
+        // to allow computed thresholds for documents with larger word spacing
+        assert_eq!(config.max_threshold_pt, 100.0);
         assert!(!config.use_iqr);
         assert_eq!(config.min_samples, 10);
     }
@@ -933,6 +1083,7 @@ mod tests {
                 color: crate::layout::Color::new(0.0, 0.0, 0.0),
                 mcid: None,
                 sequence: 0,
+                split_boundary_before: false,
             },
             TextSpan {
                 text: "B".to_string(),
@@ -943,11 +1094,168 @@ mod tests {
                 color: crate::layout::Color::new(0.0, 0.0, 0.0),
                 mcid: None,
                 sequence: 1,
+                split_boundary_before: false,
             },
         ];
 
         let result = analyze_document_gaps(&spans, None);
         assert_eq!(result.threshold_pt, 0.1);
         assert!(result.stats.is_none());
+    }
+
+    #[test]
+    fn test_policy_profile_detection() {
+        use crate::geometry::Rect;
+
+        // Create spans with very tight gaps (< 0.5pt) - typical for policy documents
+        // Gap = right edge of span N - left edge of span N+1
+        // Span 0: left=0, width=8, right=8
+        // Span 1: left=8.1 (tight gap of 0.1pt), width=8, right=16.1
+        let spans: Vec<TextSpan> = (0..15)
+            .map(|i| TextSpan {
+                text: format!("word{}", i),
+                bbox: Rect::new((i as f32) * 8.1, 0.0, 8.0, 12.0), // 0.1pt gaps
+                font_name: "Arial".to_string(),
+                font_size: 12.0,
+                font_weight: crate::layout::FontWeight::Normal,
+                color: crate::layout::Color::new(0.0, 0.0, 0.0),
+                mcid: None,
+                sequence: i,
+                split_boundary_before: false,
+            })
+            .collect();
+
+        let profile = DocumentProfile::detect(&spans, None);
+        assert_eq!(profile, DocumentProfile::Policy, "Expected Policy profile for tight spacing");
+    }
+
+    #[test]
+    fn test_academic_profile_detection() {
+        use crate::geometry::Rect;
+
+        // Create spans with high variance in gaps (columns):
+        // First column: tight spacing (1-2pt)
+        // Then gap (20pt - column boundary)
+        // Second column: tight spacing (1-2pt)
+        let mut spans = Vec::new();
+
+        // First column: 10 words with 1-2pt gaps
+        for i in 0..10 {
+            spans.push(TextSpan {
+                text: format!("word{}", i),
+                bbox: Rect::new((i as f32) * 10.0, 100.0, 8.0, 12.0),
+                font_name: "Arial".to_string(),
+                font_size: 12.0,
+                font_weight: crate::layout::FontWeight::Normal,
+                color: crate::layout::Color::new(0.0, 0.0, 0.0),
+                mcid: None,
+                sequence: i,
+                split_boundary_before: false,
+            });
+        }
+
+        // Large gap (column boundary) - 20pt
+        // Second column: 10 words with 1-2pt gaps
+        for i in 10..20 {
+            spans.push(TextSpan {
+                text: format!("word{}", i),
+                bbox: Rect::new(150.0 + ((i - 10) as f32) * 10.0, 100.0, 8.0, 12.0),
+                font_name: "Arial".to_string(),
+                font_size: 12.0,
+                font_weight: crate::layout::FontWeight::Normal,
+                color: crate::layout::Color::new(0.0, 0.0, 0.0),
+                mcid: None,
+                sequence: i,
+                split_boundary_before: false,
+            });
+        }
+
+        let profile = DocumentProfile::detect(&spans, None);
+        assert_eq!(profile, DocumentProfile::Academic, "Expected Academic profile for high gap variance");
+    }
+
+    #[test]
+    fn test_default_profile_fallback() {
+        use crate::geometry::Rect;
+
+        // Create spans with moderate, consistent spacing
+        let spans: Vec<TextSpan> = (0..15)
+            .map(|i| TextSpan {
+                text: format!("word{}", i),
+                bbox: Rect::new((i as f32) * 15.0, 0.0, 8.0, 12.0), // Consistent 7pt gap
+                font_name: "Arial".to_string(),
+                font_size: 12.0,
+                font_weight: crate::layout::FontWeight::Normal,
+                color: crate::layout::Color::new(0.0, 0.0, 0.0),
+                mcid: None,
+                sequence: i,
+                split_boundary_before: false,
+            })
+            .collect();
+
+        let profile = DocumentProfile::detect(&spans, None);
+        assert_eq!(profile, DocumentProfile::Default, "Expected Default profile for balanced spacing");
+    }
+
+    #[test]
+    fn test_profile_config_values() {
+        // Academic profile
+        let academic_config = DocumentProfile::Academic.get_config();
+        assert_eq!(academic_config.median_multiplier, 1.6);
+        assert_eq!(academic_config.min_threshold_pt, 0.1);
+
+        // Policy profile
+        let policy_config = DocumentProfile::Policy.get_config();
+        assert_eq!(policy_config.median_multiplier, 1.2);
+        assert_eq!(policy_config.min_threshold_pt, 0.05);
+
+        // Default profile
+        let default_config = DocumentProfile::Default.get_config();
+        assert_eq!(default_config.median_multiplier, 1.5);
+        assert_eq!(default_config.min_threshold_pt, 0.05);
+    }
+
+    #[test]
+    fn test_document_profile_name() {
+        assert_eq!(DocumentProfile::Academic.name(), "Academic");
+        assert_eq!(DocumentProfile::Policy.name(), "Policy");
+        assert_eq!(DocumentProfile::Default.name(), "Default");
+    }
+
+    #[test]
+    fn test_profile_detect_with_existing_stats() {
+        use crate::geometry::Rect;
+
+        let spans: Vec<TextSpan> = (0..5)
+            .map(|i| TextSpan {
+                text: format!("w{}", i),
+                bbox: Rect::new((i as f32) * 15.0, 0.0, 8.0, 12.0),
+                font_name: "Arial".to_string(),
+                font_size: 12.0,
+                font_weight: crate::layout::FontWeight::Normal,
+                color: crate::layout::Color::new(0.0, 0.0, 0.0),
+                mcid: None,
+                sequence: i,
+                split_boundary_before: false,
+            })
+            .collect();
+
+        // Create stats with tight median (policy profile)
+        let stats = GapStatistics {
+            gaps: vec![0.2, 0.25, 0.3, 0.25, 0.2],
+            count: 5,
+            min: 0.2,
+            max: 0.3,
+            mean: 0.24,
+            median: 0.25,
+            std_dev: 0.04,
+            p25: 0.2,
+            p75: 0.3,
+            p10: 0.2,
+            p90: 0.3,
+        };
+
+        let profile = DocumentProfile::detect(&spans, Some(&stats));
+        assert_eq!(profile, DocumentProfile::Policy, "Expected Policy profile when median < 0.5");
     }
 }
