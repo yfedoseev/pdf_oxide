@@ -40,6 +40,13 @@ pub struct TextSpan {
     /// sequence number preserves the original extraction order from the content
     /// stream, which often reflects the intended reading order per PDF spec.
     pub sequence: usize,
+    /// If true, this span was created by splitting fused words and should not be re-merged.
+    ///
+    /// When CamelCase splitting creates separate spans from a single fused word
+    /// (e.g., "theGeneral" -> "the" + "General"), this flag prevents them from
+    /// being re-merged during the span merging phase, even if the gap is 0pt.
+    /// This preserves the split intent and prevents word fusion regressions.
+    pub split_boundary_before: bool,
 }
 
 /// A single character with its position and styling.

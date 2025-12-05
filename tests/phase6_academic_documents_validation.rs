@@ -231,7 +231,12 @@ fn test_adaptive_threshold_for_academic() {
     // Verify academic config parameters
     assert_eq!(academic_config.median_multiplier, 1.6, "Academic multiplier should be 1.6");
     assert_eq!(academic_config.min_threshold_pt, 0.2, "Academic min threshold should be 0.2pt");
-    assert_eq!(academic_config.max_threshold_pt, 1.0, "Academic max threshold should be 1.0pt");
+    // Phase 7 FIX: max_threshold_pt was increased from 1.0 to 100.0
+    // to allow computed thresholds for documents with larger word spacing
+    assert_eq!(
+        academic_config.max_threshold_pt, 100.0,
+        "Academic max threshold should be 100.0pt (Phase 7 fix)"
+    );
     println!("  ✓ Academic config parameters verified");
 }
 

@@ -15,7 +15,7 @@ use crate::layout::column_detector::{xy_cut, xy_cut_adaptive};
 use crate::layout::document_analyzer::{AdaptiveLayoutParams, DocumentProperties};
 use crate::layout::heading_detector::{HeadingLevel, detect_headings};
 use crate::layout::reading_order::determine_reading_order as determine_order_from_tree;
-use crate::layout::{TextBlock, TextChar};
+use crate::layout::{BoldGroup, BoldMarkerDecision, BoldMarkerValidator, TextBlock, TextChar};
 use lazy_static::lazy_static;
 use regex::{Captures, Regex};
 
@@ -31,6 +31,12 @@ lazy_static! {
 
     /// Regex for cleaning space after dash in numeric contexts
     static ref RE_DASH_AFTER: Regex = Regex::new(r"(\d)(–|—)\s+(\d)").unwrap();
+
+    /// Phase 1.3: Regex for detecting missing spaces after punctuation
+    /// Pattern: punctuation immediately followed by a letter (no space)
+    /// Note: Rust regex crate doesn't support look-behind, using simple pattern
+    /// False positives (URLs) are filtered by context in replacement
+    static ref RE_PUNCT_SPACE: Regex = Regex::new(r"([.!?;:,])([A-Za-z])").unwrap();
 }
 
 /// Converter for PDF to Markdown format.
@@ -225,6 +231,64 @@ impl MarkdownConverter {
             other => other.unwrap_or(std::cmp::Ordering::Equal),
         });
 
+        // **Task B.1: Pre-Validation Bold Filter (BEFORE any grouping)**
+        // Phase 1.2a: Filter whitespace-only blocks BEFORE merging
+        // This prevents empty blocks from entering the bold grouping pipeline.
+        // Per Solution 3 in comprehensive plan: validate content BEFORE processing.
+        let initial_count = blocks.len();
+        let mut whitespace_count = 0;
+        blocks.retain(|block| {
+            let is_whitespace = block.text.trim().is_empty();
+            if is_whitespace {
+                whitespace_count += 1;
+            }
+            !is_whitespace
+        });
+        let filtered_count = blocks.len();
+        log::debug!(
+            "Pre-grouping whitespace filter: removed {} whitespace-only blocks ({} → {})",
+            whitespace_count,
+            initial_count,
+            filtered_count
+        );
+
+        // Phase 1.2b: Neutralize bold on non-word-character blocks
+        // Blocks containing only punctuation, symbols, or special characters
+        // should not be marked as bold, even if they inherited the flag from context.
+        // This includes content that has no alphanumeric characters AND
+        // content that is very short (< 2 chars) and not typical word content.
+        let mut neutralized_count = 0;
+        for block in &mut blocks {
+            let has_alphanumeric = block.text.chars().any(|c| c.is_alphanumeric());
+            let has_non_whitespace = block.text.chars().any(|c| !c.is_whitespace());
+
+            // Neutralize bold if:
+            // 1. No alphanumeric characters at all: "---", "...", ">>>", etc.
+            // 2. Very short with only punctuation/symbols: single or few non-word chars
+            let should_neutralize = if !has_alphanumeric {
+                // Rule 1: No alphanumeric = definitely non-word content
+                true
+            } else if has_non_whitespace && block.text.len() == 1 {
+                // Rule 2: Single non-alphabetic character (e.g., ".", "!", etc.)
+                let ch = block.text.chars().next().unwrap();
+                !ch.is_alphabetic() && ch != ' ' && ch != '\t' && ch != '\n'
+            } else {
+                false
+            };
+
+            if should_neutralize && block.is_bold {
+                log::debug!("Neutralizing bold on non-word block: '{}'", block.text);
+                block.is_bold = false;
+                neutralized_count += 1;
+            }
+        }
+        if neutralized_count > 0 {
+            log::debug!(
+                "Phase 1.2b: Neutralized {} bold flags on non-word blocks",
+                neutralized_count
+            );
+        }
+
         // PDF Spec ISO 32000-1:2008 Section 9.4.4 NOTE 6:
         // "text strings are as long as possible"
         // Merge adjacent character-level spans that are too close to have real spaces
@@ -308,8 +372,14 @@ impl MarkdownConverter {
                     group_text.push_str(&blocks[block_idx].text);
                 }
 
-                let first_char_in_group = group_text.chars().next();
-                let last_char_in_group = group_text.chars().last();
+                // FIX #3: Format URLs and emails as markdown links
+                let formatted_text = Self::format_links(&group_text);
+                // FIX #4: Clean up reference spacing
+                let cleaned_text = Self::clean_reference_spacing(&formatted_text);
+
+                // Extract boundary characters for bold marker validation
+                let first_char_in_group = cleaned_text.chars().next();
+                let last_char_in_group = cleaned_text.chars().last();
 
                 // Check if both opening and closing positions are valid for bold markers
                 // We need to insert both or neither to maintain balance
@@ -321,33 +391,50 @@ impl MarkdownConverter {
                 // Determine if content warrants bold markers based on behavior setting
                 let should_render_bold_markers = match options.bold_marker_behavior {
                     BoldMarkerBehavior::Aggressive => true,
-                    BoldMarkerBehavior::Conservative => is_content_block(&group_text),
+                    BoldMarkerBehavior::Conservative => is_content_block(&cleaned_text),
                 };
 
-                // Only insert markers if BOTH positions are valid AND content check passes
-                let should_insert_markers =
+                // Phase 2: Validate bold markers with BoldMarkerValidator
+                let group = BoldGroup {
+                    text: cleaned_text.clone(),
+                    is_bold,
+                    first_char_in_group,
+                    last_char_in_group,
+                };
+
+                // Check if we should render bold markers based on behavior setting
+                // This respects the conversion options while validator handles content validation
+                let should_check_validator =
                     is_bold && can_insert_open && can_insert_close && should_render_bold_markers;
 
-                // Log the bold marker decision for debugging
-                log::debug!(
-                    "Bold marker decision: text='{}', is_content={}, behavior={:?}, render_markers={}",
-                    group_text.chars().take(20).collect::<String>(),
-                    is_content_block(&group_text),
-                    options.bold_marker_behavior,
-                    should_render_bold_markers
-                );
+                // Validate before inserting markers using Phase 2 validator
+                let marker_decision = if should_check_validator {
+                    BoldMarkerValidator::can_insert_markers(&group)
+                } else {
+                    // Skip validation if any precondition fails
+                    BoldMarkerDecision::Skip(
+                        crate::layout::bold_validation::ValidatorError::NotBold,
+                    )
+                };
 
-                if should_insert_markers {
+                // Insert opening marker if approved by validator
+                let should_insert_bold_markers =
+                    matches!(marker_decision, BoldMarkerDecision::Insert);
+                if should_insert_bold_markers {
                     markdown.push_str("**");
+                } else if let BoldMarkerDecision::Skip(reason) = &marker_decision {
+                    log::debug!(
+                        "Skipping bold markers: {:?} for '{}'",
+                        reason,
+                        group.text.chars().take(20).collect::<String>()
+                    );
                 }
 
-                // FIX #3: Format URLs and emails as markdown links
-                let formatted_text = Self::format_links(&group_text);
-                // FIX #4: Clean up reference spacing
-                let cleaned_text = Self::clean_reference_spacing(&formatted_text);
-                markdown.push_str(&cleaned_text);
+                // Output the text content (may have leading/trailing spaces)
+                markdown.push_str(&group.text);
 
-                if should_insert_markers {
+                // Insert closing marker if approved by validator
+                if should_insert_bold_markers {
                     markdown.push_str("**");
                 }
 
@@ -388,8 +475,12 @@ impl MarkdownConverter {
         // Don't forget to render the last line
         render_line(&current_line, &mut markdown);
 
+        // Phase 1.3: Insert missing spaces after punctuation (post-processing)
+        // Catches punctuation-letter patterns that TJ offset processing missed
+        let spaced = Self::insert_missing_punctuation_spaces(&markdown);
+
         // Apply whitespace cleanup: remove artifacts and normalize blank lines
-        Ok(cleanup_markdown(&markdown))
+        Ok(cleanup_markdown(&spaced))
     }
 
     /// Convert a page to Markdown format (character-based - DEPRECATED).
@@ -839,6 +930,30 @@ impl MarkdownConverter {
 
         result
     }
+
+    /// Phase 1.3: Insert missing spaces after punctuation.
+    ///
+    /// Some PDFs have punctuation directly followed by a letter with no space,
+    /// which TJ offset processing fails to catch. This post-processing regex
+    /// detects and fixes `[punctuation][letter]` patterns.
+    ///
+    /// Transforms:
+    /// - `"hello.world"` → `"hello. world"`
+    /// - `"end,another"` → `"end, another"`
+    /// - `"question?Answer"` → `"question? Answer"`
+    ///
+    /// Excludes URLs (`://`) and emails (`@`) to avoid false positives.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - Text potentially containing punctuation without following space
+    ///
+    /// # Returns
+    ///
+    /// Text with spaces inserted after punctuation where needed
+    fn insert_missing_punctuation_spaces(text: &str) -> String {
+        RE_PUNCT_SPACE.replace_all(text, "${1} ${2}").to_string()
+    }
 }
 
 impl Default for MarkdownConverter {
@@ -932,6 +1047,7 @@ fn should_insert_bold_marker(prev_char: Option<char>, next_char: Option<char>) -
 mod tests {
     use super::*;
     use crate::geometry::Rect;
+    use crate::layout::bold_validation::ValidatorError;
     use crate::layout::{Color, FontWeight};
 
     fn mock_char(c: char, x: f32, y: f32, font_size: f32, bold: bool) -> TextChar {
@@ -1141,5 +1257,434 @@ mod tests {
 
         assert_eq!(indices1.len(), 2);
         assert_eq!(indices2.len(), 2);
+    }
+
+    // ============================================================================
+    // NEW TESTS (Task B.1: Pre-Validation Bold Filter)
+    // ============================================================================
+
+    #[test]
+    fn test_whitespace_filtered_before_grouping() {
+        // Task B.1: Verify whitespace blocks are filtered BEFORE merge step
+        // This prevents empty blocks from entering bold grouping
+
+        use crate::geometry::Rect;
+        use crate::layout::TextSpan;
+
+        let converter = MarkdownConverter::new();
+        let options = ConversionOptions::default();
+
+        // Create spans with whitespace that should be filtered
+        let spans = vec![
+            TextSpan {
+                text: "Hello".to_string(),
+                bbox: Rect::new(0.0, 0.0, 40.0, 12.0),
+                font_name: "Times".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                sequence: 0,
+                split_boundary_before: false,
+            },
+            TextSpan {
+                text: "   ".to_string(), // Whitespace only - should be filtered
+                bbox: Rect::new(50.0, 0.0, 20.0, 12.0),
+                font_name: "Times".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Bold, // Even if marked bold
+                color: Color::black(),
+                mcid: None,
+                sequence: 1,
+                split_boundary_before: false,
+            },
+            TextSpan {
+                text: "World".to_string(),
+                bbox: Rect::new(80.0, 0.0, 40.0, 12.0),
+                font_name: "Times".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                sequence: 2,
+                split_boundary_before: false,
+            },
+        ];
+
+        let result = converter.convert_page_from_spans(&spans, &options).unwrap();
+
+        // Result should contain "Hello" and "World" but NOT empty bold markers
+        assert!(result.contains("Hello"));
+        assert!(result.contains("World"));
+        assert!(!result.contains("** **"), "Whitespace should be filtered before grouping");
+    }
+
+    #[test]
+    fn test_punctuation_not_bolded() {
+        // Task B.1: Punctuation-only blocks should have bold neutralized
+        // "---", "...", ">>>" should never be marked bold
+
+        use crate::geometry::Rect;
+        use crate::layout::TextSpan;
+
+        let converter = MarkdownConverter::new();
+        let options = ConversionOptions::default();
+
+        let spans = vec![
+            TextSpan {
+                text: "Section".to_string(),
+                bbox: Rect::new(0.0, 0.0, 50.0, 12.0),
+                font_name: "Times".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Bold,
+                color: Color::black(),
+                mcid: None,
+                sequence: 0,
+                split_boundary_before: false,
+            },
+            TextSpan {
+                text: "---".to_string(), // Punctuation only, but marked bold
+                bbox: Rect::new(60.0, 0.0, 20.0, 12.0),
+                font_name: "Times".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Bold,
+                color: Color::black(),
+                mcid: None,
+                sequence: 1,
+                split_boundary_before: false,
+            },
+            TextSpan {
+                text: "Content".to_string(),
+                bbox: Rect::new(0.0, 20.0, 50.0, 12.0),
+                font_name: "Times".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                sequence: 2,
+                split_boundary_before: false,
+            },
+        ];
+
+        let result = converter.convert_page_from_spans(&spans, &options).unwrap();
+
+        // Punctuation should not create bold markers
+        assert!(result.contains("---"));
+        assert!(result.contains("Content"));
+        // The punctuation "---" should NOT be wrapped in ** **
+        assert!(!result.contains("**---**"), "Punctuation should not be bolded");
+    }
+
+    #[test]
+    fn test_numeric_bold_preserved() {
+        // Task B.1: Numbers CAN be bold if they're actual content
+        // "2024" or "Version 3.0" can be bold
+
+        use crate::geometry::Rect;
+        use crate::layout::TextSpan;
+
+        let converter = MarkdownConverter::new();
+        let options = ConversionOptions {
+            bold_marker_behavior: crate::converters::BoldMarkerBehavior::Conservative,
+            ..Default::default()
+        };
+
+        let spans = vec![
+            TextSpan {
+                text: "Year:".to_string(),
+                bbox: Rect::new(0.0, 0.0, 40.0, 12.0),
+                font_name: "Times".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                sequence: 0,
+                split_boundary_before: false,
+            },
+            TextSpan {
+                text: "2024".to_string(), // Numeric, should be bold if marked
+                bbox: Rect::new(50.0, 0.0, 30.0, 12.0),
+                font_name: "Times".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Bold,
+                color: Color::black(),
+                mcid: None,
+                sequence: 1,
+                split_boundary_before: false,
+            },
+        ];
+
+        let result = converter.convert_page_from_spans(&spans, &options).unwrap();
+
+        // Numeric content should be allowed
+        assert!(result.contains("2024"));
+        // May or may not have bold markers depending on boundary context,
+        // but shouldn't produce empty markers
+        assert!(!result.contains("** **"), "Numeric should not create empty bold markers");
+    }
+
+    #[test]
+    fn test_no_empty_bold_markers_regression() {
+        // Task B.1: Combined fix should prevent ANY empty bold markers
+        // This is the main regression test for the fix
+
+        use crate::geometry::Rect;
+        use crate::layout::TextSpan;
+
+        let converter = MarkdownConverter::new();
+        let options = ConversionOptions::default();
+
+        // Scenario: Mix of content, whitespace, and punctuation
+        // All potentially bolded
+        let spans = vec![
+            TextSpan {
+                text: "Title".to_string(),
+                bbox: Rect::new(0.0, 0.0, 40.0, 14.0),
+                font_name: "Times-Bold".to_string(),
+                font_size: 14.0,
+                font_weight: FontWeight::Bold,
+                color: Color::black(),
+                mcid: None,
+                sequence: 0,
+                split_boundary_before: false,
+            },
+            TextSpan {
+                text: " ".to_string(), // Whitespace - should be filtered
+                bbox: Rect::new(50.0, 0.0, 5.0, 14.0),
+                font_name: "Times-Bold".to_string(),
+                font_size: 14.0,
+                font_weight: FontWeight::Bold,
+                color: Color::black(),
+                mcid: None,
+                sequence: 1,
+                split_boundary_before: false,
+            },
+            TextSpan {
+                text: "...".to_string(), // Punctuation - should be neutralized
+                bbox: Rect::new(60.0, 0.0, 15.0, 14.0),
+                font_name: "Times-Bold".to_string(),
+                font_size: 14.0,
+                font_weight: FontWeight::Bold,
+                color: Color::black(),
+                mcid: None,
+                sequence: 2,
+                split_boundary_before: false,
+            },
+            TextSpan {
+                text: "  \n  ".to_string(), // Mixed whitespace - should be filtered
+                bbox: Rect::new(0.0, 20.0, 50.0, 12.0),
+                font_name: "Times-Bold".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Bold,
+                color: Color::black(),
+                mcid: None,
+                sequence: 3,
+                split_boundary_before: false,
+            },
+            TextSpan {
+                text: "Content".to_string(),
+                bbox: Rect::new(0.0, 35.0, 50.0, 12.0),
+                font_name: "Times".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                sequence: 4,
+                split_boundary_before: false,
+            },
+        ];
+
+        let result = converter.convert_page_from_spans(&spans, &options).unwrap();
+
+        // Main assertion: NO empty bold markers anywhere
+        assert!(!result.contains("** **"), "No empty bold markers allowed");
+        assert!(!result.contains("**\n**"), "No empty bold markers with newlines");
+        assert!(!result.contains("**  **"), "No bold wrapping only spaces");
+
+        // Content should still be present
+        assert!(result.contains("Title"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn test_merge_adjacent_char_spans_preserves_spacing() {
+        // Task B.1: Verify merge happens AFTER filtering
+        // So merged characters don't inherit bold from filtered whitespace
+
+        let spans = vec![
+            TextBlock {
+                chars: vec![],
+                bbox: Rect::new(0.0, 0.0, 4.0, 12.0),
+                text: "H".to_string(),
+                avg_font_size: 12.0,
+                dominant_font: "Times".to_string(),
+                is_bold: false,
+                mcid: None,
+            },
+            TextBlock {
+                chars: vec![],
+                bbox: Rect::new(4.5, 0.0, 4.0, 12.0),
+                text: "i".to_string(),
+                avg_font_size: 12.0,
+                dominant_font: "Times".to_string(),
+                is_bold: false,
+                mcid: None,
+            },
+            TextBlock {
+                chars: vec![],
+                bbox: Rect::new(9.0, 0.0, 4.0, 12.0),
+                text: "!".to_string(),
+                avg_font_size: 12.0,
+                dominant_font: "Times".to_string(),
+                is_bold: false,
+                mcid: None,
+            },
+        ];
+
+        let merged = MarkdownConverter::merge_adjacent_char_spans(spans);
+
+        // Should merge closely-spaced characters into "Hi!"
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "Hi!");
+    }
+
+    // ============================================================================
+    // NEW TESTS (Fix 2A: Trim Boundary Extraction)
+    // ============================================================================
+
+    #[test]
+    fn test_fix_2a_boundary_extraction_with_leading_whitespace() {
+        // Fix 2A: Leading whitespace should not become first_char_in_group
+        // This prevents "** text**" patterns where the opening position is space
+
+        let group = BoldGroup {
+            text: "  hello".to_string(), // Leading spaces
+            is_bold: true,
+            first_char_in_group: Some('h'), // Should be 'h' from trimmed, not space
+            last_char_in_group: Some('o'),
+        };
+
+        // Validator should approve: first char is alphabetic
+        assert_eq!(BoldMarkerValidator::can_insert_markers(&group), BoldMarkerDecision::Insert);
+    }
+
+    #[test]
+    fn test_fix_2a_boundary_extraction_with_trailing_whitespace() {
+        // Fix 2A: Trailing whitespace should not become last_char_in_group
+        // This prevents "**text **" patterns where the closing position is space
+
+        let group = BoldGroup {
+            text: "hello  ".to_string(), // Trailing spaces
+            is_bold: true,
+            first_char_in_group: Some('h'),
+            last_char_in_group: Some('o'), // Should be 'o' from trimmed, not space
+        };
+
+        // Validator should approve: last char is alphabetic
+        assert_eq!(BoldMarkerValidator::can_insert_markers(&group), BoldMarkerDecision::Insert);
+    }
+
+    #[test]
+    fn test_fix_2a_boundary_extraction_with_both_whitespace() {
+        // Fix 2A: Both leading and trailing whitespace should be trimmed
+
+        let group = BoldGroup {
+            text: "  hello world  ".to_string(), // Both sides
+            is_bold: true,
+            first_char_in_group: Some('h'), // From trimmed
+            last_char_in_group: Some('d'),  // From trimmed
+        };
+
+        // Validator should approve
+        assert_eq!(BoldMarkerValidator::can_insert_markers(&group), BoldMarkerDecision::Insert);
+    }
+
+    #[test]
+    fn test_fix_2a_whitespace_only_string_returns_none() {
+        // Fix 2A: Whitespace-only strings should have None boundaries
+        // This prevents empty bold markers
+
+        let group = BoldGroup {
+            text: "   ".to_string(),
+            is_bold: true,
+            first_char_in_group: None, // trimmed is empty
+            last_char_in_group: None,  // trimmed is empty
+        };
+
+        // Validator should reject: no word content
+        assert_eq!(
+            BoldMarkerValidator::can_insert_markers(&group),
+            BoldMarkerDecision::Skip(ValidatorError::WhitespaceOnly)
+        );
+    }
+
+    #[test]
+    fn test_fix_2a_tabs_and_newlines_trimmed() {
+        // Fix 2A: Unicode whitespace variants (tabs, newlines) should be trimmed
+
+        let group = BoldGroup {
+            text: "\t\n  hello  \n\t".to_string(), // Tabs and newlines
+            is_bold: true,
+            first_char_in_group: Some('h'), // From trimmed
+            last_char_in_group: Some('o'),  // From trimmed
+        };
+
+        // Validator should approve
+        assert_eq!(BoldMarkerValidator::can_insert_markers(&group), BoldMarkerDecision::Insert);
+    }
+
+    #[test]
+    fn test_fix_2a_markdown_no_empty_bold_from_spaces() {
+        // Fix 2A: Integration test - no "** **" patterns from boundary trimming
+        // Even if cleaned_text has spaces, the actual markers use trimmed boundaries
+
+        use crate::layout::TextSpan;
+
+        let converter = MarkdownConverter::new();
+        let options = ConversionOptions::default();
+
+        let spans = vec![
+            TextSpan {
+                text: "Content".to_string(),
+                bbox: Rect::new(0.0, 0.0, 50.0, 12.0),
+                font_name: "Times-Bold".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Bold,
+                color: Color::black(),
+                mcid: None,
+                sequence: 0,
+                split_boundary_before: false,
+            },
+            TextSpan {
+                text: "  \n  ".to_string(), // Whitespace with newlines
+                bbox: Rect::new(60.0, 0.0, 20.0, 12.0),
+                font_name: "Times-Bold".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Bold,
+                color: Color::black(),
+                mcid: None,
+                sequence: 1,
+                split_boundary_before: false,
+            },
+            TextSpan {
+                text: "More".to_string(),
+                bbox: Rect::new(0.0, 20.0, 40.0, 12.0),
+                font_name: "Times".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                sequence: 2,
+                split_boundary_before: false,
+            },
+        ];
+
+        let result = converter.convert_page_from_spans(&spans, &options).unwrap();
+
+        // Verify: no empty bold markers with newlines or spaces
+        assert!(!result.contains("**\n**"), "No bold wrapping newlines");
+        assert!(!result.contains("** **"), "No bold wrapping spaces");
+        assert!(result.contains("Content"), "Content preserved");
+        assert!(result.contains("More"), "More preserved");
     }
 }

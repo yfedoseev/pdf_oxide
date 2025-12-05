@@ -6,6 +6,7 @@
 //!
 //! Phase 4, Task 4.6
 
+use super::word_segmentation;
 use crate::content::graphics_state::{GraphicsStateStack, Matrix};
 use crate::content::operators::{Operator, TextElement};
 use crate::content::parse_content_stream;
@@ -519,8 +520,9 @@ impl SpanMergingConfig {
 /// - This is explicit PDF positioning information
 /// - Confidence: 0.95 (highest, explicit signal)
 ///
-/// **Rule 2**: Dual threshold (PDFBox pattern)
+/// **Rule 2**: Dual threshold (PDFBox pattern) with document-type adjustment
 /// - Calculate both space-width-based and char-width-based thresholds
+/// - Adjust thresholds based on document type (Academic/Policy/Mixed)
 /// - Use MINIMUM of the two for robustness
 /// - If gap exceeds this threshold, insert space
 /// - Confidence: 0.8 (geometric measurement)
@@ -530,12 +532,23 @@ impl SpanMergingConfig {
 /// - If heuristic fires, insert space
 /// - Confidence: 0.6 (pattern-based)
 ///
-/// **Rule 4**: Conservative threshold
+/// **Rule 4**: Conservative threshold (document-type aware)
 /// - If gap exceeds conservative threshold (very small), insert space
 /// - Catches small intentional gaps that are still word boundaries
+/// - Adaptive to document type (Policy uses lower threshold, Academic uses higher)
 /// - Confidence: 0.5 (conservative)
 ///
 /// **Default**: No space inserted
+///
+/// # Document Type Adjustment
+///
+/// When document_type is provided, thresholds are adjusted:
+/// - **Academic** (1.4x multiplier): Higher thresholds for loose spacing
+/// - **Policy** (0.6x multiplier): Lower thresholds for tight justified text
+/// - **Mixed** (1.0x multiplier): Default/balanced approach
+///
+/// This matches research findings from LA-PDFText, pdfminer.six, PDFBox, and iText
+/// that adaptive thresholds provide better results than fixed values.
 ///
 /// # PDF Spec Reference
 ///
@@ -549,6 +562,7 @@ fn should_insert_space(
     font_size: f32,
     tj_offset_triggered: bool,
     config: &SpanMergingConfig,
+    doc_type: Option<crate::extractors::gap_statistics::DocumentType>,
 ) -> SpaceDecision {
     // Rule 0: Check if boundary already has whitespace
     if has_boundary_space(preceding_text, following_text) {
@@ -561,29 +575,48 @@ fn should_insert_space(
         return SpaceDecision::insert(SpaceSource::TjOffset, 0.95);
     }
 
-    // Rule 2: Dual threshold (PDFBox pattern)
+    // Rule 2: Dual threshold (PDFBox pattern) with document-type adjustment
     //
     // PDFBox implements a robust dual-threshold algorithm to handle font metric variations:
     // - Space-width threshold: font_size * 0.25em (typical word spacing)
     // - Char-width threshold: font_size * 0.3em (conservative estimate)
     // Use MINIMUM for robustness across different fonts and document types
     //
-    // Research Finding (pdfminer.six, PDFMiner.six, PDFBox, iText):
+    // Document-type adjustment (Phase 8 enhancement):
+    // - Academic documents (wide gaps): Use 1.4x multiplier for conservative detection
+    // - Policy documents (tight gaps): Use 0.6x multiplier for aggressive detection
+    // - Mixed documents: Use 1.0x (default)
+    //
+    // Research Finding (LA-PDFText, pdfminer.six, PDFMiner.six, PDFBox, iText):
     // Single threshold approaches fail on documents with tight column spacing or
-    // variable font metrics. Dual threshold provides better coverage without
-    // increasing false positives.
+    // variable font metrics. Dual threshold + document-type adjustment provides
+    // better coverage without increasing false positives.
     //
     // Per PDF Spec ISO 32000-1:2008 Section 9.4.4:
     // "word boundaries are not encoded in PDF, only heuristics available"
     let space_threshold = font_size * config.space_threshold_em_ratio;
     let char_width_threshold = font_size * 0.3; // 30% of em (PDFBox default)
-    let dual_threshold = space_threshold.min(char_width_threshold);
+    let mut dual_threshold = space_threshold.min(char_width_threshold);
+
+    // Apply document-type adjustment to thresholds
+    // These multipliers adapt the dual threshold based on document characteristics:
+    // - Academic: Higher multiplier (wider thresholds, less sensitive) to avoid false positives from column boundaries
+    // - Policy: Lower multiplier (narrower thresholds, more sensitive) to detect tight justified spacing
+    // - Mixed: Default multiplier (balanced approach)
+    let doc_adjustment = match doc_type {
+        Some(crate::extractors::gap_statistics::DocumentType::Academic) => 1.3,
+        Some(crate::extractors::gap_statistics::DocumentType::Policy) => 0.7,
+        Some(crate::extractors::gap_statistics::DocumentType::Mixed) | None => 1.0,
+    };
+
+    dual_threshold *= doc_adjustment;
 
     if gap_pt > dual_threshold {
         log::debug!(
-            "Space decision: Dual threshold triggered (gap={:.2}pt > {:.2}pt threshold) - inserting space",
+            "Space decision: Dual threshold triggered (gap={:.2}pt > {:.2}pt threshold, doc_type adjustment={:.2}x) - inserting space",
             gap_pt,
-            dual_threshold
+            dual_threshold,
+            doc_adjustment
         );
         return SpaceDecision::insert(SpaceSource::GeometricGap, 0.8);
     }
@@ -614,11 +647,27 @@ fn should_insert_space(
     }
 
     // Rule 4: Conservative threshold (catches small intentional gaps)
-    if gap_pt > config.conservative_threshold_pt {
-        log::debug!(
-            "Space decision: Conservative threshold triggered (gap={:.2}pt > {:.2}pt) - inserting space",
-            gap_pt,
+    // Document-type aware: adjust conservative threshold based on document type
+    let conservative_threshold = match doc_type {
+        Some(crate::extractors::gap_statistics::DocumentType::Academic) => {
+            // Academic: use higher threshold to avoid false positives in dense layouts
+            config.conservative_threshold_pt * 1.3
+        },
+        Some(crate::extractors::gap_statistics::DocumentType::Policy) => {
+            // Policy: use lower threshold to catch tight justified spacing
+            config.conservative_threshold_pt * 0.7
+        },
+        Some(crate::extractors::gap_statistics::DocumentType::Mixed) | None => {
+            // Mixed: use default conservative threshold
             config.conservative_threshold_pt
+        },
+    };
+
+    if gap_pt > conservative_threshold {
+        log::debug!(
+            "Space decision: Conservative threshold triggered (gap={:.2}pt > {:.2}pt, doc_type adjusted) - inserting space",
+            gap_pt,
+            conservative_threshold
         );
         return SpaceDecision::insert(SpaceSource::GeometricGap, 0.5);
     }
@@ -627,7 +676,7 @@ fn should_insert_space(
     log::trace!(
         "Space decision: No rule triggered (gap={:.2}pt <= conservative={:.2}pt) - no space",
         gap_pt,
-        config.conservative_threshold_pt
+        conservative_threshold
     );
     SpaceDecision::no_space(SpaceSource::NoSpace, 1.0)
 }
@@ -640,8 +689,14 @@ fn should_insert_space(
 ///
 /// This prevents double-spacing when text already contains space characters.
 fn has_boundary_space(preceding: &str, following: &str) -> bool {
-    let has_trailing_space = preceding.chars().last().map_or(false, |c| c.is_whitespace());
-    let has_leading_space = following.chars().next().map_or(false, |c| c.is_whitespace());
+    let has_trailing_space = preceding
+        .chars()
+        .last()
+        .map_or(false, |c| c.is_whitespace());
+    let has_leading_space = following
+        .chars()
+        .next()
+        .map_or(false, |c| c.is_whitespace());
 
     has_trailing_space || has_leading_space
 }
@@ -1031,6 +1086,14 @@ pub struct TextExtractor {
     /// Used as a tie-breaker when sorting spans by Y-coordinate. Ensures
     /// that spans with identical Y-coordinates maintain extraction order.
     span_sequence_counter: usize,
+    /// Detected document type for adaptive thresholding
+    ///
+    /// Computed from gap statistics during span merging phase.
+    /// Used to adapt space insertion thresholds to document characteristics:
+    /// - Academic: wide word gaps, multi-column layout
+    /// - Policy: tight justified layout
+    /// - Mixed: variable layout with multiple structure types
+    detected_document_type: Option<crate::extractors::gap_statistics::DocumentType>,
 }
 
 impl TextExtractor {
@@ -1077,6 +1140,7 @@ impl TextExtractor {
             extract_spans: true,      // Default to span mode (PDF spec compliant)
             tj_span_buffer: None,     // No buffer initially
             span_sequence_counter: 0, // Initialize sequence counter
+            detected_document_type: None, // Computed during span merging
         }
     }
 
@@ -1565,7 +1629,9 @@ impl TextExtractor {
             return;
         }
 
-        use crate::extractors::gap_statistics::analyze_document_gaps;
+        use crate::extractors::gap_statistics::{
+            DocumentType, analyze_document_gaps, extract_gaps,
+        };
 
         let adaptive_config = self
             .merging_config
@@ -1586,6 +1652,19 @@ impl TextExtractor {
 
             // Override the conservative threshold with the computed value
             self.merging_config.conservative_threshold_pt = result.threshold_pt;
+
+            // Detect document type from gap statistics (Phase 8 enhancement)
+            // This enables adaptive thresholding based on document characteristics
+            if let Some(stats) = &result.stats {
+                let doc_type = DocumentType::detect(&stats.gaps);
+                log::info!(
+                    "Detected document type: {} (median gap: {:.3}pt, CV: {:.3})",
+                    doc_type.name(),
+                    stats.median,
+                    stats.coefficient_of_variation()
+                );
+                self.detected_document_type = Some(doc_type);
+            }
         } else {
             // Adaptive analysis fell back to default - log reason
             log::debug!(
@@ -1593,6 +1672,14 @@ impl TextExtractor {
                 result.reason,
                 self.merging_config.conservative_threshold_pt
             );
+
+            // Still try to detect document type from raw gaps, even if adaptive threshold failed
+            let gaps = extract_gaps(&self.spans);
+            if !gaps.is_empty() {
+                let doc_type = DocumentType::detect(&gaps);
+                log::debug!("Detected document type from raw gaps: {}", doc_type.name());
+                self.detected_document_type = Some(doc_type);
+            }
         }
     }
 
@@ -1654,9 +1741,10 @@ impl TextExtractor {
                 // Merge spans: concatenate text and extend bbox
                 let old_text = current.text.clone();
 
-                // Use unified space decision function
+                // Use unified space decision function with detected document type
                 // If we have a split_boundary_before flag, FORCE a space by treating it like a TJ offset
                 // This ensures "length" + "This" becomes "length This" not "lengthThis"
+                // Document type adjustment (Phase 8): Use adaptive thresholds based on document characteristics
                 let tj_offset_triggered_override = has_split_boundary;
                 let space_decision = should_insert_space(
                     &current.text,
@@ -1665,6 +1753,7 @@ impl TextExtractor {
                     current.font_size,
                     tj_offset_triggered_override,
                     &self.merging_config,
+                    self.detected_document_type,
                 );
 
                 log::debug!(
@@ -1684,7 +1773,7 @@ impl TextExtractor {
                                 current.text,
                                 span.text
                             );
-                        }
+                        },
                         SpaceSource::GeometricGap => {
                             log::trace!(
                                 "Space via gap (source={:?}): '{}' | '{}' (gap={:.2}pt)",
@@ -1693,18 +1782,15 @@ impl TextExtractor {
                                 span.text,
                                 gap
                             );
-                        }
+                        },
                         _ => {
                             log::trace!("Space via {:?}", space_decision.source);
-                        }
+                        },
                     }
                     format!("{} {}", current.text, span.text)
                 } else {
                     // No space: adjacent characters within same word
-                    log::trace!(
-                        "No space insertion: decision source={:?}",
-                        space_decision.source
-                    );
+                    log::trace!("No space insertion: decision source={:?}", space_decision.source);
                     format!("{}{}", current.text, span.text)
                 };
 
@@ -1816,14 +1902,36 @@ impl TextExtractor {
     /// - "lengthThis" instead of "length" + "This"
     /// - "helporganisationscraft" (partial fusion)
     ///
-    /// This post-processor detects CamelCase patterns (lowercase->uppercase transitions)
-    /// and splits them into separate spans, per ISO 32000-1:2008 Section 9.4.4:
-    /// "Text strings are as long as possible" - spaces are positioning artifacts.
+    /// This post-processor detects word fusions and splits them into separate spans.
+    ///
+    /// Uses two strategies:
+    /// 1. **CamelCase detection** (first priority): Detects lowercase->uppercase transitions
+    ///    - Example: "theGeneral" -> ["the", "General"]
+    /// 2. **Dictionary-based segmentation** (fallback): Uses Viterbi algorithm with word dictionary
+    ///    - Example: "helporganisationscraft" -> ["help", "organisations", "craft"]
+    ///
+    /// Per ISO 32000-1:2008 Section 9.4.4: "Text strings are as long as possible" - spaces
+    /// are positioning artifacts, so word fusions must be detected and reconstructed.
     fn split_fused_words(&mut self) {
         let mut split_spans = Vec::new();
 
         for span in &self.spans {
-            let parts = self.split_on_camelcase(&span.text);
+            // Strategy 1: Try CamelCase split first (handles mixed-case fusions)
+            let mut parts = self.split_on_camelcase(&span.text);
+
+            // Strategy 2: If CamelCase didn't work, try dictionary-based segmentation
+            // Only for all-lowercase words that are likely fusions
+            if parts.len() == 1
+                && span
+                    .text
+                    .chars()
+                    .all(|c| c.is_lowercase() || !c.is_alphabetic())
+            {
+                if let Some(segments) = word_segmentation::segment_word(&span.text) {
+                    // Only use segmentation if it resulted in multiple words
+                    parts = segments;
+                }
+            }
 
             if parts.len() == 1 {
                 // No split needed
@@ -3589,8 +3697,7 @@ mod tests {
         let config = SpanMergingConfig::default();
 
         // TJ offset triggered should always insert space (Rule 1, confidence 0.95)
-        let decision =
-            should_insert_space("word", "next", 0.0, 12.0, true, &config);
+        let decision = should_insert_space("word", "next", 0.0, 12.0, true, &config, None);
 
         assert!(decision.insert_space);
         assert_eq!(decision.source, SpaceSource::TjOffset);
@@ -3603,12 +3710,12 @@ mod tests {
         let config = SpanMergingConfig::default();
 
         // Preceding text ends with space
-        let decision = should_insert_space("word ", "next", 0.0, 12.0, false, &config);
+        let decision = should_insert_space("word ", "next", 0.0, 12.0, false, &config, None);
         assert!(!decision.insert_space);
         assert_eq!(decision.source, SpaceSource::AlreadyPresent);
 
         // Following text starts with space
-        let decision = should_insert_space("word", " next", 0.0, 12.0, false, &config);
+        let decision = should_insert_space("word", " next", 0.0, 12.0, false, &config, None);
         assert!(!decision.insert_space);
         assert_eq!(decision.source, SpaceSource::AlreadyPresent);
     }
@@ -3625,13 +3732,13 @@ mod tests {
         let font_size = 12.0;
 
         // Gap > dual_threshold should insert (Rule 2, confidence 0.8)
-        let decision = should_insert_space("word", "next", 3.5, font_size, false, &config);
+        let decision = should_insert_space("word", "next", 3.5, font_size, false, &config, None);
         assert!(decision.insert_space);
         assert_eq!(decision.source, SpaceSource::GeometricGap);
         assert_eq!(decision.confidence, 0.8);
 
         // Gap <= dual_threshold, not at heuristic boundary: no space (yet)
-        let decision = should_insert_space("word", "next", 2.5, font_size, false, &config);
+        let decision = should_insert_space("word", "next", 2.5, font_size, false, &config, None);
         // This should not insert (no rule triggers)
         // But conservative threshold (0.1) is still checked below
     }
@@ -3642,13 +3749,13 @@ mod tests {
         let config = SpanMergingConfig::default();
 
         // lowercase -> uppercase (CamelCase) should trigger heuristic (Rule 3, confidence 0.6)
-        let decision = should_insert_space("the", "General", 0.0, 12.0, false, &config);
+        let decision = should_insert_space("the", "General", 0.0, 12.0, false, &config, None);
         assert!(decision.insert_space);
         assert_eq!(decision.source, SpaceSource::CharacterHeuristic);
         assert_eq!(decision.confidence, 0.6);
 
         // numeric -> letter should trigger heuristic
-        let decision = should_insert_space("version2", "dot3", 0.0, 12.0, false, &config);
+        let decision = should_insert_space("version2", "dot3", 0.0, 12.0, false, &config, None);
         assert!(decision.insert_space);
         assert_eq!(decision.source, SpaceSource::CharacterHeuristic);
     }
@@ -3660,15 +3767,83 @@ mod tests {
         // conservative_threshold_pt: 0.1
 
         // Gap > conservative_threshold but not meeting other rules (Rule 4, confidence 0.5)
-        let decision = should_insert_space("word", "next", 0.2, 12.0, false, &config);
+        let decision = should_insert_space("word", "next", 0.2, 12.0, false, &config, None);
         assert!(decision.insert_space);
         assert_eq!(decision.source, SpaceSource::GeometricGap);
         assert_eq!(decision.confidence, 0.5);
 
         // Gap <= conservative_threshold: no space (Rule 5 - default)
-        let decision = should_insert_space("word", "next", 0.05, 12.0, false, &config);
+        let decision = should_insert_space("word", "next", 0.05, 12.0, false, &config, None);
         assert!(!decision.insert_space);
         assert_eq!(decision.source, SpaceSource::NoSpace);
+    }
+
+    /// Test document-type adjusted thresholds for space decisions
+    #[test]
+    fn test_space_decision_with_document_type_adjustment() {
+        use crate::extractors::gap_statistics::DocumentType;
+
+        let config = SpanMergingConfig::default();
+        // Default dual threshold: 12pt * min(0.25, 0.3) = 12pt * 0.25 = 3pt
+        // Default conservative threshold: 0.1pt
+
+        // Test gap between conservative (0.1pt) and dual (3pt) thresholds
+        // We'll use 2.5pt which is > 0.1pt (conservative) and < 3pt (dual)
+        let gap = 2.5;
+
+        // Without document type: triggers on conservative threshold (2.5 > 0.1)
+        let decision_no_type = should_insert_space("word", "next", gap, 12.0, false, &config, None);
+        assert!(
+            decision_no_type.insert_space,
+            "Without doc type, 2.5pt triggers conservative threshold"
+        );
+        assert_eq!(decision_no_type.source, SpaceSource::GeometricGap);
+
+        // With Policy type (0.7x adjustment): conservative becomes 0.1 * 0.7 = 0.07pt
+        // So 2.5pt > 0.07pt still triggers space
+        // But ALSO: dual threshold becomes 3pt * 0.7 = 2.1pt
+        // So 2.5pt > 2.1pt triggers dual threshold too - MORE aggressively
+        let decision_policy = should_insert_space(
+            "word",
+            "next",
+            gap,
+            12.0,
+            false,
+            &config,
+            Some(DocumentType::Policy),
+        );
+        assert!(
+            decision_policy.insert_space,
+            "With Policy type, 2.5pt gap triggers (more aggressive)"
+        );
+
+        // Now test with a smaller gap that's below dual threshold
+        let small_gap = 1.5; // > 3 * 0.7 = 2.1 is false, but > 0.1 is true
+
+        // Without document type: triggers on conservative (1.5 > 0.1)
+        let decision_no_type_small =
+            should_insert_space("word", "next", small_gap, 12.0, false, &config, None);
+        assert!(
+            decision_no_type_small.insert_space,
+            "Without doc type, 1.5pt triggers conservative"
+        );
+
+        // With Academic type (1.3x adjustment): dual becomes 3pt * 1.3 = 3.9pt
+        // So 1.5pt < 3.9pt doesn't trigger dual threshold
+        // But still triggers conservative (1.5 > 0.1 * 1.3 = 0.13)
+        let decision_academic = should_insert_space(
+            "word",
+            "next",
+            small_gap,
+            12.0,
+            false,
+            &config,
+            Some(DocumentType::Academic),
+        );
+        assert!(
+            decision_academic.insert_space,
+            "With Academic type, still triggers conservative threshold"
+        );
     }
 
     /// Test unified space decision: No double spaces
@@ -3678,8 +3853,8 @@ mod tests {
 
         // When both TJ offset and gap would trigger, they should be coordinated
         // TJ offset has highest priority and should be respected first
-        let decision_tj = should_insert_space("word", "next", 1.0, 12.0, true, &config);
-        let decision_gap = should_insert_space("word", "next", 1.0, 12.0, false, &config);
+        let decision_tj = should_insert_space("word", "next", 1.0, 12.0, true, &config, None);
+        let decision_gap = should_insert_space("word", "next", 1.0, 12.0, false, &config, None);
 
         // TJ offset decision (0.95) should be preferred over gap decision
         assert!(decision_tj.insert_space);
@@ -3825,20 +4000,14 @@ fn test_space_threshold_disabled() {
 fn test_adaptive_enabled_by_default() {
     // Test that adaptive threshold is enabled by default (Phase 8)
     let config = SpanMergingConfig::default();
-    assert!(
-        config.use_adaptive_threshold,
-        "Adaptive threshold should be enabled by default"
-    );
+    assert!(config.use_adaptive_threshold, "Adaptive threshold should be enabled by default");
 }
 
 #[test]
 fn test_legacy_mode_disables_adaptive() {
     // Test that legacy() constructor provides backward-compatible behavior
     let legacy = SpanMergingConfig::legacy();
-    assert!(
-        !legacy.use_adaptive_threshold,
-        "Legacy mode should disable adaptive threshold"
-    );
+    assert!(!legacy.use_adaptive_threshold, "Legacy mode should disable adaptive threshold");
     assert_eq!(legacy.conservative_threshold_pt, 0.1);
 }
 

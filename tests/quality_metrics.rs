@@ -181,9 +181,16 @@ pub fn detect_empty_bold_markers(markdown: &str) -> usize {
 /// Examples: "organi s ations", "polic y", "princip le"
 ///
 /// NOTE: This detection uses multiple heuristics:
-/// 1. Single letter between word fragments (e.g., "organis a tions")
-/// 2. Multiple consecutive spaces between words (e.g., "word  word")
-/// 3. Excludes common English short words (a, an, as, at, be, by, etc.)
+/// 1. Actual consecutive spaces (multiple spaces in a row, e.g., "word  word")
+/// 2. Single uncommon letters between word fragments (e.g., "organis x tions" where x is not a common word)
+/// 3. Excludes common English short words and single space word separators
+///
+/// **Root Cause Analysis (Phase 7):**
+/// Previous regex `/[a-zA-Z]+\s{2,}[a-zA-Z]+/` only matched non-overlapping word pairs.
+/// With "Over  the  past  decades", it caught only "Over  the", missing the rest.
+/// This caused 2,208 actual double spaces → 136 detected (16:1 mismatch).
+///
+/// Fixed by directly counting consecutive spaces and examining context.
 pub fn detect_spurious_spaces(markdown: &str) -> Vec<SpuriousSpace> {
     let mut spaces = Vec::new();
 
@@ -195,23 +202,60 @@ pub fn detect_spurious_spaces(markdown: &str) -> Vec<SpuriousSpace> {
         "and", "are", "can", "for", "has", "the", "was", "not", "but", "its", "all",
     ];
 
-    // Pattern 1: Detect multiple consecutive spaces (definite spurious spacing)
-    // This catches cases like "word  word" or "word   word"
-    if let Ok(re) = Regex::new(r"[a-zA-Z]+\s{2,}[a-zA-Z]+") {
-        for (line_num, line) in markdown.lines().enumerate() {
-            for m in re.find_iter(line) {
-                spaces.push(SpuriousSpace {
-                    text: m.as_str().to_string(),
-                    line_number: line_num + 1,
-                    severity: SpaceSeverity::High,
-                });
+    // Direct Pattern: Count actual consecutive spaces in context
+    // Instead of matching non-overlapping word pairs, examine each occurrence of 2+ spaces
+    for (line_num, line) in markdown.lines().enumerate() {
+        let mut chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            // Look for multiple consecutive spaces
+            if chars[i].is_whitespace() {
+                let start = i;
+                let mut space_count = 0;
+                while i < chars.len() && chars[i].is_whitespace() {
+                    space_count += 1;
+                    i += 1;
+                }
+
+                // If we found 2+ consecutive spaces, check context
+                if space_count >= 2 && i < chars.len() {
+                    // Look backward for preceding letter
+                    let mut before_end = start;
+                    while before_end > 0 && !chars[before_end - 1].is_alphabetic() {
+                        before_end -= 1;
+                    }
+                    let has_letter_before = before_end > 0 && chars[before_end - 1].is_alphabetic();
+
+                    // Look forward for following letter
+                    let has_letter_after = i < chars.len() && chars[i].is_alphabetic();
+
+                    // Flag if we have letters/words separated by multiple spaces
+                    if has_letter_before && has_letter_after {
+                        // Extract surrounding context for the spurious space entry
+                        let context_start = if before_end > 20 { before_end - 20 } else { 0 };
+                        let context_end = if i + 20 < chars.len() {
+                            i + 20
+                        } else {
+                            chars.len()
+                        };
+                        let context: String = chars[context_start..context_end].iter().collect();
+
+                        spaces.push(SpuriousSpace {
+                            text: context,
+                            line_number: line_num + 1,
+                            severity: SpaceSeverity::High,
+                        });
+                    }
+                }
+            } else {
+                i += 1;
             }
         }
     }
 
-    // Pattern 2: Single letter between word fragments (likely broken word)
+    // Pattern 2: Single uncommon letter between word fragments (likely broken word)
     // Only flag if middle is a single letter AND NOT a common word
-    // Examples: "organis a tions" (spurious), but NOT "is a test" (valid)
+    // Examples: "organis x tions" (spurious), but NOT "is a test" (valid)
     if let Ok(re) = Regex::new(r"\b([a-z]{2,})\s+([a-z])\s+([a-z]{2,})\b") {
         for (line_num, line) in markdown.lines().enumerate() {
             for cap in re.captures_iter(line) {

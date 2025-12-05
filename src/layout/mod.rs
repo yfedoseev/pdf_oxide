@@ -15,6 +15,11 @@ pub mod reading_order;
 pub mod table_detector;
 pub mod text_block;
 
+// Phase 2: Core architectural components
+pub mod bold_validation;
+pub mod font_normalization;
+pub mod space_detection;
+
 // Re-export main types
 pub use column_detector::{CutDirection, LayoutTree, xy_cut, xy_cut_adaptive};
 pub use document_analyzer::{AdaptiveLayoutParams, DocumentProperties};
@@ -22,3 +27,11 @@ pub use heading_detector::{HeadingLevel, detect_headings};
 pub use reading_order::{determine_reading_order, graph_based_reading_order};
 pub use table_detector::{Table, detect_tables, detect_tables_aggressive};
 pub use text_block::{Color, FontWeight, TextBlock, TextChar, TextSpan};
+
+// Re-export Phase 2 components
+pub use bold_validation::{BoldGroup, BoldMarkerDecision, BoldMarkerValidator};
+pub use font_normalization::{FontWeightNormalizer, NormalizedSpan, SpanType};
+pub use space_detection::{
+    GapBasedDetector, HeuristicDetector, SpaceContext, SpaceDecision, SpaceDetectionEngine,
+    SpaceDetector,
+};

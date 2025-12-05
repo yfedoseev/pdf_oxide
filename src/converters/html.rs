@@ -831,6 +831,7 @@ mod tests {
                 color: Color::black(),
                 mcid: None,
                 sequence: 0,
+                split_boundary_before: false,
             },
             TextSpan {
                 text: "Second".to_string(),
@@ -841,6 +842,7 @@ mod tests {
                 color: Color::black(),
                 mcid: None,
                 sequence: 1,
+                split_boundary_before: false,
             },
         ];
 

@@ -128,10 +128,10 @@ panic = "abort"
 opt-level = 3
 lto = true
 
-# Benchmarks will be added as they are implemented
-# [[bench]]
-# name = "parsing"
-# harness = false
+# Benchmarks
+[[bench]]
+name = "pdf_extraction_performance"
+harness = false
 
 # Cargo auto-discovers binaries in src/bin/
 
