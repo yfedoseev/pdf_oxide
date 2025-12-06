@@ -9,7 +9,6 @@ pub mod images;
 pub mod structured;
 pub mod table_detector;
 pub mod text;
-pub mod word_segmentation;
 
 #[cfg(feature = "debug-span-merging")]
 pub mod debug_span_merging;

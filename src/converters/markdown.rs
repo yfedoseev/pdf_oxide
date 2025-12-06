@@ -381,7 +381,9 @@ impl MarkdownConverter {
                 // Some blocks with content become whitespace-only after formatting,
                 // so we must verify content is still non-empty before adding bold markers
                 if cleaned_text.trim().is_empty() {
-                    log::debug!("Skipping bold markers: content became whitespace-only after formatting");
+                    log::debug!(
+                        "Skipping bold markers: content became whitespace-only after formatting"
+                    );
                     markdown.push_str(&cleaned_text);
                     continue;
                 }
@@ -1295,7 +1297,8 @@ mod tests {
                 mcid: None,
                 sequence: 0,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
             TextSpan {
                 text: "   ".to_string(), // Whitespace only - should be filtered
                 bbox: Rect::new(50.0, 0.0, 20.0, 12.0),
@@ -1306,7 +1309,8 @@ mod tests {
                 mcid: None,
                 sequence: 1,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
             TextSpan {
                 text: "World".to_string(),
                 bbox: Rect::new(80.0, 0.0, 40.0, 12.0),
@@ -1317,7 +1321,8 @@ mod tests {
                 mcid: None,
                 sequence: 2,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
         ];
 
         let result = converter.convert_page_from_spans(&spans, &options).unwrap();
@@ -1350,7 +1355,8 @@ mod tests {
                 mcid: None,
                 sequence: 0,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
             TextSpan {
                 text: "---".to_string(), // Punctuation only, but marked bold
                 bbox: Rect::new(60.0, 0.0, 20.0, 12.0),
@@ -1361,7 +1367,8 @@ mod tests {
                 mcid: None,
                 sequence: 1,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
             TextSpan {
                 text: "Content".to_string(),
                 bbox: Rect::new(0.0, 20.0, 50.0, 12.0),
@@ -1372,7 +1379,8 @@ mod tests {
                 mcid: None,
                 sequence: 2,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
         ];
 
         let result = converter.convert_page_from_spans(&spans, &options).unwrap();
@@ -1409,7 +1417,8 @@ mod tests {
                 mcid: None,
                 sequence: 0,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
             TextSpan {
                 text: "2024".to_string(), // Numeric, should be bold if marked
                 bbox: Rect::new(50.0, 0.0, 30.0, 12.0),
@@ -1420,7 +1429,8 @@ mod tests {
                 mcid: None,
                 sequence: 1,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
         ];
 
         let result = converter.convert_page_from_spans(&spans, &options).unwrap();
@@ -1456,7 +1466,8 @@ mod tests {
                 mcid: None,
                 sequence: 0,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
             TextSpan {
                 text: " ".to_string(), // Whitespace - should be filtered
                 bbox: Rect::new(50.0, 0.0, 5.0, 14.0),
@@ -1467,7 +1478,8 @@ mod tests {
                 mcid: None,
                 sequence: 1,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
             TextSpan {
                 text: "...".to_string(), // Punctuation - should be neutralized
                 bbox: Rect::new(60.0, 0.0, 15.0, 14.0),
@@ -1478,7 +1490,8 @@ mod tests {
                 mcid: None,
                 sequence: 2,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
             TextSpan {
                 text: "  \n  ".to_string(), // Mixed whitespace - should be filtered
                 bbox: Rect::new(0.0, 20.0, 50.0, 12.0),
@@ -1489,7 +1502,8 @@ mod tests {
                 mcid: None,
                 sequence: 3,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
             TextSpan {
                 text: "Content".to_string(),
                 bbox: Rect::new(0.0, 35.0, 50.0, 12.0),
@@ -1500,7 +1514,8 @@ mod tests {
                 mcid: None,
                 sequence: 4,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
         ];
 
         let result = converter.convert_page_from_spans(&spans, &options).unwrap();
@@ -1663,7 +1678,8 @@ mod tests {
                 mcid: None,
                 sequence: 0,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
             TextSpan {
                 text: "  \n  ".to_string(), // Whitespace with newlines
                 bbox: Rect::new(60.0, 0.0, 20.0, 12.0),
@@ -1674,7 +1690,8 @@ mod tests {
                 mcid: None,
                 sequence: 1,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
             TextSpan {
                 text: "More".to_string(),
                 bbox: Rect::new(0.0, 20.0, 40.0, 12.0),
@@ -1685,7 +1702,8 @@ mod tests {
                 mcid: None,
                 sequence: 2,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
         ];
 
         let result = converter.convert_page_from_spans(&spans, &options).unwrap();

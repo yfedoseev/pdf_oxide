@@ -1203,7 +1203,8 @@ mod tests {
                 mcid: None,
                 sequence: 0,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
             TextSpan {
                 text: "World".to_string(),
                 bbox: Rect::new(35.0, 0.0, 30.0, 12.0),
@@ -1214,7 +1215,8 @@ mod tests {
                 mcid: None,
                 sequence: 1,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
         ];
 
         let gaps = extract_gaps(&spans);
@@ -1310,7 +1312,8 @@ mod tests {
                 mcid: None,
                 sequence: 0,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
             TextSpan {
                 text: "B".to_string(),
                 bbox: Rect::new(15.0, 0.0, 10.0, 12.0),
@@ -1321,7 +1324,8 @@ mod tests {
                 mcid: None,
                 sequence: 1,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
         ];
 
         let result = analyze_document_gaps(&spans, None);

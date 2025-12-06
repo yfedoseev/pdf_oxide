@@ -47,6 +47,12 @@ pub struct TextSpan {
     /// being re-merged during the span merging phase, even if the gap is 0pt.
     /// This preserves the split intent and prevents word fusion regressions.
     pub split_boundary_before: bool,
+    /// If true, this span was created by the TJ processor as a space from a negative offset.
+    ///
+    /// Per PDF spec ISO 32000-1:2008 Section 9.4.4, negative offsets in TJ arrays
+    /// indicate word boundaries where spaces should be inserted. This flag marks
+    /// those automatically generated space spans so merge logic can avoid double-spacing.
+    pub offset_semantic: bool,
 }
 
 /// A single character with its position and styling.

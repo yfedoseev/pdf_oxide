@@ -18,7 +18,6 @@ pub mod text_block;
 // Phase 2: Core architectural components
 pub mod bold_validation;
 pub mod font_normalization;
-pub mod space_detection;
 
 // Re-export main types
 pub use column_detector::{CutDirection, LayoutTree, xy_cut, xy_cut_adaptive};
@@ -31,7 +30,3 @@ pub use text_block::{Color, FontWeight, TextBlock, TextChar, TextSpan};
 // Re-export Phase 2 components
 pub use bold_validation::{BoldGroup, BoldMarkerDecision, BoldMarkerValidator};
 pub use font_normalization::{FontWeightNormalizer, NormalizedSpan, SpanType};
-pub use space_detection::{
-    GapBasedDetector, HeuristicDetector, SpaceContext, SpaceDecision, SpaceDetectionEngine,
-    SpaceDetector,
-};

@@ -134,8 +134,8 @@ pub fn should_insert_space(
 /// Check if boundary between texts already has whitespace.
 #[inline]
 fn has_boundary_whitespace(prev: &str, next: &str) -> bool {
-    prev.chars().last().map_or(false, |c| c.is_whitespace())
-        || next.chars().next().map_or(false, |c| c.is_whitespace())
+    prev.chars().last().is_some_and(|c| c.is_whitespace())
+        || next.chars().next().is_some_and(|c| c.is_whitespace())
 }
 
 #[cfg(test)]

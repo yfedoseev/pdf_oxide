@@ -832,7 +832,8 @@ mod tests {
                 mcid: None,
                 sequence: 0,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
             TextSpan {
                 text: "Second".to_string(),
                 bbox: Rect::new(10.0, 40.0, 36.0, 12.0), // width ~= 6 chars * 6pt
@@ -843,7 +844,8 @@ mod tests {
                 mcid: None,
                 sequence: 1,
                 split_boundary_before: false,
-            offset_semantic: false,},
+                offset_semantic: false,
+            },
         ];
 
         let result = converter
