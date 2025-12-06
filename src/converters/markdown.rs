@@ -6,7 +6,7 @@
 //! - Image embedding
 //! - Reading order determination
 
-use crate::converters::whitespace::{cleanup_markdown, normalize_horizontal_whitespace};
+use crate::converters::whitespace::cleanup_markdown;
 use crate::converters::{BoldMarkerBehavior, ConversionOptions, ReadingOrderMode};
 use crate::error::Result;
 use crate::geometry::Rect;
