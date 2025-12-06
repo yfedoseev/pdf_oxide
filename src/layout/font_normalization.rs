@@ -131,6 +131,7 @@ mod tests {
             mcid: Some(0),
             sequence: 0,
             split_boundary_before: false,
+            offset_semantic: false,
         }
     }
 

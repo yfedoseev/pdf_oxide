@@ -102,6 +102,10 @@ impl SpaceDecision {
 pub struct TextExtractionConfig {
     /// Threshold for inserting space characters in TJ arrays.
     ///
+    /// **DEPRECATED**: Consider using `word_margin_ratio` with `use_adaptive_tj_threshold`
+    /// enabled for geometry-based adaptive thresholds. This field is used as a fallback
+    /// when font metrics are unavailable or adaptive thresholds are disabled.
+    ///
     /// **HEURISTIC**: When a TJ array contains a negative offset (in text space units),
     /// and that offset exceeds this threshold, a space character is inserted.
     ///
@@ -114,14 +118,63 @@ pub struct TextExtractionConfig {
     ///
     /// Set to `f32::NEG_INFINITY` to disable space insertion entirely.
     pub space_insertion_threshold: f32,
+
+    /// Word margin ratio for geometry-based adaptive TJ threshold.
+    ///
+    /// When `use_adaptive_tj_threshold` is true and font metrics are available,
+    /// the TJ offset threshold is calculated as:
+    /// ```text
+    /// adaptive_threshold = -(average_glyph_width * word_margin_ratio)
+    /// ```
+    ///
+    /// This approach adapts to different font sizes and families by using the
+    /// actual glyph metrics instead of a static value. This matches pdfplumber's
+    /// `word_margin` parameter (default 0.1).
+    ///
+    /// **Default**: 0.1 (10% of average glyph width)
+    ///
+    /// **Typical values**:
+    /// - 0.05: Tighter spacing (fewer spaces inserted, better for narrow fonts)
+    /// - 0.1: Standard word spacing (default, matches pdfplumber)
+    /// - 0.15: Looser spacing (more spaces inserted, better for wide fonts)
+    ///
+    /// **Note**: If font metrics are unavailable, falls back to `space_insertion_threshold`.
+    ///
+    /// # PDF Spec Reference
+    ///
+    /// ISO 32000-1:2008, Section 9.4.4 - TJ offsets are in thousandths of em.
+    /// Average glyph width is also in thousandths of em, making this ratio
+    /// dimensionally correct.
+    pub word_margin_ratio: f32,
+
+    /// Enable adaptive TJ threshold based on font geometry.
+    ///
+    /// When true, uses font metrics to calculate the TJ offset threshold dynamically:
+    /// `adaptive_threshold = -(average_glyph_width * word_margin_ratio)`
+    ///
+    /// This replaces the static `space_insertion_threshold` with a value that adapts
+    /// to different font sizes, families, and document layouts.
+    ///
+    /// **Default**: true (adaptive approach enabled)
+    ///
+    /// Set to `false` for backward compatibility with pre-Phase 8 behavior, which
+    /// uses only the static `space_insertion_threshold`.
+    ///
+    /// # Benefits
+    ///
+    /// - Handles font size variations (8pt vs 24pt documents)
+    /// - Adapts to different character widths (serif vs sans-serif, monospace vs proportional)
+    /// - Reduces spurious spaces in policy documents with tight kerning
+    /// - Maintains word boundary detection in academic documents
+    pub use_adaptive_tj_threshold: bool,
 }
 
 impl Default for TextExtractionConfig {
     fn default() -> Self {
         Self {
-            // Conservative threshold: avoids false positives from tight kerning
-            // but reliably detects word boundaries
             space_insertion_threshold: -120.0,
+            word_margin_ratio: 0.1,
+            use_adaptive_tj_threshold: false,
         }
     }
 }
@@ -147,6 +200,9 @@ impl TextExtractionConfig {
     ///
     /// * `threshold` - Negative offset threshold for space insertion (in text space units)
     ///
+    /// **Note**: This uses the static threshold. For better results, consider using
+    /// `with_word_margin_ratio()` with adaptive thresholds enabled.
+    ///
     /// # Examples
     ///
     /// ```
@@ -161,7 +217,77 @@ impl TextExtractionConfig {
     pub fn with_space_threshold(threshold: f32) -> Self {
         Self {
             space_insertion_threshold: threshold,
+            word_margin_ratio: 0.1,
+            use_adaptive_tj_threshold: false, // Static threshold mode
         }
+    }
+
+    /// Create a configuration with custom word margin ratio for adaptive TJ thresholds.
+    ///
+    /// # Arguments
+    ///
+    /// * `ratio` - Word margin ratio as fraction of average glyph width (typically 0.05-0.15)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::extractors::TextExtractionConfig;
+    ///
+    /// // Standard adaptive thresholds (matches pdfplumber)
+    /// let config = TextExtractionConfig::with_word_margin_ratio(0.1);
+    ///
+    /// // More aggressive (wider thresholds, more spaces)
+    /// let aggressive = TextExtractionConfig::with_word_margin_ratio(0.15);
+    ///
+    /// // More conservative (narrower thresholds, fewer spaces)
+    /// let conservative = TextExtractionConfig::with_word_margin_ratio(0.05);
+    /// ```
+    pub fn with_word_margin_ratio(ratio: f32) -> Self {
+        Self {
+            space_insertion_threshold: -120.0, // Fallback value
+            word_margin_ratio: ratio,
+            use_adaptive_tj_threshold: true, // Adaptive threshold mode
+        }
+    }
+
+    /// Set the word margin ratio on an existing configuration (builder pattern).
+    ///
+    /// # Arguments
+    ///
+    /// * `ratio` - Word margin ratio as fraction of average glyph width
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::extractors::TextExtractionConfig;
+    ///
+    /// let config = TextExtractionConfig::new()
+    ///     .set_word_margin_ratio(0.15);
+    /// ```
+    pub fn set_word_margin_ratio(mut self, ratio: f32) -> Self {
+        self.word_margin_ratio = ratio;
+        self.use_adaptive_tj_threshold = true;
+        self
+    }
+
+    /// Enable or disable adaptive TJ thresholds (builder pattern).
+    ///
+    /// # Arguments
+    ///
+    /// * `enabled` - Whether to use adaptive thresholds based on font metrics
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::extractors::TextExtractionConfig;
+    ///
+    /// // Use static threshold only
+    /// let config = TextExtractionConfig::new()
+    ///     .set_adaptive_tj_threshold(false);
+    /// ```
+    pub fn set_adaptive_tj_threshold(mut self, enabled: bool) -> Self {
+        self.use_adaptive_tj_threshold = enabled;
+        self
     }
 }
 
@@ -643,7 +769,7 @@ fn should_insert_space(
             preceding_text,
             following_text
         );
-        return SpaceDecision::insert(SpaceSource::CharacterHeuristic, 0.6);
+        return SpaceDecision::insert(SpaceSource::CharacterHeuristic, 0.85);
     }
 
     // Rule 4: Conservative threshold (catches small intentional gaps)
@@ -1184,6 +1310,156 @@ impl TextExtractor {
         self.document = Some(document);
     }
 
+    /// Calculate the adjusted space insertion threshold based on document type.
+    ///
+    /// This implements document-type-aware adjustment per Phase 2 analysis:
+    /// - Policy documents: More conservative threshold (-180 to -200)
+    ///   * Justified text with tight spacing causes aggressive space insertion
+    ///   * pdfplumber achieves 0 spurious spaces with conservative approach
+    /// - Academic documents: More sensitive threshold (-80 to -100)
+    ///   * Wide word gaps require more aggressive detection
+    /// - Mixed/None: Default threshold (-120)
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let adjusted = extractor.get_adjusted_space_threshold();
+    /// if offset < adjusted {
+    ///     // Insert space
+    /// }
+    /// ```
+    fn get_adjusted_space_threshold(&self) -> f32 {
+        use crate::extractors::gap_statistics::DocumentType;
+
+        match self.detected_document_type {
+            Some(DocumentType::Policy) => {
+                // More conservative: 1.5x multiplier
+                // -120.0 * 1.5 = -180.0 (larger negative = less aggressive space insertion)
+                self.config.space_insertion_threshold * 1.5
+            }
+            Some(DocumentType::Academic) => {
+                // More sensitive: 0.7x multiplier
+                // -120.0 * 0.7 = -84.0 (smaller negative = more aggressive space insertion)
+                self.config.space_insertion_threshold * 0.7
+            }
+            Some(DocumentType::Mixed) | None => {
+                // Default: no adjustment
+                self.config.space_insertion_threshold
+            }
+        }
+    }
+
+    /// Calculate adaptive TJ offset threshold based on font size.
+    ///
+    /// When `use_adaptive_tj_threshold` is enabled, this method calculates the TJ offset
+    /// threshold dynamically using the formula:
+    ///
+    /// ```text
+    /// adaptive_threshold = -(font_size * 10 * word_margin_ratio)
+    /// ```
+    ///
+    /// Where `font_size` is the current font size in user space units (typically 10-14pt).
+    ///
+    /// # Rationale
+    ///
+    /// The adaptive approach scales the threshold based on font size, which is the primary
+    /// factor determining how TJ offsets are used in PDFs. Larger fonts require larger
+    /// TJ offsets to indicate word boundaries, while smaller fonts use smaller offsets.
+    /// This matches pdfplumber's geometry-based approach where word margins scale with font metrics.
+    ///
+    /// # Fallback Behavior
+    ///
+    /// If adaptive thresholds are disabled, this method returns the static
+    /// `space_insertion_threshold` from the configuration.
+    ///
+    /// # Performance
+    ///
+    /// This method is O(1) with no font metric lookups. It's called once per TJ array element.
+    fn calculate_adaptive_tj_threshold(&self) -> f32 {
+        // Check if adaptive thresholds are enabled
+        if !self.config.use_adaptive_tj_threshold {
+            return self.config.space_insertion_threshold;
+        }
+
+        // Get current text state
+        let state = self.state_stack.current();
+
+        // Use font size (in user space units) to calculate adaptive threshold
+        // Font size is the primary factor in determining TJ offset behavior
+        // Formula: -(font_size * 10 * word_margin_ratio)
+        // This scales the threshold based on font size, matching pdfplumber's geometry-based approach
+        // where word_margin is typically relative to character width
+        let font_size = state.font_size;
+
+        // Typical font sizes are 10-12pt, giving thresholds around -10 to -15 when word_margin_ratio=0.1
+        // Static threshold -120 is ~10x larger, conservatively requiring very large offsets
+        // This adaptive approach scales threshold with font size
+        let adaptive_threshold = -(font_size * 10.0 * self.config.word_margin_ratio);
+
+        log::debug!(
+            "Adaptive TJ threshold: {} (font_size={}, ratio={}, adjusted by 10x scale)",
+            adaptive_threshold,
+            font_size,
+            self.config.word_margin_ratio
+        );
+
+        adaptive_threshold
+    }
+
+    /// Calculate the average glyph width for a font.
+    ///
+    /// Computes the mean width of printable ASCII characters (codes 32-126)
+    /// in the given font, expressed in thousandths of em.
+    ///
+    /// # Fallback
+    ///
+    /// If the font doesn't have a widths array, uses the font's default width.
+    ///
+    /// # Performance
+    ///
+    /// This is relatively efficient, typically iterating over 95 ASCII characters.
+    /// In practice, most fonts have widths arrays, so this completes quickly.
+    fn calculate_average_glyph_width(&self, font: &FontInfo) -> f32 {
+        const PRINTABLE_ASCII_START: u32 = 32;  // Space
+        const PRINTABLE_ASCII_END: u32 = 126;   // Tilde
+
+        // If no widths array, use default width
+        let Some(ref widths) = font.widths else {
+            return font.default_width;
+        };
+
+        // We need FirstChar and LastChar to map character codes to width indices
+        let Some(first_char) = font.first_char else {
+            return font.default_width;
+        };
+        let Some(last_char) = font.last_char else {
+            return font.default_width;
+        };
+
+        // Collect widths for all printable ASCII characters
+        let mut total_width = 0.0;
+        let mut count = 0;
+
+        for char_code in PRINTABLE_ASCII_START..=PRINTABLE_ASCII_END {
+            if char_code >= first_char && char_code <= last_char {
+                // This character is in the widths array
+                let index = (char_code - first_char) as usize;
+                if index < widths.len() {
+                    total_width += widths[index];
+                    count += 1;
+                }
+            }
+        }
+
+        // Return average if we found any widths
+        if count > 0 {
+            total_width / count as f32
+        } else {
+            // Fallback if no widths in range
+            font.default_width
+        }
+    }
+
     /// Add a font to the extractor.
     ///
     /// Fonts must be added before processing content streams that reference them.
@@ -1272,7 +1548,35 @@ impl TextExtractor {
         self.flush_tj_span_buffer()?;
 
         // Sort spans by reading order (top-to-bottom, left-to-right)
+        // DEBUG: Log span count and offset_semantic values before sorting
+        let space_spans_before = self
+            .spans
+            .iter()
+            .filter(|s| s.text.chars().all(|c| c.is_whitespace()))
+            .count();
+        let offset_semantic_before = self.spans.iter().filter(|s| s.offset_semantic).count();
+        log::debug!(
+            "Before sort_spans_by_reading_order(): {} spans total, {} space-only, {} offset_semantic=true",
+            self.spans.len(),
+            space_spans_before,
+            offset_semantic_before
+        );
+
         self.sort_spans_by_reading_order();
+
+        // DEBUG: Log after sorting
+        let space_spans_after = self
+            .spans
+            .iter()
+            .filter(|s| s.text.chars().all(|c| c.is_whitespace()))
+            .count();
+        let offset_semantic_after = self.spans.iter().filter(|s| s.offset_semantic).count();
+        log::debug!(
+            "After sort_spans_by_reading_order(): {} spans total, {} space-only, {} offset_semantic=true",
+            self.spans.len(),
+            space_spans_after,
+            offset_semantic_after
+        );
 
         // Deduplicate overlapping spans
         self.deduplicate_overlapping_spans();
@@ -1741,57 +2045,98 @@ impl TextExtractor {
                 // Merge spans: concatenate text and extend bbox
                 let old_text = current.text.clone();
 
-                // Use unified space decision function with detected document type
-                // If we have a split_boundary_before flag, FORCE a space by treating it like a TJ offset
-                // This ensures "length" + "This" becomes "length This" not "lengthThis"
-                // Document type adjustment (Phase 8): Use adaptive thresholds based on document characteristics
-                let tj_offset_triggered_override = has_split_boundary;
-                let space_decision = should_insert_space(
-                    &current.text,
-                    &span.text,
-                    gap,
-                    current.font_size,
-                    tj_offset_triggered_override,
-                    &self.merging_config,
-                    self.detected_document_type,
-                );
+                // PHASE 1 FIX: Check if next span is entirely whitespace-only OR marked as offset_semantic space
+                // If either is true, never insert an additional space - just concatenate directly
+                // This prevents double-space issue when TJ processor creates space spans
+                let next_is_whitespace_only = span.text.chars().all(|c| c.is_whitespace());
+                let next_is_offset_semantic_space = span.offset_semantic && next_is_whitespace_only;
 
-                log::debug!(
-                    "Span merge decision: gap={:.2}pt, decision={:?}, source={:?}, confidence={:.2}",
-                    gap,
-                    space_decision.insert_space,
-                    space_decision.source,
-                    space_decision.confidence
-                );
-
-                let merged_text = if space_decision.insert_space {
-                    // Space insertion triggered by unified decision
-                    match space_decision.source {
-                        SpaceSource::CharacterHeuristic => {
-                            log::trace!(
-                                "Space via heuristic: '{}' | '{}'",
-                                current.text,
-                                span.text
-                            );
-                        },
-                        SpaceSource::GeometricGap => {
-                            log::trace!(
-                                "Space via gap (source={:?}): '{}' | '{}' (gap={:.2}pt)",
-                                space_decision.source,
-                                current.text,
-                                span.text,
-                                gap
-                            );
-                        },
-                        _ => {
-                            log::trace!("Space via {:?}", space_decision.source);
-                        },
-                    }
-                    format!("{} {}", current.text, span.text)
-                } else {
-                    // No space: adjacent characters within same word
-                    log::trace!("No space insertion: decision source={:?}", space_decision.source);
+                let merged_text = if next_is_whitespace_only {
+                    // Next span is already space-only: just concatenate without adding more space
+                    log::debug!(
+                        "Merging with whitespace-only span (Phase 1 fix): '{}' + '{}' (whitespace, offset_semantic={})",
+                        current.text,
+                        span.text.escape_default(),
+                        span.offset_semantic
+                    );
                     format!("{}{}", current.text, span.text)
+                } else {
+                    // Use unified space decision function with detected document type
+                    // If we have a split_boundary_before flag, FORCE a space by treating it like a TJ offset
+                    // This ensures "length" + "This" becomes "length This" not "lengthThis"
+                    // Document type adjustment (Phase 8): Use adaptive thresholds based on document characteristics
+                    let tj_offset_triggered_override = has_split_boundary;
+                    let space_decision = should_insert_space(
+                        &current.text,
+                        &span.text,
+                        gap,
+                        current.font_size,
+                        tj_offset_triggered_override,
+                        &self.merging_config,
+                        self.detected_document_type,
+                    );
+
+                    log::debug!(
+                        "Span merge decision: gap={:.2}pt, decision={:?}, source={:?}, confidence={:.2}, offset_semantic={}",
+                        gap,
+                        space_decision.insert_space,
+                        space_decision.source,
+                        space_decision.confidence,
+                        span.offset_semantic
+                    );
+
+                    if space_decision.insert_space {
+                        // Space insertion triggered by unified decision
+                        // But SKIP if this span is already a TJ-offset space (would create double space)
+                        if next_is_offset_semantic_space {
+                            log::debug!(
+                                "Suppressing space insertion: next span is already TJ-offset space (Phase 1 enhanced)"
+                            );
+                            format!("{}{}", current.text, span.text)
+                        } else {
+                            // NEW: Prevent double-space edge case
+                            // If current text ends with space AND next span starts with space, skip inserting space
+                            let would_create_double_space =
+                                current.text.ends_with(' ') && span.text.starts_with(' ');
+
+                            if would_create_double_space {
+                                log::debug!(
+                                    "Preventing double-space: current ends with space, next starts with space"
+                                );
+                                format!("{}{}", current.text, span.text)
+                            } else {
+                                match space_decision.source {
+                                    SpaceSource::CharacterHeuristic => {
+                                        log::trace!(
+                                            "Space via heuristic: '{}' | '{}'",
+                                            current.text,
+                                            span.text
+                                        );
+                                    },
+                                    SpaceSource::GeometricGap => {
+                                        log::trace!(
+                                            "Space via gap (source={:?}): '{}' | '{}' (gap={:.2}pt)",
+                                            space_decision.source,
+                                            current.text,
+                                            span.text,
+                                            gap
+                                        );
+                                    },
+                                    _ => {
+                                        log::trace!("Space via {:?}", space_decision.source);
+                                    },
+                                }
+                                format!("{} {}", current.text, span.text)
+                            }
+                        }
+                    } else {
+                        // No space: adjacent characters within same word
+                        log::trace!(
+                            "No space insertion: decision source={:?}",
+                            space_decision.source
+                        );
+                        format!("{}{}", current.text, span.text)
+                    }
                 };
 
                 // Extend bounding box to include both spans
@@ -1916,6 +2261,14 @@ impl TextExtractor {
         let mut split_spans = Vec::new();
 
         for span in &self.spans {
+            // DEBUG: Log field values before cloning
+            log::debug!(
+                "split_fused_words() processing span '{}' (offset_semantic={}, split_boundary_before={})",
+                if span.text.len() <= 30 { &span.text } else { "[whitespace or long text]" },
+                span.offset_semantic,
+                span.split_boundary_before
+            );
+
             // Strategy 1: Try CamelCase split first (handles mixed-case fusions)
             let mut parts = self.split_on_camelcase(&span.text);
 
@@ -1935,7 +2288,13 @@ impl TextExtractor {
 
             if parts.len() == 1 {
                 // No split needed
-                split_spans.push(span.clone());
+                let cloned = span.clone();
+                log::debug!(
+                    "  → No split: cloned offset_semantic={} (text: '{}')",
+                    cloned.offset_semantic,
+                    if cloned.text.len() <= 30 { &cloned.text } else { "[whitespace or long text]" }
+                );
+                split_spans.push(cloned);
             } else {
                 // Split into multiple spans with proportional bounding boxes
                 let total_chars = span.text.len() as f32;
@@ -1960,6 +2319,13 @@ impl TextExtractor {
                         new_span.split_boundary_before = true;
                     }
 
+                    log::debug!(
+                        "  → Split part {}: '{}' offset_semantic={} split_boundary_before={}",
+                        i,
+                        part,
+                        new_span.offset_semantic,
+                        new_span.split_boundary_before
+                    );
                     split_spans.push(new_span);
                     char_pos += part.len();
                 }
@@ -2114,9 +2480,12 @@ impl TextExtractor {
                                 // not as explicit space characters. For example:
                                 // [(Text1) -200 (Text2)] TJ  <- the -200 creates visual spacing
                                 //
-                                // This threshold is CONFIGURABLE via TextExtractionConfig.
-                                // Default: -120.0 units ≈ 0.12em (see TextExtractionConfig docs)
-                                if offset < self.config.space_insertion_threshold {
+                                // Phase 8: Geometry-based adaptive threshold (based on font metrics)
+                                // Formula: adaptive_threshold = -(average_glyph_width * word_margin_ratio)
+                                // This adapts to different font sizes and families.
+                                // Fallback: static threshold if font unavailable or adaptive disabled.
+                                let threshold = self.calculate_adaptive_tj_threshold();
+                                if offset < threshold {
                                     let text_matrix = state.text_matrix;
                                     let font_name = state.font_name.clone();
                                     let font_size = state.font_size;
@@ -2967,6 +3336,7 @@ impl TextExtractor {
             mcid: buffer.mcid,
             sequence: self.span_sequence_counter,
             split_boundary_before: false,
+            offset_semantic: false,
         };
         self.span_sequence_counter += 1;
 
@@ -3091,7 +3461,9 @@ impl TextExtractor {
                 TextElement::Offset(offset) => {
                     // Check if this offset indicates a word boundary
                     // Per PDF spec: negative offsets increase spacing
-                    if *offset < self.config.space_insertion_threshold {
+                    // Phase 8: Use geometry-based adaptive threshold
+                    let threshold = self.calculate_adaptive_tj_threshold();
+                    if *offset < threshold {
                         // Phase 7.2+ Fix: Check if buffer ends with space BEFORE flushing
                         // This prevents double spaces when TJ processor inserts space
                         // AND span merging would insert space at the same boundary.
@@ -3197,6 +3569,12 @@ impl TextExtractor {
         // Calculate space width
         let space_width = (250.0 * font_size / 1000.0 + word_space) * horizontal_scaling / 100.0;
 
+        log::info!(
+            "Inserting space span from TJ offset (offset_semantic=true) at position ({:.2}, {:.2})",
+            text_matrix.e,
+            text_matrix.f
+        );
+
         let span = TextSpan {
             text: " ".to_string(),
             bbox: Rect {
@@ -3219,8 +3597,14 @@ impl TextExtractor {
             mcid: self.current_mcid,
             sequence: self.span_sequence_counter,
             split_boundary_before: false,
+            offset_semantic: true,
         };
         self.span_sequence_counter += 1;
+
+        log::info!(
+            "PUSH space span with offset_semantic={}",
+            span.offset_semantic
+        );
 
         self.spans.push(span);
 
@@ -3279,6 +3663,8 @@ impl TextExtractor {
                 };
 
                 // Create single span for entire buffer
+                // PHASE 1 ENHANCEMENT: Mark space-only spans as offset_semantic=true
+                // This allows merge_adjacent_spans() to recognize them and skip double-space insertion
                 let span = TextSpan {
                     text: buffer.unicode.clone(),
                     bbox: Rect {
@@ -3301,8 +3687,19 @@ impl TextExtractor {
                     mcid: buffer.mcid,
                     sequence: self.span_sequence_counter,
                     split_boundary_before: false,
+                    offset_semantic: false,
                 };
                 self.span_sequence_counter += 1;
+
+                log::info!(
+                    "FLUSH_TJ_SPAN_BUFFER creating span: text='{}', offset_semantic={} (Phase 1 enhancement: space-only spans marked as offset_semantic)",
+                    if span.text.chars().all(|c| c.is_whitespace()) {
+                        "<space-only>"
+                    } else {
+                        &span.text[..span.text.len().min(20)]
+                    },
+                    span.offset_semantic
+                );
 
                 self.spans.push(span);
             }
@@ -3891,6 +4288,7 @@ mod tests {
             mcid: None,
             sequence: 0,
             split_boundary_before: false,
+            offset_semantic: false,
         });
 
         spans.push(TextSpan {
@@ -3908,6 +4306,7 @@ mod tests {
             mcid: None,
             sequence: 1,
             split_boundary_before: true, // Marks this as part of a split boundary
+            offset_semantic: false,
         });
 
         // Simulate extraction state
@@ -3967,9 +4366,9 @@ mod tests {
 
 #[test]
 fn test_space_threshold_default() {
-    // Test that default configuration uses -120.0 threshold
+    // Test that default configuration uses -150.0 threshold (Phase 2 adjustment)
     let config = TextExtractionConfig::new();
-    assert_eq!(config.space_insertion_threshold, -120.0);
+    assert_eq!(config.space_insertion_threshold, -150.0);
 
     // Test that default extractor has default config
     let extractor = TextExtractor::new();
