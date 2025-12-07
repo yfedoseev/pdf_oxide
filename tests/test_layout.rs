@@ -7,10 +7,7 @@ use pdf_oxide::geometry::{Point, Rect};
 use pdf_oxide::layout::{
     Color, FontWeight, TextBlock, TextChar,
     clustering::{cluster_chars_into_words, cluster_words_into_lines},
-    column_detector::{CutDirection, LayoutTree, xy_cut},
-    heading_detector::{HeadingLevel, detect_headings},
-    reading_order::{determine_reading_order, graph_based_reading_order},
-    table_detector::detect_tables,
+    reading_order::graph_based_reading_order,
 };
 
 // ============================================================================
@@ -162,87 +159,17 @@ fn test_cluster_words_into_lines_simple() {
 }
 
 // ============================================================================
-// XY-Cut Column Detection Tests
+// NOTE: XY-Cut Column Detection Tests Removed
+// These tests were removed in Phase 2.2 of CLEANUP_ROADMAP.md
+// as the column_detector module and XY-Cut algorithm were deleted
+// for PDF spec compliance (they are non-spec-compliant heuristics)
 // ============================================================================
-
-#[test]
-fn test_xy_cut_single_column() {
-    let blocks = vec![
-        mock_block("Line1", 0.0, 0.0, 12.0, false),
-        mock_block("Line2", 0.0, 20.0, 12.0, false),
-        mock_block("Line3", 0.0, 40.0, 12.0, false),
-    ];
-
-    let region = Rect::new(0.0, 0.0, 600.0, 800.0);
-    let indices: Vec<usize> = (0..blocks.len()).collect();
-
-    let tree = xy_cut(region, &blocks, &indices, 0, 5, 50.0);
-
-    // With a single column, should eventually resolve to a leaf
-    // (though it may have intermediate nodes for horizontal splits)
-    match tree {
-        LayoutTree::Leaf { blocks } => {
-            assert_eq!(blocks.len(), 3);
-        },
-        LayoutTree::Node { .. } => {
-            // Also acceptable - horizontal splits
-        },
-    }
-}
-
-#[test]
-#[ignore] // TODO: Layout test needs tuning for analysis parameters
-fn test_xy_cut_two_columns() {
-    let blocks = create_two_column_layout();
-
-    let region = Rect::new(0.0, 0.0, 400.0, 100.0);
-    let indices: Vec<usize> = (0..blocks.len()).collect();
-
-    let tree = xy_cut(region, &blocks, &indices, 0, 5, 10.0);
-
-    // Should detect a split (algorithm may find horizontal or vertical first)
-    match tree {
-        LayoutTree::Node { children, .. } => {
-            assert_eq!(children.len(), 2);
-        },
-        LayoutTree::Leaf { .. } => {
-            panic!("Expected Node for two-column layout, got Leaf");
-        },
-    }
-}
-
-#[test]
-fn test_xy_cut_respects_max_depth() {
-    let blocks = create_two_column_layout();
-
-    let region = Rect::new(0.0, 0.0, 400.0, 100.0);
-    let indices: Vec<usize> = (0..blocks.len()).collect();
-
-    // Force max depth of 0 - should return leaf
-    let tree = xy_cut(region, &blocks, &indices, 0, 0, 10.0);
-
-    assert!(matches!(tree, LayoutTree::Leaf { .. }));
-}
 
 // ============================================================================
 // Reading Order Tests
 // ============================================================================
 
-#[test]
-fn test_reading_order_tree_based() {
-    let tree = LayoutTree::Node {
-        direction: CutDirection::Vertical,
-        children: vec![
-            LayoutTree::Leaf { blocks: vec![0, 1] },
-            LayoutTree::Leaf { blocks: vec![2, 3] },
-        ],
-    };
-
-    let order = determine_reading_order(&tree);
-
-    // Should read left column first, then right column
-    assert_eq!(order, vec![0, 1, 2, 3]);
-}
+// NOTE: test_reading_order_tree_based removed - relied on LayoutTree and determine_reading_order (both deleted)
 
 #[test]
 #[ignore] // TODO: Layout test needs tuning for analysis parameters
@@ -289,135 +216,16 @@ fn test_reading_order_two_columns() {
 }
 
 // ============================================================================
-// Heading Detection Tests
-// ============================================================================
-
-#[test]
-fn test_heading_detection_full_document() {
-    let blocks = vec![
-        mock_block("Document Title", 0.0, 0.0, 24.0, true), // H1
-        mock_block("Introduction", 0.0, 40.0, 18.0, true),  // H2
-        mock_block("Background", 0.0, 70.0, 14.0, true),    // H3
-        mock_block("This is body text", 0.0, 100.0, 12.0, false), // Body
-        mock_block("Figure 1", 0.0, 130.0, 8.0, false),     // Small
-    ];
-
-    let levels = detect_headings(&blocks);
-
-    assert_eq!(levels[0], HeadingLevel::H1);
-    assert_eq!(levels[1], HeadingLevel::H2);
-    assert_eq!(levels[2], HeadingLevel::H3);
-    assert_eq!(levels[3], HeadingLevel::Body);
-    assert_eq!(levels[4], HeadingLevel::Small);
-}
-
-#[test]
-fn test_heading_detection_hierarchy() {
-    let h1 = HeadingLevel::H1;
-    let h2 = HeadingLevel::H2;
-    let body = HeadingLevel::Body;
-
-    assert!(h1.hierarchy_level() < h2.hierarchy_level());
-    assert!(h2.hierarchy_level() < body.hierarchy_level());
-
-    assert!(h1.is_heading());
-    assert!(h2.is_heading());
-    assert!(!body.is_heading());
-}
-
-// ============================================================================
-// Table Detection Tests
-// ============================================================================
-
-#[test]
-fn test_table_detection_simple_grid() {
-    // Create a 3×3 table
-    let blocks = vec![
-        // Row 1
-        mock_block("A1", 0.0, 0.0, 12.0, false),
-        mock_block("B1", 50.0, 0.0, 12.0, false),
-        mock_block("C1", 100.0, 0.0, 12.0, false),
-        // Row 2
-        mock_block("A2", 0.0, 20.0, 12.0, false),
-        mock_block("B2", 50.0, 20.0, 12.0, false),
-        mock_block("C2", 100.0, 20.0, 12.0, false),
-        // Row 3
-        mock_block("A3", 0.0, 40.0, 12.0, false),
-        mock_block("B3", 50.0, 40.0, 12.0, false),
-        mock_block("C3", 100.0, 40.0, 12.0, false),
-    ];
-
-    let tables = detect_tables(&blocks);
-
-    // Should detect one table
-    if !tables.is_empty() {
-        let table = &tables[0];
-        assert!(table.num_rows >= 3);
-        assert!(table.num_cols >= 3);
-    }
-}
-
-#[test]
-fn test_table_detection_insufficient_data() {
-    let blocks = vec![
-        mock_block("A", 0.0, 0.0, 12.0, false),
-        mock_block("B", 50.0, 0.0, 12.0, false),
-    ];
-
-    let tables = detect_tables(&blocks);
-
-    // Not enough blocks for a table
-    assert_eq!(tables.len(), 0);
-}
+// NOTE: Heading and Table Detection Tests Removed
+// These tests were removed in Phase 1 of CLEANUP_ROADMAP.md
+// as heading_detector and table_detector modules were deleted
+// for PDF spec compliance (they are non-spec-compliant heuristics)
 
 // ============================================================================
 // Integration Tests - Full Pipeline
 // ============================================================================
 
-#[test]
-#[ignore] // TODO: Layout test needs tuning for analysis parameters
-fn test_full_pipeline_two_column_document() {
-    // Simulate a two-column document with title
-    let mut all_blocks = vec![
-        // Title (spanning both columns)
-        mock_block("Document Title", 100.0, 0.0, 24.0, true),
-    ];
-
-    // Left column
-    all_blocks.extend(vec![
-        mock_block("Introduction", 0.0, 40.0, 18.0, true),
-        mock_block("The quick brown", 0.0, 70.0, 12.0, false),
-        mock_block("fox jumps over", 0.0, 90.0, 12.0, false),
-    ]);
-
-    // Right column
-    all_blocks.extend(vec![
-        mock_block("Conclusion", 300.0, 40.0, 18.0, true),
-        mock_block("In summary we", 300.0, 70.0, 12.0, false),
-        mock_block("find that this", 300.0, 90.0, 12.0, false),
-    ]);
-
-    // Test XY-Cut
-    let region = Rect::new(0.0, 0.0, 600.0, 200.0);
-    let indices: Vec<usize> = (0..all_blocks.len()).collect();
-    let tree = xy_cut(region, &all_blocks, &indices, 0, 5, 50.0);
-
-    // Should detect some structure
-    assert!(matches!(tree, LayoutTree::Node { .. } | LayoutTree::Leaf { .. }));
-
-    // Test reading order
-    let order = graph_based_reading_order(&all_blocks);
-    assert_eq!(order.len(), all_blocks.len());
-
-    // Title should come first (top of document)
-    assert_eq!(order[0], 0);
-
-    // Test heading detection
-    let levels = detect_headings(&all_blocks);
-    assert_eq!(levels[0], HeadingLevel::H1); // Title
-    assert!(levels[1].is_heading()); // Introduction
-    assert!(levels[4].is_heading()); // Conclusion
-}
+// NOTE: test_full_pipeline_two_column_document removed - relied on xy_cut, determine_reading_order, and detect_headings (all deleted)
 
 #[test]
 fn test_empty_inputs() {
@@ -431,12 +239,6 @@ fn test_empty_inputs() {
 
     // Reading order
     assert_eq!(graph_based_reading_order(&empty_blocks).len(), 0);
-
-    // Heading detection
-    assert_eq!(detect_headings(&empty_blocks).len(), 0);
-
-    // Table detection
-    assert_eq!(detect_tables(&empty_blocks).len(), 0);
 }
 
 #[test]
@@ -451,10 +253,4 @@ fn test_single_element_inputs() {
 
     // Reading order
     assert_eq!(graph_based_reading_order(&single_block), vec![0]);
-
-    // Heading detection
-    assert_eq!(detect_headings(&single_block).len(), 1);
-
-    // Table detection
-    assert_eq!(detect_tables(&single_block).len(), 0);
 }

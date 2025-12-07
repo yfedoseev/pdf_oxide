@@ -1303,8 +1303,8 @@ impl TextExtractor {
     /// This is relatively efficient, typically iterating over 95 ASCII characters.
     /// In practice, most fonts have widths arrays, so this completes quickly.
     fn calculate_average_glyph_width(&self, font: &FontInfo) -> f32 {
-        const PRINTABLE_ASCII_START: u32 = 32;  // Space
-        const PRINTABLE_ASCII_END: u32 = 126;   // Tilde
+        const PRINTABLE_ASCII_START: u32 = 32; // Space
+        const PRINTABLE_ASCII_END: u32 = 126; // Tilde
 
         // If no widths array, use default width
         let Some(ref widths) = font.widths else {
@@ -2068,7 +2068,11 @@ impl TextExtractor {
             // DEBUG: Log field values before cloning
             log::debug!(
                 "split_fused_words() processing span '{}' (offset_semantic={}, split_boundary_before={})",
-                if span.text.len() <= 30 { &span.text } else { "[whitespace or long text]" },
+                if span.text.len() <= 30 {
+                    &span.text
+                } else {
+                    "[whitespace or long text]"
+                },
                 span.offset_semantic,
                 span.split_boundary_before
             );
@@ -2082,7 +2086,11 @@ impl TextExtractor {
                 log::debug!(
                     "  → No split: cloned offset_semantic={} (text: '{}')",
                     cloned.offset_semantic,
-                    if cloned.text.len() <= 30 { &cloned.text } else { "[whitespace or long text]" }
+                    if cloned.text.len() <= 30 {
+                        &cloned.text
+                    } else {
+                        "[whitespace or long text]"
+                    }
                 );
                 split_spans.push(cloned);
             } else {
@@ -3391,10 +3399,7 @@ impl TextExtractor {
         };
         self.span_sequence_counter += 1;
 
-        log::info!(
-            "PUSH space span with offset_semantic={}",
-            span.offset_semantic
-        );
+        log::info!("PUSH space span with offset_semantic={}", span.offset_semantic);
 
         self.spans.push(span);
 
@@ -3946,7 +3951,6 @@ mod tests {
         assert!(!decision.insert_space);
         assert_eq!(decision.source, SpaceSource::NoSpace);
     }
-
 
     /// Test unified space decision: No double spaces
     #[test]

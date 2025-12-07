@@ -3,16 +3,31 @@
 //! This module orchestrates between classical and ML-based approaches
 //! based on document complexity, providing the best balance of speed
 //! and accuracy.
+//!
+//! NOTE: Heading detection has been removed (non-PDF-spec-compliant).
+//! This module now focuses on reading order optimization only.
 
 use crate::error::Result;
 use crate::hybrid::complexity_estimator::{Complexity, ComplexityEstimator};
-use crate::layout::heading_detector::{self, HeadingLevel};
 use crate::layout::text_block::TextBlock;
 
-#[cfg(feature = "ml")]
-use crate::ml::heading_classifier::HeadingClassifier;
-#[cfg(feature = "ml")]
-use crate::ml::layout_reader::LayoutReader;
+/// Heading classification levels (deprecated - heading detection removed).
+///
+/// This enum is kept for API compatibility but heading detection
+/// is no longer performed as it is not PDF-spec-compliant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadingLevel {
+    /// Top-level heading
+    H1,
+    /// Second-level heading
+    H2,
+    /// Third-level heading
+    H3,
+    /// Fourth-level heading
+    H4,
+    /// Body text (default)
+    Body,
+}
 
 /// Smart layout analyzer that chooses between classical and ML approaches.
 ///
@@ -32,12 +47,6 @@ use crate::ml::layout_reader::LayoutReader;
 /// let headings = analyzer.detect_headings(&blocks)?;
 /// ```
 pub struct SmartLayoutAnalyzer {
-    #[cfg(feature = "ml")]
-    layout_reader: Option<LayoutReader>,
-
-    #[cfg(feature = "ml")]
-    heading_classifier: Option<HeadingClassifier>,
-
     /// Complexity threshold for using ML (default: Moderate)
     complexity_threshold: Complexity,
 }
@@ -49,28 +58,6 @@ impl SmartLayoutAnalyzer {
     /// If models can't be loaded, the analyzer will fall back to classical methods.
     pub fn new() -> Self {
         Self {
-            #[cfg(feature = "ml")]
-            layout_reader: {
-                match LayoutReader::load() {
-                    Ok(reader) => Some(reader),
-                    Err(e) => {
-                        log::warn!("Failed to load LayoutReader: {}", e);
-                        None
-                    },
-                }
-            },
-
-            #[cfg(feature = "ml")]
-            heading_classifier: {
-                match HeadingClassifier::load() {
-                    Ok(classifier) => Some(classifier),
-                    Err(e) => {
-                        log::warn!("Failed to load HeadingClassifier: {}", e);
-                        None
-                    },
-                }
-            },
-
             complexity_threshold: Complexity::Moderate,
         }
     }
@@ -135,31 +122,12 @@ impl SmartLayoutAnalyzer {
             self.complexity_threshold
         );
 
-        // Decide which approach to use
-        #[cfg(feature = "ml")]
-        {
-            if complexity >= self.complexity_threshold {
-                // Try ML first for complex documents
-                if let Some(ref ml) = self.layout_reader {
-                    match ml.predict_reading_order(blocks, page_width, page_height) {
-                        Ok(order) => {
-                            log::info!("Using ML reading order (complexity: {:?})", complexity);
-                            return Ok(order);
-                        },
-                        Err(e) => {
-                            log::warn!("ML reading order failed: {}, falling back to classical", e);
-                        },
-                    }
-                }
-            }
-        }
-
-        // Fallback to classical
+        // ML reading order removed - using only classical approach
         log::info!("Using classical reading order (complexity: {:?})", complexity);
         Ok(self.classical_reading_order(blocks))
     }
 
-    /// Detect headings using best available method.
+    /// Detect headings (DEPRECATED - heading detection has been removed).
     ///
     /// # Arguments
     ///
@@ -167,36 +135,23 @@ impl SmartLayoutAnalyzer {
     ///
     /// # Returns
     ///
-    /// Returns a vector of HeadingLevel, one per block.
+    /// Returns a vector of HeadingLevel::Body for all blocks (constant result).
     ///
-    /// # Algorithm
+    /// # Note
     ///
-    /// 1. Try ML classifier if available (feature-gated)
-    /// 2. Fall back to classical font-based detection
+    /// Heading detection is no longer supported as it is not PDF-spec-compliant.
+    /// This method is kept for API compatibility only and always returns Body level.
     pub fn detect_headings(&self, blocks: &[TextBlock]) -> Result<Vec<HeadingLevel>> {
         if blocks.is_empty() {
             return Ok(vec![]);
         }
 
-        #[cfg(feature = "ml")]
-        {
-            // Try ML classifier first
-            if let Some(ref classifier) = self.heading_classifier {
-                match classifier.classify(blocks) {
-                    Ok(levels) => {
-                        log::info!("Using ML heading detection");
-                        return Ok(levels);
-                    },
-                    Err(e) => {
-                        log::warn!("ML heading detection failed: {}, falling back to classical", e);
-                    },
-                }
-            }
-        }
-
-        // Fallback to classical
-        log::info!("Using classical heading detection");
-        Ok(heading_detector::detect_headings(blocks))
+        // Heading detection removed (non-PDF-spec-compliant)
+        // Return Body level for all blocks
+        log::warn!(
+            "Heading detection has been removed (non-PDF-spec-compliant). All blocks will be treated as body text."
+        );
+        Ok(vec![HeadingLevel::Body; blocks.len()])
     }
 
     /// Get analyzer capabilities.
@@ -206,12 +161,9 @@ impl SmartLayoutAnalyzer {
     /// Returns an AnalyzerCapabilities struct describing what features are available.
     pub fn capabilities(&self) -> AnalyzerCapabilities {
         AnalyzerCapabilities {
-            has_ml_reading_order: cfg!(feature = "ml"),
-            has_ml_heading_detection: cfg!(feature = "ml"),
-            #[cfg(feature = "ml")]
-            ml_models_loaded: self.layout_reader.is_some() && self.heading_classifier.is_some(),
-            #[cfg(not(feature = "ml"))]
-            ml_models_loaded: false,
+            has_ml_reading_order: false,     // ML module removed
+            has_ml_heading_detection: false, // Heading detection removed (non-spec-compliant)
+            ml_models_loaded: false,         // ML module removed
             complexity_threshold: self.complexity_threshold,
         }
     }
@@ -383,19 +335,10 @@ mod tests {
         let analyzer = SmartLayoutAnalyzer::new();
         let caps = analyzer.capabilities();
 
-        // These depend on feature flags
-        #[cfg(feature = "ml")]
-        {
-            assert!(caps.has_ml_reading_order);
-            assert!(caps.has_ml_heading_detection);
-        }
-
-        #[cfg(not(feature = "ml"))]
-        {
-            assert!(!caps.has_ml_reading_order);
-            assert!(!caps.has_ml_heading_detection);
-            assert!(!caps.ml_models_loaded);
-        }
+        // ML module removed - should always be false
+        assert!(!caps.has_ml_reading_order);
+        assert!(!caps.has_ml_heading_detection);
+        assert!(!caps.ml_models_loaded);
     }
 
     #[test]

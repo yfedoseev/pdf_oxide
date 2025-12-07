@@ -129,11 +129,6 @@ pub mod converters;
 // Configuration
 pub mod config;
 
-// ML integration (Phase 8 - optional)
-#[cfg(feature = "ml")]
-#[cfg_attr(docsrs, doc(cfg(feature = "ml")))]
-pub mod ml;
-
 // Hybrid classical + ML orchestration (Phase 8)
 pub mod hybrid;
 

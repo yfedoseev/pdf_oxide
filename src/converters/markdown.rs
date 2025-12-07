@@ -11,10 +11,8 @@ use crate::converters::{BoldMarkerBehavior, ConversionOptions, ReadingOrderMode}
 use crate::error::Result;
 use crate::geometry::Rect;
 use crate::layout::clustering::{cluster_chars_into_words, cluster_words_into_lines};
-use crate::layout::column_detector::{xy_cut, xy_cut_adaptive};
 use crate::layout::document_analyzer::{AdaptiveLayoutParams, DocumentProperties};
-use crate::layout::heading_detector::{HeadingLevel, detect_headings};
-use crate::layout::reading_order::determine_reading_order as determine_order_from_tree;
+use crate::layout::reading_order::graph_based_reading_order;
 use crate::layout::{BoldGroup, BoldMarkerDecision, BoldMarkerValidator, TextBlock, TextChar};
 use lazy_static::lazy_static;
 use regex::{Captures, Regex};
@@ -295,12 +293,8 @@ impl MarkdownConverter {
         // This handles PDFs with character-level fragmentation (like GDPR file)
         blocks = Self::merge_adjacent_char_spans(blocks);
 
-        // Apply heading detection if enabled
-        let heading_levels = if options.detect_headings {
-            detect_headings(&blocks)
-        } else {
-            vec![HeadingLevel::Body; blocks.len()]
-        };
+        // Heading detection removed (non-spec-compliant feature)
+        // All blocks are treated as body text for spec compliance
 
         // Apply reading order (use simple top-to-bottom for span-based conversion)
         // XY-Cut algorithm requires adaptive params which need char-based analysis
@@ -319,17 +313,8 @@ impl MarkdownConverter {
                 return;
             }
 
-            // Check if this line is a heading (use first block's heading level)
-            let first_idx = line_indices[0];
-            let level = heading_levels[first_idx];
-
-            // Add heading prefix if needed
-            match level {
-                HeadingLevel::H1 => markdown.push_str("# "),
-                HeadingLevel::H2 => markdown.push_str("## "),
-                HeadingLevel::H3 => markdown.push_str("### "),
-                _ => {},
-            }
+            // Heading detection removed (non-spec-compliant feature)
+            // All lines rendered as body text for spec compliance
 
             // Join blocks on this line, grouping consecutive blocks with same formatting
             // Per PDF spec (ISO 32000-1:2008, Section 9.4.4 NOTE 6):
@@ -452,15 +437,10 @@ impl MarkdownConverter {
                 i = j;
             }
 
-            // Add newline(s) after complete line
-            match level {
-                HeadingLevel::H1 | HeadingLevel::H2 | HeadingLevel::H3 => {
-                    markdown.push_str("\n\n"); // Extra blank line after headings
-                },
-                _ => {
-                    markdown.push('\n'); // Single newline after body text
-                },
-            }
+            // Heading detection removed (non-spec-compliant feature)
+            // All lines rendered as body text for spec compliance
+            // Always single newline for body text (no heading markers)
+            markdown.push('\n');
         };
 
         // Group blocks by Y coordinate and render each line immediately
@@ -604,12 +584,9 @@ impl MarkdownConverter {
             Err(_) => None, // Fall back to fixed params if analysis fails
         };
 
-        // Step 4: Detect headings (if enabled)
-        let heading_levels = if options.detect_headings {
-            detect_headings(&lines)
-        } else {
-            vec![HeadingLevel::Body; lines.len()]
-        };
+        // Heading detection removed (non-spec-compliant feature)
+        // All content is treated as body text for spec compliance
+        let heading_levels = vec![(); lines.len()]; // Placeholder - not used, all body text
 
         // Step 5: Determine reading order
         let ordered_indices = self.determine_reading_order(
@@ -623,40 +600,18 @@ impl MarkdownConverter {
 
         for &idx in &ordered_indices {
             let line = &lines[idx];
-            let level = heading_levels[idx];
 
-            // Add appropriate markdown syntax based on heading level
+            // Heading detection removed (non-spec-compliant feature)
+            // All content rendered as body text for spec compliance
+
             // FIX #3: Format URLs and emails as markdown links
             let formatted_text = Self::format_links(&line.text);
             // FIX #4: Clean up reference spacing
             let cleaned_text = Self::clean_reference_spacing(&formatted_text);
 
-            match level {
-                HeadingLevel::H1 => {
-                    markdown.push_str("# ");
-                    markdown.push_str(&cleaned_text);
-                    markdown.push_str("\n\n");
-                },
-                HeadingLevel::H2 => {
-                    markdown.push_str("## ");
-                    markdown.push_str(&cleaned_text);
-                    markdown.push_str("\n\n");
-                },
-                HeadingLevel::H3 => {
-                    markdown.push_str("### ");
-                    markdown.push_str(&cleaned_text);
-                    markdown.push_str("\n\n");
-                },
-                HeadingLevel::Body => {
-                    markdown.push_str(&cleaned_text);
-                    markdown.push('\n');
-                },
-                HeadingLevel::Small => {
-                    // Small text (footnotes, captions) - render as regular text
-                    markdown.push_str(&cleaned_text);
-                    markdown.push('\n');
-                },
-            }
+            // Render as body text (no markdown heading markers)
+            markdown.push_str(&cleaned_text);
+            markdown.push('\n');
         }
 
         // Apply whitespace cleanup: remove artifacts and normalize blank lines
@@ -713,22 +668,10 @@ impl MarkdownConverter {
                 });
             },
             ReadingOrderMode::ColumnAware => {
-                // Use XY-Cut algorithm for column-aware reading order
-
-                // Calculate page bounding box from all blocks
-                let page_bbox = Self::calculate_bounding_box(blocks);
-
-                // Run XY-Cut algorithm (adaptive or fixed parameters)
-                let layout_tree = if let Some(params) = adaptive_params {
-                    // Use adaptive parameters computed from document analysis
-                    xy_cut_adaptive(page_bbox, blocks, &indices, params)
-                } else {
-                    // Fall back to fixed parameters
-                    xy_cut(page_bbox, blocks, &indices, 0, 10, 50.0)
-                };
-
-                // Determine reading order from layout tree
-                indices = determine_order_from_tree(&layout_tree);
+                // Column-aware mode removed with XY-Cut algorithm deletion (non-PDF-spec-compliant)
+                // Fall back to graph-based reading order which is PDF-spec-compliant
+                log::info!("ColumnAware mode removed; using graph-based reading order instead");
+                indices = graph_based_reading_order(blocks);
             },
             ReadingOrderMode::StructureTreeFirst { ref mcid_order } => {
                 // PDF-spec-compliant reading order via structure tree (Tagged PDFs)
@@ -737,17 +680,10 @@ impl MarkdownConverter {
                     indices = Self::reorder_by_mcid(blocks, mcid_order);
                     log::info!("Using structure tree for reading order (Tagged PDF)");
                 } else {
-                    // Fall back to XY-Cut for untagged PDFs
-                    log::info!("No MCIDs found, falling back to adaptive XY-Cut");
-                    let page_bbox = Self::calculate_bounding_box(blocks);
-                    let layout_tree = if let Some(params) = adaptive_params {
-                        // Use adaptive parameters computed from document analysis
-                        xy_cut_adaptive(page_bbox, blocks, &indices, params)
-                    } else {
-                        // Fall back to fixed parameters
-                        xy_cut(page_bbox, blocks, &indices, 0, 10, 50.0)
-                    };
-                    indices = determine_order_from_tree(&layout_tree);
+                    // Fall back to graph-based reading order for untagged PDFs
+                    // (XY-Cut algorithm removed as non-PDF-spec-compliant)
+                    log::info!("No MCIDs found, falling back to graph-based reading order");
+                    indices = graph_based_reading_order(blocks);
                 }
             },
         }

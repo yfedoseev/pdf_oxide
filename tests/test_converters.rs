@@ -52,7 +52,6 @@ fn mock_paragraph(text: &str, x: f32, y: f32, font_size: f32) -> Vec<TextChar> {
 fn test_markdown_simple_document() {
     let converter = MarkdownConverter::new();
     let options = ConversionOptions {
-        detect_headings: false,
         ..Default::default()
     };
 
@@ -71,7 +70,6 @@ fn test_markdown_simple_document() {
 fn test_markdown_with_heading_detection() {
     let converter = MarkdownConverter::new();
     let options = ConversionOptions {
-        detect_headings: true,
         ..Default::default()
     };
 
@@ -94,7 +92,6 @@ fn test_markdown_with_heading_detection() {
 fn test_markdown_multiline() {
     let converter = MarkdownConverter::new();
     let options = ConversionOptions {
-        detect_headings: false,
         ..Default::default()
     };
 
@@ -115,7 +112,6 @@ fn test_markdown_multiline() {
 fn test_markdown_reading_order_top_to_bottom() {
     let converter = MarkdownConverter::new();
     let options = ConversionOptions {
-        detect_headings: false,
         reading_order_mode: ReadingOrderMode::TopToBottomLeftToRight,
         ..Default::default()
     };
@@ -140,7 +136,6 @@ fn test_markdown_reading_order_top_to_bottom() {
 fn test_markdown_reading_order_left_to_right() {
     let converter = MarkdownConverter::new();
     let options = ConversionOptions {
-        detect_headings: false,
         reading_order_mode: ReadingOrderMode::TopToBottomLeftToRight,
         ..Default::default()
     };
@@ -168,7 +163,6 @@ fn test_html_semantic_simple() {
     let converter = HtmlConverter::new();
     let options = ConversionOptions {
         preserve_layout: false,
-        detect_headings: false,
         ..Default::default()
     };
 
@@ -183,7 +177,6 @@ fn test_html_semantic_with_heading() {
     let converter = HtmlConverter::new();
     let options = ConversionOptions {
         preserve_layout: false,
-        detect_headings: true,
         ..Default::default()
     };
 
@@ -203,7 +196,6 @@ fn test_html_semantic_escape() {
     let converter = HtmlConverter::new();
     let options = ConversionOptions {
         preserve_layout: false,
-        detect_headings: false,
         ..Default::default()
     };
 
@@ -286,7 +278,6 @@ fn test_html_layout_css_structure() {
 fn test_markdown_paragraph() {
     let converter = MarkdownConverter::new();
     let options = ConversionOptions {
-        detect_headings: false,
         ..Default::default()
     };
 
@@ -303,7 +294,6 @@ fn test_html_paragraph() {
     let converter = HtmlConverter::new();
     let options = ConversionOptions {
         preserve_layout: false,
-        detect_headings: false,
         ..Default::default()
     };
 
@@ -337,7 +327,6 @@ fn test_html_empty_input() {
 fn test_markdown_single_character() {
     let converter = MarkdownConverter::new();
     let options = ConversionOptions {
-        detect_headings: false,
         ..Default::default()
     };
 
@@ -351,7 +340,6 @@ fn test_html_single_character() {
     let converter = HtmlConverter::new();
     let options = ConversionOptions {
         preserve_layout: false,
-        detect_headings: false,
         ..Default::default()
     };
 
@@ -366,7 +354,6 @@ fn test_html_single_character() {
 fn test_markdown_column_aware_mode() {
     let converter = MarkdownConverter::new();
     let options = ConversionOptions {
-        detect_headings: false,
         reading_order_mode: ReadingOrderMode::ColumnAware,
         ..Default::default()
     };
@@ -388,7 +375,6 @@ fn test_comprehensive_document_conversion() {
     let converter_html = HtmlConverter::new();
 
     let options = ConversionOptions {
-        detect_headings: true,
         preserve_layout: false,
         include_images: false,
         extract_tables: false,

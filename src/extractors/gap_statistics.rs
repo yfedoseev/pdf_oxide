@@ -754,7 +754,6 @@ pub fn analyze_document_gaps(
     }
 }
 
-
 /// Helper function to compute percentiles using linear interpolation.
 ///
 /// Uses the NIST-recommended method:
@@ -994,5 +993,4 @@ mod tests {
         );
     }
     */
-
 }

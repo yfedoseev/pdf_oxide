@@ -7,7 +7,6 @@
 use crate::converters::{ConversionOptions, ReadingOrderMode};
 use crate::error::Result;
 use crate::layout::clustering::{cluster_chars_into_words, cluster_words_into_lines};
-use crate::layout::heading_detector::{HeadingLevel, detect_headings};
 use crate::layout::{TextBlock, TextChar};
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -204,12 +203,8 @@ impl HtmlConverter {
             blocks.push(para);
         }
 
-        // Detect headings (if enabled)
-        let heading_levels = if options.detect_headings {
-            detect_headings(&blocks)
-        } else {
-            vec![HeadingLevel::Body; blocks.len()]
-        };
+        // Heading detection removed (non-spec-compliant feature)
+        // All blocks are treated as paragraphs for spec compliance
 
         // Apply reading order (use simple top-to-bottom for span-based conversion)
         let ordered_indices =
@@ -220,38 +215,13 @@ impl HtmlConverter {
 
         for &idx in &ordered_indices {
             let block = &blocks[idx];
-            let level = heading_levels[idx];
             // Convert URLs and emails to hyperlinks
             let linked_text = linkify_urls_and_emails(&block.text);
 
-            // Add appropriate HTML tag based on heading level
-            match level {
-                HeadingLevel::H1 => {
-                    html.push_str("<h1>");
-                    html.push_str(&linked_text);
-                    html.push_str("</h1>\n");
-                },
-                HeadingLevel::H2 => {
-                    html.push_str("<h2>");
-                    html.push_str(&linked_text);
-                    html.push_str("</h2>\n");
-                },
-                HeadingLevel::H3 => {
-                    html.push_str("<h3>");
-                    html.push_str(&linked_text);
-                    html.push_str("</h3>\n");
-                },
-                HeadingLevel::Body => {
-                    html.push_str("<p>");
-                    html.push_str(&linked_text);
-                    html.push_str("</p>\n");
-                },
-                HeadingLevel::Small => {
-                    html.push_str("<small>");
-                    html.push_str(&linked_text);
-                    html.push_str("</small>\n");
-                },
-            }
+            // All blocks rendered as paragraphs for PDF spec compliance
+            html.push_str("<p>");
+            html.push_str(&linked_text);
+            html.push_str("</p>\n");
         }
 
         Ok(html)
@@ -405,12 +375,8 @@ impl HtmlConverter {
             return Ok(String::new());
         }
 
-        // Step 3: Detect headings (if enabled)
-        let heading_levels = if options.detect_headings {
-            detect_headings(&lines)
-        } else {
-            vec![HeadingLevel::Body; lines.len()]
-        };
+        // Heading detection removed (non-PDF-spec-compliant)
+        // All content is now rendered as body text/paragraphs
 
         // Step 4: Determine reading order
         let ordered_indices =
@@ -421,38 +387,13 @@ impl HtmlConverter {
 
         for &idx in &ordered_indices {
             let line = &lines[idx];
-            let level = heading_levels[idx];
             // Convert URLs and emails to hyperlinks
             let linked_text = linkify_urls_and_emails(&line.text);
 
-            // Add appropriate HTML tag based on heading level
-            match level {
-                HeadingLevel::H1 => {
-                    html.push_str("<h1>");
-                    html.push_str(&linked_text);
-                    html.push_str("</h1>\n");
-                },
-                HeadingLevel::H2 => {
-                    html.push_str("<h2>");
-                    html.push_str(&linked_text);
-                    html.push_str("</h2>\n");
-                },
-                HeadingLevel::H3 => {
-                    html.push_str("<h3>");
-                    html.push_str(&linked_text);
-                    html.push_str("</h3>\n");
-                },
-                HeadingLevel::Body => {
-                    html.push_str("<p>");
-                    html.push_str(&linked_text);
-                    html.push_str("</p>\n");
-                },
-                HeadingLevel::Small => {
-                    html.push_str("<small>");
-                    html.push_str(&linked_text);
-                    html.push_str("</small>\n");
-                },
-            }
+            // All content rendered as paragraphs (body text only)
+            html.push_str("<p>");
+            html.push_str(&linked_text);
+            html.push_str("</p>\n");
         }
 
         Ok(html)

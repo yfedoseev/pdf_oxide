@@ -1,56 +1,11 @@
 //! Reading order determination for layout analysis.
 //!
 //! This module provides algorithms for determining the correct reading order
-//! of text blocks in a document, supporting both tree-based and graph-based approaches.
+//! of text blocks in a document. The primary approach is graph-based topological
+//! sorting which doesn't rely on layout trees.
 
-use crate::layout::column_detector::LayoutTree;
 use crate::layout::text_block::TextBlock;
 use std::collections::{HashSet, VecDeque};
-
-/// Determine reading order from a layout tree.
-///
-/// This traverses the layout tree in reading order (top-to-bottom, left-to-right)
-/// and returns the block indices in the order they should be read.
-///
-/// # Arguments
-///
-/// * `layout_tree` - The hierarchical layout tree from XY-Cut
-///
-/// # Returns
-///
-/// A vector of block indices in reading order.
-///
-/// # Examples
-///
-/// ```ignore
-/// use pdf_oxide::layout::column_detector::LayoutTree;
-/// use pdf_oxide::layout::reading_order::determine_reading_order;
-///
-/// let tree = LayoutTree::Leaf { blocks: vec![0, 1, 2] };
-/// let order = determine_reading_order(&tree);
-/// assert_eq!(order, vec![0, 1, 2]);
-/// ```ignore
-pub fn determine_reading_order(layout_tree: &LayoutTree) -> Vec<usize> {
-    let mut order = vec![];
-    traverse_tree(layout_tree, &mut order);
-    order
-}
-
-/// Recursively traverse the layout tree in reading order.
-fn traverse_tree(tree: &LayoutTree, order: &mut Vec<usize>) {
-    match tree {
-        LayoutTree::Leaf { blocks } => {
-            // Add all blocks in this leaf
-            order.extend(blocks);
-        },
-        LayoutTree::Node { children, .. } => {
-            // Traverse children in order (they're already in reading order)
-            for child in children {
-                traverse_tree(child, order);
-            }
-        },
-    }
-}
 
 /// Determine reading order using graph-based topological sorting.
 ///
@@ -202,7 +157,6 @@ fn kahn_sort(graph: &[HashSet<usize>]) -> Vec<usize> {
 mod tests {
     use super::*;
     use crate::geometry::Rect;
-    use crate::layout::column_detector::CutDirection;
     use crate::layout::{Color, FontWeight, TextChar};
 
     fn mock_block(text: &str, x: f32, y: f32) -> TextBlock {
@@ -221,30 +175,6 @@ mod tests {
             .collect();
 
         TextBlock::from_chars(chars)
-    }
-
-    #[test]
-    fn test_traverse_leaf() {
-        let tree = LayoutTree::Leaf {
-            blocks: vec![0, 1, 2],
-        };
-
-        let order = determine_reading_order(&tree);
-        assert_eq!(order, vec![0, 1, 2]);
-    }
-
-    #[test]
-    fn test_traverse_nested_tree() {
-        let tree = LayoutTree::Node {
-            direction: CutDirection::Vertical,
-            children: vec![
-                LayoutTree::Leaf { blocks: vec![0, 1] },
-                LayoutTree::Leaf { blocks: vec![2, 3] },
-            ],
-        };
-
-        let order = determine_reading_order(&tree);
-        assert_eq!(order, vec![0, 1, 2, 3]);
     }
 
     #[test]

@@ -1,13 +1,19 @@
 //! Structured text extraction with document semantics.
 //!
-//! This module provides structured extraction that preserves document hierarchy
-//! including headers, paragraphs, lists, and formatting information.
+//! This module provides structured extraction that preserves document structure
+//! including paragraphs and formatting information (bold, italic, font size).
 //!
-//! # Overview
+//! # Note on PDF Spec Compliance
 //!
-//! Unlike plain text extraction which returns a flat string, structured extraction
-//! identifies document elements (headers, paragraphs, lists) and preserves their
-//! formatting (bold, italic, font size).
+//! This module has been refactored to focus on PDF-specification-compliant extraction.
+//! The following non-spec-compliant heuristics have been removed:
+//! - Header/heading detection (based on font size heuristics)
+//! - List detection (based on marker patterns)
+//! - Text alignment detection (based on position heuristics)
+//!
+//! These detections are not based on PDF structure but on assumptions about document
+//! layout, which may not hold for all PDFs. For semantic extraction, applications
+//! should use PDF structure tags (if available) or their own domain-specific logic.
 //!
 //! # Usage
 //!
@@ -21,15 +27,10 @@
 //!
 //! for element in structured.elements {
 //!     match element {
-//!         DocumentElement::Header { level, text, .. } => {
-//!             println!("H{}: {}", level, text);
-//!         }
 //!         DocumentElement::Paragraph { text, .. } => {
 //!             println!("P: {}", text);
 //!         }
-//!         DocumentElement::List { items, ordered, .. } => {
-//!             println!("{} with {} items", if ordered { "OL" } else { "UL" }, items.len());
-//!         }
+//!         _ => {} // Other element types for API compatibility only
 //!     }
 //! }
 //! # Ok::<(), pdf_oxide::error::Error>(())
@@ -40,7 +41,6 @@ use crate::error::{Error, Result};
 use crate::geometry::Rect;
 use crate::layout::TextBlock;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// A structured document with semantic elements.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,17 +191,33 @@ pub struct StructuredExtractor {
 }
 
 /// Extraction configuration.
+///
+/// # Note
+///
+/// Header detection, list detection, and alignment detection have been removed
+/// for PDF-specification compliance. These options are retained for API compatibility
+/// but no longer have any effect.
 #[derive(Debug, Clone)]
 pub struct ExtractorConfig {
-    /// Minimum font size to consider as header (default: 14.0)
+    /// (Deprecated) Minimum font size to consider as header
+    /// This option no longer has any effect.
+    #[allow(dead_code)]
     pub min_header_size: f32,
-    /// Maximum header levels to detect (default: 6)
+    /// (Deprecated) Maximum header levels to detect
+    /// This option no longer has any effect.
+    #[allow(dead_code)]
     pub max_header_levels: u8,
-    /// Vertical gap threshold for paragraph breaks (default: 1.5× avg line height)
+    /// (Deprecated) Vertical gap threshold for paragraph breaks
+    /// This option no longer has any effect.
+    #[allow(dead_code)]
     pub paragraph_gap_threshold: f32,
-    /// Enable list detection
+    /// (Deprecated) Enable list detection
+    /// This option no longer has any effect.
+    #[allow(dead_code)]
     pub detect_lists: bool,
-    /// Enable table detection (future)
+    /// (Deprecated) Enable table detection
+    /// This option no longer has any effect.
+    #[allow(dead_code)]
     pub detect_tables: bool,
 }
 
@@ -211,7 +227,7 @@ impl Default for ExtractorConfig {
             min_header_size: 14.0,
             max_header_levels: 6,
             paragraph_gap_threshold: 1.5,
-            detect_lists: true,
+            detect_lists: false,
             detect_tables: false,
         }
     }
@@ -239,11 +255,17 @@ impl StructuredExtractor {
     ///
     /// # Returns
     ///
-    /// A structured document with semantic elements.
+    /// A structured document with paragraphs and formatting information.
     ///
     /// # Errors
     ///
     /// Returns an error if the page cannot be processed.
+    ///
+    /// # Note
+    ///
+    /// This method extracts text blocks from the PDF and converts them to paragraphs
+    /// with formatting information (bold, italic, font size). Header detection, list
+    /// detection, and alignment detection have been removed for PDF-spec compliance.
     pub fn extract_page(
         &mut self,
         document: &mut PdfDocument,
@@ -269,20 +291,11 @@ impl StructuredExtractor {
         // Step 2: Convert spans to text blocks (spans are already properly grouped)
         let blocks = self.spans_to_blocks(&spans);
 
-        // Step 3: Analyze font sizes for header detection
-        let font_clusters = self.cluster_font_sizes(&blocks);
+        // Step 3: Convert all blocks to paragraphs
+        // (Header detection, list detection, and alignment detection removed for spec compliance)
+        let elements = self.blocks_to_simple_paragraphs(&blocks);
 
-        // Step 4: Classify blocks as headers or body text
-        let classified_blocks = self.classify_blocks(&blocks, &font_clusters);
-
-        // Step 5: Detect lists
-        let elements = if self.config.detect_lists {
-            self.detect_document_elements(&classified_blocks)?
-        } else {
-            self.blocks_to_elements(&classified_blocks)
-        };
-
-        // Step 6: Calculate page size and metadata
+        // Step 4: Calculate page size and metadata
         let page_size = self.calculate_page_size_from_spans(&spans);
         let metadata = self.calculate_metadata(&elements);
 
@@ -329,282 +342,21 @@ impl StructuredExtractor {
         (max_x, max_y)
     }
 
-    /// Group characters into text blocks (lines/words).
-    /// Cluster font sizes to identify header levels.
-    fn cluster_font_sizes(&self, blocks: &[TextBlock]) -> HashMap<usize, f32> {
-        if blocks.is_empty() {
-            return HashMap::new();
-        }
-
-        // Step 1: Collect unique font sizes
-        let mut font_sizes: Vec<f32> = blocks.iter().map(|b| b.avg_font_size).collect();
-        font_sizes.sort_by(|a, b| b.partial_cmp(a).unwrap()); // Descending order
-        font_sizes.dedup_by(|a, b| (*a - *b).abs() < 0.5); // Remove near-duplicates
-
-        if font_sizes.is_empty() {
-            return HashMap::new();
-        }
-
-        log::debug!("Unique font sizes: {:?}", font_sizes);
-
-        // Step 2: Simple k-means clustering with k = min(6, num_sizes)
-        let k = std::cmp::min(6, font_sizes.len());
-
-        // Simple approach: Just divide sizes into k groups by sorting
-        // Group 0 = largest sizes (H1), Group 1 = second largest (H2), etc.
-        let mut clusters: HashMap<usize, f32> = HashMap::new();
-
-        let group_size = (font_sizes.len() as f32 / k as f32).ceil() as usize;
-
-        for (i, &size) in font_sizes.iter().enumerate() {
-            let cluster_id = std::cmp::min(i / group_size, k - 1);
-
-            // Only consider as header if >= min_header_size
-            if size >= self.config.min_header_size {
-                // Use the largest size in this cluster as representative
-                let current_rep = clusters.get(&cluster_id).copied().unwrap_or(0.0);
-                clusters.insert(cluster_id, current_rep.max(size));
-            }
-        }
-
-        log::debug!("Font size clusters: {:?}", clusters);
-        clusters
-    }
-
-    /// Classify blocks as headers or body text.
-    fn classify_blocks(
-        &self,
-        blocks: &[TextBlock],
-        clusters: &HashMap<usize, f32>,
-    ) -> Vec<ClassifiedBlock> {
+    /// Convert all blocks to simple paragraphs without semantic classification.
+    ///
+    /// This method converts text blocks to paragraphs with formatting information only.
+    /// Header detection, list detection, and alignment detection have been removed
+    /// for PDF-specification compliance.
+    fn blocks_to_simple_paragraphs(&self, blocks: &[TextBlock]) -> Vec<DocumentElement> {
         blocks
             .iter()
-            .map(|block| {
-                let font_size = block.avg_font_size;
-
-                // Find which cluster this block's font size belongs to
-                let cluster_id = clusters
-                    .iter()
-                    .find(|(_, &rep_size)| (font_size - rep_size).abs() < 1.0)
-                    .map(|(&id, _)| id);
-
-                let classification = if let Some(cluster_id) = cluster_id {
-                    // Check if it's a header
-                    if cluster_id < self.config.max_header_levels as usize
-                        && font_size >= self.config.min_header_size
-                    {
-                        BlockType::Header((cluster_id + 1) as u8) // 1-based header levels
-                    } else {
-                        BlockType::Paragraph
-                    }
-                } else {
-                    // Not in any cluster, default to paragraph
-                    BlockType::Paragraph
-                };
-
-                ClassifiedBlock {
-                    block: block.clone(),
-                    classification,
-                }
+            .map(|block| DocumentElement::Paragraph {
+                text: block.text.clone(),
+                style: Self::block_to_text_style(block),
+                bbox: Self::bbox_from_rect(block.bbox),
+                alignment: TextAlignment::Left, // No alignment detection
             })
             .collect()
-    }
-
-    /// Detect document elements (headers, paragraphs, lists).
-    fn detect_document_elements(&self, blocks: &[ClassifiedBlock]) -> Result<Vec<DocumentElement>> {
-        let mut elements = Vec::new();
-        let mut i = 0;
-
-        while i < blocks.len() {
-            let block = &blocks[i];
-
-            // Check if this block starts with a list marker
-            let trimmed_text = block.block.text.trim();
-            let list_marker_info = self.detect_list_marker(trimmed_text);
-
-            if let Some((is_ordered, marker_len)) = list_marker_info {
-                // Start collecting list items
-                let mut items = Vec::new();
-                let mut list_bbox = block.block.bbox;
-                let list_ordered = is_ordered;
-
-                // Add first item
-                let item_text = trimmed_text[marker_len..].trim().to_string();
-                items.push(ListItem {
-                    text: item_text,
-                    style: Self::block_to_text_style(&block.block),
-                    nested: None,
-                    bbox: Self::bbox_from_rect(block.block.bbox),
-                });
-
-                // Collect consecutive list items
-                i += 1;
-                while i < blocks.len() {
-                    let next_block = &blocks[i];
-                    let next_trimmed = next_block.block.text.trim();
-
-                    if let Some((next_ordered, next_marker_len)) =
-                        self.detect_list_marker(next_trimmed)
-                    {
-                        // Check if it's the same type of list
-                        if next_ordered == list_ordered {
-                            let next_item_text = next_trimmed[next_marker_len..].trim().to_string();
-                            items.push(ListItem {
-                                text: next_item_text,
-                                style: Self::block_to_text_style(&next_block.block),
-                                nested: None,
-                                bbox: Self::bbox_from_rect(next_block.block.bbox),
-                            });
-                            list_bbox = list_bbox.union(&next_block.block.bbox);
-                            i += 1;
-                        } else {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-
-                // Create list element
-                elements.push(DocumentElement::List {
-                    items,
-                    ordered: list_ordered,
-                    bbox: Self::bbox_from_rect(list_bbox),
-                });
-            } else {
-                // Not a list item, convert based on classification
-                match block.classification {
-                    BlockType::Header(level) => {
-                        elements.push(DocumentElement::Header {
-                            level,
-                            text: block.block.text.clone(),
-                            style: Self::block_to_text_style(&block.block),
-                            bbox: Self::bbox_from_rect(block.block.bbox),
-                        });
-                        i += 1;
-                    },
-                    BlockType::Paragraph => {
-                        // Calculate page width from block position (estimate)
-                        let page_width = block.block.bbox.x + block.block.bbox.width + 100.0;
-                        let alignment = self.detect_alignment(&block.block, page_width);
-
-                        elements.push(DocumentElement::Paragraph {
-                            text: block.block.text.clone(),
-                            style: Self::block_to_text_style(&block.block),
-                            bbox: Self::bbox_from_rect(block.block.bbox),
-                            alignment,
-                        });
-                        i += 1;
-                    },
-                    _ => {
-                        i += 1;
-                    },
-                }
-            }
-        }
-
-        Ok(elements)
-    }
-
-    /// Detect list marker at the beginning of text.
-    /// Returns (is_ordered, marker_length) if found.
-    fn detect_list_marker(&self, text: &str) -> Option<(bool, usize)> {
-        let text_bytes = text.as_bytes();
-        if text_bytes.is_empty() {
-            return None;
-        }
-
-        // Bullet markers (unordered)
-        let bullet_markers = ['•', '-', '*', '◦', '▪', '►'];
-        if let Some(first_char) = text.chars().next() {
-            if bullet_markers.contains(&first_char) {
-                // Found bullet marker
-                let marker_len = first_char.len_utf8();
-                return Some((false, marker_len));
-            }
-        }
-
-        // Numbered markers (ordered)
-        // Pattern: digit(s) + '.' or ')'  or  letter + '.' or ')'
-        // Examples: "1.", "2)", "a.", "b)", "i.", "ii.", "(1)", "(a)"
-
-        // Check for parenthesized numbers/letters: "(1)", "(a)"
-        if text_bytes[0] == b'(' {
-            let mut end_idx = 1;
-            while end_idx < text_bytes.len() && text_bytes[end_idx].is_ascii_alphanumeric() {
-                end_idx += 1;
-            }
-            if end_idx < text_bytes.len() && text_bytes[end_idx] == b')' {
-                return Some((true, end_idx + 1));
-            }
-        }
-
-        // Check for number/letter followed by '.' or ')'
-        let mut idx = 0;
-        while idx < text_bytes.len()
-            && (text_bytes[idx].is_ascii_digit() || text_bytes[idx].is_ascii_lowercase())
-        {
-            idx += 1;
-        }
-
-        if idx > 0 && idx < text_bytes.len() && (text_bytes[idx] == b'.' || text_bytes[idx] == b')')
-        {
-            // Check it's a valid marker (not too long, like a sentence ending)
-            if idx <= 4 {
-                return Some((true, idx + 1));
-            }
-        }
-
-        None
-    }
-
-    /// Convert classified blocks to document elements (without list detection).
-    fn blocks_to_elements(&self, blocks: &[ClassifiedBlock]) -> Vec<DocumentElement> {
-        blocks
-            .iter()
-            .map(|block| match block.classification {
-                BlockType::Header(level) => DocumentElement::Header {
-                    level,
-                    text: block.block.text.clone(),
-                    style: Self::block_to_text_style(&block.block),
-                    bbox: Self::bbox_from_rect(block.block.bbox),
-                },
-                BlockType::Paragraph => {
-                    let page_width = block.block.bbox.x + block.block.bbox.width + 100.0;
-                    let alignment = self.detect_alignment(&block.block, page_width);
-
-                    DocumentElement::Paragraph {
-                        text: block.block.text.clone(),
-                        style: Self::block_to_text_style(&block.block),
-                        bbox: Self::bbox_from_rect(block.block.bbox),
-                        alignment,
-                    }
-                },
-                _ => DocumentElement::Paragraph {
-                    text: block.block.text.clone(),
-                    style: Self::block_to_text_style(&block.block),
-                    bbox: Self::bbox_from_rect(block.block.bbox),
-                    alignment: TextAlignment::Left,
-                },
-            })
-            .collect()
-    }
-
-    /// Detect text alignment based on position.
-    fn detect_alignment(&self, block: &TextBlock, page_width: f32) -> TextAlignment {
-        let left_margin = block.bbox.x;
-        let right_margin = page_width - (block.bbox.x + block.bbox.width);
-
-        // Center aligned if margins are approximately equal
-        if (left_margin - right_margin).abs() < 10.0 {
-            TextAlignment::Center
-        } else if left_margin < 50.0 {
-            TextAlignment::Left
-        } else if right_margin < 50.0 {
-            TextAlignment::Right
-        } else {
-            TextAlignment::Left // Default
-        }
     }
 
     /// Convert TextBlock to TextStyle with bold/italic detection.
@@ -668,29 +420,6 @@ impl Default for StructuredExtractor {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Classified text block.
-#[derive(Debug, Clone)]
-struct ClassifiedBlock {
-    /// Original block
-    block: TextBlock,
-    /// Classification
-    classification: BlockType,
-}
-
-/// Block classification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-enum BlockType {
-    /// Header at specified level
-    Header(u8),
-    /// Body paragraph
-    Paragraph,
-    /// List item
-    ListItem,
-    /// Table cell (future)
-    TableCell,
 }
 
 impl StructuredDocument {
