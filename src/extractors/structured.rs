@@ -185,6 +185,7 @@ pub struct DocumentMetadata {
 /// Structured text extractor.
 ///
 /// Converts positioned characters into semantic document elements.
+#[allow(dead_code)]
 pub struct StructuredExtractor {
     /// Configuration options
     config: ExtractorConfig,

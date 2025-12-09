@@ -12,6 +12,7 @@
 //! 4. Fully-justified: Variable spacing to align both edges
 //! 5. Unjustified: No apparent alignment structure
 
+/// Justification modes for text alignment
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JustificationMode {
     /// Left-aligned with ragged right edge
@@ -48,7 +49,7 @@ impl JustificationDetector {
     /// # Returns
     /// `JustificationMode` indicating the detected justification
     pub fn detect(
-        avg_word_spacing: f32,
+        _avg_word_spacing: f32,
         word_spacing_variance: f32,
         start_x: f32,
         end_x: f32,

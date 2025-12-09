@@ -2,7 +2,6 @@
 //!
 //! Phase 1, Tasks 1.6 and 1.8
 
-use crate::config::PdfConfig;
 use crate::encryption::EncryptionHandler;
 use crate::error::{Error, Result};
 use crate::layout::TextSpan;
@@ -329,11 +328,11 @@ impl PdfDocument {
         }
     }
 
-    /// Open with custom configuration.
+    /// Open with custom extraction profile.
     ///
-    /// Currently, the configuration is not used but is reserved for future features
-    /// such as custom memory limits, security settings, etc.
-    pub fn open_with_config(path: impl AsRef<Path>, _config: PdfConfig) -> Result<Self> {
+    /// Currently, the profile is not used at the document level but is reserved
+    /// for future integration with document-type-specific extraction settings.
+    pub fn open_with_config(path: impl AsRef<Path>, _config: impl std::any::Any) -> Result<Self> {
         Self::open(path)
     }
 
@@ -1925,7 +1924,8 @@ impl PdfDocument {
     /// # }
     /// ```
     pub fn extract_spans(&mut self, page_index: usize) -> Result<Vec<crate::layout::TextSpan>> {
-        use crate::extractors::TextExtractor;
+        use crate::extractors::{TextExtractionConfig, TextExtractor};
+        use crate::text::document_classifier::DocumentClassifier;
 
         // Get page object
         let page = self.get_page(page_index)?;
@@ -1937,20 +1937,49 @@ impl PdfDocument {
         // Get content stream data (reuse the same logic as extract_chars)
         let content_data = self.get_page_content_data(page_index)?;
 
-        // Create text extractor
-        let mut extractor = TextExtractor::new();
+        // First pass: Extract with conservative thresholds to analyze document
+        let mut initial_extractor = TextExtractor::new();
+        if let Some(resources) = page_dict.get("Resources") {
+            initial_extractor.set_resources(resources.clone());
+            initial_extractor.set_document(self as *mut PdfDocument);
+            self.load_fonts(resources, &mut initial_extractor)?;
+        }
+        let initial_spans = initial_extractor.extract_text_spans(&content_data)?;
+
+        // Classify document type based on extracted content
+        // Convert TextSpans to text lines for classification
+        let text_lines: Vec<&str> = initial_spans
+            .iter()
+            .filter_map(|span| {
+                // Skip empty spans
+                if span.text.trim().is_empty() {
+                    None
+                } else {
+                    Some(span.text.as_str())
+                }
+            })
+            .collect();
+
+        let (doc_type, _stats) = DocumentClassifier::classify_lines(text_lines.into_iter());
+
+        // Select appropriate profile for this document type
+        let profile = crate::config::ExtractionProfile::for_document_type(doc_type);
+
+        // Create configured text extractor with profile-specific thresholds
+        let config = TextExtractionConfig::default().with_profile(profile);
+        let mut final_extractor = TextExtractor::with_config(config);
 
         // Load fonts from page resources and set resources for XObject access
         if let Some(resources) = page_dict.get("Resources") {
-            extractor.set_resources(resources.clone());
-            extractor.set_document(self as *mut PdfDocument);
+            final_extractor.set_resources(resources.clone());
+            final_extractor.set_document(self as *mut PdfDocument);
 
             // Load fonts
-            self.load_fonts(resources, &mut extractor)?;
+            self.load_fonts(resources, &mut final_extractor)?;
         }
 
-        // Extract text spans
-        extractor.extract_text_spans(&content_data)
+        // Extract text spans with profile-optimized thresholds
+        final_extractor.extract_text_spans(&content_data)
     }
 
     /// Extract text spans from a page with custom configuration.

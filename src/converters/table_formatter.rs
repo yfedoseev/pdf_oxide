@@ -5,8 +5,6 @@
 
 use crate::converters::TableFormatConfig;
 use crate::layout::TextBlock;
-use log::{debug, info, trace};
-use std::cmp::max;
 
 /// Markdown table formatter.
 ///

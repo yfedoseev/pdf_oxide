@@ -325,7 +325,7 @@ fn parse_parent_tree(document: &mut PdfDocument, obj: &Object) -> Result<ParentT
                     parent_tree
                         .page_mappings
                         .entry(0)
-                        .or_insert_with(std::collections::HashMap::new)
+                        .or_default()
                         .insert(key as u32, entry);
                 }
                 i += 2;
@@ -403,7 +403,7 @@ fn parse_number_tree_kid(
                     parent_tree
                         .page_mappings
                         .entry(0)
-                        .or_insert_with(std::collections::HashMap::new)
+                        .or_default()
                         .insert(key as u32, entry);
                 }
                 i += 2;

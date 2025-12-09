@@ -373,8 +373,7 @@ mod tests {
     #[test]
     fn test_bold_marker_behavior_copy_clone() {
         let behavior = BoldMarkerBehavior::Aggressive;
-        let cloned = behavior.clone();
         let copied = behavior;
-        assert_eq!(cloned, copied);
+        assert_eq!(behavior, copied);
     }
 }

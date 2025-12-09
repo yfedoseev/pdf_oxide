@@ -90,13 +90,7 @@ impl FontWeightNormalizer {
     /// E.g., if "hel" and "lo" are both bold, the space between should
     /// not be treated as part of the bold region - bold applies to the word
     pub fn propagate_bold(normalized: &[NormalizedSpan]) -> Vec<NormalizedSpan> {
-        normalized
-            .iter()
-            .map(|s| {
-                // Already handled in effective_font_weight
-                s.clone()
-            })
-            .collect()
+        normalized.to_vec()
     }
 
     /// Validate that space spans never have effective bold

@@ -14,7 +14,7 @@ use crate::layout::clustering::{cluster_chars_into_words, cluster_words_into_lin
 use crate::layout::document_analyzer::{AdaptiveLayoutParams, DocumentProperties};
 use crate::layout::reading_order::graph_based_reading_order;
 use crate::layout::{BoldGroup, BoldMarkerDecision, BoldMarkerValidator, TextBlock, TextChar};
-use crate::structure::table_extractor::{ExtractedTable, TableCell, TableRow};
+use crate::structure::table_extractor::{ExtractedTable, TableRow};
 use lazy_static::lazy_static;
 use regex::{Captures, Regex};
 
@@ -427,7 +427,7 @@ impl MarkdownConverter {
                     match (is_bold, is_italic) {
                         (true, true) => markdown.push_str("***"), // Bold + Italic
                         (true, false) => markdown.push_str("**"), // Bold only
-                        (false, true) => markdown.push_str("*"),  // Italic only
+                        (false, true) => markdown.push('*'),      // Italic only
                         (false, false) => {},                     // No formatting
                     }
                 } else if let BoldMarkerDecision::Skip(reason) = &marker_decision {
@@ -447,7 +447,7 @@ impl MarkdownConverter {
                     match (is_bold, is_italic) {
                         (true, true) => markdown.push_str("***"), // Bold + Italic
                         (true, false) => markdown.push_str("**"), // Bold only
-                        (false, true) => markdown.push_str("*"),  // Italic only
+                        (false, true) => markdown.push('*'),      // Italic only
                         (false, false) => {},                     // No formatting
                     }
                 }
@@ -606,7 +606,7 @@ impl MarkdownConverter {
 
         // Heading detection removed (non-spec-compliant feature)
         // All content is treated as body text for spec compliance
-        let heading_levels = vec![(); lines.len()]; // Placeholder - not used, all body text
+        let _heading_levels = vec![(); lines.len()]; // Placeholder - not used, all body text
 
         // Step 5: Determine reading order
         let ordered_indices = self.determine_reading_order(
@@ -656,7 +656,7 @@ impl MarkdownConverter {
         &self,
         blocks: &[TextBlock],
         mode: ReadingOrderMode,
-        adaptive_params: Option<&AdaptiveLayoutParams>,
+        _adaptive_params: Option<&AdaptiveLayoutParams>,
     ) -> Vec<usize> {
         if blocks.is_empty() {
             return vec![];
@@ -1024,6 +1024,7 @@ fn should_insert_bold_marker(prev_char: Option<char>, next_char: Option<char>) -
 /// # Returns
 ///
 /// A string containing the Markdown table representation
+#[allow(dead_code)]
 fn render_markdown_table(table: &ExtractedTable) -> String {
     let mut md = String::new();
 
@@ -1079,6 +1080,7 @@ fn render_markdown_table(table: &ExtractedTable) -> String {
 /// # Returns
 ///
 /// A string containing the Markdown row representation
+#[allow(dead_code)]
 fn render_table_row(row: &TableRow) -> String {
     let mut line = String::from("|");
     for cell in &row.cells {

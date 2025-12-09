@@ -15,7 +15,6 @@
 use crate::error::Error;
 use crate::layout::TextBlock;
 use crate::structure::types::{StructChild, StructElem, StructType};
-use std::collections::HashMap;
 
 /// A complete extracted table with rows and optional header information.
 #[derive(Debug, Clone)]
@@ -57,6 +56,12 @@ pub struct TableCell {
 
     /// Whether this is a header cell
     pub is_header: bool,
+}
+
+impl Default for ExtractedTable {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ExtractedTable {

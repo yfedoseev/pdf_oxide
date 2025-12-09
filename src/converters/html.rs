@@ -121,7 +121,7 @@ impl HtmlConverter {
     pub fn convert_page_semantic_from_spans(
         &self,
         spans: &[crate::layout::TextSpan],
-        options: &ConversionOptions,
+        _options: &ConversionOptions,
     ) -> Result<String> {
         use crate::layout::TextBlock;
 

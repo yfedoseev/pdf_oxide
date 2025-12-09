@@ -162,7 +162,7 @@ impl BoldMarkerValidator {
     /// `true` if bold group has valid word boundaries before/after
     pub fn validate_boundary_context(
         preceding_text: &str,
-        group_text: &str,
+        _group_text: &str,
         following_text: &str,
     ) -> bool {
         // Bold group must start with a word boundary
@@ -239,9 +239,9 @@ impl BoldMarkerValidator {
             match Self::can_insert_markers(group) {
                 BoldMarkerDecision::Skip(err) if group.is_bold => {
                     log::warn!(
-                        "Group {}: {}: '{}'",
+                        "Group {}: {:?}: '{}'",
                         idx,
-                        format!("{:?}", err),
+                        err,
                         group.text.chars().take(20).collect::<String>()
                     );
                 },

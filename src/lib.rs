@@ -149,7 +149,7 @@ pub mod wasm;
 
 // Re-exports
 pub use annotations::{Annotation, LinkAction, LinkDestination};
-pub use config::PdfConfig;
+pub use config::{DocumentType, ExtractionProfile};
 pub use document::{ExtractedImageRef, ImageFormat, PdfDocument};
 pub use error::{Error, Result};
 pub use outline::{Destination, OutlineItem};

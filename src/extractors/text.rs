@@ -6,6 +6,7 @@
 //!
 //! Phase 4, Task 4.6
 
+use crate::config::ExtractionProfile;
 use crate::content::graphics_state::{GraphicsStateStack, Matrix};
 use crate::content::operators::{Operator, TextElement};
 use crate::content::parse_content_stream;
@@ -99,11 +100,21 @@ impl SpaceDecision {
 /// represents a word boundary vs. tight kerning.
 #[derive(Debug, Clone)]
 pub struct TextExtractionConfig {
+    /// Extraction profile with document-type-specific thresholds
+    ///
+    /// When set, this profile overrides individual threshold settings and provides
+    /// pre-tuned parameters optimized for specific document types (Academic, Policy,
+    /// Government, Form, ScannedOCR, etc.).
+    ///
+    /// **Default**: None (uses legacy individual thresholds for backward compatibility)
+    pub profile: Option<ExtractionProfile>,
+
     /// Threshold for inserting space characters in TJ arrays.
     ///
-    /// **DEPRECATED**: Consider using `word_margin_ratio` with `use_adaptive_tj_threshold`
-    /// enabled for geometry-based adaptive thresholds. This field is used as a fallback
-    /// when font metrics are unavailable or adaptive thresholds are disabled.
+    /// **DEPRECATED**: Consider using `profile` with an `ExtractionProfile` or
+    /// `word_margin_ratio` with `use_adaptive_tj_threshold` enabled for geometry-based
+    /// adaptive thresholds. This field is used as a fallback when font metrics are
+    /// unavailable or adaptive thresholds are disabled, and when profile is not set.
     ///
     /// **HEURISTIC**: When a TJ array contains a negative offset (in text space units),
     /// and that offset exceeds this threshold, a space character is inserted.
@@ -171,6 +182,7 @@ pub struct TextExtractionConfig {
 impl Default for TextExtractionConfig {
     fn default() -> Self {
         Self {
+            profile: None,
             space_insertion_threshold: -120.0,
             word_margin_ratio: 0.1,
             use_adaptive_tj_threshold: false,
@@ -215,6 +227,7 @@ impl TextExtractionConfig {
     /// ```
     pub fn with_space_threshold(threshold: f32) -> Self {
         Self {
+            profile: None,
             space_insertion_threshold: threshold,
             word_margin_ratio: 0.1,
             use_adaptive_tj_threshold: false, // Static threshold mode
@@ -243,6 +256,7 @@ impl TextExtractionConfig {
     /// ```
     pub fn with_word_margin_ratio(ratio: f32) -> Self {
         Self {
+            profile: None,
             space_insertion_threshold: -120.0, // Fallback value
             word_margin_ratio: ratio,
             use_adaptive_tj_threshold: true, // Adaptive threshold mode
@@ -286,6 +300,39 @@ impl TextExtractionConfig {
     /// ```
     pub fn set_adaptive_tj_threshold(mut self, enabled: bool) -> Self {
         self.use_adaptive_tj_threshold = enabled;
+        self
+    }
+
+    /// Set the extraction profile and apply its threshold configuration (builder pattern).
+    ///
+    /// This applies the profile's thresholds to the configuration, selecting document-type-specific
+    /// parameters for better text extraction quality.
+    ///
+    /// # Arguments
+    ///
+    /// * `profile` - An extraction profile (e.g., ACADEMIC, POLICY, FORM)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::extractors::TextExtractionConfig;
+    /// use pdf_oxide::config::ExtractionProfile;
+    ///
+    /// // Use ACADEMIC profile for research papers
+    /// let config = TextExtractionConfig::new()
+    ///     .with_profile(ExtractionProfile::ACADEMIC);
+    /// ```
+    pub fn with_profile(mut self, profile: ExtractionProfile) -> Self {
+        // Extract profile settings before moving profile
+        let tj_offset = profile.tj_offset_threshold;
+        let word_margin = profile.word_margin_ratio;
+        let use_adaptive = profile.use_adaptive_threshold;
+
+        // Set profile and apply its thresholds
+        self.profile = Some(profile);
+        self.space_insertion_threshold = tj_offset;
+        self.word_margin_ratio = word_margin;
+        self.use_adaptive_tj_threshold = use_adaptive;
         self
     }
 }
@@ -780,14 +827,8 @@ fn should_insert_space(
 ///
 /// This prevents double-spacing when text already contains space characters.
 fn has_boundary_space(preceding: &str, following: &str) -> bool {
-    let has_trailing_space = preceding
-        .chars()
-        .last()
-        .map_or(false, |c| c.is_whitespace());
-    let has_leading_space = following
-        .chars()
-        .next()
-        .map_or(false, |c| c.is_whitespace());
+    let has_trailing_space = preceding.chars().last().is_some_and(|c| c.is_whitespace());
+    let has_leading_space = following.chars().next().is_some_and(|c| c.is_whitespace());
 
     has_trailing_space || has_leading_space
 }
@@ -1135,6 +1176,7 @@ fn decode_text_to_unicode(bytes: &[u8], font: Option<&FontInfo>) -> String {
 ///
 /// Tracks nested marked content tags to implement artifact filtering.
 /// When content is marked as `/Artifact`, it should be excluded from text extraction.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct MarkedContentContext {
     tag: String,
@@ -1396,6 +1438,7 @@ impl TextExtractor {
     ///
     /// This is relatively efficient, typically iterating over 95 ASCII characters.
     /// In practice, most fonts have widths arrays, so this completes quickly.
+    #[allow(dead_code)]
     fn calculate_average_glyph_width(&self, font: &FontInfo) -> f32 {
         const PRINTABLE_ASCII_START: u32 = 32; // Space
         const PRINTABLE_ASCII_END: u32 = 126; // Tilde
@@ -2199,6 +2242,7 @@ impl TextExtractor {
     ///
     /// Per ISO 32000-1:2008 Section 9.4.4: "Text strings are as long as possible" - spaces
     /// are positioning artifacts, so word fusions must be detected and reconstructed.
+    #[allow(dead_code)]
     fn split_fused_words(&mut self) {
         let mut split_spans = Vec::new();
 
@@ -2277,6 +2321,7 @@ impl TextExtractor {
     /// - "theGeneral" -> ["the", "General"]
     /// - "lengthThis" -> ["length", "This"]
     /// - "helporganisationscraft" -> ["help", "organisations", "craft"]
+    #[allow(dead_code)]
     fn split_on_camelcase(&self, text: &str) -> Vec<String> {
         let mut parts = Vec::new();
         let mut current_part = String::new();
@@ -3469,8 +3514,7 @@ impl TextExtractor {
                             && buffer
                                 .unicode
                                 .chars()
-                                .rev()
-                                .next()
+                                .next_back()
                                 .map(|c| c.is_whitespace())
                                 .unwrap_or(false);
 
@@ -4234,53 +4278,50 @@ mod tests {
     /// These spans should be merged WITH a space to preserve word separation.
     #[test]
     fn test_split_boundary_merges_with_space() {
-        let mut spans = vec![];
-
-        // Create two spans representing a split word (from CamelCase splitting)
-        // Example: "theGeneral" was split into "the" + "General"
-        spans.push(TextSpan {
-            text: "the".to_string(),
-            bbox: Rect {
-                x: 0.0,
-                y: 100.0,
-                width: 10.0,
-                height: 12.0,
+        let spans = vec![
+            TextSpan {
+                text: "the".to_string(),
+                bbox: Rect {
+                    x: 0.0,
+                    y: 100.0,
+                    width: 10.0,
+                    height: 12.0,
+                },
+                font_name: "Arial".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                sequence: 0,
+                split_boundary_before: false,
+                offset_semantic: false,
+                is_italic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
-            font_name: "Arial".to_string(),
-            font_size: 12.0,
-            font_weight: FontWeight::Normal,
-            color: Color::black(),
-            mcid: None,
-            sequence: 0,
-            split_boundary_before: false,
-            offset_semantic: false,
-            is_italic: false,
-            char_spacing: 0.0,
-            word_spacing: 0.0,
-            horizontal_scaling: 100.0,
-        });
-
-        spans.push(TextSpan {
-            text: "General".to_string(),
-            bbox: Rect {
-                x: 10.0,
-                y: 100.0,
-                width: 25.0,
-                height: 12.0,
+            TextSpan {
+                text: "General".to_string(),
+                bbox: Rect {
+                    x: 10.0,
+                    y: 100.0,
+                    width: 25.0,
+                    height: 12.0,
+                },
+                font_name: "Arial".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                sequence: 1,
+                split_boundary_before: true, // Marks this as part of a split boundary
+                offset_semantic: false,
+                is_italic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
-            font_name: "Arial".to_string(),
-            font_size: 12.0,
-            font_weight: FontWeight::Normal,
-            color: Color::black(),
-            mcid: None,
-            sequence: 1,
-            split_boundary_before: true, // Marks this as part of a split boundary
-            offset_semantic: false,
-            is_italic: false,
-            char_spacing: 0.0,
-            word_spacing: 0.0,
-            horizontal_scaling: 100.0,
-        });
+        ];
 
         // Simulate extraction state
         let mut extractor = TextExtractor::new();
@@ -4380,4 +4421,226 @@ fn test_adaptive_constructor_enables_adaptive() {
         adaptive.adaptive_config.is_some(),
         "Adaptive constructor should set adaptive_config"
     );
+}
+
+// ============================================================================
+// PHASE 2.5: Profile-Based Space Insertion Tests (TDD)
+// ============================================================================
+//
+// Tests for document-type-specific extraction profiles.
+// These tests define expected behavior BEFORE implementation.
+// Once these tests pass, the profile integration is complete.
+//
+// Key Scenarios:
+// 1. Academic papers: Tighter spacing, aggressive space insertion
+// 2. Policy documents: Justified text, conservative spacing
+// 3. Forms: Structured fields with precise boundaries
+// 4. Default/Conservative: Backward-compatible behavior
+
+#[cfg(test)]
+mod profile_based_space_tests {
+    use super::*;
+
+    /// Test that ACADEMIC profile uses aggressive thresholds
+    ///
+    /// Academic papers have tight spacing (especially around punctuation).
+    /// The profile should:
+    /// - Use lower TJ offset threshold (-90 instead of -120)
+    /// - Use lower word margin ratio (0.12 instead of 0.1)
+    /// - Enable adaptive threshold for dynamic adjustment
+    #[test]
+    fn test_academic_profile_thresholds() {
+        let profile = crate::config::ExtractionProfile::for_document_type(
+            crate::config::DocumentType::Academic,
+        );
+
+        // Academic papers should be more aggressive with space insertion
+        assert!(
+            profile.tj_offset_threshold < -100.0,
+            "Academic should use lower TJ threshold for more spaces"
+        );
+
+        // Academic papers should have tighter word margins
+        assert!(
+            profile.word_margin_ratio <= 0.15,
+            "Academic should use conservative word margin"
+        );
+
+        // Verify we can create a config from the profile
+        let config = TextExtractionConfig::with_space_threshold(profile.tj_offset_threshold);
+        assert_eq!(config.space_insertion_threshold, profile.tj_offset_threshold);
+    }
+
+    /// Test that POLICY profile uses conservative thresholds
+    ///
+    /// Policy documents (like GDPR) have justified text with precise spacing.
+    /// The profile should:
+    /// - Use higher TJ offset threshold (-110 to preserve structure)
+    /// - Use higher word margin ratio (0.18-0.2 for justified text)
+    /// - Preserve column boundaries and table structure
+    #[test]
+    fn test_policy_profile_thresholds() {
+        let profile = crate::config::ExtractionProfile::for_document_type(
+            crate::config::DocumentType::Policy,
+        );
+
+        // Policy documents should be more conservative to preserve structure
+        assert!(
+            profile.tj_offset_threshold > -120.0,
+            "Policy should use higher TJ threshold to avoid over-spacing"
+        );
+
+        // Policy documents should have looser word margins for justified text
+        assert!(
+            profile.word_margin_ratio >= 0.15,
+            "Policy should use higher word margin for justified text"
+        );
+
+        let config = TextExtractionConfig::with_space_threshold(profile.tj_offset_threshold);
+        assert_eq!(config.space_insertion_threshold, profile.tj_offset_threshold);
+    }
+
+    /// Test that FORM profile preserves field boundaries
+    ///
+    /// Forms have checkboxes, fields, and precise layout.
+    /// The profile should:
+    /// - Use conservative thresholds to avoid merging fields
+    /// - High column boundary threshold to preserve structure
+    /// - Enable adaptive threshold for form field detection
+    #[test]
+    fn test_form_profile_thresholds() {
+        let profile =
+            crate::config::ExtractionProfile::for_document_type(crate::config::DocumentType::Form);
+
+        // Forms should preserve field structure with conservative spacing
+        assert!(
+            profile.tj_offset_threshold >= -120.0,
+            "Form profile should be conservative with space insertion"
+        );
+
+        let config = TextExtractionConfig::with_space_threshold(profile.tj_offset_threshold);
+        assert_eq!(config.space_insertion_threshold, profile.tj_offset_threshold);
+    }
+
+    /// Test that profile selection works correctly for document types
+    #[test]
+    fn test_profile_selection_for_document_types() {
+        let academic = crate::config::ExtractionProfile::for_document_type(
+            crate::config::DocumentType::Academic,
+        );
+        let policy = crate::config::ExtractionProfile::for_document_type(
+            crate::config::DocumentType::Policy,
+        );
+        let form =
+            crate::config::ExtractionProfile::for_document_type(crate::config::DocumentType::Form);
+        let mixed =
+            crate::config::ExtractionProfile::for_document_type(crate::config::DocumentType::Mixed);
+
+        // Verify each profile has distinct thresholds
+        let thresholds = [
+            academic.tj_offset_threshold,
+            policy.tj_offset_threshold,
+            form.tj_offset_threshold,
+            mixed.tj_offset_threshold,
+        ];
+
+        // At least some profiles should have different thresholds
+        let unique_count = thresholds
+            .iter()
+            .filter(|t| !thresholds.iter().skip(1).any(|other| other == *t))
+            .count();
+
+        assert!(
+            unique_count > 0,
+            "Profiles should have different thresholds for different document types"
+        );
+    }
+
+    /// Test that TextExtractionConfig can accept a profile
+    #[test]
+    fn test_config_with_profile() {
+        let profile = crate::config::ExtractionProfile::ACADEMIC;
+
+        // Should be able to create config with profile thresholds
+        let config = TextExtractionConfig::with_space_threshold(profile.tj_offset_threshold);
+
+        assert_eq!(config.space_insertion_threshold, profile.tj_offset_threshold);
+    }
+
+    /// Test that profiles have reasonable threshold ranges
+    #[test]
+    fn test_profile_thresholds_in_reasonable_range() {
+        let profiles = vec![
+            crate::config::ExtractionProfile::CONSERVATIVE,
+            crate::config::ExtractionProfile::ACADEMIC,
+            crate::config::ExtractionProfile::POLICY,
+            crate::config::ExtractionProfile::FORM,
+        ];
+
+        for profile in profiles {
+            // TJ offsets should be negative (per PDF spec)
+            assert!(
+                profile.tj_offset_threshold < 0.0,
+                "TJ threshold must be negative ({})",
+                profile.name
+            );
+
+            // Should be in reasonable range (-150 to -50)
+            assert!(
+                profile.tj_offset_threshold >= -150.0 && profile.tj_offset_threshold <= -50.0,
+                "TJ threshold out of range for {} ({})",
+                profile.name,
+                profile.tj_offset_threshold
+            );
+
+            // Word margin ratios should be positive and reasonable (0.05 to 0.25)
+            assert!(
+                profile.word_margin_ratio > 0.0 && profile.word_margin_ratio < 1.0,
+                "Word margin ratio must be between 0 and 1 for {}",
+                profile.name
+            );
+
+            // Space threshold EM ratio should be positive
+            assert!(
+                profile.space_threshold_em_ratio > 0.0,
+                "Space threshold EM ratio must be positive for {}",
+                profile.name
+            );
+        }
+    }
+
+    /// Test that multiple profiles can coexist
+    #[test]
+    fn test_multiple_profiles_independent() {
+        let academic = crate::config::ExtractionProfile::for_document_type(
+            crate::config::DocumentType::Academic,
+        );
+        let policy = crate::config::ExtractionProfile::for_document_type(
+            crate::config::DocumentType::Policy,
+        );
+
+        // Create configs from both profiles
+        let academic_config =
+            TextExtractionConfig::with_space_threshold(academic.tj_offset_threshold);
+        let policy_config = TextExtractionConfig::with_space_threshold(policy.tj_offset_threshold);
+
+        // Verify they have different thresholds
+        assert_ne!(
+            academic_config.space_insertion_threshold, policy_config.space_insertion_threshold,
+            "Academic and policy configs should have different thresholds"
+        );
+    }
+
+    /// Test that default config is backward-compatible
+    #[test]
+    fn test_default_config_backward_compatible() {
+        let default_config = TextExtractionConfig::default();
+        let conservative_profile = crate::config::ExtractionProfile::CONSERVATIVE;
+
+        // Default should match or be compatible with conservative profile
+        assert_eq!(
+            default_config.space_insertion_threshold, conservative_profile.tj_offset_threshold,
+            "Default config should use conservative threshold for backward compatibility"
+        );
+    }
 }

@@ -158,7 +158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 *fonts_used.entry(span.font_name.clone()).or_insert(0) += 1;
                 font_weights
                     .entry(span.font_name.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(if span.font_weight.is_bold() {
                         "bold".to_string()
                     } else {

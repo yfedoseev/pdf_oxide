@@ -428,7 +428,7 @@ pub fn compute_page_gap_stats(page_num: usize, spans: &[TextSpan]) -> PageGapSta
         };
     }
 
-    let mut gaps: Vec<f32> = spans
+    let gaps: Vec<f32> = spans
         .windows(2)
         .map(|w| w[1].bbox.left() - w[0].bbox.right())
         .collect();

@@ -568,7 +568,7 @@ fn detect_word_boundary_threshold(spans: &[TextSpan]) -> Option<f32> {
     let p75 = percentile(&gaps, 0.75);
 
     // Accept if threshold is in reasonable range for word spacing
-    if p75 >= 2.0 && p75 <= 10.0 {
+    if (2.0..=10.0).contains(&p75) {
         debug!("Percentile-based threshold: P75 = {:.4}pt", p75);
         Some(p75)
     } else {

@@ -293,7 +293,7 @@ fn print_histogram(gaps: &[f32], buckets: usize) {
     for (i, &count) in histogram.iter().enumerate() {
         let label_min = min + (i as f32) * bucket_size;
         let label_max = min + ((i + 1) as f32) * bucket_size;
-        let bar = "█".repeat((count as usize) * scale);
+        let bar = "█".repeat(count * scale);
         println!("    {:.4}-{:.4}pt [{:3}] {}", label_min, label_max, count, bar);
     }
     println!();
