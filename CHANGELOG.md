@@ -56,7 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Performance optimizations** - 47.9× faster than PyMuPDF4LLM (5.43s vs 259.94s for 103 PDFs)
 - **Python bindings** via PyO3 for easy integration
 - **Word spacing detection** - dynamic threshold for proper word boundaries (100% fix rate)
-- **Bold text detection** - 37% more bold sections detected compared to reference implementation
+- **Bold text detection** - 37% more bold sections detected compared to PyMuPDF
 - **Character-level text extraction** with accurate bounding boxes
 - **Layout analysis algorithms** - DBSCAN clustering and XY-Cut for multi-column detection
 - **Stream decompression** - support for Flate, LZW, and other compression filters
@@ -82,7 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Performance
 - **47.9× faster** than PyMuPDF4LLM on benchmark suite (103 PDFs)
 - **Average processing time:** 53ms per PDF
-- **Output size:** 4% smaller than reference implementation
+- **Output size:** 4% smaller than PyMuPDF
 - **Success rate:** 100% on test suite
 - **Memory efficiency:** Stays under 100MB even for large PDFs
 - **Production-ready:** Handles 10,000 PDFs in under 9 minutes
