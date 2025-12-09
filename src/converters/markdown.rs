@@ -204,11 +204,42 @@ impl MarkdownConverter {
             return Ok(String::new());
         }
 
-        // Convert spans to TextBlocks for compatibility with existing rendering logic
+        // Phase 3 Step 3: Detect and mark non-text content (figures, diagrams)
+        // Use NonTextDetector to identify likely figure content
+        let detector = crate::fonts::non_text_detection::NonTextDetector::default();
+        let span_classifications = detector.mark_non_text_spans(spans);
+
+        // Log figure detection results for debugging
+        let figures_detected = span_classifications
+            .iter()
+            .filter(|c| c.is_non_text)
+            .count();
+        if figures_detected > 0 {
+            log::debug!(
+                "Phase 3 Step 3: Detected {} figure(s) out of {} spans",
+                figures_detected,
+                spans.len()
+            );
+        }
+
+        // Convert spans to TextBlocks, filtering out non-text content
         let mut blocks: Vec<TextBlock> = spans
             .iter()
-            .map(|span| {
-                TextBlock {
+            .enumerate()
+            .filter_map(|(idx, span)| {
+                // Check if this span was classified as non-text content
+                let classification = &span_classifications[idx];
+
+                if classification.is_non_text {
+                    log::debug!(
+                        "Filtering out non-text span: '{}...' (confidence: {:.2})",
+                        span.text.chars().take(20).collect::<String>(),
+                        classification.confidence
+                    );
+                    return None; // Skip non-text content
+                }
+
+                Some(TextBlock {
                     chars: vec![], // Not needed for span-based conversion
                     bbox: span.bbox,
                     text: span.text.clone(),
@@ -217,7 +248,7 @@ impl MarkdownConverter {
                     is_bold: span.font_weight.is_bold(),
                     is_italic: span.is_italic,
                     mcid: span.mcid,
-                }
+                })
             })
             .collect();
 
