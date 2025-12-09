@@ -63,7 +63,7 @@ fn test_synthetic_policy_documents() {
     );
 
     // Analyze with adaptive threshold (policy_documents config)
-    let policy_config = AdaptiveThresholdConfig::policy_documents();
+    let policy_config = AdaptiveThresholdConfig::with_multiplier(1.3);
     let result = analyze_document_gaps(&synthetic_spans, Some(policy_config.clone()));
 
     println!("\nAdaptive Threshold Analysis (policy_documents):");
@@ -119,6 +119,8 @@ fn create_synthetic_span(text: &str, x: f32) -> TextSpan {
         color: Color::black(),
         mcid: None,
         sequence: 0,
+        split_boundary_before: false,
+        offset_semantic: false,
     }
 }
 
@@ -148,6 +150,8 @@ fn test_adaptive_threshold_matches_expectations() {
             color: Color::black(),
             mcid: None,
             sequence: 0,
+            split_boundary_before: false,
+            offset_semantic: false,
         });
         x_pos += span_width;
 
@@ -163,13 +167,15 @@ fn test_adaptive_threshold_matches_expectations() {
                 color: Color::black(),
                 mcid: None,
                 sequence: i + 1,
+                split_boundary_before: false,
+                offset_semantic: false,
             });
             x_pos += span_width;
         }
         spans
     };
 
-    let policy_config = AdaptiveThresholdConfig::policy_documents();
+    let policy_config = AdaptiveThresholdConfig::with_multiplier(1.3);
     let result = analyze_document_gaps(&policy_spans, Some(policy_config));
 
     println!("Policy Document Test:");
@@ -205,6 +211,8 @@ fn test_adaptive_threshold_matches_expectations() {
             color: Color::black(),
             mcid: None,
             sequence: 0,
+            split_boundary_before: false,
+            offset_semantic: false,
         });
         x_pos += span_width;
 
@@ -220,13 +228,15 @@ fn test_adaptive_threshold_matches_expectations() {
                 color: Color::black(),
                 mcid: None,
                 sequence: i + 1,
+                split_boundary_before: false,
+                offset_semantic: false,
             });
             x_pos += span_width;
         }
         spans
     };
 
-    let academic_config = AdaptiveThresholdConfig::academic();
+    let academic_config = AdaptiveThresholdConfig::with_multiplier(1.6);
     let result = analyze_document_gaps(&academic_spans, Some(academic_config));
 
     println!("Academic Document Test:");
@@ -273,12 +283,14 @@ fn test_adaptive_vs_fixed_threshold_comparison() {
                 color: Color::black(),
                 mcid: None,
                 sequence: i,
+                split_boundary_before: false,
+                offset_semantic: false,
             }
         })
         .collect();
 
     // Analyze with adaptive threshold
-    let adaptive_config = AdaptiveThresholdConfig::policy_documents();
+    let adaptive_config = AdaptiveThresholdConfig::with_multiplier(1.3);
     let adaptive_result = analyze_document_gaps(&spans, Some(adaptive_config));
 
     println!("Adaptive Threshold: {:.3}pt", adaptive_result.threshold_pt);

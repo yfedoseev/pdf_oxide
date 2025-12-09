@@ -685,6 +685,8 @@ fn should_insert_space(
     following_text: &str,
     gap_pt: f32,
     font_size: f32,
+    font_name: &str,
+    fonts: &std::collections::HashMap<String, crate::fonts::FontInfo>,
     tj_offset_triggered: bool,
     _config: &SpanMergingConfig,
 ) -> SpaceDecision {
@@ -713,10 +715,42 @@ fn should_insert_space(
     }
 
     // Rule 2: Geometric Gap + Font Metrics (Section 9.4.4)
-    // Standard word spacing threshold: gap > 0.25em (pdfplumber standard, PDFBox compatible)
-    // 0.25em = typical word spacing width relative to font size
-    // This single threshold is simpler and more predictable than dual thresholds.
-    let geometric_threshold = font_size * 0.25;
+    // Per ISO 32000-1:2008 Section 9.7.4, word spacing should be based on actual font metrics,
+    // not fixed ratios. Use space glyph width (in 1000ths of em) to compute adaptive threshold.
+    //
+    // Calculate font-aware threshold:
+    // 1. Get space glyph width from font dictionary (in 1000ths of em)
+    // 2. Convert to points: (width / 1000) * font_size
+    // 3. Apply word margin ratio: space_width_pt * word_margin_ratio (default 50%)
+    //
+    // This adapts to different fonts:
+    // - Tight fonts (space ~2.5pt): threshold ~1.25pt (avoids spurious spaces in newspapers)
+    // - Normal fonts (space ~3.5pt): threshold ~1.75pt (preserves word boundaries)
+    let geometric_threshold = if let Some(font_info) = fonts.get(font_name) {
+        // Font found: use space glyph width for calculation
+        let space_width_units = font_info.get_space_glyph_width(); // in 1000ths of em
+        let space_width_pt = (space_width_units / 1000.0) * font_size;
+        let word_margin_ratio = 0.5; // 50% of space width
+        let threshold = space_width_pt * word_margin_ratio;
+
+        log::debug!(
+            "Font-aware spacing for '{}' @ {:.1}pt: space_width={:.1}pt, threshold={:.1}pt",
+            font_name,
+            font_size,
+            space_width_pt,
+            threshold
+        );
+
+        threshold
+    } else {
+        // Font not found: fallback to fixed 0.25em threshold
+        log::debug!(
+            "Font '{}' not found in font map, using default 0.25em threshold for {:.1}pt",
+            font_name,
+            font_size
+        );
+        font_size * 0.25
+    };
 
     if gap_pt > geometric_threshold {
         log::debug!(
@@ -1097,6 +1131,16 @@ fn decode_text_to_unicode(bytes: &[u8], font: Option<&FontInfo>) -> String {
     }
 }
 
+/// Context for marked content sequences (per PDF Spec Section 14.6)
+///
+/// Tracks nested marked content tags to implement artifact filtering.
+/// When content is marked as `/Artifact`, it should be excluded from text extraction.
+#[derive(Debug, Clone)]
+struct MarkedContentContext {
+    tag: String,
+    is_artifact: bool,
+}
+
 /// Text extractor that processes content streams.
 ///
 /// This structure maintains the graphics state stack and font information
@@ -1130,6 +1174,16 @@ pub struct TextExtractor {
     /// Tracks the MCID of the currently active marked content sequence.
     /// Used to associate extracted text with structure tree elements.
     current_mcid: Option<u32>,
+    /// Stack of marked content contexts (per PDF Spec Section 14.6)
+    ///
+    /// Tracks nested marked content tags to enable artifact filtering.
+    /// When content is marked as `/Artifact`, it should be excluded from text extraction.
+    marked_content_stack: Vec<MarkedContentContext>,
+    /// Whether we're currently inside an /Artifact marked content context
+    ///
+    /// Per PDF Spec Section 14.6, artifact content should be excluded from text extraction.
+    /// This flag is true when any ancestor in the marked_content_stack has is_artifact=true.
+    inside_artifact: bool,
     /// Extraction mode: true for spans, false for characters
     extract_spans: bool,
     /// Buffer for accumulating consecutive Tj operators into single spans
@@ -1189,6 +1243,8 @@ impl TextExtractor {
             extract_spans: true,      // Default to span mode (PDF spec compliant)
             tj_span_buffer: None,     // No buffer initially
             span_sequence_counter: 0, // Initialize sequence counter
+            marked_content_stack: Vec::new(), // NEW: Track marked content contexts
+            inside_artifact: false,   // NEW: Track artifact state
         }
     }
 
@@ -1287,6 +1343,21 @@ impl TextExtractor {
         );
 
         adaptive_threshold
+    }
+
+    /// Update the artifact state based on the marked content stack.
+    ///
+    /// This method computes whether we're currently inside an artifact region
+    /// by checking if any ancestor in the marked_content_stack has is_artifact=true.
+    /// Per PDF Spec Section 14.6, artifact content should be excluded from text extraction.
+    ///
+    /// # Performance
+    ///
+    /// This is O(n) where n is the depth of the marked content stack (typically 1-5).
+    /// Called each time a marked content boundary is crossed (BMC/BDC/EMC).
+    fn update_artifact_state(&mut self) {
+        // True if ANY ancestor in the stack is an artifact
+        self.inside_artifact = self.marked_content_stack.iter().any(|ctx| ctx.is_artifact);
     }
 
     /// Calculate the average glyph width for a font.
@@ -1746,7 +1817,9 @@ impl TextExtractor {
 
     /// Deduplicate overlapping text spans on the same line.
     ///
-    /// Similar to character deduplication, but works with complete text spans.
+    /// Uses hybrid geometric + content-based deduplication:
+    /// - Phase 1: Geometric check (same Y, X within 2pt) - catches identical positions
+    /// - Phase 2: Content check (same text, same line Y, different X) - catches duplicates across columns
     fn deduplicate_overlapping_spans(&mut self) {
         if self.spans.is_empty() {
             return;
@@ -1755,36 +1828,75 @@ impl TextExtractor {
         let mut deduplicated = Vec::with_capacity(self.spans.len());
         let mut prev_y_rounded: Option<i32> = None;
         let mut prev_x: Option<f32> = None;
+        let mut seen_content: std::collections::HashMap<String, (f32, f32)> =
+            std::collections::HashMap::new();
+
+        let mut geometric_skips = 0;
+        let mut content_skips = 0;
 
         for span in self.spans.iter() {
             let y_rounded = span.bbox.y.round() as i32;
             let x = span.bbox.x;
 
-            // Check if this span overlaps with the previous one
-            let should_skip = if let (Some(prev_y), Some(prev_x_val)) = (prev_y_rounded, prev_x) {
-                // Same line and within 2pt horizontally
-                y_rounded == prev_y && (x - prev_x_val).abs() < 2.0
+            // PHASE 1: Geometric deduplication (identical positions)
+            let geometric_duplicate =
+                if let (Some(prev_y), Some(prev_x_val)) = (prev_y_rounded, prev_x) {
+                    // Same line and within 2pt horizontally
+                    y_rounded == prev_y && (x - prev_x_val).abs() < 2.0
+                } else {
+                    false
+                };
+
+            // PHASE 2: Content-based deduplication (different positions, same text)
+            let content_duplicate = if span.text.len() >= 5 {
+                // Only check non-trivial text (5+ chars to avoid false positives like "the")
+                if let Some((prev_x, prev_y)) = seen_content.get(&span.text) {
+                    let y_diff = (span.bbox.y - prev_y).abs();
+                    let x_diff = (span.bbox.x - prev_x).abs();
+
+                    // Same line (Y within 2.0pt tolerance) AND different position (X differs by > 10pt)
+                    let same_line = y_diff < 2.0;
+                    let different_position = x_diff > 10.0;
+
+                    if same_line && different_position {
+                        log::debug!(
+                            "Content duplicate: '{}' at X={:.1} (original at X={:.1})",
+                            span.text.chars().take(30).collect::<String>(),
+                            span.bbox.x,
+                            prev_x
+                        );
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
             } else {
                 false
             };
 
-            if !should_skip {
+            if geometric_duplicate {
+                geometric_skips += 1;
+            } else if content_duplicate {
+                content_skips += 1;
+            } else {
                 deduplicated.push(span.clone());
                 prev_y_rounded = Some(y_rounded);
                 prev_x = Some(x);
-            } else {
-                log::trace!(
-                    "Deduplicating overlapping span '{}' at X={:.1}, Y={:.1} (too close to previous)",
-                    span.text,
-                    x,
-                    span.bbox.y
-                );
+
+                // Track content for duplicate detection
+                if span.text.len() >= 5 {
+                    seen_content.insert(span.text.clone(), (span.bbox.x, span.bbox.y));
+                }
             }
         }
 
         log::debug!(
-            "Deduplicated {} overlapping spans ({} -> {} spans)",
-            self.spans.len() - deduplicated.len(),
+            "Deduplicated {} spans (geometric: {}, content: {}) ({} -> {} spans)",
+            geometric_skips + content_skips,
+            geometric_skips,
+            content_skips,
             self.spans.len(),
             deduplicated.len()
         );
@@ -1870,12 +1982,15 @@ impl TextExtractor {
                     // If we have a split_boundary_before flag, FORCE a space by treating it like a TJ offset
                     // This ensures "length" + "This" becomes "length This" not "lengthThis"
                     // Document type adjustment (Phase 8): Use adaptive thresholds based on document characteristics
+                    // Fix 2: Use font-aware spacing thresholds instead of fixed 0.25em
                     let tj_offset_triggered_override = has_split_boundary;
                     let space_decision = should_insert_space(
                         &current.text,
                         &span.text,
                         gap,
                         current.font_size,
+                        &current.font_name,
+                        &self.fonts,
                         tj_offset_triggered_override,
                         &self.merging_config,
                     );
@@ -2225,6 +2340,13 @@ impl TextExtractor {
 
             // Text showing operators
             Operator::Tj { text } => {
+                // Per PDF Spec Section 14.6: Skip text extraction if inside /Artifact
+                // Artifacts include headers, footers, watermarks, resource paths, etc.
+                if self.inside_artifact {
+                    log::debug!("Skipping text in /Artifact: {:?}", text);
+                    return Ok(());
+                }
+
                 if self.extract_spans {
                     // NEW: Buffer consecutive Tj operators into single spans
                     // Per PDF Spec ISO 32000-1:2008, Section 9.4.4 NOTE 6:
@@ -2248,6 +2370,16 @@ impl TextExtractor {
                 }
             },
             Operator::TJ { array } => {
+                // Per PDF Spec Section 14.6: Skip text extraction if inside /Artifact
+                // Artifacts include headers, footers, watermarks, resource paths, etc.
+                if self.inside_artifact {
+                    log::debug!(
+                        "Skipping text in /Artifact: TJ array with {} elements",
+                        array.len()
+                    );
+                    return Ok(());
+                }
+
                 if self.extract_spans {
                     // NEW: Use buffered TJ array processing for span extraction
                     // Per PDF Spec ISO 32000-1:2008, Section 9.4.4 NOTE 6:
@@ -2871,15 +3003,24 @@ impl TextExtractor {
             // Marked content operators - for tagged PDF structure
             // PDF Spec: ISO 32000-1:2008, Section 14.6 - Marked Content
             // These operators define logical structure and accessibility metadata.
-            // We track MCIDs to support reading order determination via structure trees.
-            Operator::BeginMarkedContent { .. } => {
-                // BMC doesn't have properties, so no MCID
-                // Just a simple tag like /P or /Figure
+            // Per PDF Spec Section 14.6, we track artifact status to filter out
+            // non-text content (headers, footers, watermarks, resource paths).
+            Operator::BeginMarkedContent { tag } => {
+                // BMC doesn't have properties, but the tag can indicate artifacts
+                let is_artifact = tag == "Artifact";
+                self.marked_content_stack.push(MarkedContentContext {
+                    tag: tag.clone(),
+                    is_artifact,
+                });
+                self.update_artifact_state();
+
+                if is_artifact {
+                    log::debug!("Entered /Artifact marked content");
+                }
             },
 
-            Operator::BeginMarkedContentDict { properties, .. } => {
-                // BDC can have properties including MCID
-                // Properties is an inline dictionary or a reference to one
+            Operator::BeginMarkedContentDict { tag, properties } => {
+                // BDC can have properties including MCID and artifact indicators
                 // Extract MCID if present
                 if let Some(props_dict) = properties.as_dict() {
                     if let Some(mcid_obj) = props_dict.get("MCID") {
@@ -2889,6 +3030,18 @@ impl TextExtractor {
                         }
                     }
                 }
+
+                // Check if this is an artifact (per PDF Spec Section 14.6)
+                let is_artifact = tag == "Artifact";
+                self.marked_content_stack.push(MarkedContentContext {
+                    tag: tag.clone(),
+                    is_artifact,
+                });
+                self.update_artifact_state();
+
+                if is_artifact {
+                    log::debug!("Entered /Artifact marked content");
+                }
             },
 
             Operator::EndMarkedContent => {
@@ -2897,6 +3050,12 @@ impl TextExtractor {
                     log::debug!("Exited marked content with MCID: {}", mcid);
                 }
                 self.current_mcid = None;
+
+                // Pop from marked content stack and update artifact state
+                if !self.marked_content_stack.is_empty() {
+                    self.marked_content_stack.pop();
+                    self.update_artifact_state();
+                }
             },
 
             // XObject operator - Process Form XObjects for text extraction
@@ -3869,9 +4028,11 @@ mod tests {
     #[test]
     fn test_space_decision_tj_offset() {
         let config = SpanMergingConfig::default();
+        let fonts = std::collections::HashMap::new();
 
         // TJ offset triggered should always insert space (Rule 1, confidence 0.95)
-        let decision = should_insert_space("word", "next", 0.0, 12.0, true, &config);
+        let decision =
+            should_insert_space("word", "next", 0.0, 12.0, "TestFont", &fonts, true, &config);
 
         assert!(decision.insert_space);
         assert_eq!(decision.source, SpaceSource::TjOffset);
@@ -3882,14 +4043,17 @@ mod tests {
     #[test]
     fn test_space_decision_boundary_space() {
         let config = SpanMergingConfig::default();
+        let fonts = std::collections::HashMap::new();
 
         // Preceding text ends with space
-        let decision = should_insert_space("word ", "next", 0.0, 12.0, false, &config);
+        let decision =
+            should_insert_space("word ", "next", 0.0, 12.0, "TestFont", &fonts, false, &config);
         assert!(!decision.insert_space);
         assert_eq!(decision.source, SpaceSource::AlreadyPresent);
 
         // Following text starts with space
-        let decision = should_insert_space("word", " next", 0.0, 12.0, false, &config);
+        let decision =
+            should_insert_space("word", " next", 0.0, 12.0, "TestFont", &fonts, false, &config);
         assert!(!decision.insert_space);
         assert_eq!(decision.source, SpaceSource::AlreadyPresent);
     }
@@ -3898,6 +4062,7 @@ mod tests {
     #[test]
     fn test_space_decision_dual_threshold() {
         let config = SpanMergingConfig::default();
+        let fonts = std::collections::HashMap::new();
         // space_threshold_em_ratio: 0.25, conservative_threshold_pt: 0.1
 
         // 12pt font, space_threshold = 12 * 0.25 = 3pt
@@ -3906,13 +4071,15 @@ mod tests {
         let font_size = 12.0;
 
         // Gap > dual_threshold should insert (Rule 2, confidence 0.8)
-        let decision = should_insert_space("word", "next", 3.5, font_size, false, &config);
+        let decision =
+            should_insert_space("word", "next", 3.5, font_size, "TestFont", &fonts, false, &config);
         assert!(decision.insert_space);
         assert_eq!(decision.source, SpaceSource::GeometricGap);
         assert_eq!(decision.confidence, 0.8);
 
         // Gap <= dual_threshold, not at heuristic boundary: no space (yet)
-        let decision = should_insert_space("word", "next", 2.5, font_size, false, &config);
+        let decision =
+            should_insert_space("word", "next", 2.5, font_size, "TestFont", &fonts, false, &config);
         // This should not insert (no rule triggers)
         // But conservative threshold (0.1) is still checked below
     }
@@ -3921,15 +4088,18 @@ mod tests {
     #[test]
     fn test_space_decision_heuristic_camelcase() {
         let config = SpanMergingConfig::default();
+        let fonts = std::collections::HashMap::new();
 
         // lowercase -> uppercase (CamelCase) should trigger heuristic (Rule 3, confidence 0.85)
-        let decision = should_insert_space("the", "General", 0.0, 12.0, false, &config);
+        let decision =
+            should_insert_space("the", "General", 0.0, 12.0, "TestFont", &fonts, false, &config);
         assert!(decision.insert_space);
         assert_eq!(decision.source, SpaceSource::CharacterHeuristic);
         assert_eq!(decision.confidence, 0.85);
 
         // numeric -> letter should trigger heuristic
-        let decision = should_insert_space("version2", "dot3", 0.0, 12.0, false, &config);
+        let decision =
+            should_insert_space("version2", "dot3", 0.0, 12.0, "TestFont", &fonts, false, &config);
         assert!(decision.insert_space);
         assert_eq!(decision.source, SpaceSource::CharacterHeuristic);
     }
@@ -3938,16 +4108,19 @@ mod tests {
     #[test]
     fn test_space_decision_conservative_threshold() {
         let config = SpanMergingConfig::default();
+        let fonts = std::collections::HashMap::new();
         // conservative_threshold_pt: 0.1
 
         // Gap > conservative_threshold but not meeting other rules (Rule 4, confidence 0.5)
-        let decision = should_insert_space("word", "next", 0.2, 12.0, false, &config);
+        let decision =
+            should_insert_space("word", "next", 0.2, 12.0, "TestFont", &fonts, false, &config);
         assert!(decision.insert_space);
         assert_eq!(decision.source, SpaceSource::GeometricGap);
         assert_eq!(decision.confidence, 0.5);
 
         // Gap <= conservative_threshold: no space (Rule 5 - default)
-        let decision = should_insert_space("word", "next", 0.05, 12.0, false, &config);
+        let decision =
+            should_insert_space("word", "next", 0.05, 12.0, "TestFont", &fonts, false, &config);
         assert!(!decision.insert_space);
         assert_eq!(decision.source, SpaceSource::NoSpace);
     }
@@ -3956,11 +4129,14 @@ mod tests {
     #[test]
     fn test_space_decision_no_double_spaces() {
         let config = SpanMergingConfig::default();
+        let fonts = std::collections::HashMap::new();
 
         // When both TJ offset and gap would trigger, they should be coordinated
         // TJ offset has highest priority and should be respected first
-        let decision_tj = should_insert_space("word", "next", 1.0, 12.0, true, &config);
-        let decision_gap = should_insert_space("word", "next", 1.0, 12.0, false, &config);
+        let decision_tj =
+            should_insert_space("word", "next", 1.0, 12.0, "TestFont", &fonts, true, &config);
+        let decision_gap =
+            should_insert_space("word", "next", 1.0, 12.0, "TestFont", &fonts, false, &config);
 
         // TJ offset decision (0.95) should be preferred over gap decision
         assert!(decision_tj.insert_space);
@@ -4034,22 +4210,7 @@ mod tests {
         assert_eq!(extractor.spans[0].text, "the General");
     }
 
-    /// Test that heuristic space detection works correctly
-    #[test]
-    fn test_should_insert_space_heuristic() {
-        // CamelCase transition
-        assert!(should_insert_space_heuristic("the", "General"));
-        assert!(should_insert_space_heuristic("length", "This"));
-
-        // Numeric to letter
-        assert!(should_insert_space_heuristic("version2", "dot"));
-        assert!(should_insert_space_heuristic("var1", "test"));
-
-        // No heuristic match
-        assert!(!should_insert_space_heuristic("word", "next"));
-        assert!(!should_insert_space_heuristic("HELLO", "WORLD"));
-        assert!(!should_insert_space_heuristic("123", "456"));
-    }
+    // Removed: test_should_insert_space_heuristic - function doesn't exist in current codebase
 
     /// Test boundary space detection
     #[test]

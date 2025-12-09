@@ -208,3 +208,6 @@ markdown_exports/
 # Export directories (generated data)
 html_exports/
 text_exports/
+
+# Claude Code
+Claude.md

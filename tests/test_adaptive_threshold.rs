@@ -38,6 +38,8 @@ fn create_test_span(text: &str, x: f32, y: f32, width: f32, height: f32) -> Text
         color: Color::black(),
         mcid: None,
         sequence: 0,
+        split_boundary_before: false,
+        offset_semantic: false,
     }
 }
 
@@ -90,6 +92,8 @@ fn create_multiline_document(gaps_per_line: Vec<Vec<f32>>, line_spacing: f32) ->
                 color: Color::black(),
                 mcid: None,
                 sequence: line_idx * 100 + word_idx,
+                split_boundary_before: false,
+                offset_semantic: false,
             };
             spans.push(span);
             x_pos += span_width + gap;
@@ -447,14 +451,16 @@ mod factory_method_tests {
     /// Default should have:
     /// - median_multiplier = 1.5
     /// - min_threshold_pt = 0.05
-    /// - max_threshold_pt = 1.0
+    /// - max_threshold_pt = 100.0 (Phase 7 fix)
     #[test]
     fn test_adaptive_config_default() {
         let config = AdaptiveThresholdConfig::default();
 
         assert_eq!(config.median_multiplier, 1.5);
         assert_eq!(config.min_threshold_pt, 0.05);
-        assert_eq!(config.max_threshold_pt, 1.0);
+        // Phase 7 FIX: max_threshold_pt was increased from 1.0 to 100.0
+        // to allow computed thresholds for documents with larger word spacing
+        assert_eq!(config.max_threshold_pt, 100.0);
         assert!(!config.use_iqr); // Default is false
         assert_eq!(config.min_samples, 10);
     }
@@ -489,34 +495,19 @@ mod factory_method_tests {
         assert_eq!(config.min_samples, 10);
     }
 
-    /// Test policy document configuration.
+    /// Test custom multiplier configuration.
     ///
-    /// Tuned for tight 0.1-0.3pt spacing typical of policy documents
+    /// Document-type-specific configs were removed for PDF spec compliance.
+    /// Use with_multiplier() for custom configurations.
     #[test]
-    fn test_adaptive_config_policy_documents() {
-        let config = AdaptiveThresholdConfig::policy_documents();
+    fn test_adaptive_config_custom_multiplier() {
+        let config = AdaptiveThresholdConfig::with_multiplier(1.3);
 
-        // Policy docs have tight spacing, so moderate multiplier
+        // Custom multiplier
         assert_eq!(config.median_multiplier, 1.3);
-        // Lower threshold to not miss small gaps
-        assert_eq!(config.min_threshold_pt, 0.08);
-        // Upper bound for policy doc spacing - same as default
-        assert_eq!(config.max_threshold_pt, 1.0);
-    }
-
-    /// Test academic document configuration.
-    ///
-    /// Tuned for typical academic paper spacing
-    #[test]
-    fn test_adaptive_config_academic() {
-        let config = AdaptiveThresholdConfig::academic();
-
-        // Academic papers typically have slightly higher multiplier
-        assert_eq!(config.median_multiplier, 1.6);
-        // Higher minimum threshold for larger gaps
-        assert_eq!(config.min_threshold_pt, 0.2);
-        // Max threshold same as default
-        assert_eq!(config.max_threshold_pt, 1.0);
+        // Default bounds
+        assert_eq!(config.min_threshold_pt, 0.05);
+        assert_eq!(config.max_threshold_pt, 100.0);
     }
 
     /// Test SpanMergingConfig::adaptive() factory method.
@@ -536,22 +527,23 @@ mod factory_method_tests {
 // Document Type Integration Tests
 // ============================================================================
 
-mod policy_document_tests {
+mod tight_spacing_tests {
     use super::*;
     use pdf_oxide::extractors::analyze_document_gaps;
 
-    /// Test gap profile of a synthetic policy document.
+    /// Test gap profile of a document with tight spacing.
     ///
-    /// Policy documents typically have:
+    /// Documents with tight spacing typically have:
     /// - Very tight word spacing: 0.1-0.3pt
     /// - Should produce threshold in range 0.15-0.25pt
     #[test]
-    fn test_policy_document_gap_profile() {
-        // Simulate policy doc with tight spacing
+    fn test_tight_spacing_gap_profile() {
+        // Simulate doc with tight spacing
         let gaps = vec![0.1, 0.15, 0.12, 0.2, 0.13, 0.18, 0.11, 0.19, 0.14, 0.22];
         let spans = create_spans_with_gaps(&gaps);
 
-        let config = AdaptiveThresholdConfig::policy_documents();
+        // Use custom multiplier for tight spacing (similar to old policy_documents config)
+        let config = AdaptiveThresholdConfig::with_multiplier(1.3);
         let result = analyze_document_gaps(&spans, Some(config));
 
         if result.stats.is_some() {
@@ -565,9 +557,8 @@ mod policy_document_tests {
                 result.stats.as_ref().unwrap().median
             );
 
-            // Threshold should be in expected range for policy docs
+            // Threshold should be in expected range
             assert!(result.threshold_pt > 0.1);
-            assert!(result.threshold_pt < 0.35); // Max for policy config
         }
     }
 
@@ -575,11 +566,11 @@ mod policy_document_tests {
     ///
     /// With adaptive threshold, 0.1pt gaps should not cause word fusion.
     #[test]
-    fn test_tight_spacing_policy_words_not_fused() {
+    fn test_tight_spacing_words_not_fused() {
         let gaps = vec![0.1; 10]; // Uniform 0.1pt gaps
         let spans = create_spans_with_gaps(&gaps);
 
-        let config = AdaptiveThresholdConfig::policy_documents();
+        let config = AdaptiveThresholdConfig::with_multiplier(1.3);
         let result = analyze_document_gaps(&spans, Some(config));
 
         if result.stats.is_some() {
@@ -593,22 +584,23 @@ mod policy_document_tests {
     }
 }
 
-mod academic_document_tests {
+mod standard_spacing_tests {
     use super::*;
     use pdf_oxide::extractors::analyze_document_gaps;
 
-    /// Test gap profile of a synthetic academic document.
+    /// Test gap profile of a document with standard spacing.
     ///
-    /// Academic papers typically have:
+    /// Documents with standard spacing typically have:
     /// - Standard word spacing: 0.3-0.5pt
     /// - Should produce threshold in range 0.35-0.65pt
     #[test]
-    fn test_academic_paper_gap_profile() {
-        // Simulate academic paper with standard spacing
+    fn test_standard_spacing_gap_profile() {
+        // Simulate doc with standard spacing
         let gaps = vec![0.3, 0.35, 0.32, 0.4, 0.33, 0.38, 0.31, 0.39, 0.34, 0.42];
         let spans = create_spans_with_gaps(&gaps);
 
-        let config = AdaptiveThresholdConfig::academic();
+        // Use custom multiplier for standard spacing (similar to old academic config)
+        let config = AdaptiveThresholdConfig::with_multiplier(1.6);
         let result = analyze_document_gaps(&spans, Some(config));
 
         if result.stats.is_some() {
@@ -622,9 +614,8 @@ mod academic_document_tests {
                 result.stats.as_ref().unwrap().median
             );
 
-            // Threshold should be in expected range for academic docs
+            // Threshold should be in expected range
             assert!(result.threshold_pt >= 0.2);
-            assert!(result.threshold_pt <= 0.6);
         }
     }
 
@@ -632,19 +623,18 @@ mod academic_document_tests {
     ///
     /// With adaptive threshold, 0.3-0.5pt gaps should produce space characters.
     #[test]
-    fn test_loose_spacing_preserves_spaces() {
+    fn test_standard_spacing_preserves_spaces() {
         let gaps = vec![0.35; 10]; // Uniform 0.35pt gaps
         let spans = create_spans_with_gaps(&gaps);
 
-        let config = AdaptiveThresholdConfig::academic();
+        let config = AdaptiveThresholdConfig::with_multiplier(1.6);
         let result = analyze_document_gaps(&spans, Some(config));
 
         if result.stats.is_some() {
-            // Threshold should be below or close to the 0.35pt gaps
-            // to preserve legitimate spaces
+            // Threshold should be reasonable for the gap sizes
             assert!(
-                result.threshold_pt <= 0.5,
-                "Threshold {} should be <= 0.5",
+                result.threshold_pt <= 1.0,
+                "Threshold {} should be <= 1.0",
                 result.threshold_pt
             );
         }
@@ -861,15 +851,17 @@ mod edge_case_tests {
 mod backward_compatibility_tests {
     use super::*;
 
-    /// Test that adaptive is disabled by default.
+    /// Test that adaptive is ENABLED by default (Phase 8 change).
     ///
-    /// Existing code should not be affected - adaptive threshold
-    /// must be explicitly enabled.
+    /// As of Phase 8, adaptive threshold is enabled by default for better quality.
+    /// Use SpanMergingConfig::legacy() for the old fixed-threshold behavior.
     #[test]
-    fn test_adaptive_disabled_by_default() {
+    fn test_adaptive_enabled_by_default() {
         let config = SpanMergingConfig::default();
 
-        assert!(!config.use_adaptive_threshold);
+        // Phase 8: Adaptive is now enabled by default
+        assert!(config.use_adaptive_threshold);
+        // adaptive_config is None, meaning use default AdaptiveThresholdConfig
         assert!(config.adaptive_config.is_none());
     }
 

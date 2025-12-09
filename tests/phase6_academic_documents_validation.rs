@@ -52,6 +52,8 @@ fn create_academic_spans(gaps: &[f32]) -> Vec<TextSpan> {
             color: Color::black(),
             mcid: None,
             sequence: i,
+            split_boundary_before: false,
+            offset_semantic: false,
         };
         spans.push(span);
         x_pos += span_width;
@@ -196,11 +198,11 @@ fn test_adaptive_threshold_for_academic() {
     let academic_gaps = vec![0.35, 0.38, 0.36, 0.40, 0.34, 0.39, 0.37, 0.41, 0.33, 0.42];
     let spans = create_academic_spans(&academic_gaps);
 
-    println!("\nTesting AdaptiveThresholdConfig::academic()");
+    println!("\nTesting AdaptiveThresholdConfig::with_multiplier(1.6)");
     println!("  Expected multiplier: 1.6");
     println!("  Expected range: 0.45-0.65pt");
 
-    let academic_config = AdaptiveThresholdConfig::academic();
+    let academic_config = AdaptiveThresholdConfig::with_multiplier(1.6);
     let result = analyze_document_gaps(&spans, Some(academic_config.clone()));
 
     println!("\nAdaptive Threshold Result:");
@@ -228,16 +230,15 @@ fn test_adaptive_threshold_for_academic() {
         println!("  ✓ Threshold in expected range (0.45-0.65pt)");
     }
 
-    // Verify academic config parameters
-    assert_eq!(academic_config.median_multiplier, 1.6, "Academic multiplier should be 1.6");
-    assert_eq!(academic_config.min_threshold_pt, 0.2, "Academic min threshold should be 0.2pt");
-    // Phase 7 FIX: max_threshold_pt was increased from 1.0 to 100.0
-    // to allow computed thresholds for documents with larger word spacing
+    // Verify custom config parameters
+    // Note: with_multiplier() uses default min/max thresholds
+    assert_eq!(academic_config.median_multiplier, 1.6, "Multiplier should be 1.6");
+    assert_eq!(academic_config.min_threshold_pt, 0.05, "Default min threshold should be 0.05pt");
     assert_eq!(
         academic_config.max_threshold_pt, 100.0,
-        "Academic max threshold should be 100.0pt (Phase 7 fix)"
+        "Default max threshold should be 100.0pt"
     );
-    println!("  ✓ Academic config parameters verified");
+    println!("  ✓ Config parameters verified");
 }
 
 // ============================================================================
@@ -263,7 +264,7 @@ fn test_word_spacing_quality() {
     let spans = create_academic_spans(&gaps);
 
     // Test with adaptive threshold
-    let adaptive_config = AdaptiveThresholdConfig::academic();
+    let adaptive_config = AdaptiveThresholdConfig::with_multiplier(1.6);
     let adaptive_result = analyze_document_gaps(&spans, Some(adaptive_config));
 
     // Test with default threshold (for comparison)
@@ -332,7 +333,7 @@ fn test_spurious_spaces_minimal() {
 
     let spans = create_academic_spans(&academic_gaps);
 
-    let adaptive_config = AdaptiveThresholdConfig::academic();
+    let adaptive_config = AdaptiveThresholdConfig::with_multiplier(1.6);
     let result = analyze_document_gaps(&spans, Some(adaptive_config));
 
     println!("\nSpurious Spaces Analysis:");
@@ -396,6 +397,8 @@ fn test_paragraph_integrity() {
                 color: Color::black(),
                 mcid: None,
                 sequence: sequence as usize,
+                split_boundary_before: false,
+                offset_semantic: false,
             };
             all_spans.push(span);
             sequence += 1;
@@ -403,7 +406,7 @@ fn test_paragraph_integrity() {
         }
     }
 
-    let adaptive_config = AdaptiveThresholdConfig::academic();
+    let adaptive_config = AdaptiveThresholdConfig::with_multiplier(1.6);
     let result = analyze_document_gaps(&all_spans, Some(adaptive_config));
 
     println!("\nParagraph Integrity Analysis:");
@@ -451,7 +454,7 @@ fn test_adaptive_configuration_options() {
 
     // Test SpanMergingConfig::adaptive_with_config()
     println!("\nSpanMergingConfig::adaptive_with_config(academic):");
-    let academic_config = AdaptiveThresholdConfig::academic();
+    let academic_config = AdaptiveThresholdConfig::with_multiplier(1.6);
     let config = SpanMergingConfig::adaptive_with_config(academic_config.clone());
     assert!(config.use_adaptive_threshold, "adaptive_with_config() should enable adaptive");
     assert_eq!(
@@ -462,11 +465,14 @@ fn test_adaptive_configuration_options() {
     println!("  ✓ Adaptive mode with custom config enabled");
     println!("  ✓ Academic multiplier: 1.6");
 
-    // Test backward compatibility
-    println!("\nBackward Compatibility Check:");
+    // Test default configuration (Phase 8: adaptive enabled by default)
+    println!("\nDefault Configuration Check:");
     let default_config = SpanMergingConfig::default();
-    assert!(!default_config.use_adaptive_threshold, "default() should NOT enable adaptive");
-    println!("  ✓ Adaptive disabled by default (backward compatible)");
+    assert!(
+        default_config.use_adaptive_threshold,
+        "default() should enable adaptive (Phase 8)"
+    );
+    println!("  ✓ Adaptive enabled by default for better quality");
 }
 
 #[test]
@@ -484,7 +490,8 @@ fn test_comparison_adaptive_vs_fixed() {
 
     // Compare: Fixed 0.25 (default conservative_threshold_pt)
     // vs Adaptive academic
-    let adaptive_result = analyze_document_gaps(&spans, Some(AdaptiveThresholdConfig::academic()));
+    let adaptive_result =
+        analyze_document_gaps(&spans, Some(AdaptiveThresholdConfig::with_multiplier(1.6)));
     let default_result = analyze_document_gaps(&spans, None);
 
     println!("\nThreshold Comparison for Academic Document:");
@@ -530,7 +537,7 @@ fn test_summary_report() {
     println!("   ✓ Word fusion instances: 0 (no regression)");
     println!("   ✓ Spurious spaces: < 2 per typical document");
     println!("   ✓ Gap profile detected: 0.3-0.5pt correctly identified");
-    println!("   ✓ Factory method: AdaptiveThresholdConfig::academic()");
+    println!("   ✓ Factory method: AdaptiveThresholdConfig::with_multiplier(1.6)");
 
     println!("\n3. QUALITY METRICS:");
     println!("   ✓ Tight academic: median 0.30-0.40pt");

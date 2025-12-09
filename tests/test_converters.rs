@@ -376,6 +376,7 @@ fn test_comprehensive_document_conversion() {
 
     let options = ConversionOptions {
         preserve_layout: false,
+        detect_headings: true,
         include_images: false,
         extract_tables: false,
         image_output_dir: None,

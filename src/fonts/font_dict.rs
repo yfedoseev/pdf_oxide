@@ -616,6 +616,25 @@ impl FontInfo {
         self.default_width
     }
 
+    /// Get the width of the space glyph (U+0020) in font units.
+    ///
+    /// Returns the width in 1000ths of em per PDF spec Section 9.7.4.
+    /// Used for font-aware spacing threshold calculations.
+    ///
+    /// Per PDF Spec Section 9.4.4, word spacing should be based on actual font metrics
+    /// rather than fixed ratios. This method returns the actual space glyph width,
+    /// which is used to compute adaptive TJ offset thresholds that account for
+    /// different font sizes and families.
+    ///
+    /// # Returns
+    ///
+    /// The width of the space character (code 0x20) in 1000ths of em,
+    /// or the font's default width if the space glyph is not defined.
+    pub fn get_space_glyph_width(&self) -> f32 {
+        // Space character is always code 0x20 (32) in PDF
+        self.get_glyph_width(0x20)
+    }
+
     /// Convert a character code to Unicode string.
     ///
     /// This method looks up the character code in the font's encoding tables

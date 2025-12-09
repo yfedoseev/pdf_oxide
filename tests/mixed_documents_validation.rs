@@ -31,6 +31,8 @@ fn create_span(text: &str, x: f32, y: f32, width: f32, height: f32) -> TextSpan 
         color: Color::black(),
         mcid: None,
         sequence: 0,
+        split_boundary_before: false,
+        offset_semantic: false,
     }
 }
 
@@ -75,6 +77,8 @@ fn create_government_document() -> Vec<TextSpan> {
             color: Color::black(),
             mcid: None,
             sequence: seq,
+            split_boundary_before: false,
+            offset_semantic: false,
         };
         seq += 1;
         spans.push(span);
@@ -98,6 +102,8 @@ fn create_government_document() -> Vec<TextSpan> {
             color: Color::black(),
             mcid: None,
             sequence: seq,
+            split_boundary_before: false,
+            offset_semantic: false,
         };
         seq += 1;
         spans.push(span);
@@ -121,6 +127,8 @@ fn create_government_document() -> Vec<TextSpan> {
             color: Color::black(),
             mcid: None,
             sequence: seq,
+            split_boundary_before: false,
+            offset_semantic: false,
         };
         seq += 1;
         spans.push(span);
@@ -151,6 +159,8 @@ fn create_newspaper_document() -> Vec<TextSpan> {
             color: Color::black(),
             mcid: None,
             sequence: seq,
+            split_boundary_before: false,
+            offset_semantic: false,
         };
         seq += 1;
         spans.push(span);
@@ -174,6 +184,8 @@ fn create_newspaper_document() -> Vec<TextSpan> {
             color: Color::black(),
             mcid: None,
             sequence: seq,
+            split_boundary_before: false,
+            offset_semantic: false,
         };
         seq += 1;
         spans.push(span);
@@ -197,6 +209,8 @@ fn create_newspaper_document() -> Vec<TextSpan> {
             color: Color::black(),
             mcid: None,
             sequence: seq,
+            split_boundary_before: false,
+            offset_semantic: false,
         };
         seq += 1;
         spans.push(span);
@@ -227,6 +241,8 @@ fn create_technical_manual() -> Vec<TextSpan> {
             color: Color::black(),
             mcid: None,
             sequence: seq,
+            split_boundary_before: false,
+            offset_semantic: false,
         };
         seq += 1;
         spans.push(span);
@@ -250,6 +266,8 @@ fn create_technical_manual() -> Vec<TextSpan> {
             color: Color::black(),
             mcid: None,
             sequence: seq,
+            split_boundary_before: false,
+            offset_semantic: false,
         };
         seq += 1;
         spans.push(span);
@@ -273,6 +291,8 @@ fn create_technical_manual() -> Vec<TextSpan> {
             color: Color::black(),
             mcid: None,
             sequence: seq,
+            split_boundary_before: false,
+            offset_semantic: false,
         };
         seq += 1;
         spans.push(span);
@@ -305,6 +325,8 @@ fn create_extreme_bimodal_document() -> Vec<TextSpan> {
             color: Color::black(),
             mcid: None,
             sequence: seq,
+            split_boundary_before: false,
+            offset_semantic: false,
         };
         seq += 1;
         spans.push(span);
@@ -325,6 +347,8 @@ fn create_extreme_bimodal_document() -> Vec<TextSpan> {
             color: Color::black(),
             mcid: None,
             sequence: seq,
+            split_boundary_before: false,
+            offset_semantic: false,
         };
         seq += 1;
         spans.push(span);
@@ -404,8 +428,10 @@ fn test_adaptive_variations(name: &str, spans: &[TextSpan]) {
         ("Default (1.5x)", AdaptiveThresholdConfig::default()),
         ("Aggressive (1.2x)", AdaptiveThresholdConfig::aggressive()),
         ("Conservative (2.0x)", AdaptiveThresholdConfig::conservative()),
-        ("Policy Docs (1.3x)", AdaptiveThresholdConfig::policy_documents()),
-        ("Academic (1.6x)", AdaptiveThresholdConfig::academic()),
+        // Note: Document-type-specific configs removed for PDF spec compliance
+        // Use with_multiplier() for custom thresholds
+        ("Custom (1.3x)", AdaptiveThresholdConfig::with_multiplier(1.3)),
+        ("Custom (1.6x)", AdaptiveThresholdConfig::with_multiplier(1.6)),
     ];
 
     for (name, config) in configs {
