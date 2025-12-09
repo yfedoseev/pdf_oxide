@@ -1,6 +1,6 @@
 # Export Commands Reference
 
-Complete command reference for exporting PDFs to all formats using both our library and PyMuPDF/leading alternatives baselines.
+Complete command reference for exporting PDFs to all formats using both our library and PyMuPDF/PyMuPDF4LLM baselines.
 
 **Date:** 2025-11-04
 **Status:** Ready for benchmarking
@@ -31,7 +31,7 @@ cargo run --release --bin export_to_text -- --output-dir test_datasets/benchmark
 ### Baseline Alternatives
 
 ```bash
-# Markdown (leading alternatives)
+# Markdown (PyMuPDF4LLM)
 python test_datasets/export_with_pymupdf4llm.py
 
 # HTML (PyMuPDF)
@@ -67,16 +67,16 @@ cargo run --release --bin export_to_markdown -- --output-dir test_datasets/bench
 - Features: Semantic headings, clickable links, proper formatting
 - Quality: 99.8/100 (tested)
 
-#### leading alternatives Baseline
+#### PyMuPDF4LLM Baseline
 ```bash
-# Export to default directory (markdown_exports/leading alternatives)
+# Export to default directory (markdown_exports/PyMuPDF4LLM)
 python test_datasets/export_with_pymupdf4llm.py
 
 # Export to custom directory
-python test_datasets/export_with_pymupdf4llm.py --output-dir test_datasets/benchmark_outputs/leading alternatives
+python test_datasets/export_with_pymupdf4llm.py --output-dir test_datasets/benchmark_outputs/PyMuPDF4LLM
 
 # Verbose mode
-python test_datasets/export_with_pymupdf4llm.py --output-dir test_datasets/benchmark_outputs/leading alternatives --verbose
+python test_datasets/export_with_pymupdf4llm.py --output-dir test_datasets/benchmark_outputs/PyMuPDF4LLM --verbose
 ```
 
 **Output:**
@@ -122,7 +122,7 @@ cargo run --release --bin export_to_html -- --output-dir test_datasets/benchmark
 - Features: CSS absolute positioning, exact PDF layout replication
 - Use case: When layout matters (forms, invoices)
 
-#### established PDF library Baseline
+#### PyMuPDF Baseline
 ```bash
 # Export to default directory (html_exports/pymupdf)
 python test_datasets/export_with_pymupdf_html.py
@@ -136,7 +136,7 @@ python test_datasets/export_with_pymupdf_html.py --output-dir test_datasets/benc
 
 **Output:**
 - Format: `.html` files
-- Features: Basic HTML from an established PDF library's `get_text("html")`
+- Features: Basic HTML from an PyMuPDF's `get_text("html")`
 - Quality: ~85/100 (estimated - no clickable links, no semantic structure)
 
 ---
@@ -163,7 +163,7 @@ cargo run --release --bin export_to_text -- --output-dir test_datasets/benchmark
 - Features: Clean text extraction, proper encoding
 - Quality: ~100/100 (estimated)
 
-#### established PDF library Baseline
+#### PyMuPDF Baseline
 ```bash
 # Export to default directory (text_exports/pymupdf)
 python test_datasets/export_with_pymupdf_text.py
@@ -177,7 +177,7 @@ python test_datasets/export_with_pymupdf_text.py --output-dir test_datasets/benc
 
 **Output:**
 - Format: `.txt` files
-- Features: Basic text extraction from an established PDF library's `get_text("text")`
+- Features: Basic text extraction from an PyMuPDF's `get_text("text")`
 - Quality: ~98/100 (estimated - more replacement characters)
 
 ---
@@ -200,8 +200,8 @@ cargo run --release --bin export_to_text -- --output-dir test_datasets/benchmark
 ### Step 2: Export with Baseline Alternatives
 
 ```bash
-# Markdown (leading alternatives)
-python test_datasets/export_with_pymupdf4llm.py --output-dir test_datasets/benchmark_outputs/leading alternatives
+# Markdown (PyMuPDF4LLM)
+python test_datasets/export_with_pymupdf4llm.py --output-dir test_datasets/benchmark_outputs/PyMuPDF4LLM
 
 # HTML (PyMuPDF)
 python test_datasets/export_with_pymupdf_html.py --output-dir test_datasets/benchmark_outputs/pymupdf_html
@@ -246,7 +246,7 @@ test_datasets/benchmark_outputs/
 │   ├── academic/
 │   ├── forms/
 │   └── government/
-├── leading alternatives/              # Baseline - Markdown
+├── PyMuPDF4LLM/              # Baseline - Markdown
 │   ├── academic/
 │   ├── forms/
 │   └── government/
@@ -266,9 +266,9 @@ test_datasets/benchmark_outputs/
 
 | Format | Our Library | Baseline | Library Used | Advantage |
 |--------|-------------|----------|--------------|-----------|
-| **Markdown** | **99.8/100** ✅ | 92.5/100 | leading alternatives | **+7.3** (tested) |
-| **HTML** | **~99/100** ⭐ | ~85/100 | established PDF library | **+14** (estimated) |
-| **Plain Text** | **~100/100** ⭐ | ~98/100 | established PDF library | **+2** (estimated) |
+| **Markdown** | **99.8/100** ✅ | 92.5/100 | PyMuPDF4LLM | **+7.3** (tested) |
+| **HTML** | **~99/100** ⭐ | ~85/100 | PyMuPDF | **+14** (estimated) |
+| **Plain Text** | **~100/100** ⭐ | ~98/100 | PyMuPDF | **+2** (estimated) |
 
 ---
 
@@ -283,13 +283,13 @@ cargo build --release
 ### Baseline Alternatives
 ```bash
 # For markdown
-pip install leading alternatives --user
+pip install PyMuPDF4LLM --user
 
 # For HTML and plain text
-pip install established PDF library --user
+pip install PyMuPDF --user
 
 # Install both (recommended)
-pip install established PDF library leading alternatives --user
+pip install PyMuPDF PyMuPDF4LLM --user
 ```
 
 ---
@@ -321,7 +321,7 @@ python extract_html_pymupdf4llm.py specific_file.pdf ./output_dir
 ## 🏆 Summary
 
 **Markdown (Already Tested):**
-- ✅ Our: 99.8/100 vs leading alternatives: 92.5/100
+- ✅ Our: 99.8/100 vs PyMuPDF4LLM: 92.5/100
 - Advantage: +7.3 points
 
 **HTML (Ready to Test):**

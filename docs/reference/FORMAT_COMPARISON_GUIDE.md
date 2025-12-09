@@ -1,6 +1,6 @@
 # Format Comparison Guide: HTML, Markdown, and Plain Text
 
-This guide explains how to test and compare all three output formats (HTML, Markdown, Plain Text) between our PDF library and PyMuPDF/leading alternatives baseline.
+This guide explains how to test and compare all three output formats (HTML, Markdown, Plain Text) between our PDF library and PyMuPDF/PyMuPDF4LLM baseline.
 
 **Date:** 2025-11-04
 **Status:** Ready for testing
@@ -82,7 +82,7 @@ cargo test --test test_markdown_formatting_quality -- --nocapture
 
 ---
 
-## 🔬 established PDF library Baseline Extraction Scripts
+## 🔬 PyMuPDF Baseline Extraction Scripts
 
 ### 1. HTML Extraction Baseline
 
@@ -102,7 +102,7 @@ python3 extract_html_pymupdf4llm.py \
   ./pymupdf_html_baseline
 ```
 
-**Note:** Uses an established PDF library's `get_text("html")` method for HTML export.
+**Note:** Uses an PyMuPDF's `get_text("html")` method for HTML export.
 
 ### 2. Plain Text Extraction Baseline
 
@@ -122,7 +122,7 @@ python3 extract_text_pymupdf.py \
   ./pymupdf_text_baseline
 ```
 
-**Note:** Uses an established PDF library's `get_text("text")` method for plain text extraction.
+**Note:** Uses an PyMuPDF's `get_text("text")` method for plain text extraction.
 
 ### 3. Markdown Extraction Baseline (Existing)
 
@@ -146,7 +146,7 @@ python3 compare_html_with_pymupdf.py \
 ```
 
 **What it does:**
-1. Extracts HTML using established PDF library 2. Analyzes HTML quality (clickable links, semantic structure, encoding)
+1. Extracts HTML using PyMuPDF 2. Analyzes HTML quality (clickable links, semantic structure, encoding)
 3. Scores quality 0-100
 4. Shows comparison template for our library's output
 
@@ -169,7 +169,7 @@ python3 compare_text_with_pymupdf.py \
 ```
 
 **What it does:**
-1. Extracts plain text using established PDF library 2. Analyzes text quality (completeness, encoding, URLs, emails)
+1. Extracts plain text using PyMuPDF 2. Analyzes text quality (completeness, encoding, URLs, emails)
 3. Scores quality 0-100
 4. Saves baseline output for comparison
 
@@ -185,7 +185,7 @@ python3 compare_text_with_pymupdf.py \
 
 **Already implemented and tested** ✅
 
-**Result:** PDF Library 99.8/100 vs leading alternatives 92.5/100 (+7.3 points)
+**Result:** PDF Library 99.8/100 vs PyMuPDF4LLM 92.5/100 (+7.3 points)
 
 ---
 
@@ -204,7 +204,7 @@ cargo test --test test_plaintext_quality -- --nocapture > plaintext_test_results
 cargo test --test test_markdown_formatting_quality -- --nocapture > markdown_test_results.txt
 ```
 
-### Step 2: Extract established PDF library Baselines
+### Step 2: Extract PyMuPDF Baselines
 
 ```bash
 # Create baseline directories
@@ -274,9 +274,9 @@ Expected Results (based on Markdown):
 
 ## 🎯 Expected Quality Comparison
 
-Based on our Markdown results (99.8/100 vs leading alternatives's 92.5/100):
+Based on our Markdown results (99.8/100 vs PyMuPDF4LLM's 92.5/100):
 
-| Format | PDF Library | established PDF library Baseline | Advantage |
+| Format | PDF Library | PyMuPDF Baseline | Advantage |
 |--------|-------------|------------------|-----------|
 | **Markdown** | **99.8/100** ✅ | 92.5/100 | **+7.3** (tested) |
 | **HTML** | **~99/100** ⭐ | ~90/100 | **+9** (estimated) |
@@ -302,7 +302,7 @@ Based on our Markdown results (99.8/100 vs leading alternatives's 92.5/100):
    - Layout mode: CSS positioning to match PDF
 
 3. **Clean Encoding** (All Formats)
-   - 89.3% clean extraction vs an established PDF library's 62.4%
+   - 89.3% clean extraction vs an PyMuPDF's 62.4%
    - Fewer � replacement characters
    - Better Unicode support
 
@@ -311,11 +311,11 @@ Based on our Markdown results (99.8/100 vs leading alternatives's 92.5/100):
    - Column-aware detection
    - PDF structure tree support
 
-### an established PDF library's Approach
+### an PyMuPDF's Approach
 
 1. **HTML:** Basic `get_text("html")` with minimal semantic structure
 2. **Plain Text:** Basic `get_text("text")` extraction
-3. **Markdown:** leading alternatives with column-by-column extraction (breaks layout)
+3. **Markdown:** PyMuPDF4LLM with column-by-column extraction (breaks layout)
 
 ---
 
@@ -370,10 +370,10 @@ ls -la test_datasets/pdfs/academic/arxiv_2510.25332v1.pdf
 # Download if missing (or use your own PDFs)
 ```
 
-### established PDF library Not Installed
+### PyMuPDF Not Installed
 
 ```bash
-# Install established PDF library pip install established PDF library --user
+# Install PyMuPDF pip install PyMuPDF --user
 
 # Or system-wide (may require sudo)
 pip install PyMuPDF
@@ -383,7 +383,7 @@ pip install PyMuPDF
 
 Make sure both libraries are installed:
 ```bash
-pip install established PDF library leading alternatives --user
+pip install PyMuPDF PyMuPDF4LLM --user
 ```
 
 ---
@@ -411,7 +411,7 @@ cargo test --test test_html_formatting_quality -- --nocapture
 cargo test --test test_plaintext_quality -- --nocapture
 cargo test --test test_markdown_formatting_quality -- --nocapture
 
-# 2. Extract established PDF library baselines
+# 2. Extract PyMuPDF baselines
 python3 extract_html_pymupdf4llm.py test_datasets/pdfs/academic/arxiv_2510.25332v1.pdf baseline_outputs/html
 python3 extract_text_pymupdf.py test_datasets/pdfs/academic/arxiv_2510.25332v1.pdf baseline_outputs/text
 

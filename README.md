@@ -2,7 +2,7 @@
 
 **47.9× faster PDF text extraction and markdown conversion library built in Rust.**
 
-A production-ready, high-performance PDF parsing and conversion library with Python bindings. Processes 103 PDFs in 5.43 seconds vs 259.94 seconds for leading alternatives.
+A production-ready, high-performance PDF parsing and conversion library with Python bindings. Processes 103 PDFs in 5.43 seconds vs 259.94 seconds for PyMuPDF4LLM.
 
 [![Crates.io](https://img.shields.io/crates/v/pdf_oxide.svg)](https://crates.io/crates/pdf_oxide)
 [![Documentation](https://docs.rs/pdf_oxide/badge.svg)](https://docs.rs/pdf_oxide)
@@ -14,10 +14,10 @@ A production-ready, high-performance PDF parsing and conversion library with Pyt
 
 ## Why This Library?
 
-✨ **47.9× faster** than leading alternatives - Process 100 PDFs in 5.3 seconds instead of 4.2 minutes
+✨ **47.9× faster** than PyMuPDF4LLM - Process 100 PDFs in 5.3 seconds instead of 4.2 minutes
 📋 **Form field extraction** - Only library that extracts complete form field structure
-🎯 **100% text accuracy** - Perfect word spacing and bold detection (37% more than reference)
-💾 **Smaller output** - 4% smaller than reference implementation
+🎯 **100% text accuracy** - Perfect word spacing and bold detection (37% more than PyMuPDF)
+💾 **Smaller output** - 4% smaller than PyMuPDF
 🚀 **Production ready** - 100% success rate on 103-file test suite
 ⚡ **Low latency** - Average 53ms per PDF, perfect for web services
 
@@ -26,7 +26,7 @@ A production-ready, high-performance PDF parsing and conversion library with Pyt
 ### Currently Available (v0.1.0+)
 - 📄 **Complete PDF Parsing** - PDF 1.0-1.7 with robust error handling and cycle detection
 - 📝 **Text Extraction** - 100% accurate with perfect word spacing and Unicode support
-- ✍️ **Bold Detection** - 37% more accurate than reference implementation (16,074 vs 11,759 sections)
+- ✍️ **Bold Detection** - 37% more accurate than PyMuPDF (16,074 vs 11,759 sections)
 - 📋 **Form Field Extraction** - Unique feature: extracts complete form field structure and hierarchy
 - 🔖 **Bookmarks/Outline** - Extract PDF document outline with hierarchical structure (NEW)
 - 📌 **Annotations** - Extract PDF annotations including comments, highlights, and links (NEW)
@@ -34,8 +34,8 @@ A production-ready, high-performance PDF parsing and conversion library with Pyt
 - 🔄 **Markdown Export** - Clean, properly formatted output with heading detection
 - 🖼️ **Image Extraction** - Extract embedded images with metadata
 - 📊 **Comprehensive Extraction** - Captures all text including technical diagrams and annotations
-- ⚡ **Ultra-Fast Processing** - 47.9× faster than leading alternatives (5.43s vs 259.94s for 103 PDFs)
-- 💾 **Efficient Output** - 4% smaller files than reference implementation
+- ⚡ **Ultra-Fast Processing** - 47.9× faster than PyMuPDF4LLM (5.43s vs 259.94s for 103 PDFs)
+- 💾 **Efficient Output** - 4% smaller files than PyMuPDF
 
 ### Python Integration
 - 🐍 **Python Bindings** - Easy-to-use API via PyO3
@@ -239,7 +239,7 @@ pdf_oxide/
 - **Markdown Export** - Clean formatting with bold detection and form fields
 - **Image Extraction** - Extract embedded images with metadata
 - **Python Bindings** - Full PyO3 integration
-- **Performance Optimization** - 47.9× faster than reference implementation
+- **Performance Optimization** - 47.9× faster than PyMuPDF
 - **Production Quality** - 100% success rate on comprehensive test suite
 
 ### 🚧 Planned Enhancements (v1.x)
@@ -299,7 +299,7 @@ Real-world benchmark results (103 diverse PDFs including forms, financial docume
 
 ### Head-to-Head Comparison
 
-| Metric | This Library (Rust) | leading alternatives (Python) | Advantage |
+| Metric | This Library (Rust) | PyMuPDF4LLM (Python) | Advantage |
 |--------|---------------------|----------------------|-----------|
 | **Total Time** | **5.43s** | 259.94s | **47.9× faster** |
 | **Per PDF** | **53ms** | 2,524ms | **47.6× faster** |
@@ -333,11 +333,11 @@ Based on comprehensive analysis of 103 diverse PDFs, with recent improvements to
 | **Quality Score** | **8.5+/10** | Up from 3.4/10 (150% improvement) |
 | **Text Extraction** | **100%** | Perfect character extraction with proper encoding |
 | **Word Spacing** | **100%** | Unified adaptive threshold algorithm |
-| **Bold Detection** | **137%** | 16,074 sections vs 11,759 in reference (+37%) |
-| **Form Field Extraction** | 13 files | Complete form structure (reference: 0) |
+| **Bold Detection** | **137%** | 16,074 sections vs 11,759 in PyMuPDF (+37%) |
+| **Form Field Extraction** | 13 files | Complete form structure (PyMuPDF: 0) |
 | **Quality Rating** | **67% GOOD+** | 67% of files rated GOOD or EXCELLENT |
 | **Success Rate** | 100% | All 103 PDFs processed successfully |
-| **Output Size Efficiency** | 96% | 4% smaller than reference implementation |
+| **Output Size Efficiency** | 96% | 4% smaller than PyMuPDF |
 
 ### Specific Quality Improvements (v0.1.2+)
 
@@ -512,7 +512,7 @@ cargo clippy -- -D warnings
 **Research Sources**:
 - PDF Reference 1.7 (ISO 32000-1:2008)
 - Academic papers on document layout analysis
-- Open-source implementations (lopdf, pdf-rs, alternative PDF library)
+- Open-source implementations (lopdf, pdf-rs, pdfium-render)
 
 ## Support
 
@@ -536,4 +536,4 @@ If you use this library in academic research, please cite:
 
 **Built with** 🦀 Rust + 🐍 Python
 
-**Status**: ✅ Production Ready | v0.1.0 | 47.9× faster than leading alternatives
+**Status**: ✅ Production Ready | v0.1.0 | 47.9× faster than PyMuPDF4LLM

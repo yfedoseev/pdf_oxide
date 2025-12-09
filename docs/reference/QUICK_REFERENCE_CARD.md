@@ -1,4 +1,4 @@
-# Quick Reference Card: Surpassing leading alternatives
+# Quick Reference Card: Surpassing PyMuPDF4LLM
 
 **Current:** 84.7/100 | **Target:** 99.5+/100 | **Gap:** +14.8 points | **Timeline:** 6-8 weeks
 
@@ -79,7 +79,7 @@ citation_regex.replace_all(text, "[${1}]–[${2}]")
 
 **Our Advantage:**
 - PDF Library: **0** � chars
-- leading alternatives: **17,297** � chars
+- PyMuPDF4LLM: **17,297** � chars
 - **Result:** 97.5 → **99.5+/100** → **SURPASS!** 🎉
 
 ---
@@ -158,7 +158,7 @@ python3 compare_quality.py
 
 **CELEBRATION:**
 - **With encoding bonus:** 99.5+/100
-- **Result:** **SURPASS leading alternatives!** 🎉
+- **Result:** **SURPASS PyMuPDF4LLM!** 🎉
 
 ---
 
