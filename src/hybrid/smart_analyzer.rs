@@ -249,6 +249,7 @@ mod tests {
             font_name: "Arial".to_string(),
             font_size: 12.0,
             font_weight: FontWeight::Normal,
+            is_italic: false,
             color: Color::black(),
             mcid: None,
         };
@@ -265,6 +266,7 @@ mod tests {
             avg_font_size: 12.0,
             dominant_font: "Arial".to_string(),
             is_bold: false,
+            is_italic: false,
             mcid: None,
         }
     }

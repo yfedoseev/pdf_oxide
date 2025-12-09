@@ -151,11 +151,15 @@ mod tests {
             font_name: "Arial".to_string(),
             font_size: 12.0,
             font_weight: FontWeight::Normal,
+            is_italic: false,
             color: Color::new(0.0, 0.0, 0.0),
             mcid: None,
             sequence: 0,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         }
     }
 

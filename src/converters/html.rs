@@ -139,6 +139,7 @@ impl HtmlConverter {
                 avg_font_size: span.font_size,
                 dominant_font: span.font_name.clone(),
                 is_bold: matches!(span.font_weight, crate::layout::FontWeight::Bold),
+                is_italic: span.is_italic,
                 mcid: span.mcid,
             })
             .collect();
@@ -634,6 +635,7 @@ mod tests {
             } else {
                 FontWeight::Normal
             },
+            is_italic: false,
             color: Color::black(),
             mcid: None,
         }
@@ -769,11 +771,15 @@ mod tests {
                 font_name: "Times".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Normal,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
             TextSpan {
                 text: "Second".to_string(),
@@ -781,11 +787,15 @@ mod tests {
                 font_name: "Times".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Normal,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
         ];
 

@@ -113,6 +113,7 @@ pub mod layout;
 pub mod content;
 pub mod extractors;
 pub mod fonts;
+pub mod text;
 
 // Image extraction (Phase 5)
 pub mod images;
@@ -131,6 +132,11 @@ pub mod config;
 
 // Hybrid classical + ML orchestration (Phase 8)
 pub mod hybrid;
+
+// OCR - PaddleOCR via ONNX Runtime (Phase 10 - optional)
+#[cfg(feature = "ocr")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ocr")))]
+pub mod ocr;
 
 // Python bindings (Phase 7 - optional)
 #[cfg(feature = "python")]

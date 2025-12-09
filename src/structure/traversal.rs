@@ -2,7 +2,7 @@
 //!
 //! Implements pre-order traversal of structure trees to determine correct reading order.
 
-use super::types::{StructChild, StructElem, StructTreeRoot};
+use super::types::{StructChild, StructElem, StructTreeRoot, StructType};
 use crate::error::Error;
 
 /// Represents an ordered content item extracted from structure tree.
@@ -16,6 +16,9 @@ pub struct OrderedContent {
 
     /// Structure type (for semantic information)
     pub struct_type: String,
+
+    /// Pre-parsed structure type for efficient access
+    pub parsed_type: StructType,
 
     /// Is this a heading?
     pub is_heading: bool,
@@ -60,6 +63,7 @@ fn traverse_element(
     result: &mut Vec<OrderedContent>,
 ) -> Result<(), Error> {
     let struct_type_str = format!("{:?}", elem.struct_type);
+    let parsed_type = elem.struct_type.clone();
     let is_heading = elem.struct_type.is_heading();
     let is_block = elem.struct_type.is_block();
 
@@ -73,6 +77,7 @@ fn traverse_element(
                         page: *page,
                         mcid: *mcid,
                         struct_type: struct_type_str.clone(),
+                        parsed_type: parsed_type.clone(),
                         is_heading,
                         is_block,
                     });

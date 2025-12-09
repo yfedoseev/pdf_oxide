@@ -37,6 +37,7 @@ use std::collections::{HashSet, VecDeque};
 ///         font_name: "Times".to_string(),
 ///         font_size: 12.0,
 ///         font_weight: FontWeight::Normal,
+///         is_italic: false,
 ///         color: Color::black(),
 ///     },
 /// ];
@@ -49,6 +50,7 @@ use std::collections::{HashSet, VecDeque};
 ///         font_name: "Times".to_string(),
 ///         font_size: 12.0,
 ///         font_weight: FontWeight::Normal,
+///         is_italic: false,
 ///         color: Color::black(),
 ///     },
 /// ];
@@ -169,6 +171,7 @@ mod tests {
                 font_name: "Times".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Normal,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
             })

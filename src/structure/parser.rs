@@ -2,7 +2,9 @@
 //!
 //! Parses StructTreeRoot and StructElem dictionaries according to PDF spec Section 14.7.
 
-use super::types::{ParentTree, StructChild, StructElem, StructTreeRoot, StructType};
+use super::types::{
+    ParentTree, ParentTreeEntry, StructChild, StructElem, StructTreeRoot, StructType,
+};
 use crate::document::PdfDocument;
 use crate::error::Error;
 use crate::object::Object;
@@ -292,19 +294,132 @@ fn parse_marked_content_ref(obj: &Object) -> Result<Option<StructChild>, Error> 
 /// Parse the ParentTree from a PDF object.
 ///
 /// The ParentTree is a number tree that maps MCIDs to structure elements.
-/// For simplicity, we'll build a HashMap representation.
+/// According to PDF spec Section 7.9.7, number trees use /Nums (simple case)
+/// or /Kids (complex case with intermediate nodes).
+///
+/// This implementation handles:
+/// 1. Simple number trees with /Nums array (key-value pairs)
+/// 2. Complex number trees with /Kids array (recursive node traversal)
 fn parse_parent_tree(document: &mut PdfDocument, obj: &Object) -> Result<ParentTree, Error> {
-    let _obj = resolve_object(document, obj)?;
+    let obj = resolve_object(document, obj)?;
 
-    // ParentTree is a number tree - complex structure
-    // For MVP, we'll create an empty parent tree
-    // Full implementation would parse the number tree structure
-    let parent_tree = ParentTree::new();
+    let dict = match obj.as_dict() {
+        Some(d) => d,
+        None => return Ok(ParentTree::new()), // Not a dict, return empty
+    };
 
-    // TODO: Implement full number tree parsing
-    // Number trees are defined in PDF spec Section 7.9.7
+    let mut parent_tree = ParentTree::new();
 
+    // Try simple case first: /Nums array with key-value pairs
+    if let Some(nums_obj) = dict.get("Nums") {
+        let nums_obj = resolve_object(document, nums_obj)?;
+        if let Some(nums_array) = nums_obj.as_array() {
+            // /Nums is an array of alternating keys and values
+            // [key1, value1, key2, value2, ...]
+            let mut i = 0;
+            while i + 1 < nums_array.len() {
+                if let Some(key) = nums_array[i].as_integer() {
+                    let entry = parse_parent_tree_entry(document, &nums_array[i + 1])?;
+                    // Store in parent_tree with page=0 and mcid=key
+                    // In practice, MCIDs are page-specific, so we use page 0 as default
+                    parent_tree
+                        .page_mappings
+                        .entry(0)
+                        .or_insert_with(std::collections::HashMap::new)
+                        .insert(key as u32, entry);
+                }
+                i += 2;
+            }
+            return Ok(parent_tree);
+        }
+    }
+
+    // Try complex case: /Kids array with intermediate nodes
+    if let Some(kids_obj) = dict.get("Kids") {
+        let kids_obj = resolve_object(document, kids_obj)?;
+        if let Some(kids_array) = kids_obj.as_array() {
+            // Recursively parse each kid node
+            for kid_obj in kids_array {
+                parse_number_tree_kid(document, kid_obj, &mut parent_tree)?;
+            }
+            return Ok(parent_tree);
+        }
+    }
+
+    // Neither /Nums nor /Kids found, return empty parent tree
     Ok(parent_tree)
+}
+
+/// Parse a single entry in the parent tree (can be StructElem or ObjectRef)
+fn parse_parent_tree_entry(
+    document: &mut PdfDocument,
+    obj: &Object,
+) -> Result<ParentTreeEntry, Error> {
+    let obj = resolve_object(document, obj)?;
+
+    match obj {
+        Object::Dictionary(_) => {
+            // Could be a StructElem dictionary or ObjectRef
+            if let Some(struct_elem) = parse_struct_elem(document, &obj, &HashMap::new())? {
+                Ok(ParentTreeEntry::StructElem(Box::new(struct_elem)))
+            } else {
+                // Fallback: treat as empty StructElem
+                Ok(ParentTreeEntry::StructElem(Box::new(StructElem::new(StructType::Document))))
+            }
+        },
+        Object::Reference(obj_ref) => {
+            // Object reference to a StructElem
+            Ok(ParentTreeEntry::ObjectRef(obj_ref.id, obj_ref.gen))
+        },
+        _ => {
+            // Unknown type, treat as empty StructElem
+            Ok(ParentTreeEntry::StructElem(Box::new(StructElem::new(StructType::Document))))
+        },
+    }
+}
+
+/// Recursively parse a number tree kid node
+fn parse_number_tree_kid(
+    document: &mut PdfDocument,
+    kid_obj: &Object,
+    parent_tree: &mut ParentTree,
+) -> Result<(), Error> {
+    let kid_obj = resolve_object(document, kid_obj)?;
+
+    let kid_dict = match kid_obj.as_dict() {
+        Some(d) => d,
+        None => return Ok(()), // Not a dict, skip
+    };
+
+    // Check if this is a leaf node (has /Nums) or intermediate node (has /Kids)
+    if let Some(nums_obj) = kid_dict.get("Nums") {
+        let nums_obj = resolve_object(document, nums_obj)?;
+        if let Some(nums_array) = nums_obj.as_array() {
+            // Leaf node: parse key-value pairs
+            let mut i = 0;
+            while i + 1 < nums_array.len() {
+                if let Some(key) = nums_array[i].as_integer() {
+                    let entry = parse_parent_tree_entry(document, &nums_array[i + 1])?;
+                    parent_tree
+                        .page_mappings
+                        .entry(0)
+                        .or_insert_with(std::collections::HashMap::new)
+                        .insert(key as u32, entry);
+                }
+                i += 2;
+            }
+        }
+    } else if let Some(kids_obj) = kid_dict.get("Kids") {
+        let kids_obj = resolve_object(document, kids_obj)?;
+        if let Some(kids_array) = kids_obj.as_array() {
+            // Intermediate node: recursively parse children
+            for child_kid_obj in kids_array {
+                parse_number_tree_kid(document, child_kid_obj, parent_tree)?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

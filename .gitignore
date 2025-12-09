@@ -211,3 +211,16 @@ text_exports/
 
 # Claude Code
 Claude.md
+CLAUDE.md
+
+# Generated planning and analysis documents (auto-generated during work)
+PHASE_*.md
+PLAN_*.md
+CLEANUP_ROADMAP.md
+WORD_BOUNDARY_ANALYSIS.md
+examples/test_pdf.rs
+
+# Temporary analysis files
+*.backup
+*.bak
+*.tmp_analysis

@@ -320,6 +320,7 @@ impl StructuredExtractor {
                 avg_font_size: span.font_size,
                 dominant_font: span.font_name.clone(),
                 is_bold: span.font_weight == crate::layout::FontWeight::Bold,
+                is_italic: span.is_italic,
                 mcid: span.mcid,
             })
             .collect()

@@ -52,13 +52,17 @@ md-5 = "0.10"        # MD5 for key derivation
 sha2 = "0.10"        # SHA-256 for newer encryption
 
 # Math and algorithms
-ndarray = { version = "0.15", optional = true }
+ndarray = { version = "0.16", optional = true, features = ["std"] }
 linfa = { version = "0.7", optional = true }
 linfa-clustering = { version = "0.7", optional = true }
 
 # ML (CPU-only)
 tract-onnx = { version = "0.21", optional = true }
 tokenizers = { version = "0.15", optional = true, default-features = false, features = ["onig"] }
+
+# OCR - PaddleOCR via ONNX Runtime (optional)
+ort = { version = "2.0.0-rc.10", optional = true, default-features = false, features = ["ndarray", "download-binaries"] }
+imageproc = { version = "0.25", optional = true }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -81,8 +85,6 @@ tesseract-rs = { version = "0.1", optional = true }
 # Table detection - page rendering (optional)
 pdfium-render = { version = "0.8", optional = true }
 
-# GPU support (optional)
-ort = { version = "2.0.0-rc.10", optional = true, features = ["cuda"] }
 lzw = "0.10.0"
 
 [dev-dependencies]
@@ -101,7 +103,7 @@ python = ["pyo3"]
 # We define them here to avoid check-cfg warnings, but their dependencies are commented out.
 ml = ["dep:tract-onnx", "dep:ndarray", "dep:linfa", "dep:linfa-clustering", "dep:tokenizers"]
 table-ml = ["ml", "dep:pdfium-render"]
-ocr = ["dep:tesseract-rs"]
+ocr = ["dep:ort", "dep:imageproc", "dep:ndarray"]
 gpu = ["dep:ort", "ml"]
 wasm = ["dep:wasm-bindgen", "dep:web-sys", "dep:js-sys", "dep:console_error_panic_hook", "dep:getrandom"]
 wasm-ml = ["wasm", "ml"]

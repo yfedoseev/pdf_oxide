@@ -14,6 +14,7 @@ use crate::layout::clustering::{cluster_chars_into_words, cluster_words_into_lin
 use crate::layout::document_analyzer::{AdaptiveLayoutParams, DocumentProperties};
 use crate::layout::reading_order::graph_based_reading_order;
 use crate::layout::{BoldGroup, BoldMarkerDecision, BoldMarkerValidator, TextBlock, TextChar};
+use crate::structure::table_extractor::{ExtractedTable, TableCell, TableRow};
 use lazy_static::lazy_static;
 use regex::{Captures, Regex};
 
@@ -214,6 +215,7 @@ impl MarkdownConverter {
                     avg_font_size: span.font_size,
                     dominant_font: span.font_name.clone(),
                     is_bold: span.font_weight.is_bold(),
+                    is_italic: span.is_italic,
                     mcid: span.mcid,
                 }
             })
@@ -329,10 +331,14 @@ impl MarkdownConverter {
                 let idx = line_indices[i];
                 let block = &blocks[idx];
                 let is_bold = block.is_bold;
+                let is_italic = block.is_italic;
 
-                // Find all consecutive blocks with same bold status
+                // Find all consecutive blocks with same bold AND italic status
                 let mut j = i + 1;
-                while j < line_indices.len() && blocks[line_indices[j]].is_bold == is_bold {
+                while j < line_indices.len()
+                    && blocks[line_indices[j]].is_bold == is_bold
+                    && blocks[line_indices[j]].is_italic == is_italic
+                {
                     j += 1;
                 }
 
@@ -417,7 +423,13 @@ impl MarkdownConverter {
                 let should_insert_bold_markers =
                     matches!(marker_decision, BoldMarkerDecision::Insert);
                 if should_insert_bold_markers {
-                    markdown.push_str("**");
+                    // Determine which formatting markers to use
+                    match (is_bold, is_italic) {
+                        (true, true) => markdown.push_str("***"), // Bold + Italic
+                        (true, false) => markdown.push_str("**"), // Bold only
+                        (false, true) => markdown.push_str("*"),  // Italic only
+                        (false, false) => {},                     // No formatting
+                    }
                 } else if let BoldMarkerDecision::Skip(reason) = &marker_decision {
                     log::debug!(
                         "Skipping bold markers: {:?} for '{}'",
@@ -431,15 +443,23 @@ impl MarkdownConverter {
 
                 // Insert closing marker if approved by validator
                 if should_insert_bold_markers {
-                    markdown.push_str("**");
+                    // Determine which formatting markers to use (must match opening)
+                    match (is_bold, is_italic) {
+                        (true, true) => markdown.push_str("***"), // Bold + Italic
+                        (true, false) => markdown.push_str("**"), // Bold only
+                        (false, true) => markdown.push_str("*"),  // Italic only
+                        (false, false) => {},                     // No formatting
+                    }
                 }
 
                 i = j;
             }
 
-            // Heading detection removed (non-spec-compliant feature)
-            // All lines rendered as body text for spec compliance
-            // Always single newline for body text (no heading markers)
+            // Structure-aware rendering (Phase 2.1: Document Structure Hierarchy)
+            // Infrastructure added to support heading/list detection from structure tree
+            // See StructType::heading_level(), StructType::is_list(), StructType::markdown_prefix()
+            // Full integration requires passing structure tree through ConversionOptions
+            // Current implementation: render as body text for spec compliance
             markdown.push('\n');
         };
 
@@ -990,6 +1010,85 @@ fn should_insert_bold_marker(prev_char: Option<char>, next_char: Option<char>) -
     }
 }
 
+/// Render a markdown table from an extracted table structure.
+///
+/// Converts an ExtractedTable into Markdown table format with:
+/// - Header row (if present) separated by | delimiters
+/// - Separator row with |---|---|...
+/// - Data rows in same format
+///
+/// # Arguments
+///
+/// * `table` - The extracted table to render
+///
+/// # Returns
+///
+/// A string containing the Markdown table representation
+fn render_markdown_table(table: &ExtractedTable) -> String {
+    let mut md = String::new();
+
+    if table.rows.is_empty() {
+        return md;
+    }
+
+    // Render header row if present
+    if table.has_header && !table.rows.is_empty() {
+        md.push_str(&render_table_row(&table.rows[0]));
+        md.push('\n');
+
+        // Separator row: |---|---|...
+        md.push('|');
+        for _ in 0..table.col_count {
+            md.push_str("---|");
+        }
+        md.push('\n');
+
+        // Data rows (starting from index 1 if we have a header)
+        for row in &table.rows[1..] {
+            md.push_str(&render_table_row(row));
+            md.push('\n');
+        }
+    } else {
+        // No header: render all rows
+        for (idx, row) in table.rows.iter().enumerate() {
+            md.push_str(&render_table_row(row));
+            md.push('\n');
+
+            // Add separator after first row if no header
+            if idx == 0 {
+                md.push('|');
+                for _ in 0..table.col_count {
+                    md.push_str("---|");
+                }
+                md.push('\n');
+            }
+        }
+    }
+
+    md
+}
+
+/// Render a single table row as a Markdown row.
+///
+/// Escapes pipe characters (|) in cell text and formats as: | cell1 | cell2 | ...
+///
+/// # Arguments
+///
+/// * `row` - The table row to render
+///
+/// # Returns
+///
+/// A string containing the Markdown row representation
+fn render_table_row(row: &TableRow) -> String {
+    let mut line = String::from("|");
+    for cell in &row.cells {
+        // Escape pipe characters in cell text
+        let escaped = cell.text.replace('|', "\\|");
+        line.push_str(&format!(" {} |", escaped.trim()));
+    }
+    line
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1008,6 +1107,7 @@ mod tests {
             } else {
                 FontWeight::Normal
             },
+            is_italic: false,
             color: Color::black(),
             mcid: None,
         }
@@ -1229,11 +1329,15 @@ mod tests {
                 font_name: "Times".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Normal,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
             TextSpan {
                 text: "   ".to_string(), // Whitespace only - should be filtered
@@ -1241,11 +1345,15 @@ mod tests {
                 font_name: "Times".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Bold, // Even if marked bold
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
             TextSpan {
                 text: "World".to_string(),
@@ -1253,11 +1361,15 @@ mod tests {
                 font_name: "Times".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Normal,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 2,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
         ];
 
@@ -1287,11 +1399,15 @@ mod tests {
                 font_name: "Times".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Bold,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
             TextSpan {
                 text: "---".to_string(), // Punctuation only, but marked bold
@@ -1299,11 +1415,15 @@ mod tests {
                 font_name: "Times".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Bold,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
             TextSpan {
                 text: "Content".to_string(),
@@ -1311,11 +1431,15 @@ mod tests {
                 font_name: "Times".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Normal,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 2,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
         ];
 
@@ -1349,11 +1473,15 @@ mod tests {
                 font_name: "Times".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Normal,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
             TextSpan {
                 text: "2024".to_string(), // Numeric, should be bold if marked
@@ -1361,11 +1489,15 @@ mod tests {
                 font_name: "Times".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Bold,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
         ];
 
@@ -1398,11 +1530,15 @@ mod tests {
                 font_name: "Times-Bold".to_string(),
                 font_size: 14.0,
                 font_weight: FontWeight::Bold,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
             TextSpan {
                 text: " ".to_string(), // Whitespace - should be filtered
@@ -1410,11 +1546,15 @@ mod tests {
                 font_name: "Times-Bold".to_string(),
                 font_size: 14.0,
                 font_weight: FontWeight::Bold,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
             TextSpan {
                 text: "...".to_string(), // Punctuation - should be neutralized
@@ -1422,11 +1562,15 @@ mod tests {
                 font_name: "Times-Bold".to_string(),
                 font_size: 14.0,
                 font_weight: FontWeight::Bold,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 2,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
             TextSpan {
                 text: "  \n  ".to_string(), // Mixed whitespace - should be filtered
@@ -1434,11 +1578,15 @@ mod tests {
                 font_name: "Times-Bold".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Bold,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 3,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
             TextSpan {
                 text: "Content".to_string(),
@@ -1446,11 +1594,15 @@ mod tests {
                 font_name: "Times".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Normal,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 4,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
         ];
 
@@ -1479,6 +1631,7 @@ mod tests {
                 avg_font_size: 12.0,
                 dominant_font: "Times".to_string(),
                 is_bold: false,
+                is_italic: false,
                 mcid: None,
             },
             TextBlock {
@@ -1488,6 +1641,7 @@ mod tests {
                 avg_font_size: 12.0,
                 dominant_font: "Times".to_string(),
                 is_bold: false,
+                is_italic: false,
                 mcid: None,
             },
             TextBlock {
@@ -1497,6 +1651,7 @@ mod tests {
                 avg_font_size: 12.0,
                 dominant_font: "Times".to_string(),
                 is_bold: false,
+                is_italic: false,
                 mcid: None,
             },
         ];
@@ -1610,11 +1765,15 @@ mod tests {
                 font_name: "Times-Bold".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Bold,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
             TextSpan {
                 text: "  \n  ".to_string(), // Whitespace with newlines
@@ -1622,11 +1781,15 @@ mod tests {
                 font_name: "Times-Bold".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Bold,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
             TextSpan {
                 text: "More".to_string(),
@@ -1634,11 +1797,15 @@ mod tests {
                 font_name: "Times".to_string(),
                 font_size: 12.0,
                 font_weight: FontWeight::Normal,
+                is_italic: false,
                 color: Color::black(),
                 mcid: None,
                 sequence: 2,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             },
         ];
 

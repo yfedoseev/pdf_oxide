@@ -263,6 +263,7 @@ mod tests {
             font_name: font.to_string(),
             font_size,
             font_weight: FontWeight::Normal,
+            is_italic: false,
             color: Color::black(),
             mcid: None,
         };
@@ -279,6 +280,7 @@ mod tests {
             avg_font_size: font_size,
             dominant_font: font.to_string(),
             is_bold: false,
+            is_italic: false,
             mcid: None,
         }
     }

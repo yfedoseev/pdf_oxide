@@ -21,6 +21,7 @@ fn mock_char(c: char, x: f32, y: f32, font_size: f32, bold: bool) -> TextChar {
         } else {
             FontWeight::Normal
         },
+        is_italic: false,
         color: Color::black(),
         mcid: None, // No marked content ID for mock chars
     }

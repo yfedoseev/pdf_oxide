@@ -22,6 +22,7 @@ fn mock_char(c: char, x: f32, y: f32, size: f32) -> TextChar {
         font_name: "Times".to_string(),
         font_size: size,
         font_weight: FontWeight::Normal,
+        is_italic: false,
         color: Color::black(),
         mcid: None,
     }
@@ -35,6 +36,7 @@ fn mock_bold_char(c: char, x: f32, y: f32, size: f32) -> TextChar {
         font_name: "Times-Bold".to_string(),
         font_size: size,
         font_weight: FontWeight::Bold,
+        is_italic: false,
         color: Color::black(),
         mcid: None,
     }

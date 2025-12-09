@@ -196,6 +196,64 @@ impl PdfImage {
             },
         }
     }
+
+    /// Convert this PDF image to a `DynamicImage` for processing by image crate.
+    ///
+    /// This enables integration with image processing libraries like OCR engines.
+    /// JPEG data is decoded if necessary, and raw pixels are converted to the appropriate format.
+    pub fn to_dynamic_image(&self) -> Result<image::DynamicImage> {
+        match &self.data {
+            ImageData::Jpeg(jpeg_data) => {
+                // Decode JPEG data
+                image::load_from_memory(jpeg_data)
+                    .map_err(|e| Error::Decode(format!("Failed to decode JPEG: {}", e)))
+            },
+            ImageData::Raw { pixels, format } => {
+                // Convert raw pixels to DynamicImage
+                match (format, self.color_space) {
+                    (PixelFormat::RGB, ColorSpace::DeviceRGB) => {
+                        image::ImageBuffer::<image::Rgb<u8>, Vec<u8>>::from_raw(
+                            self.width,
+                            self.height,
+                            pixels.clone(),
+                        )
+                        .ok_or_else(|| Error::Decode("Invalid image dimensions".to_string()))
+                        .map(image::DynamicImage::ImageRgb8)
+                    },
+                    (PixelFormat::Grayscale, ColorSpace::DeviceGray) => {
+                        image::ImageBuffer::<image::Luma<u8>, Vec<u8>>::from_raw(
+                            self.width,
+                            self.height,
+                            pixels.clone(),
+                        )
+                        .ok_or_else(|| Error::Decode("Invalid image dimensions".to_string()))
+                        .map(image::DynamicImage::ImageLuma8)
+                    },
+                    // For other combinations, convert to RGB
+                    _ => {
+                        let rgb_pixels = match format {
+                            PixelFormat::Grayscale => {
+                                // Expand grayscale to RGB
+                                pixels.iter().flat_map(|&g| vec![g, g, g]).collect()
+                            },
+                            PixelFormat::CMYK => {
+                                // Convert CMYK to RGB
+                                cmyk_to_rgb(pixels)
+                            },
+                            PixelFormat::RGB => pixels.clone(),
+                        };
+                        image::ImageBuffer::<image::Rgb<u8>, Vec<u8>>::from_raw(
+                            self.width,
+                            self.height,
+                            rgb_pixels,
+                        )
+                        .ok_or_else(|| Error::Decode("Invalid image dimensions".to_string()))
+                        .map(image::DynamicImage::ImageRgb8)
+                    },
+                }
+            },
+        }
+    }
 }
 
 /// Image data representation.

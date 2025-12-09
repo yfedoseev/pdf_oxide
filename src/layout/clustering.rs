@@ -430,6 +430,7 @@ mod tests {
             font_weight: FontWeight::Normal,
             color: Color::black(),
             mcid: None,
+            is_italic: false,
         }
     }
 

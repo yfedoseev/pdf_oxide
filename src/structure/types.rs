@@ -268,6 +268,38 @@ impl StructType {
                 | Self::Formula
         )
     }
+
+    /// Get heading level (1-6) if this is a heading type
+    pub fn heading_level(&self) -> Option<u8> {
+        match self {
+            Self::H | Self::H1 => Some(1),
+            Self::H2 => Some(2),
+            Self::H3 => Some(3),
+            Self::H4 => Some(4),
+            Self::H5 => Some(5),
+            Self::H6 => Some(6),
+            _ => None,
+        }
+    }
+
+    /// Check if this is a list type (L, LI, Lbl, LBody)
+    pub fn is_list(&self) -> bool {
+        matches!(self, Self::L | Self::LI | Self::Lbl | Self::LBody)
+    }
+
+    /// Get markdown prefix for this structure type
+    pub fn markdown_prefix(&self) -> Option<&'static str> {
+        match self {
+            Self::H1 => Some("# "),
+            Self::H2 => Some("## "),
+            Self::H3 => Some("### "),
+            Self::H4 => Some("#### "),
+            Self::H5 => Some("##### "),
+            Self::H6 => Some("###### "),
+            Self::Lbl => Some("- "),
+            _ => None,
+        }
+    }
 }
 
 /// Parent tree that maps marked content IDs to structure elements.
@@ -344,5 +376,42 @@ mod tests {
         assert!(StructType::Document.is_block());
         assert!(!StructType::Span.is_block());
         assert!(!StructType::Link.is_block());
+    }
+
+    #[test]
+    fn test_heading_level() {
+        assert_eq!(StructType::H.heading_level(), Some(1));
+        assert_eq!(StructType::H1.heading_level(), Some(1));
+        assert_eq!(StructType::H2.heading_level(), Some(2));
+        assert_eq!(StructType::H3.heading_level(), Some(3));
+        assert_eq!(StructType::H4.heading_level(), Some(4));
+        assert_eq!(StructType::H5.heading_level(), Some(5));
+        assert_eq!(StructType::H6.heading_level(), Some(6));
+        assert_eq!(StructType::P.heading_level(), None);
+        assert_eq!(StructType::Document.heading_level(), None);
+    }
+
+    #[test]
+    fn test_is_list() {
+        assert!(StructType::L.is_list());
+        assert!(StructType::LI.is_list());
+        assert!(StructType::Lbl.is_list());
+        assert!(StructType::LBody.is_list());
+        assert!(!StructType::P.is_list());
+        assert!(!StructType::H1.is_list());
+        assert!(!StructType::Table.is_list());
+    }
+
+    #[test]
+    fn test_markdown_prefix() {
+        assert_eq!(StructType::H1.markdown_prefix(), Some("# "));
+        assert_eq!(StructType::H2.markdown_prefix(), Some("## "));
+        assert_eq!(StructType::H3.markdown_prefix(), Some("### "));
+        assert_eq!(StructType::H4.markdown_prefix(), Some("#### "));
+        assert_eq!(StructType::H5.markdown_prefix(), Some("##### "));
+        assert_eq!(StructType::H6.markdown_prefix(), Some("###### "));
+        assert_eq!(StructType::Lbl.markdown_prefix(), Some("- "));
+        assert_eq!(StructType::P.markdown_prefix(), None);
+        assert_eq!(StructType::Table.markdown_prefix(), None);
     }
 }
