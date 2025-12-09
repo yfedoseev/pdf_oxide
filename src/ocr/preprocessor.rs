@@ -256,7 +256,7 @@ mod tests {
         assert_eq!(tensor.shape()[2], 48); // Target height
 
         // Width should be padded to multiple of 4
-        assert!(tensor.shape()[3].is_multiple_of(&4));
+        assert!(tensor.shape()[3].is_multiple_of(4));
     }
 
     #[test]

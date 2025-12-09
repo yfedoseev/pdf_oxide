@@ -68,6 +68,9 @@ impl OcrSpan {
             sequence,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         }
     }
 
