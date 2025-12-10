@@ -15,6 +15,7 @@ use crate::layout::clustering::{cluster_chars_into_words, cluster_words_into_lin
 use crate::layout::document_analyzer::{AdaptiveLayoutParams, DocumentProperties};
 use crate::layout::reading_order::graph_based_reading_order;
 use crate::layout::{BoldGroup, BoldMarkerDecision, BoldMarkerValidator, TextBlock, TextChar};
+use crate::structure::spatial_table_detector::{SpatialTableDetector, TableDetectionConfig};
 use crate::structure::table_extractor::{ExtractedTable, TableRow};
 use lazy_static::lazy_static;
 use regex::{Captures, Regex};
@@ -222,6 +223,33 @@ impl MarkdownConverter {
                 spans.len()
             );
         }
+
+        // Phase 5B: Spatial table detection
+        // Detect tables from current spans if enabled in options
+        let detected_tables = if options.extract_tables {
+            let detector_config = options.table_detection_config.clone().unwrap_or_default();
+            let table_detector = SpatialTableDetector::with_config(detector_config);
+            let tables = table_detector.detect_tables(spans);
+
+            if !tables.is_empty() {
+                log::debug!(
+                    "Phase 5B: Detected {} table(s) from {} spans",
+                    tables.len(),
+                    spans.len()
+                );
+            }
+            tables
+        } else {
+            Vec::new()
+        };
+
+        // Build set of span indices that belong to detected tables
+        // This will be used to skip these spans when rendering normal text in Phase 5B Step 2
+        let _table_span_indices: std::collections::HashSet<usize> = detected_tables
+            .iter()
+            .flat_map(|table| &table.span_indices)
+            .copied()
+            .collect();
 
         // Convert spans to TextBlocks, filtering out non-text content
         let mut blocks: Vec<TextBlock> = spans

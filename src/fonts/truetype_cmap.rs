@@ -1,3 +1,4 @@
+use byteorder::{BigEndian, ReadBytesExt};
 /// TrueType cmap table extraction for font character mapping
 ///
 /// This module extracts Unicode mappings from TrueType font cmap tables,
@@ -5,10 +6,8 @@
 ///
 /// The cmap table maps glyph IDs (GIDs) to Unicode code points.
 /// We support formats 4 (BMP), 6 (trimmed), and 12 (Unicode full).
-
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
-use byteorder::{BigEndian, ReadBytesExt};
 
 /// Represents a TrueType cmap table extracted from an embedded font
 #[derive(Debug, Clone)]
@@ -45,14 +44,16 @@ impl TrueTypeCMap {
 
         // Parse cmap table and find the best subtable
         cursor.set_position(cmap_offset as u64);
-        let cmap_version = cursor.read_u16::<BigEndian>()
+        let cmap_version = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read cmap version: {}", e))?;
 
         if cmap_version != 0 {
             return Err(format!("Unsupported cmap table version: {}", cmap_version));
         }
 
-        let num_subtables = cursor.read_u16::<BigEndian>()
+        let num_subtables = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read cmap subtable count: {}", e))?;
 
         // Read all subtable records
@@ -60,11 +61,14 @@ impl TrueTypeCMap {
         let mut best_priority = -1i32;
 
         for _ in 0..num_subtables {
-            let platform_id = cursor.read_u16::<BigEndian>()
+            let platform_id = cursor
+                .read_u16::<BigEndian>()
                 .map_err(|e| format!("Failed to read platform ID: {}", e))?;
-            let encoding_id = cursor.read_u16::<BigEndian>()
+            let encoding_id = cursor
+                .read_u16::<BigEndian>()
                 .map_err(|e| format!("Failed to read encoding ID: {}", e))?;
-            let offset = cursor.read_u32::<BigEndian>()
+            let offset = cursor
+                .read_u32::<BigEndian>()
                 .map_err(|e| format!("Failed to read subtable offset: {}", e))?;
 
             // Calculate priority: higher is better
@@ -81,16 +85,18 @@ impl TrueTypeCMap {
             }
         }
 
-        let (platform_id, encoding_id, subtable_offset) = best_subtable
-            .ok_or_else(|| "No suitable cmap subtable found".to_string())?;
+        let (platform_id, encoding_id, subtable_offset) =
+            best_subtable.ok_or_else(|| "No suitable cmap subtable found".to_string())?;
 
         log::debug!(
             "TrueType cmap: selected platform={} encoding={} offset={}",
-            platform_id, encoding_id, subtable_offset
+            platform_id,
+            encoding_id,
+            subtable_offset
         );
 
         // Parse the selected cmap subtable
-        cursor.set_position((cmap_offset as u32 + subtable_offset) as u64);
+        cursor.set_position((cmap_offset + subtable_offset) as u64);
         let gid_to_unicode = Self::parse_cmap_subtable(&mut cursor)?;
 
         Ok(TrueTypeCMap { gid_to_unicode })
@@ -117,7 +123,8 @@ impl TrueTypeCMap {
 
     fn parse_sfnt_header(cursor: &mut Cursor<&[u8]>) -> Result<(u16, u16, u16, u16), String> {
         // Read sfnt version (4 bytes - can be 0x00010000 for TrueType or "OTTO" for OpenType)
-        let version = cursor.read_u32::<BigEndian>()
+        let version = cursor
+            .read_u32::<BigEndian>()
             .map_err(|e| format!("Failed to read sfnt version: {}", e))?;
 
         if version != 0x00010000 && version != 0x4F54544F {
@@ -125,13 +132,17 @@ impl TrueTypeCMap {
             return Err(format!("Invalid sfnt version: 0x{:08X}", version));
         }
 
-        let num_tables = cursor.read_u16::<BigEndian>()
+        let num_tables = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read table count: {}", e))?;
-        let search_range = cursor.read_u16::<BigEndian>()
+        let search_range = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read search range: {}", e))?;
-        let entry_selector = cursor.read_u16::<BigEndian>()
+        let entry_selector = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read entry selector: {}", e))?;
-        let range_shift = cursor.read_u16::<BigEndian>()
+        let range_shift = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read range shift: {}", e))?;
 
         Ok((num_tables, search_range, entry_selector, range_shift))
@@ -148,13 +159,17 @@ impl TrueTypeCMap {
         const CMAP_TAG: u32 = 0x636D6170;
 
         for _ in 0..num_tables {
-            let tag = cursor.read_u32::<BigEndian>()
+            let tag = cursor
+                .read_u32::<BigEndian>()
                 .map_err(|e| format!("Failed to read table tag: {}", e))?;
-            let _checksum = cursor.read_u32::<BigEndian>()
+            let _checksum = cursor
+                .read_u32::<BigEndian>()
                 .map_err(|e| format!("Failed to read table checksum: {}", e))?;
-            let offset = cursor.read_u32::<BigEndian>()
+            let offset = cursor
+                .read_u32::<BigEndian>()
                 .map_err(|e| format!("Failed to read table offset: {}", e))?;
-            let _length = cursor.read_u32::<BigEndian>()
+            let _length = cursor
+                .read_u32::<BigEndian>()
                 .map_err(|e| format!("Failed to read table length: {}", e))?;
 
             if tag == CMAP_TAG {
@@ -166,7 +181,8 @@ impl TrueTypeCMap {
     }
 
     fn parse_cmap_subtable(cursor: &mut Cursor<&[u8]>) -> Result<HashMap<u16, char>, String> {
-        let format = cursor.read_u16::<BigEndian>()
+        let format = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read cmap format: {}", e))?;
 
         match format {
@@ -179,50 +195,63 @@ impl TrueTypeCMap {
 
     /// Parse cmap format 4 (BMP - supports characters U+0000 to U+FFFF)
     fn parse_cmap_format4(cursor: &mut Cursor<&[u8]>) -> Result<HashMap<u16, char>, String> {
-        let length = cursor.read_u16::<BigEndian>()
-            .map_err(|e| format!("Failed to read format 4 length: {}", e))? as u32;
-        let _language = cursor.read_u16::<BigEndian>()
+        let length = cursor
+            .read_u16::<BigEndian>()
+            .map_err(|e| format!("Failed to read format 4 length: {}", e))?
+            as u32;
+        let _language = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read format 4 language: {}", e))?;
 
-        let seg_count_x2 = cursor.read_u16::<BigEndian>()
-            .map_err(|e| format!("Failed to read segCountX2: {}", e))? as usize;
+        let seg_count_x2 = cursor
+            .read_u16::<BigEndian>()
+            .map_err(|e| format!("Failed to read segCountX2: {}", e))?
+            as usize;
         let seg_count = seg_count_x2 / 2;
 
         // Skip binary search parameters
-        let _search_range = cursor.read_u16::<BigEndian>()
+        let _search_range = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read searchRange: {}", e))?;
-        let _entry_selector = cursor.read_u16::<BigEndian>()
+        let _entry_selector = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read entrySelector: {}", e))?;
-        let _range_shift = cursor.read_u16::<BigEndian>()
+        let _range_shift = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read rangeShift: {}", e))?;
 
         // Read segment arrays
         let mut end_codes = vec![0u16; seg_count];
         for i in 0..seg_count {
-            end_codes[i] = cursor.read_u16::<BigEndian>()
+            end_codes[i] = cursor
+                .read_u16::<BigEndian>()
                 .map_err(|e| format!("Failed to read endCode[{}]: {}", i, e))?;
         }
 
         // Reserved pad
-        let _reserved = cursor.read_u16::<BigEndian>()
+        let _reserved = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read reserved pad: {}", e))?;
 
         let mut start_codes = vec![0u16; seg_count];
         for i in 0..seg_count {
-            start_codes[i] = cursor.read_u16::<BigEndian>()
+            start_codes[i] = cursor
+                .read_u16::<BigEndian>()
                 .map_err(|e| format!("Failed to read startCode[{}]: {}", i, e))?;
         }
 
         let mut id_deltas = vec![0i16; seg_count];
         for i in 0..seg_count {
-            id_deltas[i] = cursor.read_i16::<BigEndian>()
+            id_deltas[i] = cursor
+                .read_i16::<BigEndian>()
                 .map_err(|e| format!("Failed to read idDelta[{}]: {}", i, e))?;
         }
 
         // id_range_offsets require special parsing - just read as array
         let mut id_range_offsets = vec![0u16; seg_count];
         for i in 0..seg_count {
-            id_range_offsets[i] = cursor.read_u16::<BigEndian>()
+            id_range_offsets[i] = cursor
+                .read_u16::<BigEndian>()
                 .map_err(|e| format!("Failed to read idRangeOffset[{}]: {}", i, e))?;
         }
 
@@ -241,13 +270,13 @@ impl TrueTypeCMap {
 
                 let gid = if id_range_offsets[seg] == 0 {
                     // Simple formula: GID = char_code + id_delta
-                    ((char_code as i32 + id_delta) as u16) & 0xFFFF
+                    (char_code as i32 + id_delta) as u16
                 } else {
                     // Need to index into glyphIdArray - for now use simple formula
-                    ((char_code as i32 + id_delta) as u16) & 0xFFFF
+                    (char_code as i32 + id_delta) as u16
                 };
 
-                if let Some(ch) = char::from_u32(char_code as u32) {
+                if let Some(ch) = char::from_u32(char_code) {
                     gid_to_unicode.insert(gid, ch);
                 }
             }
@@ -258,20 +287,25 @@ impl TrueTypeCMap {
 
     /// Parse cmap format 6 (trimmed table)
     fn parse_cmap_format6(cursor: &mut Cursor<&[u8]>) -> Result<HashMap<u16, char>, String> {
-        let _length = cursor.read_u16::<BigEndian>()
+        let _length = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read format 6 length: {}", e))?;
-        let _language = cursor.read_u16::<BigEndian>()
+        let _language = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read format 6 language: {}", e))?;
 
-        let first_code = cursor.read_u16::<BigEndian>()
+        let first_code = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read firstCode: {}", e))?;
-        let count = cursor.read_u16::<BigEndian>()
+        let count = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read entryCount: {}", e))? as usize;
 
         let mut gid_to_unicode = HashMap::new();
 
         for i in 0..count {
-            let gid = cursor.read_u16::<BigEndian>()
+            let gid = cursor
+                .read_u16::<BigEndian>()
                 .map_err(|e| format!("Failed to read glyphId[{}]: {}", i, e))?;
 
             let char_code = first_code as u32 + i as u32;
@@ -286,25 +320,33 @@ impl TrueTypeCMap {
     /// Parse cmap format 12 (segmented coverage - supports full Unicode)
     fn parse_cmap_format12(cursor: &mut Cursor<&[u8]>) -> Result<HashMap<u16, char>, String> {
         // Skip reserved bytes
-        let _reserved = cursor.read_u16::<BigEndian>()
+        let _reserved = cursor
+            .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read reserved: {}", e))?;
 
-        let _length = cursor.read_u32::<BigEndian>()
+        let _length = cursor
+            .read_u32::<BigEndian>()
             .map_err(|e| format!("Failed to read format 12 length: {}", e))?;
-        let _language = cursor.read_u32::<BigEndian>()
+        let _language = cursor
+            .read_u32::<BigEndian>()
             .map_err(|e| format!("Failed to read format 12 language: {}", e))?;
 
-        let num_groups = cursor.read_u32::<BigEndian>()
-            .map_err(|e| format!("Failed to read numGroups: {}", e))? as usize;
+        let num_groups = cursor
+            .read_u32::<BigEndian>()
+            .map_err(|e| format!("Failed to read numGroups: {}", e))?
+            as usize;
 
         let mut gid_to_unicode = HashMap::new();
 
         for _ in 0..num_groups {
-            let start_char_code = cursor.read_u32::<BigEndian>()
+            let start_char_code = cursor
+                .read_u32::<BigEndian>()
                 .map_err(|e| format!("Failed to read startCharCode: {}", e))?;
-            let end_char_code = cursor.read_u32::<BigEndian>()
+            let end_char_code = cursor
+                .read_u32::<BigEndian>()
                 .map_err(|e| format!("Failed to read endCharCode: {}", e))?;
-            let start_gid = cursor.read_u32::<BigEndian>()
+            let start_gid = cursor
+                .read_u32::<BigEndian>()
                 .map_err(|e| format!("Failed to read startGlyphId: {}", e))?;
 
             for (offset, char_code) in (start_char_code..=end_char_code).enumerate() {

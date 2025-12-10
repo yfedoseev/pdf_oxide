@@ -8,8 +8,8 @@
 
 use crate::document::PdfDocument;
 use crate::error::{Error, Result};
-use crate::fonts::cmap::{CMap, parse_tounicode_cmap};
 use crate::fonts::TrueTypeCMap;
+use crate::fonts::cmap::{CMap, parse_tounicode_cmap};
 use crate::layout::text_block::FontWeight;
 use crate::object::Object;
 use std::collections::HashMap;
@@ -179,10 +179,11 @@ impl FontInfo {
 
         // Parse FontDescriptor FIRST to get font flags (needed for encoding decision)
         // PDF Spec: ISO 32000-1:2008, Section 9.6.2 - Font Descriptor
-        let (font_weight, flags, stem_v, embedded_font_data, is_truetype_font) = if let Some(descriptor_ref) =
-            font_dict
-                .get("FontDescriptor")
-                .and_then(|obj| obj.as_reference())
+        let (font_weight, flags, stem_v, embedded_font_data, is_truetype_font) = if let Some(
+            descriptor_ref,
+        ) = font_dict
+            .get("FontDescriptor")
+            .and_then(|obj| obj.as_reference())
         {
             // Load the FontDescriptor object
             if let Ok(descriptor_obj) = doc.load_object(descriptor_ref) {
@@ -206,94 +207,91 @@ impl FontInfo {
 
                     // Load embedded font data from FontFile2 (TrueType), FontFile (Type 1), or FontFile3 (CFF/OpenType)
                     // IMPORTANT: Track whether font is TrueType or CFF - only TrueType fonts have cmaps!
-                    let (embedded_font, is_truetype_font) = if let Some(ff2_obj) = descriptor_dict.get("FontFile2") {
+                    let (embedded_font, is_truetype_font) = if let Some(ff2_obj) =
+                        descriptor_dict.get("FontFile2")
+                    {
                         log::info!("Font '{}' has FontFile2 entry (TrueType)", base_font);
                         let font_data = match ff2_obj.as_reference() {
-                            Some(ff2_ref) => {
-                                match doc.load_object(ff2_ref) {
-                                    Ok(ff2_stream) => {
-                                        match ff2_stream.decode_stream_data() {
-                                            Ok(data) => {
-                                                log::info!(
-                                                    "Font '{}' loaded embedded TrueType font ({} bytes)",
-                                                    base_font,
-                                                    data.len()
-                                                );
-                                                Some(Arc::new(data))
-                                            }
-                                            Err(e) => {
-                                                log::warn!(
-                                                    "Font '{}' FontFile2 stream decode failed: {}",
-                                                    base_font,
-                                                    e
-                                                );
-                                                None
-                                            }
-                                        }
-                                    }
+                            Some(ff2_ref) => match doc.load_object(ff2_ref) {
+                                Ok(ff2_stream) => match ff2_stream.decode_stream_data() {
+                                    Ok(data) => {
+                                        log::info!(
+                                            "Font '{}' loaded embedded TrueType font ({} bytes)",
+                                            base_font,
+                                            data.len()
+                                        );
+                                        Some(Arc::new(data))
+                                    },
                                     Err(e) => {
                                         log::warn!(
-                                            "Font '{}' FontFile2 object load failed: {}",
+                                            "Font '{}' FontFile2 stream decode failed: {}",
                                             base_font,
                                             e
                                         );
                                         None
-                                    }
-                                }
-                            }
+                                    },
+                                },
+                                Err(e) => {
+                                    log::warn!(
+                                        "Font '{}' FontFile2 object load failed: {}",
+                                        base_font,
+                                        e
+                                    );
+                                    None
+                                },
+                            },
                             None => {
                                 log::warn!("Font '{}' FontFile2 is not a reference", base_font);
                                 None
-                            }
+                            },
                         };
-                        (font_data, true)  // TrueType - can have cmaps
+                        (font_data, true) // TrueType - can have cmaps
                     } else if let Some(ff3_obj) = descriptor_dict.get("FontFile3") {
-                        log::info!("Font '{}' has FontFile3 entry (CFF/OpenType - no TrueType cmap)", base_font);
+                        log::info!(
+                            "Font '{}' has FontFile3 entry (CFF/OpenType - no TrueType cmap)",
+                            base_font
+                        );
                         let font_data = match ff3_obj.as_reference() {
-                            Some(ff3_ref) => {
-                                match doc.load_object(ff3_ref) {
-                                    Ok(ff3_stream) => {
-                                        match ff3_stream.decode_stream_data() {
-                                            Ok(data) => {
-                                                log::info!(
-                                                    "Font '{}' loaded embedded CFF/OpenType font ({} bytes)",
-                                                    base_font,
-                                                    data.len()
-                                                );
-                                                Some(Arc::new(data))
-                                            }
-                                            Err(e) => {
-                                                log::warn!(
-                                                    "Font '{}' FontFile3 stream decode failed: {}",
-                                                    base_font,
-                                                    e
-                                                );
-                                                None
-                                            }
-                                        }
-                                    }
+                            Some(ff3_ref) => match doc.load_object(ff3_ref) {
+                                Ok(ff3_stream) => match ff3_stream.decode_stream_data() {
+                                    Ok(data) => {
+                                        log::info!(
+                                            "Font '{}' loaded embedded CFF/OpenType font ({} bytes)",
+                                            base_font,
+                                            data.len()
+                                        );
+                                        Some(Arc::new(data))
+                                    },
                                     Err(e) => {
                                         log::warn!(
-                                            "Font '{}' FontFile3 object load failed: {}",
+                                            "Font '{}' FontFile3 stream decode failed: {}",
                                             base_font,
                                             e
                                         );
                                         None
-                                    }
-                                }
-                            }
+                                    },
+                                },
+                                Err(e) => {
+                                    log::warn!(
+                                        "Font '{}' FontFile3 object load failed: {}",
+                                        base_font,
+                                        e
+                                    );
+                                    None
+                                },
+                            },
                             None => {
                                 log::warn!("Font '{}' FontFile3 is not a reference", base_font);
                                 None
-                            }
+                            },
                         };
-                        (font_data, false)  // CFF - no TrueType cmap
+                        (font_data, false) // CFF - no TrueType cmap
                     } else if descriptor_dict.get("FontFile").is_some() {
                         log::info!(
                             "Font '{}' has FontFile entry (Type 1 - not supported for cmap)",
                             base_font
                         );
-                        (None, false)  // Type 1 - no TrueType cmap
+                        (None, false) // Type 1 - no TrueType cmap
                     } else {
                         log::debug!("Font '{}' has no embedded font data", base_font);
                         (None, false)
@@ -311,47 +309,54 @@ impl FontInfo {
         };
 
         // ===== NEW: Extract TrueType cmap if available (Phase 2A) =====
-        let truetype_cmap = if is_truetype_font && embedded_font_data.is_some() {
+        let truetype_cmap = if is_truetype_font {
             // Only attempt TrueType cmap extraction for actual TrueType fonts (FontFile2)
             // CFF/OpenType fonts (FontFile3) do NOT have TrueType cmaps - they have different structures
-            let font_data = embedded_font_data.as_ref().unwrap();
-            log::info!(
-                "Font '{}': Attempting to extract TrueType cmap from {} byte embedded TrueType font data",
-                base_font,
-                font_data.len()
-            );
-            match TrueTypeCMap::from_font_data(font_data) {
-                Ok(cmap) => {
-                    let glyph_count = cmap.len();
-                    if glyph_count > 0 {
-                        log::info!(
-                            "✓ Successfully extracted TrueType cmap for font '{}': {} glyph→Unicode mappings",
-                            base_font,
-                            glyph_count
-                        );
-                    } else {
-                        log::warn!(
-                            "Font '{}': TrueType cmap extracted but contains 0 mappings (empty cmap)",
-                            base_font
-                        );
-                    }
-                    Some(cmap)
+            if let Some(font_data) = &embedded_font_data {
+                log::info!(
+                    "Font '{}': Attempting to extract TrueType cmap from {} byte embedded TrueType font data",
+                    base_font,
+                    font_data.len()
+                );
+                match TrueTypeCMap::from_font_data(font_data) {
+                    Ok(cmap) => {
+                        let glyph_count = cmap.len();
+                        if glyph_count > 0 {
+                            log::info!(
+                                "✓ Successfully extracted TrueType cmap for font '{}': {} glyph→Unicode mappings",
+                                base_font,
+                                glyph_count
+                            );
+                        } else {
+                            log::warn!(
+                                "Font '{}': TrueType cmap extracted but contains 0 mappings (empty cmap)",
+                                base_font
+                            );
+                        }
+                        Some(cmap)
+                    },
+                    Err(e) => {
+                        log::warn!("Font '{}': TrueType cmap extraction failed: {}", base_font, e);
+                        None
+                    },
                 }
-                Err(e) => {
-                    log::warn!(
-                        "Font '{}': TrueType cmap extraction failed: {}",
-                        base_font,
-                        e
-                    );
-                    None
-                }
+            } else {
+                log::debug!(
+                    "Font '{}': No embedded font data available for TrueType cmap extraction",
+                    base_font
+                );
+                None
             }
         } else if embedded_font_data.is_some() {
             // Embedded font exists but it's NOT TrueType (e.g., CFF/OpenType)
             log::debug!(
                 "Font '{}': Skipping TrueType cmap extraction - font is {} (not TrueType)",
                 base_font,
-                if subtype == "Type0" { "Type0 with CFF/OpenType" } else { "other format" }
+                if subtype == "Type0" {
+                    "Type0 with CFF/OpenType"
+                } else {
+                    "other format"
+                }
             );
             None
         } else {
@@ -530,18 +535,23 @@ impl FontInfo {
                         "Font '{}': Parsed DescendantFonts - CIDFontType={}, CIDSystemInfo={}-{}",
                         base_font,
                         ftype.as_ref().unwrap_or(&"Unknown".to_string()),
-                        info.as_ref().map(|s| s.registry.as_str()).unwrap_or("Unknown"),
-                        info.as_ref().map(|s| s.ordering.as_str()).unwrap_or("Unknown")
+                        info.as_ref()
+                            .map(|s| s.registry.as_str())
+                            .unwrap_or("Unknown"),
+                        info.as_ref()
+                            .map(|s| s.ordering.as_str())
+                            .unwrap_or("Unknown")
                     );
                     (map, info, ftype)
-                }
+                },
                 Err(e) => {
                     log::warn!(
                         "Font '{}': Failed to parse DescendantFonts: {}. Using Identity fallback.",
-                        base_font, e
+                        base_font,
+                        e
                     );
                     (Some(CIDToGIDMap::Identity), None, None)
-                }
+                },
             }
         } else {
             (None, None, None)
@@ -653,10 +663,7 @@ impl FontInfo {
 
         let array = resolved.as_array().ok_or_else(|| Error::ParseError {
             offset: 0,
-            reason: format!(
-                "Type0 font '{}': DescendantFonts is not an array",
-                base_font
-            ),
+            reason: format!("Type0 font '{}': DescendantFonts is not an array", base_font),
         })?;
 
         if array.is_empty() {
@@ -680,19 +687,13 @@ impl FontInfo {
 
         let cidfont_ref = array[0].as_reference().ok_or_else(|| Error::ParseError {
             offset: 0,
-            reason: format!(
-                "Type0 font '{}': DescendantFonts[0] is not a reference",
-                base_font
-            ),
+            reason: format!("Type0 font '{}': DescendantFonts[0] is not a reference", base_font),
         })?;
 
         let cidfont_obj = doc.load_object(cidfont_ref)?;
         let cidfont_dict = cidfont_obj.as_dict().ok_or_else(|| Error::ParseError {
             offset: 0,
-            reason: format!(
-                "Type0 font '{}': CIDFont is not a dictionary",
-                base_font
-            ),
+            reason: format!("Type0 font '{}': CIDFont is not a dictionary", base_font),
         })?;
 
         // Get CIDFont subtype (required: CIDFontType0 or CIDFontType2)
@@ -701,10 +702,7 @@ impl FontInfo {
             .and_then(|obj| obj.as_name())
             .ok_or_else(|| Error::ParseError {
                 offset: 0,
-                reason: format!(
-                    "Type0 font '{}': CIDFont missing required /Subtype",
-                    base_font
-                ),
+                reason: format!("Type0 font '{}': CIDFont missing required /Subtype", base_font),
             })?
             .to_string();
 
@@ -729,7 +727,7 @@ impl FontInfo {
                     e
                 );
                 None
-            }
+            },
         };
 
         // Parse CIDToGIDMap (only for CIDFontType2 - TrueType-based)
@@ -742,7 +740,7 @@ impl FontInfo {
                         base_font
                     );
                     Some(CIDToGIDMap::Identity)
-                }
+                },
                 Some(cidtogid_obj) => {
                     // Handle Name object "/Identity"
                     if let Some(name) = cidtogid_obj.as_name() {
@@ -752,7 +750,8 @@ impl FontInfo {
                         } else {
                             log::warn!(
                                 "Font '{}': Invalid CIDToGIDMap name '{}' (only 'Identity' is valid as name)",
-                                base_font, name
+                                base_font,
+                                name
                             );
                             Some(CIDToGIDMap::Identity) // Fallback
                         }
@@ -793,7 +792,7 @@ impl FontInfo {
                                         );
                                         Some(CIDToGIDMap::Explicit(map))
                                     }
-                                }
+                                },
                                 Err(e) => {
                                     log::warn!(
                                         "Font '{}': CIDToGIDMap stream decode failed: {}. Using Identity fallback.",
@@ -801,7 +800,7 @@ impl FontInfo {
                                         e
                                     );
                                     Some(CIDToGIDMap::Identity)
-                                }
+                                },
                             },
                             Err(e) => {
                                 log::warn!(
@@ -810,7 +809,7 @@ impl FontInfo {
                                     e
                                 );
                                 Some(CIDToGIDMap::Identity)
-                            }
+                            },
                         }
                     } else {
                         log::warn!(
@@ -819,7 +818,7 @@ impl FontInfo {
                         );
                         Some(CIDToGIDMap::Identity)
                     }
-                }
+                },
             }
         } else {
             // CIDFontType0 (CFF/OpenType) doesn't use CIDToGIDMap
@@ -1253,7 +1252,7 @@ impl FontInfo {
                     if let Some(ref tt_cmap) = self.truetype_cmap {
                         // Assume Identity CIDToGIDMap (CID == GID) for now
                         // Phase 3 will add explicit CIDToGIDMap parsing
-                        let gid = char_code as u16;
+                        let gid = char_code;
 
                         if let Some(unicode_char) = tt_cmap.get_unicode(gid) {
                             log::debug!(
@@ -1283,7 +1282,11 @@ impl FontInfo {
                          Text extraction will fail for this font.",
                         self.base_font,
                         char_code,
-                        if self.truetype_cmap.is_some() { "tried but GID not found" } else { "not available" }
+                        if self.truetype_cmap.is_some() {
+                            "tried but GID not found"
+                        } else {
+                            "not available"
+                        }
                     );
                     return None; // Cannot map - return None instead of wrong character
                 }
@@ -2151,6 +2154,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
         assert!(font.is_bold());
 
@@ -2168,6 +2174,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
         assert!(!font2.is_bold());
     }
@@ -2188,6 +2197,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
         assert!(font.is_italic());
 
@@ -2205,6 +2217,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
         assert!(font2.is_italic());
     }
@@ -2228,6 +2243,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
 
         // Should use ToUnicode mapping (priority)
@@ -2252,6 +2270,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
 
         assert_eq!(font.char_to_unicode(0x41), Some("A".to_string()));
@@ -2275,6 +2296,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
 
         // Type0 without ToUnicode should return None (cannot use Identity encoding for CIDs)
@@ -2296,6 +2320,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
 
         // Simple fonts (Type1) CAN use Identity encoding for valid Unicode codes
@@ -2329,6 +2356,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
 
         let font2 = font.clone();
@@ -2438,6 +2468,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
 
         // Should use custom encoding
@@ -2465,6 +2498,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
 
         assert_eq!(font_with_force_bold.get_font_weight(), FontWeight::Bold);
@@ -2485,6 +2521,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
 
         assert_eq!(font_without_force_bold.get_font_weight(), FontWeight::Normal);
@@ -2509,6 +2548,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
 
         assert_eq!(font_heavy_stem.get_font_weight(), FontWeight::Bold);
@@ -2529,6 +2571,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
 
         assert_eq!(font_medium_stem.get_font_weight(), FontWeight::Medium);
@@ -2549,6 +2594,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
 
         assert_eq!(font_light_stem.get_font_weight(), FontWeight::Normal);
@@ -2573,6 +2621,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
 
         assert_eq!(font_explicit.get_font_weight(), FontWeight::Light);
@@ -2593,6 +2644,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
 
         assert_eq!(font_force_bold.get_font_weight(), FontWeight::Bold);
@@ -2613,6 +2667,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
 
         assert_eq!(font_name.get_font_weight(), FontWeight::Bold);
@@ -2637,6 +2694,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
         assert_eq!(font_black.get_font_weight(), FontWeight::Black);
         assert!(font_black.is_bold());
@@ -2656,6 +2716,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
         assert_eq!(font_extrabold.get_font_weight(), FontWeight::ExtraBold);
         assert!(font_extrabold.is_bold());
@@ -2675,6 +2738,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
         assert_eq!(font_bold.get_font_weight(), FontWeight::Bold);
         assert!(font_bold.is_bold());
@@ -2694,6 +2760,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
         assert_eq!(font_semibold.get_font_weight(), FontWeight::SemiBold);
         assert!(font_semibold.is_bold());
@@ -2713,6 +2782,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
         assert_eq!(font_medium.get_font_weight(), FontWeight::Medium);
         assert!(!font_medium.is_bold());
@@ -2732,6 +2804,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
         assert_eq!(font_light.get_font_weight(), FontWeight::Light);
         assert!(!font_light.is_bold());
@@ -2751,6 +2826,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
         assert_eq!(font_extralight.get_font_weight(), FontWeight::ExtraLight);
         assert!(!font_extralight.is_bold());
@@ -2770,6 +2848,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
         assert_eq!(font_thin.get_font_weight(), FontWeight::Thin);
         assert!(!font_thin.is_bold());
@@ -2789,6 +2870,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         };
         assert_eq!(font_normal.get_font_weight(), FontWeight::Normal);
         assert!(!font_normal.is_bold());

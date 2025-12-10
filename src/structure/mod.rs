@@ -40,11 +40,15 @@
 //! ```
 
 mod parser;
+pub mod spatial_table_detector;
 pub mod table_extractor;
 pub mod traversal;
 pub mod types;
 
 pub use parser::parse_structure_tree;
+pub use spatial_table_detector::{
+    DetectedTable, SpatialTableDetector, TableDetectionConfig, detect_tables_from_spans,
+};
 pub use table_extractor::{ExtractedTable, TableCell, TableRow, extract_table};
 pub use traversal::{OrderedContent, extract_reading_order, traverse_structure_tree};
 pub use types::{ParentTree, StructChild, StructElem, StructTreeRoot, StructType};

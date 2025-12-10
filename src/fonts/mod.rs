@@ -11,6 +11,7 @@ pub mod character_mapper;
 pub mod cmap;
 pub mod font_dict; // Private module - only used internally by font_dict
 pub mod non_text_detection;
+/// TrueType font CMap parsing for glyph-to-character mapping.
 pub mod truetype_cmap;
 
 pub use character_mapper::CharacterMapper;

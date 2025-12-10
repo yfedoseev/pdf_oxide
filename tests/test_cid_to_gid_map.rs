@@ -9,7 +9,7 @@
 //! - Regression Tests (19-21): Phase 2A/2B compatibility
 //! - Edge Cases (22-24): Boundary conditions
 
-use pdf_oxide::fonts::{CIDToGIDMap, CIDSystemInfo};
+use pdf_oxide::fonts::{CIDSystemInfo, CIDToGIDMap};
 
 // ============================================================================
 // ITERATION 1: Identity CIDToGIDMap Tests (Tests 1, 3, 15)
@@ -62,16 +62,19 @@ fn test_cidtogidmap_explicit_stream_basic() {
     // CID 0 → GID 10, CID 1 → GID 20, CID 2 → GID 30
 
     let stream_data = vec![0x00, 0x0A, 0x00, 0x14, 0x00, 0x1E];
-    let map = CIDToGIDMap::Explicit(stream_data.chunks(2)
-        .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
-        .collect::<Vec<_>>());
+    let map = CIDToGIDMap::Explicit(
+        stream_data
+            .chunks(2)
+            .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+            .collect::<Vec<_>>(),
+    );
 
     match map {
         CIDToGIDMap::Explicit(ref vec) => {
             assert_eq!(vec[0], 10);
             assert_eq!(vec[1], 20);
             assert_eq!(vec[2], 30);
-        }
+        },
         _ => panic!("Expected Explicit mapping"),
     }
 }
@@ -110,7 +113,7 @@ fn test_char_to_unicode_with_explicit_cidtogidmap() {
             assert_eq!(gids[1], 20);
             // CID 2 maps to GID 0 (should return None in char_to_unicode)
             assert_eq!(gids[2], 0);
-        }
+        },
         _ => panic!("Expected Explicit mapping"),
     }
 }
@@ -135,11 +138,11 @@ fn test_char_to_unicode_cid_out_of_range() {
 
     // Test 1: Create CIDToGIDMap with limited entries
     let map = CIDToGIDMap::Explicit(vec![
-        10,  // CID 0 → GID 10
-        20,  // CID 1 → GID 20
-        30,  // CID 2 → GID 30
-        40,  // CID 3 → GID 40
-        50,  // CID 4 → GID 50
+        10, // CID 0 → GID 10
+        20, // CID 1 → GID 20
+        30, // CID 2 → GID 30
+        40, // CID 3 → GID 40
+        50, // CID 4 → GID 50
     ]);
 
     match map {
@@ -157,7 +160,7 @@ fn test_char_to_unicode_cid_out_of_range() {
             for cid in out_of_range_cids {
                 assert!(cid >= gids.len(), "CID {} should be out of range", cid);
             }
-        }
+        },
         _ => panic!("Expected Explicit mapping"),
     }
 
@@ -165,10 +168,10 @@ fn test_char_to_unicode_cid_out_of_range() {
     // This verifies that the char_to_unicode() method will need to check:
     // if cid >= map.len() { return None; }
     let cids_to_test = vec![
-        (0usize, true),   // In range
-        (4usize, true),   // In range (max)
-        (5usize, false),  // Out of range
-        (100usize, false), // Out of range
+        (0usize, true),      // In range
+        (4usize, true),      // In range (max)
+        (5usize, false),     // Out of range
+        (100usize, false),   // Out of range
         (65535usize, false), // Out of range (u16::MAX)
     ];
 
@@ -177,11 +180,13 @@ fn test_char_to_unicode_cid_out_of_range() {
         CIDToGIDMap::Explicit(ref gids) => {
             for (cid, should_be_in_range) in cids_to_test {
                 let is_in_range = cid < gids.len();
-                assert_eq!(is_in_range, should_be_in_range,
+                assert_eq!(
+                    is_in_range, should_be_in_range,
                     "CID {}: expected in_range={}, got in_range={}",
-                    cid, should_be_in_range, is_in_range);
+                    cid, should_be_in_range, is_in_range
+                );
             }
-        }
+        },
         _ => panic!("Expected Explicit mapping"),
     }
 }
@@ -202,11 +207,11 @@ fn test_char_to_unicode_gid_zero_notdef() {
 
     // Test 1: Create CIDToGIDMap with GID 0 entries
     let map = CIDToGIDMap::Explicit(vec![
-        0,    // CID 0 → GID 0 (.notdef)
-        10,   // CID 1 → GID 10 (valid glyph)
-        0,    // CID 2 → GID 0 (.notdef)
-        20,   // CID 3 → GID 20 (valid glyph)
-        0,    // CID 4 → GID 0 (.notdef)
+        0,  // CID 0 → GID 0 (.notdef)
+        10, // CID 1 → GID 10 (valid glyph)
+        0,  // CID 2 → GID 0 (.notdef)
+        20, // CID 3 → GID 20 (valid glyph)
+        0,  // CID 4 → GID 0 (.notdef)
     ]);
 
     match map {
@@ -222,7 +227,7 @@ fn test_char_to_unicode_gid_zero_notdef() {
             // Verify valid mappings (GID > 0)
             assert_eq!(gids[1], 10, "CID 1 should map to GID 10");
             assert_eq!(gids[3], 20, "CID 3 should map to GID 20");
-        }
+        },
         _ => panic!("Expected Explicit mapping"),
     }
 
@@ -230,17 +235,19 @@ fn test_char_to_unicode_gid_zero_notdef() {
     // When char_to_unicode() processes a mapped GID, it must check:
     // if gid == 0 { return None; }
     let gid_mappings = vec![
-        (0u16, true),   // .notdef - must return None
-        (1u16, false),  // Valid GID - might have Unicode
-        (10u16, false), // Valid GID - might have Unicode
+        (0u16, true),      // .notdef - must return None
+        (1u16, false),     // Valid GID - might have Unicode
+        (10u16, false),    // Valid GID - might have Unicode
         (65535u16, false), // Valid GID - might have Unicode
     ];
 
     for (gid, should_be_notdef) in gid_mappings {
         let is_notdef = gid == 0;
-        assert_eq!(is_notdef, should_be_notdef,
+        assert_eq!(
+            is_notdef, should_be_notdef,
             "GID {}: expected notdef={}, got notdef={}",
-            gid, should_be_notdef, is_notdef);
+            gid, should_be_notdef, is_notdef
+        );
     }
 
     // Test 3: .notdef is special and should always be filtered
@@ -356,7 +363,7 @@ fn test_phase2a_truetype_cmap_still_works() {
 
     // Test 1: Verify TrueType cmap concept still valid
     // TrueType cmaps map GID → Unicode, used when no ToUnicode available
-    let truetype_cmap_concept_valid = true;  // TrueType uses cmap tables
+    let truetype_cmap_concept_valid = true; // TrueType uses cmap tables
     assert!(truetype_cmap_concept_valid, "TrueType cmap concept should remain valid");
 
     // Test 2: Verify Phase 3 doesn't touch non-Type0 fonts
@@ -415,8 +422,11 @@ fn test_simple_fonts_unaffected() {
     ];
 
     for (feature, required_type) in type0_only_features {
-        assert_eq!(required_type, "Type0",
-            "Phase 3 feature '{}' only applies to Type0 fonts", feature);
+        assert_eq!(
+            required_type, "Type0",
+            "Phase 3 feature '{}' only applies to Type0 fonts",
+            feature
+        );
     }
 
     // Test 5: Summary
@@ -444,12 +454,18 @@ fn test_phase2b_text_processing_unchanged() {
     // Test 2: Verify whitespace normalization still valid
     // Text post-processing includes whitespace normalization (tabs, multiple spaces)
     let whitespace_normalization_enabled = true;
-    assert!(whitespace_normalization_enabled, "Text post-processing should normalize whitespace");
+    assert!(
+        whitespace_normalization_enabled,
+        "Text post-processing should normalize whitespace"
+    );
 
     // Test 3: Verify special character handling still valid
     // Text post-processing handles special Unicode characters (ligatures, etc.)
     let special_char_handling_enabled = true;
-    assert!(special_char_handling_enabled, "Text post-processing should handle special characters");
+    assert!(
+        special_char_handling_enabled,
+        "Text post-processing should handle special characters"
+    );
 
     // Test 4: Phase 3 doesn't interfere with post-processing pipeline
     // Phase 3 operates at font parsing level, before text extraction
@@ -457,8 +473,10 @@ fn test_phase2b_text_processing_unchanged() {
     // These are independent pipelines
     let phase3_level = "font_parsing";
     let phase2b_level = "text_post_processing";
-    assert_ne!(phase3_level, phase2b_level,
-        "Phase 3 (font parsing) and Phase 2B (post-processing) operate at different levels");
+    assert_ne!(
+        phase3_level, phase2b_level,
+        "Phase 3 (font parsing) and Phase 2B (post-processing) operate at different levels"
+    );
 
     // Test 5: Summary
     // This test verifies that Phase 2B text post-processing is unaffected by Phase 3
@@ -497,8 +515,11 @@ fn test_cid_65535_max_boundary() {
             assert_eq!(gids.len(), 6);
             // CID 65535 would be out of bounds - handled by bounds check
             let out_of_range_cid = 65535;
-            assert!(out_of_range_cid as usize >= gids.len(), "CID 65535 is out of range for small map");
-        }
+            assert!(
+                out_of_range_cid as usize >= gids.len(),
+                "CID 65535 is out of range for small map"
+            );
+        },
         _ => panic!("Expected Explicit mapping"),
     }
 }
@@ -525,7 +546,7 @@ fn test_gid_maps_to_zero_returns_none() {
 
             // CID 2 maps to GID 20
             assert_eq!(gids[2], 20);
-        }
+        },
         _ => panic!("Expected Explicit mapping"),
     }
 

@@ -76,7 +76,7 @@ impl TextPostProcessor {
                 let next_line = lines[i + 1].trim_start();
 
                 // If next line starts with lowercase letter, likely word continuation
-                if next_line.chars().next().map_or(false, |c| c.is_lowercase()) {
+                if next_line.chars().next().is_some_and(|c| c.is_lowercase()) {
                     // Remove the hyphen/soft-hyphen and join words
                     let without_hyphen = if trimmed.ends_with('\u{00AD}') {
                         &trimmed[..trimmed.len() - '\u{00AD}'.len_utf8()]
@@ -161,7 +161,9 @@ impl TextPostProcessor {
             }
 
             // Reduce 2+ consecutive spaces to 1
-            let normalized = RE_EXCESSIVE_SPACES.replace_all(trimmed_start, "$1 $2").to_string();
+            let normalized = RE_EXCESSIVE_SPACES
+                .replace_all(trimmed_start, "$1 $2")
+                .to_string();
             result.push_str(&normalized);
 
             // Add newline except on last line
@@ -221,19 +223,26 @@ impl TextPostProcessor {
         for i in 0..chars.len() {
             let current_char = chars[i];
             let prev_char = if i > 0 { Some(chars[i - 1]) } else { None };
-            let next_char = if i + 1 < chars.len() { Some(chars[i + 1]) } else { None };
+            let next_char = if i + 1 < chars.len() {
+                Some(chars[i + 1])
+            } else {
+                None
+            };
 
             // Check if current character is special (Greek, math, etc.)
             let is_special = Self::is_special_character(current_char);
 
             // Add space before special character if needed
-            if is_special && prev_char.is_some() {
-                let prev = prev_char.unwrap();
-                // Add space if:
-                // 1. Previous char is not whitespace AND
-                // 2. Previous char is not a punctuation that typically precedes special chars
-                if !prev.is_whitespace() && !Self::is_space_before_special(prev) {
-                    if !result.is_empty() && !result.ends_with(' ') {
+            if is_special {
+                if let Some(prev) = prev_char {
+                    // Add space if:
+                    // 1. Previous char is not whitespace AND
+                    // 2. Previous char is not a punctuation that typically precedes special chars
+                    if !prev.is_whitespace()
+                        && !Self::is_space_before_special(prev)
+                        && !result.is_empty()
+                        && !result.ends_with(' ')
+                    {
                         result.push(' ');
                     }
                 }
@@ -242,10 +251,11 @@ impl TextPostProcessor {
             result.push(current_char);
 
             // Add space after special character if needed
-            if is_special && next_char.is_some() {
-                let next = next_char.unwrap();
-                if !next.is_whitespace() && !Self::is_space_after_special(next) {
-                    result.push(' ');
+            if is_special {
+                if let Some(next) = next_char {
+                    if !next.is_whitespace() && !Self::is_space_after_special(next) {
+                        result.push(' ');
+                    }
                 }
             }
         }

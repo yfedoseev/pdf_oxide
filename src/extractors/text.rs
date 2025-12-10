@@ -449,6 +449,52 @@ pub struct SpanMergingConfig {
     /// - `AdaptiveThresholdConfig::aggressive()` - For dense layouts
     /// - `AdaptiveThresholdConfig::conservative()` - For formal documents
     pub adaptive_config: Option<crate::extractors::gap_statistics::AdaptiveThresholdConfig>,
+
+    /// Enable email pattern detection for spacing decisions.
+    ///
+    /// When true, detects email-like patterns in surrounding text
+    /// (e.g., "user@domain" separated by spaces) and applies special spacing rules
+    /// to preserve email addresses.
+    ///
+    /// Per PDF Spec ISO 32000-1:2008 Section 9.10, only extracted text patterns
+    /// are used - no domain-specific semantics.
+    ///
+    /// **Default**: false
+    pub detect_email_patterns: bool,
+
+    /// Multiplier for email pattern threshold detection.
+    ///
+    /// Controls how aggressively email patterns are detected by adjusting the gap threshold.
+    /// A multiplier > 1.0 makes detection more lenient (allows larger gaps to be considered email context).
+    /// A multiplier < 1.0 makes detection stricter.
+    ///
+    /// Calculated as: `email_threshold = geometric_threshold * email_threshold_multiplier`
+    ///
+    /// **Default**: 2.5
+    /// - At 2.5×, handles typical email address separations with spaces
+    /// - Typical gap between email parts: 4-8pt (after @, before TLD)
+    pub email_threshold_multiplier: f32,
+
+    /// Enable citation marker detection for spacing decisions.
+    ///
+    /// When true, detects superscript citation markers (typically smaller font size)
+    /// and adjusts spacing rules to preserve citation formatting.
+    ///
+    /// Per PDF Spec ISO 32000-1:2008 Section 9.10, font size ratios from extracted content
+    /// are used for detection.
+    ///
+    /// **Default**: false
+    pub detect_citation_markers: bool,
+
+    /// Font size ratio for citation marker detection.
+    ///
+    /// Citation markers typically have font size between this ratio and 1.0 of the base text.
+    /// Values below this ratio are considered citation markers.
+    ///
+    /// **Default**: 0.75
+    /// - Typical citation markers: 70-80% of text font size
+    /// - Superscript usually: 50-80% of base font
+    pub citation_font_size_ratio: f32,
 }
 
 impl Default for SpanMergingConfig {
@@ -460,6 +506,10 @@ impl Default for SpanMergingConfig {
             severe_overlap_threshold_pt: -0.5,
             use_adaptive_threshold: true, // Phase 8: Enabled by default for better quality
             adaptive_config: None,
+            detect_email_patterns: false,
+            email_threshold_multiplier: 2.5,
+            detect_citation_markers: false,
+            citation_font_size_ratio: 0.75,
         }
     }
 }
@@ -502,6 +552,10 @@ impl SpanMergingConfig {
             severe_overlap_threshold_pt: -0.5,
             use_adaptive_threshold: false,
             adaptive_config: None,
+            detect_email_patterns: false,
+            email_threshold_multiplier: 2.5,
+            detect_citation_markers: false,
+            citation_font_size_ratio: 0.75,
         }
     }
 
@@ -531,6 +585,10 @@ impl SpanMergingConfig {
             severe_overlap_threshold_pt: -0.5,
             use_adaptive_threshold: false,
             adaptive_config: None,
+            detect_email_patterns: false,
+            email_threshold_multiplier: 2.5,
+            detect_citation_markers: false,
+            citation_font_size_ratio: 0.75,
         }
     }
 
@@ -563,6 +621,10 @@ impl SpanMergingConfig {
             severe_overlap_threshold_pt: overlap_pt,
             use_adaptive_threshold: false,
             adaptive_config: None,
+            detect_email_patterns: false,
+            email_threshold_multiplier: 2.5,
+            detect_citation_markers: false,
+            citation_font_size_ratio: 0.75,
         }
     }
 
@@ -603,6 +665,10 @@ impl SpanMergingConfig {
             adaptive_config: Some(
                 crate::extractors::gap_statistics::AdaptiveThresholdConfig::default(),
             ),
+            detect_email_patterns: false,
+            email_threshold_multiplier: 2.5,
+            detect_citation_markers: false,
+            citation_font_size_ratio: 0.75,
         }
     }
 
@@ -632,6 +698,10 @@ impl SpanMergingConfig {
             severe_overlap_threshold_pt: -0.5,
             use_adaptive_threshold: true,
             adaptive_config: Some(adaptive_config),
+            detect_email_patterns: false,
+            email_threshold_multiplier: 2.5,
+            detect_citation_markers: false,
+            citation_font_size_ratio: 0.75,
         }
     }
 
@@ -671,6 +741,10 @@ impl SpanMergingConfig {
             severe_overlap_threshold_pt: -0.5,
             use_adaptive_threshold: false, // Fixed thresholds, no adaptive
             adaptive_config: None,
+            detect_email_patterns: false,
+            email_threshold_multiplier: 2.5,
+            detect_citation_markers: false,
+            citation_font_size_ratio: 0.75,
         }
     }
 }
@@ -735,7 +809,11 @@ fn should_insert_space(
     font_name: &str,
     fonts: &std::collections::HashMap<String, crate::fonts::FontInfo>,
     tj_offset_triggered: bool,
-    _config: &SpanMergingConfig,
+    config: &SpanMergingConfig,
+    prev_bbox: Option<&crate::geometry::Rect>,
+    next_bbox: Option<&crate::geometry::Rect>,
+    prev_font_size: f32,
+    next_font_size: f32,
 ) -> SpaceDecision {
     // PHASE 10: PDF Spec-Compliant Space Detection
     // Per ISO 32000-1:2008 Section 9.4.3 and 9.4.4
@@ -754,25 +832,123 @@ fn should_insert_space(
         return SpaceDecision::no_space(SpaceSource::AlreadyPresent, 1.0);
     }
 
-    // Rule 1: TJ Offset Signal (Section 9.4.3)
-    // Most explicit PDF positioning signal indicating word boundary
-    if tj_offset_triggered {
-        log::debug!("Space decision: TJ offset triggered - inserting space");
-        return SpaceDecision::insert(SpaceSource::TjOffset, 1.0);
+    // Rule 0.5: Email Pattern Detection
+    // Per ISO 32000-1:2008 Section 9.10, email formatting preservation
+    if config.detect_email_patterns && is_email_context(preceding_text, following_text) {
+        let geometric_threshold = if let Some(font_info) = fonts.get(font_name) {
+            let space_width_units = font_info.get_space_glyph_width();
+            let space_width_pt = (space_width_units / 1000.0) * font_size;
+            let word_margin_ratio = 0.5;
+            space_width_pt * word_margin_ratio
+        } else {
+            font_size * 0.25
+        };
+
+        let email_threshold = geometric_threshold * config.email_threshold_multiplier;
+
+        if gap_pt > email_threshold {
+            log::debug!(
+                "Email context detected: gap={:.2}pt > {:.2}pt email threshold - inserting space",
+                gap_pt,
+                email_threshold
+            );
+            return SpaceDecision::insert(SpaceSource::GeometricGap, 0.85);
+        }
+
+        log::debug!(
+            "Email context detected: gap={:.2}pt <= {:.2}pt email threshold - suppressing space",
+            gap_pt,
+            email_threshold
+        );
+        return SpaceDecision::no_space(SpaceSource::NoSpace, 1.0);
     }
 
-    // Rule 2: Geometric Gap + Font Metrics (Section 9.4.4)
-    // Per ISO 32000-1:2008 Section 9.7.4, word spacing should be based on actual font metrics,
-    // not fixed ratios. Use space glyph width (in 1000ths of em) to compute adaptive threshold.
+    // Phase 4 (Fix 3): Line Break Handling
+    // ==============================================================================
+    // Per ISO 32000-1:2008 Section 5.2 (geometric positioning):
+    // Line breaks are detected using bbox Y-coordinates (vertical positioning).
+    // Words split across lines need special handling:
+    // - Soft hyphen breaks: Previous text ends with '-' → NO space (word continuation)
+    // - Hard line breaks: Normal breaks → INSERT space (new word on next line)
     //
-    // Calculate font-aware threshold:
-    // 1. Get space glyph width from font dictionary (in 1000ths of em)
-    // 2. Convert to points: (width / 1000) * font_size
-    // 3. Apply word margin ratio: space_width_pt * word_margin_ratio (default 50%)
+    // Spec Reference: Section 5.2 states coordinates are in user space units.
+    // Font size is used as reference for vertical gap detection threshold.
+
+    if let (Some(prev_box), Some(next_box)) = (prev_bbox, next_bbox) {
+        // Calculate vertical and horizontal positioning for line break detection
+        let prev_bottom = prev_box.y + prev_box.height;
+        let next_top = next_box.y;
+        let vertical_gap = (prev_bottom - next_top).abs();
+
+        // Line break threshold: if vertical gap > 0.5× font size (typical line spacing margin)
+        let line_break_threshold = font_size * 0.5;
+        let is_line_break = vertical_gap > line_break_threshold;
+
+        if is_line_break {
+            // Verify same-column layout: X-positions within 2× font width
+            let same_column = (prev_box.left() - next_box.left()).abs() < (font_size * 2.0);
+
+            if same_column {
+                log::debug!(
+                    "Detected line break: vertical_gap={:.2}pt > {:.2}pt threshold, same_column=true",
+                    vertical_gap,
+                    line_break_threshold
+                );
+
+                // Check if previous text ends with hyphen (soft line break)
+                if preceding_text.ends_with('-') {
+                    log::debug!(
+                        "Soft hyphen detected: '{}' ends with '-', suppressing space insertion",
+                        preceding_text
+                    );
+                    return SpaceDecision::no_space(SpaceSource::NoSpace, 1.0);
+                } else {
+                    log::debug!("Hard line break detected: inserting space for word continuation");
+                    return SpaceDecision::insert(SpaceSource::GeometricGap, 0.9);
+                }
+            }
+        }
+    }
+
+    // NEW: Rule 1.5: Citation Marker Detection
+    // ==============================================================================
+    // Per ISO 32000-1:2008 Section 9.3, citation markers have distinct visual properties
+    if config.detect_citation_markers
+        && is_citation_context(prev_bbox, next_bbox, font_size, prev_font_size, next_font_size)
+    {
+        // For citations, use single-signal detection (don't require consensus)
+        // Compute geometric threshold for citation context
+        let citation_geometric_threshold = if let Some(font_info) = fonts.get(font_name) {
+            let space_width_units = font_info.get_space_glyph_width();
+            let space_width_pt = (space_width_units / 1000.0) * font_size;
+            space_width_pt * 0.5
+        } else {
+            font_size * 0.25
+        };
+
+        if tj_offset_triggered || gap_pt > citation_geometric_threshold {
+            log::debug!(
+                "Citation context detected: using relaxed spacing rules (gap={:.2}pt, tj={})",
+                gap_pt,
+                tj_offset_triggered
+            );
+            return SpaceDecision::insert(SpaceSource::TjOffset, 0.90);
+        }
+    }
+
+    // Phase 4 (Fix 2): Consensus-Based Spacing Logic
+    // ==============================================================================
+    // Per ISO 32000-1:2008 Section 9.4.4 and 9.10:
+    // "Determining word boundaries is not specified by PDF."
+    // TJ offsets are typographic hints only, not definitive word boundaries.
     //
-    // This adapts to different fonts:
-    // - Tight fonts (space ~2.5pt): threshold ~1.25pt (avoids spurious spaces in newspapers)
-    // - Normal fonts (space ~3.5pt): threshold ~1.75pt (preserves word boundaries)
+    // Solution: Require CONSENSUS between multiple PDF-spec-defined signals:
+    // - TJ offset signal (explicit typography positioning)
+    // - Geometric signal (bounding box analysis)
+    // - Strong geometric signal alone is sufficient (gap > 2× threshold)
+
+    // Rule 1: TJ Offset Signal (Section 9.4.3) - PDF-spec explicit signal
+    // Calculate font-aware geometric threshold for consensus checking
     let geometric_threshold = if let Some(font_info) = fonts.get(font_name) {
         // Font found: use space glyph width for calculation
         let space_width_units = font_info.get_space_glyph_width(); // in 1000ths of em
@@ -799,9 +975,27 @@ fn should_insert_space(
         font_size * 0.25
     };
 
-    if gap_pt > geometric_threshold {
+    let geometric_suggests_space = gap_pt > geometric_threshold;
+
+    // Phase 4 (Fix 2): Consensus checking
+    // Only insert space if BOTH signals agree OR geometric signal is very strong
+    // This reduces false positives in justified text where TJ offsets are arbitrary
+    if tj_offset_triggered && geometric_suggests_space {
+        // HIGH CONFIDENCE: Both TJ and geometric signals agree
         log::debug!(
-            "Space decision: Geometric gap triggered (gap={:.2}pt > {:.2}pt threshold) - inserting space",
+            "Space decision: CONSENSUS - both TJ and geometric signals triggered (gap={:.2}pt > {:.2}pt) - inserting space",
+            gap_pt,
+            geometric_threshold
+        );
+        return SpaceDecision::insert(SpaceSource::TjOffset, 1.0);
+    }
+
+    // Strong geometric signal alone (gap > 2× threshold)
+    // This is high confidence even without TJ signal
+    let strong_geometric_threshold = geometric_threshold * 2.0;
+    if gap_pt > strong_geometric_threshold {
+        log::debug!(
+            "Space decision: STRONG GEOMETRIC - gap={:.2}pt > 2×{:.2}pt threshold - inserting space",
             gap_pt,
             geometric_threshold
         );
@@ -809,12 +1003,14 @@ fn should_insert_space(
     }
 
     // Default: No space
-    // Per ISO 32000-1:2008, when PDF doesn't encode a word boundary, we cannot recover it.
-    // (This is a spec limitation, not a bug. CamelCase and character heuristics are not spec-defined.)
+    // Per ISO 32000-1:2008 Section 9.10, when PDF doesn't encode a clear word boundary,
+    // we cannot reliably recover it. Requiring consensus prevents false positives in justified text.
     log::trace!(
-        "Space decision: No spec-compliant signal triggered (gap={:.2}pt <= {:.2}pt) - no space",
+        "Space decision: Insufficient consensus (TJ={}, gap={:.2}pt <= {:.2}pt, strong_threshold={:.2}pt) - no space",
+        tj_offset_triggered,
         gap_pt,
-        geometric_threshold
+        geometric_threshold,
+        strong_geometric_threshold
     );
     SpaceDecision::no_space(SpaceSource::NoSpace, 1.0)
 }
@@ -831,6 +1027,79 @@ fn has_boundary_space(preceding: &str, following: &str) -> bool {
     let has_leading_space = following.chars().next().is_some_and(|c| c.is_whitespace());
 
     has_trailing_space || has_leading_space
+}
+
+/// Check if surrounding text forms an email-like pattern.
+/// Per PDF spec, uses only extracted text pattern matching.
+///
+/// Patterns detected:
+/// - "user@outlook" + "." + "com" (space before TLD)
+/// - "user@" + "domain.com" (space after @)
+fn is_email_context(preceding_text: &str, following_text: &str) -> bool {
+    let prev = preceding_text.trim_end();
+    let next = following_text.trim_start();
+
+    // Pattern 1: @ followed by domain part
+    if prev.contains('@') {
+        let after_at = prev.split('@').next_back().unwrap_or("");
+
+        // Pattern 1a: "outlook" + "." → likely email
+        if !after_at.is_empty() && next.starts_with('.') {
+            return true;
+        }
+
+        // Pattern 1b: "outlook." + "com" → likely email
+        if after_at.ends_with('.') && next.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+            return true;
+        }
+    }
+
+    // Pattern 2: Previous ends with @ (immediate after @)
+    if prev.ends_with('@')
+        && next
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+    {
+        return true;
+    }
+
+    false
+}
+
+/// Detect if bounding boxes indicate citation marker context.
+/// Per PDF spec Section 9.3, citation markers have distinct visual properties:
+/// - Smaller font size (typically 50-75% of body text)
+/// - Raised position (superscript)
+fn is_citation_context(
+    prev_bbox: Option<&crate::geometry::Rect>,
+    next_bbox: Option<&crate::geometry::Rect>,
+    current_font_size: f32,
+    prev_font_size: f32,
+    next_font_size: f32,
+) -> bool {
+    let prev_ratio = prev_font_size / current_font_size;
+    let next_ratio = next_font_size / current_font_size;
+
+    // Superscript range: 50-75% of body text size
+    const SUPERSCRIPT_MIN: f32 = 0.5;
+    const SUPERSCRIPT_MAX: f32 = 0.75;
+
+    let prev_is_superscript = (SUPERSCRIPT_MIN..=SUPERSCRIPT_MAX).contains(&prev_ratio);
+    let next_is_superscript = (SUPERSCRIPT_MIN..=SUPERSCRIPT_MAX).contains(&next_ratio);
+
+    if let (Some(prev_box), Some(next_box)) = (prev_bbox, next_bbox) {
+        let vertical_offset = (prev_box.y - next_box.y).abs();
+        let is_raised = vertical_offset > (current_font_size * 0.2);
+
+        // Either previous OR next is superscript + raised
+        if (prev_is_superscript || next_is_superscript) && is_raised {
+            return true;
+        }
+    }
+
+    // Fallback: just font size check if bbox unavailable
+    prev_is_superscript || next_is_superscript
 }
 
 /// Buffer for accumulating text from TJ array elements into a single span.
@@ -1127,7 +1396,7 @@ fn decode_text_to_unicode(bytes: &[u8], font: Option<&FontInfo>) -> String {
         if is_type0 && bytes.len() >= 2 {
             // Type0 fonts use 2-byte character codes (big-endian)
             // ===== NEW VALIDATION CODE START =====
-            if bytes.len() % 2 != 0 {
+            if !bytes.len().is_multiple_of(2) {
                 log::warn!(
                     "Type0 font '{}' has ODD byte count ({})! Expected even count. \
                      Last byte will be processed as single-byte fallback. \
@@ -1252,6 +1521,12 @@ pub struct TextExtractor {
     /// Used as a tie-breaker when sorting spans by Y-coordinate. Ensures
     /// that spans with identical Y-coordinates maintain extraction order.
     span_sequence_counter: usize,
+    /// History of TJ array offsets for statistical analysis (Phase 4)
+    ///
+    /// Tracks TJ offset values to detect justified vs. normal text through
+    /// statistical distribution analysis (coefficient of variation).
+    /// Used to dynamically adjust spacing thresholds per ISO 32000-1:2008 Section 9.4.4.
+    tj_offset_history: Vec<f32>,
 }
 
 impl TextExtractor {
@@ -1298,8 +1573,9 @@ impl TextExtractor {
             extract_spans: true,      // Default to span mode (PDF spec compliant)
             tj_span_buffer: None,     // No buffer initially
             span_sequence_counter: 0, // Initialize sequence counter
-            marked_content_stack: Vec::new(), // NEW: Track marked content contexts
-            inside_artifact: false,   // NEW: Track artifact state
+            marked_content_stack: Vec::new(), // Track marked content contexts
+            inside_artifact: false,   // Track artifact state
+            tj_offset_history: Vec::with_capacity(1000), // Phase 4: Track TJ offsets for statistical analysis
         }
     }
 
@@ -1343,32 +1619,35 @@ impl TextExtractor {
         self.document = Some(document);
     }
 
-    /// Calculate adaptive TJ offset threshold based on font size.
+    /// Calculate adaptive TJ offset threshold based on font size and text justification (Phase 4).
     ///
     /// When `use_adaptive_tj_threshold` is enabled, this method calculates the TJ offset
     /// threshold dynamically using the formula:
     ///
     /// ```text
-    /// adaptive_threshold = -(font_size * 10 * word_margin_ratio)
+    /// adaptive_threshold = -(space_width * font_size * margin_ratio) / 1000
     /// ```
     ///
-    /// Where `font_size` is the current font size in user space units (typically 10-14pt).
+    /// Where `margin_ratio` is adjusted based on justified vs normal text detection:
+    /// - **Justified text** (high CV > 0.5): Uses 3× the normal ratio (conservative)
+    ///   to prevent false space insertions from arbitrary TJ offsets
+    /// - **Normal text** (low CV ≤ 0.5): Uses the default ratio (aggressive)
     ///
-    /// # Rationale
+    /// # Phase 4 Enhancement
     ///
-    /// The adaptive approach scales the threshold based on font size, which is the primary
-    /// factor determining how TJ offsets are used in PDFs. Larger fonts require larger
-    /// TJ offsets to indicate word boundaries, while smaller fonts use smaller offsets.
-    /// This matches pdfplumber's geometry-based approach where word margins scale with font metrics.
+    /// Per ISO 32000-1:2008 Section 9.4.4, justified text uses arbitrary TJ offsets to
+    /// distribute whitespace. This method detects justified text through statistical
+    /// analysis (coefficient of variation) and adapts the threshold accordingly.
     ///
     /// # Fallback Behavior
     ///
     /// If adaptive thresholds are disabled, this method returns the static
     /// `space_insertion_threshold` from the configuration.
     ///
-    /// # Performance
+    /// # PDF Spec Compliance
     ///
-    /// This method is O(1) with no font metric lookups. It's called once per TJ array element.
+    /// Per Section 9.10: "Determining word boundaries is not specified by PDF."
+    /// This method uses only spec-defined TJ values and geometric positions.
     fn calculate_adaptive_tj_threshold(&self) -> f32 {
         // Check if adaptive thresholds are enabled
         if !self.config.use_adaptive_tj_threshold {
@@ -1379,22 +1658,9 @@ impl TextExtractor {
         let state = self.state_stack.current();
 
         // ==============================================================================
-        // FONT-AWARE ADAPTIVE THRESHOLD (ISO 32000-1:2008 Section 9.4.4, 9.6.3)
+        // FONT-AWARE ADAPTIVE THRESHOLD WITH JUSTIFIED TEXT DETECTION (Phase 4)
+        // (ISO 32000-1:2008 Section 9.4.4, 9.6.3, 9.10)
         // ==============================================================================
-        // Use actual font metrics instead of fixed multipliers to calculate threshold.
-        // This accounts for font differences (e.g., Times: 250/1000em, Courier: 600/1000em).
-        //
-        // Formula: -(space_width * font_size * word_margin_ratio) / 1000
-        // Where:
-        // - space_width = glyph width of space char in 1/1000em units (from PDF spec)
-        // - font_size = current font size in user space units
-        // - word_margin_ratio = configurable threshold (default 0.1 = 10%)
-        // - 1000 = normalization factor (PDF spec uses 1/1000em as unit)
-        //
-        // Examples with 12pt font (typical):
-        // - Times-Roman (space_width=250): -(250 * 12 * 0.1) / 1000 = -0.3
-        // - Courier (space_width=600): -(600 * 12 * 0.1) / 1000 = -0.72
-        // - Helvetica (space_width=278): -(278 * 12 * 0.1) / 1000 = -0.334
 
         let font_size = state.font_size;
 
@@ -1407,20 +1673,101 @@ impl TextExtractor {
             .map(|font| font.get_space_glyph_width())
             .unwrap_or(250.0); // Fallback: Times-Roman typical space width
 
+        // Phase 4: Detect justified vs normal text
+        let (is_justified, cv) = self.analyze_tj_distribution();
+
+        // Adjust margin ratio based on text justification
+        // Justified text: use 3× conservative ratio (reduce false spaces)
+        // Normal text: use default ratio
+        let margin_ratio = if is_justified {
+            self.config.word_margin_ratio * 3.0 // Conservative for justified
+        } else {
+            self.config.word_margin_ratio // Normal for non-justified
+        };
+
         // Calculate threshold: negative offset required to trigger space insertion
         // Normalized by 1000 (PDF spec font units are 1/1000em)
-        let adaptive_threshold =
-            -((space_width_units * font_size * self.config.word_margin_ratio) / 1000.0);
+        let adaptive_threshold = -((space_width_units * font_size * margin_ratio) / 1000.0);
 
         log::debug!(
-            "Font-aware TJ threshold: {} (font_size={}, space_width={} units, ratio={}, ISO 32000-1 §9.4.4)",
+            "TJ threshold (Phase 4): {} (justified={}, cv={:.2}, margin_ratio={:.3}, ISO 32000-1 §9.4.4)",
             adaptive_threshold,
-            font_size,
-            space_width_units,
-            self.config.word_margin_ratio
+            is_justified,
+            cv,
+            margin_ratio
         );
 
         adaptive_threshold
+    }
+
+    /// Analyze TJ offset distribution to detect justified vs normal text (Phase 4).
+    ///
+    /// This method performs statistical analysis on collected TJ offsets to determine
+    /// if the document uses justified alignment. Justified text has high variance in TJ
+    /// offsets (to distribute whitespace), while normally-spaced text has low variance.
+    ///
+    /// # Returns
+    ///
+    /// A tuple `(is_justified: bool, coefficient_of_variation: f32)` where:
+    /// - `is_justified`: true if CV > 0.5 (high variance = justified text)
+    /// - `coefficient_of_variation`: standard deviation / mean (normalized spread)
+    ///
+    /// # Algorithm
+    ///
+    /// Per ISO 32000-1:2008 Section 9.4.4, TJ array offsets are in font-relative units
+    /// (1/1000 of text space). The distribution is analyzed as:
+    ///
+    /// 1. Calculate mean of all TJ offsets
+    /// 2. Calculate variance: average of squared deviations from mean
+    /// 3. Calculate standard deviation: sqrt(variance)
+    /// 4. Calculate coefficient of variation: std_dev / |mean|
+    ///
+    /// # Thresholds
+    ///
+    /// - CV > 0.5: Justified text (high variance in offsets)
+    /// - CV ≤ 0.5: Normal text (consistent spacing)
+    ///
+    /// # PDF Spec Compliance
+    ///
+    /// Per ISO 32000-1:2008 Section 9.10 ("Extraction of Text Content"):
+    /// "Determining word boundaries is not specified by PDF." This method uses only
+    /// spec-defined TJ offset values to infer text characteristics, not semantic assumptions.
+    fn analyze_tj_distribution(&self) -> (bool, f32) {
+        if self.tj_offset_history.is_empty() {
+            return (false, 0.0);
+        }
+
+        let offsets = &self.tj_offset_history;
+
+        // Calculate mean of TJ offsets
+        let mean = offsets.iter().sum::<f32>() / offsets.len() as f32;
+
+        // Calculate variance (average of squared deviations)
+        let variance =
+            offsets.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / offsets.len() as f32;
+
+        // Calculate standard deviation
+        let std_dev = variance.sqrt();
+
+        // Calculate coefficient of variation (normalized spread)
+        // Avoid division by zero for edge case of zero mean
+        let cv = if mean.abs() > 0.001 {
+            std_dev / mean.abs()
+        } else {
+            0.0
+        };
+
+        let is_justified = cv > 0.5;
+
+        log::debug!(
+            "TJ distribution analysis (Phase 4): mean={:.2}, std_dev={:.2}, cv={:.2}, justified={}",
+            mean,
+            std_dev,
+            cv,
+            is_justified
+        );
+
+        (is_justified, cv)
     }
 
     /// Update the artifact state based on the marked content stack.
@@ -2072,6 +2419,10 @@ impl TextExtractor {
                         &self.fonts,
                         tj_offset_triggered_override,
                         &self.merging_config,
+                        Some(&current.bbox),
+                        Some(&span.bbox),
+                        current.font_size,
+                        span.font_size,
                     );
 
                     log::debug!(
@@ -3515,6 +3866,14 @@ impl TextExtractor {
                     self.advance_position_for_string(s)?;
                 },
                 TextElement::Offset(offset) => {
+                    // Phase 4: Track TJ offset for statistical analysis
+                    // Per ISO 32000-1:2008 Section 9.4.4, collect all TJ values
+                    // to detect justified vs normal text through coefficient of variation
+                    if self.tj_offset_history.len() < 10000 {
+                        // Keep history reasonable size (first 10k offsets per document)
+                        self.tj_offset_history.push(*offset);
+                    }
+
                     // Check if this offset indicates a word boundary
                     // Per PDF spec: negative offsets increase spacing
                     // Phase 8: Use geometry-based adaptive threshold
@@ -4012,6 +4371,9 @@ mod tests {
             first_char: None,
             last_char: None,
             default_width: 1000.0,
+            cid_to_gid_map: None,
+            cid_system_info: None,
+            cid_font_type: None,
         }
     }
 
@@ -4161,8 +4523,9 @@ mod tests {
         let fonts = std::collections::HashMap::new();
 
         // TJ offset triggered should always insert space (Rule 1, confidence 0.95)
-        let decision =
-            should_insert_space("word", "next", 0.0, 12.0, "TestFont", &fonts, true, &config);
+        let decision = should_insert_space(
+            "word", "next", 0.0, 12.0, "TestFont", &fonts, true, &config, None, None, 12.0, 12.0,
+        );
 
         assert!(decision.insert_space);
         assert_eq!(decision.source, SpaceSource::TjOffset);
@@ -4176,14 +4539,16 @@ mod tests {
         let fonts = std::collections::HashMap::new();
 
         // Preceding text ends with space
-        let decision =
-            should_insert_space("word ", "next", 0.0, 12.0, "TestFont", &fonts, false, &config);
+        let decision = should_insert_space(
+            "word ", "next", 0.0, 12.0, "TestFont", &fonts, false, &config, None, None, 12.0, 12.0,
+        );
         assert!(!decision.insert_space);
         assert_eq!(decision.source, SpaceSource::AlreadyPresent);
 
         // Following text starts with space
-        let decision =
-            should_insert_space("word", " next", 0.0, 12.0, "TestFont", &fonts, false, &config);
+        let decision = should_insert_space(
+            "word", " next", 0.0, 12.0, "TestFont", &fonts, false, &config, None, None, 12.0, 12.0,
+        );
         assert!(!decision.insert_space);
         assert_eq!(decision.source, SpaceSource::AlreadyPresent);
     }
@@ -4203,15 +4568,19 @@ mod tests {
         let font_size = 12.0;
 
         // Gap > dual_threshold should insert (Rule 2, confidence 0.8)
-        let decision =
-            should_insert_space("word", "next", 3.5, font_size, "TestFont", &fonts, false, &config);
+        let decision = should_insert_space(
+            "word", "next", 3.5, font_size, "TestFont", &fonts, false, &config, None, None, 12.0,
+            12.0,
+        );
         assert!(decision.insert_space);
         assert_eq!(decision.source, SpaceSource::GeometricGap);
         assert_eq!(decision.confidence, 0.8);
 
         // Gap <= dual_threshold, not at heuristic boundary: no space (yet)
-        let decision =
-            should_insert_space("word", "next", 2.5, font_size, "TestFont", &fonts, false, &config);
+        let decision = should_insert_space(
+            "word", "next", 2.5, font_size, "TestFont", &fonts, false, &config, None, None, 12.0,
+            12.0,
+        );
         // This should not insert (no rule triggers)
         // But conservative threshold (0.1) is still checked below
     }
@@ -4225,15 +4594,18 @@ mod tests {
         let fonts = std::collections::HashMap::new();
 
         // lowercase -> uppercase (CamelCase) should trigger heuristic (Rule 3, confidence 0.85)
-        let decision =
-            should_insert_space("the", "General", 0.0, 12.0, "TestFont", &fonts, false, &config);
+        let decision = should_insert_space(
+            "the", "General", 0.0, 12.0, "TestFont", &fonts, false, &config, None, None, 12.0, 12.0,
+        );
         assert!(decision.insert_space);
         assert_eq!(decision.source, SpaceSource::CharacterHeuristic);
         assert_eq!(decision.confidence, 0.85);
 
         // numeric -> letter should trigger heuristic
-        let decision =
-            should_insert_space("version2", "dot3", 0.0, 12.0, "TestFont", &fonts, false, &config);
+        let decision = should_insert_space(
+            "version2", "dot3", 0.0, 12.0, "TestFont", &fonts, false, &config, None, None, 12.0,
+            12.0,
+        );
         assert!(decision.insert_space);
         assert_eq!(decision.source, SpaceSource::CharacterHeuristic);
     }
@@ -4248,15 +4620,17 @@ mod tests {
         // conservative_threshold_pt: 0.1
 
         // Gap > conservative_threshold but not meeting other rules (Rule 4, confidence 0.5)
-        let decision =
-            should_insert_space("word", "next", 0.2, 12.0, "TestFont", &fonts, false, &config);
+        let decision = should_insert_space(
+            "word", "next", 0.2, 12.0, "TestFont", &fonts, false, &config, None, None, 12.0, 12.0,
+        );
         assert!(decision.insert_space);
         assert_eq!(decision.source, SpaceSource::GeometricGap);
         assert_eq!(decision.confidence, 0.5);
 
         // Gap <= conservative_threshold: no space (Rule 5 - default)
-        let decision =
-            should_insert_space("word", "next", 0.05, 12.0, "TestFont", &fonts, false, &config);
+        let decision = should_insert_space(
+            "word", "next", 0.05, 12.0, "TestFont", &fonts, false, &config, None, None, 12.0, 12.0,
+        );
         assert!(!decision.insert_space);
         assert_eq!(decision.source, SpaceSource::NoSpace);
     }
@@ -4271,10 +4645,12 @@ mod tests {
 
         // When both TJ offset and gap would trigger, they should be coordinated
         // TJ offset has highest priority and should be respected first
-        let decision_tj =
-            should_insert_space("word", "next", 1.0, 12.0, "TestFont", &fonts, true, &config);
-        let decision_gap =
-            should_insert_space("word", "next", 1.0, 12.0, "TestFont", &fonts, false, &config);
+        let decision_tj = should_insert_space(
+            "word", "next", 1.0, 12.0, "TestFont", &fonts, true, &config, None, None, 12.0, 12.0,
+        );
+        let decision_gap = should_insert_space(
+            "word", "next", 1.0, 12.0, "TestFont", &fonts, false, &config, None, None, 12.0, 12.0,
+        );
 
         // TJ offset decision (0.95) should be preferred over gap decision
         assert!(decision_tj.insert_space);

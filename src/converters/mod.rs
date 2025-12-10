@@ -196,6 +196,7 @@ impl Default for BoldMarkerBehavior {
 ///     image_output_dir: Some("images/".to_string()),
 ///     reading_order_mode: ReadingOrderMode::ColumnAware,
 ///     bold_marker_behavior: BoldMarkerBehavior::Conservative,
+///     table_detection_config: None,
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq)]
@@ -240,6 +241,12 @@ pub struct ConversionOptions {
     /// content (Aggressive) or only to content-bearing text (Conservative).
     /// See BoldMarkerBehavior for details.
     pub bold_marker_behavior: BoldMarkerBehavior,
+
+    /// Configuration for spatial table detection.
+    ///
+    /// If None, uses default configuration.
+    /// Only applies when extract_tables = true.
+    pub table_detection_config: Option<crate::structure::TableDetectionConfig>,
 }
 
 impl Default for ConversionOptions {
@@ -253,6 +260,7 @@ impl Default for ConversionOptions {
     /// - image_output_dir: None
     /// - reading_order_mode: StructureTreeFirst (PDF-spec-compliant for Tagged PDFs, falls back to XY-Cut for untagged)
     /// - bold_marker_behavior: Conservative (no bold markers for whitespace-only content)
+    /// - table_detection_config: None (uses defaults when table detection is enabled)
     fn default() -> Self {
         Self {
             preserve_layout: false,
@@ -262,7 +270,53 @@ impl Default for ConversionOptions {
             image_output_dir: None,
             reading_order_mode: ReadingOrderMode::StructureTreeFirst { mcid_order: vec![] },
             bold_marker_behavior: BoldMarkerBehavior::Conservative,
+            table_detection_config: None,
         }
+    }
+}
+
+impl ConversionOptions {
+    /// Enable table detection with custom configuration.
+    ///
+    /// Sets extract_tables = true and uses the provided configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::converters::ConversionOptions;
+    /// use pdf_oxide::structure::TableDetectionConfig;
+    ///
+    /// let config = TableDetectionConfig::strict();
+    /// let opts = ConversionOptions::default().with_table_detection(config);
+    ///
+    /// assert!(opts.extract_tables);
+    /// assert!(opts.table_detection_config.is_some());
+    /// ```
+    pub fn with_table_detection(mut self, config: crate::structure::TableDetectionConfig) -> Self {
+        self.extract_tables = true;
+        self.table_detection_config = Some(config);
+        self
+    }
+
+    /// Enable table detection with default configuration.
+    ///
+    /// Sets extract_tables = true and table_detection_config = None,
+    /// which will use the default TableDetectionConfig when detection runs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::converters::ConversionOptions;
+    ///
+    /// let opts = ConversionOptions::default().with_default_table_detection();
+    ///
+    /// assert!(opts.extract_tables);
+    /// assert!(opts.table_detection_config.is_none());
+    /// ```
+    pub fn with_default_table_detection(mut self) -> Self {
+        self.extract_tables = true;
+        self.table_detection_config = None;
+        self
     }
 }
 
@@ -327,6 +381,7 @@ mod tests {
             image_output_dir: Some("output/".to_string()),
             reading_order_mode: ReadingOrderMode::ColumnAware,
             bold_marker_behavior: BoldMarkerBehavior::Aggressive,
+            table_detection_config: None,
         };
 
         assert!(opts.preserve_layout);
@@ -335,6 +390,7 @@ mod tests {
         assert_eq!(opts.image_output_dir, Some("output/".to_string()));
         assert_eq!(opts.reading_order_mode, ReadingOrderMode::ColumnAware);
         assert_eq!(opts.bold_marker_behavior, BoldMarkerBehavior::Aggressive);
+        assert!(opts.table_detection_config.is_none());
     }
 
     #[test]
@@ -377,5 +433,30 @@ mod tests {
         let behavior = BoldMarkerBehavior::Aggressive;
         let copied = behavior;
         assert_eq!(behavior, copied);
+    }
+
+    #[test]
+    fn test_with_default_table_detection() {
+        let opts = ConversionOptions::default().with_default_table_detection();
+        assert!(opts.extract_tables);
+        assert!(opts.table_detection_config.is_none());
+    }
+
+    #[test]
+    fn test_with_table_detection() {
+        let config = crate::structure::TableDetectionConfig::strict();
+        let opts = ConversionOptions::default().with_table_detection(config);
+        assert!(opts.extract_tables);
+        assert!(opts.table_detection_config.is_some());
+        let cfg = opts.table_detection_config.unwrap();
+        assert_eq!(cfg.min_table_columns, 3);
+        assert_eq!(cfg.column_tolerance, 2.0);
+    }
+
+    #[test]
+    fn test_conversion_options_default_table_config() {
+        let opts = ConversionOptions::default();
+        assert!(!opts.extract_tables);
+        assert!(opts.table_detection_config.is_none());
     }
 }

@@ -123,6 +123,7 @@ fn export_pdf_to_html(
         image_output_dir: None,
         reading_order_mode: pdf_oxide::converters::ReadingOrderMode::ColumnAware,
         bold_marker_behavior: pdf_oxide::converters::BoldMarkerBehavior::default(),
+        table_detection_config: None,
     };
 
     // Convert to HTML

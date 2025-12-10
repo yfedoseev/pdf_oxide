@@ -8,7 +8,7 @@
 //!
 //! These tests ensure that garbled text issues are properly handled.
 
-use pdf_oxide::fonts::{FontInfo, Encoding};
+use pdf_oxide::fonts::{Encoding, FontInfo};
 use std::collections::HashMap;
 
 // ============================================================================
@@ -32,16 +32,25 @@ fn test_type0_identity_encoding_without_tounicode_returns_none() {
         first_char: None,
         last_char: None,
         default_width: 1000.0,
+        cid_to_gid_map: None,
+        cid_system_info: None,
+        cid_font_type: None,
     };
 
     // Character code 0x37 (decimal 55) would incorrectly map to '7' under old code
     // With the fix, it should return None (indicating no valid mapping)
-    assert_eq!(font.char_to_unicode(0x37), None,
-        "Type0 font without ToUnicode should return None for character code 0x37, not '7'");
+    assert_eq!(
+        font.char_to_unicode(0x37),
+        None,
+        "Type0 font without ToUnicode should return None for character code 0x37, not '7'"
+    );
 
     // Character code 0x41 (decimal 65) would incorrectly map to 'A' under old code
-    assert_eq!(font.char_to_unicode(0x41), None,
-        "Type0 font without ToUnicode should return None for character code 0x41, not 'A'");
+    assert_eq!(
+        font.char_to_unicode(0x41),
+        None,
+        "Type0 font without ToUnicode should return None for character code 0x41, not 'A'"
+    );
 }
 
 #[test]
@@ -60,20 +69,31 @@ fn test_simple_font_identity_encoding_works_for_valid_codes() {
         first_char: None,
         last_char: None,
         default_width: 1000.0,
+        cid_to_gid_map: None,
+        cid_system_info: None,
+        cid_font_type: None,
     };
 
     // For simple fonts, Identity encoding is valid for Unicode-compatible codes
-    assert_eq!(font.char_to_unicode(0x41), Some("A".to_string()),
-        "Simple font with Identity encoding should map 0x41 to 'A'");
+    assert_eq!(
+        font.char_to_unicode(0x41),
+        Some("A".to_string()),
+        "Simple font with Identity encoding should map 0x41 to 'A'"
+    );
 
-    assert_eq!(font.char_to_unicode(0x42), Some("B".to_string()),
-        "Simple font with Identity encoding should map 0x42 to 'B'");
+    assert_eq!(
+        font.char_to_unicode(0x42),
+        Some("B".to_string()),
+        "Simple font with Identity encoding should map 0x42 to 'B'"
+    );
 
     // Null character code 0x00 is technically valid UTF-8 (but invisible)
     // It should be handled correctly without causing issues
     let result = font.char_to_unicode(0x00);
-    assert!(result.is_some() || result.is_none(),
-        "Simple font with Identity encoding should handle code 0x00 without panicking");
+    assert!(
+        result.is_some() || result.is_none(),
+        "Simple font with Identity encoding should handle code 0x00 without panicking"
+    );
 }
 
 // ============================================================================
@@ -97,6 +117,9 @@ fn test_type0_missing_tounicode_is_an_error() {
         first_char: None,
         last_char: None,
         default_width: 1000.0,
+        cid_to_gid_map: None,
+        cid_system_info: None,
+        cid_font_type: None,
     };
 
     // All lookups should fail gracefully for Type0 without ToUnicode
@@ -106,8 +129,11 @@ fn test_type0_missing_tounicode_is_an_error() {
         if let Some(ch) = result {
             // If we get a result, it should be from WinAnsiEncoding (fallback)
             // not from the incorrect Identity mapping
-            assert!(code as u32 <= 0xFFFF && ch.len() > 0,
-                "Type0 font without ToUnicode returned unexpected result for code 0x{:02X}", code);
+            assert!(
+                code as u32 <= 0xFFFF && ch.len() > 0,
+                "Type0 font without ToUnicode returned unexpected result for code 0x{:02X}",
+                code
+            );
         }
     }
 }
@@ -115,9 +141,9 @@ fn test_type0_missing_tounicode_is_an_error() {
 #[test]
 fn test_tounicode_with_valid_mappings_works() {
     let mut cmap = HashMap::new();
-    cmap.insert(0x41, "A".to_string());  // Standard A mapping
+    cmap.insert(0x41, "A".to_string()); // Standard A mapping
     cmap.insert(0x42, "B".to_string());
-    cmap.insert(0x263A, "☺".to_string());  // Smiley face
+    cmap.insert(0x263A, "☺".to_string()); // Smiley face
 
     let font = FontInfo {
         base_font: "CustomFont".to_string(),
@@ -132,6 +158,9 @@ fn test_tounicode_with_valid_mappings_works() {
         first_char: None,
         last_char: None,
         default_width: 1000.0,
+        cid_to_gid_map: None,
+        cid_system_info: None,
+        cid_font_type: None,
     };
 
     // ToUnicode mappings should be used (highest priority)
@@ -161,13 +190,19 @@ fn test_multi_byte_character_codes_are_processed() {
         first_char: None,
         last_char: None,
         default_width: 1000.0,
+        cid_to_gid_map: None,
+        cid_system_info: None,
+        cid_font_type: None,
     };
 
     // Multi-byte codes (> 0xFF) should be handled without panic
     // They should return None since Type0 without ToUnicode can't map them
-    let large_code = 0x3000u16;  // Typical CJK character code
-    assert_eq!(font.char_to_unicode(large_code), None,
-        "Multi-byte code without ToUnicode should return None");
+    let large_code = 0x3000u16; // Typical CJK character code
+    assert_eq!(
+        font.char_to_unicode(large_code),
+        None,
+        "Multi-byte code without ToUnicode should return None"
+    );
 }
 
 // ============================================================================
@@ -183,7 +218,7 @@ fn test_extraction_priority_chain() {
     // 4. None (fallback)
 
     let mut cmap = HashMap::new();
-    cmap.insert(0x41, "X".to_string());  // Override normal A → X
+    cmap.insert(0x41, "X".to_string()); // Override normal A → X
 
     let font = FontInfo {
         base_font: "TestFont".to_string(),
@@ -198,15 +233,24 @@ fn test_extraction_priority_chain() {
         first_char: None,
         last_char: None,
         default_width: 1000.0,
+        cid_to_gid_map: None,
+        cid_system_info: None,
+        cid_font_type: None,
     };
 
     // ToUnicode should override standard encoding
-    assert_eq!(font.char_to_unicode(0x41), Some("X".to_string()),
-        "ToUnicode mapping (Priority 1) should override standard encoding (Priority 3)");
+    assert_eq!(
+        font.char_to_unicode(0x41),
+        Some("X".to_string()),
+        "ToUnicode mapping (Priority 1) should override standard encoding (Priority 3)"
+    );
 
     // For codes not in ToUnicode, fall back to standard encoding
-    assert_eq!(font.char_to_unicode(0x42), Some("B".to_string()),
-        "Missing ToUnicode entries should fall back to standard encoding");
+    assert_eq!(
+        font.char_to_unicode(0x42),
+        Some("B".to_string()),
+        "Missing ToUnicode entries should fall back to standard encoding"
+    );
 }
 
 #[test]
@@ -218,18 +262,23 @@ fn test_symbolic_font_encoding() {
         encoding: Encoding::Standard("Symbol".to_string()),
         to_unicode: None,
         font_weight: None,
-        flags: Some(0x04),  // Bit 3: Symbolic flag
+        flags: Some(0x04), // Bit 3: Symbolic flag
         stem_v: None,
         embedded_font_data: None,
         widths: None,
         first_char: None,
         last_char: None,
         default_width: 1000.0,
+        cid_to_gid_map: None,
+        cid_system_info: None,
+        cid_font_type: None,
     };
 
     // Symbol fonts should use special encoding
-    assert!(font_symbol.is_symbolic(),
-        "Font with Symbolic bit should be detected as symbolic");
+    assert!(
+        font_symbol.is_symbolic(),
+        "Font with Symbolic bit should be detected as symbolic"
+    );
 }
 
 // ============================================================================
@@ -246,7 +295,7 @@ fn test_pdf_without_tounicode_doesnt_scramble_text() {
         base_font: "MyTypeOFont".to_string(),
         subtype: "Type0".to_string(),
         encoding: Encoding::Identity,
-        to_unicode: None,  // Missing ToUnicode - this is the problem!
+        to_unicode: None, // Missing ToUnicode - this is the problem!
         font_weight: None,
         flags: None,
         stem_v: None,
@@ -255,6 +304,9 @@ fn test_pdf_without_tounicode_doesnt_scramble_text() {
         first_char: None,
         last_char: None,
         default_width: 1000.0,
+        cid_to_gid_map: None,
+        cid_system_info: None,
+        cid_font_type: None,
     };
 
     // The key assertion: we should get None, NOT random scrambled characters
@@ -264,10 +316,10 @@ fn test_pdf_without_tounicode_doesnt_scramble_text() {
                 // If we get a character, it should be from WinAnsiEncoding fallback
                 // not from the broken Identity mapping
                 assert!(!ch.is_empty(), "Character should not be empty");
-            }
+            },
             None => {
                 // Expected: no mapping available
-            }
+            },
         }
     }
 }

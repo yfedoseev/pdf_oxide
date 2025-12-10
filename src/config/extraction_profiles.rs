@@ -81,6 +81,25 @@ pub struct ExtractionProfile {
     /// Enable document-type detection
     /// Automatically classify document and apply appropriate profile
     pub enable_document_type_detection: bool,
+
+    /// Enable email pattern detection for spacing decisions.
+    ///
+    /// When true, detects email-like patterns in extracted text
+    /// (e.g., "user@domain" separated by spaces) and applies special spacing rules
+    /// to preserve email addresses.
+    ///
+    /// Per PDF Spec ISO 32000-1:2008 Section 9.10, only extracted text patterns
+    /// are used - no domain-specific semantics.
+    pub enable_email_detection: bool,
+
+    /// Enable citation marker detection for spacing decisions.
+    ///
+    /// When true, detects superscript citation markers (typically smaller font size)
+    /// and adjusts spacing rules to preserve citation formatting.
+    ///
+    /// Per PDF Spec ISO 32000-1:2008 Section 9.10, font size ratios from extracted content
+    /// are used for detection.
+    pub enable_citation_detection: bool,
 }
 
 impl ExtractionProfile {
@@ -94,6 +113,8 @@ impl ExtractionProfile {
         space_char_multiplier: 0.5,     // Treat spaces normally
         use_adaptive_threshold: false,
         enable_document_type_detection: false,
+        enable_email_detection: false,
+        enable_citation_detection: false,
     };
 
     /// Aggressive profile - liberal space insertion
@@ -106,6 +127,8 @@ impl ExtractionProfile {
         space_char_multiplier: 0.8,     // Emphasize space characters
         use_adaptive_threshold: false,
         enable_document_type_detection: false,
+        enable_email_detection: false,
+        enable_citation_detection: false,
     };
 
     /// Balanced profile - middle ground
@@ -118,6 +141,8 @@ impl ExtractionProfile {
         space_char_multiplier: 0.65,
         use_adaptive_threshold: false,
         enable_document_type_detection: false,
+        enable_email_detection: false,
+        enable_citation_detection: false,
     };
 
     /// Academic profile - optimized for research papers
@@ -131,6 +156,8 @@ impl ExtractionProfile {
         space_char_multiplier: 0.6,  // Normal space handling
         use_adaptive_threshold: true,
         enable_document_type_detection: false,
+        enable_email_detection: true,
+        enable_citation_detection: true,
     };
 
     /// Policy profile - optimized for legal/policy documents
@@ -144,6 +171,8 @@ impl ExtractionProfile {
         space_char_multiplier: 0.7,     // Emphasize spaces slightly
         use_adaptive_threshold: true,
         enable_document_type_detection: false,
+        enable_email_detection: false,
+        enable_citation_detection: false,
     };
 
     /// Form profile - optimized for structured forms
@@ -157,6 +186,8 @@ impl ExtractionProfile {
         space_char_multiplier: 0.5,    // Normal space handling
         use_adaptive_threshold: false,
         enable_document_type_detection: false,
+        enable_email_detection: false,
+        enable_citation_detection: false,
     };
 
     /// Government profile - optimized for government documents
@@ -169,6 +200,8 @@ impl ExtractionProfile {
         space_char_multiplier: 0.65,
         use_adaptive_threshold: true,
         enable_document_type_detection: false,
+        enable_email_detection: false,
+        enable_citation_detection: false,
     };
 
     /// OCR profile - optimized for scanned documents
@@ -181,6 +214,8 @@ impl ExtractionProfile {
         space_char_multiplier: 0.75,    // Emphasize spaces
         use_adaptive_threshold: true,
         enable_document_type_detection: false,
+        enable_email_detection: false,
+        enable_citation_detection: false,
     };
 
     /// Adaptive profile - auto-tunes based on document analysis
@@ -193,6 +228,8 @@ impl ExtractionProfile {
         space_char_multiplier: 0.65,
         use_adaptive_threshold: true,
         enable_document_type_detection: true,
+        enable_email_detection: false,
+        enable_citation_detection: false,
     };
 
     /// Create a profile for a specific document type
