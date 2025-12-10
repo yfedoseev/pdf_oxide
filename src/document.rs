@@ -308,7 +308,7 @@ impl PdfDocument {
     /// # PDF Spec Reference
     ///
     /// ISO 32000-1:2008, Section 7.6.2 - Streams must be decrypted BEFORE applying filters.
-    fn decode_stream_with_encryption(
+    pub(crate) fn decode_stream_with_encryption(
         &self,
         stream_obj: &Object,
         obj_ref: ObjectRef,
@@ -2625,7 +2625,8 @@ impl PdfDocument {
                 if let Some(subtype) = dict.get("Subtype").and_then(|s| s.as_name()) {
                     if subtype == "Image" {
                         // Extract the image
-                        match extract_image_from_xobject(&xobj_loaded) {
+                        let obj_ref = xobj.as_reference();
+                        match extract_image_from_xobject(Some(self), &xobj_loaded, obj_ref) {
                             Ok(image) => images.push(image),
                             Err(_) => {
                                 // Skip images that fail to extract

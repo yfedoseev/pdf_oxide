@@ -157,8 +157,12 @@ impl FontInfo {
                         log::info!("Font '{}' has FontFile2 entry", base_font);
                         ff2_obj
                             .as_reference()
-                            .and_then(|ff2_ref| doc.load_object(ff2_ref).ok())
-                            .and_then(|ff2_stream| ff2_stream.decode_stream_data().ok())
+                            .and_then(|ff2_ref| {
+                                doc.load_object(ff2_ref).ok().map(|obj| (obj, ff2_ref))
+                            })
+                            .and_then(|(ff2_stream, ff2_ref)| {
+                                doc.decode_stream_with_encryption(&ff2_stream, ff2_ref).ok()
+                            })
                             .map(|data| {
                                 log::info!(
                                     "Font '{}' loaded embedded TrueType font ({} bytes)",
@@ -171,8 +175,12 @@ impl FontInfo {
                         log::info!("Font '{}' has FontFile3 entry (CFF/OpenType)", base_font);
                         ff3_obj
                             .as_reference()
-                            .and_then(|ff3_ref| doc.load_object(ff3_ref).ok())
-                            .and_then(|ff3_stream| ff3_stream.decode_stream_data().ok())
+                            .and_then(|ff3_ref| {
+                                doc.load_object(ff3_ref).ok().map(|obj| (obj, ff3_ref))
+                            })
+                            .and_then(|(ff3_stream, ff3_ref)| {
+                                doc.decode_stream_with_encryption(&ff3_stream, ff3_ref).ok()
+                            })
                             .map(|data| {
                                 log::info!(
                                     "Font '{}' loaded embedded CFF/OpenType font ({} bytes)",
@@ -267,7 +275,7 @@ impl FontInfo {
             let cmap_opt = doc
                 .load_object(cmap_ref)
                 .ok()
-                .and_then(|cmap_obj| cmap_obj.decode_stream_data().ok())
+                .and_then(|cmap_obj| doc.decode_stream_with_encryption(&cmap_obj, cmap_ref).ok())
                 .and_then(|decoded| parse_tounicode_cmap(&decoded).ok());
 
             if let Some(ref cmap) = cmap_opt {
