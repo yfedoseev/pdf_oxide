@@ -37,12 +37,14 @@
 pub mod html;
 pub mod markdown;
 pub mod table_formatter;
+pub mod text_post_processor;
 pub mod whitespace;
 
 // Re-export main types
 pub use html::HtmlConverter;
 pub use markdown::MarkdownConverter;
 pub use table_formatter::MarkdownTableFormatter;
+pub use text_post_processor::TextPostProcessor;
 pub use whitespace::{cleanup_markdown, normalize_whitespace, remove_page_artifacts};
 
 /// Configuration for table formatting in markdown.

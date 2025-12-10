@@ -6,6 +6,7 @@
 //! - Image embedding
 //! - Reading order determination
 
+use crate::converters::text_post_processor::TextPostProcessor;
 use crate::converters::whitespace::cleanup_markdown;
 use crate::converters::{BoldMarkerBehavior, ConversionOptions, ReadingOrderMode};
 use crate::error::Result;
@@ -522,7 +523,14 @@ impl MarkdownConverter {
         let spaced = Self::insert_missing_punctuation_spaces(&markdown);
 
         // Apply whitespace cleanup: remove artifacts and normalize blank lines
-        Ok(cleanup_markdown(&spaced))
+        let cleaned = cleanup_markdown(&spaced);
+
+        // Apply text post-processing per PDF Spec:
+        // - Remove soft hyphens at line breaks (Section 14.8.2.2.3)
+        // - Normalize whitespace within words (Section 14.8.2.5)
+        let post_processed = TextPostProcessor::process(&cleaned);
+
+        Ok(post_processed)
     }
 
     /// Convert a page to Markdown format (character-based - DEPRECATED).
@@ -666,7 +674,14 @@ impl MarkdownConverter {
         }
 
         // Apply whitespace cleanup: remove artifacts and normalize blank lines
-        Ok(cleanup_markdown(&markdown))
+        let cleaned = cleanup_markdown(&markdown);
+
+        // Apply text post-processing per PDF Spec:
+        // - Remove soft hyphens at line breaks (Section 14.8.2.2.3)
+        // - Normalize whitespace within words (Section 14.8.2.5)
+        let post_processed = TextPostProcessor::process(&cleaned);
+
+        Ok(post_processed)
     }
 
     /// Determine the reading order of text blocks.

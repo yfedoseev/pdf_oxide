@@ -57,12 +57,19 @@ struct ExportConfig {
 impl ExportConfig {
     fn from_args() -> Self {
         let args: Vec<String> = std::env::args().collect();
+        let mut pdf_dir = PathBuf::from("test_datasets/pdfs");
         let mut output_dir = PathBuf::from("markdown_exports/our_library");
         let mut verbose = false;
 
         let mut i = 1;
         while i < args.len() {
             match args[i].as_str() {
+                "--input-dir" => {
+                    i += 1;
+                    if i < args.len() {
+                        pdf_dir = PathBuf::from(&args[i]);
+                    }
+                },
                 "--output-dir" => {
                     i += 1;
                     if i < args.len() {
@@ -78,7 +85,7 @@ impl ExportConfig {
         }
 
         Self {
-            pdf_dir: PathBuf::from("test_datasets/pdfs"),
+            pdf_dir,
             output_dir,
             verbose,
         }

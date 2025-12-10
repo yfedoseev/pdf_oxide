@@ -1125,6 +1125,19 @@ fn decode_text_to_unicode(bytes: &[u8], font: Option<&FontInfo>) -> String {
         let is_type0 = font.subtype == "Type0";
 
         if is_type0 && bytes.len() >= 2 {
+            // Type0 fonts use 2-byte character codes (big-endian)
+            // ===== NEW VALIDATION CODE START =====
+            if bytes.len() % 2 != 0 {
+                log::warn!(
+                    "Type0 font '{}' has ODD byte count ({})! Expected even count. \
+                     Last byte will be processed as single-byte fallback. \
+                     This may indicate a malformed content stream.",
+                    font.base_font,
+                    bytes.len()
+                );
+            }
+            // ===== NEW VALIDATION CODE END =====
+
             // Type0 fonts use 2-byte character codes (usually UTF-16 BE)
             let mut result = String::new();
             let mut i = 0;
@@ -3994,6 +4007,7 @@ mod tests {
             flags: None,
             stem_v: None,
             embedded_font_data: None,
+            truetype_cmap: None,
             widths: None,
             first_char: None,
             last_char: None,

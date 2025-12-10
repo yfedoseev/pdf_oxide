@@ -11,10 +11,12 @@ pub mod character_mapper;
 pub mod cmap;
 pub mod font_dict; // Private module - only used internally by font_dict
 pub mod non_text_detection;
+pub mod truetype_cmap;
 
 pub use character_mapper::CharacterMapper;
 pub use cmap::{CMap, parse_tounicode_cmap};
-pub use font_dict::{Encoding, FontInfo};
+pub use font_dict::{CIDSystemInfo, CIDToGIDMap, Encoding, FontInfo};
 pub use non_text_detection::{
     CharacterConfidence, ConfidenceReason, NonTextDetector, NonTextStats,
 };
+pub use truetype_cmap::TrueTypeCMap;

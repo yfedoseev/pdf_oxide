@@ -31,6 +31,7 @@ lazy_static = "1.4"
 # Data structures
 bytes = "1.5"
 indexmap = "2.2"
+byteorder = "1.5"  # For binary parsing (TrueType cmap tables)
 
 # Compression/Decompression
 flate2 = "1.0"
