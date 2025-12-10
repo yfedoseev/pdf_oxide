@@ -96,6 +96,35 @@ pub enum CIDToGIDMap {
     Explicit(Vec<u16>),
 }
 
+impl CIDToGIDMap {
+    /// Convert a Character ID (CID) to a Glyph ID (GID) using this mapping.
+    ///
+    /// Per PDF Spec ISO 32000-1:2008, Section 9.7.4.2:
+    /// - Identity mapping: CID == GID (most common, default)
+    /// - Explicit mapping: Use uint16 array lookup
+    ///
+    /// # Arguments
+    ///
+    /// * `cid` - The Character ID from the PDF document
+    ///
+    /// # Returns
+    ///
+    /// The corresponding Glyph ID in the embedded font
+    pub fn get_gid(&self, cid: u16) -> u16 {
+        match self {
+            CIDToGIDMap::Identity => cid,
+            CIDToGIDMap::Explicit(gid_array) => {
+                if (cid as usize) < gid_array.len() {
+                    gid_array[cid as usize]
+                } else {
+                    // Out of range - fall back to identity mapping
+                    cid
+                }
+            },
+        }
+    }
+}
+
 /// CIDFont character collection identifier
 /// Per PDF Spec ISO 32000-1:2008, Section 9.7.4.2
 ///
@@ -1247,12 +1276,18 @@ impl FontInfo {
 
                 if self.subtype == "Type0" {
                     // Type0 fonts: character codes are CID (glyph indices), NOT Unicode
-                    // Try TrueType cmap fallback before giving up (Phase 2A)
+                    // Per PDF Spec ISO 32000-1:2008 Section 9.7.4.2, when no ToUnicode CMap exists,
+                    // conforming readers SHALL use the TrueType font's internal "cmap" table as fallback.
+                    // This requires translating CID → GID via the CIDToGIDMap, then looking up Unicode.
 
                     if let Some(ref tt_cmap) = self.truetype_cmap {
-                        // Assume Identity CIDToGIDMap (CID == GID) for now
-                        // Phase 3 will add explicit CIDToGIDMap parsing
-                        let gid = char_code;
+                        // Translate CID → GID using the CIDToGIDMap
+                        let gid = if let Some(ref cid_to_gid) = self.cid_to_gid_map {
+                            cid_to_gid.get_gid(char_code as u16)
+                        } else {
+                            // No explicit mapping - assume Identity (CID == GID)
+                            char_code as u16
+                        };
 
                         if let Some(unicode_char) = tt_cmap.get_unicode(gid) {
                             log::debug!(
@@ -1266,27 +1301,32 @@ impl FontInfo {
                             return Some(unicode_char.to_string());
                         } else {
                             log::debug!(
-                                "TrueType cmap: GID {} not found in font '{}'",
+                                "TrueType cmap: GID {} not found in font '{}' (CID 0x{:04X} mapped via {})",
                                 gid,
-                                self.base_font
+                                self.base_font,
+                                char_code,
+                                if self.cid_to_gid_map.is_some() { "explicit CIDToGIDMap" } else { "Identity mapping" }
                             );
                         }
                     }
 
                     // All fallbacks exhausted
+                    // Per PDF Spec Section 9.7.4.2, this is where conforming readers would
+                    // use the TrueType font's internal cmap. Since we've already tried that above
+                    // and failed, there's no other standard way to map this character.
                     log::error!(
-                        "CRITICAL: Type0 font '{}' using Identity encoding without ToUnicode CMap! \
-                         Character code 0x{:04X} is a CID (glyph index), not Unicode. \
-                         This PDF violates ISO 32000-1:2008 Section 9.7.6.3. \
-                         TrueType cmap fallback: {}. \
-                         Text extraction will fail for this font.",
+                        "Type0 font '{}' using Identity encoding without ToUnicode CMap: \
+                         CID 0x{:04X} could not be mapped to Unicode. \
+                         TrueType cmap fallback: {} (embedded font {} bytes). \
+                         This character will be omitted from text extraction.",
                         self.base_font,
                         char_code,
                         if self.truetype_cmap.is_some() {
-                            "tried but GID not found"
+                            "attempted but GID not found in cmap table"
                         } else {
-                            "not available"
-                        }
+                            "not available - no embedded TrueType font"
+                        },
+                        self.embedded_font_data.as_ref().map(|d| d.len()).unwrap_or(0)
                     );
                     return None; // Cannot map - return None instead of wrong character
                 }
@@ -2876,5 +2916,34 @@ mod tests {
         };
         assert_eq!(font_normal.get_font_weight(), FontWeight::Normal);
         assert!(!font_normal.is_bold());
+    }
+
+    /// Test CIDToGIDMap Identity mapping
+    /// Per PDF Spec ISO 32000-1:2008, Section 9.7.4.2
+    #[test]
+    fn test_cid_to_gid_identity() {
+        let identity_map = CIDToGIDMap::Identity;
+
+        // In identity mapping, CID == GID
+        assert_eq!(identity_map.get_gid(0), 0);
+        assert_eq!(identity_map.get_gid(100), 100);
+        assert_eq!(identity_map.get_gid(0xFFFF), 0xFFFF);
+    }
+
+    /// Test CIDToGIDMap Explicit mapping
+    /// Verifies that explicit GID arrays are looked up correctly
+    #[test]
+    fn test_cid_to_gid_explicit() {
+        // Create explicit mapping: CID 0→10, CID 1→20, CID 2→30
+        let gid_array = vec![10, 20, 30];
+        let explicit_map = CIDToGIDMap::Explicit(gid_array);
+
+        assert_eq!(explicit_map.get_gid(0), 10);
+        assert_eq!(explicit_map.get_gid(1), 20);
+        assert_eq!(explicit_map.get_gid(2), 30);
+
+        // Out of range - falls back to identity
+        assert_eq!(explicit_map.get_gid(3), 3);
+        assert_eq!(explicit_map.get_gid(100), 100);
     }
 }
