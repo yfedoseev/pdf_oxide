@@ -796,28 +796,34 @@ impl PdfDocument {
             data.len()
         );
 
-        let (_, obj) = parse_object(&data).map_err(|e| {
-            // Extract error kind without printing raw bytes
-            let error_kind = match &e {
-                nom::Err::Incomplete(_) => "Incomplete data",
-                nom::Err::Error(err) | nom::Err::Failure(err) => match err.code {
-                    nom::error::ErrorKind::Eof => "Unexpected EOF",
-                    nom::error::ErrorKind::Tag => "Expected tag not found",
-                    nom::error::ErrorKind::Fail => "Parse failed",
-                    _ => "Parse error",
-                },
-            };
-            log::error!(
-                "Failed to parse object {} at offset {}: {}",
-                obj_ref.id,
-                offset,
-                error_kind
-            );
-            Error::ParseError {
-                offset: offset as usize,
-                reason: format!("Failed to parse object: {}", error_kind),
+        // Phase 6B: Graceful degradation for corrupted objects
+        // Instead of failing on parse errors, return Null placeholder
+        // This allows partial content extraction from PDFs with truncated objects
+        let obj = match parse_object(&data) {
+            Ok((_, parsed_obj)) => parsed_obj,
+            Err(e) => {
+                // Extract error kind without printing raw bytes
+                let error_kind = match &e {
+                    nom::Err::Incomplete(_) => "Incomplete data",
+                    nom::Err::Error(err) | nom::Err::Failure(err) => match err.code {
+                        nom::error::ErrorKind::Eof => "Unexpected EOF",
+                        nom::error::ErrorKind::Tag => "Expected tag not found",
+                        nom::error::ErrorKind::Fail => "Parse failed",
+                        _ => "Parse error",
+                    },
+                };
+                log::warn!(
+                    "Object {} at offset {} is corrupted ({}), using Null placeholder. \
+                     This may result in missing content from the PDF.",
+                    obj_ref.id,
+                    offset,
+                    error_kind
+                );
+                // Return Null object instead of failing
+                // This allows extraction to continue with partial content
+                Object::Null
             }
-        })?;
+        };
 
         // Cache the object
         self.object_cache.insert(obj_ref, obj.clone());
