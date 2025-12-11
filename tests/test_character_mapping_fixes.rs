@@ -8,7 +8,7 @@
 //!
 //! These tests ensure that garbled text issues are properly handled.
 
-use pdf_oxide::fonts::{Encoding, FontInfo};
+use pdf_oxide::fonts::{Encoding, FontInfo, LazyCMap};
 use std::collections::HashMap;
 
 // ============================================================================
@@ -18,7 +18,7 @@ use std::collections::HashMap;
 #[test]
 fn test_type0_identity_encoding_without_tounicode_returns_none() {
     // Type0 fonts WITHOUT ToUnicode should NOT map characters via Identity encoding
-    // This is the CRITICAL bug fix that prevents character scrambling
+    // Per PDF Spec 9.10.2, should return U+FFFD replacement character
     let font = FontInfo {
         base_font: "CIDFont".to_string(),
         subtype: "Type0".to_string(),
@@ -35,21 +35,22 @@ fn test_type0_identity_encoding_without_tounicode_returns_none() {
         cid_to_gid_map: None,
         cid_system_info: None,
         cid_font_type: None,
+        truetype_cmap: None,
     };
 
     // Character code 0x37 (decimal 55) would incorrectly map to '7' under old code
-    // With the fix, it should return None (indicating no valid mapping)
+    // With the spec-compliant fix, it should return U+FFFD replacement character
     assert_eq!(
         font.char_to_unicode(0x37),
-        None,
-        "Type0 font without ToUnicode should return None for character code 0x37, not '7'"
+        Some("\u{FFFD}".to_string()),
+        "Type0 font without ToUnicode should return U+FFFD for character code 0x37, not '7'"
     );
 
     // Character code 0x41 (decimal 65) would incorrectly map to 'A' under old code
     assert_eq!(
         font.char_to_unicode(0x41),
-        None,
-        "Type0 font without ToUnicode should return None for character code 0x41, not 'A'"
+        Some("\u{FFFD}".to_string()),
+        "Type0 font without ToUnicode should return U+FFFD for character code 0x41, not 'A'"
     );
 }
 
@@ -72,6 +73,7 @@ fn test_simple_font_identity_encoding_works_for_valid_codes() {
         cid_to_gid_map: None,
         cid_system_info: None,
         cid_font_type: None,
+        truetype_cmap: None,
     };
 
     // For simple fonts, Identity encoding is valid for Unicode-compatible codes
@@ -120,36 +122,32 @@ fn test_type0_missing_tounicode_is_an_error() {
         cid_to_gid_map: None,
         cid_system_info: None,
         cid_font_type: None,
+        truetype_cmap: None,
     };
 
-    // All lookups should fail gracefully for Type0 without ToUnicode
-    for code in 0u16..256 {
+    // All lookups should return U+FFFD for Type0 without ToUnicode
+    // Per PDF Spec 9.10.2, when mapping fails, conforming readers should use replacement character
+    // This includes ALL character codes (including control chars) when using Identity-H/Identity-V
+    for code in 0u32..256 {
         let result = font.char_to_unicode(code);
-        // Should never return an incorrect mapping
-        if let Some(ch) = result {
-            // If we get a result, it should be from WinAnsiEncoding (fallback)
-            // not from the incorrect Identity mapping
-            assert!(
-                code as u32 <= 0xFFFF && ch.len() > 0,
-                "Type0 font without ToUnicode returned unexpected result for code 0x{:02X}",
-                code
-            );
-        }
+        assert_eq!(
+            result,
+            Some("\u{FFFD}".to_string()),
+            "Type0 font with Identity-H encoding without ToUnicode should return U+FFFD for code 0x{:02X}",
+            code
+        );
     }
 }
 
 #[test]
 fn test_tounicode_with_valid_mappings_works() {
-    let mut cmap = HashMap::new();
-    cmap.insert(0x41, "A".to_string()); // Standard A mapping
-    cmap.insert(0x42, "B".to_string());
-    cmap.insert(0x263A, "☺".to_string()); // Smiley face
+    let cmap_data = b"beginbfchar\n<0041> <0041>\n<0042> <0042>\n<263A> <263A>\nendbfchar";
 
     let font = FontInfo {
         base_font: "CustomFont".to_string(),
         subtype: "Type1".to_string(),
         encoding: Encoding::Standard("WinAnsiEncoding".to_string()),
-        to_unicode: Some(cmap),
+        to_unicode: Some(LazyCMap::new(cmap_data.to_vec())),
         font_weight: None,
         flags: None,
         stem_v: None,
@@ -161,6 +159,7 @@ fn test_tounicode_with_valid_mappings_works() {
         cid_to_gid_map: None,
         cid_system_info: None,
         cid_font_type: None,
+        truetype_cmap: None,
     };
 
     // ToUnicode mappings should be used (highest priority)
@@ -193,15 +192,16 @@ fn test_multi_byte_character_codes_are_processed() {
         cid_to_gid_map: None,
         cid_system_info: None,
         cid_font_type: None,
+        truetype_cmap: None,
     };
 
     // Multi-byte codes (> 0xFF) should be handled without panic
-    // They should return None since Type0 without ToUnicode can't map them
-    let large_code = 0x3000u16; // Typical CJK character code
+    // Per PDF Spec 9.10.2, should return U+FFFD replacement character
+    let large_code = 0x3000u32; // Typical CJK character code
     assert_eq!(
         font.char_to_unicode(large_code),
-        None,
-        "Multi-byte code without ToUnicode should return None"
+        Some("\u{FFFD}".to_string()),
+        "Multi-byte code without ToUnicode should return U+FFFD replacement character"
     );
 }
 
@@ -217,14 +217,13 @@ fn test_extraction_priority_chain() {
     // 3. Font /Encoding
     // 4. None (fallback)
 
-    let mut cmap = HashMap::new();
-    cmap.insert(0x41, "X".to_string()); // Override normal A → X
+    let cmap_data = b"beginbfchar\n<0041> <0058>\nendbfchar"; // Map 0x41 to 'X'
 
     let font = FontInfo {
         base_font: "TestFont".to_string(),
         subtype: "Type1".to_string(),
         encoding: Encoding::Standard("WinAnsiEncoding".to_string()),
-        to_unicode: Some(cmap),
+        to_unicode: Some(LazyCMap::new(cmap_data.to_vec())),
         font_weight: None,
         flags: None,
         stem_v: None,
@@ -236,6 +235,7 @@ fn test_extraction_priority_chain() {
         cid_to_gid_map: None,
         cid_system_info: None,
         cid_font_type: None,
+        truetype_cmap: None,
     };
 
     // ToUnicode should override standard encoding
@@ -272,6 +272,7 @@ fn test_symbolic_font_encoding() {
         cid_to_gid_map: None,
         cid_system_info: None,
         cid_font_type: None,
+        truetype_cmap: None,
     };
 
     // Symbol fonts should use special encoding
@@ -307,19 +308,19 @@ fn test_pdf_without_tounicode_doesnt_scramble_text() {
         cid_to_gid_map: None,
         cid_system_info: None,
         cid_font_type: None,
+        truetype_cmap: None,
     };
 
-    // The key assertion: we should get None, NOT random scrambled characters
-    for code in 0u16..256 {
-        match font.char_to_unicode(code) {
-            Some(ch) => {
-                // If we get a character, it should be from WinAnsiEncoding fallback
-                // not from the broken Identity mapping
-                assert!(!ch.is_empty(), "Character should not be empty");
-            },
-            None => {
-                // Expected: no mapping available
-            },
-        }
+    // The key assertion: we should get U+FFFD, NOT random scrambled characters
+    // Per PDF Spec 9.10.2, when mapping fails, conforming readers should use replacement character
+    // This applies to ALL character codes for Type0 fonts with Identity encoding
+    for code in 0u32..256 {
+        let result = font.char_to_unicode(code);
+        assert_eq!(
+            result,
+            Some("\u{FFFD}".to_string()),
+            "Type0 font without ToUnicode should return U+FFFD for code 0x{:02X}, not scrambled text",
+            code
+        );
     }
 }

@@ -41,6 +41,9 @@ fn create_test_span(text: &str, x: f32, y: f32, width: f32, height: f32) -> Text
         sequence: 0,
         split_boundary_before: false,
         offset_semantic: false,
+        char_spacing: 0.0,
+        word_spacing: 0.0,
+        horizontal_scaling: 100.0,
     }
 }
 
@@ -96,6 +99,9 @@ fn create_multiline_document(gaps_per_line: Vec<Vec<f32>>, line_spacing: f32) ->
                 sequence: line_idx * 100 + word_idx,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             };
             spans.push(span);
             x_pos += span_width + gap;

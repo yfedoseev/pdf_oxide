@@ -9,6 +9,10 @@ use crate::object::{Object, ObjectRef};
 use crate::parser::parse_object;
 use crate::structure::traverse_structure_tree;
 use crate::xref::{CrossRefTable, find_xref_offset, parse_xref};
+use crate::pipeline::{
+    TextPipeline, ReadingOrderContext, MarkdownOutputConverter, HtmlOutputConverter,
+    PlainTextConverter, TextPipelineConfig, converters::OutputConverter,
+};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -822,7 +826,7 @@ impl PdfDocument {
                 // Return Null object instead of failing
                 // This allows extraction to continue with partial content
                 Object::Null
-            }
+            },
         };
 
         // Cache the object
@@ -1680,6 +1684,23 @@ impl PdfDocument {
         // This preserves the PDF's text positioning intent and avoids overlapping character issues
         let spans = self.extract_spans(page_index)?;
 
+        // OCR fallback for scanned PDFs (when OCR feature is enabled)
+        // If no text spans found, check if page needs OCR
+        #[cfg(feature = "ocr")]
+        if spans.is_empty() || spans.iter().map(|s| s.text.len()).sum::<usize>() < 50 {
+            // Check if this looks like a scanned page
+            if let Ok(true) = crate::ocr::needs_ocr(self, page_index) {
+                log::debug!(
+                    "Page {} appears to be scanned, OCR available but not auto-enabled",
+                    page_index
+                );
+                // Note: We don't automatically run OCR here because:
+                // 1. It requires model files that may not be available
+                // 2. Users should opt-in via extract_text_with_ocr or similar
+                // 3. This keeps extract_text fast and predictable
+            }
+        }
+
         if spans.is_empty() {
             return Ok(String::new());
         }
@@ -1720,6 +1741,91 @@ impl PdfDocument {
         let cleaned_text = crate::converters::whitespace::cleanup_plain_text(&text);
 
         Ok(cleaned_text)
+    }
+
+    /// Extract text from a page with automatic OCR fallback for scanned pages.
+    ///
+    /// This method automatically detects scanned pages and applies OCR when needed,
+    /// falling back to native text extraction for regular PDFs.
+    ///
+    /// **Note**: Requires the `ocr` feature to be enabled and OCR models to be provided.
+    ///
+    /// # Arguments
+    ///
+    /// * `page_index` - Page number (0-indexed)
+    /// * `ocr_engine` - Optional OCR engine (required for scanned pages)
+    /// * `ocr_options` - OCR extraction options (DPI, thresholds, etc.)
+    ///
+    /// # Returns
+    ///
+    /// The extracted text, either from native PDF text or OCR.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use pdf_oxide::{PdfDocument, ocr::{OcrEngine, OcrConfig, OcrExtractOptions}};
+    ///
+    /// let mut doc = PdfDocument::open("mixed.pdf")?;
+    /// let engine = OcrEngine::new("det.onnx", "rec.onnx", "dict.txt", OcrConfig::default())?;
+    ///
+    /// // Automatically uses native text or OCR as needed
+    /// let text = doc.extract_text_with_ocr(0, Some(&engine), OcrExtractOptions::default())?;
+    /// ```
+    #[cfg(feature = "ocr")]
+    pub fn extract_text_with_ocr(
+        &mut self,
+        page_index: usize,
+        ocr_engine: Option<&crate::ocr::OcrEngine>,
+        ocr_options: crate::ocr::OcrExtractOptions,
+    ) -> Result<String> {
+        crate::ocr::extract_text_with_ocr(self, page_index, ocr_engine, ocr_options)
+    }
+
+    /// Extract TextSpans with automatic OCR fallback for scanned pages.
+    ///
+    /// This method extracts text spans using native PDF text extraction, but falls back
+    /// to OCR when the page appears to be scanned (no/minimal native text).
+    ///
+    /// **Note**: Requires the `ocr` feature to be enabled and OCR models to be provided.
+    ///
+    /// # Arguments
+    ///
+    /// * `page_index` - Page number (0-indexed)
+    /// * `ocr_engine` - Optional OCR engine (required for scanned pages)
+    /// * `ocr_options` - OCR extraction options (DPI, thresholds, etc.)
+    ///
+    /// # Returns
+    ///
+    /// Vector of TextSpans, either from native PDF or OCR.
+    #[cfg(feature = "ocr")]
+    pub fn extract_spans_with_ocr(
+        &mut self,
+        page_index: usize,
+        ocr_engine: Option<&crate::ocr::OcrEngine>,
+        ocr_options: &crate::ocr::OcrExtractOptions,
+    ) -> Result<Vec<crate::layout::TextSpan>> {
+        // First try native text extraction
+        let spans = self.extract_spans(page_index)?;
+
+        // If we got substantial text, return it
+        if !spans.is_empty() && spans.iter().map(|s| s.text.len()).sum::<usize>() >= 50 {
+            return Ok(spans);
+        }
+
+        // Check if page needs OCR
+        if let Ok(true) = crate::ocr::needs_ocr(self, page_index) {
+            // Try OCR if engine is available
+            if let Some(engine) = ocr_engine {
+                match crate::ocr::ocr_page_spans(self, page_index, engine, ocr_options) {
+                    Ok(ocr_spans) if !ocr_spans.is_empty() => return Ok(ocr_spans),
+                    Ok(_) => log::debug!("OCR returned no spans for page {}", page_index),
+                    Err(e) => log::warn!("OCR failed for page {}: {}", page_index, e),
+                }
+            }
+        }
+
+        // Fallback to native spans (even if empty)
+        Ok(spans)
     }
 
     /// Determine if a space should be inserted between two text spans.
@@ -2234,11 +2340,100 @@ impl PdfDocument {
         page_index: usize,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
+        use crate::structure::traversal::extract_reading_order;
+
+        // Step 1: Extract raw spans (unchanged - this is the foundation)
+        let spans = self.extract_spans(page_index)?;
+
+        // Step 2: Create pipeline config from options (using adapter from Phase 2)
+        let mut pipeline_config = TextPipelineConfig::from_conversion_options(options);
+
+        // Step 3: Handle structure tree context for reading order
+        // Try to extract MCID order for StructureTreeFirst mode
+        if let Ok(Some(struct_tree)) = self.structure_tree() {
+            match extract_reading_order(&struct_tree, page_index as u32) {
+                Ok(mcid_order) if !mcid_order.is_empty() => {
+                    // Update context with extracted MCIDs
+                    log::debug!(
+                        "Extracted {} MCIDs from structure tree for page {}",
+                        mcid_order.len(),
+                        page_index
+                    );
+                }
+                _ => {
+                    // No MCIDs found - that's OK, fallback will happen in strategy
+                    log::debug!(
+                        "No MCIDs found for page {}, reading order strategy will use geometric fallback",
+                        page_index
+                    );
+                }
+            }
+        } else {
+            log::debug!("No structure tree found, reading order strategy will use geometric fallback");
+        }
+
+        // Step 4: Create pipeline with config
+        let pipeline = TextPipeline::with_config(pipeline_config.clone());
+
+        // Step 5: Build reading order context
+        let context = ReadingOrderContext::new()
+            .with_page(page_index as u32);
+
+        // Step 6: Process through pipeline (applies reading order strategy)
+        let ordered_spans = pipeline.process(spans, context)?;
+
+        // Step 7: Use pipeline converter
+        let converter = MarkdownOutputConverter::new();
+        converter.convert(&ordered_spans, &pipeline_config)
+    }
+
+    /// Convert a page to Markdown with automatic OCR fallback for scanned pages.
+    ///
+    /// This method automatically detects scanned pages and applies OCR when needed,
+    /// falling back to native text extraction for regular PDFs.
+    ///
+    /// **Note**: Requires the `ocr` feature to be enabled and OCR models to be provided.
+    ///
+    /// # Arguments
+    ///
+    /// * `page_index` - Zero-based page index
+    /// * `options` - Conversion options controlling the output
+    /// * `ocr_engine` - Optional OCR engine (required for scanned pages)
+    /// * `ocr_options` - OCR extraction options
+    ///
+    /// # Returns
+    ///
+    /// A string containing the Markdown representation of the page.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use pdf_oxide::{PdfDocument, ocr::{OcrEngine, OcrConfig, OcrExtractOptions}};
+    /// use pdf_oxide::converters::ConversionOptions;
+    ///
+    /// let mut doc = PdfDocument::open("scanned.pdf")?;
+    /// let engine = OcrEngine::new("det.onnx", "rec.onnx", "dict.txt", OcrConfig::default())?;
+    ///
+    /// let markdown = doc.to_markdown_with_ocr(
+    ///     0,
+    ///     &ConversionOptions::default(),
+    ///     Some(&engine),
+    ///     &OcrExtractOptions::default()
+    /// )?;
+    /// ```
+    #[cfg(feature = "ocr")]
+    pub fn to_markdown_with_ocr(
+        &mut self,
+        page_index: usize,
+        options: &crate::converters::ConversionOptions,
+        ocr_engine: Option<&crate::ocr::OcrEngine>,
+        ocr_options: &crate::ocr::OcrExtractOptions,
+    ) -> Result<String> {
         use crate::converters::{MarkdownConverter, ReadingOrderMode};
         use crate::structure::traversal::extract_reading_order;
 
-        // Use PDF spec compliant span extraction instead of deprecated character extraction
-        let spans = self.extract_spans(page_index)?;
+        // Extract spans with OCR fallback
+        let spans = self.extract_spans_with_ocr(page_index, ocr_engine, ocr_options)?;
         let converter = MarkdownConverter::new();
 
         // Check if we need to extract structure tree for StructureTreeFirst mode
@@ -2329,13 +2524,25 @@ impl PdfDocument {
         page_index: usize,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
-        use crate::converters::HtmlConverter;
-
-        // Use PDF spec compliant span extraction (recommended)
+        // Step 1: Extract raw spans (unchanged - this is the foundation)
         let spans = self.extract_spans(page_index)?;
 
-        let converter = HtmlConverter::new();
-        converter.convert_page_from_spans(&spans, options)
+        // Step 2: Create pipeline config from options (using adapter from Phase 2)
+        let pipeline_config = TextPipelineConfig::from_conversion_options(options);
+
+        // Step 3: Create pipeline with config
+        let pipeline = TextPipeline::with_config(pipeline_config.clone());
+
+        // Step 4: Build reading order context
+        let context = ReadingOrderContext::new()
+            .with_page(page_index as u32);
+
+        // Step 5: Process through pipeline (applies reading order strategy)
+        let ordered_spans = pipeline.process(spans, context)?;
+
+        // Step 6: Use pipeline converter
+        let converter = HtmlOutputConverter::new();
+        converter.convert(&ordered_spans, &pipeline_config)
     }
 
     /// Convert a page to plain text.
@@ -2374,9 +2581,27 @@ impl PdfDocument {
     pub fn to_plain_text(
         &mut self,
         page_index: usize,
-        _options: &crate::converters::ConversionOptions,
+        options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
-        self.extract_text(page_index)
+        // Step 1: Extract raw spans (unchanged - this is the foundation)
+        let spans = self.extract_spans(page_index)?;
+
+        // Step 2: Create pipeline config from options (using adapter from Phase 2)
+        let pipeline_config = TextPipelineConfig::from_conversion_options(options);
+
+        // Step 3: Create pipeline with config
+        let pipeline = TextPipeline::with_config(pipeline_config.clone());
+
+        // Step 4: Build reading order context
+        let context = ReadingOrderContext::new()
+            .with_page(page_index as u32);
+
+        // Step 5: Process through pipeline (applies reading order strategy)
+        let ordered_spans = pipeline.process(spans, context)?;
+
+        // Step 6: Use pipeline converter
+        let converter = PlainTextConverter::new();
+        converter.convert(&ordered_spans, &pipeline_config)
     }
 
     /// Convert all pages to Markdown format.

@@ -32,9 +32,8 @@
 //! 4. **Unified Configuration**: All settings in TextPipelineConfig.
 
 pub mod config;
-// Note: converters and input_parsers are incomplete (depend on unimplemented `elements` module)
-// pub mod converters;
-// pub mod input_parsers;
+pub mod converters;
+// pub mod input_parsers;  // Keep disabled - for PDF creation feature later
 pub mod ordered_span;
 pub mod reading_order;
 
@@ -43,7 +42,9 @@ pub use config::{
     BoldMarkerBehavior, OutputConfig, ReadingOrderConfig, ReadingOrderStrategyType, SpacingConfig,
     TextPipelineConfig, TjThresholdConfig,
 };
-// Note: converters and input_parsers disabled (depend on unimplemented `elements` module)
+pub use converters::{
+    HtmlOutputConverter, MarkdownOutputConverter, OutputConverter, PlainTextConverter,
+};
 pub use ordered_span::{OrderedSpans, OrderedTextSpan};
 pub use reading_order::{ReadingOrderContext, ReadingOrderStrategy, XYCutStrategy};
 

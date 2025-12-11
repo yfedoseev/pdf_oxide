@@ -62,6 +62,12 @@ lazy_static! {
 /// # }
 /// ```
 #[derive(Debug)]
+#[deprecated(
+    since = "0.2.0",
+    note = "Use `pdf_oxide::pipeline::converters::MarkdownOutputConverter` instead. \
+            The new converter is part of the unified TextPipeline architecture and \
+            provides better feature support and maintainability."
+)]
 pub struct MarkdownConverter;
 
 impl MarkdownConverter {

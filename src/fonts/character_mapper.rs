@@ -122,8 +122,8 @@ impl CharacterMapper {
             }
         }
 
-        // No mapping found
-        None
+        // No mapping found - return U+FFFD replacement character per PDF Spec 9.10.2
+        Some("\u{FFFD}".to_string())
     }
 
     /// Map a glyph name to its Unicode representation.

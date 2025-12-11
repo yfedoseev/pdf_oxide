@@ -55,6 +55,9 @@ fn create_academic_spans(gaps: &[f32]) -> Vec<TextSpan> {
             sequence: i,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         };
         spans.push(span);
         x_pos += span_width;
@@ -401,6 +404,9 @@ fn test_paragraph_integrity() {
                 sequence: sequence as usize,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             };
             all_spans.push(span);
             sequence += 1;

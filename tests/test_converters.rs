@@ -383,6 +383,7 @@ fn test_comprehensive_document_conversion() {
         image_output_dir: None,
         reading_order_mode: ReadingOrderMode::TopToBottomLeftToRight,
         bold_marker_behavior: BoldMarkerBehavior::Conservative,
+        table_detection_config: None,
     };
 
     let mut chars = Vec::new();

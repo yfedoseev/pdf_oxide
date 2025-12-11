@@ -34,6 +34,9 @@ fn create_span(text: &str, x: f32, y: f32, width: f32, height: f32) -> TextSpan 
         sequence: 0,
         split_boundary_before: false,
         offset_semantic: false,
+        char_spacing: 0.0,
+        word_spacing: 0.0,
+        horizontal_scaling: 100.0,
     }
 }
 
@@ -81,6 +84,9 @@ fn create_government_document() -> Vec<TextSpan> {
             sequence: seq,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         };
         seq += 1;
         spans.push(span);
@@ -107,6 +113,9 @@ fn create_government_document() -> Vec<TextSpan> {
             sequence: seq,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         };
         seq += 1;
         spans.push(span);
@@ -133,6 +142,9 @@ fn create_government_document() -> Vec<TextSpan> {
             sequence: seq,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         };
         seq += 1;
         spans.push(span);
@@ -166,6 +178,9 @@ fn create_newspaper_document() -> Vec<TextSpan> {
             sequence: seq,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         };
         seq += 1;
         spans.push(span);
@@ -192,6 +207,9 @@ fn create_newspaper_document() -> Vec<TextSpan> {
             sequence: seq,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         };
         seq += 1;
         spans.push(span);
@@ -218,6 +236,9 @@ fn create_newspaper_document() -> Vec<TextSpan> {
             sequence: seq,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         };
         seq += 1;
         spans.push(span);
@@ -251,6 +272,9 @@ fn create_technical_manual() -> Vec<TextSpan> {
             sequence: seq,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         };
         seq += 1;
         spans.push(span);
@@ -277,6 +301,9 @@ fn create_technical_manual() -> Vec<TextSpan> {
             sequence: seq,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         };
         seq += 1;
         spans.push(span);
@@ -303,6 +330,9 @@ fn create_technical_manual() -> Vec<TextSpan> {
             sequence: seq,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         };
         seq += 1;
         spans.push(span);
@@ -338,6 +368,9 @@ fn create_extreme_bimodal_document() -> Vec<TextSpan> {
             sequence: seq,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         };
         seq += 1;
         spans.push(span);
@@ -361,6 +394,9 @@ fn create_extreme_bimodal_document() -> Vec<TextSpan> {
             sequence: seq,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         };
         seq += 1;
         spans.push(span);

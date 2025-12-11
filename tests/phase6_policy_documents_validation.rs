@@ -122,6 +122,9 @@ fn create_synthetic_span(text: &str, x: f32) -> TextSpan {
         sequence: 0,
         split_boundary_before: false,
         offset_semantic: false,
+        char_spacing: 0.0,
+        word_spacing: 0.0,
+        horizontal_scaling: 100.0,
     }
 }
 
@@ -154,6 +157,9 @@ fn test_adaptive_threshold_matches_expectations() {
             sequence: 0,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         });
         x_pos += span_width;
 
@@ -172,6 +178,9 @@ fn test_adaptive_threshold_matches_expectations() {
                 sequence: i + 1,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             });
             x_pos += span_width;
         }
@@ -217,6 +226,9 @@ fn test_adaptive_threshold_matches_expectations() {
             sequence: 0,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         });
         x_pos += span_width;
 
@@ -235,6 +247,9 @@ fn test_adaptive_threshold_matches_expectations() {
                 sequence: i + 1,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             });
             x_pos += span_width;
         }
@@ -291,6 +306,9 @@ fn test_adaptive_vs_fixed_threshold_comparison() {
                 sequence: i,
                 split_boundary_before: false,
                 offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
             }
         })
         .collect();

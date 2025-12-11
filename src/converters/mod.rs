@@ -47,6 +47,9 @@ pub use table_formatter::MarkdownTableFormatter;
 pub use text_post_processor::TextPostProcessor;
 pub use whitespace::{cleanup_markdown, normalize_whitespace, remove_page_artifacts};
 
+// Re-export BoldMarkerBehavior from pipeline config (single source of truth)
+pub use crate::pipeline::config::BoldMarkerBehavior;
+
 /// Configuration for table formatting in markdown.
 ///
 /// All formatting parameters are configurable with no magic numbers.
@@ -130,47 +133,6 @@ impl TableFormatConfig {
 impl Default for TableFormatConfig {
     fn default() -> Self {
         TableFormatConfig::default()
-    }
-}
-
-/// Control how bold markers are applied in markdown conversion.
-///
-/// Determines whether bold formatting markers (**text**) should be applied to
-/// whitespace-only content or only to content-bearing text spans.
-///
-/// # Examples
-///
-/// ```
-/// use pdf_oxide::converters::BoldMarkerBehavior;
-///
-/// // Default conservative mode - no bold markers for whitespace
-/// let behavior = BoldMarkerBehavior::default();
-/// assert_eq!(behavior, BoldMarkerBehavior::Conservative);
-///
-/// // Aggressive mode - apply markers even for whitespace
-/// let aggressive = BoldMarkerBehavior::Aggressive;
-/// ```
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
-pub enum BoldMarkerBehavior {
-    /// Apply bold markers to all styled text, even whitespace-only content.
-    ///
-    /// This produces "** **" for bold whitespace, which clutters markdown output
-    /// and may indicate layout spacing rather than actual formatting.
-    /// Generally not recommended for document conversion.
-    Aggressive,
-
-    /// Skip bold markers for whitespace-only content (default).
-    ///
-    /// Only applies bold markers when the styled text contains actual content characters.
-    /// Whitespace-only content like "   " or "\t" renders without markers.
-    /// This is the recommended mode for clean, semantic markdown output.
-    Conservative,
-}
-
-impl Default for BoldMarkerBehavior {
-    /// Default behavior is Conservative mode.
-    fn default() -> Self {
-        Self::Conservative
     }
 }
 
