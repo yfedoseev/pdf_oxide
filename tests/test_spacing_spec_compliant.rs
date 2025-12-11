@@ -36,6 +36,7 @@ fn create_test_span(text: &str, x: f32, y: f32, width: f32, height: f32) -> Text
         char_spacing: 0.0,
         word_spacing: 0.0,
         horizontal_scaling: 100.0,
+        primary_detected: false,
     }
 }
 

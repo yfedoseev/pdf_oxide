@@ -15,6 +15,7 @@ use crate::fonts::FontInfo;
 use crate::geometry::Rect;
 use crate::layout::{Color, FontWeight, TextChar, TextSpan};
 use crate::object::{Object, ObjectRef};
+use crate::pipeline::config::WordBoundaryMode;
 use crate::text::{BoundaryContext, CharacterInfo, WordBoundaryDetector};
 use std::collections::{HashMap, HashSet};
 
@@ -182,6 +183,15 @@ pub struct TextExtractionConfig {
     /// - Reduces spurious spaces in policy documents with tight kerning
     /// - Maintains word boundary detection in academic documents
     pub use_adaptive_tj_threshold: bool,
+
+    /// Word boundary detection mode for TJ array processing (Phase 9.2)
+    ///
+    /// Controls whether WordBoundaryDetector is used as:
+    /// - Tiebreaker: Only when TJ and geometric signals conflict (default)
+    /// - Primary: Before creating TextSpans from tj_character_array
+    ///
+    /// **Default**: WordBoundaryMode::Tiebreaker (backward compatible)
+    pub word_boundary_mode: WordBoundaryMode,
 }
 
 impl Default for TextExtractionConfig {
@@ -191,6 +201,7 @@ impl Default for TextExtractionConfig {
             space_insertion_threshold: -120.0,
             word_margin_ratio: 0.1,
             use_adaptive_tj_threshold: false,
+            word_boundary_mode: WordBoundaryMode::default(),
         }
     }
 }
@@ -236,6 +247,7 @@ impl TextExtractionConfig {
             space_insertion_threshold: threshold,
             word_margin_ratio: 0.1,
             use_adaptive_tj_threshold: false, // Static threshold mode
+            word_boundary_mode: WordBoundaryMode::default(),
         }
     }
 
@@ -265,6 +277,7 @@ impl TextExtractionConfig {
             space_insertion_threshold: -120.0, // Fallback value
             word_margin_ratio: ratio,
             use_adaptive_tj_threshold: true, // Adaptive threshold mode
+            word_boundary_mode: WordBoundaryMode::default(),
         }
     }
 
@@ -1641,6 +1654,12 @@ pub struct TextExtractor {
     /// Updated as each character in a TJ array is processed. Used to calculate
     /// x_position for CharacterInfo entries (not used after character collection).
     current_x_position: f32,
+    /// Word boundary detection mode (Phase 9.2)
+    ///
+    /// Controls whether WordBoundaryDetector is used as:
+    /// - Tiebreaker: Only when TJ and geometric signals conflict (default)
+    /// - Primary: Before creating TextSpans from tj_character_array
+    word_boundary_mode: WordBoundaryMode,
 }
 
 impl TextExtractor {
@@ -1673,6 +1692,7 @@ impl TextExtractor {
     /// let extractor = TextExtractor::with_config(config);
     /// ```
     pub fn with_config(config: TextExtractionConfig) -> Self {
+        let word_boundary_mode = config.word_boundary_mode;
         Self {
             state_stack: GraphicsStateStack::new(),
             fonts: HashMap::new(),
@@ -1692,6 +1712,7 @@ impl TextExtractor {
             tj_offset_history: Vec::with_capacity(1000), // Phase 4: Track TJ offsets for statistical analysis
             tj_character_array: Vec::new(), // Phase 9: Character tracking for word boundaries
             current_x_position: 0.0,        // Phase 9: Start at origin
+            word_boundary_mode,             // Phase 9.2: Word boundary detection mode
         }
     }
 
@@ -3956,6 +3977,7 @@ impl TextExtractor {
             word_spacing: buffer.word_space, // Tw - captured from PDF content stream
             horizontal_scaling: buffer.horizontal_scaling, // Tz - captured from PDF content stream
             is_italic: is_italic_span,
+            primary_detected: false, // Phase 9.2.C: Default to false for backward compatibility
         };
         self.span_sequence_counter += 1;
 
@@ -4006,7 +4028,31 @@ impl TextExtractor {
         Ok(total_width)
     }
 
-    /// Process entire TJ array with buffering logic.
+    /// Process TJ array according to configured word boundary detection mode.
+    ///
+    /// Per PDF Spec ISO 32000-1:2008 Section 9.4.4 and Phase 9.2 design,
+    /// this method dispatches to either:
+    /// - process_tj_array_tiebreaker(): WordBoundaryMode::Tiebreaker (default)
+    /// - process_tj_array_primary(): WordBoundaryMode::Primary (Phase 9.2.C+)
+    fn process_tj_array(&mut self, array: &[TextElement]) -> Result<()> {
+        match self.word_boundary_mode {
+            WordBoundaryMode::Tiebreaker => {
+                self.process_tj_array_tiebreaker(array)
+            },
+            WordBoundaryMode::Primary => {
+                self.process_tj_array_primary(array)
+            },
+        }
+    }
+
+    /// Process TJ array using tiebreaker mode (backward compatible).
+    ///
+    /// Per Phase 9.2.B, this is the legacy code path used when
+    /// WordBoundaryMode::Tiebreaker is configured.
+    ///
+    /// Maintains 100% backward compatibility with existing behavior.
+    /// Word boundaries are detected only as a tiebreaker when TJ offset
+    /// and geometric signals contradict each other.
     ///
     /// Per PDF Spec ISO 32000-1:2008, Section 9.4.4 NOTE 6:
     /// "The performance of text searching (and other text extraction operations) is
@@ -4015,7 +4061,7 @@ impl TextExtractor {
     /// This method buffers consecutive strings into a single span, only breaking on:
     /// - Large negative offsets (indicating word boundaries)
     /// - End of TJ array
-    fn process_tj_array(&mut self, array: &[TextElement]) -> Result<()> {
+    fn process_tj_array_tiebreaker(&mut self, array: &[TextElement]) -> Result<()> {
         // Phase 9: Character-level tracking for word boundary detection
         // Collect detailed character information during TJ array processing
         // Per ISO 32000-1:2008 Section 9.4.4, character-level data improves accuracy
@@ -4196,6 +4242,200 @@ impl TextExtractor {
         Ok(())
     }
 
+    /// Process TJ array using primary detection mode.
+    ///
+    /// Per Phase 9.2.C, this implementation:
+    /// 1. Creates BoundaryContext from graphics state
+    /// 2. Calls WordBoundaryDetector to detect boundaries in tj_character_array
+    /// 3. Partitions characters into clusters at boundary positions
+    /// 4. Converts each cluster to a TextSpan with proper bounding boxes
+    /// 5. Marks spans with primary_detected flag
+    fn process_tj_array_primary(&mut self, array: &[TextElement]) -> Result<()> {
+        // Phase 9.2.C: Primary detection mode implementation
+
+        // Step 1: If no characters collected, fall back to tiebreaker behavior
+        if self.tj_character_array.is_empty() {
+            return self.process_tj_array_tiebreaker(array);
+        }
+
+        // Step 2: Create BoundaryContext from current graphics state
+        let context = self.create_boundary_context();
+
+        // Step 3: Create WordBoundaryDetector and detect boundaries
+        let detector = WordBoundaryDetector::new();
+        let boundaries = detector.detect_word_boundaries(&self.tj_character_array, &context);
+
+        // Step 4: If no boundaries detected, process entire array as single span
+        if boundaries.is_empty() {
+            // All characters form a single word
+            return self.process_tj_array_tiebreaker(array);
+        }
+
+        // Step 5: Partition characters into clusters at boundary positions
+        let clusters = self.partition_characters_by_boundaries(&self.tj_character_array, boundaries);
+
+        // Step 6: Convert each cluster to a TextSpan
+        for cluster in clusters {
+            if !cluster.is_empty() {
+                self.cluster_to_span(&cluster)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Create BoundaryContext from current graphics state.
+    ///
+    /// Per ISO 32000-1:2008 Section 9.3, extracts text state parameters
+    /// used by WordBoundaryDetector to make boundary decisions.
+    fn create_boundary_context(&self) -> BoundaryContext {
+        let state = self.state_stack.current();
+        BoundaryContext {
+            font_size: state.font_size,
+            horizontal_scaling: state.horizontal_scaling,
+            word_spacing: state.word_space,
+            char_spacing: state.char_space,
+        }
+    }
+
+    /// Partition character array into clusters at boundary positions.
+    ///
+    /// # Arguments
+    /// * `characters` - Full character array from TJ processing
+    /// * `boundaries` - Boundary indices (positions where word boundaries occur)
+    ///
+    /// # Returns
+    /// Vector of character clusters, where boundaries separate clusters
+    fn partition_characters_by_boundaries(
+        &self,
+        characters: &[CharacterInfo],
+        boundaries: Vec<usize>,
+    ) -> Vec<Vec<CharacterInfo>> {
+        if boundaries.is_empty() {
+            return vec![characters.to_vec()];
+        }
+
+        let mut clusters = Vec::new();
+        let mut prev = 0;
+
+        for boundary_idx in boundaries {
+            if boundary_idx > prev {
+                clusters.push(characters[prev..boundary_idx].to_vec());
+            }
+            prev = boundary_idx;
+        }
+
+        // Add remaining characters after last boundary
+        if prev < characters.len() {
+            clusters.push(characters[prev..].to_vec());
+        }
+
+        clusters
+    }
+
+    /// Convert a character cluster to a TextSpan.
+    ///
+    /// Calculates bounding box from character positions and creates
+    /// a single TextSpan marked with primary_detected flag.
+    ///
+    /// # Arguments
+    /// * `cluster` - Character cluster from partitioning
+    fn cluster_to_span(&mut self, cluster: &[CharacterInfo]) -> Result<()> {
+        if cluster.is_empty() {
+            return Ok(());
+        }
+
+        let state = self.state_stack.current();
+
+        // Step 1: Calculate bounding box from character positions
+        // X position: from first character to end of last character
+        let min_x = cluster[0].x_position;
+        let max_x = cluster.last().unwrap().x_position + cluster.last().unwrap().width;
+        let width = (max_x - min_x).max(0.0);
+
+        // Y position: from text matrix, height from font size
+        let y = state.text_matrix.f;
+        let height = cluster[0].font_size.abs() * state.text_matrix.d.abs().max(1.0);
+
+        // Step 2: Create bounding box rectangle
+        let bbox = Rect {
+            x: min_x,
+            y,
+            width,
+            height,
+        };
+
+        // Step 3: Convert characters to Unicode string
+        // Use same decoding as existing code
+        let unicode_text = if let Some(font_name) = state.font_name.as_ref() {
+            if let Some(font) = self.fonts.get(font_name) {
+                let mut text = String::new();
+                for char_info in cluster {
+                    if let Some(decoded) = font.char_to_unicode(char_info.code) {
+                        text.push_str(&decoded);
+                    }
+                }
+                text
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        // Step 4: Determine font weight
+        let font_weight = if let Some(font_name) = state.font_name.as_ref() {
+            if let Some(font) = self.fonts.get(font_name) {
+                if font.is_bold() {
+                    FontWeight::Bold
+                } else {
+                    FontWeight::Normal
+                }
+            } else {
+                FontWeight::Normal
+            }
+        } else {
+            FontWeight::Normal
+        };
+
+        // Determine if italic
+        let is_italic = state
+            .font_name
+            .as_ref()
+            .and_then(|name| self.fonts.get(name))
+            .map(|font| font.is_italic())
+            .unwrap_or(false);
+
+        // Step 5: Create TextSpan with primary_detected flag
+        let span = TextSpan {
+            text: unicode_text,
+            bbox,
+            font_name: state.font_name.clone().unwrap_or_else(|| "Unknown".to_string()),
+            font_size: cluster[0].font_size,
+            font_weight,
+            color: Color::new(
+                state.fill_color_rgb.0,
+                state.fill_color_rgb.1,
+                state.fill_color_rgb.2,
+            ),
+            mcid: self.current_mcid,
+            sequence: self.span_sequence_counter,
+            split_boundary_before: false,
+            offset_semantic: false,
+            char_spacing: state.char_space,
+            word_spacing: state.word_space,
+            horizontal_scaling: state.horizontal_scaling,
+            is_italic,
+            primary_detected: true,  // Mark as created by primary detector
+        };
+
+        // Step 6: Increment sequence counter and add to spans
+        self.span_sequence_counter += 1;
+        self.spans.push(span);
+
+        Ok(())
+    }
+
     /// Advance text position for a string (used in TJ array processing).
     fn advance_position_for_string(&mut self, text: &[u8]) -> Result<()> {
         let state = self.state_stack.current();
@@ -4287,6 +4527,7 @@ impl TextExtractor {
             word_spacing: state.word_space, // Tw - captured from PDF content stream
             horizontal_scaling: state.horizontal_scaling, // Tz - captured from PDF content stream
             is_italic: is_italic_space,
+            primary_detected: false, // Phase 9.2.C: Default to false for backward compatibility
         };
         self.span_sequence_counter += 1;
 
@@ -4385,6 +4626,7 @@ impl TextExtractor {
                     word_spacing: 0.0, // Tw - per ISO 32000-1:2008 Section 9.3.1
                     horizontal_scaling: 100.0, // Tz - per ISO 32000-1:2008 Section 9.3.1
                     is_italic: is_italic_buf,
+                    primary_detected: false, // Phase 9.2.C: Default to false for backward compatibility
                 };
                 self.span_sequence_counter += 1;
 
@@ -4953,6 +5195,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
             TextSpan {
                 text: "General".to_string(),
@@ -4970,6 +5213,7 @@ mod tests {
                 sequence: 1,
                 split_boundary_before: true, // Marks this as part of a split boundary
                 offset_semantic: false,
+                primary_detected: false,
                 is_italic: false,
                 char_spacing: 0.0,
                 word_spacing: 0.0,

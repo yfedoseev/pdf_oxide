@@ -603,6 +603,7 @@ mod tests {
             char_spacing: 0.0,
             word_spacing: 0.0,
             horizontal_scaling: 1.0,
+                primary_detected: false,
         }
     }
 

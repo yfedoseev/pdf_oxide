@@ -41,7 +41,7 @@ pub mod text_processing;
 // Re-export main types
 pub use config::{
     BoldMarkerBehavior, OutputConfig, ReadingOrderConfig, ReadingOrderStrategyType, SpacingConfig,
-    TextPipelineConfig, TjThresholdConfig,
+    TextPipelineConfig, TjThresholdConfig, WordBoundaryMode,
 };
 pub use converters::{
     HtmlOutputConverter, MarkdownOutputConverter, OutputConverter, PlainTextConverter,

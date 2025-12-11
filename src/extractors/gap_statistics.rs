@@ -836,6 +836,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
             TextSpan {
                 text: "World".to_string(),
@@ -852,6 +853,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
         ];
 
@@ -953,6 +955,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
             TextSpan {
                 text: "B".to_string(),
@@ -969,6 +972,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
         ];
 

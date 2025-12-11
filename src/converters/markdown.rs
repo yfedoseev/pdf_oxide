@@ -896,6 +896,7 @@ impl MarkdownConverter {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             })
             .collect();
 
@@ -1512,6 +1513,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
             TextSpan {
                 text: "   ".to_string(), // Whitespace only - should be filtered
@@ -1528,6 +1530,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
             TextSpan {
                 text: "World".to_string(),
@@ -1544,6 +1547,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
         ];
 
@@ -1582,6 +1586,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
             TextSpan {
                 text: "---".to_string(), // Punctuation only, but marked bold
@@ -1598,6 +1603,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
             TextSpan {
                 text: "Content".to_string(),
@@ -1614,6 +1620,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
         ];
 
@@ -1656,6 +1663,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
             TextSpan {
                 text: "2024".to_string(), // Numeric, should be bold if marked
@@ -1672,6 +1680,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
         ];
 
@@ -1713,6 +1722,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
             TextSpan {
                 text: " ".to_string(), // Whitespace - should be filtered
@@ -1729,6 +1739,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
             TextSpan {
                 text: "...".to_string(), // Punctuation - should be neutralized
@@ -1745,6 +1756,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
             TextSpan {
                 text: "  \n  ".to_string(), // Mixed whitespace - should be filtered
@@ -1761,6 +1773,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
             TextSpan {
                 text: "Content".to_string(),
@@ -1777,6 +1790,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
         ];
 
@@ -1948,6 +1962,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
             TextSpan {
                 text: "  \n  ".to_string(), // Whitespace with newlines
@@ -1964,6 +1979,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
             TextSpan {
                 text: "More".to_string(),
@@ -1980,6 +1996,7 @@ mod tests {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
+                primary_detected: false,
             },
         ];
 

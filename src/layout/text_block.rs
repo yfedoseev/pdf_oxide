@@ -71,6 +71,12 @@ pub struct TextSpan {
     /// Tz scales all character widths and word spacing. Value is in percent (e.g., 100 = 100%).
     /// Default value is 100.0. Used for justification detection and layout analysis.
     pub horizontal_scaling: f32,
+    /// If true, was created by WordBoundaryDetector primary detection.
+    ///
+    /// Used to mark spans created by primary detection mode so they
+    /// are not re-merged during the span merging phase.
+    /// Default is false for backward compatibility.
+    pub primary_detected: bool,
 }
 
 /// A single character with its position and styling.

@@ -6,6 +6,30 @@
 //! - SpacingConfig
 //! - ConversionOptions
 
+/// Word boundary detection mode for TJ array processing.
+///
+/// Per ISO 32000-1:2008 Section 9.4.4, word boundaries can be detected
+/// using multiple signals (TJ offsets, geometric gaps, character properties).
+///
+/// Tiebreaker mode (default): Uses WordBoundaryDetector only when TJ offset
+/// and geometric signals contradict each other (backward compatible).
+///
+/// Primary mode: Uses WordBoundaryDetector to detect boundaries BEFORE creating
+/// TextSpans, partitioning the tj_character_array into word-level clusters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WordBoundaryMode {
+    /// Use WordBoundaryDetector only as tiebreaker (backward compatible, default)
+    Tiebreaker,
+    /// Use WordBoundaryDetector as primary detector before span creation
+    Primary,
+}
+
+impl Default for WordBoundaryMode {
+    fn default() -> Self {
+        Self::Tiebreaker
+    }
+}
+
 /// Unified configuration for the text extraction pipeline.
 ///
 /// This replaces the scattered configuration across multiple modules
@@ -23,6 +47,9 @@ pub struct TextPipelineConfig {
 
     /// Output formatting options
     pub output: OutputConfig,
+
+    /// Word boundary detection mode for TJ array processing (Phase 9.2)
+    pub word_boundary_mode: WordBoundaryMode,
 }
 
 impl Default for TextPipelineConfig {
@@ -32,6 +59,7 @@ impl Default for TextPipelineConfig {
             tj_threshold: TjThresholdConfig::default(),
             reading_order: ReadingOrderConfig::default(),
             output: OutputConfig::default(),
+            word_boundary_mode: WordBoundaryMode::default(),
         }
     }
 }
@@ -51,6 +79,7 @@ impl TextPipelineConfig {
                 strategy: ReadingOrderStrategyType::Simple,
             },
             output: OutputConfig::default(),
+            word_boundary_mode: WordBoundaryMode::Tiebreaker,
         }
     }
 
@@ -99,7 +128,14 @@ impl TextPipelineConfig {
                 extract_tables: opts.extract_tables,
                 image_output_dir: opts.image_output_dir.clone(),
             },
+            word_boundary_mode: WordBoundaryMode::Tiebreaker, // Keep old behavior compatible
         }
+    }
+
+    /// Set the word boundary detection mode (Phase 9.2)
+    pub fn with_word_boundary_mode(mut self, mode: WordBoundaryMode) -> Self {
+        self.word_boundary_mode = mode;
+        self
     }
 }
 
