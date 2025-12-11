@@ -59,6 +59,10 @@ fn test_character_info_structure_completeness() {
         x_position: 100.0,
         tj_offset: Some(-150),
         font_size: 12.0,
+        is_ligature: false,
+        original_ligature: None,
+        is_ligature: false,
+        original_ligature: None,
     };
 
     // Verify all fields are accessible
@@ -77,6 +81,10 @@ fn test_boundary_context_structure() {
     // Create a boundary context from text state
     let context = BoundaryContext {
         font_size: 12.0,
+        is_ligature: false,
+        original_ligature: None,
+        is_ligature: false,
+        original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.0,
         char_spacing: 0.0,
@@ -109,6 +117,10 @@ fn test_character_array_accumulation() {
             x_position: x_pos,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         });
         x_pos += char_width;
     }
@@ -144,6 +156,10 @@ fn test_tj_offset_association_with_characters() {
             x_position: x_pos,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         });
         x_pos += char_width;
     }
@@ -161,6 +177,10 @@ fn test_tj_offset_association_with_characters() {
             x_position: x_pos,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         });
         x_pos += char_width;
     }
@@ -197,6 +217,10 @@ fn test_character_tracking_with_mixed_offsets() {
             x_position: x_pos,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         });
         x_pos += char_width;
     }
@@ -211,6 +235,10 @@ fn test_character_tracking_with_mixed_offsets() {
             x_position: x_pos,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         });
         x_pos += char_width;
     }
@@ -225,6 +253,10 @@ fn test_character_tracking_with_mixed_offsets() {
             x_position: x_pos,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         });
         x_pos += char_width;
     }
@@ -258,6 +290,10 @@ fn test_character_tracking_preserves_font_metrics() {
             x_position: 0.0,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
         CharacterInfo {
             code: 'M' as u32,
@@ -266,6 +302,10 @@ fn test_character_tracking_preserves_font_metrics() {
             x_position: 200.0,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
         CharacterInfo {
             code: 'W' as u32,
@@ -274,6 +314,10 @@ fn test_character_tracking_preserves_font_metrics() {
             x_position: 1000.0,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
     ];
 
@@ -296,6 +340,10 @@ fn test_character_tracking_with_scaling() {
 
     let context = pdf_oxide::text::word_boundary::BoundaryContext {
         font_size: 12.0,
+        is_ligature: false,
+        original_ligature: None,
+        is_ligature: false,
+        original_ligature: None,
         horizontal_scaling: 80.0, // Condensed text (80% width)
         word_spacing: 0.0,
         char_spacing: 0.0,

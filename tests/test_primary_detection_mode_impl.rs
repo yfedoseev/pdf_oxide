@@ -15,8 +15,7 @@ use pdf_oxide::pipeline::config::{TextPipelineConfig, WordBoundaryMode};
 #[test]
 fn test_primary_mode_config_creation() {
     // Verify that primary mode can be configured without panic
-    let config = TextPipelineConfig::default()
-        .with_word_boundary_mode(WordBoundaryMode::Primary);
+    let config = TextPipelineConfig::default().with_word_boundary_mode(WordBoundaryMode::Primary);
 
     // Should initialize without panic
     assert_eq!(config.word_boundary_mode, WordBoundaryMode::Primary);
@@ -37,8 +36,7 @@ fn test_primary_mode_with_empty_character_array() {
     // This will be tested via actual PDF extraction once implementation is complete
 
     // For now, verify configuration doesn't panic
-    let _config = TextPipelineConfig::default()
-        .with_word_boundary_mode(WordBoundaryMode::Primary);
+    let _config = TextPipelineConfig::default().with_word_boundary_mode(WordBoundaryMode::Primary);
 }
 
 #[test]
@@ -54,8 +52,8 @@ fn test_backward_compat_with_tiebreaker_mode() {
     // Phase 9.2.C: Tiebreaker mode should work identically to before
     // All 1,308 existing tests should pass
 
-    let config = TextPipelineConfig::default()
-        .with_word_boundary_mode(WordBoundaryMode::Tiebreaker);
+    let config =
+        TextPipelineConfig::default().with_word_boundary_mode(WordBoundaryMode::Tiebreaker);
 
     assert_eq!(config.word_boundary_mode, WordBoundaryMode::Tiebreaker);
 }
@@ -71,8 +69,7 @@ fn test_backward_compat_with_tiebreaker_mode() {
 #[test]
 fn test_primary_mode_initialization() {
     // Verify primary mode can be set up correctly
-    let config = TextPipelineConfig::default()
-        .with_word_boundary_mode(WordBoundaryMode::Primary);
+    let config = TextPipelineConfig::default().with_word_boundary_mode(WordBoundaryMode::Primary);
 
     // Configuration should be valid
     assert_eq!(config.word_boundary_mode, WordBoundaryMode::Primary);

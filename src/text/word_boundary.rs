@@ -41,6 +41,15 @@ pub struct CharacterInfo {
 
     /// Current font size in points
     pub font_size: f32,
+
+    /// Whether this character is a ligature (U+FB00-U+FB04)
+    /// Week 2 Day 6: Ligature Expansion Enhancement (2A)
+    pub is_ligature: bool,
+
+    /// Original ligature character if this was split from a ligature
+    /// Used for debugging and tracking ligature expansion
+    /// Week 2 Day 6: Ligature Expansion Enhancement (2A)
+    pub original_ligature: Option<char>,
 }
 
 /// Context information for word boundary detection.
@@ -340,6 +349,8 @@ mod tests {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'H'
             CharacterInfo {
                 code: 0x65,
@@ -348,6 +359,8 @@ mod tests {
                 x_position: 6.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'e'
             CharacterInfo {
                 code: 0x20,
@@ -356,6 +369,8 @@ mod tests {
                 x_position: 10.8,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // SPACE
             CharacterInfo {
                 code: 0x57,
@@ -364,6 +379,8 @@ mod tests {
                 x_position: 16.2,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'W'
         ];
 
@@ -384,6 +401,8 @@ mod tests {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'T'
             CharacterInfo {
                 code: 0x2D,
@@ -392,6 +411,8 @@ mod tests {
                 x_position: 6.0,
                 tj_offset: Some(-200),
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // '-' with large negative offset
             CharacterInfo {
                 code: 0x6F,
@@ -400,6 +421,8 @@ mod tests {
                 x_position: 18.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'o'
         ];
 
@@ -420,6 +443,8 @@ mod tests {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'T'
             CharacterInfo {
                 code: 0x65,
@@ -428,6 +453,8 @@ mod tests {
                 x_position: 6.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'e'
             CharacterInfo {
                 code: 0x78,
@@ -436,6 +463,8 @@ mod tests {
                 x_position: 10.8,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'x'
             CharacterInfo {
                 code: 0x74,
@@ -444,6 +473,8 @@ mod tests {
                 x_position: 15.6,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 't'
             // Gap of ~11.1 units (much larger than threshold ~3.6)
             CharacterInfo {
@@ -453,6 +484,8 @@ mod tests {
                 x_position: 27.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'B'
         ];
 
@@ -474,6 +507,8 @@ mod tests {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // CJK UNIFIED IDEOGRAPH
             CharacterInfo {
                 code: 0x6587,
@@ -482,6 +517,8 @@ mod tests {
                 x_position: 12.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // CJK UNIFIED IDEOGRAPH
             CharacterInfo {
                 code: 0x5B57,
@@ -490,6 +527,8 @@ mod tests {
                 x_position: 24.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // CJK UNIFIED IDEOGRAPH
         ];
 
@@ -512,6 +551,8 @@ mod tests {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'n'
             CharacterInfo {
                 code: 0x200B,
@@ -520,6 +561,8 @@ mod tests {
                 x_position: 4.8,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // ZERO WIDTH SPACE
             CharacterInfo {
                 code: 0x72,
@@ -528,6 +571,8 @@ mod tests {
                 x_position: 4.8,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'r'
         ];
 
@@ -552,6 +597,8 @@ mod tests {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'A' ends at 0.5
             CharacterInfo {
                 code: 0x42,
@@ -560,6 +607,8 @@ mod tests {
                 x_position: 8.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'B' starts at 8.0
         ];
 
@@ -591,6 +640,8 @@ mod tests {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'H'
             CharacterInfo {
                 code: 0x65,
@@ -599,6 +650,8 @@ mod tests {
                 x_position: 6.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'e'
             CharacterInfo {
                 code: 0x20,
@@ -607,6 +660,8 @@ mod tests {
                 x_position: 10.8,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // SPACE
             CharacterInfo {
                 code: 0x57,
@@ -615,6 +670,8 @@ mod tests {
                 x_position: 16.2,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'W'
         ];
 
@@ -636,6 +693,8 @@ mod tests {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'T'
             CharacterInfo {
                 code: 0x2D,
@@ -644,6 +703,8 @@ mod tests {
                 x_position: 6.0,
                 tj_offset: Some(-200),
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // '-' with large negative offset
             CharacterInfo {
                 code: 0x6F,
@@ -652,6 +713,8 @@ mod tests {
                 x_position: 18.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // 'o'
         ];
 
@@ -673,6 +736,8 @@ mod tests {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // CJK character
             CharacterInfo {
                 code: 0x6587,
@@ -681,6 +746,8 @@ mod tests {
                 x_position: 12.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
             }, // CJK character
         ];
 

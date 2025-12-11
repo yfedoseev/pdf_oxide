@@ -67,6 +67,10 @@ mod tests {
             x_position: 500.0,
             tj_offset: Some(-200), // Significant negative offset = word boundary
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         };
 
         assert_eq!(char_info.tj_offset, Some(-200));
@@ -85,6 +89,10 @@ mod tests {
 
         let context = BoundaryContext {
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             horizontal_scaling: 100.0,
             word_spacing: 0.0,
             char_spacing: 0.0,
@@ -104,6 +112,10 @@ mod tests {
 
         let context = BoundaryContext {
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             horizontal_scaling: 80.0, // Condensed text
             word_spacing: 0.0,
             char_spacing: 0.0,
@@ -127,6 +139,10 @@ mod tests {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'e' as u32,
@@ -135,6 +151,10 @@ mod tests {
                 x_position: 500.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'l' as u32,
@@ -143,6 +163,10 @@ mod tests {
                 x_position: 900.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'l' as u32,
@@ -151,6 +175,10 @@ mod tests {
                 x_position: 1250.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'o' as u32,
@@ -159,6 +187,10 @@ mod tests {
                 x_position: 1600.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
         ];
 
@@ -181,6 +213,10 @@ mod tests {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'e' as u32,
@@ -189,6 +225,10 @@ mod tests {
                 x_position: 500.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'l' as u32,
@@ -197,6 +237,10 @@ mod tests {
                 x_position: 900.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'l' as u32,
@@ -205,6 +249,10 @@ mod tests {
                 x_position: 1250.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'o' as u32,
@@ -213,6 +261,10 @@ mod tests {
                 x_position: 1600.0,
                 tj_offset: Some(-200),
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             }, // Offset here
             CharacterInfo {
                 code: 'W' as u32,
@@ -221,6 +273,10 @@ mod tests {
                 x_position: 2100.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
         ];
 
@@ -243,6 +299,10 @@ mod tests {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'e' as u32,
@@ -251,6 +311,10 @@ mod tests {
                 x_position: 400.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'x' as u32,
@@ -259,6 +323,10 @@ mod tests {
                 x_position: 800.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 't' as u32,
@@ -267,6 +335,10 @@ mod tests {
                 x_position: 1200.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
         ];
 
@@ -294,6 +366,10 @@ mod tests {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             }, // Narrow
             CharacterInfo {
                 code: 'M' as u32,
@@ -302,6 +378,10 @@ mod tests {
                 x_position: 200.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             }, // Wide
             CharacterInfo {
                 code: 'W' as u32,
@@ -310,6 +390,10 @@ mod tests {
                 x_position: 1000.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             }, // Very wide
         ];
 
@@ -333,6 +417,10 @@ mod tests {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'h' as u32,
@@ -341,6 +429,10 @@ mod tests {
                 x_position: 400.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'e' as u32,
@@ -349,6 +441,10 @@ mod tests {
                 x_position: 800.0,
                 tj_offset: Some(-150),
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             // (quick)
             CharacterInfo {
@@ -358,6 +454,10 @@ mod tests {
                 x_position: 1250.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'u' as u32,
@@ -366,6 +466,10 @@ mod tests {
                 x_position: 1650.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'i' as u32,
@@ -374,6 +478,10 @@ mod tests {
                 x_position: 2050.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'c' as u32,
@@ -382,6 +490,10 @@ mod tests {
                 x_position: 2250.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'k' as u32,
@@ -390,6 +502,10 @@ mod tests {
                 x_position: 2650.0,
                 tj_offset: Some(-100),
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             // (brown)
             CharacterInfo {
@@ -399,6 +515,10 @@ mod tests {
                 x_position: 3050.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'r' as u32,
@@ -407,6 +527,10 @@ mod tests {
                 x_position: 3450.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'o' as u32,
@@ -415,6 +539,10 @@ mod tests {
                 x_position: 3800.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'w' as u32,
@@ -423,6 +551,10 @@ mod tests {
                 x_position: 4200.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
             CharacterInfo {
                 code: 'n' as u32,
@@ -431,6 +563,10 @@ mod tests {
                 x_position: 4800.0,
                 tj_offset: None,
                 font_size: 12.0,
+                is_ligature: false,
+                original_ligature: None,
+                is_ligature: false,
+                original_ligature: None,
             },
         ];
 

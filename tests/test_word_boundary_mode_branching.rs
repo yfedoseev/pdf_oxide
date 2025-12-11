@@ -1,4 +1,4 @@
-use pdf_oxide::extractors::{TextExtractor, TextExtractionConfig};
+use pdf_oxide::extractors::{TextExtractionConfig, TextExtractor};
 use pdf_oxide::pipeline::config::WordBoundaryMode;
 
 #[test]

@@ -45,8 +45,7 @@ fn test_text_pipeline_config_default_mode_is_tiebreaker() {
 
 #[test]
 fn test_text_pipeline_config_with_word_boundary_mode() {
-    let config = TextPipelineConfig::default()
-        .with_word_boundary_mode(WordBoundaryMode::Primary);
+    let config = TextPipelineConfig::default().with_word_boundary_mode(WordBoundaryMode::Primary);
     assert_eq!(config.word_boundary_mode, WordBoundaryMode::Primary);
 }
 
@@ -98,8 +97,7 @@ fn test_word_boundary_mode_partial_eq() {
 #[test]
 fn test_builder_pattern_chaining() {
     // Verify builder pattern works with other config methods
-    let config = TextPipelineConfig::default()
-        .with_word_boundary_mode(WordBoundaryMode::Primary);
+    let config = TextPipelineConfig::default().with_word_boundary_mode(WordBoundaryMode::Primary);
 
     // Should be chainable with other builder methods if they exist
     assert_eq!(config.word_boundary_mode, WordBoundaryMode::Primary);

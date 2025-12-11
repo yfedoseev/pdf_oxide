@@ -6,6 +6,7 @@
 pub mod document_classifier;
 pub mod hyphenation;
 pub mod justification;
+pub mod ligature_processor;
 pub mod word_boundary;
 
 pub use document_classifier::{DocumentClassifier, DocumentStats};

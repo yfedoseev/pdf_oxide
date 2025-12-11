@@ -18,6 +18,8 @@ struct CharacterInfo {
     x_position: f32,
     tj_offset: Option<i32>, // From TJ array (negative = extra space)
     font_size: f32,
+            is_ligature: false,
+            original_ligature: None,
 }
 
 /// Helper to simulate text stream with character-level information
@@ -25,6 +27,8 @@ struct CharacterInfo {
 struct TextStreamContext {
     characters: Vec<CharacterInfo>,
     font_size: f32,
+            is_ligature: false,
+            original_ligature: None,
     horizontal_scaling: f32, // Tz parameter (percentage)
     word_spacing: f32,       // Tw parameter (additional space after space char)
     char_spacing: f32,       // Tc parameter
@@ -42,6 +46,10 @@ fn test_ascii_space_boundary_detection() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'H'
             CharacterInfo {
                 code: 0x65,
@@ -50,6 +58,10 @@ fn test_ascii_space_boundary_detection() {
                 x_position: 6.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'e'
             CharacterInfo {
                 code: 0x6C,
@@ -58,6 +70,10 @@ fn test_ascii_space_boundary_detection() {
                 x_position: 10.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'l'
             CharacterInfo {
                 code: 0x6C,
@@ -66,6 +82,10 @@ fn test_ascii_space_boundary_detection() {
                 x_position: 14.4,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'l'
             CharacterInfo {
                 code: 0x6F,
@@ -74,6 +94,10 @@ fn test_ascii_space_boundary_detection() {
                 x_position: 18.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'o'
             CharacterInfo {
                 code: 0x20,
@@ -82,6 +106,10 @@ fn test_ascii_space_boundary_detection() {
                 x_position: 22.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // SPACE
             CharacterInfo {
                 code: 0x57,
@@ -90,6 +118,10 @@ fn test_ascii_space_boundary_detection() {
                 x_position: 28.2,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'W'
             CharacterInfo {
                 code: 0x6F,
@@ -98,6 +130,10 @@ fn test_ascii_space_boundary_detection() {
                 x_position: 36.6,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'o'
             CharacterInfo {
                 code: 0x72,
@@ -106,6 +142,10 @@ fn test_ascii_space_boundary_detection() {
                 x_position: 41.4,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'r'
             CharacterInfo {
                 code: 0x6C,
@@ -114,6 +154,10 @@ fn test_ascii_space_boundary_detection() {
                 x_position: 45.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'l'
             CharacterInfo {
                 code: 0x64,
@@ -122,9 +166,17 @@ fn test_ascii_space_boundary_detection() {
                 x_position: 48.6,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'd'
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.25,
         char_spacing: 0.0,
@@ -153,6 +205,10 @@ fn test_tj_array_negative_offset_creates_word_boundary() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'T'
             CharacterInfo {
                 code: 0x69,
@@ -161,6 +217,10 @@ fn test_tj_array_negative_offset_creates_word_boundary() {
                 x_position: 6.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'i'
             CharacterInfo {
                 code: 0x6D,
@@ -169,6 +229,10 @@ fn test_tj_array_negative_offset_creates_word_boundary() {
                 x_position: 9.6,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'm'
             CharacterInfo {
                 code: 0x65,
@@ -177,6 +241,10 @@ fn test_tj_array_negative_offset_creates_word_boundary() {
                 x_position: 14.4,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'e'
             CharacterInfo {
                 code: 0x2D,
@@ -185,6 +253,10 @@ fn test_tj_array_negative_offset_creates_word_boundary() {
                 x_position: 19.2,
                 tj_offset: Some(-200),
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // HYPHEN with large negative offset
             CharacterInfo {
                 code: 0x6F,
@@ -193,6 +265,10 @@ fn test_tj_array_negative_offset_creates_word_boundary() {
                 x_position: 31.2,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'o'
             CharacterInfo {
                 code: 0x75,
@@ -201,6 +277,10 @@ fn test_tj_array_negative_offset_creates_word_boundary() {
                 x_position: 36.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'u'
             CharacterInfo {
                 code: 0x74,
@@ -209,9 +289,17 @@ fn test_tj_array_negative_offset_creates_word_boundary() {
                 x_position: 40.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 't'
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.25,
         char_spacing: 0.0,
@@ -236,6 +324,10 @@ fn test_geometric_spacing_word_boundary_detection() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             CharacterInfo {
                 code: 0x65,
@@ -244,6 +336,10 @@ fn test_geometric_spacing_word_boundary_detection() {
                 x_position: 6.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             CharacterInfo {
                 code: 0x78,
@@ -252,6 +348,10 @@ fn test_geometric_spacing_word_boundary_detection() {
                 x_position: 10.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             CharacterInfo {
                 code: 0x74,
@@ -260,6 +360,10 @@ fn test_geometric_spacing_word_boundary_detection() {
                 x_position: 15.6,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             // Gap: 6.0 units (much larger than character width ~0.4)
             CharacterInfo {
@@ -269,6 +373,10 @@ fn test_geometric_spacing_word_boundary_detection() {
                 x_position: 27.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             CharacterInfo {
                 code: 0x6F,
@@ -277,6 +385,10 @@ fn test_geometric_spacing_word_boundary_detection() {
                 x_position: 33.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             CharacterInfo {
                 code: 0x78,
@@ -285,9 +397,17 @@ fn test_geometric_spacing_word_boundary_detection() {
                 x_position: 37.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.25,
         char_spacing: 0.0,
@@ -313,6 +433,10 @@ fn test_multiple_consecutive_spaces() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'W'
             CharacterInfo {
                 code: 0x6F,
@@ -321,6 +445,10 @@ fn test_multiple_consecutive_spaces() {
                 x_position: 8.4,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'o'
             CharacterInfo {
                 code: 0x72,
@@ -329,6 +457,10 @@ fn test_multiple_consecutive_spaces() {
                 x_position: 13.2,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'r'
             CharacterInfo {
                 code: 0x64,
@@ -337,6 +469,10 @@ fn test_multiple_consecutive_spaces() {
                 x_position: 16.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'd'
             CharacterInfo {
                 code: 0x20,
@@ -345,6 +481,10 @@ fn test_multiple_consecutive_spaces() {
                 x_position: 21.6,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // SPACE
             CharacterInfo {
                 code: 0x20,
@@ -353,6 +493,10 @@ fn test_multiple_consecutive_spaces() {
                 x_position: 25.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // SPACE
             CharacterInfo {
                 code: 0x20,
@@ -361,6 +505,10 @@ fn test_multiple_consecutive_spaces() {
                 x_position: 30.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // SPACE
             CharacterInfo {
                 code: 0x46,
@@ -369,6 +517,10 @@ fn test_multiple_consecutive_spaces() {
                 x_position: 34.2,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'F'
             CharacterInfo {
                 code: 0x6F,
@@ -377,6 +529,10 @@ fn test_multiple_consecutive_spaces() {
                 x_position: 40.2,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'o'
             CharacterInfo {
                 code: 0x72,
@@ -385,9 +541,17 @@ fn test_multiple_consecutive_spaces() {
                 x_position: 45.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'r'
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.25,
         char_spacing: 0.0,
@@ -413,6 +577,10 @@ fn test_hyphenation_word_boundary() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             CharacterInfo {
                 code: 0x6E,
@@ -421,6 +589,10 @@ fn test_hyphenation_word_boundary() {
                 x_position: 3.6,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             CharacterInfo {
                 code: 0x74,
@@ -429,6 +601,10 @@ fn test_hyphenation_word_boundary() {
                 x_position: 7.2,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             CharacterInfo {
                 code: 0x65,
@@ -437,6 +613,10 @@ fn test_hyphenation_word_boundary() {
                 x_position: 10.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             CharacterInfo {
                 code: 0x72,
@@ -445,6 +625,10 @@ fn test_hyphenation_word_boundary() {
                 x_position: 14.4,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             CharacterInfo {
                 code: 0x2D,
@@ -453,6 +637,10 @@ fn test_hyphenation_word_boundary() {
                 x_position: 18.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // HYPHEN
             // Continuation: no large offset, small gap
             CharacterInfo {
@@ -462,6 +650,10 @@ fn test_hyphenation_word_boundary() {
                 x_position: 20.1,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             CharacterInfo {
                 code: 0x65,
@@ -470,6 +662,10 @@ fn test_hyphenation_word_boundary() {
                 x_position: 24.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             CharacterInfo {
                 code: 0x74,
@@ -478,9 +674,17 @@ fn test_hyphenation_word_boundary() {
                 x_position: 28.2,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.25,
         char_spacing: 0.0,
@@ -507,6 +711,10 @@ fn test_cjk_text_no_explicit_spaces() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // CJK UNIFIED IDEOGRAPH (Chinese)
             CharacterInfo {
                 code: 0x6587,
@@ -515,6 +723,10 @@ fn test_cjk_text_no_explicit_spaces() {
                 x_position: 12.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // CJK UNIFIED IDEOGRAPH (Chinese)
             CharacterInfo {
                 code: 0x5B57,
@@ -523,6 +735,10 @@ fn test_cjk_text_no_explicit_spaces() {
                 x_position: 24.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // CJK UNIFIED IDEOGRAPH (Chinese)
             CharacterInfo {
                 code: 0x3002,
@@ -531,9 +747,17 @@ fn test_cjk_text_no_explicit_spaces() {
                 x_position: 36.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // IDEOGRAPHIC FULL STOP
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.0, // No word spacing in CJK
         char_spacing: 0.0,
@@ -557,6 +781,10 @@ fn test_custom_encoding_word_boundary() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // Code 0x21 = 'A' in custom encoding
             CharacterInfo {
                 code: 0x22,
@@ -565,6 +793,10 @@ fn test_custom_encoding_word_boundary() {
                 x_position: 6.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // Code 0x22 = 'B' in custom encoding
             CharacterInfo {
                 code: 0x00,
@@ -573,6 +805,10 @@ fn test_custom_encoding_word_boundary() {
                 x_position: 10.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // Code 0x00 = SPACE in custom encoding
             CharacterInfo {
                 code: 0x43,
@@ -581,9 +817,17 @@ fn test_custom_encoding_word_boundary() {
                 x_position: 16.2,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // Code 0x43 = 'C' in custom encoding
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.25,
         char_spacing: 0.0,
@@ -608,6 +852,10 @@ fn test_font_size_influence_on_spacing() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 24.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'A'
             CharacterInfo {
                 code: 0x42,
@@ -616,6 +864,10 @@ fn test_font_size_influence_on_spacing() {
                 x_position: 24.0,
                 tj_offset: None,
                 font_size: 24.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'B'
             CharacterInfo {
                 code: 0x43,
@@ -624,9 +876,17 @@ fn test_font_size_influence_on_spacing() {
                 x_position: 52.0,
                 tj_offset: None,
                 font_size: 24.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'C'
         ],
         font_size: 24.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.5,
         char_spacing: 0.0,
@@ -644,6 +904,10 @@ fn test_font_size_influence_on_spacing() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'A'
             CharacterInfo {
                 code: 0x42,
@@ -652,6 +916,10 @@ fn test_font_size_influence_on_spacing() {
                 x_position: 6.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'B'
             CharacterInfo {
                 code: 0x43,
@@ -660,9 +928,17 @@ fn test_font_size_influence_on_spacing() {
                 x_position: 10.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'C'
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.25,
         char_spacing: 0.0,
@@ -686,6 +962,10 @@ fn test_horizontal_scaling_affects_spacing() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             CharacterInfo {
                 code: 0x42,
@@ -694,6 +974,10 @@ fn test_horizontal_scaling_affects_spacing() {
                 x_position: 6.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             CharacterInfo {
                 code: 0x43,
@@ -702,9 +986,17 @@ fn test_horizontal_scaling_affects_spacing() {
                 x_position: 10.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.25,
         char_spacing: 0.0,
@@ -719,6 +1011,10 @@ fn test_horizontal_scaling_affects_spacing() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 75% scaling
             CharacterInfo {
                 code: 0x42,
@@ -727,6 +1023,10 @@ fn test_horizontal_scaling_affects_spacing() {
                 x_position: 4.5,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
             CharacterInfo {
                 code: 0x43,
@@ -735,9 +1035,17 @@ fn test_horizontal_scaling_affects_spacing() {
                 x_position: 8.1,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             },
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 75.0,
         word_spacing: 0.25,
         char_spacing: 0.0,
@@ -761,6 +1069,10 @@ fn test_character_spacing_tc_parameter() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'H'
             CharacterInfo {
                 code: 0x65,
@@ -769,6 +1081,10 @@ fn test_character_spacing_tc_parameter() {
                 x_position: 6.5,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'e'
             CharacterInfo {
                 code: 0x6C,
@@ -777,6 +1093,10 @@ fn test_character_spacing_tc_parameter() {
                 x_position: 11.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'l'
             CharacterInfo {
                 code: 0x6C,
@@ -785,6 +1105,10 @@ fn test_character_spacing_tc_parameter() {
                 x_position: 16.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'l'
             CharacterInfo {
                 code: 0x6F,
@@ -793,9 +1117,17 @@ fn test_character_spacing_tc_parameter() {
                 x_position: 21.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'o'
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.25,
         char_spacing: 0.5, // Extra spacing between ALL characters
@@ -819,6 +1151,10 @@ fn test_word_spacing_tw_parameter() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'T'
             CharacterInfo {
                 code: 0x68,
@@ -827,6 +1163,10 @@ fn test_word_spacing_tw_parameter() {
                 x_position: 6.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'h'
             CharacterInfo {
                 code: 0x65,
@@ -835,6 +1175,10 @@ fn test_word_spacing_tw_parameter() {
                 x_position: 10.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'e'
             CharacterInfo {
                 code: 0x20,
@@ -843,6 +1187,10 @@ fn test_word_spacing_tw_parameter() {
                 x_position: 15.6,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // SPACE
             CharacterInfo {
                 code: 0x63,
@@ -851,6 +1199,10 @@ fn test_word_spacing_tw_parameter() {
                 x_position: 22.1,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'c'
             CharacterInfo {
                 code: 0x61,
@@ -859,6 +1211,10 @@ fn test_word_spacing_tw_parameter() {
                 x_position: 26.7,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'a'
             CharacterInfo {
                 code: 0x74,
@@ -867,9 +1223,17 @@ fn test_word_spacing_tw_parameter() {
                 x_position: 31.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 't'
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.5, // Extra space after space character
         char_spacing: 0.0,
@@ -894,6 +1258,10 @@ fn test_ligature_handling() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'A'
             CharacterInfo {
                 code: 0xFB01,
@@ -902,6 +1270,10 @@ fn test_ligature_handling() {
                 x_position: 6.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // LATIN SMALL LIGATURE FI (U+FB01)
             CharacterInfo {
                 code: 0x6E,
@@ -910,9 +1282,17 @@ fn test_ligature_handling() {
                 x_position: 13.2,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'n'
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.25,
         char_spacing: 0.0,
@@ -936,6 +1316,10 @@ fn test_combining_characters_diacritics() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'e'
             CharacterInfo {
                 code: 0x0301,
@@ -944,6 +1328,10 @@ fn test_combining_characters_diacritics() {
                 x_position: 4.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // COMBINING ACUTE ACCENT
             CharacterInfo {
                 code: 0x74,
@@ -952,9 +1340,17 @@ fn test_combining_characters_diacritics() {
                 x_position: 8.4,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 't'
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.25,
         char_spacing: 0.0,
@@ -978,6 +1374,10 @@ fn test_zero_width_space_boundary() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'n'
             CharacterInfo {
                 code: 0x6F,
@@ -986,6 +1386,10 @@ fn test_zero_width_space_boundary() {
                 x_position: 4.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'o'
             CharacterInfo {
                 code: 0x200B,
@@ -994,6 +1398,10 @@ fn test_zero_width_space_boundary() {
                 tj_offset: None,
                 x_position: 9.6,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // ZERO WIDTH SPACE
             CharacterInfo {
                 code: 0x72,
@@ -1002,6 +1410,10 @@ fn test_zero_width_space_boundary() {
                 x_position: 9.6,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'r'
             CharacterInfo {
                 code: 0x62,
@@ -1010,9 +1422,17 @@ fn test_zero_width_space_boundary() {
                 x_position: 13.2,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'b'
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.25,
         char_spacing: 0.0,
@@ -1061,6 +1481,10 @@ fn test_mixed_scripts_word_boundary() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'T'
             CharacterInfo {
                 code: 0x65,
@@ -1069,6 +1493,10 @@ fn test_mixed_scripts_word_boundary() {
                 x_position: 6.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'e'
             CharacterInfo {
                 code: 0x78,
@@ -1077,6 +1505,10 @@ fn test_mixed_scripts_word_boundary() {
                 x_position: 10.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'x'
             CharacterInfo {
                 code: 0x74,
@@ -1085,6 +1517,10 @@ fn test_mixed_scripts_word_boundary() {
                 x_position: 15.6,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 't'
             CharacterInfo {
                 code: 0x20,
@@ -1093,6 +1529,10 @@ fn test_mixed_scripts_word_boundary() {
                 x_position: 19.2,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // SPACE
             CharacterInfo {
                 code: 0x4E2D,
@@ -1101,6 +1541,10 @@ fn test_mixed_scripts_word_boundary() {
                 x_position: 25.2,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // CJK
             CharacterInfo {
                 code: 0x6587,
@@ -1109,9 +1553,17 @@ fn test_mixed_scripts_word_boundary() {
                 x_position: 37.2,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // CJK
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.25,
         char_spacing: 0.0,
@@ -1135,6 +1587,10 @@ fn test_word_boundary_with_numbers() {
                 x_position: 0.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 't'
             CharacterInfo {
                 code: 0x65,
@@ -1143,6 +1599,10 @@ fn test_word_boundary_with_numbers() {
                 x_position: 3.6,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 'e'
             CharacterInfo {
                 code: 0x73,
@@ -1151,6 +1611,10 @@ fn test_word_boundary_with_numbers() {
                 x_position: 8.4,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 's'
             CharacterInfo {
                 code: 0x74,
@@ -1159,6 +1623,10 @@ fn test_word_boundary_with_numbers() {
                 x_position: 12.0,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // 't'
             CharacterInfo {
                 code: 0x31,
@@ -1167,6 +1635,10 @@ fn test_word_boundary_with_numbers() {
                 x_position: 15.6,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // '1'
             CharacterInfo {
                 code: 0x32,
@@ -1175,6 +1647,10 @@ fn test_word_boundary_with_numbers() {
                 x_position: 19.2,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // '2'
             CharacterInfo {
                 code: 0x33,
@@ -1183,9 +1659,17 @@ fn test_word_boundary_with_numbers() {
                 x_position: 22.8,
                 tj_offset: None,
                 font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
             }, // '3'
         ],
         font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.25,
         char_spacing: 0.0,

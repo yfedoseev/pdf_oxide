@@ -408,7 +408,7 @@ fn test_paragraph_integrity() {
                 char_spacing: 0.0,
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
-            primary_detected: false,
+                primary_detected: false,
             };
             all_spans.push(span);
             sequence += 1;

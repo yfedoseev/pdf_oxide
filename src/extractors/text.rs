@@ -1119,6 +1119,8 @@ fn build_boundary_characters(
                 None
             },
             font_size,
+            is_ligature: false, // Not relevant for tiebreaker mode
+            original_ligature: None,
         },
         CharacterInfo {
             code: next_first_char as u32,
@@ -1127,6 +1129,8 @@ fn build_boundary_characters(
             x_position: next_bbox.x,
             tj_offset: None,
             font_size,
+            is_ligature: false, // Not relevant for tiebreaker mode
+            original_ligature: None,
         },
     ];
 
@@ -4036,12 +4040,8 @@ impl TextExtractor {
     /// - process_tj_array_primary(): WordBoundaryMode::Primary (Phase 9.2.C+)
     fn process_tj_array(&mut self, array: &[TextElement]) -> Result<()> {
         match self.word_boundary_mode {
-            WordBoundaryMode::Tiebreaker => {
-                self.process_tj_array_tiebreaker(array)
-            },
-            WordBoundaryMode::Primary => {
-                self.process_tj_array_primary(array)
-            },
+            WordBoundaryMode::Tiebreaker => self.process_tj_array_tiebreaker(array),
+            WordBoundaryMode::Primary => self.process_tj_array_primary(array),
         }
     }
 
@@ -4093,6 +4093,9 @@ impl TextExtractor {
                                 let char_code = byte as u32;
                                 let glyph_width = font.get_glyph_width(byte as u16);
 
+                                // Week 2 Day 6: Check if this is a ligature character (U+FB00-U+FB04)
+                                let is_ligature = Self::is_ligature_code(char_code);
+
                                 // Create CharacterInfo for this character
                                 // The tj_offset will be applied when we encounter the next Offset element
                                 let char_info = CharacterInfo {
@@ -4102,6 +4105,8 @@ impl TextExtractor {
                                     x_position: self.current_x_position,
                                     tj_offset: None, // Will be set if next element is Offset
                                     font_size,
+                                    is_ligature,
+                                    original_ligature: None,
                                 };
 
                                 self.tj_character_array.push(char_info);
@@ -4247,9 +4252,10 @@ impl TextExtractor {
     /// Per Phase 9.2.C, this implementation:
     /// 1. Creates BoundaryContext from graphics state
     /// 2. Calls WordBoundaryDetector to detect boundaries in tj_character_array
-    /// 3. Partitions characters into clusters at boundary positions
-    /// 4. Converts each cluster to a TextSpan with proper bounding boxes
-    /// 5. Marks spans with primary_detected flag
+    /// 3. Week 2 Day 6 (2A): Apply ligature expansion decisions
+    /// 4. Partitions characters into clusters at boundary positions
+    /// 5. Converts each cluster to a TextSpan with proper bounding boxes
+    /// 6. Marks spans with primary_detected flag
     fn process_tj_array_primary(&mut self, array: &[TextElement]) -> Result<()> {
         // Phase 9.2.C: Primary detection mode implementation
 
@@ -4271,8 +4277,13 @@ impl TextExtractor {
             return self.process_tj_array_tiebreaker(array);
         }
 
+        // Step 3.5 (Week 2 Day 6 - 2A): Apply ligature expansion decisions
+        // This intelligently splits ligatures at word boundaries
+        self.apply_ligature_decisions()?;
+
         // Step 5: Partition characters into clusters at boundary positions
-        let clusters = self.partition_characters_by_boundaries(&self.tj_character_array, boundaries);
+        let clusters =
+            self.partition_characters_by_boundaries(&self.tj_character_array, boundaries);
 
         // Step 6: Convert each cluster to a TextSpan
         for cluster in clusters {
@@ -4410,7 +4421,10 @@ impl TextExtractor {
         let span = TextSpan {
             text: unicode_text,
             bbox,
-            font_name: state.font_name.clone().unwrap_or_else(|| "Unknown".to_string()),
+            font_name: state
+                .font_name
+                .clone()
+                .unwrap_or_else(|| "Unknown".to_string()),
             font_size: cluster[0].font_size,
             font_weight,
             color: Color::new(
@@ -4426,12 +4440,119 @@ impl TextExtractor {
             word_spacing: state.word_space,
             horizontal_scaling: state.horizontal_scaling,
             is_italic,
-            primary_detected: true,  // Mark as created by primary detector
+            primary_detected: true, // Mark as created by primary detector
         };
 
         // Step 6: Increment sequence counter and add to spans
         self.span_sequence_counter += 1;
         self.spans.push(span);
+
+        Ok(())
+    }
+
+    /// Check if a character code is a ligature (U+FB00-U+FB04).
+    ///
+    /// Week 2 Day 6: Ligature Expansion Enhancement (2A)
+    ///
+    /// Standard ligatures supported:
+    /// - U+FB00: ff (LATIN SMALL LIGATURE FF)
+    /// - U+FB01: fi (LATIN SMALL LIGATURE FI)
+    /// - U+FB02: fl (LATIN SMALL LIGATURE FL)
+    /// - U+FB03: ffi (LATIN SMALL LIGATURE FFI)
+    /// - U+FB04: ffl (LATIN SMALL LIGATURE FFL)
+    fn is_ligature_code(code: u32) -> bool {
+        matches!(code, 0xFB00..=0xFB04)
+    }
+
+    /// Apply ligature expansion decisions after word boundary detection.
+    ///
+    /// Week 2 Day 6: Ligature Expansion Enhancement (2A)
+    ///
+    /// This method processes the character array after boundary detection,
+    /// making intelligent decisions about whether to split ligatures.
+    ///
+    /// Algorithm:
+    /// 1. Iterate through character array
+    /// 2. For each ligature character:
+    ///    - Get next character (if exists)
+    ///    - Call LigatureDecisionMaker::decide()
+    ///    - If Split: expand to component characters with proportional widths
+    ///    - If Keep: leave as-is
+    /// 3. Recalculate x_positions for all following characters after splits
+    fn apply_ligature_decisions(&mut self) -> Result<()> {
+        use crate::text::ligature_processor::{
+            LigatureDecision, LigatureDecisionMaker, expand_ligature_to_chars,
+        };
+
+        let context = self.create_boundary_context();
+        let mut i = 0;
+
+        while i < self.tj_character_array.len() {
+            // Clone the values we need to avoid borrow checker issues
+            let is_ligature = self.tj_character_array[i].is_ligature;
+
+            // Check if this is a ligature
+            if !is_ligature {
+                i += 1;
+                continue;
+            }
+
+            // Clone char_info and next_char to avoid holding immutable references
+            let char_info = self.tj_character_array[i].clone();
+            let next_char = if i + 1 < self.tj_character_array.len() {
+                Some(self.tj_character_array[i + 1].clone())
+            } else {
+                None
+            };
+
+            // Make decision
+            let decision = LigatureDecisionMaker::decide(&char_info, &context, next_char.as_ref());
+
+            if decision == LigatureDecision::Split {
+                // Get the ligature character from code
+                let ligature_char = char::from_u32(char_info.code).unwrap_or('?');
+                let original_width = char_info.width;
+                let original_x = char_info.x_position;
+                let font_size = char_info.font_size;
+
+                // Expand to component characters
+                let components = expand_ligature_to_chars(ligature_char, original_width);
+
+                if !components.is_empty() {
+                    // Replace ligature with first component
+                    let mut x_offset = 0.0;
+                    self.tj_character_array[i].code = components[0].0 as u32;
+                    self.tj_character_array[i].width = components[0].1;
+                    self.tj_character_array[i].is_ligature = false;
+                    self.tj_character_array[i].original_ligature = Some(ligature_char);
+                    x_offset += components[0].1;
+
+                    // Insert remaining components
+                    for (comp_char, comp_width) in components.iter().skip(1) {
+                        let new_char_info = CharacterInfo {
+                            code: *comp_char as u32,
+                            glyph_id: None,
+                            width: *comp_width,
+                            x_position: original_x + x_offset,
+                            tj_offset: None,
+                            font_size,
+                            is_ligature: false,
+                            original_ligature: Some(ligature_char),
+                        };
+                        self.tj_character_array.insert(i + 1, new_char_info);
+                        x_offset += comp_width;
+                        i += 1; // Skip over inserted character
+                    }
+
+                    // Recalculate x_positions for all following characters
+                    // Width change is 0 (original_width == sum of component widths by design)
+                    // But positions need updating if we changed the layout
+                    // Actually, width is distributed proportionally, so no position shift needed
+                }
+            }
+
+            i += 1;
+        }
 
         Ok(())
     }

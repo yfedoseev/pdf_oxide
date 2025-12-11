@@ -19,6 +19,10 @@ fn test_verdate_sep_word_boundary_detection() {
     let detector = WordBoundaryDetector::new();
     let context = BoundaryContext {
         font_size: 12.0,
+        is_ligature: false,
+        original_ligature: None,
+        is_ligature: false,
+        original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.0,
         char_spacing: 0.0,
@@ -35,6 +39,10 @@ fn test_verdate_sep_word_boundary_detection() {
             x_position: 42.0,
             tj_offset: Some(-600), // Large negative offset = word boundary
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
         // 'S' (start of "Sep") - gap indicates word boundary
         CharacterInfo {
@@ -44,6 +52,10 @@ fn test_verdate_sep_word_boundary_detection() {
             x_position: 55.0, // Gap of 13 units (55 - 42) > threshold
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
     ];
 
@@ -75,6 +87,10 @@ fn test_no_false_boundary_in_kerning_pairs() {
             x_position: 0.0,
             tj_offset: Some(-40), // Small negative offset = kerning only
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
         CharacterInfo {
             code: 'V' as u32,
@@ -83,6 +99,10 @@ fn test_no_false_boundary_in_kerning_pairs() {
             x_position: 7.5, // Positioned slightly closer due to kerning
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
     ];
 
@@ -113,6 +133,10 @@ fn test_geometric_gap_creates_boundary() {
             x_position: 0.0,
             tj_offset: None, // No TJ offset signal
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
         CharacterInfo {
             code: 'B' as u32,
@@ -121,6 +145,10 @@ fn test_geometric_gap_creates_boundary() {
             x_position: 20.0, // Gap of 12 units (20 - 8) > 6pt threshold
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
     ];
 
@@ -150,6 +178,10 @@ fn test_cjk_character_word_boundaries() {
             x_position: 0.0,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
         CharacterInfo {
             code: 0x6587, // 文
@@ -158,6 +190,10 @@ fn test_cjk_character_word_boundaries() {
             x_position: 12.0,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
         CharacterInfo {
             code: 0x5B57, // 字
@@ -166,6 +202,10 @@ fn test_cjk_character_word_boundaries() {
             x_position: 24.0,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
     ];
 
@@ -200,6 +240,10 @@ fn test_explicit_space_creates_boundary() {
             x_position: 0.0,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
         CharacterInfo {
             code: 'i' as u32,
@@ -208,6 +252,10 @@ fn test_explicit_space_creates_boundary() {
             x_position: 8.0,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
         CharacterInfo {
             code: ' ' as u32, // Space character
@@ -216,6 +264,10 @@ fn test_explicit_space_creates_boundary() {
             x_position: 12.0,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
         CharacterInfo {
             code: 'W' as u32,
@@ -224,6 +276,10 @@ fn test_explicit_space_creates_boundary() {
             x_position: 16.0,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
     ];
 
@@ -252,6 +308,10 @@ fn test_zero_width_space_creates_boundary() {
             x_position: 0.0,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
         CharacterInfo {
             code: 0x200B, // Zero-width space
@@ -260,6 +320,10 @@ fn test_zero_width_space_creates_boundary() {
             x_position: 6.0,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
         CharacterInfo {
             code: 'b' as u32,
@@ -268,6 +332,10 @@ fn test_zero_width_space_creates_boundary() {
             x_position: 6.0, // Same position due to zero width
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
     ];
 
@@ -299,6 +367,10 @@ fn test_horizontal_scaling_affects_threshold() {
             x_position: 0.0,
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
         CharacterInfo {
             code: 'B' as u32,
@@ -307,12 +379,20 @@ fn test_horizontal_scaling_affects_threshold() {
             x_position: 8.0, // Gap of 7.5 units
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
     ];
 
     // At 100% scaling, gap (7.5) < threshold (9.6)
     let context_100 = BoundaryContext {
         font_size: 12.0,
+        is_ligature: false,
+        original_ligature: None,
+        is_ligature: false,
+        original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.0,
         char_spacing: 0.0,
@@ -322,6 +402,10 @@ fn test_horizontal_scaling_affects_threshold() {
     // At 75% scaling, gap (7.5) > threshold (7.2)
     let context_75 = BoundaryContext {
         font_size: 12.0,
+        is_ligature: false,
+        original_ligature: None,
+        is_ligature: false,
+        original_ligature: None,
         horizontal_scaling: 75.0,
         word_spacing: 0.0,
         char_spacing: 0.0,
@@ -355,6 +439,10 @@ fn test_multiple_signals_agreeing() {
             x_position: 0.0,
             tj_offset: Some(-200), // TJ offset signal
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
         CharacterInfo {
             code: 'B' as u32,
@@ -363,6 +451,10 @@ fn test_multiple_signals_agreeing() {
             x_position: 20.0, // Geometric gap signal (20 - 8 = 12 > 6)
             tj_offset: None,
             font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            is_ligature: false,
+            original_ligature: None,
         },
     ];
 
@@ -401,6 +493,10 @@ fn test_single_character_returns_empty() {
         x_position: 0.0,
         tj_offset: None,
         font_size: 12.0,
+        is_ligature: false,
+        original_ligature: None,
+        is_ligature: false,
+        original_ligature: None,
     }];
 
     let boundaries = detector.detect_word_boundaries(&characters, &context);
