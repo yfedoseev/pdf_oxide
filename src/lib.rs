@@ -127,6 +127,12 @@ pub mod structure;
 // Converters (Phase 6)
 pub mod converters;
 
+// Pipeline architecture (internal module for reading order strategies)
+mod pipeline;
+
+// Re-export specific types from pipeline for use by converters
+pub use pipeline::XYCutStrategy;
+
 // Configuration
 pub mod config;
 

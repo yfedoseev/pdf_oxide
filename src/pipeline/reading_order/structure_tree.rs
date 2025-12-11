@@ -118,11 +118,15 @@ mod tests {
             font_name: "Test".to_string(),
             font_size: 12.0,
             font_weight: FontWeight::Normal,
+            is_italic: false,
             color: Color::black(),
             mcid,
             sequence: 0,
             offset_semantic: false,
             split_boundary_before: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         }
     }
 

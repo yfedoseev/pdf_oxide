@@ -32,8 +32,9 @@
 //! 4. **Unified Configuration**: All settings in TextPipelineConfig.
 
 pub mod config;
-pub mod converters;
-pub mod input_parsers;
+// Note: converters and input_parsers are incomplete (depend on unimplemented `elements` module)
+// pub mod converters;
+// pub mod input_parsers;
 pub mod ordered_span;
 pub mod reading_order;
 
@@ -42,15 +43,9 @@ pub use config::{
     BoldMarkerBehavior, OutputConfig, ReadingOrderConfig, ReadingOrderStrategyType, SpacingConfig,
     TextPipelineConfig, TjThresholdConfig,
 };
-pub use converters::{
-    HtmlOutputConverter, MarkdownOutputConverter, OutputConverter, PlainTextConverter,
-    create_converter,
-};
-pub use input_parsers::{
-    HtmlParser, InputParser, InputParserConfig, MarkdownParser, PlainTextParser, create_parser,
-};
+// Note: converters and input_parsers disabled (depend on unimplemented `elements` module)
 pub use ordered_span::{OrderedSpans, OrderedTextSpan};
-pub use reading_order::{ReadingOrderContext, ReadingOrderStrategy};
+pub use reading_order::{ReadingOrderContext, ReadingOrderStrategy, XYCutStrategy};
 
 use crate::error::Result;
 use crate::layout::TextSpan;

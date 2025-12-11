@@ -78,7 +78,9 @@ impl XYCutStrategy {
     }
 
     /// Core recursive partitioning algorithm.
-    fn partition_region(&self, spans: &[TextSpan]) -> Vec<Vec<TextSpan>> {
+    ///
+    /// Public for use by MarkdownConverter's ColumnAware reading order mode.
+    pub fn partition_region(&self, spans: &[TextSpan]) -> Vec<Vec<TextSpan>> {
         if spans.is_empty() {
             return Vec::new();
         }
@@ -384,6 +386,7 @@ mod tests {
             font_size: 12.0,
             font_name: "Arial".to_string(),
             font_weight: FontWeight::Normal,
+            is_italic: false,
             color: Color {
                 r: 0.0,
                 g: 0.0,
@@ -393,6 +396,9 @@ mod tests {
             sequence: 0,
             split_boundary_before: false,
             offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
         }
     }
 

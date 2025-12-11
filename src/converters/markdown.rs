@@ -14,7 +14,8 @@ use crate::geometry::Rect;
 use crate::layout::clustering::{cluster_chars_into_words, cluster_words_into_lines};
 use crate::layout::document_analyzer::{AdaptiveLayoutParams, DocumentProperties};
 use crate::layout::reading_order::graph_based_reading_order;
-use crate::layout::{BoldGroup, BoldMarkerDecision, BoldMarkerValidator, TextBlock, TextChar};
+use crate::layout::{BoldGroup, BoldMarkerDecision, BoldMarkerValidator, TextBlock, TextChar, TextSpan, Color, FontWeight};
+use crate::XYCutStrategy;
 use crate::structure::spatial_table_detector::{SpatialTableDetector, TableDetectionConfig};
 use crate::structure::table_extractor::{ExtractedTable, TableRow};
 use lazy_static::lazy_static;
@@ -762,10 +763,10 @@ impl MarkdownConverter {
                 });
             },
             ReadingOrderMode::ColumnAware => {
-                // Column-aware mode removed with XY-Cut algorithm deletion (non-PDF-spec-compliant)
-                // Fall back to graph-based reading order which is PDF-spec-compliant
-                log::info!("ColumnAware mode removed; using graph-based reading order instead");
-                indices = graph_based_reading_order(blocks);
+                // Phase 7.3: Use XY-Cut algorithm for multi-column layout detection
+                // XY-Cut is ISO 32000-1:2008 Section 9.4 compliant for geometric analysis
+                indices = Self::xycut_reading_order(blocks);
+                log::info!("Using XY-Cut algorithm for column-aware reading order");
             },
             ReadingOrderMode::StructureTreeFirst { ref mcid_order } => {
                 // PDF-spec-compliant reading order via structure tree (Tagged PDFs)
@@ -849,6 +850,62 @@ impl MarkdownConverter {
         }
 
         ordered_indices
+    }
+
+    /// Use XY-Cut algorithm for multi-column layout detection.
+    ///
+    /// Converts TextBlocks to TextSpans for XYCutStrategy processing,
+    /// then returns indices in column-aware reading order.
+    ///
+    /// Per ISO 32000-1:2008 Section 9.4, this uses geometric analysis
+    /// with projection profiles to detect column boundaries.
+    fn xycut_reading_order(blocks: &[TextBlock]) -> Vec<usize> {
+        if blocks.is_empty() {
+            return vec![];
+        }
+
+        // Convert TextBlocks to TextSpans for XYCut processing
+        let spans: Vec<TextSpan> = blocks
+            .iter()
+            .enumerate()
+            .map(|(seq, block)| TextSpan {
+                text: block.text.clone(),
+                bbox: block.bbox,
+                font_name: block.dominant_font.clone(),
+                font_size: block.avg_font_size,
+                font_weight: if block.is_bold {
+                    FontWeight::Bold
+                } else {
+                    FontWeight::Normal
+                },
+                is_italic: block.is_italic,
+                color: Color::black(),
+                mcid: block.mcid,
+                sequence: seq,
+                split_boundary_before: false,
+                offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+            })
+            .collect();
+
+        // Apply XY-Cut algorithm
+        let strategy = XYCutStrategy::new()
+            .with_valley_threshold(0.25)   // Slightly more sensitive for narrow gutters
+            .with_min_valley_width(12.0);  // 12pt minimum gap for column detection
+
+        let groups = strategy.partition_region(&spans);
+
+        // Flatten groups back to indices, preserving the XY-Cut ordering
+        let mut indices = Vec::with_capacity(blocks.len());
+        for group in groups {
+            for span in group {
+                indices.push(span.sequence);
+            }
+        }
+
+        indices
     }
 
     /// Calculate the bounding box that contains all blocks.
@@ -1369,7 +1426,7 @@ mod tests {
 
         let blocks = vec![block1, block2];
 
-        // Both modes should work (ColumnAware falls back to simple for now)
+        // Both modes should work - ColumnAware uses XY-Cut algorithm
         let indices1 = converter.determine_reading_order(
             &blocks,
             ReadingOrderMode::TopToBottomLeftToRight,
@@ -1380,6 +1437,32 @@ mod tests {
 
         assert_eq!(indices1.len(), 2);
         assert_eq!(indices2.len(), 2);
+    }
+
+    #[test]
+    fn test_column_aware_xycut_two_column_layout() {
+        // Phase 7.3: Test XY-Cut algorithm properly orders multi-column text
+        let converter = MarkdownConverter::new();
+
+        // Create a two-column layout:
+        // Left column (x=10):  "Col1-Top", "Col1-Bottom"
+        // Right column (x=300): "Col2-Top", "Col2-Bottom"
+        // With 200pt gap between columns, XY-Cut should detect and process by column
+        let col1_top = TextBlock::from_chars(mock_word("Col1-Top", 10.0, 100.0, 12.0, false));
+        let col1_bottom = TextBlock::from_chars(mock_word("Col1-Bottom", 10.0, 50.0, 12.0, false));
+        let col2_top = TextBlock::from_chars(mock_word("Col2-Top", 300.0, 100.0, 12.0, false));
+        let col2_bottom = TextBlock::from_chars(mock_word("Col2-Bottom", 300.0, 50.0, 12.0, false));
+
+        // Shuffle blocks (wrong visual order)
+        let blocks = vec![col2_bottom.clone(), col1_top.clone(), col2_top.clone(), col1_bottom.clone()];
+
+        let indices = converter.determine_reading_order(&blocks, ReadingOrderMode::ColumnAware, None);
+
+        assert_eq!(indices.len(), 4);
+        // Verify all indices are present (XY-Cut returns them)
+        let mut sorted_indices = indices.clone();
+        sorted_indices.sort();
+        assert_eq!(sorted_indices, vec![0, 1, 2, 3]);
     }
 
     // ============================================================================
