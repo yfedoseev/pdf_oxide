@@ -1629,6 +1629,18 @@ pub struct TextExtractor {
     /// statistical distribution analysis (coefficient of variation).
     /// Used to dynamically adjust spacing thresholds per ISO 32000-1:2008 Section 9.4.4.
     tj_offset_history: Vec<f32>,
+    /// Character-level tracking for word boundary detection (Phase 9)
+    ///
+    /// Collects CharacterInfo for each character during TJ array processing.
+    /// This provides character-level positioning, width, and TJ offset data
+    /// to WordBoundaryDetector for primary word boundary detection.
+    /// Per ISO 32000-1:2008 Section 9.4.4, character-level analysis improves accuracy.
+    tj_character_array: Vec<CharacterInfo>,
+    /// Current X position in text space for character tracking
+    ///
+    /// Updated as each character in a TJ array is processed. Used to calculate
+    /// x_position for CharacterInfo entries (not used after character collection).
+    current_x_position: f32,
 }
 
 impl TextExtractor {
@@ -1678,6 +1690,8 @@ impl TextExtractor {
             marked_content_stack: Vec::new(), // Track marked content contexts
             inside_artifact: false,   // Track artifact state
             tj_offset_history: Vec::with_capacity(1000), // Phase 4: Track TJ offsets for statistical analysis
+            tj_character_array: Vec::new(), // Phase 9: Character tracking for word boundaries
+            current_x_position: 0.0,        // Phase 9: Start at origin
         }
     }
 
@@ -4002,7 +4016,19 @@ impl TextExtractor {
     /// - Large negative offsets (indicating word boundaries)
     /// - End of TJ array
     fn process_tj_array(&mut self, array: &[TextElement]) -> Result<()> {
-        // DEBUG: Log TJ array details
+        // Phase 9: Character-level tracking for word boundary detection
+        // Collect detailed character information during TJ array processing
+        // Per ISO 32000-1:2008 Section 9.4.4, character-level data improves accuracy
+
+        self.tj_character_array.clear();
+        self.current_x_position = 0.0;
+
+        // Copy state data to avoid holding reference while borrowing self mutably
+        let font_size = self.state_stack.current().font_size;
+        let horizontal_scaling = self.state_stack.current().horizontal_scaling / 100.0;
+        let font_name = self.state_stack.current().font_name.clone();
+        let char_space = self.state_stack.current().char_space;
+        let word_space = self.state_stack.current().word_space;
 
         let mut buffer = TjBuffer::new(self.state_stack.current(), self.current_mcid);
         let mut _element_count = 0;
@@ -4011,6 +4037,40 @@ impl TextExtractor {
             _element_count += 1;
             match element {
                 TextElement::String(s) => {
+                    // Phase 9: First, collect character-level data before processing buffer
+                    // Extract individual characters with their properties
+                    if let Some(ref name) = font_name {
+                        if let Some(font) = self.fonts.get(name) {
+                            // Process each byte in the string
+                            for &byte in s.iter() {
+                                // Get character code and Unicode mapping
+                                let char_code = byte as u32;
+                                let glyph_width = font.get_glyph_width(byte as u16);
+
+                                // Create CharacterInfo for this character
+                                // The tj_offset will be applied when we encounter the next Offset element
+                                let char_info = CharacterInfo {
+                                    code: char_code,
+                                    glyph_id: None, // Could be enhanced to extract actual GID
+                                    width: glyph_width,
+                                    x_position: self.current_x_position,
+                                    tj_offset: None, // Will be set if next element is Offset
+                                    font_size,
+                                };
+
+                                self.tj_character_array.push(char_info);
+
+                                // Update current X position (in text space units)
+                                // Per PDF Spec: account for character spacing and scaling
+                                let char_advance = glyph_width * horizontal_scaling
+                                    + char_space
+                                    + (if byte == 0x20 { word_space } else { 0.0 });
+                                self.current_x_position += char_advance;
+                            }
+                        }
+                    }
+
+                    // Now process buffer as before for span generation
                     // FIX: Detect and skip space strings that split words
                     // Per PDF Spec ISO 32000-1:2008, Section 14.8.2.5 NOTE 3:
                     // "The identification of what constitutes a word is unrelated to how
@@ -4024,22 +4084,21 @@ impl TextExtractor {
                     // letter (indicating we're mid-word).
 
                     // First, check if this is a space/whitespace-only string
-                    let unicode_text =
-                        if let Some(font_name) = self.state_stack.current().font_name.as_ref() {
-                            if let Some(font) = self.fonts.get(font_name) {
-                                let mut text = String::new();
-                                for &byte in s.iter() {
-                                    if let Some(chars) = font.char_to_unicode(byte as u32) {
-                                        text.push_str(&chars);
-                                    }
+                    let unicode_text = if let Some(ref name) = font_name {
+                        if let Some(font) = self.fonts.get(name) {
+                            let mut text = String::new();
+                            for &byte in s.iter() {
+                                if let Some(chars) = font.char_to_unicode(byte as u32) {
+                                    text.push_str(&chars);
                                 }
-                                text
-                            } else {
-                                String::new()
                             }
+                            text
                         } else {
                             String::new()
-                        };
+                        }
+                    } else {
+                        String::new()
+                    };
 
                     // Check if this is a whitespace-only string
                     if !unicode_text.is_empty() && unicode_text.trim().is_empty() {
@@ -4070,6 +4129,13 @@ impl TextExtractor {
                     if self.tj_offset_history.len() < 10000 {
                         // Keep history reasonable size (first 10k offsets per document)
                         self.tj_offset_history.push(*offset);
+                    }
+
+                    // Phase 9: Associate TJ offset with the last character
+                    // The offset applies AFTER the previous string, affecting spacing to next string
+                    if !self.tj_character_array.is_empty() {
+                        let last_idx = self.tj_character_array.len() - 1;
+                        self.tj_character_array[last_idx].tj_offset = Some(*offset as i32);
                     }
 
                     // Check if this offset indicates a word boundary
