@@ -69,14 +69,16 @@ impl TextPipelineConfig {
     /// let config = TextPipelineConfig::from_conversion_options(&options);
     /// ```
     pub fn from_conversion_options(opts: &crate::converters::ConversionOptions) -> Self {
-        use crate::converters::ReadingOrderMode;
         use crate::converters::BoldMarkerBehavior as OldBMB;
+        use crate::converters::ReadingOrderMode;
 
         // Map reading order mode to strategy type
         let strategy = match &opts.reading_order_mode {
             ReadingOrderMode::TopToBottomLeftToRight => ReadingOrderStrategyType::Simple,
             ReadingOrderMode::ColumnAware => ReadingOrderStrategyType::XYCut,
-            ReadingOrderMode::StructureTreeFirst { .. } => ReadingOrderStrategyType::StructureTreeFirst,
+            ReadingOrderMode::StructureTreeFirst { .. } => {
+                ReadingOrderStrategyType::StructureTreeFirst
+            },
         };
 
         // Map BoldMarkerBehavior enum (both have same variants)

@@ -7,8 +7,7 @@
 fn test_pipeline_converters_module_accessible() {
     // Verify converters module is public and accessible
     use pdf_oxide::pipeline::converters::{
-        OutputConverter, MarkdownOutputConverter,
-        HtmlOutputConverter, PlainTextConverter
+        HtmlOutputConverter, MarkdownOutputConverter, OutputConverter, PlainTextConverter,
     };
 
     // Just the imports verify that the module structure is correct

@@ -5,8 +5,8 @@
 use crate::error::Result;
 use crate::layout::FontWeight;
 use crate::pipeline::{OrderedTextSpan, TextPipelineConfig};
-use regex::Regex;
 use lazy_static::lazy_static;
+use regex::Regex;
 
 use super::OutputConverter;
 
@@ -109,9 +109,7 @@ impl MarkdownOutputConverter {
     /// Normalize whitespace in text.
     fn normalize_whitespace(&self, text: &str) -> String {
         // Replace multiple spaces with single space
-        text.split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
     /// Detect paragraph breaks between spans based on vertical spacing.
@@ -197,7 +195,6 @@ impl MarkdownOutputConverter {
             Vec::new()
         }
     }
-
 }
 
 impl Default for MarkdownOutputConverter {

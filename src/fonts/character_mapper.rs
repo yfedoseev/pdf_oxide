@@ -150,8 +150,20 @@ impl CharacterMapper {
     /// Convert a character code to a glyph name using standard mappings.
     ///
     /// For ASCII range (0x20-0x7E), this maps directly to character names.
-    /// For other ranges, this uses predefined mappings or returns None.
+    /// For extended ASCII (0x80-0xFF), uses WinAnsiEncoding fallback.
+    /// For other ranges, returns None.
     fn code_to_glyph_name(&self, code: u32) -> Option<String> {
+        // Try standard ASCII first
+        if code <= 0x7E {
+            return self.code_to_glyph_name_ascii(code);
+        }
+
+        // Try extended ASCII (WinAnsiEncoding) fallback
+        self.code_to_glyph_name_extended(code)
+    }
+
+    /// Map ASCII range (0x20-0x7E) to standard glyph names.
+    fn code_to_glyph_name_ascii(&self, code: u32) -> Option<String> {
         match code {
             // ASCII printable range
             0x20 => Some("space".to_string()),
@@ -215,7 +227,155 @@ impl CharacterMapper {
             0x7D => Some("braceright".to_string()),
             0x7E => Some("asciitilde".to_string()),
 
-            // Extended ASCII and beyond - would need more sophisticated mapping
+            _ => None,
+        }
+    }
+
+    /// Map extended ASCII range (0x80-0xFF) to glyph names using WinAnsiEncoding.
+    ///
+    /// This implements the WinAnsiEncoding (Windows-1252) character mappings
+    /// which are commonly used as a fallback in PDF documents.
+    /// Per PDF Spec ISO 32000-1:2008 Section 9.6.6.1.
+    pub fn code_to_glyph_name_extended(&self, code: u32) -> Option<String> {
+        // WinAnsiEncoding (Windows-1252) mappings for 0x80-0xFF range
+        // Maps character codes to standard glyph names per Adobe Glyph List
+        match code {
+            // 0x80-0x8F: Special WinAnsiEncoding characters
+            0x80 => Some("Euro".to_string()), // € (U+20AC)
+            0x81 => None,                     // Undefined in WinAnsiEncoding
+            0x82 => Some("quotesinglbase".to_string()), // ‚ (U+201A)
+            0x83 => Some("florin".to_string()), // ƒ (U+0192)
+            0x84 => Some("quotedblbase".to_string()), // „ (U+201E)
+            0x85 => Some("ellipsis".to_string()), // … (U+2026)
+            0x86 => Some("dagger".to_string()), // † (U+2020)
+            0x87 => Some("daggerdbl".to_string()), // ‡ (U+2021)
+            0x88 => Some("circumflex".to_string()), // ˆ (U+02C6)
+            0x89 => Some("perthousand".to_string()), // ‰ (U+2030)
+            0x8A => Some("Scaron".to_string()), // Š (U+0160)
+            0x8B => Some("guilsinglleft".to_string()), // ‹ (U+2039)
+            0x8C => Some("OEligature".to_string()), // Œ (U+0152)
+            0x8D => None,                     // Undefined
+            0x8E => Some("Zcaron".to_string()), // Ž (U+017D)
+            0x8F => None,                     // Undefined
+
+            // 0x90-0x9F: More WinAnsiEncoding specials
+            0x90 => None,                               // Undefined
+            0x91 => Some("quoteleft".to_string()),      // ' (U+2018)
+            0x92 => Some("quoteright".to_string()),     // ' (U+2019)
+            0x93 => Some("quotedblleft".to_string()),   // " (U+201C)
+            0x94 => Some("quotedblright".to_string()),  // " (U+201D)
+            0x95 => Some("bullet".to_string()),         // • (U+2022)
+            0x96 => Some("endash".to_string()),         // – (U+2013) - COMMON: en-dash
+            0x97 => Some("emdash".to_string()),         // — (U+2014) - COMMON: em-dash
+            0x98 => Some("tilde".to_string()),          // ˜ (U+02DC)
+            0x99 => Some("trademark".to_string()),      // ™ (U+2122) - COMMON: trademark
+            0x9A => Some("scaron".to_string()),         // š (U+0161)
+            0x9B => Some("guilsinglright".to_string()), // › (U+203A)
+            0x9C => Some("oeligature".to_string()),     // œ (U+0153)
+            0x9D => None,                               // Undefined
+            0x9E => Some("zcaron".to_string()),         // ž (U+017E)
+            0x9F => Some("ydieresis".to_string()),      // Ÿ (U+0178)
+
+            // 0xA0-0xFF: Latin-1 Supplement (ISO-8859-1 compatible)
+            0xA0 => Some("space".to_string()), // Non-breaking space (U+00A0)
+            0xA1 => Some("exclamdown".to_string()), // ¡ (U+00A1)
+            0xA2 => Some("cent".to_string()),  // ¢ (U+00A2)
+            0xA3 => Some("sterling".to_string()), // £ (U+00A3) - COMMON: pound sign
+            0xA4 => Some("currency".to_string()), // ¤ (U+00A4)
+            0xA5 => Some("yen".to_string()),   // ¥ (U+00A5)
+            0xA6 => Some("brokenbar".to_string()), // ¦ (U+00A6)
+            0xA7 => Some("section".to_string()), // § (U+00A7)
+            0xA8 => Some("dieresis".to_string()), // ¨ (U+00A8)
+            0xA9 => Some("copyright".to_string()), // © (U+00A9) - COMMON: copyright
+            0xAA => Some("ordfeminine".to_string()), // ª (U+00AA)
+            0xAB => Some("guillemotleft".to_string()), // « (U+00AB)
+            0xAC => Some("logicalnot".to_string()), // ¬ (U+00AC)
+            0xAD => Some("hyphen".to_string()), // Soft hyphen (U+00AD)
+            0xAE => Some("registered".to_string()), // ® (U+00AE) - COMMON: registered
+            0xAF => Some("macron".to_string()), // ¯ (U+00AF)
+            0xB0 => Some("degree".to_string()), // ° (U+00B0) - COMMON: degree
+            0xB1 => Some("plusminus".to_string()), // ± (U+00B1)
+            0xB2 => Some("twosuperior".to_string()), // ² (U+00B2)
+            0xB3 => Some("threesuperior".to_string()), // ³ (U+00B3)
+            0xB4 => Some("acute".to_string()), // ´ (U+00B4)
+            0xB5 => Some("mu".to_string()),    // µ (U+00B5)
+            0xB6 => Some("paragraph".to_string()), // ¶ (U+00B6)
+            0xB7 => Some("periodcentered".to_string()), // · (U+00B7)
+            0xB8 => Some("cedilla".to_string()), // ¸ (U+00B8)
+            0xB9 => Some("onesuperior".to_string()), // ¹ (U+00B9)
+            0xBA => Some("ordmasculine".to_string()), // º (U+00BA)
+            0xBB => Some("guillemotright".to_string()), // » (U+00BB)
+            0xBC => Some("onequarter".to_string()), // ¼ (U+00BC)
+            0xBD => Some("onehalf".to_string()), // ½ (U+00BD)
+            0xBE => Some("threequarters".to_string()), // ¾ (U+00BE)
+            0xBF => Some("questiondown".to_string()), // ¿ (U+00BF)
+
+            // 0xC0-0xFF: Accented uppercase and lowercase letters
+            0xC0 => Some("Agrave".to_string()),      // À (U+00C0)
+            0xC1 => Some("Aacute".to_string()),      // Á (U+00C1)
+            0xC2 => Some("Acircumflex".to_string()), // Â (U+00C2)
+            0xC3 => Some("Atilde".to_string()),      // Ã (U+00C3)
+            0xC4 => Some("Adieresis".to_string()),   // Ä (U+00C4)
+            0xC5 => Some("Aring".to_string()),       // Å (U+00C5)
+            0xC6 => Some("AEligature".to_string()),  // Æ (U+00C6)
+            0xC7 => Some("Ccedilla".to_string()),    // Ç (U+00C7)
+            0xC8 => Some("Egrave".to_string()),      // È (U+00C8)
+            0xC9 => Some("Eacute".to_string()),      // É (U+00C9)
+            0xCA => Some("Ecircumflex".to_string()), // Ê (U+00CA)
+            0xCB => Some("Edieresis".to_string()),   // Ë (U+00CB)
+            0xCC => Some("Igrave".to_string()),      // Ì (U+00CC)
+            0xCD => Some("Iacute".to_string()),      // Í (U+00CD)
+            0xCE => Some("Icircumflex".to_string()), // Î (U+00CE)
+            0xCF => Some("Idieresis".to_string()),   // Ï (U+00CF)
+            0xD0 => Some("Eth".to_string()),         // Ð (U+00D0)
+            0xD1 => Some("Ntilde".to_string()),      // Ñ (U+00D1)
+            0xD2 => Some("Ograve".to_string()),      // Ò (U+00D2)
+            0xD3 => Some("Oacute".to_string()),      // Ó (U+00D3)
+            0xD4 => Some("Ocircumflex".to_string()), // Ô (U+00D4)
+            0xD5 => Some("Otilde".to_string()),      // Õ (U+00D5)
+            0xD6 => Some("Odieresis".to_string()),   // Ö (U+00D6)
+            0xD7 => Some("multiply".to_string()),    // × (U+00D7)
+            0xD8 => Some("Oslash".to_string()),      // Ø (U+00D8)
+            0xD9 => Some("Ugrave".to_string()),      // Ù (U+00D9)
+            0xDA => Some("Uacute".to_string()),      // Ú (U+00DA)
+            0xDB => Some("Ucircumflex".to_string()), // Û (U+00DB)
+            0xDC => Some("Udieresis".to_string()),   // Ü (U+00DC)
+            0xDD => Some("Yacute".to_string()),      // Ý (U+00DD)
+            0xDE => Some("Thorn".to_string()),       // Þ (U+00DE)
+            0xDF => Some("germandbls".to_string()),  // ß (U+00DF)
+            0xE0 => Some("agrave".to_string()),      // à (U+00E0)
+            0xE1 => Some("aacute".to_string()),      // á (U+00E1)
+            0xE2 => Some("acircumflex".to_string()), // â (U+00E2)
+            0xE3 => Some("atilde".to_string()),      // ã (U+00E3)
+            0xE4 => Some("adieresis".to_string()),   // ä (U+00E4) - COMMON: German a-umlaut
+            0xE5 => Some("aring".to_string()),       // å (U+00E5)
+            0xE6 => Some("aeligature".to_string()),  // æ (U+00E6)
+            0xE7 => Some("ccedilla".to_string()),    // ç (U+00E7) - COMMON: French c-cedilla
+            0xE8 => Some("egrave".to_string()),      // è (U+00E8)
+            0xE9 => Some("eacute".to_string()),      // é (U+00E9) - COMMON: French e-acute
+            0xEA => Some("ecircumflex".to_string()), // ê (U+00EA)
+            0xEB => Some("edieresis".to_string()),   // ë (U+00EB)
+            0xEC => Some("igrave".to_string()),      // ì (U+00EC)
+            0xED => Some("iacute".to_string()),      // í (U+00ED)
+            0xEE => Some("icircumflex".to_string()), // î (U+00EE)
+            0xEF => Some("idieresis".to_string()),   // ï (U+00EF)
+            0xF0 => Some("eth".to_string()),         // ð (U+00F0)
+            0xF1 => Some("ntilde".to_string()),      // ñ (U+00F1)
+            0xF2 => Some("ograve".to_string()),      // ò (U+00F2)
+            0xF3 => Some("oacute".to_string()),      // ó (U+00F3)
+            0xF4 => Some("ocircumflex".to_string()), // ô (U+00F4)
+            0xF5 => Some("otilde".to_string()),      // õ (U+00F5)
+            0xF6 => Some("odieresis".to_string()),   // ö (U+00F6)
+            0xF7 => Some("divide".to_string()),      // ÷ (U+00F7)
+            0xF8 => Some("oslash".to_string()),      // ø (U+00F8)
+            0xF9 => Some("ugrave".to_string()),      // ù (U+00F9)
+            0xFA => Some("uacute".to_string()),      // ú (U+00FA)
+            0xFB => Some("ucircumflex".to_string()), // û (U+00FB)
+            0xFC => Some("udieresis".to_string()),   // ü (U+00FC) - COMMON: German u-umlaut
+            0xFD => Some("yacute".to_string()),      // ý (U+00FD)
+            0xFE => Some("thorn".to_string()),       // þ (U+00FE)
+            0xFF => Some("ydieresis".to_string()),   // ÿ (U+00FF)
+
             _ => None,
         }
     }

@@ -6,7 +6,7 @@
 #[test]
 fn test_conversion_options_to_pipeline_config_basic() {
     use pdf_oxide::converters::{ConversionOptions, ReadingOrderMode};
-    use pdf_oxide::pipeline::config::{TextPipelineConfig, ReadingOrderStrategyType};
+    use pdf_oxide::pipeline::config::{ReadingOrderStrategyType, TextPipelineConfig};
 
     let options = ConversionOptions {
         reading_order_mode: ReadingOrderMode::ColumnAware,
@@ -28,7 +28,7 @@ fn test_conversion_options_to_pipeline_config_basic() {
 #[test]
 fn test_reading_order_mode_mapping_simple() {
     use pdf_oxide::converters::{ConversionOptions, ReadingOrderMode};
-    use pdf_oxide::pipeline::config::{TextPipelineConfig, ReadingOrderStrategyType};
+    use pdf_oxide::pipeline::config::{ReadingOrderStrategyType, TextPipelineConfig};
 
     let options = ConversionOptions {
         reading_order_mode: ReadingOrderMode::TopToBottomLeftToRight,
@@ -44,7 +44,7 @@ fn test_reading_order_mode_mapping_simple() {
 #[test]
 fn test_reading_order_mode_mapping_xycut() {
     use pdf_oxide::converters::{ConversionOptions, ReadingOrderMode};
-    use pdf_oxide::pipeline::config::{TextPipelineConfig, ReadingOrderStrategyType};
+    use pdf_oxide::pipeline::config::{ReadingOrderStrategyType, TextPipelineConfig};
 
     let options = ConversionOptions {
         reading_order_mode: ReadingOrderMode::ColumnAware,
@@ -60,10 +60,12 @@ fn test_reading_order_mode_mapping_xycut() {
 #[test]
 fn test_reading_order_mode_mapping_structure_tree() {
     use pdf_oxide::converters::{ConversionOptions, ReadingOrderMode};
-    use pdf_oxide::pipeline::config::{TextPipelineConfig, ReadingOrderStrategyType};
+    use pdf_oxide::pipeline::config::{ReadingOrderStrategyType, TextPipelineConfig};
 
     let options = ConversionOptions {
-        reading_order_mode: ReadingOrderMode::StructureTreeFirst { mcid_order: vec![0, 1, 2] },
+        reading_order_mode: ReadingOrderMode::StructureTreeFirst {
+            mcid_order: vec![0, 1, 2],
+        },
         ..Default::default()
     };
 
@@ -75,8 +77,10 @@ fn test_reading_order_mode_mapping_structure_tree() {
 
 #[test]
 fn test_config_adapter_all_fields() {
-    use pdf_oxide::converters::{ConversionOptions, ReadingOrderMode, BoldMarkerBehavior as OldBMB};
-    use pdf_oxide::pipeline::config::{TextPipelineConfig, BoldMarkerBehavior};
+    use pdf_oxide::converters::{
+        BoldMarkerBehavior as OldBMB, ConversionOptions, ReadingOrderMode,
+    };
+    use pdf_oxide::pipeline::config::{BoldMarkerBehavior, TextPipelineConfig};
 
     let options = ConversionOptions {
         reading_order_mode: ReadingOrderMode::ColumnAware,
@@ -161,11 +165,17 @@ fn test_config_adapter_defaults() {
 
 #[test]
 fn test_config_adapter_all_options_combined() {
-    use pdf_oxide::converters::{ConversionOptions, ReadingOrderMode, BoldMarkerBehavior as OldBMB};
-    use pdf_oxide::pipeline::config::{TextPipelineConfig, ReadingOrderStrategyType, BoldMarkerBehavior};
+    use pdf_oxide::converters::{
+        BoldMarkerBehavior as OldBMB, ConversionOptions, ReadingOrderMode,
+    };
+    use pdf_oxide::pipeline::config::{
+        BoldMarkerBehavior, ReadingOrderStrategyType, TextPipelineConfig,
+    };
 
     let options = ConversionOptions {
-        reading_order_mode: ReadingOrderMode::StructureTreeFirst { mcid_order: vec![0, 1, 2] },
+        reading_order_mode: ReadingOrderMode::StructureTreeFirst {
+            mcid_order: vec![0, 1, 2],
+        },
         detect_headings: true,
         include_images: false,
         bold_marker_behavior: OldBMB::Conservative,

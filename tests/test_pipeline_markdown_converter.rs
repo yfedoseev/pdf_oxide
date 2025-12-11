@@ -11,9 +11,9 @@
 
 use pdf_oxide::geometry::Rect;
 use pdf_oxide::layout::{Color, FontWeight, TextSpan};
-use pdf_oxide::pipeline::converters::{MarkdownOutputConverter, OutputConverter};
-use pdf_oxide::pipeline::config::{BoldMarkerBehavior, OutputConfig, TextPipelineConfig};
 use pdf_oxide::pipeline::OrderedTextSpan;
+use pdf_oxide::pipeline::config::{BoldMarkerBehavior, OutputConfig, TextPipelineConfig};
+use pdf_oxide::pipeline::converters::{MarkdownOutputConverter, OutputConverter};
 
 /// Helper to create a text span with all necessary fields.
 fn make_span(
@@ -101,7 +101,9 @@ fn test_heading_detection_h2() {
     let converter = MarkdownOutputConverter::new();
     // Include a normal span to establish base font size
     let normal_span = make_span("Normal text", 0.0, 80.0, 12.0, FontWeight::Normal, false);
-    let output = converter.convert(&vec![normal_span, span], &config).unwrap();
+    let output = converter
+        .convert(&vec![normal_span, span], &config)
+        .unwrap();
 
     // Then: Output contains "## " (H2)
     assert!(output.contains("## "), "Output: {}", output);
@@ -125,7 +127,9 @@ fn test_heading_detection_h3() {
     let converter = MarkdownOutputConverter::new();
     // Include a normal span to establish base font size
     let normal_span = make_span("Normal text", 0.0, 80.0, 12.0, FontWeight::Normal, false);
-    let output = converter.convert(&vec![normal_span, span], &config).unwrap();
+    let output = converter
+        .convert(&vec![normal_span, span], &config)
+        .unwrap();
 
     // Then: Output contains "### " (H3)
     assert!(output.contains("### "), "Output: {}", output);
@@ -283,7 +287,9 @@ fn test_table_detection_simple_2x2() {
     };
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![cell_11, cell_12, cell_21, cell_22], &config).unwrap();
+    let output = converter
+        .convert(&vec![cell_11, cell_12, cell_21, cell_22], &config)
+        .unwrap();
 
     // Then: Output contains markdown table syntax
     assert!(output.contains("|"), "Output should contain table separators: {}", output);
@@ -377,7 +383,14 @@ fn test_image_embedding_inline() {
     };
 
     let converter = MarkdownOutputConverter::new();
-    let spans = vec![make_span("text", 0.0, 100.0, 12.0, FontWeight::Normal, false)];
+    let spans = vec![make_span(
+        "text",
+        0.0,
+        100.0,
+        12.0,
+        FontWeight::Normal,
+        false,
+    )];
     let output = converter.convert(&spans, &config).unwrap();
 
     // Then: Output should handle images (basic check)
@@ -417,14 +430,8 @@ fn test_url_linkification() {
 #[test]
 fn test_email_linkification() {
     // Given: Text containing an email address
-    let span = make_span(
-        "Contact us at info@example.com",
-        0.0,
-        100.0,
-        12.0,
-        FontWeight::Normal,
-        false,
-    );
+    let span =
+        make_span("Contact us at info@example.com", 0.0, 100.0, 12.0, FontWeight::Normal, false);
 
     // When: Convert to markdown
     let config = TextPipelineConfig::default();
@@ -443,14 +450,7 @@ fn test_email_linkification() {
 #[test]
 fn test_whitespace_normalization() {
     // Given: Text with multiple consecutive spaces
-    let span = make_span(
-        "Text   with    spaces",
-        0.0,
-        100.0,
-        12.0,
-        FontWeight::Normal,
-        false,
-    );
+    let span = make_span("Text   with    spaces", 0.0, 100.0, 12.0, FontWeight::Normal, false);
 
     // When: Convert to markdown
     let config = TextPipelineConfig::default();
@@ -461,11 +461,7 @@ fn test_whitespace_normalization() {
     // Then: Multiple spaces are normalized to single space
     // Count consecutive spaces - should be max 1
     let has_triple_space = output.contains("   ");
-    assert!(
-        !has_triple_space,
-        "Output should not have triple spaces: {}",
-        output
-    );
+    assert!(!has_triple_space, "Output should not have triple spaces: {}", output);
 }
 
 #[test]
@@ -482,11 +478,7 @@ fn test_line_ending_normalization() {
 
     // Then: Line endings are normalized
     let double_newline_count = output.matches("\n\n").count();
-    assert!(
-        double_newline_count <= 1,
-        "Too many paragraph breaks: {}",
-        output
-    );
+    assert!(double_newline_count <= 1, "Too many paragraph breaks: {}", output);
 }
 
 // ============================================================================
@@ -497,9 +489,12 @@ fn test_line_ending_normalization() {
 fn test_mixed_formatting() {
     // Given: A document with multiple formatting styles (in proper reading order)
     let heading = make_span_with_order("Title", 0.0, 100.0, 24.0, FontWeight::Bold, false, 0);
-    let bold_text = make_span_with_order("Bold paragraph", 0.0, 80.0, 12.0, FontWeight::Bold, false, 1);
-    let italic_text = make_span_with_order("italic text", 20.0, 78.0, 12.0, FontWeight::Normal, true, 2);
-    let normal_text = make_span_with_order("Regular text", 0.0, 60.0, 12.0, FontWeight::Normal, false, 3);
+    let bold_text =
+        make_span_with_order("Bold paragraph", 0.0, 80.0, 12.0, FontWeight::Bold, false, 1);
+    let italic_text =
+        make_span_with_order("italic text", 20.0, 78.0, 12.0, FontWeight::Normal, true, 2);
+    let normal_text =
+        make_span_with_order("Regular text", 0.0, 60.0, 12.0, FontWeight::Normal, false, 3);
 
     // When: Convert with headings enabled
     let config = TextPipelineConfig {
@@ -512,7 +507,8 @@ fn test_mixed_formatting() {
     };
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![heading, bold_text, italic_text, normal_text], &config)
+    let output = converter
+        .convert(&vec![heading, bold_text, italic_text, normal_text], &config)
         .unwrap();
 
     // Then: All formatting is preserved

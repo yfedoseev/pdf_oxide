@@ -7,12 +7,12 @@ use crate::error::{Error, Result};
 use crate::layout::TextSpan;
 use crate::object::{Object, ObjectRef};
 use crate::parser::parse_object;
+use crate::pipeline::{
+    HtmlOutputConverter, MarkdownOutputConverter, PlainTextConverter, ReadingOrderContext,
+    TextPipeline, TextPipelineConfig, converters::OutputConverter,
+};
 use crate::structure::traverse_structure_tree;
 use crate::xref::{CrossRefTable, find_xref_offset, parse_xref};
-use crate::pipeline::{
-    TextPipeline, ReadingOrderContext, MarkdownOutputConverter, HtmlOutputConverter,
-    PlainTextConverter, TextPipelineConfig, converters::OutputConverter,
-};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -2359,25 +2359,26 @@ impl PdfDocument {
                         mcid_order.len(),
                         page_index
                     );
-                }
+                },
                 _ => {
                     // No MCIDs found - that's OK, fallback will happen in strategy
                     log::debug!(
                         "No MCIDs found for page {}, reading order strategy will use geometric fallback",
                         page_index
                     );
-                }
+                },
             }
         } else {
-            log::debug!("No structure tree found, reading order strategy will use geometric fallback");
+            log::debug!(
+                "No structure tree found, reading order strategy will use geometric fallback"
+            );
         }
 
         // Step 4: Create pipeline with config
         let pipeline = TextPipeline::with_config(pipeline_config.clone());
 
         // Step 5: Build reading order context
-        let context = ReadingOrderContext::new()
-            .with_page(page_index as u32);
+        let context = ReadingOrderContext::new().with_page(page_index as u32);
 
         // Step 6: Process through pipeline (applies reading order strategy)
         let ordered_spans = pipeline.process(spans, context)?;
@@ -2534,8 +2535,7 @@ impl PdfDocument {
         let pipeline = TextPipeline::with_config(pipeline_config.clone());
 
         // Step 4: Build reading order context
-        let context = ReadingOrderContext::new()
-            .with_page(page_index as u32);
+        let context = ReadingOrderContext::new().with_page(page_index as u32);
 
         // Step 5: Process through pipeline (applies reading order strategy)
         let ordered_spans = pipeline.process(spans, context)?;
@@ -2593,8 +2593,7 @@ impl PdfDocument {
         let pipeline = TextPipeline::with_config(pipeline_config.clone());
 
         // Step 4: Build reading order context
-        let context = ReadingOrderContext::new()
-            .with_page(page_index as u32);
+        let context = ReadingOrderContext::new().with_page(page_index as u32);
 
         // Step 5: Process through pipeline (applies reading order strategy)
         let ordered_spans = pipeline.process(spans, context)?;

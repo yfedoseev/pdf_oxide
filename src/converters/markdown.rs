@@ -6,6 +6,7 @@
 //! - Image embedding
 //! - Reading order determination
 
+use crate::XYCutStrategy;
 use crate::converters::text_post_processor::TextPostProcessor;
 use crate::converters::whitespace::cleanup_markdown;
 use crate::converters::{BoldMarkerBehavior, ConversionOptions, ReadingOrderMode};
@@ -14,8 +15,10 @@ use crate::geometry::Rect;
 use crate::layout::clustering::{cluster_chars_into_words, cluster_words_into_lines};
 use crate::layout::document_analyzer::{AdaptiveLayoutParams, DocumentProperties};
 use crate::layout::reading_order::graph_based_reading_order;
-use crate::layout::{BoldGroup, BoldMarkerDecision, BoldMarkerValidator, TextBlock, TextChar, TextSpan, Color, FontWeight};
-use crate::XYCutStrategy;
+use crate::layout::{
+    BoldGroup, BoldMarkerDecision, BoldMarkerValidator, Color, FontWeight, TextBlock, TextChar,
+    TextSpan,
+};
 use crate::structure::spatial_table_detector::{SpatialTableDetector, TableDetectionConfig};
 use crate::structure::table_extractor::{ExtractedTable, TableRow};
 use lazy_static::lazy_static;
@@ -899,7 +902,7 @@ impl MarkdownConverter {
         // Apply XY-Cut algorithm
         let strategy = XYCutStrategy::new()
             .with_valley_threshold(0.25)   // Slightly more sensitive for narrow gutters
-            .with_min_valley_width(12.0);  // 12pt minimum gap for column detection
+            .with_min_valley_width(12.0); // 12pt minimum gap for column detection
 
         let groups = strategy.partition_region(&spans);
 
@@ -1460,9 +1463,15 @@ mod tests {
         let col2_bottom = TextBlock::from_chars(mock_word("Col2-Bottom", 300.0, 50.0, 12.0, false));
 
         // Shuffle blocks (wrong visual order)
-        let blocks = vec![col2_bottom.clone(), col1_top.clone(), col2_top.clone(), col1_bottom.clone()];
+        let blocks = vec![
+            col2_bottom.clone(),
+            col1_top.clone(),
+            col2_top.clone(),
+            col1_bottom.clone(),
+        ];
 
-        let indices = converter.determine_reading_order(&blocks, ReadingOrderMode::ColumnAware, None);
+        let indices =
+            converter.determine_reading_order(&blocks, ReadingOrderMode::ColumnAware, None);
 
         assert_eq!(indices.len(), 4);
         // Verify all indices are present (XY-Cut returns them)

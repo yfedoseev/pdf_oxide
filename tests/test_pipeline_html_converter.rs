@@ -11,22 +11,16 @@
 
 use pdf_oxide::geometry::Rect;
 use pdf_oxide::layout::{Color, FontWeight, TextSpan};
-use pdf_oxide::pipeline::{OrderedTextSpan, TextPipelineConfig};
 use pdf_oxide::pipeline::converters::HtmlOutputConverter;
 use pdf_oxide::pipeline::converters::OutputConverter;
+use pdf_oxide::pipeline::{OrderedTextSpan, TextPipelineConfig};
 
 // ============================================================================
 // HELPER FUNCTION
 // ============================================================================
 
 /// Create an OrderedTextSpan with given parameters for testing.
-fn make_span(
-    text: &str,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    weight: FontWeight,
-) -> OrderedTextSpan {
+fn make_span(text: &str, x: f32, y: f32, font_size: f32, weight: FontWeight) -> OrderedTextSpan {
     OrderedTextSpan::new(
         TextSpan {
             text: text.to_string(),
@@ -239,7 +233,9 @@ fn test_html_semantic_heading_h2() {
     config.output.detect_headings = true;
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![base_span, heading_span], &config).unwrap();
+    let output = converter
+        .convert(&vec![base_span, heading_span], &config)
+        .unwrap();
 
     // Then: Output should recognize heading level
     assert!(output.contains("Subheading"), "Should contain the heading text");

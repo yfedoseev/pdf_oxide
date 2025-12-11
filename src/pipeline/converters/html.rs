@@ -160,20 +160,15 @@ impl HtmlOutputConverter {
             let font_size = span.span.font_size;
 
             // Build style attribute
-            let mut style = format!(
-                "position:absolute;left:{}pt;top:{}pt;font-size:{}pt;",
-                x, y, font_size
-            );
+            let mut style =
+                format!("position:absolute;left:{}pt;top:{}pt;font-size:{}pt;", x, y, font_size);
 
             // Add color if present
             if let Some(color) = self.format_color(span) {
                 style.push_str(&format!("color:{};", color));
             }
 
-            result.push_str(&format!(
-                "<div style=\"{}\">{}</div>\n",
-                style, text
-            ));
+            result.push_str(&format!("<div style=\"{}\">{}</div>\n", style, text));
         }
 
         Ok(result)

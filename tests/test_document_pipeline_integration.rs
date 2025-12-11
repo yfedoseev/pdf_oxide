@@ -8,8 +8,8 @@
 
 #[cfg(test)]
 mod document_pipeline_integration {
-    use pdf_oxide::document::PdfDocument;
     use pdf_oxide::converters::ConversionOptions;
+    use pdf_oxide::document::PdfDocument;
     use std::path::PathBuf;
 
     /// Helper to find test PDF files
@@ -48,7 +48,7 @@ mod document_pipeline_integration {
             Err(_) => {
                 println!("Could not open PDF at {:?}, skipping", pdf_path);
                 return;
-            }
+            },
         };
 
         let options = ConversionOptions::default();
@@ -61,11 +61,11 @@ mod document_pipeline_integration {
 
                 // Should contain valid content
                 assert!(markdown.len() > 0, "Output length should be > 0");
-            }
+            },
             Err(e) => {
                 // Some PDFs may fail, but the interface should work
                 eprintln!("to_markdown() failed: {}", e);
-            }
+            },
         }
     }
 
@@ -84,7 +84,7 @@ mod document_pipeline_integration {
             Err(_) => {
                 println!("Could not open PDF at {:?}, skipping", pdf_path);
                 return;
-            }
+            },
         };
 
         let options = ConversionOptions::default();
@@ -97,11 +97,11 @@ mod document_pipeline_integration {
 
                 // Should contain some HTML structure
                 assert!(html.len() > 0, "Output length should be > 0");
-            }
+            },
             Err(e) => {
                 // Some PDFs may fail, but the interface should work
                 eprintln!("to_html() failed: {}", e);
-            }
+            },
         }
     }
 
@@ -120,7 +120,7 @@ mod document_pipeline_integration {
             Err(_) => {
                 println!("Could not open PDF at {:?}, skipping", pdf_path);
                 return;
-            }
+            },
         };
 
         let options = ConversionOptions::default();
@@ -133,11 +133,11 @@ mod document_pipeline_integration {
 
                 // Plain text should not contain HTML or markdown markup
                 assert!(!text.contains("<html"), "Should not contain HTML tags");
-            }
+            },
             Err(e) => {
                 // Some PDFs may fail, but the interface should work
                 eprintln!("to_plain_text() failed: {}", e);
-            }
+            },
         }
     }
 
@@ -157,7 +157,7 @@ mod document_pipeline_integration {
             Err(_) => {
                 println!("Could not open PDF at {:?}, skipping", pdf_path);
                 return;
-            }
+            },
         };
 
         // Create two sets of options with different settings
@@ -168,10 +168,7 @@ mod document_pipeline_integration {
         options2.detect_headings = true;
 
         // Both should produce output
-        match (
-            doc.to_markdown(0, &options1),
-            doc.to_markdown(0, &options2),
-        ) {
+        match (doc.to_markdown(0, &options1), doc.to_markdown(0, &options2)) {
             (Ok(md1), Ok(md2)) => {
                 // Output should be produced
                 assert!(!md1.is_empty(), "Output with detect_headings=false should not be empty");
@@ -179,13 +176,13 @@ mod document_pipeline_integration {
 
                 // The outputs may be different depending on heading detection
                 // This at least validates the options are being used
-            }
+            },
             (Err(e1), _) => {
                 eprintln!("First to_markdown() failed: {}", e1);
-            }
+            },
             (_, Err(e2)) => {
                 eprintln!("Second to_markdown() failed: {}", e2);
-            }
+            },
         }
     }
 
@@ -204,18 +201,9 @@ mod document_pipeline_integration {
         let config = TextPipelineConfig::from_conversion_options(&options);
 
         // Verify the config was properly created
-        assert_eq!(
-            config.output.detect_headings, true,
-            "detect_headings should be preserved"
-        );
-        assert_eq!(
-            config.output.preserve_layout, true,
-            "preserve_layout should be preserved"
-        );
-        assert_eq!(
-            config.output.extract_tables, true,
-            "extract_tables should be preserved"
-        );
+        assert_eq!(config.output.detect_headings, true, "detect_headings should be preserved");
+        assert_eq!(config.output.preserve_layout, true, "preserve_layout should be preserved");
+        assert_eq!(config.output.extract_tables, true, "extract_tables should be preserved");
     }
 
     #[test]
@@ -234,7 +222,7 @@ mod document_pipeline_integration {
             Err(_) => {
                 println!("Could not open PDF at {:?}, skipping", pdf_path);
                 return;
-            }
+            },
         };
 
         let options = ConversionOptions::default();
@@ -270,8 +258,7 @@ mod document_pipeline_integration {
         use pdf_oxide::pipeline::ReadingOrderContext;
 
         // Create a context as the pipeline would
-        let context = ReadingOrderContext::new()
-            .with_page(0);
+        let context = ReadingOrderContext::new().with_page(0);
 
         // Context should be properly initialized
         assert_eq!(context.page_number, 0, "Page number should be set");
@@ -294,7 +281,7 @@ mod document_pipeline_integration {
             Err(_) => {
                 println!("Could not open PDF at {:?}, skipping", pdf_path);
                 return;
-            }
+            },
         };
 
         // extract_spans should still work independently
@@ -305,10 +292,10 @@ mod document_pipeline_integration {
 
                 // Spans should be valid (at minimum non-null)
                 assert!(spans.len() >= 0, "Spans vector should be valid");
-            }
+            },
             Err(e) => {
                 eprintln!("extract_spans failed: {}", e);
-            }
+            },
         }
     }
 
@@ -327,7 +314,7 @@ mod document_pipeline_integration {
             Err(_) => {
                 println!("Could not open PDF at {:?}, skipping", pdf_path);
                 return;
-            }
+            },
         };
 
         // Get page count
@@ -336,7 +323,7 @@ mod document_pipeline_integration {
             Err(_) => {
                 println!("Could not determine page count, skipping");
                 return;
-            }
+            },
         };
 
         let options = ConversionOptions::default();
@@ -346,10 +333,10 @@ mod document_pipeline_integration {
             match doc.to_markdown(0, &options) {
                 Ok(md) => {
                     assert!(!md.is_empty(), "First page markdown should be non-empty");
-                }
+                },
                 Err(e) => {
                     eprintln!("Could not convert page 0: {}", e);
-                }
+                },
             }
         }
 
@@ -357,10 +344,10 @@ mod document_pipeline_integration {
             match doc.to_markdown((page_count - 1) as usize, &options) {
                 Ok(md) => {
                     assert!(!md.is_empty(), "Last page markdown should be non-empty");
-                }
+                },
                 Err(e) => {
                     eprintln!("Could not convert last page: {}", e);
-                }
+                },
             }
         }
     }
@@ -381,7 +368,7 @@ mod document_pipeline_integration {
             Err(_) => {
                 println!("Could not open PDF at {:?}, skipping", pdf_path);
                 return;
-            }
+            },
         };
 
         let options = ConversionOptions::default();
@@ -397,10 +384,10 @@ mod document_pipeline_integration {
                     trimmed.chars().any(|c| !c.is_whitespace()),
                     "Markdown should contain non-whitespace characters"
                 );
-            }
+            },
             Err(e) => {
                 eprintln!("to_markdown failed: {}", e);
-            }
+            },
         }
     }
 }

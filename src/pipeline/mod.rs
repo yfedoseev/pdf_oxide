@@ -36,6 +36,7 @@ pub mod converters;
 // pub mod input_parsers;  // Keep disabled - for PDF creation feature later
 pub mod ordered_span;
 pub mod reading_order;
+pub mod text_processing;
 
 // Re-export main types
 pub use config::{
@@ -47,6 +48,7 @@ pub use converters::{
 };
 pub use ordered_span::{OrderedSpans, OrderedTextSpan};
 pub use reading_order::{ReadingOrderContext, ReadingOrderStrategy, XYCutStrategy};
+pub use text_processing::WhitespaceNormalizer;
 
 use crate::error::Result;
 use crate::layout::TextSpan;
