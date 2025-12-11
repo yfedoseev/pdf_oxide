@@ -15,6 +15,7 @@ use crate::fonts::FontInfo;
 use crate::geometry::Rect;
 use crate::layout::{Color, FontWeight, TextChar, TextSpan};
 use crate::object::{Object, ObjectRef};
+use crate::text::{BoundaryContext, CharacterInfo, WordBoundaryDetector};
 use std::collections::{HashMap, HashSet};
 
 /// Source of a space decision in the unified pipeline.
@@ -42,6 +43,10 @@ pub enum SpaceSource {
     /// No space inserted
     /// Confidence: varies (default when no rule matches)
     NoSpace,
+
+    /// Space triggered by WordBoundaryDetector analysis
+    /// Confidence: 0.85 (combines TJ offset, geometric, and CJK signals per PDF Spec 9.4.4)
+    WordBoundaryAnalysis,
 }
 
 /// Result of unified space decision process.
@@ -990,6 +995,34 @@ fn should_insert_space(
         return SpaceDecision::insert(SpaceSource::TjOffset, 1.0);
     }
 
+    // Phase 7: WordBoundaryDetector tiebreaker when TJ and geometric signals conflict
+    // Per ISO 32000-1:2008 Section 9.4.4, use multiple signals to determine word boundaries
+    if tj_offset_triggered != geometric_suggests_space {
+        if let (Some(prev_box), Some(next_box)) = (prev_bbox, next_bbox) {
+            let (characters, context) = build_boundary_characters(
+                preceding_text,
+                following_text,
+                prev_box,
+                next_box,
+                font_size,
+                tj_offset_triggered,
+            );
+
+            // Use WordBoundaryDetector with geometric gap ratio matching our threshold
+            let detector = WordBoundaryDetector::new().with_geometric_gap_ratio(0.5);
+            let boundaries = detector.detect_word_boundaries(&characters, &context);
+
+            if !boundaries.is_empty() {
+                log::debug!(
+                    "Space decision: WordBoundaryDetector resolved conflict (TJ={}, geo={}) - inserting space",
+                    tj_offset_triggered,
+                    geometric_suggests_space
+                );
+                return SpaceDecision::insert(SpaceSource::WordBoundaryAnalysis, 0.85);
+            }
+        }
+    }
+
     // Strong geometric signal alone (gap > 2× threshold)
     // This is high confidence even without TJ signal
     let strong_geometric_threshold = geometric_threshold * 2.0;
@@ -1027,6 +1060,71 @@ fn has_boundary_space(preceding: &str, following: &str) -> bool {
     let has_leading_space = following.chars().next().is_some_and(|c| c.is_whitespace());
 
     has_trailing_space || has_leading_space
+}
+
+/// Build CharacterInfo for word boundary analysis between two text segments.
+///
+/// Creates minimal character info for the last character of the preceding text
+/// and the first character of the following text. This allows WordBoundaryDetector
+/// to determine if a word boundary exists between two spans.
+///
+/// Per ISO 32000-1:2008 Section 9.4.4, word boundaries can be identified through:
+/// - TJ array offsets (passed via tj_offset_triggered)
+/// - Geometric gaps between glyphs (calculated from bbox positions)
+/// - Space characters in the text stream
+/// - CJK character transitions
+fn build_boundary_characters(
+    prev_text: &str,
+    next_text: &str,
+    prev_bbox: &Rect,
+    next_bbox: &Rect,
+    font_size: f32,
+    tj_offset_triggered: bool,
+) -> (Vec<CharacterInfo>, BoundaryContext) {
+    let prev_last_char = prev_text.chars().last().unwrap_or(' ');
+    let next_first_char = next_text.chars().next().unwrap_or(' ');
+
+    // Estimate character widths from bbox and character count
+    let prev_char_count = prev_text.chars().count().max(1) as f32;
+    let prev_char_width = prev_bbox.width / prev_char_count;
+    let prev_last_x = prev_bbox.x + prev_bbox.width - prev_char_width;
+
+    let next_char_count = next_text.chars().count().max(1) as f32;
+    let next_char_width = next_bbox.width / next_char_count;
+
+    // Build CharacterInfo for boundary analysis
+    let characters = vec![
+        CharacterInfo {
+            code: prev_last_char as u32,
+            glyph_id: None,
+            width: prev_char_width,
+            x_position: prev_last_x,
+            // Convert TJ trigger to offset value: -200 indicates word boundary
+            tj_offset: if tj_offset_triggered {
+                Some(-200)
+            } else {
+                None
+            },
+            font_size,
+        },
+        CharacterInfo {
+            code: next_first_char as u32,
+            glyph_id: None,
+            width: next_char_width,
+            x_position: next_bbox.x,
+            tj_offset: None,
+            font_size,
+        },
+    ];
+
+    let context = BoundaryContext {
+        font_size,
+        horizontal_scaling: 100.0, // Default; actual value not available at span level
+        word_spacing: 0.0,
+        char_spacing: 0.0,
+    };
+
+    (characters, context)
 }
 
 /// Check if surrounding text forms an email-like pattern.
@@ -1415,7 +1513,7 @@ fn decode_text_to_unicode(bytes: &[u8], font: Option<&FontInfo>) -> String {
                     // Combine two bytes into a 16-bit character code (big-endian)
                     let char_code = ((bytes[i] as u16) << 8) | (bytes[i + 1] as u16);
                     let char_str = font
-                        .char_to_unicode(char_code)
+                        .char_to_unicode(char_code as u32)
                         .unwrap_or_else(|| fallback_char_to_unicode(char_code));
                     result.push_str(&char_str);
                     i += 2;
@@ -1423,7 +1521,7 @@ fn decode_text_to_unicode(bytes: &[u8], font: Option<&FontInfo>) -> String {
                     // Odd byte at end - process as single byte
                     let char_code = bytes[i] as u16;
                     let char_str = font
-                        .char_to_unicode(char_code)
+                        .char_to_unicode(char_code as u32)
                         .unwrap_or_else(|| fallback_char_to_unicode(char_code));
                     result.push_str(&char_str);
                     i += 1;
@@ -1436,7 +1534,7 @@ fn decode_text_to_unicode(bytes: &[u8], font: Option<&FontInfo>) -> String {
             for &byte in bytes {
                 let char_code = byte as u16;
                 let char_str = font
-                    .char_to_unicode(char_code)
+                    .char_to_unicode(char_code as u32)
                     .unwrap_or_else(|| fallback_char_to_unicode(char_code));
                 result.push_str(&char_str);
             }
@@ -1463,6 +1561,10 @@ fn decode_text_to_unicode(bytes: &[u8], font: Option<&FontInfo>) -> String {
 struct MarkedContentContext {
     tag: String,
     is_artifact: bool,
+    /// ActualText for marked content (PDF Spec Section 14.9.4)
+    /// Used to replace extracted text with correct representation
+    /// e.g., ligatures (fi, fl, ffi, ffl), decorated glyphs
+    actual_text: Option<String>,
 }
 
 /// Text extractor that processes content streams.
@@ -1783,6 +1885,21 @@ impl TextExtractor {
     fn update_artifact_state(&mut self) {
         // True if ANY ancestor in the stack is an artifact
         self.inside_artifact = self.marked_content_stack.iter().any(|ctx| ctx.is_artifact);
+    }
+
+    /// Get current ActualText from marked content stack (PDF Spec Section 14.9.4).
+    ///
+    /// Searches from the innermost marked content context outward, returning
+    /// the first ActualText found. If no ActualText is defined, returns None.
+    ///
+    /// ActualText provides the exact text representation for content that's
+    /// represented non-standardly, such as ligatures (fi, fl, ffi, ffl) or
+    /// decorated glyphs.
+    fn get_current_actual_text(&self) -> Option<String> {
+        self.marked_content_stack
+            .iter()
+            .rev()  // Search from innermost (most recent) context
+            .find_map(|ctx| ctx.actual_text.clone())
     }
 
     /// Calculate the average glyph width for a font.
@@ -2779,26 +2896,54 @@ impl TextExtractor {
                     return Ok(());
                 }
 
-                if self.extract_spans {
-                    // NEW: Buffer consecutive Tj operators into single spans
-                    // Per PDF Spec ISO 32000-1:2008, Section 9.4.4 NOTE 6:
-                    // "text strings are as long as possible"
+                // Phase 7C.2: ActualText override
+                // Per PDF Spec ISO 32000-1:2008, Section 14.9.4:
+                // ActualText provides replacement text for content that cannot be
+                // automatically extracted (e.g., figures, symbols, decorative text).
+                if let Some(actual_text) = self.get_current_actual_text() {
+                    log::debug!("Tj operator: Using ActualText override: '{}'", actual_text);
 
-                    // Create buffer if doesn't exist
-                    if self.tj_span_buffer.is_none() {
-                        self.tj_span_buffer =
-                            Some(TjBuffer::new(self.state_stack.current(), self.current_mcid));
+                    if self.extract_spans {
+                        // Use ActualText in span mode - buffer it like normal text
+                        if self.tj_span_buffer.is_none() {
+                            self.tj_span_buffer =
+                                Some(TjBuffer::new(self.state_stack.current(), self.current_mcid));
+                        }
+
+                        // Append ActualText to buffer (convert to bytes for consistency)
+                        if let Some(ref mut buffer) = self.tj_span_buffer {
+                            buffer.append(actual_text.as_bytes(), &self.fonts)?;
+                        }
+                    } else {
+                        // Use ActualText in character mode - process each character
+                        self.show_text(actual_text.as_bytes())?;
                     }
 
-                    // Append to buffer
-                    if let Some(ref mut buffer) = self.tj_span_buffer {
-                        buffer.append(&text, &self.fonts)?;
-                    }
-
-                    // Advance position (text matrix must be updated)
+                    // Advance position for the original text (to maintain layout)
                     self.advance_position_for_string(&text)?;
                 } else {
-                    self.show_text(&text)?;
+                    // No ActualText - use standard text extraction
+                    if self.extract_spans {
+                        // NEW: Buffer consecutive Tj operators into single spans
+                        // Per PDF Spec ISO 32000-1:2008, Section 9.4.4 NOTE 6:
+                        // "text strings are as long as possible"
+
+                        // Create buffer if doesn't exist
+                        if self.tj_span_buffer.is_none() {
+                            self.tj_span_buffer =
+                                Some(TjBuffer::new(self.state_stack.current(), self.current_mcid));
+                        }
+
+                        // Append to buffer
+                        if let Some(ref mut buffer) = self.tj_span_buffer {
+                            buffer.append(&text, &self.fonts)?;
+                        }
+
+                        // Advance position (text matrix must be updated)
+                        self.advance_position_for_string(&text)?;
+                    } else {
+                        self.show_text(&text)?;
+                    }
                 }
             },
             Operator::TJ { array } => {
@@ -2812,92 +2957,131 @@ impl TextExtractor {
                     return Ok(());
                 }
 
-                if self.extract_spans {
-                    // NEW: Use buffered TJ array processing for span extraction
-                    // Per PDF Spec ISO 32000-1:2008, Section 9.4.4 NOTE 6:
-                    // "text strings are as long as possible"
-                    // This creates one span per logical text unit instead of fragmenting
-                    self.process_tj_array(&array)?;
-                } else {
-                    // Keep old behavior for character extraction mode
+                // Phase 7C.2: ActualText override
+                // Per PDF Spec ISO 32000-1:2008, Section 14.9.4:
+                // When ActualText is present, use it instead of the TJ array contents.
+                // The entire TJ array is replaced with the ActualText string.
+                if let Some(actual_text) = self.get_current_actual_text() {
+                    log::debug!(
+                        "TJ operator: Using ActualText override: '{}' (replacing {} elements)",
+                        actual_text,
+                        array.len()
+                    );
+
+                    if self.extract_spans {
+                        // Use ActualText in span mode - create a single span
+                        let mut buffer =
+                            TjBuffer::new(self.state_stack.current(), self.current_mcid);
+                        buffer.append(actual_text.as_bytes(), &self.fonts)?;
+                        self.flush_tj_buffer(&buffer)?;
+                    } else {
+                        // Use ActualText in character mode
+                        self.show_text(actual_text.as_bytes())?;
+                    }
+
+                    // Advance position for the entire TJ array (to maintain layout)
+                    // Calculate the total displacement the array would have caused
                     for element in array {
                         match element {
                             TextElement::String(s) => {
-                                self.show_text(&s)?;
+                                self.advance_position_for_string(&s)?;
                             },
                             TextElement::Offset(offset) => {
-                                // Adjust text position by offset (in thousandths of em)
-                                let state = self.state_stack.current();
-                                let tx =
-                                    -offset / 1000.0 * state.font_size * state.horizontal_scaling
+                                self.advance_position_for_offset(offset)?;
+                            },
+                        }
+                    }
+                } else {
+                    // No ActualText - use standard TJ array processing
+                    if self.extract_spans {
+                        // NEW: Use buffered TJ array processing for span extraction
+                        // Per PDF Spec ISO 32000-1:2008, Section 9.4.4 NOTE 6:
+                        // "text strings are as long as possible"
+                        // This creates one span per logical text unit instead of fragmenting
+                        self.process_tj_array(&array)?;
+                    } else {
+                        // Keep old behavior for character extraction mode
+                        for element in array {
+                            match element {
+                                TextElement::String(s) => {
+                                    self.show_text(&s)?;
+                                },
+                                TextElement::Offset(offset) => {
+                                    // Adjust text position by offset (in thousandths of em)
+                                    let state = self.state_stack.current();
+                                    let tx = -offset / 1000.0
+                                        * state.font_size
+                                        * state.horizontal_scaling
                                         / 100.0;
 
-                                // HEURISTIC: Insert space character for significant negative offsets
-                                //
-                                // PDF Spec Reference: ISO 32000-1:2008, Section 9.4.4
-                                // The spec defines text positioning but does NOT specify when a positioning
-                                // offset represents a word boundary vs. tight kerning.
-                                //
-                                // In PDFs, spaces are often represented as negative positioning offsets in TJ arrays,
-                                // not as explicit space characters. For example:
-                                // [(Text1) -200 (Text2)] TJ  <- the -200 creates visual spacing
-                                //
-                                // Phase 8: Geometry-based adaptive threshold (based on font metrics)
-                                // Formula: adaptive_threshold = -(average_glyph_width * word_margin_ratio)
-                                // This adapts to different font sizes and families.
-                                // Fallback: static threshold if font unavailable or adaptive disabled.
-                                let threshold = self.calculate_adaptive_tj_threshold();
-                                if offset < threshold {
-                                    let text_matrix = state.text_matrix;
-                                    let font_name = state.font_name.clone();
-                                    let font_size = state.font_size;
-                                    let fill_color_rgb = state.fill_color_rgb;
+                                    // HEURISTIC: Insert space character for significant negative offsets
+                                    //
+                                    // PDF Spec Reference: ISO 32000-1:2008, Section 9.4.4
+                                    // The spec defines text positioning but does NOT specify when a positioning
+                                    // offset represents a word boundary vs. tight kerning.
+                                    //
+                                    // In PDFs, spaces are often represented as negative positioning offsets in TJ arrays,
+                                    // not as explicit space characters. For example:
+                                    // [(Text1) -200 (Text2)] TJ  <- the -200 creates visual spacing
+                                    //
+                                    // Phase 8: Geometry-based adaptive threshold (based on font metrics)
+                                    // Formula: adaptive_threshold = -(average_glyph_width * word_margin_ratio)
+                                    // This adapts to different font sizes and families.
+                                    // Fallback: static threshold if font unavailable or adaptive disabled.
+                                    let threshold = self.calculate_adaptive_tj_threshold();
+                                    if offset < threshold {
+                                        let text_matrix = state.text_matrix;
+                                        let font_name = state.font_name.clone();
+                                        let font_size = state.font_size;
+                                        let fill_color_rgb = state.fill_color_rgb;
 
-                                    // Calculate effective font size (accounting for text matrix scaling)
-                                    let effective_font_size = font_size * text_matrix.d.abs();
+                                        // Calculate effective font size (accounting for text matrix scaling)
+                                        let effective_font_size = font_size * text_matrix.d.abs();
 
-                                    // Get font for determining weight
-                                    let font =
-                                        font_name.as_ref().and_then(|name| self.fonts.get(name));
-                                    let font_weight = if let Some(font) = font {
-                                        if font.is_bold() {
-                                            FontWeight::Bold
+                                        // Get font for determining weight
+                                        let font = font_name
+                                            .as_ref()
+                                            .and_then(|name| self.fonts.get(name));
+                                        let font_weight = if let Some(font) = font {
+                                            if font.is_bold() {
+                                                FontWeight::Bold
+                                            } else {
+                                                FontWeight::Normal
+                                            }
                                         } else {
                                             FontWeight::Normal
-                                        }
-                                    } else {
-                                        FontWeight::Normal
-                                    };
+                                        };
 
-                                    // Create space character at current position
-                                    let (r, g, b) = fill_color_rgb;
-                                    let is_italic_space = font_name
-                                        .as_ref()
-                                        .and_then(|name| self.fonts.get(name))
-                                        .map(|font| font.is_italic())
-                                        .unwrap_or(false);
-                                    let font_name_str = font_name.unwrap_or_default();
-                                    let space_char = TextChar {
-                                        char: ' ',
-                                        bbox: Rect::new(
-                                            text_matrix.e,       // Current X position
-                                            text_matrix.f,       // Current Y position
-                                            tx.abs(),            // Width = the gap being created
-                                            effective_font_size, // Height = effective font size
-                                        ),
-                                        font_name: font_name_str,
-                                        font_size: effective_font_size,
-                                        font_weight,
-                                        color: Color::new(r, g, b),
-                                        mcid: self.current_mcid,
-                                        is_italic: is_italic_space,
-                                    };
-                                    self.chars.push(space_char);
-                                }
+                                        // Create space character at current position
+                                        let (r, g, b) = fill_color_rgb;
+                                        let is_italic_space = font_name
+                                            .as_ref()
+                                            .and_then(|name| self.fonts.get(name))
+                                            .map(|font| font.is_italic())
+                                            .unwrap_or(false);
+                                        let font_name_str = font_name.unwrap_or_default();
+                                        let space_char = TextChar {
+                                            char: ' ',
+                                            bbox: Rect::new(
+                                                text_matrix.e,       // Current X position
+                                                text_matrix.f,       // Current Y position
+                                                tx.abs(), // Width = the gap being created
+                                                effective_font_size, // Height = effective font size
+                                            ),
+                                            font_name: font_name_str,
+                                            font_size: effective_font_size,
+                                            font_weight,
+                                            color: Color::new(r, g, b),
+                                            mcid: self.current_mcid,
+                                            is_italic: is_italic_space,
+                                        };
+                                        self.chars.push(space_char);
+                                    }
 
-                                let state_mut = self.state_stack.current_mut();
-                                state_mut.text_matrix.e += tx;
-                            },
+                                    let state_mut = self.state_stack.current_mut();
+                                    state_mut.text_matrix.e += tx;
+                                },
+                            }
                         }
                     }
                 }
@@ -3450,6 +3634,7 @@ impl TextExtractor {
                 self.marked_content_stack.push(MarkedContentContext {
                     tag: tag.clone(),
                     is_artifact,
+                    actual_text: None, // BMC doesn't have ActualText
                 });
                 self.update_artifact_state();
 
@@ -3459,13 +3644,25 @@ impl TextExtractor {
             },
 
             Operator::BeginMarkedContentDict { tag, properties } => {
-                // BDC can have properties including MCID and artifact indicators
-                // Extract MCID if present
+                // BDC can have properties including MCID, artifact indicators, and ActualText
+                // PDF Spec Section 14.9.4: ActualText provides replacement text for content
+                let mut actual_text = None;
                 if let Some(props_dict) = properties.as_dict() {
+                    // Extract MCID if present
                     if let Some(mcid_obj) = props_dict.get("MCID") {
                         if let Some(mcid) = mcid_obj.as_integer() {
                             self.current_mcid = Some(mcid as u32);
                             log::debug!("Entered marked content with MCID: {}", mcid);
+                        }
+                    }
+
+                    // Extract ActualText if present (PDF Spec Section 14.9.4)
+                    // ActualText provides exact text representation (e.g., ligatures, decorated glyphs)
+                    if let Some(actual_text_obj) = props_dict.get("ActualText") {
+                        if let Some(text_bytes) = actual_text_obj.as_string() {
+                            // Convert UTF-8 bytes to String, fall back to lossy conversion if invalid
+                            actual_text = Some(String::from_utf8_lossy(text_bytes).to_string());
+                            log::debug!("Marked content has ActualText: {:?}", actual_text);
                         }
                     }
                 }
@@ -3475,6 +3672,7 @@ impl TextExtractor {
                 self.marked_content_stack.push(MarkedContentContext {
                     tag: tag.clone(),
                     is_artifact,
+                    actual_text,
                 });
                 self.update_artifact_state();
 
@@ -3831,7 +4029,7 @@ impl TextExtractor {
                             if let Some(font) = self.fonts.get(font_name) {
                                 let mut text = String::new();
                                 for &byte in s.iter() {
-                                    if let Some(chars) = font.char_to_unicode(byte as u16) {
+                                    if let Some(chars) = font.char_to_unicode(byte as u32) {
                                         text.push_str(&chars);
                                     }
                                 }
@@ -4163,7 +4361,7 @@ impl TextExtractor {
             // a ligature glyph is expanded to its constituent ASCII characters.
             let unicode_string = if let Some(font) = font {
                 let result = font
-                    .char_to_unicode(char_code)
+                    .char_to_unicode(char_code as u32)
                     .unwrap_or_else(|| "?".to_string());
 
                 // DEBUG: Log when we get 'd' or ρ to trace the issue
