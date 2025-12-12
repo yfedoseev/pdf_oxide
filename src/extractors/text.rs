@@ -2033,8 +2033,8 @@ impl TextExtractor {
                 // Form XObject - extract text from it
                 log::debug!("Processing Form XObject: {}", name);
 
-                // Decode the stream data with error recovery
-                let stream_data = match xobject.decode_stream_data() {
+                // Decode the stream data with error recovery, respecting encryption
+                let stream_data = match doc.decode_stream_with_encryption(&xobject, xobject_ref) {
                     Ok(data) => data,
                     Err(e) => {
                         log::warn!(

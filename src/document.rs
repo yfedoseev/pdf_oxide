@@ -151,11 +151,10 @@ impl PdfDocument {
             },
         };
 
-        // Note: Encryption initialization is deferred because the /Encrypt entry
-        // is usually an indirect reference that requires object loading, which
-        // requires a fully constructed document. We'll initialize it lazily.
-
-        Ok(Self {
+        // Note: Encryption initialization was originally lazy, but decode_stream_with_encryption
+        // only has &self access which prevents initialization.
+        // We now initialize eagerly to ensure the handler is ready when needed.
+        let mut document = Self {
             reader,
             version,
             xref,
@@ -163,8 +162,17 @@ impl PdfDocument {
             object_cache: HashMap::new(),
             resolving_stack: RefCell::new(HashSet::new()),
             recursion_depth: RefCell::new(0),
-            encryption_handler: None, // Will be initialized lazily
-        })
+            encryption_handler: None,
+        };
+
+        // Initialize encryption immediately
+        if let Err(e) = document.ensure_encryption_initialized() {
+            log::error!("Failed to initialize encryption: {}", e);
+            // We continue anyway, as it might just be an unsupported security handler
+            // and maybe we can still read parts of the file (or fail later)
+        }
+
+        Ok(document)
     }
 
     /// Try to open the PDF using regular xref parsing.
