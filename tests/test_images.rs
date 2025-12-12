@@ -259,7 +259,7 @@ fn test_extract_jpeg_image_from_xobject() {
         data: bytes::Bytes::from(jpeg_data.clone()),
     };
 
-    let image = extract_image_from_xobject(&xobject).unwrap();
+    let image = extract_image_from_xobject(None, &xobject, None).unwrap();
 
     assert_eq!(image.width(), 200);
     assert_eq!(image.height(), 100);
@@ -294,7 +294,7 @@ fn test_extract_raw_rgb_image_from_xobject() {
         data: bytes::Bytes::from(pixel_data.clone()),
     };
 
-    let image = extract_image_from_xobject(&xobject).unwrap();
+    let image = extract_image_from_xobject(None, &xobject, None).unwrap();
 
     assert_eq!(image.width(), 2);
     assert_eq!(image.height(), 1);
@@ -325,7 +325,7 @@ fn test_extract_raw_grayscale_image_from_xobject() {
         data: bytes::Bytes::from(pixel_data.clone()),
     };
 
-    let image = extract_image_from_xobject(&xobject).unwrap();
+    let image = extract_image_from_xobject(None, &xobject, None).unwrap();
 
     assert_eq!(image.width(), 4);
     assert_eq!(*image.color_space(), ColorSpace::DeviceGray);
@@ -354,7 +354,7 @@ fn test_extract_raw_cmyk_image_from_xobject() {
         data: bytes::Bytes::from(pixel_data.clone()),
     };
 
-    let image = extract_image_from_xobject(&xobject).unwrap();
+    let image = extract_image_from_xobject(None, &xobject, None).unwrap();
 
     assert_eq!(*image.color_space(), ColorSpace::DeviceCMYK);
 
@@ -376,7 +376,7 @@ fn test_extract_image_error_cases() {
             dict,
             data: bytes::Bytes::from(vec![]),
         };
-        assert!(extract_image_from_xobject(&xobject).is_err());
+        assert!(extract_image_from_xobject(None, &xobject, None).is_err());
     }
 
     // Test wrong Subtype
@@ -387,7 +387,7 @@ fn test_extract_image_error_cases() {
             dict,
             data: bytes::Bytes::from(vec![]),
         };
-        assert!(extract_image_from_xobject(&xobject).is_err());
+        assert!(extract_image_from_xobject(None, &xobject, None).is_err());
     }
 
     // Test missing Width
@@ -400,7 +400,7 @@ fn test_extract_image_error_cases() {
             dict,
             data: bytes::Bytes::from(vec![]),
         };
-        assert!(extract_image_from_xobject(&xobject).is_err());
+        assert!(extract_image_from_xobject(None, &xobject, None).is_err());
     }
 
     // Test missing Height
@@ -413,7 +413,7 @@ fn test_extract_image_error_cases() {
             dict,
             data: bytes::Bytes::from(vec![]),
         };
-        assert!(extract_image_from_xobject(&xobject).is_err());
+        assert!(extract_image_from_xobject(None, &xobject, None).is_err());
     }
 
     // Test missing ColorSpace
@@ -426,7 +426,7 @@ fn test_extract_image_error_cases() {
             dict,
             data: bytes::Bytes::from(vec![]),
         };
-        assert!(extract_image_from_xobject(&xobject).is_err());
+        assert!(extract_image_from_xobject(None, &xobject, None).is_err());
     }
 }
 
@@ -447,7 +447,7 @@ fn test_jpeg_filter_array_detection() {
         data: bytes::Bytes::from(jpeg_data.clone()),
     };
 
-    let image = extract_image_from_xobject(&xobject).unwrap();
+    let image = extract_image_from_xobject(None, &xobject, None).unwrap();
 
     // Should recognize DCTDecode in array and treat as JPEG
     match image.data() {
@@ -472,7 +472,7 @@ fn test_bits_per_component_default() {
         data: bytes::Bytes::from(vec![0; 300]), // 10x10 RGB
     };
 
-    let image = extract_image_from_xobject(&xobject).unwrap();
+    let image = extract_image_from_xobject(None, &xobject, None).unwrap();
     assert_eq!(image.bits_per_component(), 8); // Default value
 }
 
@@ -507,7 +507,7 @@ fn test_large_image_dimensions() {
         data: bytes::Bytes::from(jpeg_data),
     };
 
-    let image = extract_image_from_xobject(&xobject).unwrap();
+    let image = extract_image_from_xobject(None, &xobject, None).unwrap();
     assert_eq!(image.width(), 4096);
     assert_eq!(image.height(), 2048);
 }

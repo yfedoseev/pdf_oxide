@@ -485,7 +485,11 @@ pub fn parse_color_space(obj: &crate::object::Object) -> Result<ColorSpace> {
 /// # Ok(())
 /// # }
 /// ```
-pub fn extract_image_from_xobject(xobject: &crate::object::Object) -> Result<PdfImage> {
+pub fn extract_image_from_xobject(
+    doc: Option<&crate::document::PdfDocument>,
+    xobject: &crate::object::Object,
+    obj_ref: Option<crate::object::ObjectRef>,
+) -> Result<PdfImage> {
     use crate::object::Object;
 
     // XObject must be a stream
@@ -546,7 +550,11 @@ pub fn extract_image_from_xobject(xobject: &crate::object::Object) -> Result<Pdf
         }
     } else {
         // Decode stream data and store as raw pixels
-        let decoded_data = xobject.decode_stream_data()?;
+        let decoded_data = if let (Some(doc), Some(ref_id)) = (doc, obj_ref) {
+            doc.decode_stream_with_encryption(xobject, ref_id)?
+        } else {
+            xobject.decode_stream_data()?
+        };
         let pixel_format = color_space_to_pixel_format(&color_space);
         ImageData::Raw {
             pixels: decoded_data,
@@ -1040,7 +1048,7 @@ mod tests {
             data: bytes::Bytes::from(jpeg_data.clone()),
         };
 
-        let image = extract_image_from_xobject(&xobject).unwrap();
+        let image = extract_image_from_xobject(None, &xobject, None).unwrap();
         assert_eq!(image.width(), 100);
         assert_eq!(image.height(), 200);
         assert_eq!(*image.color_space(), ColorSpace::DeviceRGB);
@@ -1071,7 +1079,7 @@ mod tests {
             data: bytes::Bytes::from(raw_data.clone()),
         };
 
-        let image = extract_image_from_xobject(&xobject).unwrap();
+        let image = extract_image_from_xobject(None, &xobject, None).unwrap();
         assert_eq!(image.width(), 2);
         assert_eq!(image.height(), 2);
         assert_eq!(*image.color_space(), ColorSpace::DeviceRGB);
@@ -1103,7 +1111,7 @@ mod tests {
             data: bytes::Bytes::from(raw_data.clone()),
         };
 
-        let image = extract_image_from_xobject(&xobject).unwrap();
+        let image = extract_image_from_xobject(None, &xobject, None).unwrap();
         assert_eq!(*image.color_space(), ColorSpace::DeviceGray);
 
         match image.data() {
@@ -1125,7 +1133,7 @@ mod tests {
             data: bytes::Bytes::from(vec![]),
         };
 
-        let result = extract_image_from_xobject(&xobject);
+        let result = extract_image_from_xobject(None, &xobject, None);
         assert!(result.is_err());
     }
 
@@ -1142,7 +1150,7 @@ mod tests {
             data: bytes::Bytes::from(vec![]),
         };
 
-        let result = extract_image_from_xobject(&xobject);
+        let result = extract_image_from_xobject(None, &xobject, None);
         assert!(result.is_err());
     }
 
@@ -1161,7 +1169,7 @@ mod tests {
             data: bytes::Bytes::from(vec![]),
         };
 
-        let result = extract_image_from_xobject(&xobject);
+        let result = extract_image_from_xobject(None, &xobject, None);
         assert!(result.is_err());
     }
 
@@ -1187,7 +1195,7 @@ mod tests {
             data: bytes::Bytes::from(jpeg_data.clone()),
         };
 
-        let image = extract_image_from_xobject(&xobject).unwrap();
+        let image = extract_image_from_xobject(None, &xobject, None).unwrap();
 
         match image.data() {
             ImageData::Jpeg(data) => assert_eq!(data, &jpeg_data),

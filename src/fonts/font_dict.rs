@@ -238,85 +238,44 @@ impl FontInfo {
 
                     // Load embedded font data from FontFile2 (TrueType), FontFile (Type 1), or FontFile3 (CFF/OpenType)
                     // IMPORTANT: Track whether font is TrueType or CFF - only TrueType fonts have cmaps!
-                    let (embedded_font, is_truetype_font) = if let Some(ff2_obj) =
-                        descriptor_dict.get("FontFile2")
-                    {
+                    let (embedded_font, is_truetype_font) = if let Some(ff2_obj) = descriptor_dict.get("FontFile2") {
                         log::info!("Font '{}' has FontFile2 entry (TrueType)", base_font);
-                        let font_data = match ff2_obj.as_reference() {
-                            Some(ff2_ref) => match doc.load_object(ff2_ref) {
-                                Ok(ff2_stream) => match ff2_stream.decode_stream_data() {
-                                    Ok(data) => {
-                                        log::info!(
-                                            "Font '{}' loaded embedded TrueType font ({} bytes)",
-                                            base_font,
-                                            data.len()
-                                        );
-                                        Some(Arc::new(data))
-                                    },
-                                    Err(e) => {
-                                        log::warn!(
-                                            "Font '{}' FontFile2 stream decode failed: {}",
-                                            base_font,
-                                            e
-                                        );
-                                        None
-                                    },
-                                },
-                                Err(e) => {
-                                    log::warn!(
-                                        "Font '{}' FontFile2 object load failed: {}",
-                                        base_font,
-                                        e
-                                    );
-                                    None
-                                },
-                            },
-                            None => {
-                                log::warn!("Font '{}' FontFile2 is not a reference", base_font);
-                                None
-                            },
-                        };
-                        (font_data, true) // TrueType - can have cmaps
+                        let font_data = ff2_obj
+                            .as_reference()
+                            .and_then(|ff2_ref| {
+                                doc.load_object(ff2_ref).ok().map(|obj| (obj, ff2_ref))
+                            })
+                            .and_then(|(ff2_stream, ff2_ref)| {
+                                doc.decode_stream_with_encryption(&ff2_stream, ff2_ref).ok()
+                            })
+                            .map(|data| {
+                                log::info!(
+                                    "Font '{}' loaded embedded TrueType font ({} bytes)",
+                                    base_font,
+                                    data.len()
+                                );
+                                Arc::new(data)
+                            });
+                        (font_data, true)  // TrueType - can have cmaps
                     } else if let Some(ff3_obj) = descriptor_dict.get("FontFile3") {
-                        log::info!(
-                            "Font '{}' has FontFile3 entry (CFF/OpenType - no TrueType cmap)",
-                            base_font
-                        );
-                        let font_data = match ff3_obj.as_reference() {
-                            Some(ff3_ref) => match doc.load_object(ff3_ref) {
-                                Ok(ff3_stream) => match ff3_stream.decode_stream_data() {
-                                    Ok(data) => {
-                                        log::info!(
-                                            "Font '{}' loaded embedded CFF/OpenType font ({} bytes)",
-                                            base_font,
-                                            data.len()
-                                        );
-                                        Some(Arc::new(data))
-                                    },
-                                    Err(e) => {
-                                        log::warn!(
-                                            "Font '{}' FontFile3 stream decode failed: {}",
-                                            base_font,
-                                            e
-                                        );
-                                        None
-                                    },
-                                },
-                                Err(e) => {
-                                    log::warn!(
-                                        "Font '{}' FontFile3 object load failed: {}",
-                                        base_font,
-                                        e
-                                    );
-                                    None
-                                },
-                            },
-                            None => {
-                                log::warn!("Font '{}' FontFile3 is not a reference", base_font);
-                                None
-                            },
-                        };
-                        (font_data, false) // CFF - no TrueType cmap
+                        log::info!("Font '{}' has FontFile3 entry (CFF/OpenType - no TrueType cmap)", base_font);
+                        let font_data = ff3_obj
+                            .as_reference()
+                            .and_then(|ff3_ref| {
+                                doc.load_object(ff3_ref).ok().map(|obj| (obj, ff3_ref))
+                            })
+                            .and_then(|(ff3_stream, ff3_ref)| {
+                                doc.decode_stream_with_encryption(&ff3_stream, ff3_ref).ok()
+                            })
+                            .map(|data| {
+                                log::info!(
+                                    "Font '{}' loaded embedded CFF/OpenType font ({} bytes)",
+                                    base_font,
+                                    data.len()
+                                );
+                                Arc::new(data)
+                            });
+                        (font_data, false)  // CFF - no TrueType cmap
                     } else if descriptor_dict.get("FontFile").is_some() {
                         log::info!(
                             "Font '{}' has FontFile entry (Type 1 - not supported for cmap)",
@@ -464,7 +423,15 @@ impl FontInfo {
             let stream_opt = doc
                 .load_object(cmap_ref)
                 .ok()
+<<<<<<< HEAD
                 .and_then(|cmap_obj| cmap_obj.decode_stream_data().ok());
+||||||| b00f6cd
+                .and_then(|cmap_obj| cmap_obj.decode_stream_data().ok())
+                .and_then(|decoded| parse_tounicode_cmap(&decoded).ok());
+=======
+                .and_then(|cmap_obj| doc.decode_stream_with_encryption(&cmap_obj, cmap_ref).ok())
+                .and_then(|decoded| parse_tounicode_cmap(&decoded).ok());
+>>>>>>> origin/main
 
             if let Some(stream_bytes) = stream_opt {
                 log::info!(
