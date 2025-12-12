@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Annotations API** - Extract PDF annotations including comments, highlights, and links
 - **ASCII85Decode filter** - Support for ASCII85-encoded streams (already implemented)
 
+## [0.1.3] - 2025-12-11
+
+### Fixed
+- **Encrypted Stream Decoding** - Fixed stream decoding order for encrypted PDFs
+  - Ensures decryption happens BEFORE decompression per PDF Spec ISO 32000-1:2008 Section 7.6.2
+  - Fixes image and font extraction from encrypted PDF documents
+  - Properly handles encrypted streams with decryption context
+
 ## [0.1.2] - 2025-11-26
 
 ### Added
