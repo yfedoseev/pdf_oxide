@@ -20,103 +20,114 @@
 //!     --dict models/en_dict.txt
 //! ```
 
-#![cfg(feature = "ocr")]
-
-use pdf_oxide::document::PdfDocument;
-use pdf_oxide::ocr::{self, OcrConfigBuilder, OcrEngine, OcrExtractOptions};
 use std::env;
 
+#[cfg(feature = "ocr")]
+use pdf_oxide::document::PdfDocument;
+#[cfg(feature = "ocr")]
+use pdf_oxide::ocr::{self, OcrConfigBuilder, OcrEngine, OcrExtractOptions};
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
-
-    let args: Vec<String> = env::args().collect();
-
-    // Simple argument parsing
-    let mut pdf_path = None;
-    let mut det_model = None;
-    let mut rec_model = None;
-    let mut dict_path = None;
-    let mut dpi = 300.0f32;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--pdf" => {
-                pdf_path = Some(args.get(i + 1).cloned().ok_or("Missing --pdf value")?);
-                i += 2;
-            },
-            "--det" => {
-                det_model = Some(args.get(i + 1).cloned().ok_or("Missing --det value")?);
-                i += 2;
-            },
-            "--rec" => {
-                rec_model = Some(args.get(i + 1).cloned().ok_or("Missing --rec value")?);
-                i += 2;
-            },
-            "--dict" => {
-                dict_path = Some(args.get(i + 1).cloned().ok_or("Missing --dict value")?);
-                i += 2;
-            },
-            "--dpi" => {
-                dpi = args
-                    .get(i + 1)
-                    .ok_or("Missing --dpi value")?
-                    .parse()
-                    .map_err(|_| "Invalid --dpi value")?;
-                i += 2;
-            },
-            "--help" | "-h" => {
-                print_usage(&args[0]);
-                return Ok(());
-            },
-            _ => {
-                eprintln!("Unknown argument: {}", args[i]);
-                print_usage(&args[0]);
-                std::process::exit(1);
-            },
-        }
+    #[cfg(not(feature = "ocr"))]
+    {
+        eprintln!("This example requires the 'ocr' feature to be enabled.");
+        eprintln!("Run with: cargo run --features ocr --example ocr_scanned_pdf");
+        return Ok(());
     }
 
-    let pdf_path = pdf_path.ok_or("Missing required --pdf argument")?;
-    let det_model = det_model.ok_or("Missing required --det argument")?;
-    let rec_model = rec_model.ok_or("Missing required --rec argument")?;
-    let dict_path = dict_path.ok_or("Missing required --dict argument")?;
+    #[cfg(feature = "ocr")]
+    {
+        env_logger::init();
 
-    // Configure OCR
-    let config = OcrConfigBuilder::new()
-        .det_threshold(0.3)
-        .box_threshold(0.5)
-        .rec_threshold(0.5)
-        .num_threads(4)
-        .build();
+        let args: Vec<String> = env::args().collect();
 
-    println!("Loading OCR models...");
-    let engine = OcrEngine::new(&det_model, &rec_model, &dict_path, config)?;
-    println!("Models loaded successfully.");
+        // Simple argument parsing
+        let mut pdf_path = None;
+        let mut det_model = None;
+        let mut rec_model = None;
+        let mut dict_path = None;
+        let mut dpi = 300.0f32;
 
-    // Open PDF
-    println!("Opening PDF: {}", pdf_path);
-    let mut doc = PdfDocument::open(&pdf_path)?;
-    let page_count = doc.page_count()?;
-    println!("PDF has {} pages", page_count);
+        let mut i = 1;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--pdf" => {
+                    pdf_path = Some(args.get(i + 1).cloned().ok_or("Missing --pdf value")?);
+                    i += 2;
+                },
+                "--det" => {
+                    det_model = Some(args.get(i + 1).cloned().ok_or("Missing --det value")?);
+                    i += 2;
+                },
+                "--rec" => {
+                    rec_model = Some(args.get(i + 1).cloned().ok_or("Missing --rec value")?);
+                    i += 2;
+                },
+                "--dict" => {
+                    dict_path = Some(args.get(i + 1).cloned().ok_or("Missing --dict value")?);
+                    i += 2;
+                },
+                "--dpi" => {
+                    dpi = args
+                        .get(i + 1)
+                        .ok_or("Missing --dpi value")?
+                        .parse()
+                        .map_err(|_| "Invalid --dpi value")?;
+                    i += 2;
+                },
+                "--help" | "-h" => {
+                    print_usage(&args[0]);
+                    return Ok(());
+                },
+                _ => {
+                    eprintln!("Unknown argument: {}", args[i]);
+                    print_usage(&args[0]);
+                    std::process::exit(1);
+                },
+            }
+        }
 
-    // Process each page
-    let options = OcrExtractOptions::with_dpi(dpi);
+        let pdf_path = pdf_path.ok_or("Missing required --pdf argument")?;
+        let det_model = det_model.ok_or("Missing required --det argument")?;
+        let rec_model = rec_model.ok_or("Missing required --rec argument")?;
+        let dict_path = dict_path.ok_or("Missing required --dict argument")?;
 
-    for page_idx in 0..page_count {
-        println!("\n=== Page {} ===", page_idx + 1);
+        // Configure OCR
+        let config = OcrConfigBuilder::new()
+            .det_threshold(0.3)
+            .box_threshold(0.5)
+            .rec_threshold(0.5)
+            .num_threads(4)
+            .build();
 
-        // Check if page needs OCR
-        let needs_ocr = ocr::needs_ocr(&mut doc, page_idx)?;
+        println!("Loading OCR models...");
+        let engine = OcrEngine::new(&det_model, &rec_model, &dict_path, config)?;
+        println!("Models loaded successfully.");
 
-        if needs_ocr {
-            println!("Page is scanned, running OCR...");
-            let text = ocr::ocr_page(&mut doc, page_idx, &engine, &options)?;
-            println!("{}", text);
-        } else {
-            println!("Page has native text, using standard extraction...");
-            let text = doc.extract_text(page_idx)?;
-            println!("{}", text);
+        // Open PDF
+        println!("Opening PDF: {}", pdf_path);
+        let mut doc = PdfDocument::open(&pdf_path)?;
+        let page_count = doc.page_count()?;
+        println!("PDF has {} pages", page_count);
+
+        // Process each page
+        let options = OcrExtractOptions::with_dpi(dpi);
+
+        for page_idx in 0..page_count {
+            println!("\n=== Page {} ===", page_idx + 1);
+
+            // Check if page needs OCR
+            let needs_ocr = ocr::needs_ocr(&mut doc, page_idx)?;
+
+            if needs_ocr {
+                println!("Page is scanned, running OCR...");
+                let text = ocr::ocr_page(&mut doc, page_idx, &engine, &options)?;
+                println!("{}", text);
+            } else {
+                println!("Page has native text, using standard extraction...");
+                let text = doc.extract_text(page_idx)?;
+                println!("{}", text);
+            }
         }
     }
 
