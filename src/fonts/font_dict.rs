@@ -1883,6 +1883,82 @@ impl FontInfo {
             || name_lower.contains("zapf")
             || name_lower.contains("dingbat")
     }
+
+    /// Get character from encoding (custom or standard).
+    ///
+    /// Week 2 Day 7 - Custom Encoding Support (2B)
+    ///
+    /// This method normalizes a raw character code through the font's encoding,
+    /// converting it to the actual Unicode character. This ensures word boundary
+    /// detection works on real characters, not raw byte codes.
+    ///
+    /// Per PDF Spec ISO 32000-1:2008, Section 9.6.6:
+    /// - Custom encodings with /Differences override standard encodings
+    /// - Standard encodings have well-defined mappings
+    /// - Identity encoding passes codes through as-is
+    ///
+    /// # Arguments
+    ///
+    /// * `code` - The raw byte value from the PDF content stream
+    ///
+    /// # Returns
+    ///
+    /// The normalized Unicode character, or None if no mapping exists
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use pdf_oxide::fonts::FontInfo;
+    ///
+    /// let font_info = /* ... load font ... */;
+    /// if let Some(ch) = font_info.get_encoded_char(0x64) {
+    ///     println!("Code 0x64 maps to: {}", ch);
+    /// }
+    /// ```
+    pub fn get_encoded_char(&self, code: u8) -> Option<char> {
+        match &self.encoding {
+            Encoding::Custom(mappings) => {
+                // Custom encoding: use explicit character mappings
+                mappings.get(&code).copied()
+            },
+            Encoding::Standard(_encoding_name) => {
+                // Standard encoding: for now, assume ToUnicode CMap handles this
+                // If we need explicit standard encoding tables, add them here
+                // For basic ASCII range, we can pass through
+                if code < 128 { Some(code as char) } else { None }
+            },
+            Encoding::Identity => {
+                // Identity encoding: code == Unicode (for CID fonts)
+                // For single-byte codes, treat as Unicode
+                if code < 128 { Some(code as char) } else { None }
+            },
+        }
+    }
+
+    /// Check if font has custom encoding.
+    ///
+    /// Week 2 Day 7 - Custom Encoding Support (2B)
+    ///
+    /// Returns true if the font uses a custom encoding with /Differences array,
+    /// which overrides standard encoding for specific character codes.
+    ///
+    /// # Returns
+    ///
+    /// true if the font has a custom encoding, false otherwise
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use pdf_oxide::fonts::FontInfo;
+    ///
+    /// let font_info = /* ... load font ... */;
+    /// if font_info.has_custom_encoding() {
+    ///     println!("Font uses custom encoding");
+    /// }
+    /// ```
+    pub fn has_custom_encoding(&self) -> bool {
+        matches!(self.encoding, Encoding::Custom(_))
+    }
 }
 
 /// Map a PDF glyph name to a Unicode character.

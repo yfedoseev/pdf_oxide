@@ -2346,7 +2346,7 @@ impl PdfDocument {
         let spans = self.extract_spans(page_index)?;
 
         // Step 2: Create pipeline config from options (using adapter from Phase 2)
-        let mut pipeline_config = TextPipelineConfig::from_conversion_options(options);
+        let pipeline_config = TextPipelineConfig::from_conversion_options(options);
 
         // Step 3: Handle structure tree context for reading order
         // Try to extract MCID order for StructureTreeFirst mode

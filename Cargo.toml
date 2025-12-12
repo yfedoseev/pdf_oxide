@@ -136,6 +136,34 @@ lto = true
 name = "pdf_extraction_performance"
 harness = false
 
+[[bench]]
+name = "word_boundary_benchmarks"
+harness = false
+
+[[bench]]
+name = "script_detection_benchmarks"
+harness = false
+
+[[bench]]
+name = "ligature_benchmarks"
+harness = false
+
+[[bench]]
+name = "cjk_benchmarks"
+harness = false
+
+[[bench]]
+name = "rtl_benchmarks"
+harness = false
+
+[[bench]]
+name = "complex_script_benchmarks"
+harness = false
+
+[[bench]]
+name = "full_pipeline_benchmarks"
+harness = false
+
 # Cargo auto-discovers binaries in src/bin/
 
 [package.metadata.docs.rs]

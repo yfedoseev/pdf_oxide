@@ -44,6 +44,9 @@ mod tests {
             x_position: 100.0, // Current X position
             tj_offset: None,   // No TJ offset for this character
             font_size: 12.0,   // Font size in points
+            is_ligature: false,
+            original_ligature: None,
+            protected_from_split: false,
         };
 
         assert_eq!(char_info.code, 'H' as u32);
@@ -69,8 +72,7 @@ mod tests {
             font_size: 12.0,
             is_ligature: false,
             original_ligature: None,
-            is_ligature: false,
-            original_ligature: None,
+            protected_from_split: false,
         };
 
         assert_eq!(char_info.tj_offset, Some(-200));
@@ -89,10 +91,6 @@ mod tests {
 
         let context = BoundaryContext {
             font_size: 12.0,
-            is_ligature: false,
-            original_ligature: None,
-            is_ligature: false,
-            original_ligature: None,
             horizontal_scaling: 100.0,
             word_spacing: 0.0,
             char_spacing: 0.0,
@@ -112,10 +110,6 @@ mod tests {
 
         let context = BoundaryContext {
             font_size: 12.0,
-            is_ligature: false,
-            original_ligature: None,
-            is_ligature: false,
-            original_ligature: None,
             horizontal_scaling: 80.0, // Condensed text
             word_spacing: 0.0,
             char_spacing: 0.0,
@@ -141,8 +135,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'e' as u32,
@@ -153,8 +146,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'l' as u32,
@@ -165,8 +157,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'l' as u32,
@@ -177,8 +168,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'o' as u32,
@@ -189,8 +179,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
         ];
 
@@ -215,8 +204,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'e' as u32,
@@ -227,8 +215,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'l' as u32,
@@ -239,8 +226,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'l' as u32,
@@ -251,8 +237,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'o' as u32,
@@ -263,8 +248,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             }, // Offset here
             CharacterInfo {
                 code: 'W' as u32,
@@ -275,8 +259,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
         ];
 
@@ -301,8 +284,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'e' as u32,
@@ -313,8 +295,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'x' as u32,
@@ -325,8 +306,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 't' as u32,
@@ -337,8 +317,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
         ];
 
@@ -368,8 +347,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             }, // Narrow
             CharacterInfo {
                 code: 'M' as u32,
@@ -380,8 +358,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             }, // Wide
             CharacterInfo {
                 code: 'W' as u32,
@@ -392,8 +369,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             }, // Very wide
         ];
 
@@ -419,8 +395,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'h' as u32,
@@ -431,8 +406,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'e' as u32,
@@ -443,8 +417,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             // (quick)
             CharacterInfo {
@@ -456,8 +429,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'u' as u32,
@@ -468,8 +440,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'i' as u32,
@@ -480,8 +451,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'c' as u32,
@@ -492,8 +462,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'k' as u32,
@@ -504,8 +473,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             // (brown)
             CharacterInfo {
@@ -517,8 +485,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'r' as u32,
@@ -529,8 +496,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'o' as u32,
@@ -541,8 +507,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'w' as u32,
@@ -553,8 +518,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
             CharacterInfo {
                 code: 'n' as u32,
@@ -565,8 +529,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
-                is_ligature: false,
-                original_ligature: None,
+                protected_from_split: false,
             },
         ];
 

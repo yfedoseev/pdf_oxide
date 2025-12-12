@@ -233,6 +233,7 @@ mod tests {
             font_size: 12.0,
             is_ligature: true,
             original_ligature: None,
+            protected_from_split: false,
         };
 
         let context = BoundaryContext::new(12.0);
@@ -252,6 +253,7 @@ mod tests {
             font_size: 12.0,
             is_ligature: true,
             original_ligature: None,
+            protected_from_split: false,
         };
 
         let next = CharacterInfo {
@@ -263,6 +265,7 @@ mod tests {
             font_size: 12.0,
             is_ligature: false,
             original_ligature: None,
+            protected_from_split: false,
         };
 
         let context = BoundaryContext::new(12.0);
@@ -282,6 +285,7 @@ mod tests {
             font_size: 12.0,
             is_ligature: true,
             original_ligature: None,
+            protected_from_split: false,
         };
 
         let next = CharacterInfo {
@@ -293,6 +297,7 @@ mod tests {
             font_size: 12.0,
             is_ligature: false,
             original_ligature: None,
+            protected_from_split: false,
         };
 
         let context = BoundaryContext::new(12.0);
@@ -312,6 +317,7 @@ mod tests {
             font_size: 12.0,
             is_ligature: true,
             original_ligature: None,
+            protected_from_split: false,
         };
 
         let next = CharacterInfo {
@@ -323,6 +329,7 @@ mod tests {
             font_size: 12.0,
             is_ligature: false,
             original_ligature: None,
+            protected_from_split: false,
         };
 
         let context = BoundaryContext::new(12.0);

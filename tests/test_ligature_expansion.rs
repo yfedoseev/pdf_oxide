@@ -30,6 +30,7 @@ fn create_char_info(
         font_size: 12.0,
         is_ligature,
         original_ligature: None,
+        protected_from_split: false,
     }
 }
 

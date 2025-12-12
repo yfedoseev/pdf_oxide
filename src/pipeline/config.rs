@@ -16,25 +16,20 @@
 ///
 /// Primary mode: Uses WordBoundaryDetector to detect boundaries BEFORE creating
 /// TextSpans, partitioning the tj_character_array into word-level clusters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WordBoundaryMode {
     /// Use WordBoundaryDetector only as tiebreaker (backward compatible, default)
+    #[default]
     Tiebreaker,
     /// Use WordBoundaryDetector as primary detector before span creation
     Primary,
-}
-
-impl Default for WordBoundaryMode {
-    fn default() -> Self {
-        Self::Tiebreaker
-    }
 }
 
 /// Unified configuration for the text extraction pipeline.
 ///
 /// This replaces the scattered configuration across multiple modules
 /// and provides a single configuration point for the entire pipeline.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TextPipelineConfig {
     /// Spacing configuration for span merging
     pub spacing: SpacingConfig,
@@ -50,18 +45,6 @@ pub struct TextPipelineConfig {
 
     /// Word boundary detection mode for TJ array processing (Phase 9.2)
     pub word_boundary_mode: WordBoundaryMode,
-}
-
-impl Default for TextPipelineConfig {
-    fn default() -> Self {
-        Self {
-            spacing: SpacingConfig::default(),
-            tj_threshold: TjThresholdConfig::default(),
-            reading_order: ReadingOrderConfig::default(),
-            output: OutputConfig::default(),
-            word_boundary_mode: WordBoundaryMode::default(),
-        }
-    }
 }
 
 impl TextPipelineConfig {

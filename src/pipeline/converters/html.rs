@@ -140,7 +140,7 @@ impl HtmlOutputConverter {
     fn convert_layout_mode(
         &self,
         spans: &[OrderedTextSpan],
-        config: &TextPipelineConfig,
+        _config: &TextPipelineConfig,
     ) -> Result<String> {
         if spans.is_empty() {
             return Ok(String::new());

@@ -67,7 +67,7 @@ impl XYCutStrategy {
 
     /// Create with custom valley threshold (0.0-1.0).
     pub fn with_valley_threshold(mut self, threshold: f32) -> Self {
-        self.valley_threshold = threshold.max(0.0).min(1.0);
+        self.valley_threshold = threshold.clamp(0.0, 1.0);
         self
     }
 
@@ -498,7 +498,7 @@ mod tests {
 
         if let Some(profile) = strategy.horizontal_projection(&spans) {
             // Should have density peaks around x=25 and x=115
-            assert!(profile.density.len() > 0);
+            assert!(!profile.density.is_empty());
             assert!(profile.density.len() >= 120); // Total width from 10 to 130 = 120
 
             // Gap is between local x=30 and x=90 (relative to x_min=10)
@@ -523,7 +523,7 @@ mod tests {
 
         if let Some(profile) = strategy.vertical_projection(&spans) {
             // Should have density peaks around y=110 and y=60
-            assert!(profile.density.len() > 0);
+            assert!(!profile.density.is_empty());
             // Large gap between 70 and 100
             assert!(profile.density.len() > 50);
         }

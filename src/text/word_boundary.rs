@@ -17,6 +17,17 @@
 //! - ISO 32000-1:2008 Section 9.3: Text State Parameters (Tc, Tw, Tz, TL)
 //! - ISO 32000-1:2008 Section 9.6-9.8: Font Metrics
 
+use crate::text::cjk_punctuation;
+use crate::text::complex_script_detector::{
+    ComplexScript, detect_complex_script, handle_devanagari_boundary, handle_indic_boundary,
+    handle_khmer_boundary, handle_thai_boundary,
+};
+use crate::text::rtl_detector::should_split_at_rtl_boundary;
+use crate::text::script_detector::{
+    DocumentLanguage, detect_cjk_script, handle_japanese_text, handle_korean_text,
+    should_split_on_script_transition,
+};
+
 /// Information about a character in the text stream for boundary detection.
 ///
 /// This type captures all the information needed to determine word boundaries
@@ -50,6 +61,14 @@ pub struct CharacterInfo {
     /// Used for debugging and tracking ligature expansion
     /// Week 2 Day 6: Ligature Expansion Enhancement (2A)
     pub original_ligature: Option<char>,
+
+    /// Whether this character is protected from word boundary splitting
+    /// Week 2 Day 7: Email/URL Pattern Preservation (2C)
+    ///
+    /// When true, word boundary detection will skip creating boundaries
+    /// before or after this character. Used to preserve email addresses
+    /// (user@example.com) and URLs (http://example.com) as single tokens.
+    pub protected_from_split: bool,
 }
 
 /// Context information for word boundary detection.
@@ -88,6 +107,92 @@ impl BoundaryContext {
     }
 }
 
+/// Document script profile for optimization.
+///
+/// OPTIMIZATION (Issue #1 fix): Detect document primary script once,
+/// then skip unnecessary script detection functions for faster boundary detection.
+///
+/// When documents contain only Latin text, we skip RTL and CJK detection entirely.
+/// When documents are CJK-dominant, we skip RTL detection.
+/// This reduces function call overhead from millions per batch to thousands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentScript {
+    /// Latin-only document (ASCII + extended Latin)
+    /// Fast path: only check space, TJ offset, geometric gap
+    Latin,
+
+    /// CJK-dominant document (Chinese, Japanese, Korean)
+    /// Skip RTL detection, use optimized CJK path
+    CJK,
+
+    /// Right-to-left dominant (Arabic, Hebrew)
+    /// Skip CJK detection, use optimized RTL path
+    RTL,
+
+    /// Complex scripts (Devanagari, Thai, Khmer, etc.)
+    /// Use specialized complex script detection
+    Complex,
+
+    /// Mixed scripts or unknown
+    /// Check all detection functions (slowest path)
+    Mixed,
+}
+
+impl DocumentScript {
+    /// Detect document script profile by sampling first 1000 characters.
+    ///
+    /// This optimization reduces boundary detection overhead by skipping
+    /// unnecessary script detection for documents with known script profiles.
+    ///
+    /// PERFORMANCE: O(min(n, 1000)) sampling, executed once per extraction
+    pub fn detect_from_characters(characters: &[CharacterInfo]) -> Self {
+        if characters.is_empty() {
+            return Self::Latin; // Default to Latin for empty documents
+        }
+
+        let mut has_rtl = false;
+        let mut has_cjk = false;
+        let mut has_complex = false;
+        let sample_size = characters.len().min(1000);
+
+        // Sample first 1000 characters to classify document
+        for ch in &characters[..sample_size] {
+            // Check for RTL (fast range check)
+            if (0x0590..=0x08FF).contains(&ch.code) || (0xFB1D..=0xFDFF).contains(&ch.code) {
+                has_rtl = true;
+            }
+
+            // Check for CJK (fast range checks - common ranges first)
+            if (0x4E00..=0x9FFF).contains(&ch.code) // Han
+                || (0x3040..=0x309F).contains(&ch.code) // Hiragana
+                || (0x30A0..=0x30FF).contains(&ch.code) // Katakana
+                || (0xAC00..=0xD7AF).contains(&ch.code)
+            {
+                // Hangul
+                has_cjk = true;
+            }
+
+            // Check for complex scripts
+            if (0x0900..=0x097F).contains(&ch.code) // Devanagari
+                || (0x0E00..=0x0E7F).contains(&ch.code) // Thai
+                || (0x1780..=0x17FF).contains(&ch.code)
+            {
+                // Khmer
+                has_complex = true;
+            }
+        }
+
+        // Decision tree: classify based on what we found
+        match (has_rtl, has_cjk, has_complex) {
+            (false, false, false) => Self::Latin, // Pure Latin (fast path)
+            (false, true, _) => Self::CJK,        // CJK-dominant (skip RTL)
+            (true, false, _) => Self::RTL,        // RTL-dominant (skip CJK)
+            (_, _, true) => Self::Complex,        // Complex scripts present
+            _ => Self::Mixed,                     // Mixed scripts
+        }
+    }
+}
+
 /// Main word boundary detection engine.
 ///
 /// Implements the specification-compliant word boundary detection algorithm
@@ -104,6 +209,16 @@ pub struct WordBoundaryDetector {
 
     /// Enable CJK-aware boundary detection
     cjk_enabled: bool,
+
+    /// Enable script-aware transition detection
+    detect_script_transitions: bool,
+
+    /// Document language context (if known)
+    document_language: Option<DocumentLanguage>,
+
+    /// Detected document script profile (Issue #1 optimization)
+    /// Cached at detector creation to skip unnecessary detection functions
+    primary_script: DocumentScript,
 }
 
 impl Default for WordBoundaryDetector {
@@ -122,6 +237,9 @@ impl WordBoundaryDetector {
             // but sensitive enough to detect actual word breaks
             geometric_gap_ratio: 0.8,
             cjk_enabled: true,
+            detect_script_transitions: true,
+            document_language: None,
+            primary_script: DocumentScript::Mixed, // Default to Mixed, will be set by caller
         }
     }
 
@@ -146,6 +264,35 @@ impl WordBoundaryDetector {
     /// Enable or disable CJK-aware word boundary detection.
     pub fn with_cjk_enabled(mut self, enabled: bool) -> Self {
         self.cjk_enabled = enabled;
+        self
+    }
+
+    /// Enable or disable script-aware transition detection.
+    ///
+    /// When enabled, the detector will analyze script transitions (e.g., Hiragana→Katakana)
+    /// and apply language-specific rules for word boundaries.
+    pub fn with_script_detection(mut self, enabled: bool) -> Self {
+        self.detect_script_transitions = enabled;
+        self
+    }
+
+    /// Set the document language context.
+    ///
+    /// This helps apply appropriate script transition rules:
+    /// - Japanese: Allow Han↔Kana transitions
+    /// - Korean: Allow Hangul↔Hanja transitions
+    /// - Chinese: Use conservative Han character boundaries
+    pub fn with_document_language(mut self, lang: DocumentLanguage) -> Self {
+        self.document_language = Some(lang);
+        self
+    }
+
+    /// Set the document script profile (Issue #1 optimization).
+    ///
+    /// When set, the detector will skip unnecessary script detection functions
+    /// for documents with known script profiles, significantly improving performance.
+    pub fn with_document_script(mut self, script: DocumentScript) -> Self {
+        self.primary_script = script;
         self
     }
 
@@ -199,7 +346,8 @@ impl WordBoundaryDetector {
     /// 1. **Space characters** (U+0020, U+200B): Always create boundaries
     /// 2. **TJ array offsets**: Negative values below threshold indicate spacing
     /// 3. **Geometric gaps**: Gaps larger than font-size-relative threshold
-    /// 4. **CJK characters**: Each non-punctuation CJK character creates boundary
+    /// 4. **CJK script transitions**: Script-aware word boundaries
+    /// 5. **CJK characters**: Each non-punctuation CJK character creates boundary (legacy)
     ///
     /// # Arguments
     ///
@@ -216,11 +364,92 @@ impl WordBoundaryDetector {
         curr_char: &CharacterInfo,
         context: &BoundaryContext,
     ) -> bool {
+        // Week 2 Day 7 (2C): Skip boundaries in protected contexts (emails, URLs)
+        if prev_char.protected_from_split || curr_char.protected_from_split {
+            return false;
+        }
+
         // Rule 1: ASCII space (U+0020) or zero-width space (U+200B)
         if prev_char.code == 0x20 || prev_char.code == 0x200B {
             return true;
         }
 
+        // OPTIMIZATION (Issue #1): Use script-aware dispatch to avoid unnecessary function calls
+        // This reduces millions of function calls per batch by skipping detection for known script types
+        match self.primary_script {
+            // Fast path: Latin-only documents - skip RTL and CJK detection entirely
+            DocumentScript::Latin => self.is_word_boundary_basic(prev_char, curr_char, context),
+
+            // CJK path: Skip RTL detection, use only CJK detection
+            DocumentScript::CJK => {
+                if self.detect_script_transitions {
+                    if let Some(decision) = self.should_split_at_cjk_boundary(prev_char, curr_char)
+                    {
+                        return decision;
+                    }
+                }
+                self.is_word_boundary_basic(prev_char, curr_char, context)
+            },
+
+            // RTL path: Skip CJK detection, use only RTL detection
+            DocumentScript::RTL => {
+                if let Some(decision) =
+                    should_split_at_rtl_boundary(prev_char, curr_char, Some(context))
+                {
+                    return decision;
+                }
+                self.is_word_boundary_basic(prev_char, curr_char, context)
+            },
+
+            // Complex script path: Use complex script detection, skip RTL/CJK
+            DocumentScript::Complex => {
+                if let Some(decision) =
+                    self.should_split_at_complex_script_boundary(prev_char, curr_char)
+                {
+                    return decision;
+                }
+                self.is_word_boundary_basic(prev_char, curr_char, context)
+            },
+
+            // Mixed path: Check all detection functions (original behavior)
+            DocumentScript::Mixed => {
+                // Week 2 Day 10: RTL (Arabic/Hebrew) boundary detection
+                if let Some(decision) =
+                    should_split_at_rtl_boundary(prev_char, curr_char, Some(context))
+                {
+                    return decision;
+                }
+
+                // Week 2 Days 8-9 (3A-3D): CJK script-aware boundaries
+                if self.detect_script_transitions {
+                    if let Some(decision) = self.should_split_at_cjk_boundary(prev_char, curr_char)
+                    {
+                        return decision;
+                    }
+                }
+
+                // Week 3 Days 11-12: Complex script boundary detection
+                if let Some(decision) =
+                    self.should_split_at_complex_script_boundary(prev_char, curr_char)
+                {
+                    return decision;
+                }
+
+                self.is_word_boundary_basic(prev_char, curr_char, context)
+            },
+        }
+    }
+
+    /// Basic boundary detection used by all script paths.
+    ///
+    /// This contains the core TJ offset and geometric gap checks
+    /// that apply to all scripts.
+    fn is_word_boundary_basic(
+        &self,
+        prev_char: &CharacterInfo,
+        curr_char: &CharacterInfo,
+        context: &BoundaryContext,
+    ) -> bool {
         // Rule 2: TJ array offset signals explicit spacing
         if let Some(tj_offset) = prev_char.tj_offset {
             if tj_offset < self.tj_offset_threshold {
@@ -233,8 +462,9 @@ impl WordBoundaryDetector {
             return true;
         }
 
-        // Rule 4: CJK character boundaries (if enabled)
+        // Rule 4: CJK character boundaries (legacy, if enabled but script detection disabled)
         if self.cjk_enabled
+            && !self.detect_script_transitions
             && self.is_cjk_character(prev_char.code)
             && !self.is_cjk_punctuation(prev_char.code)
         {
@@ -242,6 +472,122 @@ impl WordBoundaryDetector {
         }
 
         false
+    }
+
+    /// Determine if a complex script boundary should be created.
+    ///
+    /// This implements Week 3 Days 11-12 Complex Script support:
+    /// - Devanagari virama and matras
+    /// - Thai tone marks and vowel modifiers
+    /// - Khmer COENG and vowels
+    /// - Indic scripts (Tamil, Telugu, Kannada, Malayalam) diacritics
+    ///
+    /// # Arguments
+    ///
+    /// * `prev_char` - Previous character information
+    /// * `curr_char` - Current character information
+    ///
+    /// # Returns
+    ///
+    /// - `Some(true)` - Must create boundary
+    /// - `Some(false)` - Must not create boundary
+    /// - `None` - Use other signals (TJ offset, geometry)
+    fn should_split_at_complex_script_boundary(
+        &self,
+        prev_char: &CharacterInfo,
+        curr_char: &CharacterInfo,
+    ) -> Option<bool> {
+        let prev_script = detect_complex_script(prev_char.code);
+        let curr_script = detect_complex_script(curr_char.code);
+
+        // If neither is complex script, not our concern
+        if prev_script.is_none() && curr_script.is_none() {
+            return None;
+        }
+
+        // Apply script-specific rules based on which scripts are involved
+        match (prev_script, curr_script) {
+            // Devanagari boundaries
+            (Some(ComplexScript::Devanagari), _) | (_, Some(ComplexScript::Devanagari)) => {
+                handle_devanagari_boundary(prev_char, curr_char)
+            },
+            // Thai boundaries
+            (Some(ComplexScript::Thai), _) | (_, Some(ComplexScript::Thai)) => {
+                handle_thai_boundary(prev_char, curr_char)
+            },
+            // Khmer boundaries
+            (Some(ComplexScript::Khmer), _) | (_, Some(ComplexScript::Khmer)) => {
+                handle_khmer_boundary(prev_char, curr_char)
+            },
+            // South Asian Indic scripts (Tamil, Telugu, Kannada, Malayalam)
+            (Some(ComplexScript::Tamil), _)
+            | (_, Some(ComplexScript::Tamil))
+            | (Some(ComplexScript::Telugu), _)
+            | (_, Some(ComplexScript::Telugu))
+            | (Some(ComplexScript::Kannada), _)
+            | (_, Some(ComplexScript::Kannada))
+            | (Some(ComplexScript::Malayalam), _)
+            | (_, Some(ComplexScript::Malayalam))
+            | (Some(ComplexScript::Bengali), _)
+            | (_, Some(ComplexScript::Bengali)) => handle_indic_boundary(prev_char, curr_char),
+            // Other complex scripts - use conservative default (let other signals decide)
+            _ => None,
+        }
+    }
+
+    /// Determine if a CJK boundary should be created based on script analysis.
+    ///
+    /// This implements Week 2 Days 8-9 CJK script support:
+    /// - CJK punctuation detection
+    /// - Script type detection
+    /// - Language-specific transition rules
+    /// - Japanese modifier handling
+    ///
+    /// # Arguments
+    ///
+    /// * `prev_char` - Previous character information
+    /// * `curr_char` - Current character information
+    ///
+    /// # Returns
+    ///
+    /// - `Some(true)` - Must create boundary
+    /// - `Some(false)` - Must not create boundary
+    /// - `None` - Use other signals (TJ offset, geometry)
+    fn should_split_at_cjk_boundary(
+        &self,
+        prev_char: &CharacterInfo,
+        curr_char: &CharacterInfo,
+    ) -> Option<bool> {
+        // Check CJK punctuation (always creates boundary with high confidence)
+        let prev_punctuation_score =
+            cjk_punctuation::get_cjk_punctuation_boundary_score(prev_char.code);
+        if prev_punctuation_score >= 0.9 {
+            // Sentence-ending and enumeration punctuation create boundaries
+            return Some(true);
+        }
+
+        // Detect scripts for both characters
+        let prev_script = detect_cjk_script(prev_char.code);
+        let curr_script = detect_cjk_script(curr_char.code);
+
+        // If neither character is CJK, not our concern
+        if prev_script.is_none() && curr_script.is_none() {
+            return None;
+        }
+
+        // Apply language-specific rules
+        match self.document_language {
+            Some(DocumentLanguage::Japanese) => {
+                handle_japanese_text(prev_char, curr_char, prev_script, curr_script)
+            },
+            Some(DocumentLanguage::Korean) => {
+                handle_korean_text(prev_char, curr_char, prev_script, curr_script)
+            },
+            Some(DocumentLanguage::Chinese) | None => {
+                // Chinese or unknown: use script transition analysis
+                should_split_on_script_transition(prev_script, curr_script, self.document_language)
+            },
+        }
     }
 
     /// Check if there is a significant geometric gap between two characters.
@@ -351,6 +697,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'H'
             CharacterInfo {
                 code: 0x65,
@@ -361,6 +708,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'e'
             CharacterInfo {
                 code: 0x20,
@@ -371,6 +719,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // SPACE
             CharacterInfo {
                 code: 0x57,
@@ -381,6 +730,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'W'
         ];
 
@@ -403,6 +753,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'T'
             CharacterInfo {
                 code: 0x2D,
@@ -413,6 +764,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // '-' with large negative offset
             CharacterInfo {
                 code: 0x6F,
@@ -423,6 +775,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'o'
         ];
 
@@ -445,6 +798,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'T'
             CharacterInfo {
                 code: 0x65,
@@ -455,6 +809,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'e'
             CharacterInfo {
                 code: 0x78,
@@ -465,6 +820,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'x'
             CharacterInfo {
                 code: 0x74,
@@ -475,6 +831,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 't'
             // Gap of ~11.1 units (much larger than threshold ~3.6)
             CharacterInfo {
@@ -486,6 +843,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'B'
         ];
 
@@ -509,6 +867,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // CJK UNIFIED IDEOGRAPH
             CharacterInfo {
                 code: 0x6587,
@@ -519,6 +878,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // CJK UNIFIED IDEOGRAPH
             CharacterInfo {
                 code: 0x5B57,
@@ -529,6 +889,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // CJK UNIFIED IDEOGRAPH
         ];
 
@@ -553,6 +914,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'n'
             CharacterInfo {
                 code: 0x200B,
@@ -563,6 +925,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // ZERO WIDTH SPACE
             CharacterInfo {
                 code: 0x72,
@@ -573,6 +936,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'r'
         ];
 
@@ -599,6 +963,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'A' ends at 0.5
             CharacterInfo {
                 code: 0x42,
@@ -609,6 +974,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'B' starts at 8.0
         ];
 
@@ -642,6 +1008,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'H'
             CharacterInfo {
                 code: 0x65,
@@ -652,6 +1019,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'e'
             CharacterInfo {
                 code: 0x20,
@@ -662,6 +1030,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // SPACE
             CharacterInfo {
                 code: 0x57,
@@ -672,6 +1041,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'W'
         ];
 
@@ -695,6 +1065,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'T'
             CharacterInfo {
                 code: 0x2D,
@@ -705,6 +1076,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // '-' with large negative offset
             CharacterInfo {
                 code: 0x6F,
@@ -715,6 +1087,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // 'o'
         ];
 
@@ -738,6 +1111,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // CJK character
             CharacterInfo {
                 code: 0x6587,
@@ -748,6 +1122,7 @@ mod tests {
                 font_size: 12.0,
                 is_ligature: false,
                 original_ligature: None,
+                protected_from_split: false,
             }, // CJK character
         ];
 

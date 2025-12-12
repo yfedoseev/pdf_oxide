@@ -7,7 +7,7 @@ use byteorder::{BigEndian, ReadBytesExt};
 /// The cmap table maps glyph IDs (GIDs) to Unicode code points.
 /// We support formats 4 (BMP), 6 (trimmed), and 12 (Unicode full).
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 /// Represents a TrueType cmap table extracted from an embedded font
 #[derive(Debug, Clone)]
@@ -195,7 +195,7 @@ impl TrueTypeCMap {
 
     /// Parse cmap format 4 (BMP - supports characters U+0000 to U+FFFF)
     fn parse_cmap_format4(cursor: &mut Cursor<&[u8]>) -> Result<HashMap<u16, char>, String> {
-        let length = cursor
+        let _length = cursor
             .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read format 4 length: {}", e))?
             as u32;

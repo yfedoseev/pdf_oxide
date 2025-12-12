@@ -258,8 +258,7 @@ impl TocDetector {
 
     /// Parse page number from text (e.g., "45", "123", "x")
     fn parse_page_number(&self, text: &str) -> Option<u32> {
-        text.trim()
-            .split_whitespace()
+        text.split_whitespace()
             .next()
             .and_then(|w| w.parse::<u32>().ok())
     }
@@ -321,8 +320,7 @@ mod tests {
         let line = "Introduction..........."; // Dots but no page number
         let result = detector.extract_toc_parts(line);
         // Should still extract if enough dots
-        if result.is_some() {
-            let (text, page) = result.unwrap();
+        if let Some((text, page)) = result {
             assert_eq!(text, "Introduction");
             assert!(page.is_empty() || page.contains("."));
         }

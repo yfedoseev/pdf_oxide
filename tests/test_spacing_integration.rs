@@ -49,6 +49,7 @@ fn create_test_span(
         char_spacing: 0.0,         // Tc parameter (Section 9.3.1)
         word_spacing: 0.0,         // Tw parameter (Section 9.3.1)
         horizontal_scaling: 100.0, // Tz parameter (Section 9.3.1)
+        primary_detected: false,
     }
 }
 

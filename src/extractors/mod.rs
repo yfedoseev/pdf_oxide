@@ -6,6 +6,7 @@ pub mod forms;
 pub mod gap_statistics;
 pub mod geometric_spacing;
 pub mod images;
+pub mod pattern_detector;
 pub mod structured;
 pub mod text;
 
@@ -19,6 +20,7 @@ pub use gap_statistics::{
 };
 pub use geometric_spacing::{SpaceInsertion, SpacingConfig, should_insert_space};
 pub use images::{ColorSpace, ImageData, PdfImage, PixelFormat, extract_image_from_xobject};
+pub use pattern_detector::{PatternDetector, PatternPreservationConfig};
 pub use structured::{
     BoundingBox, DocumentElement, DocumentMetadata, ExtractorConfig, ListItem, StructuredDocument,
     StructuredExtractor, TextAlignment, TextStyle,

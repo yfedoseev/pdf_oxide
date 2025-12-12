@@ -61,8 +61,7 @@ fn test_character_info_structure_completeness() {
         font_size: 12.0,
         is_ligature: false,
         original_ligature: None,
-        is_ligature: false,
-        original_ligature: None,
+        protected_from_split: false,
     };
 
     // Verify all fields are accessible
@@ -81,10 +80,6 @@ fn test_boundary_context_structure() {
     // Create a boundary context from text state
     let context = BoundaryContext {
         font_size: 12.0,
-        is_ligature: false,
-        original_ligature: None,
-        is_ligature: false,
-        original_ligature: None,
         horizontal_scaling: 100.0,
         word_spacing: 0.0,
         char_spacing: 0.0,
@@ -119,8 +114,7 @@ fn test_character_array_accumulation() {
             font_size: 12.0,
             is_ligature: false,
             original_ligature: None,
-            is_ligature: false,
-            original_ligature: None,
+            protected_from_split: false,
         });
         x_pos += char_width;
     }
@@ -158,8 +152,7 @@ fn test_tj_offset_association_with_characters() {
             font_size: 12.0,
             is_ligature: false,
             original_ligature: None,
-            is_ligature: false,
-            original_ligature: None,
+            protected_from_split: false,
         });
         x_pos += char_width;
     }
@@ -179,8 +172,7 @@ fn test_tj_offset_association_with_characters() {
             font_size: 12.0,
             is_ligature: false,
             original_ligature: None,
-            is_ligature: false,
-            original_ligature: None,
+            protected_from_split: false,
         });
         x_pos += char_width;
     }
@@ -219,8 +211,7 @@ fn test_character_tracking_with_mixed_offsets() {
             font_size: 12.0,
             is_ligature: false,
             original_ligature: None,
-            is_ligature: false,
-            original_ligature: None,
+            protected_from_split: false,
         });
         x_pos += char_width;
     }
@@ -237,8 +228,7 @@ fn test_character_tracking_with_mixed_offsets() {
             font_size: 12.0,
             is_ligature: false,
             original_ligature: None,
-            is_ligature: false,
-            original_ligature: None,
+            protected_from_split: false,
         });
         x_pos += char_width;
     }
@@ -255,8 +245,7 @@ fn test_character_tracking_with_mixed_offsets() {
             font_size: 12.0,
             is_ligature: false,
             original_ligature: None,
-            is_ligature: false,
-            original_ligature: None,
+            protected_from_split: false,
         });
         x_pos += char_width;
     }
@@ -292,8 +281,7 @@ fn test_character_tracking_preserves_font_metrics() {
             font_size: 12.0,
             is_ligature: false,
             original_ligature: None,
-            is_ligature: false,
-            original_ligature: None,
+            protected_from_split: false,
         },
         CharacterInfo {
             code: 'M' as u32,
@@ -304,8 +292,7 @@ fn test_character_tracking_preserves_font_metrics() {
             font_size: 12.0,
             is_ligature: false,
             original_ligature: None,
-            is_ligature: false,
-            original_ligature: None,
+            protected_from_split: false,
         },
         CharacterInfo {
             code: 'W' as u32,
@@ -316,8 +303,7 @@ fn test_character_tracking_preserves_font_metrics() {
             font_size: 12.0,
             is_ligature: false,
             original_ligature: None,
-            is_ligature: false,
-            original_ligature: None,
+            protected_from_split: false,
         },
     ];
 
@@ -340,10 +326,6 @@ fn test_character_tracking_with_scaling() {
 
     let context = pdf_oxide::text::word_boundary::BoundaryContext {
         font_size: 12.0,
-        is_ligature: false,
-        original_ligature: None,
-        is_ligature: false,
-        original_ligature: None,
         horizontal_scaling: 80.0, // Condensed text (80% width)
         word_spacing: 0.0,
         char_spacing: 0.0,
@@ -357,6 +339,9 @@ fn test_character_tracking_with_scaling() {
         x_position: 0.0,
         tj_offset: None,
         font_size: context.font_size,
+        is_ligature: false,
+        original_ligature: None,
+        protected_from_split: false,
     };
 
     assert_eq!(context.horizontal_scaling, 80.0);

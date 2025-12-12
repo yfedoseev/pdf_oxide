@@ -16,7 +16,7 @@ use crate::geometry::Rect;
 use crate::layout::{Color, FontWeight, TextChar, TextSpan};
 use crate::object::{Object, ObjectRef};
 use crate::pipeline::config::WordBoundaryMode;
-use crate::text::{BoundaryContext, CharacterInfo, WordBoundaryDetector};
+use crate::text::{BoundaryContext, CharacterInfo, DocumentScript, WordBoundaryDetector};
 use std::collections::{HashMap, HashSet};
 
 /// Source of a space decision in the unified pipeline.
@@ -1022,7 +1022,11 @@ fn should_insert_space(
             );
 
             // Use WordBoundaryDetector with geometric gap ratio matching our threshold
-            let detector = WordBoundaryDetector::new().with_geometric_gap_ratio(0.5);
+            // OPTIMIZATION: Detect document script profile to skip unnecessary detectors
+            let script = DocumentScript::detect_from_characters(&characters);
+            let detector = WordBoundaryDetector::new()
+                .with_document_script(script)
+                .with_geometric_gap_ratio(0.5);
             let boundaries = detector.detect_word_boundaries(&characters, &context);
 
             if !boundaries.is_empty() {
@@ -1121,6 +1125,7 @@ fn build_boundary_characters(
             font_size,
             is_ligature: false, // Not relevant for tiebreaker mode
             original_ligature: None,
+            protected_from_split: false,
         },
         CharacterInfo {
             code: next_first_char as u32,
@@ -1131,6 +1136,7 @@ fn build_boundary_characters(
             font_size,
             is_ligature: false, // Not relevant for tiebreaker mode
             original_ligature: None,
+            protected_from_split: false,
         },
     ];
 
@@ -4089,8 +4095,14 @@ impl TextExtractor {
                         if let Some(font) = self.fonts.get(name) {
                             // Process each byte in the string
                             for &byte in s.iter() {
-                                // Get character code and Unicode mapping
-                                let char_code = byte as u32;
+                                // Week 2 Day 7 (2B): Normalize character code through encoding
+                                // This ensures word boundary detection works on actual characters,
+                                // not raw byte codes from custom encodings
+                                let char_code = font
+                                    .get_encoded_char(byte)
+                                    .map(|ch| ch as u32)
+                                    .unwrap_or(byte as u32);
+
                                 let glyph_width = font.get_glyph_width(byte as u16);
 
                                 // Week 2 Day 6: Check if this is a ligature character (U+FB00-U+FB04)
@@ -4107,6 +4119,7 @@ impl TextExtractor {
                                     font_size,
                                     is_ligature,
                                     original_ligature: None,
+                                    protected_from_split: false,
                                 };
 
                                 self.tj_character_array.push(char_info);
@@ -4264,11 +4277,21 @@ impl TextExtractor {
             return self.process_tj_array_tiebreaker(array);
         }
 
+        // Week 2 Day 7 (2C): Mark pattern contexts BEFORE boundary detection
+        // This protects email and URL patterns from being split at word boundaries
+        let pattern_config = crate::extractors::PatternPreservationConfig::default();
+        crate::extractors::PatternDetector::mark_pattern_contexts(
+            &mut self.tj_character_array,
+            &pattern_config,
+        )?;
+
         // Step 2: Create BoundaryContext from current graphics state
         let context = self.create_boundary_context();
 
         // Step 3: Create WordBoundaryDetector and detect boundaries
-        let detector = WordBoundaryDetector::new();
+        // OPTIMIZATION: Detect document script profile to skip unnecessary detectors (Issue #1 fix)
+        let script = DocumentScript::detect_from_characters(&self.tj_character_array);
+        let detector = WordBoundaryDetector::new().with_document_script(script);
         let boundaries = detector.detect_word_boundaries(&self.tj_character_array, &context);
 
         // Step 4: If no boundaries detected, process entire array as single span
@@ -4485,28 +4508,31 @@ impl TextExtractor {
         };
 
         let context = self.create_boundary_context();
+        let mut result = Vec::new();
         let mut i = 0;
 
+        // OPTIMIZATION: Single-pass reconstruction instead of Vec::insert() in loop
+        // This fixes O(n²) complexity to O(n) by avoiding repeated insertions
+        // Issue #2 fix: Vec::insert was causing 50× slowdown for ligature-heavy PDFs
         while i < self.tj_character_array.len() {
-            // Clone the values we need to avoid borrow checker issues
-            let is_ligature = self.tj_character_array[i].is_ligature;
+            let char_info = &self.tj_character_array[i];
 
-            // Check if this is a ligature
-            if !is_ligature {
+            // If not a ligature, keep as-is
+            if !char_info.is_ligature {
+                result.push(char_info.clone());
                 i += 1;
                 continue;
             }
 
-            // Clone char_info and next_char to avoid holding immutable references
-            let char_info = self.tj_character_array[i].clone();
+            // Get next character without cloning (Issue #3 fix: eliminate unnecessary clones)
             let next_char = if i + 1 < self.tj_character_array.len() {
-                Some(self.tj_character_array[i + 1].clone())
+                Some(&self.tj_character_array[i + 1])
             } else {
                 None
             };
 
-            // Make decision
-            let decision = LigatureDecisionMaker::decide(&char_info, &context, next_char.as_ref());
+            // Make decision using references
+            let decision = LigatureDecisionMaker::decide(char_info, &context, next_char);
 
             if decision == LigatureDecision::Split {
                 // Get the ligature character from code
@@ -4519,17 +4545,24 @@ impl TextExtractor {
                 let components = expand_ligature_to_chars(ligature_char, original_width);
 
                 if !components.is_empty() {
-                    // Replace ligature with first component
+                    // Add first component (replacing the ligature)
                     let mut x_offset = 0.0;
-                    self.tj_character_array[i].code = components[0].0 as u32;
-                    self.tj_character_array[i].width = components[0].1;
-                    self.tj_character_array[i].is_ligature = false;
-                    self.tj_character_array[i].original_ligature = Some(ligature_char);
+                    result.push(CharacterInfo {
+                        code: components[0].0 as u32,
+                        glyph_id: char_info.glyph_id,
+                        width: components[0].1,
+                        x_position: original_x,
+                        tj_offset: char_info.tj_offset,
+                        font_size,
+                        is_ligature: false,
+                        original_ligature: Some(ligature_char),
+                        protected_from_split: char_info.protected_from_split,
+                    });
                     x_offset += components[0].1;
 
-                    // Insert remaining components
+                    // Add remaining components (no Vec::insert needed - just push!)
                     for (comp_char, comp_width) in components.iter().skip(1) {
-                        let new_char_info = CharacterInfo {
+                        result.push(CharacterInfo {
                             code: *comp_char as u32,
                             glyph_id: None,
                             width: *comp_width,
@@ -4538,22 +4571,24 @@ impl TextExtractor {
                             font_size,
                             is_ligature: false,
                             original_ligature: Some(ligature_char),
-                        };
-                        self.tj_character_array.insert(i + 1, new_char_info);
+                            protected_from_split: false,
+                        });
                         x_offset += comp_width;
-                        i += 1; // Skip over inserted character
                     }
-
-                    // Recalculate x_positions for all following characters
-                    // Width change is 0 (original_width == sum of component widths by design)
-                    // But positions need updating if we changed the layout
-                    // Actually, width is distributed proportionally, so no position shift needed
+                } else {
+                    // If expansion failed, keep original ligature
+                    result.push(char_info.clone());
                 }
+            } else {
+                // Keep ligature intact
+                result.push(char_info.clone());
             }
 
             i += 1;
         }
 
+        // OPTIMIZATION: Replace entire array once instead of multiple insertions
+        self.tj_character_array = result;
         Ok(())
     }
 

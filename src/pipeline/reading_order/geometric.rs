@@ -58,7 +58,7 @@ impl GeometricStrategy {
         x_coords.dedup();
 
         if x_coords.len() < 2 {
-            return vec![x_coords.get(0).copied().unwrap_or(0.0)];
+            return vec![x_coords.first().copied().unwrap_or(0.0)];
         }
 
         // Find significant gaps that indicate column boundaries

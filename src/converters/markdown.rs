@@ -19,7 +19,7 @@ use crate::layout::{
     BoldGroup, BoldMarkerDecision, BoldMarkerValidator, Color, FontWeight, TextBlock, TextChar,
     TextSpan,
 };
-use crate::structure::spatial_table_detector::{SpatialTableDetector, TableDetectionConfig};
+use crate::structure::spatial_table_detector::SpatialTableDetector;
 use crate::structure::table_extractor::{ExtractedTable, TableRow};
 use lazy_static::lazy_static;
 use regex::{Captures, Regex};

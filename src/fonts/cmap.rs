@@ -173,24 +173,24 @@ fn compute_stream_hash(data: &[u8]) -> CMapKey {
     CMapKey(hasher.finish())
 }
 
-/// Global CMap cache for deduplicating parsed CMaps.
-///
-/// # Design
-/// - Maps from stream hash to Arc<CMap> (reference-counted parsed CMap)
-/// - Arc allows efficient sharing without cloning
-/// - Mutex ensures thread-safe access
-/// - Unbounded (future: could add LRU eviction)
-///
-/// # Usage
-/// When a LazyCMap is first accessed, it checks this cache before parsing.
-/// If the same stream bytes appear in multiple fonts, only one CMap is
-/// parsed and shared via Arc reference counting.
-///
-/// # Thread Safety
-/// Multiple threads can safely:
-/// - Check cache simultaneously (read-only Arc clones)
-/// - Parse and insert new entries (Mutex serializes writes)
-/// - Access shared CMaps concurrently (Arc is thread-safe)
+// Global CMap cache for deduplicating parsed CMaps.
+//
+// Design:
+// - Maps from stream hash to Arc<CMap> (reference-counted parsed CMap)
+// - Arc allows efficient sharing without cloning
+// - Mutex ensures thread-safe access
+// - Unbounded (future: could add LRU eviction)
+//
+// Usage:
+// When a LazyCMap is first accessed, it checks this cache before parsing.
+// If the same stream bytes appear in multiple fonts, only one CMap is
+// parsed and shared via Arc reference counting.
+//
+// Thread Safety:
+// Multiple threads can safely:
+// - Check cache simultaneously (read-only Arc clones)
+// - Parse and insert new entries (Mutex serializes writes)
+// - Access shared CMaps concurrently (Arc is thread-safe)
 lazy_static::lazy_static! {
     static ref CMAP_CACHE: Mutex<HashMap<CMapKey, Arc<CMap>>> = Mutex::new(HashMap::new());
 }
