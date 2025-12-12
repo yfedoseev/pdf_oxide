@@ -261,7 +261,14 @@ impl HyphenationHandler {
             i += 1;
         }
 
-        result.join("\n")
+        let mut output = result.join("\n");
+
+        // Preserve trailing newline if the original had one
+        if text.ends_with('\n') && !output.ends_with('\n') {
+            output.push('\n');
+        }
+
+        output
     }
 }
 

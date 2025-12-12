@@ -9,6 +9,7 @@
 use crate::error::Result;
 use crate::layout::FontWeight;
 use crate::pipeline::{OrderedTextSpan, TextPipelineConfig};
+use crate::text::HyphenationHandler;
 
 use super::OutputConverter;
 
@@ -140,7 +141,7 @@ impl HtmlOutputConverter {
     fn convert_layout_mode(
         &self,
         spans: &[OrderedTextSpan],
-        _config: &TextPipelineConfig,
+        config: &TextPipelineConfig,
     ) -> Result<String> {
         if spans.is_empty() {
             return Ok(String::new());
@@ -169,6 +170,12 @@ impl HtmlOutputConverter {
             }
 
             result.push_str(&format!("<div style=\"{}\">{}</div>\n", style, text));
+        }
+
+        // Apply hyphenation reconstruction if enabled
+        if config.enable_hyphenation_reconstruction {
+            let handler = HyphenationHandler::new();
+            result = handler.process_text(&result);
         }
 
         Ok(result)
@@ -255,6 +262,12 @@ impl HtmlOutputConverter {
         // Close any open paragraph
         if in_paragraph && !current_content.is_empty() {
             result.push_str(&format!("<p>{}</p>\n", current_content.trim()));
+        }
+
+        // Apply hyphenation reconstruction if enabled
+        if config.enable_hyphenation_reconstruction {
+            let handler = HyphenationHandler::new();
+            result = handler.process_text(&result);
         }
 
         Ok(result)

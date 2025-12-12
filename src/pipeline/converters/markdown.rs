@@ -5,6 +5,7 @@
 use crate::error::Result;
 use crate::layout::FontWeight;
 use crate::pipeline::{OrderedTextSpan, TextPipelineConfig};
+use crate::text::HyphenationHandler;
 use lazy_static::lazy_static;
 use regex::Regex;
 
@@ -370,7 +371,7 @@ impl OutputConverter for MarkdownOutputConverter {
         }
 
         // Final whitespace normalization
-        let final_result = if config.output.preserve_layout {
+        let mut final_result = if config.output.preserve_layout {
             result
         } else {
             // Clean up excessive newlines while preserving paragraph breaks
@@ -388,6 +389,12 @@ impl OutputConverter for MarkdownOutputConverter {
                 cleaned
             }
         };
+
+        // Apply hyphenation reconstruction if enabled
+        if config.enable_hyphenation_reconstruction {
+            let handler = HyphenationHandler::new();
+            final_result = handler.process_text(&final_result);
+        }
 
         Ok(final_result)
     }

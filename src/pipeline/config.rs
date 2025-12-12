@@ -29,7 +29,7 @@ pub enum WordBoundaryMode {
 ///
 /// This replaces the scattered configuration across multiple modules
 /// and provides a single configuration point for the entire pipeline.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TextPipelineConfig {
     /// Spacing configuration for span merging
     pub spacing: SpacingConfig,
@@ -45,6 +45,23 @@ pub struct TextPipelineConfig {
 
     /// Word boundary detection mode for TJ array processing (Phase 9.2)
     pub word_boundary_mode: WordBoundaryMode,
+
+    /// Enable hyphenation reconstruction
+    /// When true, hyphenated words at line breaks are reconstructed
+    pub enable_hyphenation_reconstruction: bool,
+}
+
+impl Default for TextPipelineConfig {
+    fn default() -> Self {
+        Self {
+            spacing: SpacingConfig::default(),
+            tj_threshold: TjThresholdConfig::default(),
+            reading_order: ReadingOrderConfig::default(),
+            output: OutputConfig::default(),
+            word_boundary_mode: WordBoundaryMode::default(),
+            enable_hyphenation_reconstruction: true,
+        }
+    }
 }
 
 impl TextPipelineConfig {
@@ -63,6 +80,7 @@ impl TextPipelineConfig {
             },
             output: OutputConfig::default(),
             word_boundary_mode: WordBoundaryMode::Tiebreaker,
+            enable_hyphenation_reconstruction: true,
         }
     }
 
@@ -112,12 +130,26 @@ impl TextPipelineConfig {
                 image_output_dir: opts.image_output_dir.clone(),
             },
             word_boundary_mode: WordBoundaryMode::Tiebreaker, // Keep old behavior compatible
+            enable_hyphenation_reconstruction: true,
         }
     }
 
     /// Set the word boundary detection mode (Phase 9.2)
     pub fn with_word_boundary_mode(mut self, mode: WordBoundaryMode) -> Self {
         self.word_boundary_mode = mode;
+        self
+    }
+
+    /// Set whether to enable hyphenation reconstruction.
+    ///
+    /// When enabled, hyphenated words at line breaks are reconstructed
+    /// (e.g., "govern-" + "ment" becomes "government").
+    ///
+    /// # Arguments
+    ///
+    /// * `enabled` - true to enable hyphenation reconstruction (default)
+    pub fn with_hyphenation_reconstruction(mut self, enabled: bool) -> Self {
+        self.enable_hyphenation_reconstruction = enabled;
         self
     }
 }

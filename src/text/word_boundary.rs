@@ -608,8 +608,10 @@ impl WordBoundaryDetector {
         curr_char: &CharacterInfo,
     ) -> Option<bool> {
         // Check CJK punctuation (always creates boundary with high confidence)
+        // Note: Using None for density to maintain current behavior
+        // Future: Could integrate document-wide density measurement here
         let prev_punctuation_score =
-            cjk_punctuation::get_cjk_punctuation_boundary_score(prev_char.code);
+            cjk_punctuation::get_cjk_punctuation_boundary_score(prev_char.code, None);
         if prev_punctuation_score >= 0.9 {
             // Sentence-ending and enumeration punctuation create boundaries
             return Some(true);

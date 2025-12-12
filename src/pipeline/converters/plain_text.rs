@@ -4,6 +4,7 @@
 
 use crate::error::Result;
 use crate::pipeline::{OrderedTextSpan, TextPipelineConfig};
+use crate::text::HyphenationHandler;
 
 use super::OutputConverter;
 
@@ -39,7 +40,7 @@ impl Default for PlainTextConverter {
 }
 
 impl OutputConverter for PlainTextConverter {
-    fn convert(&self, spans: &[OrderedTextSpan], _config: &TextPipelineConfig) -> Result<String> {
+    fn convert(&self, spans: &[OrderedTextSpan], config: &TextPipelineConfig) -> Result<String> {
         if spans.is_empty() {
             return Ok(String::new());
         }
@@ -73,6 +74,12 @@ impl OutputConverter for PlainTextConverter {
         // Ensure trailing newline
         if !result.ends_with('\n') {
             result.push('\n');
+        }
+
+        // Apply hyphenation reconstruction if enabled
+        if config.enable_hyphenation_reconstruction {
+            let handler = HyphenationHandler::new();
+            result = handler.process_text(&result);
         }
 
         Ok(result)
