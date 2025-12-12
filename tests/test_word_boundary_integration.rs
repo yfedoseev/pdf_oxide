@@ -66,9 +66,11 @@ fn test_verdate_sep_word_boundary_detection() {
 /// Test 2: No false positives in tight kerning
 /// Kerning pairs like "AV" have negative TJ offsets for visual adjustment,
 /// but these should NOT create word boundaries.
+/// Uses static threshold (not adaptive) to test legacy behavior.
 #[test]
 fn test_no_false_boundary_in_kerning_pairs() {
-    let detector = WordBoundaryDetector::new();
+    let detector = WordBoundaryDetector::new()
+        .with_adaptive_threshold(false); // Use static -100 threshold for kerning test
     let context = BoundaryContext::new(12.0);
 
     // "AV" with kerning offset -40 (tight kerning, NOT word boundary)
