@@ -42,42 +42,42 @@ mod punctuation_tests {
     fn test_ideographic_fullstop_creates_boundary() {
         // 。(U+3002) should create boundary
         assert!(cjk_punctuation::is_sentence_ending_punctuation(0x3002));
-        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0x3002), 1.0);
+        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0x3002, None), 1.0);
     }
 
     #[test]
     fn test_fullwidth_question_mark_creates_boundary() {
         // ？(U+FF1F) should create boundary
         assert!(cjk_punctuation::is_sentence_ending_punctuation(0xFF1F));
-        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0xFF1F), 1.0);
+        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0xFF1F, None), 1.0);
     }
 
     #[test]
     fn test_fullwidth_exclamation_creates_boundary() {
         // ！(U+FF01) should create boundary
         assert!(cjk_punctuation::is_sentence_ending_punctuation(0xFF01));
-        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0xFF01), 1.0);
+        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0xFF01, None), 1.0);
     }
 
     #[test]
     fn test_ideographic_comma_enumeration() {
         // 、(U+3001) is enumeration punctuation
         assert!(cjk_punctuation::is_enumeration_punctuation(0x3001));
-        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0x3001), 0.9);
+        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0x3001, None), 0.9);
     }
 
     #[test]
     fn test_fullwidth_comma_enumeration() {
         // ，(U+FF0C) is enumeration punctuation
         assert!(cjk_punctuation::is_enumeration_punctuation(0xFF0C));
-        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0xFF0C), 0.9);
+        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0xFF0C, None), 0.9);
     }
 
     #[test]
     fn test_fullwidth_semicolon() {
         // ；(U+FF1B) is enumeration punctuation
         assert!(cjk_punctuation::is_enumeration_punctuation(0xFF1B));
-        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0xFF1B), 0.9);
+        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0xFF1B, None), 0.9);
     }
 
     #[test]
@@ -87,7 +87,7 @@ mod punctuation_tests {
         assert!(cjk_punctuation::is_opening_bracket(0xFF08));
         assert!(cjk_punctuation::is_bracket_punctuation(0xFF09));
         assert!(cjk_punctuation::is_closing_bracket(0xFF09));
-        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0xFF08), 0.8);
+        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0xFF08, None), 0.8);
     }
 
     #[test]
@@ -103,7 +103,7 @@ mod punctuation_tests {
     fn test_ideographic_space() {
         // U+3000 is other CJK punctuation
         assert!(cjk_punctuation::is_other_cjk_punctuation(0x3000));
-        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0x3000), 0.7);
+        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0x3000, None), 0.7);
     }
 
     #[test]
@@ -118,16 +118,16 @@ mod punctuation_tests {
         // ASCII period and comma should not be CJK punctuation
         assert!(!cjk_punctuation::is_fullwidth_punctuation(0x002E)); // .
         assert!(!cjk_punctuation::is_fullwidth_punctuation(0x002C)); // ,
-        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0x002E), 0.0);
+        assert_eq!(cjk_punctuation::get_cjk_punctuation_boundary_score(0x002E, None), 0.0);
     }
 
     #[test]
     fn test_boundary_score_hierarchy() {
         // Verify score ordering: sentence-ending > enumeration > bracket > other
-        let sentence = cjk_punctuation::get_cjk_punctuation_boundary_score(0x3002);
-        let enumeration = cjk_punctuation::get_cjk_punctuation_boundary_score(0x3001);
-        let bracket = cjk_punctuation::get_cjk_punctuation_boundary_score(0xFF08);
-        let other = cjk_punctuation::get_cjk_punctuation_boundary_score(0x30FB);
+        let sentence = cjk_punctuation::get_cjk_punctuation_boundary_score(0x3002, None);
+        let enumeration = cjk_punctuation::get_cjk_punctuation_boundary_score(0x3001, None);
+        let bracket = cjk_punctuation::get_cjk_punctuation_boundary_score(0xFF08, None);
+        let other = cjk_punctuation::get_cjk_punctuation_boundary_score(0x30FB, None);
 
         assert!(sentence > enumeration);
         assert!(enumeration > bracket);
