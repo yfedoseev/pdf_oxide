@@ -224,3 +224,6 @@ examples/test_pdf.rs
 *.backup
 *.bak
 *.tmp_analysis
+
+# Golden files for regression testing (generated, not committed)
+tests/golden_files/

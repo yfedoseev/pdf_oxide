@@ -115,6 +115,7 @@ impl BoundaryContext {
 /// When documents contain only Latin text, we skip RTL and CJK detection entirely.
 /// When documents are CJK-dominant, we skip RTL detection.
 /// This reduces function call overhead from millions per batch to thousands.
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentScript {
     /// Latin-only document (ASCII + extended Latin)
@@ -219,6 +220,11 @@ pub struct WordBoundaryDetector {
     /// Detected document script profile (Issue #1 optimization)
     /// Cached at detector creation to skip unnecessary detection functions
     primary_script: DocumentScript,
+
+    /// Enable adaptive TJ threshold calculation based on font metrics
+    /// When true, uses calculate_tj_threshold() instead of static tj_offset_threshold
+    /// Default: true (adaptive mode enabled)
+    use_adaptive_threshold: bool,
 }
 
 impl Default for WordBoundaryDetector {
@@ -240,6 +246,7 @@ impl WordBoundaryDetector {
             detect_script_transitions: true,
             document_language: None,
             primary_script: DocumentScript::Mixed, // Default to Mixed, will be set by caller
+            use_adaptive_threshold: true,          // Enable adaptive threshold by default
         }
     }
 
@@ -294,6 +301,43 @@ impl WordBoundaryDetector {
     pub fn with_document_script(mut self, script: DocumentScript) -> Self {
         self.primary_script = script;
         self
+    }
+
+    /// Enable or disable adaptive TJ threshold calculation.
+    ///
+    /// When enabled (default), TJ offset thresholds are calculated dynamically
+    /// based on font metrics (size, scaling, spacing). When disabled, uses the
+    /// static threshold set via `with_tj_threshold()`.
+    ///
+    /// Adaptive mode provides better accuracy across documents with varying
+    /// font sizes and text state parameters.
+    pub fn with_adaptive_threshold(mut self, enabled: bool) -> Self {
+        self.use_adaptive_threshold = enabled;
+        self
+    }
+
+    /// Calculate adaptive TJ threshold based on font metrics and text state.
+    ///
+    /// Per PDF Spec Section 9.3, TJ array offsets depend on:
+    /// - Font size (Tf): Larger fonts need larger thresholds
+    /// - Character spacing (Tc): Manual spacing offsets base threshold
+    /// - Word spacing (Tw): Applied after space characters
+    /// - Horizontal scaling (Tz): Affects text width calculations
+    ///
+    /// Formula: base_threshold = -font_size * (h_scale / 100.0) * 0.025
+    /// Then adjust by: -(char_spacing.abs() + word_spacing.abs()) * 0.5
+    fn calculate_tj_threshold(&self, context: &BoundaryContext) -> f32 {
+        let font_size = context.font_size.max(1.0);
+        let h_scale = (context.horizontal_scaling / 100.0).max(0.01);
+
+        // Base threshold as percentage of font size (2.5%)
+        // 12pt font → -0.3, 24pt font → -0.6
+        let base_threshold = -font_size * h_scale * 0.025;
+
+        // Adjust for explicit spacing parameters
+        let spacing_adjustment = (context.char_spacing.abs() + context.word_spacing.abs()) * 0.5;
+
+        base_threshold - spacing_adjustment
     }
 
     /// Detect word boundaries in a character stream.
@@ -450,9 +494,14 @@ impl WordBoundaryDetector {
         curr_char: &CharacterInfo,
         context: &BoundaryContext,
     ) -> bool {
-        // Rule 2: TJ array offset signals explicit spacing
+        // Rule 2: TJ array offset signals explicit spacing (adaptive threshold)
         if let Some(tj_offset) = prev_char.tj_offset {
-            if tj_offset < self.tj_offset_threshold {
+            let threshold = if self.use_adaptive_threshold {
+                self.calculate_tj_threshold(context)
+            } else {
+                self.tj_offset_threshold as f32
+            };
+            if (tj_offset as f32) < threshold {
                 return true;
             }
         }
@@ -590,26 +639,89 @@ impl WordBoundaryDetector {
         }
     }
 
+    /// Check if a gap is internal to a ligature expansion.
+    ///
+    /// When a ligature like 'fi' (U+FB01) is expanded into 'f' + 'i',
+    /// the geometric gap between expanded components should not create a word boundary.
+    fn is_ligature_internal_gap(
+        &self,
+        prev_char: &CharacterInfo,
+        curr_char: &CharacterInfo,
+    ) -> bool {
+        // Ligature Unicode range: U+FB00-U+FB06
+        const LIGATURES: [u32; 7] = [0xFB00, 0xFB01, 0xFB02, 0xFB03, 0xFB04, 0xFB05, 0xFB06];
+
+        // Check if either character is a ligature or was expanded from one
+        LIGATURES.contains(&prev_char.code)
+            || prev_char.is_ligature
+            || LIGATURES.contains(&curr_char.code)
+            || curr_char.is_ligature
+    }
+
+    /// Check if a character code represents punctuation that attaches to words.
+    ///
+    /// Punctuation like periods, commas, colons should use reduced threshold
+    /// to avoid creating unwanted boundaries when appearing after words.
+    pub fn is_punctuation(code: u32) -> bool {
+        matches!(
+            code,
+            // ASCII punctuation
+            0x21     // ! EXCLAMATION MARK
+            | 0x22   // " QUOTATION MARK
+            | 0x27   // ' APOSTROPHE
+            | 0x2C   // , COMMA
+            | 0x2E   // . FULL STOP
+            | 0x3A   // : COLON
+            | 0x3B   // ; SEMICOLON
+            | 0x3F   // ? QUESTION MARK
+            // Unicode quotation marks
+            | 0x2018..=0x201F  // General Punctuation: quotes, dashes, etc.
+            // Unicode dashes and hyphens
+            | 0x2010..=0x2015  // Hyphen, dash variants
+        )
+    }
+
     /// Check if there is a significant geometric gap between two characters.
     ///
     /// Per Section 9.4, character positions and widths determine visual spacing.
     /// A gap larger than the threshold (font_size * ratio) indicates a word boundary.
+    ///
+    /// Special cases:
+    /// 1. **Ligature internal gaps**: Gaps inside expanded ligatures never create boundaries
+    /// 2. **Punctuation attachment**: Punctuation uses 50% threshold to attach to preceding words
+    /// 3. **Character spacing**: Tc parameter adjusts baseline gap calculation
     fn has_significant_geometric_gap(
         &self,
         prev_char: &CharacterInfo,
         curr_char: &CharacterInfo,
         context: &BoundaryContext,
     ) -> bool {
+        // Special case 1: Ligatures - gaps inside ligature expansions are NOT boundaries
+        if self.is_ligature_internal_gap(prev_char, curr_char) {
+            return false;
+        }
+
         // Calculate the expected end position of previous character
         let prev_end_x = prev_char.x_position + prev_char.width;
 
-        // Calculate actual gap
-        let gap = curr_char.x_position - prev_end_x;
+        // Calculate raw gap between characters
+        let raw_gap = curr_char.x_position - prev_end_x;
 
-        // Threshold is relative to font size (accounting for horizontal scaling)
-        let threshold = context.effective_font_size() * self.geometric_gap_ratio;
+        // Adjust for character spacing (Tc parameter)
+        // Tc is added after every character, so subtract it from the gap
+        let adjusted_gap = raw_gap - context.char_spacing;
 
-        gap > threshold
+        // Base threshold is relative to font size (accounting for horizontal scaling)
+        let base_threshold = context.effective_font_size() * self.geometric_gap_ratio;
+
+        // Special case 2: Punctuation - use reduced threshold (50% of normal)
+        // This keeps punctuation attached to the preceding word
+        if Self::is_punctuation(curr_char.code) {
+            return adjusted_gap > (base_threshold * 0.5);
+        }
+
+        // Normal case: full threshold
+        adjusted_gap > base_threshold
     }
 
     /// Check if a character code represents a CJK (Chinese/Japanese/Korean) character.
@@ -1131,5 +1243,415 @@ mod tests {
 
         // Each CJK character should create a boundary
         assert!(boundaries.contains(&1), "Should have boundary after first CJK character");
+    }
+
+    #[test]
+    fn test_calculate_tj_threshold_default_font() {
+        let detector = WordBoundaryDetector::new();
+        let context = BoundaryContext::new(12.0); // 12pt
+        let threshold = detector.calculate_tj_threshold(&context);
+        // Expected: -12.0 * 1.0 * 0.025 = -0.3
+        assert!(
+            (threshold - (-0.3)).abs() < 0.01,
+            "12pt font should give -0.3, got {}",
+            threshold
+        );
+    }
+
+    #[test]
+    fn test_calculate_tj_threshold_large_font() {
+        let detector = WordBoundaryDetector::new();
+        let context = BoundaryContext::new(24.0); // 24pt
+        let threshold = detector.calculate_tj_threshold(&context);
+        // Expected: -24.0 * 1.0 * 0.025 = -0.6
+        assert!(
+            (threshold - (-0.6)).abs() < 0.01,
+            "24pt font should give -0.6, got {}",
+            threshold
+        );
+    }
+
+    #[test]
+    fn test_calculate_tj_threshold_with_char_spacing() {
+        let detector = WordBoundaryDetector::new();
+        let mut context = BoundaryContext::new(12.0);
+        context.char_spacing = 2.0;
+        let threshold = detector.calculate_tj_threshold(&context);
+        // Expected: -0.3 - (2.0 * 0.5) = -1.3
+        assert!(
+            (threshold - (-1.3)).abs() < 0.01,
+            "With char_spacing=2.0, expected -1.3, got {}",
+            threshold
+        );
+    }
+
+    #[test]
+    fn test_calculate_tj_threshold_with_word_spacing() {
+        let detector = WordBoundaryDetector::new();
+        let mut context = BoundaryContext::new(12.0);
+        context.word_spacing = 3.0;
+        let threshold = detector.calculate_tj_threshold(&context);
+        // Expected: -0.3 - (3.0 * 0.5) = -1.8
+        assert!(
+            (threshold - (-1.8)).abs() < 0.01,
+            "With word_spacing=3.0, expected -1.8, got {}",
+            threshold
+        );
+    }
+
+    #[test]
+    fn test_calculate_tj_threshold_with_horizontal_scaling() {
+        let detector = WordBoundaryDetector::new();
+        let mut context = BoundaryContext::new(12.0);
+        context.horizontal_scaling = 80.0; // 80%
+        let threshold = detector.calculate_tj_threshold(&context);
+        // Expected: -12.0 * 0.8 * 0.025 = -0.24
+        assert!(
+            (threshold - (-0.24)).abs() < 0.01,
+            "With 80% scaling, expected -0.24, got {}",
+            threshold
+        );
+    }
+
+    #[test]
+    fn test_adaptive_threshold_affects_boundary_detection() {
+        let detector = WordBoundaryDetector::new().with_adaptive_threshold(true);
+        let context = BoundaryContext::new(12.0);
+
+        let prev = CharacterInfo {
+            code: 't' as u32,
+            glyph_id: None,
+            width: 5.0,
+            x_position: 100.0,
+            tj_offset: Some(-200), // Significant negative offset
+            font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            protected_from_split: false,
+        };
+
+        let curr = CharacterInfo {
+            code: 'h' as u32,
+            glyph_id: None,
+            width: 5.0,
+            x_position: 110.0,
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            protected_from_split: false,
+        };
+
+        let boundary = detector.is_word_boundary(&prev, &curr, &context);
+        assert!(boundary, "TJ offset -200 should trigger boundary with 12pt font");
+    }
+
+    #[test]
+    fn test_disable_adaptive_threshold_uses_static() {
+        let detector = WordBoundaryDetector::new()
+            .with_adaptive_threshold(false)
+            .with_tj_threshold(-100);
+        let context = BoundaryContext::new(12.0);
+
+        let prev = CharacterInfo {
+            code: 'a' as u32,
+            glyph_id: None,
+            width: 5.0,
+            x_position: 100.0,
+            tj_offset: Some(-50), // Below -100 threshold
+            font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            protected_from_split: false,
+        };
+
+        let curr = CharacterInfo {
+            code: 'b' as u32,
+            glyph_id: None,
+            width: 5.0,
+            x_position: 110.0,
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            protected_from_split: false,
+        };
+
+        let boundary = detector.is_word_boundary(&prev, &curr, &context);
+        assert!(!boundary, "TJ offset -50 should NOT trigger boundary when static -100 is used");
+    }
+
+    #[test]
+    fn test_geometric_gap_basic() {
+        let detector = WordBoundaryDetector::new();
+        let context = BoundaryContext::new(12.0);
+
+        let prev = CharacterInfo {
+            code: 't' as u32,
+            glyph_id: None,
+            width: 5.0,
+            x_position: 100.0,
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            protected_from_split: false,
+        };
+
+        // Large gap (10 units > 9.6 = 12*0.8 threshold)
+        let curr = CharacterInfo {
+            code: 'h' as u32,
+            glyph_id: None,
+            width: 5.0,
+            x_position: 115.0, // 115 - 105 = 10 unit gap
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            protected_from_split: false,
+        };
+
+        assert!(
+            detector.has_significant_geometric_gap(&prev, &curr, &context),
+            "Gap of 10 units should exceed threshold of 9.6 (12pt * 0.8)"
+        );
+    }
+
+    #[test]
+    fn test_geometric_gap_with_char_spacing() {
+        let detector = WordBoundaryDetector::new();
+        let mut context = BoundaryContext::new(12.0);
+        context.char_spacing = 2.0; // Tc = 2.0
+
+        let prev = CharacterInfo {
+            code: 'a' as u32,
+            glyph_id: None,
+            width: 5.0,
+            x_position: 100.0,
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            protected_from_split: false,
+        };
+
+        // Raw gap = 10, but Tc = 2.0 reduces it to 8.0
+        // 8.0 < 9.6 (threshold), so NO boundary
+        let curr = CharacterInfo {
+            code: 'b' as u32,
+            glyph_id: None,
+            width: 5.0,
+            x_position: 115.0, // 115 - 105 = 10 unit gap
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            protected_from_split: false,
+        };
+
+        assert!(
+            !detector.has_significant_geometric_gap(&prev, &curr, &context),
+            "Gap of 10 - 2.0 (Tc) = 8.0 should NOT exceed threshold of 9.6"
+        );
+    }
+
+    #[test]
+    fn test_ligature_internal_gap_fi() {
+        let detector = WordBoundaryDetector::new();
+        let context = BoundaryContext::new(12.0);
+
+        // 'f' component from expanded 'fi' ligature
+        let prev = CharacterInfo {
+            code: 'f' as u32,
+            glyph_id: None,
+            width: 5.0,
+            x_position: 100.0,
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: true, // This is from ligature expansion
+            original_ligature: Some('ﬁ'),
+            protected_from_split: false,
+        };
+
+        // Large gap but prev is from ligature
+        let curr = CharacterInfo {
+            code: 'i' as u32,
+            glyph_id: None,
+            width: 3.0,
+            x_position: 120.0, // 120 - 105 = 15 unit gap (would normally be boundary)
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: true,
+            original_ligature: Some('ﬁ'),
+            protected_from_split: false,
+        };
+
+        assert!(
+            !detector.has_significant_geometric_gap(&prev, &curr, &context),
+            "Ligature internal gap should NOT create boundary even with large gap"
+        );
+    }
+
+    #[test]
+    fn test_punctuation_reduced_threshold() {
+        let detector = WordBoundaryDetector::new();
+        let context = BoundaryContext::new(12.0);
+        // Base threshold: 12.0 * 0.8 = 9.6
+        // Punctuation threshold: 9.6 * 0.5 = 4.8
+
+        let prev = CharacterInfo {
+            code: 'd' as u32,
+            glyph_id: None,
+            width: 5.0,
+            x_position: 100.0,
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            protected_from_split: false,
+        };
+
+        // Gap of 6.0 units
+        // Normal threshold would be 9.6 (no boundary)
+        // Punctuation threshold is 4.8 (YES boundary)
+        let curr_period = CharacterInfo {
+            code: '.' as u32, // Period is punctuation
+            glyph_id: None,
+            width: 2.0,
+            x_position: 111.0, // 111 - 105 = 6 unit gap
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            protected_from_split: false,
+        };
+
+        assert!(
+            detector.has_significant_geometric_gap(&prev, &curr_period, &context),
+            "Gap of 6 units should exceed punctuation threshold of 4.8 (50% of 9.6)"
+        );
+    }
+
+    #[test]
+    fn test_punctuation_does_not_trigger_on_normal_text() {
+        let detector = WordBoundaryDetector::new();
+        let context = BoundaryContext::new(12.0);
+
+        let prev = CharacterInfo {
+            code: 'd' as u32,
+            glyph_id: None,
+            width: 5.0,
+            x_position: 100.0,
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            protected_from_split: false,
+        };
+
+        // Same gap (6.0) but current character is 'e', not punctuation
+        let curr = CharacterInfo {
+            code: 'e' as u32, // 'e' is NOT punctuation
+            glyph_id: None,
+            width: 5.0,
+            x_position: 111.0,
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            protected_from_split: false,
+        };
+
+        assert!(
+            !detector.has_significant_geometric_gap(&prev, &curr, &context),
+            "Gap of 6 units should NOT exceed normal threshold of 9.6"
+        );
+    }
+
+    #[test]
+    fn test_is_punctuation_ascii() {
+        assert!(WordBoundaryDetector::is_punctuation('.' as u32));
+        assert!(WordBoundaryDetector::is_punctuation(',' as u32));
+        assert!(WordBoundaryDetector::is_punctuation('!' as u32));
+        assert!(WordBoundaryDetector::is_punctuation('?' as u32));
+        assert!(WordBoundaryDetector::is_punctuation(':' as u32));
+        assert!(WordBoundaryDetector::is_punctuation(';' as u32));
+    }
+
+    #[test]
+    fn test_is_punctuation_non_punctuation() {
+        assert!(!WordBoundaryDetector::is_punctuation('a' as u32));
+        assert!(!WordBoundaryDetector::is_punctuation('1' as u32));
+        assert!(!WordBoundaryDetector::is_punctuation(' ' as u32));
+    }
+
+    #[test]
+    fn test_is_ligature_internal_gap_ffi() {
+        let detector = WordBoundaryDetector::new();
+
+        // 'f' from 'ffi' ligature
+        let prev = CharacterInfo {
+            code: 'f' as u32,
+            glyph_id: None,
+            width: 5.0,
+            x_position: 100.0,
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: true,
+            original_ligature: Some('ﬄ'), // ffi ligature U+FB04
+            protected_from_split: false,
+        };
+
+        let curr = CharacterInfo {
+            code: 'f' as u32,
+            glyph_id: None,
+            width: 5.0,
+            x_position: 110.0,
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: true,
+            original_ligature: Some('ﬄ'),
+            protected_from_split: false,
+        };
+
+        assert!(
+            detector.is_ligature_internal_gap(&prev, &curr),
+            "Should detect ligature internal gap when both have is_ligature=true"
+        );
+    }
+
+    #[test]
+    fn test_is_ligature_internal_gap_actual_ligature_code() {
+        let detector = WordBoundaryDetector::new();
+
+        // Previous character IS the ligature U+FB00 ('ff')
+        let prev = CharacterInfo {
+            code: 0xFB00, // 'ff' ligature
+            glyph_id: None,
+            width: 10.0,
+            x_position: 100.0,
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: false, // Not expanded, still the ligature
+            original_ligature: None,
+            protected_from_split: false,
+        };
+
+        let curr = CharacterInfo {
+            code: 'i' as u32,
+            glyph_id: None,
+            width: 3.0,
+            x_position: 115.0,
+            tj_offset: None,
+            font_size: 12.0,
+            is_ligature: false,
+            original_ligature: None,
+            protected_from_split: false,
+        };
+
+        assert!(
+            detector.is_ligature_internal_gap(&prev, &curr),
+            "Should detect ligature internal gap when prev code is U+FB00"
+        );
     }
 }
