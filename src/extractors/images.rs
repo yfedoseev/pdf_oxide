@@ -466,9 +466,14 @@ pub fn parse_color_space(obj: &crate::object::Object) -> Result<ColorSpace> {
 /// This function handles both JPEG-encoded images (DCTDecode filter)
 /// and raw pixel images (other filters or no filter).
 ///
+/// For encrypted PDFs, provide the document reference and object reference
+/// to enable proper stream decryption before decompression.
+///
 /// # Arguments
 ///
+/// * `doc` - Optional reference to the PdfDocument (needed for encrypted PDFs)
 /// * `xobject` - The XObject stream object
+/// * `obj_ref` - Optional object reference (needed for encrypted PDFs)
 ///
 /// # Returns
 ///
@@ -480,7 +485,7 @@ pub fn parse_color_space(obj: &crate::object::Object) -> Result<ColorSpace> {
 /// # use pdf_oxide::extractors::images::extract_image_from_xobject;
 /// # use pdf_oxide::object::Object;
 /// # fn example(xobj: Object) -> Result<(), Box<dyn std::error::Error>> {
-/// let image = extract_image_from_xobject(&xobj)?;
+/// let image = extract_image_from_xobject(None, &xobj, None)?;
 /// println!("Extracted {}x{} image", image.width(), image.height());
 /// # Ok(())
 /// # }
