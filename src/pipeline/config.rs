@@ -6,6 +6,337 @@
 //! - SpacingConfig
 //! - ConversionOptions
 
+/// Logging detail level for extraction pipeline.
+///
+/// Controls the verbosity of logging output during text extraction.
+/// When the `logging` feature is enabled, logging is written to stderr.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLevel {
+    /// Only critical errors are logged
+    Error,
+    /// Warnings and errors are logged
+    Warn,
+    /// General information (default level)
+    Info,
+    /// Detailed debug information for troubleshooting
+    Debug,
+    /// Very detailed trace information (character-level details)
+    Trace,
+}
+
+impl Default for LogLevel {
+    fn default() -> Self {
+        Self::Info
+    }
+}
+
+/// Document type classification for optimized extraction settings.
+///
+/// Different document types have different characteristics that benefit from
+/// tuned extraction parameters:
+/// - Academic: Dense text, special characters, equations
+/// - Business: Tables, formal structure, headers/footers
+/// - Novel: Long narrative, simple formatting, chapters
+/// - CJK: Chinese/Japanese/Korean text with special boundary rules
+/// - RTL: Arabic/Hebrew with right-to-left text flow
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentType {
+    /// Academic papers, theses, technical documents
+    /// Characteristics: Dense text, many special characters, equations, citations
+    /// Optimizations: Aggressive hyphenation, strict spacing, preserve formatting
+    Academic,
+
+    /// Business documents, reports, contracts
+    /// Characteristics: Formal structure, tables, headers/footers, multi-column
+    /// Optimizations: Table detection, header preservation, justified text
+    Business,
+
+    /// Novels, books, creative content
+    /// Characteristics: Long narrative, simple formatting, chapters
+    /// Optimizations: Relaxed spacing, chapter detection, paragraph preservation
+    Novel,
+
+    /// CJK documents: Chinese, Japanese, Korean
+    /// Characteristics: Different word boundaries, no spaces, special punctuation
+    /// Optimizations: CJK-aware boundaries, density-adaptive scoring, custom punctuation
+    CJK,
+
+    /// RTL documents: Arabic, Hebrew
+    /// Characteristics: Right-to-left text flow, special diacritics, ligatures
+    /// Optimizations: RTL detection, diacritic handling, ligature support
+    RTL,
+
+    /// Generic/unknown documents - balanced defaults
+    Generic,
+}
+
+impl DocumentType {
+    /// Create optimized TextPipelineConfig for this document type
+    pub fn create_config(&self) -> TextPipelineConfig {
+        match self {
+            Self::Academic => Self::academic_config(),
+            Self::Business => Self::business_config(),
+            Self::Novel => Self::novel_config(),
+            Self::CJK => Self::cjk_config(),
+            Self::RTL => Self::rtl_config(),
+            Self::Generic => TextPipelineConfig::default(),
+        }
+    }
+
+    fn academic_config() -> TextPipelineConfig {
+        TextPipelineConfig {
+            spacing: SpacingConfig { word_margin: 0.1 },
+            tj_threshold: TjThresholdConfig {
+                space_insertion_threshold: -120.0,
+                use_adaptive: true, // Strict spacing
+            },
+            reading_order: ReadingOrderConfig {
+                strategy: ReadingOrderStrategyType::StructureTreeFirst,
+            },
+            output: OutputConfig {
+                detect_headings: false,
+                include_images: true,
+                bold_marker_behavior: BoldMarkerBehavior::Conservative,
+                preserve_layout: true, // Preserve formatting
+                extract_tables: true,  // Detect tables
+                image_output_dir: None,
+            },
+            word_boundary_mode: WordBoundaryMode::Primary,
+            enable_hyphenation_reconstruction: true, // Aggressive hyphenation
+            log_level: LogLevel::Info,
+            collect_metrics: false,
+        }
+    }
+
+    fn business_config() -> TextPipelineConfig {
+        TextPipelineConfig {
+            spacing: SpacingConfig { word_margin: 0.1 },
+            tj_threshold: TjThresholdConfig {
+                space_insertion_threshold: -120.0,
+                use_adaptive: true, // Strict boundaries
+            },
+            reading_order: ReadingOrderConfig {
+                strategy: ReadingOrderStrategyType::XYCut,
+            },
+            output: OutputConfig {
+                detect_headings: false,
+                include_images: true,
+                bold_marker_behavior: BoldMarkerBehavior::Conservative,
+                preserve_layout: true, // Headers/footers matter
+                extract_tables: true,  // Essential for reports
+                image_output_dir: None,
+            },
+            word_boundary_mode: WordBoundaryMode::Primary,
+            enable_hyphenation_reconstruction: true,
+            log_level: LogLevel::Info,
+            collect_metrics: false,
+        }
+    }
+
+    fn novel_config() -> TextPipelineConfig {
+        TextPipelineConfig {
+            spacing: SpacingConfig { word_margin: 0.15 }, // Slightly relaxed
+            tj_threshold: TjThresholdConfig {
+                space_insertion_threshold: -100.0, // Relaxed
+                use_adaptive: false,
+            },
+            reading_order: ReadingOrderConfig {
+                strategy: ReadingOrderStrategyType::Simple,
+            },
+            output: OutputConfig {
+                detect_headings: false,
+                include_images: true,
+                bold_marker_behavior: BoldMarkerBehavior::Conservative,
+                preserve_layout: false, // Minimal formatting
+                extract_tables: false,
+                image_output_dir: None,
+            },
+            word_boundary_mode: WordBoundaryMode::Tiebreaker,
+            enable_hyphenation_reconstruction: true, // Essential for novels
+            log_level: LogLevel::Info,
+            collect_metrics: false,
+        }
+    }
+
+    fn cjk_config() -> TextPipelineConfig {
+        TextPipelineConfig {
+            spacing: SpacingConfig { word_margin: 0.05 }, // Tighter for CJK
+            tj_threshold: TjThresholdConfig {
+                space_insertion_threshold: -80.0, // CJK-aware
+                use_adaptive: true,
+            },
+            reading_order: ReadingOrderConfig {
+                strategy: ReadingOrderStrategyType::StructureTreeFirst,
+            },
+            output: OutputConfig {
+                detect_headings: false,
+                include_images: true,
+                bold_marker_behavior: BoldMarkerBehavior::Conservative,
+                preserve_layout: true,
+                extract_tables: true,
+                image_output_dir: None,
+            },
+            word_boundary_mode: WordBoundaryMode::Primary,
+            enable_hyphenation_reconstruction: false, // Not applicable to CJK
+            log_level: LogLevel::Info,
+            collect_metrics: false,
+        }
+    }
+
+    fn rtl_config() -> TextPipelineConfig {
+        TextPipelineConfig {
+            spacing: SpacingConfig { word_margin: 0.1 },
+            tj_threshold: TjThresholdConfig {
+                space_insertion_threshold: -120.0,
+                use_adaptive: true,
+            },
+            reading_order: ReadingOrderConfig {
+                strategy: ReadingOrderStrategyType::StructureTreeFirst,
+            },
+            output: OutputConfig {
+                detect_headings: false,
+                include_images: true,
+                bold_marker_behavior: BoldMarkerBehavior::Conservative,
+                preserve_layout: true,
+                extract_tables: true,
+                image_output_dir: None,
+            },
+            word_boundary_mode: WordBoundaryMode::Tiebreaker,
+            enable_hyphenation_reconstruction: false, // Different rules
+            log_level: LogLevel::Info,
+            collect_metrics: false,
+        }
+    }
+
+    /// Detect document type from text sample
+    ///
+    /// Examines first 1000 characters to classify document
+    pub fn detect_from_sample(sample: &str) -> Self {
+        if sample.is_empty() {
+            return Self::Generic;
+        }
+
+        let cjk_ratio = Self::count_cjk_chars(sample) as f32 / sample.len() as f32;
+        let rtl_ratio = Self::count_rtl_chars(sample) as f32 / sample.len() as f32;
+        let special_ratio = Self::count_special_chars(sample) as f32 / sample.len() as f32;
+
+        // CJK if >10% of text is CJK characters
+        if cjk_ratio > 0.1 {
+            return Self::CJK;
+        }
+
+        // RTL if >20% of text is RTL characters
+        if rtl_ratio > 0.2 {
+            return Self::RTL;
+        }
+
+        // Check business patterns first
+        if Self::looks_like_business(sample) {
+            return Self::Business;
+        }
+
+        // Academic if high special character count (equations, citations, etc.)
+        if special_ratio >= 0.08 {
+            return Self::Academic;
+        }
+
+        // Novel if mostly lowercase ASCII with few numbers
+        if Self::looks_like_narrative(sample) {
+            return Self::Novel;
+        }
+
+        Self::Generic
+    }
+
+    fn count_cjk_chars(text: &str) -> usize {
+        text.chars()
+            .filter(|c| {
+                let code = *c as u32;
+                matches!(
+                    code,
+                    0x3040..=0x309F   // Hiragana
+                    | 0x30A0..=0x30FF // Katakana
+                    | 0x3400..=0x4DBF // CJK Ext A
+                    | 0x4E00..=0x9FFF // CJK
+                    | 0xAC00..=0xD7AF // Hangul (Korean)
+                )
+            })
+            .count()
+    }
+
+    fn count_rtl_chars(text: &str) -> usize {
+        text.chars()
+            .filter(|c| {
+                let code = *c as u32;
+                matches!(
+                    code,
+                    0x0590..=0x05FF   // Hebrew
+                    | 0x0600..=0x06FF // Arabic
+                    | 0x0750..=0x077F // Arabic Supplement
+                )
+            })
+            .count()
+    }
+
+    fn count_special_chars(text: &str) -> usize {
+        text.chars()
+            .filter(|c| {
+                matches!(
+                    *c,
+                    '©' | '®' | '™' | '§' | '¶' | '†' | '‡'
+                    | '€' | '£' | '¥' | '¢'
+                    | '±' | '×' | '÷' | '√' | '∞' | '∫'
+                    | '←' | '→' | '↑' | '↓'
+                    | '°' | '′' | '″'
+                )
+            })
+            .count()
+    }
+
+    fn looks_like_narrative(text: &str) -> bool {
+        // Narrative has more lowercase than uppercase, many common words,
+        // and contains typical narrative punctuation and sentence structures
+        let lower_count = text.chars().filter(|c| c.is_lowercase()).count();
+        let upper_count = text.chars().filter(|c| c.is_uppercase()).count();
+        let digit_count = text.chars().filter(|c| c.is_ascii_digit()).count();
+
+        // Count sentence-like patterns
+        let period_count = text.matches('.').count();
+        let has_narrative_words = text.contains("was ") || text.contains("were ")
+            || text.contains("walked ") || text.contains("said ") || text.contains("went ");
+
+        lower_count > upper_count * 5
+            && digit_count < text.len() / 20
+            && (has_narrative_words || period_count > 2)
+    }
+
+    fn looks_like_business(text: &str) -> bool {
+        // Business has structured patterns, key terms, tables
+        text.contains("Table")
+            || text.contains("Figure")
+            || text.contains("report")
+            || text.contains("document")
+            || text.contains("agreement")
+    }
+}
+
+impl LogLevel {
+    /// Check if a message at the given level should be logged.
+    ///
+    /// This is used internally by logging macros to determine whether
+    /// to actually emit log output.
+    pub fn should_log(&self, level: LogLevel) -> bool {
+        match (*self, level) {
+            (Self::Error, Self::Error) => true,
+            (Self::Warn, Self::Error | Self::Warn) => true,
+            (Self::Info, Self::Error | Self::Warn | Self::Info) => true,
+            (Self::Debug, Self::Error | Self::Warn | Self::Info | Self::Debug) => true,
+            (Self::Trace, _) => true,
+            _ => false,
+        }
+    }
+}
+
 /// Word boundary detection mode for TJ array processing.
 ///
 /// Per ISO 32000-1:2008 Section 9.4.4, word boundaries can be detected
@@ -49,6 +380,12 @@ pub struct TextPipelineConfig {
     /// Enable hyphenation reconstruction
     /// When true, hyphenated words at line breaks are reconstructed
     pub enable_hyphenation_reconstruction: bool,
+
+    /// Logging detail level for the extraction pipeline
+    pub log_level: LogLevel,
+
+    /// Enable metrics collection during extraction
+    pub collect_metrics: bool,
 }
 
 impl Default for TextPipelineConfig {
@@ -60,11 +397,44 @@ impl Default for TextPipelineConfig {
             output: OutputConfig::default(),
             word_boundary_mode: WordBoundaryMode::default(),
             enable_hyphenation_reconstruction: true,
+            log_level: LogLevel::default(),
+            collect_metrics: false,
         }
     }
 }
 
 impl TextPipelineConfig {
+    /// Create config for a specific document type
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use pdf_oxide::pipeline::config::{TextPipelineConfig, DocumentType};
+    ///
+    /// let config = TextPipelineConfig::for_document_type(DocumentType::Academic);
+    /// ```
+    pub fn for_document_type(doc_type: DocumentType) -> Self {
+        doc_type.create_config()
+    }
+
+    /// Detect document type from text sample and create optimized config
+    ///
+    /// Analyzes the first portion of text to classify the document type,
+    /// then returns a configuration optimized for that type.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use pdf_oxide::pipeline::config::TextPipelineConfig;
+    ///
+    /// let sample = "これは日本語です。";
+    /// let config = TextPipelineConfig::detect_and_optimize(sample);
+    /// ```
+    pub fn detect_and_optimize(sample: &str) -> Self {
+        let doc_type = DocumentType::detect_from_sample(sample);
+        doc_type.create_config()
+    }
+
     /// Create config with pdfplumber-compatible defaults.
     ///
     /// Uses word_margin = 0.1 and simple reading order.
@@ -81,6 +451,8 @@ impl TextPipelineConfig {
             output: OutputConfig::default(),
             word_boundary_mode: WordBoundaryMode::Tiebreaker,
             enable_hyphenation_reconstruction: true,
+            log_level: LogLevel::default(),
+            collect_metrics: false,
         }
     }
 
@@ -131,6 +503,8 @@ impl TextPipelineConfig {
             },
             word_boundary_mode: WordBoundaryMode::Tiebreaker, // Keep old behavior compatible
             enable_hyphenation_reconstruction: true,
+            log_level: LogLevel::default(),
+            collect_metrics: false,
         }
     }
 
@@ -151,6 +525,390 @@ impl TextPipelineConfig {
     pub fn with_hyphenation_reconstruction(mut self, enabled: bool) -> Self {
         self.enable_hyphenation_reconstruction = enabled;
         self
+    }
+
+    /// Set the logging detail level for the extraction pipeline.
+    ///
+    /// # Arguments
+    ///
+    /// * `level` - The logging level to use
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use pdf_oxide::pipeline::config::{TextPipelineConfig, LogLevel};
+    ///
+    /// let config = TextPipelineConfig::default()
+    ///     .with_log_level(LogLevel::Debug);
+    /// ```
+    pub fn with_log_level(mut self, level: LogLevel) -> Self {
+        self.log_level = level;
+        self
+    }
+
+    /// Enable metrics collection during extraction.
+    ///
+    /// When enabled, the extraction pipeline will collect detailed metrics
+    /// about the extraction process for quality tracking and analysis.
+    ///
+    /// # Arguments
+    ///
+    /// * `enabled` - true to enable metrics collection
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use pdf_oxide::pipeline::config::TextPipelineConfig;
+    ///
+    /// let config = TextPipelineConfig::default()
+    ///     .with_metrics_collection(true);
+    /// ```
+    pub fn with_metrics_collection(mut self, enabled: bool) -> Self {
+        self.collect_metrics = enabled;
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_log_level_default() {
+        assert_eq!(LogLevel::default(), LogLevel::Info);
+    }
+
+    #[test]
+    fn test_log_level_should_log() {
+        let info_level = LogLevel::Info;
+        assert!(info_level.should_log(LogLevel::Error));
+        assert!(info_level.should_log(LogLevel::Warn));
+        assert!(info_level.should_log(LogLevel::Info));
+        assert!(!info_level.should_log(LogLevel::Debug));
+        assert!(!info_level.should_log(LogLevel::Trace));
+
+        let debug_level = LogLevel::Debug;
+        assert!(debug_level.should_log(LogLevel::Error));
+        assert!(debug_level.should_log(LogLevel::Warn));
+        assert!(debug_level.should_log(LogLevel::Info));
+        assert!(debug_level.should_log(LogLevel::Debug));
+        assert!(!debug_level.should_log(LogLevel::Trace));
+
+        let trace_level = LogLevel::Trace;
+        assert!(trace_level.should_log(LogLevel::Error));
+        assert!(trace_level.should_log(LogLevel::Warn));
+        assert!(trace_level.should_log(LogLevel::Info));
+        assert!(trace_level.should_log(LogLevel::Debug));
+        assert!(trace_level.should_log(LogLevel::Trace));
+    }
+
+    #[test]
+    fn test_config_log_level_default() {
+        let config = TextPipelineConfig::default();
+        assert_eq!(config.log_level, LogLevel::Info);
+    }
+
+    #[test]
+    fn test_config_with_log_level() {
+        let config = TextPipelineConfig::default()
+            .with_log_level(LogLevel::Debug);
+        assert_eq!(config.log_level, LogLevel::Debug);
+    }
+
+    #[test]
+    fn test_config_with_log_level_trace() {
+        let config = TextPipelineConfig::default()
+            .with_log_level(LogLevel::Trace);
+        assert_eq!(config.log_level, LogLevel::Trace);
+    }
+
+    #[test]
+    fn test_config_with_log_level_error() {
+        let config = TextPipelineConfig::default()
+            .with_log_level(LogLevel::Error);
+        assert_eq!(config.log_level, LogLevel::Error);
+    }
+
+    #[test]
+    fn test_pdfplumber_compatible_has_log_level() {
+        let config = TextPipelineConfig::pdfplumber_compatible();
+        assert_eq!(config.log_level, LogLevel::Info);
+    }
+
+    // Document type preset tests
+
+    #[test]
+    fn test_document_type_academic_config() {
+        let config = DocumentType::Academic.create_config();
+        assert!(config.enable_hyphenation_reconstruction);
+        assert_eq!(config.log_level, LogLevel::Info);
+        assert!(config.output.preserve_layout);
+        assert!(config.output.extract_tables);
+        assert!(config.tj_threshold.use_adaptive);
+    }
+
+    #[test]
+    fn test_document_type_business_config() {
+        let config = DocumentType::Business.create_config();
+        assert!(config.enable_hyphenation_reconstruction);
+        assert_eq!(config.log_level, LogLevel::Info);
+        assert!(config.output.preserve_layout);
+        assert!(config.output.extract_tables);
+        assert_eq!(config.reading_order.strategy, ReadingOrderStrategyType::XYCut);
+    }
+
+    #[test]
+    fn test_document_type_novel_config() {
+        let config = DocumentType::Novel.create_config();
+        assert!(config.enable_hyphenation_reconstruction);
+        assert!(!config.output.preserve_layout);
+        assert!(!config.output.extract_tables);
+        assert_eq!(config.reading_order.strategy, ReadingOrderStrategyType::Simple);
+        assert!(!config.tj_threshold.use_adaptive);
+    }
+
+    #[test]
+    fn test_document_type_cjk_config() {
+        let config = DocumentType::CJK.create_config();
+        assert!(!config.enable_hyphenation_reconstruction);
+        assert_eq!(config.log_level, LogLevel::Info);
+        assert!(config.output.preserve_layout);
+        assert!(config.output.extract_tables);
+        assert!(config.tj_threshold.use_adaptive);
+        assert_eq!(config.word_boundary_mode, WordBoundaryMode::Primary);
+    }
+
+    #[test]
+    fn test_document_type_rtl_config() {
+        let config = DocumentType::RTL.create_config();
+        assert!(!config.enable_hyphenation_reconstruction);
+        assert!(config.output.preserve_layout);
+        assert!(config.output.extract_tables);
+        assert_eq!(config.word_boundary_mode, WordBoundaryMode::Tiebreaker);
+    }
+
+    #[test]
+    fn test_document_type_generic_config() {
+        let config = DocumentType::Generic.create_config();
+        // Generic should match the default config structure
+        assert_eq!(config.log_level, LogLevel::default());
+        assert_eq!(config.word_boundary_mode, WordBoundaryMode::default());
+        assert_eq!(config.enable_hyphenation_reconstruction, true);
+    }
+
+    // Document type detection tests
+
+    #[test]
+    fn test_detect_empty_sample() {
+        let doc_type = DocumentType::detect_from_sample("");
+        assert_eq!(doc_type, DocumentType::Generic);
+    }
+
+    #[test]
+    fn test_detect_cjk_sample() {
+        let sample = "これは日本語です。This is bilingual text.";
+        let doc_type = DocumentType::detect_from_sample(sample);
+        assert_eq!(doc_type, DocumentType::CJK);
+    }
+
+    #[test]
+    fn test_detect_cjk_chinese() {
+        let sample = "这是中文文本。";
+        let doc_type = DocumentType::detect_from_sample(sample);
+        assert_eq!(doc_type, DocumentType::CJK);
+    }
+
+    #[test]
+    fn test_detect_cjk_korean() {
+        let sample = "이것은 한국어 텍스트입니다.";
+        let doc_type = DocumentType::detect_from_sample(sample);
+        assert_eq!(doc_type, DocumentType::CJK);
+    }
+
+    #[test]
+    fn test_detect_rtl_sample() {
+        let sample = "مرحبا بك في النص العربي";
+        let doc_type = DocumentType::detect_from_sample(sample);
+        assert_eq!(doc_type, DocumentType::RTL);
+    }
+
+    #[test]
+    fn test_detect_rtl_hebrew() {
+        let sample = "זה טקסט בעברית";
+        let doc_type = DocumentType::detect_from_sample(sample);
+        assert_eq!(doc_type, DocumentType::RTL);
+    }
+
+    #[test]
+    fn test_detect_academic_sample() {
+        // Sample has enough special chars for academic detection (>= 0.08 ratio)
+        let sample = "The ∫∞√∑ equations © research shows ± evidence × mathematical ÷ concepts ® article";
+        let doc_type = DocumentType::detect_from_sample(sample);
+        assert_eq!(doc_type, DocumentType::Academic);
+    }
+
+    #[test]
+    fn test_detect_academic_with_symbols() {
+        let sample = "Consider the integral ∫ from a to b and the summation ∑ with limit n → ∞ © 2024 ® ± × ÷ √ Author";
+        let doc_type = DocumentType::detect_from_sample(sample);
+        assert_eq!(doc_type, DocumentType::Academic);
+    }
+
+    #[test]
+    fn test_detect_novel_sample() {
+        let sample = "The quick brown fox jumps over the lazy dog. She walked through the forest, listening to the birds singing their morning songs.";
+        let doc_type = DocumentType::detect_from_sample(sample);
+        assert_eq!(doc_type, DocumentType::Novel);
+    }
+
+    #[test]
+    fn test_detect_novel_narrative() {
+        let sample = "Once upon a time, there was a kingdom far away. The princess walked through the castle gardens every morning, admiring the flowers and trees.";
+        let doc_type = DocumentType::detect_from_sample(sample);
+        assert_eq!(doc_type, DocumentType::Novel);
+    }
+
+    #[test]
+    fn test_detect_business_sample() {
+        let sample = "Table 1 shows the results. Figure 2 displays the report findings. The document contains the agreement terms with key provisions.";
+        let doc_type = DocumentType::detect_from_sample(sample);
+        assert_eq!(doc_type, DocumentType::Business);
+    }
+
+    #[test]
+    fn test_detect_generic_mixed_text() {
+        let sample = "ABC DEF GHI JKL MNO PQR STU VWX YZ are letters. Numbers like 1234567890 appear here too.";
+        let doc_type = DocumentType::detect_from_sample(sample);
+        assert_eq!(doc_type, DocumentType::Generic);
+    }
+
+    // Builder methods tests
+
+    #[test]
+    fn test_for_document_type_builder() {
+        let config = TextPipelineConfig::for_document_type(DocumentType::Business);
+        assert!(config.enable_hyphenation_reconstruction);
+        assert!(config.output.extract_tables);
+    }
+
+    #[test]
+    fn test_detect_and_optimize() {
+        let sample = "これは日本語です。";
+        let config = TextPipelineConfig::detect_and_optimize(sample);
+        assert_eq!(config.log_level, LogLevel::Info);
+        assert!(!config.enable_hyphenation_reconstruction); // CJK config
+    }
+
+    #[test]
+    fn test_for_document_type_academic() {
+        let config = TextPipelineConfig::for_document_type(DocumentType::Academic);
+        assert!(config.tj_threshold.use_adaptive);
+        assert_eq!(config.word_boundary_mode, WordBoundaryMode::Primary);
+    }
+
+    #[test]
+    fn test_for_document_type_cjk_spacing() {
+        let config = TextPipelineConfig::for_document_type(DocumentType::CJK);
+        // CJK should have tighter spacing
+        assert!(config.spacing.word_margin < 0.1);
+    }
+
+    #[test]
+    fn test_for_document_type_novel_spacing() {
+        let config = TextPipelineConfig::for_document_type(DocumentType::Novel);
+        // Novel should have relaxed spacing
+        assert!(config.spacing.word_margin > 0.1);
+    }
+
+    #[test]
+    fn test_detect_sample_with_high_cjk_ratio() {
+        let sample = "これはひらがなですあ。カタカナです。テスト。";
+        let doc_type = DocumentType::detect_from_sample(sample);
+        assert_eq!(doc_type, DocumentType::CJK);
+    }
+
+    #[test]
+    fn test_detect_sample_with_low_cjk_ratio() {
+        let sample = "This is mostly English text with some 日本語 mixed in.";
+        let doc_type = DocumentType::detect_from_sample(sample);
+        // Should be Generic since CJK ratio is too low
+        assert_ne!(doc_type, DocumentType::CJK);
+    }
+
+    #[test]
+    fn test_count_cjk_chars() {
+        let text = "これは日本語です";
+        let count = DocumentType::count_cjk_chars(text);
+        assert!(count > 0);
+    }
+
+    #[test]
+    fn test_count_rtl_chars() {
+        let text = "مرحبا بك";
+        let count = DocumentType::count_rtl_chars(text);
+        assert!(count > 0);
+    }
+
+    #[test]
+    fn test_count_special_chars() {
+        let text = "Equation: ∫√∞ with © symbol";
+        let count = DocumentType::count_special_chars(text);
+        assert!(count > 0);
+    }
+
+    #[test]
+    fn test_looks_like_narrative() {
+        let text = "she was running through the forest. she walked past the trees. they said hello to her.";
+        assert!(DocumentType::looks_like_narrative(text));
+    }
+
+    #[test]
+    fn test_looks_not_like_narrative_high_digits() {
+        let text = "1234567890 ABC DEF GHIJ 1234567890 KLMN";
+        assert!(!DocumentType::looks_like_narrative(text));
+    }
+
+    #[test]
+    fn test_looks_like_business() {
+        let text = "This Table shows the Figure in our report and document with agreement details";
+        assert!(DocumentType::looks_like_business(text));
+    }
+
+    #[test]
+    fn test_looks_not_like_business() {
+        let text = "This is a simple story about a dog and a cat in the forest";
+        assert!(!DocumentType::looks_like_business(text));
+    }
+
+    // Metrics collection tests
+
+    #[test]
+    fn test_collect_metrics_default_disabled() {
+        let config = TextPipelineConfig::default();
+        assert!(!config.collect_metrics);
+    }
+
+    #[test]
+    fn test_collect_metrics_enabled() {
+        let config = TextPipelineConfig::default()
+            .with_metrics_collection(true);
+        assert!(config.collect_metrics);
+    }
+
+    #[test]
+    fn test_collect_metrics_disabled_explicitly() {
+        let config = TextPipelineConfig::default()
+            .with_metrics_collection(false);
+        assert!(!config.collect_metrics);
+    }
+
+    #[test]
+    fn test_collect_metrics_builder_chain() {
+        let config = TextPipelineConfig::default()
+            .with_log_level(LogLevel::Debug)
+            .with_metrics_collection(true);
+        assert!(config.collect_metrics);
+        assert_eq!(config.log_level, LogLevel::Debug);
     }
 }
 

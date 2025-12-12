@@ -11,6 +11,7 @@ use crate::content::graphics_state::{GraphicsStateStack, Matrix};
 use crate::content::operators::{Operator, TextElement};
 use crate::content::parse_content_stream;
 use crate::error::Result;
+use crate::extract_log_debug;
 use crate::fonts::FontInfo;
 use crate::geometry::Rect;
 use crate::layout::{Color, FontWeight, TextChar, TextSpan};
@@ -2079,6 +2080,7 @@ impl TextExtractor {
         self.span_sequence_counter = 0; // Reset sequence counter for this page
 
         // Parse content stream into operators
+        extract_log_debug!("Parsing content stream for text extraction");
         let operators = parse_content_stream(content_stream)?;
 
         // Execute each operator

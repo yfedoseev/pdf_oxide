@@ -97,6 +97,9 @@ tempfile = "3.10"
 [features]
 default = []
 
+# Enable logging for the extraction pipeline
+logging = []
+
 # Python bindings (v0.1.0)
 python = ["pyo3"]
 

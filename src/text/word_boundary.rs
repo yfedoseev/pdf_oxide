@@ -17,6 +17,7 @@
 //! - ISO 32000-1:2008 Section 9.3: Text State Parameters (Tc, Tw, Tz, TL)
 //! - ISO 32000-1:2008 Section 9.6-9.8: Font Metrics
 
+use crate::extract_log_trace;
 use crate::text::cjk_punctuation;
 use crate::text::complex_script_detector::{
     ComplexScript, detect_complex_script, handle_devanagari_boundary, handle_indic_boundary,
@@ -184,13 +185,18 @@ impl DocumentScript {
         }
 
         // Decision tree: classify based on what we found
-        match (has_rtl, has_cjk, has_complex) {
+        let script = match (has_rtl, has_cjk, has_complex) {
             (false, false, false) => Self::Latin, // Pure Latin (fast path)
             (false, true, _) => Self::CJK,        // CJK-dominant (skip RTL)
             (true, false, _) => Self::RTL,        // RTL-dominant (skip CJK)
             (_, _, true) => Self::Complex,        // Complex scripts present
             _ => Self::Mixed,                     // Mixed scripts
-        }
+        };
+
+        // Log detected script at TRACE level for debugging
+        crate::extract_log_trace!("Detected document script: {:?} (sampled {} characters)", script, sample_size);
+
+        script
     }
 }
 
@@ -379,6 +385,13 @@ impl WordBoundaryDetector {
                 boundaries.push(i);
             }
         }
+
+        // Log boundary count at TRACE level for debugging word boundary detection
+        crate::extract_log_trace!(
+            "Word boundary detection: {} boundaries in {} characters",
+            boundaries.len(),
+            characters.len()
+        );
 
         boundaries
     }

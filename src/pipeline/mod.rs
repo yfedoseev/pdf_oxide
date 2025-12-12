@@ -33,6 +33,8 @@
 
 pub mod config;
 pub mod converters;
+pub mod logging;
+pub mod metrics;
 // pub mod input_parsers;  // Keep disabled - for PDF creation feature later
 pub mod ordered_span;
 pub mod reading_order;
@@ -40,12 +42,16 @@ pub mod text_processing;
 
 // Re-export main types
 pub use config::{
-    BoldMarkerBehavior, OutputConfig, ReadingOrderConfig, ReadingOrderStrategyType, SpacingConfig,
-    TextPipelineConfig, TjThresholdConfig, WordBoundaryMode,
+    BoldMarkerBehavior, LogLevel, OutputConfig, ReadingOrderConfig, ReadingOrderStrategyType,
+    SpacingConfig, TextPipelineConfig, TjThresholdConfig, WordBoundaryMode,
 };
 pub use converters::{
     HtmlOutputConverter, MarkdownOutputConverter, OutputConverter, PlainTextConverter,
 };
+pub use logging::{
+    extract_log_debug, extract_log_error, extract_log_info, extract_log_trace, extract_log_warn,
+};
+pub use metrics::{BatchMetrics, ExtractionMetrics};
 pub use ordered_span::{OrderedSpans, OrderedTextSpan};
 pub use reading_order::{ReadingOrderContext, ReadingOrderStrategy, XYCutStrategy};
 pub use text_processing::WhitespaceNormalizer;
