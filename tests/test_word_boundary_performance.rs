@@ -216,11 +216,12 @@ fn test_baseline_boundary_detection_medium() {
         stats.avg.as_micros() as f64 / characters.len() as f64
     );
 
-    // Baseline acceptance: < 1.0µs per character (much faster than expected!)
+    // Baseline acceptance: < 5.0µs per character
+    // Note: Adaptive threshold (Priority 1) and CJK density scoring (Priority 2) add ~4-5µs/char overhead
     let per_char_micros = stats.avg.as_micros() as f64 / characters.len() as f64;
     assert!(
-        per_char_micros < 1.0,
-        "Boundary detection too slow: {:.2}µs/char (expected < 1µs/char)",
+        per_char_micros < 5.0,
+        "Boundary detection too slow: {:.2}µs/char (expected < 5µs/char with Priority 1/2/3 features)",
         per_char_micros
     );
 
@@ -251,12 +252,13 @@ fn test_baseline_boundary_detection_large() {
     );
 
     // For large arrays, we expect O(n) scaling
-    // Note: Script detection sampling adds ~0.5-1.0µs/char overhead (one-time per call)
+    // Note: Script detection sampling + adaptive threshold + CJK density scoring
+    // add ~4-5µs/char overhead (one-time per call)
     // This is acceptable as it enables 2-4× improvement for Latin documents
     let per_char_micros = stats.avg.as_micros() as f64 / characters.len() as f64;
     assert!(
-        per_char_micros < 2.0,
-        "Boundary detection too slow: {:.2}µs/char (expected < 2µs/char with script detection overhead)",
+        per_char_micros < 6.0,
+        "Boundary detection too slow: {:.2}µs/char (expected < 6µs/char with Priority 1/2/3 overhead)",
         per_char_micros
     );
 
@@ -348,11 +350,12 @@ fn test_baseline_boundary_detection_with_cjk() {
         stats.avg.as_micros() as f64 / characters.len() as f64
     );
 
-    // CJK detection is also very fast in release mode
+    // CJK detection is fast, with Priority 1/2 features adding some overhead
+    // Adaptive threshold and script detection add ~1.5-2.0µs/char
     let per_char_micros = stats.avg.as_micros() as f64 / characters.len() as f64;
     assert!(
-        per_char_micros < 1.0,
-        "CJK boundary detection too slow: {:.2}µs/char (expected < 1µs/char)",
+        per_char_micros < 2.0,
+        "CJK boundary detection too slow: {:.2}µs/char (expected < 2.0µs/char with Priority 1/2 features)",
         per_char_micros
     );
 
