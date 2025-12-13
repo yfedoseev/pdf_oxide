@@ -46,8 +46,7 @@ phf = { version = "0.11", features = ["macros"] }  # Perfect hash maps for Adobe
 # Image processing
 image = { version = "0.24", default-features = false, features = ["png", "jpeg", "tiff"] }
 tiff = "0.9"  # TIFF support including CCITT decompression
-fax = "0.2"   # CCITT Group 3/4 decompression for scanned PDFs
-ccitt-t4-t6 = "0.1"  # Alternative CCITT Group 3/4 decoder
+fax = "0.2"   # CCITT Group 3/4 decompression for scanned PDFs (more lenient with malformed EOFB)
 
 # Encryption support
 aes = "0.8"          # AES encryption for PDF 1.6+

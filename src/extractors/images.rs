@@ -626,12 +626,22 @@ pub fn extract_image_from_xobject(
         filter_names.contains(&"Jbig2Decode".to_string())) &&
        bits_per_component == 1 {
         // Check if DecodeParms looks like CCITT parameters
-        if let Some(ccitt_params) = crate::object::extract_ccitt_params_with_width(dict.get("DecodeParms"), Some(width)) {
+        let mut ccitt_params = crate::object::extract_ccitt_params_with_width(dict.get("DecodeParms"), Some(width));
+
+        // If we extracted CCITT parameters but rows is missing, use image height
+        if let Some(ref mut params) = ccitt_params {
+            if params.rows.is_none() {
+                params.rows = Some(height);
+                log::debug!("Added image height {} to CCITT parameters (was missing from /DecodeParms)", height);
+            }
+        }
+
+        if ccitt_params.is_some() {
             log::warn!(
                 "PDF incorrectly labeled 1-bit image with JBIG2Decode filter but has CCITT parameters (K={})",
-                ccitt_params.k
+                ccitt_params.as_ref().unwrap().k
             );
-            ccitt_params_override = Some(ccitt_params);
+            ccitt_params_override = ccitt_params;
         }
     }
 
@@ -685,14 +695,22 @@ pub fn extract_image_from_xobject(
         image.set_ccitt_params(ccitt_params);
     } else if bits_per_component == 1 && image.color_space == ColorSpace::DeviceGray {
         // Try to extract CCITT decompression parameters normally
-        if let Some(ccitt_params) = crate::object::extract_ccitt_params_with_width(dict.get("DecodeParms"), Some(width)) {
+        if let Some(mut ccitt_params) = crate::object::extract_ccitt_params_with_width(dict.get("DecodeParms"), Some(width)) {
+            // If rows is missing from /DecodeParms, use image height
+            if ccitt_params.rows.is_none() {
+                ccitt_params.rows = Some(height);
+                log::debug!("Added image height {} to CCITT parameters (was missing from /DecodeParms)", height);
+            }
+
             log::debug!(
-                "Extracted CCITT parameters: K={}, BlackIs1={}, EndOfLine={}, EncodedByteAlign={}, EndOfBlock={}",
+                "Extracted CCITT parameters: K={}, BlackIs1={}, EndOfLine={}, EncodedByteAlign={}, EndOfBlock={}, columns={}, rows={:?}",
                 ccitt_params.k,
                 ccitt_params.black_is_1,
                 ccitt_params.end_of_line,
                 ccitt_params.encoded_byte_align,
                 ccitt_params.end_of_block,
+                ccitt_params.columns,
+                ccitt_params.rows,
             );
             image.set_ccitt_params(ccitt_params);
         }

@@ -53,7 +53,7 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
         log::debug!("CCITT Group 4 decompression requested");
     }
 
-    match decompress_with_ccitt_t4_t6(data, width, height_opt, params) {
+    match decompress_with_fax(data, width, height_opt, params) {
         Ok(mut output) => {
             let rows = output.len() / ((width as usize + 7) / 8);
             log::debug!(
@@ -68,6 +68,7 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
                 invert_bilevel_pixels(&mut output);
             }
 
+            log::info!("CCITT decompression successful!");
             Ok(output)
         }
         Err(e) => {
@@ -92,73 +93,173 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
     }
 }
 
-/// Decompress CCITT data using the ccitt-t4-t6 crate.
-fn decompress_with_ccitt_t4_t6(
+/// Decompress CCITT data using the fax crate.
+///
+/// The fax crate is more lenient with malformed EOFB markers compared to ccitt-t4-t6,
+/// which makes it better suited for handling real-world PDF files that don't strictly
+/// comply with the CCITT specification.
+fn decompress_with_fax(
     data: &[u8],
     width: u16,
     height: Option<u16>,
-    _params: &CcittParams,
+    params: &CcittParams,
 ) -> Result<Vec<u8>> {
-    use ccitt_t4_t6::bit_iter::BitWriter;
-    use ccitt_t4_t6::g42d::decode::Decoder;
-
     let width_usize = width as usize;
 
     log::debug!(
-        "Attempting CCITT decompression: width={}, height={:?}, data_len={}",
+        "Attempting CCITT decompression with fax crate: width={}, height={:?}, data_len={}, K={}",
         width,
         height,
-        data.len()
+        data.len(),
+        params.k
     );
 
-    // Try decompressing with the original data first
-    let result = try_decode_ccitt(data, width_usize);
-
-    if result.is_ok() {
-        return result;
+    // Try with original data first
+    match try_decode_with_fax(data, width_usize, height, params) {
+        Ok(output) if !output.is_empty() => {
+            return Ok(output);
+        }
+        Ok(_empty) => {
+            log::debug!("First attempt returned no data, trying with leading zeros stripped");
+        }
+        Err(e) => {
+            log::debug!("First attempt failed: {}, trying with leading zeros stripped", e);
+        }
     }
 
-    // If that failed, try stripping leading zeros
-    log::debug!("First decompression attempt failed, trying with leading zeros stripped");
+    // If that failed, try stripping leading zeros (common in some PDFs)
     let trimmed_data = data.iter()
         .skip_while(|b| **b == 0)
         .copied()
         .collect::<Vec<_>>();
 
-    if trimmed_data.len() < data.len() {
+    if trimmed_data.len() < data.len() && !trimmed_data.is_empty() {
         log::debug!(
-            "Stripped {} leading zero bytes, attempting decompression",
-            data.len() - trimmed_data.len()
+            "Stripped {} leading zero bytes ({} -> {}), attempting decompression",
+            data.len() - trimmed_data.len(),
+            data.len(),
+            trimmed_data.len()
         );
 
-        if let Ok(output) = try_decode_ccitt(&trimmed_data, width_usize) {
-            return Ok(output);
+        log::debug!(
+            "Data after stripping zeros, first 32 bytes: {}",
+            trimmed_data.iter().take(32)
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+
+        match try_decode_with_fax(&trimmed_data, width_usize, height, params) {
+            Ok(output) if !output.is_empty() => {
+                log::info!("Successfully decompressed after stripping leading zeros!");
+                return Ok(output);
+            }
+            Ok(_) => {
+                log::debug!("Strip attempt also returned no data");
+            }
+            Err(e) => {
+                log::debug!("Strip attempt also failed: {}", e);
+            }
         }
     }
 
-    // Both attempts failed
-    result
+    // Both attempts failed - return error
+    Err(Error::Decode(
+        "CCITT decompression failed: fax decoder returned no output".to_string()
+    ))
 }
 
-fn try_decode_ccitt(data: &[u8], width: usize) -> Result<Vec<u8>> {
-    use ccitt_t4_t6::bit_iter::BitWriter;
-    use ccitt_t4_t6::g42d::decode::Decoder;
+fn try_decode_with_fax(
+    data: &[u8],
+    width: usize,
+    height: Option<u16>,
+    params: &CcittParams,
+) -> Result<Vec<u8>> {
+    use fax::decoder;
 
-    let mut decoder = Decoder::<BitWriter>::new(width);
+    let mut output_rows = Vec::new();
+    let bytes_per_row = (width + 7) / 8;
 
-    // Decode the CCITT compressed data
-    decoder.decode(data)
-        .map_err(|e| Error::Decode(format!("CCITT decompression failed: {}", e)))?;
+    // Use fax crate's decoder which is more lenient with malformed EOFB
+    let bytes_iter = data.iter().copied();
 
-    let packed_bits = decoder.into_store().done();
+    let success = if params.is_group_4() {
+        log::debug!("Using Group 4 (T.6) decoder");
+        decoder::decode_g4(bytes_iter, width as u16, height, |transitions: &[u16]| {
+            // Convert run-length transitions to pixel bytes
+            let row_bytes = transitions_to_bytes(transitions, width);
+            output_rows.push(row_bytes);
+        })
+    } else {
+        log::debug!("Using Group 3 (T.4) decoder");
+        // Group 3 has a different signature - no width/height params in callback
+        decoder::decode_g3(bytes_iter, |transitions: &[u16]| {
+            // Convert run-length transitions to pixel bytes
+            let row_bytes = transitions_to_bytes(transitions, width);
+            output_rows.push(row_bytes);
+        })
+    };
 
-    log::debug!(
-        "CCITT decompression successful: {} bytes input -> {} bytes output",
-        data.len(),
-        packed_bits.len()
-    );
+    // Check if decoder succeeded and returned data
+    if success.is_some() && !output_rows.is_empty() {
+        let output = output_rows.into_iter().flatten().collect::<Vec<u8>>();
+        log::debug!(
+            "CCITT decompression successful: {} bytes input -> {} bytes output ({} rows)",
+            data.len(),
+            output.len(),
+            output.len() / bytes_per_row
+        );
+        Ok(output)
+    } else if success.is_some() {
+        // Decoder succeeded but produced no output - unusual but valid
+        log::debug!("CCITT decoder returned success but no rows produced");
+        Ok(Vec::new())
+    } else {
+        // Decoder failed
+        log::warn!("CCITT fax decoder returned None");
+        Err(Error::Decode("CCITT fax decoder failed".to_string()))
+    }
+}
 
-    Ok(packed_bits)
+/// Convert run-length transition positions to byte-packed pixels.
+///
+/// The transitions array contains positions where the color changes from white to black
+/// or black to white, starting with white. For example, [3, 5, 8] means:
+/// - Pixels 0-2: white
+/// - Pixels 3-4: black
+/// - Pixels 5-7: white
+fn transitions_to_bytes(transitions: &[u16], width: usize) -> Vec<u8> {
+    let bytes_per_row = (width + 7) / 8;
+    let mut row_bytes = vec![0u8; bytes_per_row];
+
+    let mut is_black = false; // Start with white
+    let mut start_pos = 0u16;
+
+    for &transition_pos in transitions {
+        let transition_pos = transition_pos as usize;
+        if is_black {
+            // Fill black pixels from start_pos to transition_pos
+            for pixel_idx in start_pos as usize..transition_pos.min(width) {
+                let byte_idx = pixel_idx / 8;
+                let bit_idx = 7 - (pixel_idx % 8);
+                row_bytes[byte_idx] |= 1 << bit_idx;
+            }
+        }
+        // Switch color for next run
+        is_black = !is_black;
+        start_pos = transition_pos as u16;
+    }
+
+    // Handle remaining pixels in the last run
+    if is_black && (start_pos as usize) < width {
+        for pixel_idx in (start_pos as usize)..width {
+            let byte_idx = pixel_idx / 8;
+            let bit_idx = 7 - (pixel_idx % 8);
+            row_bytes[byte_idx] |= 1 << bit_idx;
+        }
+    }
+
+    row_bytes
 }
 
 /// Decompresses CCITT Group 4 encoded data (legacy API for backwards compatibility).
