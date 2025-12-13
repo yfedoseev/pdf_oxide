@@ -32,7 +32,7 @@ pub use dct::DctDecoder;
 pub use flate::FlateDecoder;
 pub use jbig2::Jbig2Decoder;
 pub use lzw::LzwDecoder;
-pub use predictor::{DecodeParams, PngPredictor, decode_predictor};
+pub use predictor::{CcittParams, DecodeParams, PngPredictor, decode_predictor};
 pub use runlength::RunLengthDecoder;
 
 /// Security limits for decompression (decompression bomb protection).

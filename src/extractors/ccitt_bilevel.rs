@@ -6,36 +6,55 @@
 //! PDF Spec: ISO 32000-1:2008, Section 7.4.6 - CCITTFaxDecode Filter
 //! CCITT Spec: ITU-T Recommendation T.6 - Facsimile coding schemes and coding control functions
 
+use crate::decoders::CcittParams;
 use crate::error::{Error, Result};
 use fax::decoder;
 
-/// Decompresses CCITT Group 4 encoded data to raw bilevel pixels.
+/// Decompresses CCITT encoded data (Group 3 or Group 4).
 ///
-/// CCITT Group 4 is a binary compression format used in TIFF and PDF for bilevel images.
-/// This function decompresses Group 4 data and returns the raw bits as a byte vector.
+/// CCITT (Consultative Committee for International Telegraphy and Telephony) is a binary
+/// compression format used in TIFF and PDF for bilevel (1-bit) images. This is the standard
+/// compression for scanned documents.
 ///
 /// # Arguments
 ///
-/// * `data` - CCITT Group 4 compressed data
-/// * `width` - Image width in pixels
-/// * `height` - Image height in rows
+/// * `data` - CCITT compressed data
+/// * `params` - CCITT decompression parameters from PDF /DecodeParms dictionary
 ///
 /// # Returns
 ///
 /// A vector of bytes representing the decompressed bilevel image.
 /// Each byte contains 8 pixels (MSB = leftmost pixel, LSB = rightmost pixel).
-/// Pixels are encoded as: 0 = white, 1 = black.
-pub fn decompress_ccitt_group4(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
-    let width = width as u16;
-    let height_opt = Some(height as u16);
-    let mut output = Vec::new();
+/// Pixels are encoded as: 0 = white, 1 = black (unless /BlackIs1=true, then inverted).
+pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
+    // Validate required parameters
+    if params.columns == 0 {
+        return Err(Error::Decode("CCITT decompression requires /Columns parameter".to_string()));
+    }
+
+    let width = params.columns as u16;
+    let height_opt = params.rows.map(|h| h as u16);
 
     log::debug!(
-        "CCITT Group 4 decompression: {} bytes, {}x{} pixels",
+        "CCITT decompression: {} bytes, {}x{} pixels, K={}, BlackIs1={}",
         data.len(),
-        width,
-        height_opt.unwrap_or(0)
+        params.columns,
+        params.rows.unwrap_or(0),
+        params.k,
+        params.black_is_1
     );
+
+    // For now, we only support Group 4 decompression
+    if !params.is_group_4() {
+        log::warn!(
+            "CCITT Group 3 decompression requested (K={}), falling back to white pixels",
+            params.k
+        );
+        let expected_bytes = height_opt.unwrap_or(1) as usize * ((width as usize + 7) / 8);
+        return Ok(vec![0; expected_bytes]);
+    }
+
+    let mut output = Vec::new();
 
     // Use the fax crate's Group 4 decoder
     // It calls our callback for each decompressed line
@@ -51,31 +70,71 @@ pub fn decompress_ccitt_group4(data: &[u8], width: u32, height: u32) -> Result<V
             // Verify we got the expected amount of data
             if output.is_empty() {
                 log::warn!("CCITT decompression produced empty output");
-                return Err(Error::Decode("CCITT Group 4 decompression produced no output".to_string()));
+                return Err(Error::Decode(
+                    "CCITT decompression produced no output. This may indicate \
+                     /EndOfLine=true or /EncodedByteAlign=true in /DecodeParms, \
+                     which are not yet supported.".to_string()
+                ));
             }
 
             let rows = output.len() / ((width as usize + 7) / 8);
             log::debug!(
-                "CCITT Group 4 decompressed: {} bytes -> {} bytes ({} rows)",
+                "CCITT decompressed: {} bytes -> {} bytes ({} rows)",
                 data.len(),
                 output.len(),
                 rows
             );
 
+            // Handle /BlackIs1 parameter if needed
+            if params.black_is_1 {
+                invert_bilevel_pixels(&mut output);
+            }
+
             Ok(output)
         }
         None => {
             log::warn!(
-                "CCITT Group 4 decompression failed for {}x{} image with {} bytes",
-                width,
-                height_opt.unwrap_or(0),
+                "CCITT Group 4 decompression failed: {}x{} pixels, {} bytes",
+                params.columns,
+                params.rows.unwrap_or(0),
                 data.len()
             );
-            // Try returning empty data padded with white pixels as fallback
-            let expected_bytes = (height as usize) * ((width as usize + 7) / 8);
+            log::info!(
+                "Check /DecodeParms: /EndOfLine={}, /EncodedByteAlign={}, /EndOfBlock={}",
+                params.end_of_line,
+                params.encoded_byte_align,
+                params.end_of_block
+            );
+            // Fallback: return white pixels
+            let expected_bytes = height_opt.unwrap_or(1) as usize * ((width as usize + 7) / 8);
             log::info!("Returning {} bytes of white pixels as fallback", expected_bytes);
             Ok(vec![0; expected_bytes])
         }
+    }
+}
+
+/// Decompresses CCITT Group 4 encoded data (legacy API for backwards compatibility).
+///
+/// This is a convenience function that uses default CCITT parameters.
+#[deprecated(since = "0.1.5", note = "Use decompress_ccitt with CcittParams instead")]
+pub fn decompress_ccitt_group4(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+    let params = CcittParams {
+        columns: width,
+        rows: Some(height),
+        ..Default::default()
+    };
+    decompress_ccitt(data, &params)
+}
+
+/// Invert all bits in a bilevel image.
+///
+/// This is used when /BlackIs1=true to convert from:
+/// - white=1, black=0 (inverted representation)
+/// to standard PDF representation:
+/// - white=0, black=1
+fn invert_bilevel_pixels(data: &mut [u8]) {
+    for byte in data.iter_mut() {
+        *byte = !*byte;
     }
 }
 

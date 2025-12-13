@@ -67,6 +67,60 @@ impl DecodeParams {
     }
 }
 
+/// CCITT Group 3/4 Fax decode parameters.
+///
+/// PDF Spec: ISO 32000-1:2008, Section 7.4.6 - CCITTFaxDecode Filter Parameters
+#[derive(Debug, Clone, PartialEq)]
+pub struct CcittParams {
+    /// Group indicator:
+    /// -1 = Group 4 (pure 2D, default)
+    ///  0 = Group 3 (1-D)
+    ///  >0 = Group 3 (2-D with specified K)
+    pub k: i64,
+    /// Image width in pixels (must match /Columns in DecodeParms)
+    pub columns: u32,
+    /// Image height in pixels (optional)
+    pub rows: Option<u32>,
+    /// Pixel interpretation:
+    /// false = white is 0, black is 1 (PDF default)
+    /// true = white is 1, black is 0 (inverted)
+    pub black_is_1: bool,
+    /// Include End-of-Line code
+    pub end_of_line: bool,
+    /// Align compressed data to byte boundaries
+    pub encoded_byte_align: bool,
+    /// Include Return-to-Control (RTC) code
+    /// true = RTC code at end (default)
+    /// false = no RTC code
+    pub end_of_block: bool,
+}
+
+impl Default for CcittParams {
+    fn default() -> Self {
+        Self {
+            k: -1,                     // Group 4
+            columns: 1,
+            rows: None,
+            black_is_1: false,          // PDF default: white=0, black=1
+            end_of_line: false,
+            encoded_byte_align: false,
+            end_of_block: true,         // PDF default: RTC code present
+        }
+    }
+}
+
+impl CcittParams {
+    /// Check if this is Group 4 encoding (K = -1)
+    pub fn is_group_4(&self) -> bool {
+        self.k == -1
+    }
+
+    /// Check if this is Group 3 encoding
+    pub fn is_group_3(&self) -> bool {
+        self.k >= 0
+    }
+}
+
 /// Apply PNG predictor decoding to data.
 ///
 /// PNG predictors encode differences between pixels. This function reverses

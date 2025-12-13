@@ -41,6 +41,8 @@ pub struct PdfImage {
     data: ImageData,
     /// Optional bounding box in PDF user space
     bbox: Option<Rect>,
+    /// CCITT decompression parameters (for 1-bit bilevel images)
+    ccitt_params: Option<crate::decoders::CcittParams>,
 }
 
 impl PdfImage {
@@ -84,6 +86,7 @@ impl PdfImage {
             bits_per_component,
             data,
             bbox: None,
+            ccitt_params: None,
         }
     }
 
@@ -103,6 +106,27 @@ impl PdfImage {
             bits_per_component,
             data,
             bbox: Some(bbox),
+            ccitt_params: None,
+        }
+    }
+
+    /// Create a new PDF image with CCITT parameters.
+    pub fn with_ccitt_params(
+        width: u32,
+        height: u32,
+        color_space: ColorSpace,
+        bits_per_component: u8,
+        data: ImageData,
+        ccitt_params: crate::decoders::CcittParams,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            color_space,
+            bits_per_component,
+            data,
+            bbox: None,
+            ccitt_params: Some(ccitt_params),
         }
     }
 
@@ -134,6 +158,11 @@ impl PdfImage {
     /// Get the bounding box if available.
     pub fn bbox(&self) -> Option<&Rect> {
         self.bbox.as_ref()
+    }
+
+    /// Set CCITT decompression parameters for this image.
+    pub fn set_ccitt_params(&mut self, params: crate::decoders::CcittParams) {
+        self.ccitt_params = Some(params);
     }
 
     /// Save the image as PNG format.
@@ -213,12 +242,17 @@ impl PdfImage {
             ImageData::Raw { pixels, format } => {
                 // Special handling for 1-bit bilevel images (typically CCITT compressed)
                 if self.bits_per_component == 1 && matches!(self.color_space, ColorSpace::DeviceGray) {
-                    // Decompress CCITT Group 4 data
-                    let decompressed = ccitt_bilevel::decompress_ccitt_group4(
-                        pixels,
-                        self.width,
-                        self.height,
-                    )?;
+                    // Use CCITT parameters if available, otherwise use defaults
+                    let params = self.ccitt_params.clone().unwrap_or_else(|| {
+                        crate::decoders::CcittParams {
+                            columns: self.width,
+                            rows: Some(self.height),
+                            ..Default::default()
+                        }
+                    });
+
+                    // Decompress CCITT data using extracted parameters
+                    let decompressed = ccitt_bilevel::decompress_ccitt(pixels, &params)?;
 
                     // Convert 1-bit bilevel to 8-bit grayscale
                     let grayscale = ccitt_bilevel::bilevel_to_grayscale(
@@ -564,15 +598,37 @@ pub fn extract_image_from_xobject(
     let color_space = parse_color_space(color_space_obj)?;
 
     // Check if this is a JPEG image (DCTDecode filter)
-    let is_jpeg = if let Some(filter_obj) = dict.get("Filter") {
+    let mut filter_names = if let Some(filter_obj) = dict.get("Filter") {
         match filter_obj {
-            Object::Name(name) => name == "DCTDecode",
-            Object::Array(filters) => filters.iter().any(|f| f.as_name() == Some("DCTDecode")),
-            _ => false,
+            Object::Name(name) => vec![name.clone()],
+            Object::Array(filters) => filters
+                .iter()
+                .filter_map(|f| f.as_name().map(String::from))
+                .collect(),
+            _ => vec![],
         }
     } else {
-        false
+        vec![]
     };
+
+    log::debug!("Image filters detected: {:?}", filter_names);
+
+    let is_jpeg = filter_names.iter().any(|name| name == "DCTDecode");
+
+    // Check for CCITT parameter mismatch (incorrectly labeled as JBIG2Decode)
+    let mut ccitt_params_override: Option<crate::decoders::CcittParams> = None;
+    if (filter_names.contains(&"JBIG2Decode".to_string()) ||
+        filter_names.contains(&"Jbig2Decode".to_string())) &&
+       bits_per_component == 1 {
+        // Check if DecodeParms looks like CCITT parameters
+        if let Some(ccitt_params) = crate::object::extract_ccitt_params(dict.get("DecodeParms")) {
+            log::warn!(
+                "PDF incorrectly labeled 1-bit image with JBIG2Decode filter but has CCITT parameters (K={})",
+                ccitt_params.k
+            );
+            ccitt_params_override = Some(ccitt_params);
+        }
+    }
 
     // Extract image data
     let data = if is_jpeg {
@@ -581,8 +637,21 @@ pub fn extract_image_from_xobject(
             Object::Stream { data, .. } => ImageData::Jpeg(data.to_vec()),
             _ => return Err(Error::Image("XObject is not a stream".to_string())),
         }
+    } else if ccitt_params_override.is_some() {
+        // Special handling: If we detected CCITT parameters override, extract the raw stream
+        // without applying the (incorrect) JBIG2Decode filter
+        match xobject {
+            Object::Stream { data, .. } => {
+                log::debug!("Using raw CCITT data (skipping incorrect JBIG2Decode filter)");
+                ImageData::Raw {
+                    pixels: data.to_vec(),
+                    format: PixelFormat::Grayscale,
+                }
+            }
+            _ => return Err(Error::Image("XObject is not a stream".to_string())),
+        }
     } else {
-        // Decode stream data and store as raw pixels
+        // Decode stream data normally
         let decoded_data = if let (Some(doc), Some(ref_id)) = (doc, obj_ref) {
             doc.decode_stream_with_encryption(xobject, ref_id)?
         } else {
@@ -595,7 +664,36 @@ pub fn extract_image_from_xobject(
         }
     };
 
-    Ok(PdfImage::new(width, height, color_space, bits_per_component, data))
+    // Extract CCITT parameters if this is a 1-bit bilevel image
+    let mut image = PdfImage::new(width, height, color_space, bits_per_component, data);
+
+    // Use override parameters if we detected a mismatch
+    if let Some(ccitt_params) = ccitt_params_override {
+        log::debug!(
+            "Using CCITT override parameters: K={}, BlackIs1={}, EndOfLine={}, EncodedByteAlign={}, EndOfBlock={}",
+            ccitt_params.k,
+            ccitt_params.black_is_1,
+            ccitt_params.end_of_line,
+            ccitt_params.encoded_byte_align,
+            ccitt_params.end_of_block,
+        );
+        image.set_ccitt_params(ccitt_params);
+    } else if bits_per_component == 1 && image.color_space == ColorSpace::DeviceGray {
+        // Try to extract CCITT decompression parameters normally
+        if let Some(ccitt_params) = crate::object::extract_ccitt_params(dict.get("DecodeParms")) {
+            log::debug!(
+                "Extracted CCITT parameters: K={}, BlackIs1={}, EndOfLine={}, EncodedByteAlign={}, EndOfBlock={}",
+                ccitt_params.k,
+                ccitt_params.black_is_1,
+                ccitt_params.end_of_line,
+                ccitt_params.encoded_byte_align,
+                ccitt_params.end_of_block,
+            );
+            image.set_ccitt_params(ccitt_params);
+        }
+    }
+
+    Ok(image)
 }
 
 /// Convert CMYK pixel values to RGB.

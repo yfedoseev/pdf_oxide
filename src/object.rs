@@ -349,6 +349,81 @@ fn extract_decode_params(params_obj: Option<&Object>) -> Option<crate::decoders:
     })
 }
 
+/// Extract CCITT-specific decode parameters from a DecodeParms object.
+///
+/// PDF Spec: ISO 32000-1:2008, Section 7.4.6 - CCITTFaxDecode Filter Parameters
+///
+/// The DecodeParms entry can be:
+/// - A dictionary (for single filter)
+/// - An array of dictionaries (for multiple filters)
+/// - Null or absent (no parameters, use defaults)
+///
+/// CCITT parameters:
+/// - /K: Group indicator (-1=Group 4, 0=Group 3 1-D, >0=Group 3 2-D)
+/// - /Columns: Image width in pixels
+/// - /Rows: Image height in pixels (optional)
+/// - /BlackIs1: Pixel interpretation (false=white is 0, true=white is 1)
+/// - /EndOfLine: Include EOL code (default false)
+/// - /EncodedByteAlign: Byte-aligned encoding (default false)
+/// - /EndOfBlock: Include RTC code (default true)
+pub fn extract_ccitt_params(params_obj: Option<&Object>) -> Option<crate::decoders::CcittParams> {
+    let dict = match params_obj? {
+        Object::Dictionary(d) => d,
+        Object::Array(arr) => {
+            // For array, take the first non-null dictionary
+            arr.iter().filter_map(|obj| obj.as_dict()).next()?
+        },
+        _ => return None,
+    };
+
+    // Extract CCITT parameters with PDF defaults
+    let k = dict
+        .get("K")
+        .and_then(|obj| obj.as_integer())
+        .unwrap_or(-1); // Default: Group 4
+
+    let columns = dict
+        .get("Columns")
+        .and_then(|obj| obj.as_integer())
+        .map(|v| v as u32)
+        .unwrap_or(1);
+
+    let rows = dict
+        .get("Rows")
+        .and_then(|obj| obj.as_integer())
+        .map(|v| v as u32);
+
+    let black_is_1 = dict
+        .get("BlackIs1")
+        .and_then(|obj| obj.as_bool())
+        .unwrap_or(false); // PDF default: white=0, black=1
+
+    let end_of_line = dict
+        .get("EndOfLine")
+        .and_then(|obj| obj.as_bool())
+        .unwrap_or(false); // PDF default: no EOL
+
+    let encoded_byte_align = dict
+        .get("EncodedByteAlign")
+        .and_then(|obj| obj.as_bool())
+        .unwrap_or(false); // PDF default: no alignment
+
+    let end_of_block = dict
+        .get("EndOfBlock")
+        .and_then(|obj| obj.as_bool())
+        .unwrap_or(true); // PDF default: RTC code present
+
+    Some(crate::decoders::CcittParams {
+        k,
+        columns,
+        rows,
+        black_is_1,
+        end_of_line,
+        encoded_byte_align,
+        end_of_block,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
