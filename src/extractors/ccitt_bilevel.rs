@@ -8,7 +8,6 @@
 
 use crate::decoders::CcittParams;
 use crate::error::{Error, Result};
-use fax::decoder;
 
 /// Decompresses CCITT encoded data (Group 3 or Group 4).
 ///
@@ -44,39 +43,18 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
         params.black_is_1
     );
 
-    // For now, we only support Group 4 decompression
-    if !params.is_group_4() {
-        log::warn!(
-            "CCITT Group 3 decompression requested (K={}), falling back to white pixels",
+    // Support both Group 3 and Group 4
+    if params.is_group_3() {
+        log::debug!(
+            "CCITT Group 3 decompression requested (K={})",
             params.k
         );
-        let expected_bytes = height_opt.unwrap_or(1) as usize * ((width as usize + 7) / 8);
-        return Ok(vec![0; expected_bytes]);
+    } else {
+        log::debug!("CCITT Group 4 decompression requested");
     }
 
-    let mut output = Vec::new();
-
-    // Use the fax crate's Group 4 decoder
-    // It calls our callback for each decompressed line
-    let bytes_iter = data.iter().copied();
-    let result = decoder::decode_g4(bytes_iter, width, height_opt, |line| {
-        // Convert each line (array of u16 transitions) to bytes
-        let row_bytes = transitions_to_bytes(line, width);
-        output.extend_from_slice(&row_bytes);
-    });
-
-    match result {
-        Some(()) => {
-            // Verify we got the expected amount of data
-            if output.is_empty() {
-                log::warn!("CCITT decompression produced empty output");
-                return Err(Error::Decode(
-                    "CCITT decompression produced no output. This may indicate \
-                     /EndOfLine=true or /EncodedByteAlign=true in /DecodeParms, \
-                     which are not yet supported.".to_string()
-                ));
-            }
-
+    match decompress_with_ccitt_t4_t6(data, width, height_opt, params) {
+        Ok(mut output) => {
             let rows = output.len() / ((width as usize + 7) / 8);
             log::debug!(
                 "CCITT decompressed: {} bytes -> {} bytes ({} rows)",
@@ -92,12 +70,13 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
 
             Ok(output)
         }
-        None => {
+        Err(e) => {
             log::warn!(
-                "CCITT Group 4 decompression failed: {}x{} pixels, {} bytes",
+                "CCITT decompression failed: {}x{} pixels, {} bytes: {}",
                 params.columns,
                 params.rows.unwrap_or(0),
-                data.len()
+                data.len(),
+                e
             );
             log::info!(
                 "Check /DecodeParms: /EndOfLine={}, /EncodedByteAlign={}, /EndOfBlock={}",
@@ -111,6 +90,75 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
             Ok(vec![0; expected_bytes])
         }
     }
+}
+
+/// Decompress CCITT data using the ccitt-t4-t6 crate.
+fn decompress_with_ccitt_t4_t6(
+    data: &[u8],
+    width: u16,
+    height: Option<u16>,
+    _params: &CcittParams,
+) -> Result<Vec<u8>> {
+    use ccitt_t4_t6::bit_iter::BitWriter;
+    use ccitt_t4_t6::g42d::decode::Decoder;
+
+    let width_usize = width as usize;
+
+    log::debug!(
+        "Attempting CCITT decompression: width={}, height={:?}, data_len={}",
+        width,
+        height,
+        data.len()
+    );
+
+    // Try decompressing with the original data first
+    let result = try_decode_ccitt(data, width_usize);
+
+    if result.is_ok() {
+        return result;
+    }
+
+    // If that failed, try stripping leading zeros
+    log::debug!("First decompression attempt failed, trying with leading zeros stripped");
+    let trimmed_data = data.iter()
+        .skip_while(|b| **b == 0)
+        .copied()
+        .collect::<Vec<_>>();
+
+    if trimmed_data.len() < data.len() {
+        log::debug!(
+            "Stripped {} leading zero bytes, attempting decompression",
+            data.len() - trimmed_data.len()
+        );
+
+        if let Ok(output) = try_decode_ccitt(&trimmed_data, width_usize) {
+            return Ok(output);
+        }
+    }
+
+    // Both attempts failed
+    result
+}
+
+fn try_decode_ccitt(data: &[u8], width: usize) -> Result<Vec<u8>> {
+    use ccitt_t4_t6::bit_iter::BitWriter;
+    use ccitt_t4_t6::g42d::decode::Decoder;
+
+    let mut decoder = Decoder::<BitWriter>::new(width);
+
+    // Decode the CCITT compressed data
+    decoder.decode(data)
+        .map_err(|e| Error::Decode(format!("CCITT decompression failed: {}", e)))?;
+
+    let packed_bits = decoder.into_store().done();
+
+    log::debug!(
+        "CCITT decompression successful: {} bytes input -> {} bytes output",
+        data.len(),
+        packed_bits.len()
+    );
+
+    Ok(packed_bits)
 }
 
 /// Decompresses CCITT Group 4 encoded data (legacy API for backwards compatibility).
@@ -138,49 +186,6 @@ fn invert_bilevel_pixels(data: &mut [u8]) {
     }
 }
 
-/// Convert transition array to packed byte representation.
-///
-/// The transitions array contains run lengths (white/black alternating).
-/// We convert this to a byte array where each bit represents a pixel.
-fn transitions_to_bytes(transitions: &[u16], width: u16) -> Vec<u8> {
-    let width = width as usize;
-    let row_bytes = (width + 7) / 8;
-    let mut row = vec![0u8; row_bytes];
-
-    // Expand transitions to individual pixels
-    let mut pixel_idx = 0;
-    let mut is_black = false; // Start with white run
-
-    for &run_length in transitions.iter() {
-        let run_length = run_length as usize;
-
-        for _ in 0..run_length {
-            if pixel_idx >= width {
-                break;
-            }
-
-            let byte_idx = pixel_idx / 8;
-            let bit_pos = 7 - (pixel_idx % 8);
-
-            // Set bit if this is a black pixel
-            if is_black {
-                row[byte_idx] |= 1 << bit_pos;
-            }
-            // else: white pixel, bit remains 0
-
-            pixel_idx += 1;
-        }
-
-        if pixel_idx >= width {
-            break;
-        }
-
-        // Toggle between white and black for next run
-        is_black = !is_black;
-    }
-
-    row
-}
 
 /// Convert 1-bit bilevel image to 8-bit grayscale.
 ///

@@ -367,6 +367,10 @@ fn extract_decode_params(params_obj: Option<&Object>) -> Option<crate::decoders:
 /// - /EncodedByteAlign: Byte-aligned encoding (default false)
 /// - /EndOfBlock: Include RTC code (default true)
 pub fn extract_ccitt_params(params_obj: Option<&Object>) -> Option<crate::decoders::CcittParams> {
+    extract_ccitt_params_with_width(params_obj, None)
+}
+
+pub fn extract_ccitt_params_with_width(params_obj: Option<&Object>, image_width: Option<u32>) -> Option<crate::decoders::CcittParams> {
     let dict = match params_obj? {
         Object::Dictionary(d) => d,
         Object::Array(arr) => {
@@ -386,6 +390,7 @@ pub fn extract_ccitt_params(params_obj: Option<&Object>) -> Option<crate::decode
         .get("Columns")
         .and_then(|obj| obj.as_integer())
         .map(|v| v as u32)
+        .or(image_width)
         .unwrap_or(1);
 
     let rows = dict

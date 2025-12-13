@@ -165,6 +165,11 @@ impl PdfImage {
         self.ccitt_params = Some(params);
     }
 
+    /// Get CCITT decompression parameters if available.
+    pub fn ccitt_params(&self) -> Option<&crate::decoders::CcittParams> {
+        self.ccitt_params.as_ref()
+    }
+
     /// Save the image as PNG format.
     ///
     /// For JPEG images, this will decode and re-encode as PNG.
@@ -621,7 +626,7 @@ pub fn extract_image_from_xobject(
         filter_names.contains(&"Jbig2Decode".to_string())) &&
        bits_per_component == 1 {
         // Check if DecodeParms looks like CCITT parameters
-        if let Some(ccitt_params) = crate::object::extract_ccitt_params(dict.get("DecodeParms")) {
+        if let Some(ccitt_params) = crate::object::extract_ccitt_params_with_width(dict.get("DecodeParms"), Some(width)) {
             log::warn!(
                 "PDF incorrectly labeled 1-bit image with JBIG2Decode filter but has CCITT parameters (K={})",
                 ccitt_params.k
@@ -680,7 +685,7 @@ pub fn extract_image_from_xobject(
         image.set_ccitt_params(ccitt_params);
     } else if bits_per_component == 1 && image.color_space == ColorSpace::DeviceGray {
         // Try to extract CCITT decompression parameters normally
-        if let Some(ccitt_params) = crate::object::extract_ccitt_params(dict.get("DecodeParms")) {
+        if let Some(ccitt_params) = crate::object::extract_ccitt_params_with_width(dict.get("DecodeParms"), Some(width)) {
             log::debug!(
                 "Extracted CCITT parameters: K={}, BlackIs1={}, EndOfLine={}, EncodedByteAlign={}, EndOfBlock={}",
                 ccitt_params.k,

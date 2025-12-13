@@ -86,4 +86,88 @@ mod ccitt_extraction_tests {
         println!("   - Default Group 4 parameters verified");
         println!("   - Group 3 detection works correctly");
     }
+
+    #[test]
+    fn test_ccitt_t4_t6_decompression_output() {
+        use pdf_oxide::extractors::ccitt_bilevel;
+
+        let pdf_path = "scanned_samples/pride_prejudice.pdf";
+        if !std::path::Path::new(pdf_path).exists() {
+            println!("PDF not found: {}", pdf_path);
+            return;
+        }
+
+        env_logger::builder().is_test(true).try_init().ok();
+
+        println!("\n╔═══════════════════════════════════════════════════════════════╗");
+        println!("║  CCITT-T4-T6 DECOMPRESSION OUTPUT TEST                       ║");
+        println!("╚═══════════════════════════════════════════════════════════════╝\n");
+
+        let mut doc = match PdfDocument::open(pdf_path) {
+            Ok(d) => d,
+            Err(e) => {
+                println!("❌ Failed to open PDF: {}", e);
+                return;
+            }
+        };
+
+        match doc.extract_images(1) {
+            Ok(images) => {
+                println!("✅ Extracted {} images from page 1\n", images.len());
+
+                for (idx, image) in images.iter().enumerate() {
+                    if let pdf_oxide::extractors::images::ImageData::Raw { pixels, .. } = image.data() {
+                        println!("Image {}: {}x{}", idx, image.width(), image.height());
+
+                        println!("  Raw stream bytes: {}", pixels.len());
+                        println!("  Expected decompressed bytes: {}", ((image.width() as u64 + 7) / 8) * image.height() as u64);
+
+                        // Try to decompress if we have CCITT parameters
+                        if let Some(ccitt_params) = image.ccitt_params() {
+                            println!("\n  Attempting CCITT decompression...");
+                            println!("    K={}, columns={}, rows={:?}",
+                                ccitt_params.k,
+                                ccitt_params.columns,
+                                ccitt_params.rows
+                            );
+
+                            match ccitt_bilevel::decompress_ccitt(pixels, ccitt_params) {
+                                Ok(decompressed) => {
+                                    println!("    ✅ Decompression successful: {} bytes", decompressed.len());
+
+                                    let non_zero = decompressed.iter().filter(|b| **b != 0).count();
+                                    let non_ff = decompressed.iter().filter(|b| **b != 0xFF).count();
+
+                                    println!("    Non-zero bytes: {}", non_zero);
+                                    println!("    Non-0xFF bytes: {}", non_ff);
+
+                                    if non_zero == 0 {
+                                        println!("    ⚠️ All bytes are zero (fallback - decompression failed)");
+                                    } else if non_ff == 0 {
+                                        println!("    ⚠️ All bytes are 0xFF (all white)");
+                                    } else {
+                                        println!("    ✅ Valid decompressed data");
+                                    }
+
+                                    println!("    First 32 bytes: {}",
+                                        decompressed.iter().take(32)
+                                            .map(|b| format!("{:02x}", b))
+                                            .collect::<Vec<_>>()
+                                            .join(" "));
+                                }
+                                Err(e) => {
+                                    println!("    ❌ Decompression failed: {}", e);
+                                }
+                            }
+                        } else {
+                            println!("    ⚠️ No CCITT parameters stored on image");
+                        }
+
+                        println!();
+                    }
+                }
+            }
+            Err(e) => println!("Error: {}", e),
+        }
+    }
 }
