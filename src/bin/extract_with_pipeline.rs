@@ -15,7 +15,7 @@
 //!     --verbose
 
 use pdf_oxide::document::PdfDocument;
-use pdf_oxide::pipeline::config::{TextPipelineConfig, DocumentType};
+use pdf_oxide::pipeline::config::{DocumentType, TextPipelineConfig};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -120,7 +120,7 @@ fn extract_pdf(pdf_path: &Path, verbose: bool) -> Result<String, Box<dyn std::er
             },
             Err(e) => {
                 eprintln!("  Warning: Failed to extract page {}: {}", page_idx + 1, e);
-            }
+            },
         }
     }
 
@@ -195,7 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => {
                 eprintln!("✗ Failed to extract {}: {}", relative_path, e);
                 failed += 1;
-            }
+            },
         }
     }
 
@@ -208,7 +208,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Failed: {}", failed);
     }
     println!("Total time: {:.2}s", elapsed.as_secs_f64());
-    println!("Average time per PDF: {:.2}ms", elapsed.as_secs_f64() * 1000.0 / pdfs.len() as f64);
+    println!(
+        "Average time per PDF: {:.2}ms",
+        elapsed.as_secs_f64() * 1000.0 / pdfs.len() as f64
+    );
     println!();
     println!("Output directory: {}", config.output_dir.display());
 

@@ -10,9 +10,12 @@ mod ocr_e2e_tests {
     use std::path::Path;
 
     // Test PDF paths from the test dataset
-    const ACADEMIC_PDF: &str = "/home/yfedoseev/projects/pdf_oxide_tests/pdfs/academic/arxiv_2510.21165v1.pdf";
-    const FORMS_PDF: &str = "/home/yfedoseev/projects/pdf_oxide_tests/pdfs/forms/AmazonQ1_Shareholder.pdf";
-    const GOVERNMENT_PDF: &str = "/home/yfedoseev/projects/pdf_oxide_tests/pdfs/government/eo_2024_08_20_signed.pdf";
+    const ACADEMIC_PDF: &str =
+        "/home/yfedoseev/projects/pdf_oxide_tests/pdfs/academic/arxiv_2510.21165v1.pdf";
+    const FORMS_PDF: &str =
+        "/home/yfedoseev/projects/pdf_oxide_tests/pdfs/forms/AmazonQ1_Shareholder.pdf";
+    const GOVERNMENT_PDF: &str =
+        "/home/yfedoseev/projects/pdf_oxide_tests/pdfs/government/eo_2024_08_20_signed.pdf";
 
     fn get_test_pdf() -> Option<&'static str> {
         // Return first available test PDF
@@ -51,21 +54,12 @@ mod ocr_e2e_tests {
             }
         }
 
-        println!(
-            "\nAvailable PDFs: {}/3",
-            available_count
-        );
+        println!("\nAvailable PDFs: {}/3", available_count);
 
         if available_count == 0 {
-            println!(
-                "\nTo test with real PDFs, ensure test datasets are downloaded:"
-            );
-            println!(
-                "  cd /home/yfedoseev/projects/pdf_oxide_tests"
-            );
-            println!(
-                "  git lfs pull"
-            );
+            println!("\nTo test with real PDFs, ensure test datasets are downloaded:");
+            println!("  cd /home/yfedoseev/projects/pdf_oxide_tests");
+            println!("  git lfs pull");
         }
         println!("===============================\n");
     }
@@ -81,7 +75,7 @@ mod ocr_e2e_tests {
             None => {
                 println!("No test PDFs available - skipping inspection");
                 return;
-            }
+            },
         };
 
         match PdfDocument::open(pdf_path) {
@@ -100,25 +94,22 @@ mod ocr_e2e_tests {
                         let text_len = text.trim().len();
                         println!("First page text length: {} characters", text_len);
                         println!("Has substantial native text: {}", text_len > 100);
-                    }
+                    },
                     Err(e) => println!("Error reading text: {:?}", e),
                 }
 
                 match doc.extract_images(0) {
                     Ok(images) => {
                         println!("First page images: {}", images.len());
-                    }
+                    },
                     Err(e) => println!("Error reading images: {:?}", e),
                 }
 
                 println!("=============================\n");
-            }
+            },
             Err(e) => {
-                println!(
-                    "Could not open PDF {}: {:?}",
-                    pdf_path, e
-                );
-            }
+                println!("Could not open PDF {}: {:?}", pdf_path, e);
+            },
         }
     }
 
@@ -133,7 +124,7 @@ mod ocr_e2e_tests {
             None => {
                 println!("No test PDFs available - skipping");
                 return;
-            }
+            },
         };
 
         match PdfDocument::open(pdf_path) {
@@ -143,12 +134,8 @@ mod ocr_e2e_tests {
 
                 let page_count = doc.page_count().unwrap_or(0).min(3);
                 for page_idx in 0..page_count {
-                    let text = doc
-                        .extract_text(page_idx)
-                        .unwrap_or_default();
-                    let images = doc
-                        .extract_images(page_idx)
-                        .unwrap_or_default();
+                    let text = doc.extract_text(page_idx).unwrap_or_default();
+                    let images = doc.extract_images(page_idx).unwrap_or_default();
 
                     let text_len = text.trim().len();
                     let is_likely_scanned = text_len < 50 && !images.is_empty();
@@ -167,10 +154,10 @@ mod ocr_e2e_tests {
                 }
 
                 println!("\n============================\n");
-            }
+            },
             Err(e) => {
                 println!("Error opening PDF: {:?}", e);
-            }
+            },
         }
     }
 
@@ -191,9 +178,30 @@ mod ocr_e2e_tests {
         let rec_model = format!("{}/ch_PP-OCRv3_rec_infer/inference.pdmodel", models_dir);
         let dict = format!("{}/ppocr_keys_v1.txt", models_dir);
 
-        println!("Detection model:  {}", if Path::new(&det_model).exists() { "✓" } else { "✗" });
-        println!("Recognition model: {}", if Path::new(&rec_model).exists() { "✓" } else { "✗" });
-        println!("Dictionary:       {}", if Path::new(&dict).exists() { "✓" } else { "✗" });
+        println!(
+            "Detection model:  {}",
+            if Path::new(&det_model).exists() {
+                "✓"
+            } else {
+                "✗"
+            }
+        );
+        println!(
+            "Recognition model: {}",
+            if Path::new(&rec_model).exists() {
+                "✓"
+            } else {
+                "✗"
+            }
+        );
+        println!(
+            "Dictionary:       {}",
+            if Path::new(&dict).exists() {
+                "✓"
+            } else {
+                "✗"
+            }
+        );
 
         // Show recommended configurations
         println!("\nRecommended OCR configurations:\n");
@@ -313,10 +321,7 @@ mod ocr_e2e_tests {
         ];
 
         for (name, description) in categories {
-            let path = format!(
-                "/home/yfedoseev/projects/pdf_oxide_tests/pdfs/{}/",
-                name
-            );
+            let path = format!("/home/yfedoseev/projects/pdf_oxide_tests/pdfs/{}/", name);
             if Path::new(&path).exists() {
                 if let Ok(entries) = std::fs::read_dir(&path) {
                     let count: usize = entries
@@ -329,8 +334,7 @@ mod ocr_e2e_tests {
                                 .unwrap_or(false)
                         })
                         .count();
-                    println!("✓ {:<15} - {} PDFs - {}",
-                        name, count, description);
+                    println!("✓ {:<15} - {} PDFs - {}", name, count, description);
                 } else {
                     println!("? {:<15} - {}", name, description);
                 }

@@ -56,11 +56,11 @@ mod ocr_model_tests {
         match TextDetector::new(DET_MODEL_PATH, config) {
             Ok(_detector) => {
                 println!("✓ Detection model loaded successfully");
-            }
+            },
             Err(e) => {
                 eprintln!("Failed to load detection model: {:?}", e);
                 panic!("Could not load detection model");
-            }
+            },
         }
     }
 
@@ -80,11 +80,11 @@ mod ocr_model_tests {
         match TextRecognizer::new(REC_MODEL_PATH, DICT_PATH, config) {
             Ok(_recognizer) => {
                 println!("✓ Recognition model loaded successfully");
-            }
+            },
             Err(e) => {
                 eprintln!("Failed to load recognition model: {:?}", e);
                 panic!("Could not load recognition model");
-            }
+            },
         }
     }
 
@@ -104,7 +104,7 @@ mod ocr_model_tests {
         match (det_result, rec_result) {
             (Ok(_), Ok(_)) => {
                 println!("✓ Both detection and recognition models loaded");
-            }
+            },
             (Err(e), _) => panic!("Detection model failed: {:?}", e),
             (_, Err(e)) => panic!("Recognition model failed: {:?}", e),
         }
@@ -172,14 +172,16 @@ mod ocr_model_tests {
         println!("Dictionary:       {}", DICT_PATH);
 
         if let Ok(metadata) = std::fs::metadata(DET_MODEL_PATH) {
-            println!("Detection size:   {} bytes ({:.1} MB)",
+            println!(
+                "Detection size:   {} bytes ({:.1} MB)",
                 metadata.len(),
                 metadata.len() as f64 / 1024.0 / 1024.0
             );
         }
 
         if let Ok(metadata) = std::fs::metadata(REC_MODEL_PATH) {
-            println!("Recognition size: {} bytes ({:.1} MB)",
+            println!(
+                "Recognition size: {} bytes ({:.1} MB)",
                 metadata.len(),
                 metadata.len() as f64 / 1024.0 / 1024.0
             );
@@ -207,10 +209,10 @@ mod ocr_model_tests {
                 // Show first few characters
                 let first_chars: Vec<&str> = content.lines().take(5).collect();
                 println!("  First characters: {:?}", first_chars);
-            }
+            },
             Err(e) => {
                 eprintln!("Failed to read dictionary: {}", e);
-            }
+            },
         }
     }
 

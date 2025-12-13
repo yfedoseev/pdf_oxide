@@ -124,8 +124,8 @@ macro_rules! extract_log_error {
 }
 
 // Re-export the macros for convenience
-pub use extract_log_info;
-pub use extract_log_warn;
 pub use extract_log_debug;
-pub use extract_log_trace;
 pub use extract_log_error;
+pub use extract_log_info;
+pub use extract_log_trace;
+pub use extract_log_warn;

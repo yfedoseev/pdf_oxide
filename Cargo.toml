@@ -44,7 +44,8 @@ ttf-parser = "0.24"  # TrueType font parser for embedded font cmap tables
 phf = { version = "0.11", features = ["macros"] }  # Perfect hash maps for Adobe Glyph List
 
 # Image processing
-image = { version = "0.24", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.24", default-features = false, features = ["png", "jpeg", "tiff"] }
+tiff = "0.9"  # TIFF support including CCITT decompression
 
 # Encryption support
 aes = "0.8"          # AES encryption for PDF 1.6+

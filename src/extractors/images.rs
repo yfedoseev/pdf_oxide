@@ -7,6 +7,7 @@
 //! Phase 5
 
 use crate::error::{Error, Result};
+use crate::extractors::ccitt_bilevel;
 use crate::geometry::Rect;
 use std::path::Path;
 
@@ -201,6 +202,7 @@ impl PdfImage {
     ///
     /// This enables integration with image processing libraries like OCR engines.
     /// JPEG data is decoded if necessary, and raw pixels are converted to the appropriate format.
+    /// Special handling for 1-bit bilevel images (CCITT compressed).
     pub fn to_dynamic_image(&self) -> Result<image::DynamicImage> {
         match &self.data {
             ImageData::Jpeg(jpeg_data) => {
@@ -209,47 +211,73 @@ impl PdfImage {
                     .map_err(|e| Error::Decode(format!("Failed to decode JPEG: {}", e)))
             },
             ImageData::Raw { pixels, format } => {
-                // Convert raw pixels to DynamicImage
-                match (format, self.color_space) {
-                    (PixelFormat::RGB, ColorSpace::DeviceRGB) => {
-                        image::ImageBuffer::<image::Rgb<u8>, Vec<u8>>::from_raw(
-                            self.width,
-                            self.height,
-                            pixels.clone(),
-                        )
-                        .ok_or_else(|| Error::Decode("Invalid image dimensions".to_string()))
-                        .map(image::DynamicImage::ImageRgb8)
-                    },
-                    (PixelFormat::Grayscale, ColorSpace::DeviceGray) => {
-                        image::ImageBuffer::<image::Luma<u8>, Vec<u8>>::from_raw(
-                            self.width,
-                            self.height,
-                            pixels.clone(),
-                        )
-                        .ok_or_else(|| Error::Decode("Invalid image dimensions".to_string()))
-                        .map(image::DynamicImage::ImageLuma8)
-                    },
-                    // For other combinations, convert to RGB
-                    _ => {
-                        let rgb_pixels = match format {
-                            PixelFormat::Grayscale => {
-                                // Expand grayscale to RGB
-                                pixels.iter().flat_map(|&g| vec![g, g, g]).collect()
-                            },
-                            PixelFormat::CMYK => {
-                                // Convert CMYK to RGB
-                                cmyk_to_rgb(pixels)
-                            },
-                            PixelFormat::RGB => pixels.clone(),
-                        };
-                        image::ImageBuffer::<image::Rgb<u8>, Vec<u8>>::from_raw(
-                            self.width,
-                            self.height,
-                            rgb_pixels,
-                        )
-                        .ok_or_else(|| Error::Decode("Invalid image dimensions".to_string()))
-                        .map(image::DynamicImage::ImageRgb8)
-                    },
+                // Special handling for 1-bit bilevel images (typically CCITT compressed)
+                if self.bits_per_component == 1 && matches!(self.color_space, ColorSpace::DeviceGray) {
+                    // Decompress CCITT Group 4 data
+                    let decompressed = ccitt_bilevel::decompress_ccitt_group4(
+                        pixels,
+                        self.width,
+                        self.height,
+                    )?;
+
+                    // Convert 1-bit bilevel to 8-bit grayscale
+                    let grayscale = ccitt_bilevel::bilevel_to_grayscale(
+                        &decompressed,
+                        self.width,
+                        self.height,
+                    );
+
+                    // Create Luma8 image
+                    image::ImageBuffer::<image::Luma<u8>, Vec<u8>>::from_raw(
+                        self.width,
+                        self.height,
+                        grayscale,
+                    )
+                    .ok_or_else(|| Error::Decode("Invalid image dimensions".to_string()))
+                    .map(image::DynamicImage::ImageLuma8)
+                } else {
+                    // Standard pixel format conversion
+                    match (format, self.color_space) {
+                        (PixelFormat::RGB, ColorSpace::DeviceRGB) => {
+                            image::ImageBuffer::<image::Rgb<u8>, Vec<u8>>::from_raw(
+                                self.width,
+                                self.height,
+                                pixels.clone(),
+                            )
+                            .ok_or_else(|| Error::Decode("Invalid image dimensions".to_string()))
+                            .map(image::DynamicImage::ImageRgb8)
+                        },
+                        (PixelFormat::Grayscale, ColorSpace::DeviceGray) => {
+                            image::ImageBuffer::<image::Luma<u8>, Vec<u8>>::from_raw(
+                                self.width,
+                                self.height,
+                                pixels.clone(),
+                            )
+                            .ok_or_else(|| Error::Decode("Invalid image dimensions".to_string()))
+                            .map(image::DynamicImage::ImageLuma8)
+                        },
+                        // For other combinations, convert to RGB
+                        _ => {
+                            let rgb_pixels = match format {
+                                PixelFormat::Grayscale => {
+                                    // Expand grayscale to RGB
+                                    pixels.iter().flat_map(|&g| vec![g, g, g]).collect()
+                                },
+                                PixelFormat::CMYK => {
+                                    // Convert CMYK to RGB
+                                    cmyk_to_rgb(pixels)
+                                },
+                                PixelFormat::RGB => pixels.clone(),
+                            };
+                            image::ImageBuffer::<image::Rgb<u8>, Vec<u8>>::from_raw(
+                                self.width,
+                                self.height,
+                                rgb_pixels,
+                            )
+                            .ok_or_else(|| Error::Decode("Invalid image dimensions".to_string()))
+                            .map(image::DynamicImage::ImageRgb8)
+                        },
+                    }
                 }
             },
         }

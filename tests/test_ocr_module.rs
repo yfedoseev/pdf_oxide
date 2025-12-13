@@ -30,26 +30,14 @@ mod ocr_tests {
             (config.rec_threshold - 0.5).abs() < f32::EPSILON,
             "Default recognition threshold should be 0.5"
         );
-        assert_eq!(
-            config.det_max_side, 960,
-            "Default detection max side should be 960"
-        );
-        assert_eq!(
-            config.rec_target_height, 48,
-            "Default recognition target height should be 48"
-        );
-        assert_eq!(
-            config.num_threads, 4,
-            "Default number of threads should be 4"
-        );
+        assert_eq!(config.det_max_side, 960, "Default detection max side should be 960");
+        assert_eq!(config.rec_target_height, 48, "Default recognition target height should be 48");
+        assert_eq!(config.num_threads, 4, "Default number of threads should be 4");
         assert!(
             (config.unclip_ratio - 1.5).abs() < f32::EPSILON,
             "Default unclip ratio should be 1.5"
         );
-        assert_eq!(
-            config.max_candidates, 1000,
-            "Default max candidates should be 1000"
-        );
+        assert_eq!(config.max_candidates, 1000, "Default max candidates should be 1000");
         assert!(config.detect_styles, "Style detection should be enabled by default");
         assert!(config.det_model_path.is_none());
         assert!(config.rec_model_path.is_none());
@@ -65,10 +53,7 @@ mod ocr_tests {
             config.det_threshold, default_config.det_threshold,
             "new() should match default()"
         );
-        assert_eq!(
-            config.num_threads, default_config.num_threads,
-            "new() should match default()"
-        );
+        assert_eq!(config.num_threads, default_config.num_threads, "new() should match default()");
     }
 
     // ========================================================================
@@ -83,18 +68,9 @@ mod ocr_tests {
             .rec_threshold(0.7)
             .build();
 
-        assert!(
-            (config.det_threshold - 0.4).abs() < f32::EPSILON,
-            "det_threshold should be 0.4"
-        );
-        assert!(
-            (config.box_threshold - 0.6).abs() < f32::EPSILON,
-            "box_threshold should be 0.6"
-        );
-        assert!(
-            (config.rec_threshold - 0.7).abs() < f32::EPSILON,
-            "rec_threshold should be 0.7"
-        );
+        assert!((config.det_threshold - 0.4).abs() < f32::EPSILON, "det_threshold should be 0.4");
+        assert!((config.box_threshold - 0.6).abs() < f32::EPSILON, "box_threshold should be 0.6");
+        assert!((config.rec_threshold - 0.7).abs() < f32::EPSILON, "rec_threshold should be 0.7");
     }
 
     #[test]
@@ -148,19 +124,10 @@ mod ocr_tests {
             .build();
 
         assert!(config.det_max_side >= 32, "det_max_side should be at least 32");
-        assert!(
-            config.rec_target_height >= 16,
-            "rec_target_height should be at least 16"
-        );
+        assert!(config.rec_target_height >= 16, "rec_target_height should be at least 16");
         assert!(config.num_threads >= 1, "num_threads should be at least 1");
-        assert!(
-            config.max_candidates >= 1,
-            "max_candidates should be at least 1"
-        );
-        assert!(
-            config.unclip_ratio >= 1.0,
-            "unclip_ratio should be at least 1.0"
-        );
+        assert!(config.max_candidates >= 1, "max_candidates should be at least 1");
+        assert!(config.unclip_ratio >= 1.0, "unclip_ratio should be at least 1.0");
     }
 
     #[test]
@@ -191,21 +158,9 @@ mod ocr_tests {
             .dict_path(dict_path.clone())
             .build();
 
-        assert_eq!(
-            config.det_model_path,
-            Some(det_path),
-            "Detection model path should be set"
-        );
-        assert_eq!(
-            config.rec_model_path,
-            Some(rec_path),
-            "Recognition model path should be set"
-        );
-        assert_eq!(
-            config.dict_path,
-            Some(dict_path),
-            "Dictionary path should be set"
-        );
+        assert_eq!(config.det_model_path, Some(det_path), "Detection model path should be set");
+        assert_eq!(config.rec_model_path, Some(rec_path), "Recognition model path should be set");
+        assert_eq!(config.dict_path, Some(dict_path), "Dictionary path should be set");
     }
 
     // ========================================================================

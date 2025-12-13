@@ -205,7 +205,9 @@ impl BatchMetrics {
         if self.documents.is_empty() {
             return 0.0;
         }
-        let sum: f32 = self.documents.iter()
+        let sum: f32 = self
+            .documents
+            .iter()
             .map(|m| m.estimate_quality_score())
             .sum();
         sum / self.documents.len() as f32
@@ -229,7 +231,7 @@ impl BatchMetrics {
     pub fn to_csv(&self) -> String {
         let mut csv = String::from(
             "characters,words,boundaries,hyphenations,agl_mappings,density_applications,\
-             cjk_chars,rtl_chars,script,time_ms,quality_score\n"
+             cjk_chars,rtl_chars,script,time_ms,quality_score\n",
         );
         for doc in &self.documents {
             csv.push_str(&doc.to_csv_row());
@@ -322,11 +324,11 @@ mod tests {
     #[test]
     fn test_batch_metrics_average_quality_score() {
         let mut batch = BatchMetrics::default();
-        let doc1 = ExtractionMetrics::default();  // Score 7.0
+        let doc1 = ExtractionMetrics::default(); // Score 7.0
         let doc2 = ExtractionMetrics {
             hyphenated_words_reconstructed: 100,
             ..Default::default()
-        };  // Higher score
+        }; // Higher score
         batch.add_document(doc1);
         batch.add_document(doc2);
         let avg = batch.average_quality_score();

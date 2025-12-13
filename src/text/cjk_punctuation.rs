@@ -436,47 +436,50 @@ mod tests {
     fn test_boundary_score_ordering() {
         // Sentence-ending > Enumeration > Bracket > Other
         assert!(
-            get_cjk_punctuation_boundary_score(0x3002, None) > get_cjk_punctuation_boundary_score(0x3001, None)
+            get_cjk_punctuation_boundary_score(0x3002, None)
+                > get_cjk_punctuation_boundary_score(0x3001, None)
         );
         assert!(
-            get_cjk_punctuation_boundary_score(0x3001, None) > get_cjk_punctuation_boundary_score(0xFF08, None)
+            get_cjk_punctuation_boundary_score(0x3001, None)
+                > get_cjk_punctuation_boundary_score(0xFF08, None)
         );
         assert!(
-            get_cjk_punctuation_boundary_score(0xFF08, None) > get_cjk_punctuation_boundary_score(0x30FB, None)
+            get_cjk_punctuation_boundary_score(0xFF08, None)
+                > get_cjk_punctuation_boundary_score(0x30FB, None)
         );
     }
 
     // Text density tests
     #[test]
     fn test_text_density_classify_low() {
-        let density = TextDensity::classify(400, 1);  // 400 chars per page
+        let density = TextDensity::classify(400, 1); // 400 chars per page
         assert_eq!(density, TextDensity::Low);
     }
 
     #[test]
     fn test_text_density_classify_medium() {
-        let density = TextDensity::classify(1200, 1);  // 1200 chars per page
+        let density = TextDensity::classify(1200, 1); // 1200 chars per page
         assert_eq!(density, TextDensity::Medium);
     }
 
     #[test]
     fn test_text_density_classify_high() {
-        let density = TextDensity::classify(3000, 1);  // 3000 chars per page
+        let density = TextDensity::classify(3000, 1); // 3000 chars per page
         assert_eq!(density, TextDensity::High);
     }
 
     #[test]
     fn test_text_density_classify_boundary_low_medium() {
-        let density_500 = TextDensity::classify(500, 1);  // Boundary at 500
-        let density_501 = TextDensity::classify(501, 1);  // Just above boundary
+        let density_500 = TextDensity::classify(500, 1); // Boundary at 500
+        let density_501 = TextDensity::classify(501, 1); // Just above boundary
         assert_eq!(density_500, TextDensity::Low);
         assert_eq!(density_501, TextDensity::Medium);
     }
 
     #[test]
     fn test_text_density_classify_boundary_medium_high() {
-        let density_2000 = TextDensity::classify(2000, 1);  // Boundary at 2000
-        let density_2001 = TextDensity::classify(2001, 1);  // Just above boundary
+        let density_2000 = TextDensity::classify(2000, 1); // Boundary at 2000
+        let density_2001 = TextDensity::classify(2001, 1); // Just above boundary
         assert_eq!(density_2000, TextDensity::Medium);
         assert_eq!(density_2001, TextDensity::High);
     }
@@ -557,13 +560,13 @@ mod tests {
     #[test]
     fn test_density_classify_multi_page() {
         // Test averaging across multiple pages
-        let density_per_page_1000 = TextDensity::classify(3000, 3);  // 1000 per page
+        let density_per_page_1000 = TextDensity::classify(3000, 3); // 1000 per page
         assert_eq!(density_per_page_1000, TextDensity::Medium);
 
-        let density_per_page_300 = TextDensity::classify(900, 3);    // 300 per page
+        let density_per_page_300 = TextDensity::classify(900, 3); // 300 per page
         assert_eq!(density_per_page_300, TextDensity::Low);
 
-        let density_per_page_1500 = TextDensity::classify(9000, 6);  // 1500 per page
+        let density_per_page_1500 = TextDensity::classify(9000, 6); // 1500 per page
         assert_eq!(density_per_page_1500, TextDensity::Medium);
     }
 
@@ -574,8 +577,8 @@ mod tests {
         let medium = get_cjk_punctuation_boundary_score(0xFF08, Some(TextDensity::Medium));
         let high = get_cjk_punctuation_boundary_score(0xFF08, Some(TextDensity::High));
 
-        assert!((low - 0.48).abs() < 0.01);   // 0.8 * 0.6
+        assert!((low - 0.48).abs() < 0.01); // 0.8 * 0.6
         assert!((medium - 0.8).abs() < 0.01); // 0.8 * 1.0
-        assert!((high - 1.12).abs() < 0.01);  // 0.8 * 1.4
+        assert!((high - 1.12).abs() < 0.01); // 0.8 * 1.4
     }
 }

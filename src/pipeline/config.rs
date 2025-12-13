@@ -283,11 +283,29 @@ impl DocumentType {
             .filter(|c| {
                 matches!(
                     *c,
-                    '©' | '®' | '™' | '§' | '¶' | '†' | '‡'
-                    | '€' | '£' | '¥' | '¢'
-                    | '±' | '×' | '÷' | '√' | '∞' | '∫'
-                    | '←' | '→' | '↑' | '↓'
-                    | '°' | '′' | '″'
+                    '©' | '®'
+                        | '™'
+                        | '§'
+                        | '¶'
+                        | '†'
+                        | '‡'
+                        | '€'
+                        | '£'
+                        | '¥'
+                        | '¢'
+                        | '±'
+                        | '×'
+                        | '÷'
+                        | '√'
+                        | '∞'
+                        | '∫'
+                        | '←'
+                        | '→'
+                        | '↑'
+                        | '↓'
+                        | '°'
+                        | '′'
+                        | '″'
                 )
             })
             .count()
@@ -302,8 +320,11 @@ impl DocumentType {
 
         // Count sentence-like patterns
         let period_count = text.matches('.').count();
-        let has_narrative_words = text.contains("was ") || text.contains("were ")
-            || text.contains("walked ") || text.contains("said ") || text.contains("went ");
+        let has_narrative_words = text.contains("was ")
+            || text.contains("were ")
+            || text.contains("walked ")
+            || text.contains("said ")
+            || text.contains("went ");
 
         lower_count > upper_count * 5
             && digit_count < text.len() / 20
@@ -610,22 +631,19 @@ mod tests {
 
     #[test]
     fn test_config_with_log_level() {
-        let config = TextPipelineConfig::default()
-            .with_log_level(LogLevel::Debug);
+        let config = TextPipelineConfig::default().with_log_level(LogLevel::Debug);
         assert_eq!(config.log_level, LogLevel::Debug);
     }
 
     #[test]
     fn test_config_with_log_level_trace() {
-        let config = TextPipelineConfig::default()
-            .with_log_level(LogLevel::Trace);
+        let config = TextPipelineConfig::default().with_log_level(LogLevel::Trace);
         assert_eq!(config.log_level, LogLevel::Trace);
     }
 
     #[test]
     fn test_config_with_log_level_error() {
-        let config = TextPipelineConfig::default()
-            .with_log_level(LogLevel::Error);
+        let config = TextPipelineConfig::default().with_log_level(LogLevel::Error);
         assert_eq!(config.log_level, LogLevel::Error);
     }
 
@@ -742,7 +760,8 @@ mod tests {
     #[test]
     fn test_detect_academic_sample() {
         // Sample has enough special chars for academic detection (>= 0.08 ratio)
-        let sample = "The ∫∞√∑ equations © research shows ± evidence × mathematical ÷ concepts ® article";
+        let sample =
+            "The ∫∞√∑ equations © research shows ± evidence × mathematical ÷ concepts ® article";
         let doc_type = DocumentType::detect_from_sample(sample);
         assert_eq!(doc_type, DocumentType::Academic);
     }
@@ -890,15 +909,13 @@ mod tests {
 
     #[test]
     fn test_collect_metrics_enabled() {
-        let config = TextPipelineConfig::default()
-            .with_metrics_collection(true);
+        let config = TextPipelineConfig::default().with_metrics_collection(true);
         assert!(config.collect_metrics);
     }
 
     #[test]
     fn test_collect_metrics_disabled_explicitly() {
-        let config = TextPipelineConfig::default()
-            .with_metrics_collection(false);
+        let config = TextPipelineConfig::default().with_metrics_collection(false);
         assert!(!config.collect_metrics);
     }
 

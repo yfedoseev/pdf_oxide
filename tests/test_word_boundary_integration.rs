@@ -69,8 +69,7 @@ fn test_verdate_sep_word_boundary_detection() {
 /// Uses static threshold (not adaptive) to test legacy behavior.
 #[test]
 fn test_no_false_boundary_in_kerning_pairs() {
-    let detector = WordBoundaryDetector::new()
-        .with_adaptive_threshold(false); // Use static -100 threshold for kerning test
+    let detector = WordBoundaryDetector::new().with_adaptive_threshold(false); // Use static -100 threshold for kerning test
     let context = BoundaryContext::new(12.0);
 
     // "AV" with kerning offset -40 (tight kerning, NOT word boundary)

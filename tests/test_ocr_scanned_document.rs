@@ -37,7 +37,9 @@ mod ocr_scanned_tests {
             println!("  mkdir -p scanned_samples");
             println!("  cd scanned_samples");
             println!("  curl -L -o grammar_vulgate.pdf \\");
-            println!("    'https://archive.org/download/AGrammarOfTheVulgateBWNewOCRAndMarginCropped19Jan2017ForAll/A%20Grammar%20Of%20The%20Vulgate%20%28BW%20New%20OCR%20and%20Margin%20cropped_19%20Jan%202017%20for%20all.pdf'");
+            println!(
+                "    'https://archive.org/download/AGrammarOfTheVulgateBWNewOCRAndMarginCropped19Jan2017ForAll/A%20Grammar%20Of%20The%20Vulgate%20%28BW%20New%20OCR%20and%20Margin%20cropped_19%20Jan%202017%20for%20all.pdf'"
+            );
         }
     }
 
@@ -50,19 +52,17 @@ mod ocr_scanned_tests {
 
         println!("\n=== Opening Scanned PDF ===");
         match PdfDocument::open(SCANNED_PDF) {
-            Ok(mut doc) => {
-                match doc.page_count() {
-                    Ok(count) => {
-                        println!("✓ PDF opened successfully");
-                        println!("  Pages: {}", count);
-                    }
-                    Err(e) => println!("✗ Error getting page count: {:?}", e),
-                }
-            }
+            Ok(mut doc) => match doc.page_count() {
+                Ok(count) => {
+                    println!("✓ PDF opened successfully");
+                    println!("  Pages: {}", count);
+                },
+                Err(e) => println!("✗ Error getting page count: {:?}", e),
+            },
             Err(e) => {
                 println!("✗ Failed to open PDF: {:?}", e);
                 panic!("Could not open test PDF");
-            }
+            },
         }
     }
 
@@ -102,10 +102,10 @@ mod ocr_scanned_tests {
                                 } else {
                                     println!("  ✓ Has substantial text");
                                 }
-                            }
+                            },
                             Err(_) => {
                                 println!("? Error reading text");
-                            }
+                            },
                         }
 
                         // Check for images
@@ -114,17 +114,17 @@ mod ocr_scanned_tests {
                                 if !images.is_empty() {
                                     println!("  📷 Contains {} image(s)", images.len());
                                 }
-                            }
-                            Err(_) => {}
+                            },
+                            Err(_) => {},
                         }
                     }
 
                     println!("\n═════════════════════════════════");
                 }
-            }
+            },
             Err(e) => {
                 println!("Failed to analyze PDF: {:?}", e);
-            }
+            },
         }
     }
 
@@ -148,9 +148,7 @@ mod ocr_scanned_tests {
                     let mut text_pages = 0;
 
                     for page_idx in 0..page_count.min(20) {
-                        let text = doc
-                            .extract_text(page_idx)
-                            .unwrap_or_default();
+                        let text = doc.extract_text(page_idx).unwrap_or_default();
                         let text_len = text.trim().len();
 
                         if text_len < 50 {
@@ -172,7 +170,7 @@ mod ocr_scanned_tests {
                         println!("  May not need OCR for most pages");
                     }
                 }
-            }
+            },
             Err(e) => println!("Error: {:?}", e),
         }
     }
@@ -209,12 +207,16 @@ mod ocr_scanned_tests {
                     println!("✓ Extracted {} pages", pages_to_test);
                     println!("  Total characters: {}", total_chars);
                     println!("  Time elapsed: {:.2}s", duration.as_secs_f64());
-                    println!("  Average per page: {:.1} ms",
-                        duration.as_millis() as f64 / pages_to_test as f64);
-                    println!("  Throughput: {:.0} chars/sec",
-                        total_chars as f64 / duration.as_secs_f64());
+                    println!(
+                        "  Average per page: {:.1} ms",
+                        duration.as_millis() as f64 / pages_to_test as f64
+                    );
+                    println!(
+                        "  Throughput: {:.0} chars/sec",
+                        total_chars as f64 / duration.as_secs_f64()
+                    );
                 }
-            }
+            },
             Err(e) => println!("Error: {:?}", e),
         }
     }
@@ -266,27 +268,25 @@ mod ocr_scanned_tests {
         println!("\n=== Sample Page Extraction ===");
 
         match PdfDocument::open(SCANNED_PDF) {
-            Ok(mut doc) => {
-                match doc.extract_text(0) {
-                    Ok(text) => {
-                        println!("✓ Successfully extracted text from page 0");
-                        println!("  Length: {} characters", text.len());
+            Ok(mut doc) => match doc.extract_text(0) {
+                Ok(text) => {
+                    println!("✓ Successfully extracted text from page 0");
+                    println!("  Length: {} characters", text.len());
 
-                        if text.len() > 200 {
-                            println!("  Preview (first 200 chars):");
-                            println!("  ────────────────────────────");
-                            println!("{}", &text[..200.min(text.len())]);
-                            println!("  ────────────────────────────");
-                        } else {
-                            println!("  Full text:");
-                            println!("  ────────────────────────────");
-                            println!("{}", text);
-                            println!("  ────────────────────────────");
-                        }
+                    if text.len() > 200 {
+                        println!("  Preview (first 200 chars):");
+                        println!("  ────────────────────────────");
+                        println!("{}", &text[..200.min(text.len())]);
+                        println!("  ────────────────────────────");
+                    } else {
+                        println!("  Full text:");
+                        println!("  ────────────────────────────");
+                        println!("{}", text);
+                        println!("  ────────────────────────────");
                     }
-                    Err(e) => println!("Error extracting text: {:?}", e),
-                }
-            }
+                },
+                Err(e) => println!("Error extracting text: {:?}", e),
+            },
             Err(e) => println!("Error opening PDF: {:?}", e),
         }
     }

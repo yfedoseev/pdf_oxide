@@ -194,7 +194,11 @@ impl DocumentScript {
         };
 
         // Log detected script at TRACE level for debugging
-        crate::extract_log_trace!("Detected document script: {:?} (sampled {} characters)", script, sample_size);
+        crate::extract_log_trace!(
+            "Detected document script: {:?} (sampled {} characters)",
+            script,
+            sample_size
+        );
 
         script
     }

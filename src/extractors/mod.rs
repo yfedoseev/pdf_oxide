@@ -2,6 +2,7 @@
 //!
 //! Phase 4 (text), Phase 5 (images), and Phase 5.1 (gap analysis)
 
+pub mod ccitt_bilevel;
 pub mod forms;
 pub mod gap_statistics;
 pub mod geometric_spacing;

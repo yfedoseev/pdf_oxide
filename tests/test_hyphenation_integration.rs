@@ -1,7 +1,7 @@
 //! Integration tests for hyphenation module in text extraction pipeline
 
-use pdf_oxide::text::hyphenation::HyphenationHandler;
 use pdf_oxide::pipeline::config::TextPipelineConfig;
+use pdf_oxide::text::hyphenation::HyphenationHandler;
 
 #[test]
 fn test_hyphenation_reconstruction_simple() {
@@ -58,10 +58,7 @@ fn test_hyphenation_multiple_continuations() {
     let output = handler.process_text(input);
 
     // Should process the first hyphenation
-    assert!(
-        output.contains("Government"),
-        "First continuation should be reconstructed"
-    );
+    assert!(output.contains("Government"), "First continuation should be reconstructed");
 }
 
 #[test]
