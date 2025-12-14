@@ -175,6 +175,113 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Per-Block Analysis**: No global configuration needed, adapts per text span
 - **PDF Spec Aligned**: Follows ISO 32000-1:2008 (PDF 1.7)
 
+### Rust - HTML Conversion Example
+
+```rust
+use pdf_oxide::PdfDocument;
+use pdf_oxide::pipeline::converters::HtmlOutputConverter;
+use pdf_oxide::pipeline::{TextPipeline, TextPipelineConfig};
+use pdf_oxide::converters::ConversionOptions;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut doc = PdfDocument::open("document.pdf")?;
+    let spans = doc.extract_spans(0)?;
+
+    // Create pipeline
+    let config = TextPipelineConfig::from_conversion_options(&ConversionOptions::default());
+    let pipeline = TextPipeline::with_config(config.clone());
+
+    // Process through pipeline
+    let ordered_spans = pipeline.process(spans, Default::default())?;
+
+    // Convert to HTML instead of Markdown
+    let converter = HtmlOutputConverter::new();
+    let html = converter.convert(&ordered_spans, &config)?;
+
+    println!("{}", html);
+    Ok(())
+}
+```
+
+### Rust - Markdown with Configuration
+
+```rust
+use pdf_oxide::PdfDocument;
+use pdf_oxide::converters::ConversionOptions;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut doc = PdfDocument::open("paper.pdf")?;
+
+    // Create custom conversion options
+    let options = ConversionOptions {
+        detect_headings: true,      // Auto-detect heading levels by font size
+        include_images: true,        // Extract and reference images
+        preserve_layout: false,      // Use semantic structure instead of visual layout
+        image_output_dir: Some("./extracted_images".to_string()),
+    };
+
+    // Convert to Markdown with options
+    let markdown = doc.to_markdown(0, options)?;
+    println!("{}", markdown);
+
+    // Convert entire document
+    let full_markdown = doc.to_markdown_all(options)?;
+    std::fs::write("output.md", &full_markdown)?;
+
+    Ok(())
+}
+```
+
+### Rust - Intelligent OCR Detection (Mixed Documents)
+
+```rust
+use pdf_oxide::PdfDocument;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut doc = PdfDocument::open("mixed_content.pdf")?;
+    let spans = doc.extract_spans(0)?;
+
+    // Apply intelligent text processing
+    // Automatically detects OCR blocks and applies appropriate cleaning:
+    // - Punctuation reconstruction for OCR text
+    // - Ligature handling (fi, fl, etc.)
+    // - Hyphenation cleanup
+    let processed = doc.apply_intelligent_text_processing(spans)?;
+
+    for span in &processed {
+        println!("Text: '{}' (cleaned: {})",
+                 &span.text,
+                 span.text.len()); // OCR artifacts automatically removed
+    }
+
+    Ok(())
+}
+```
+
+### Rust - Form Field Extraction
+
+```rust
+use pdf_oxide::PdfDocument;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut doc = PdfDocument::open("form.pdf")?;
+
+    // Extract form fields from page
+    let fields = doc.extract_form_fields(0)?;
+
+    for field in fields {
+        println!("Field: {}", field.name);
+        println!("  Type: {:?}", field.field_type);  // Text, Checkbox, Radio, Dropdown, etc.
+        println!("  Value: {:?}", field.value);
+        println!("  Required: {}", field.required);
+        println!("  Options: {:?}", field.options);  // For dropdown/radio fields
+        println!();
+    }
+
+    Ok(())
+}
+```
+
 ### Python
 
 ```python
