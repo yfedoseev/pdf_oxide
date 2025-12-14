@@ -409,4 +409,4 @@ impl OutputConverter for MyCustomMarkdown {
 
 - [PDF Specification](../spec/pdf.md) - ISO 32000-1:2008
 - [Architecture](ARCHITECTURE.md) - System design
-- [Code Documentation](CODE_DOCUMENTATION.md) - Implementation details
+- [Development Guide](DEVELOPMENT_GUIDE.md) - Development workflow

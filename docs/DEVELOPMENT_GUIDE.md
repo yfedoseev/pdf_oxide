@@ -75,8 +75,9 @@ pdf_oxide/
 │   ├── spec/                 # PDF specification reference
 │   │   └── pdf.md            # ISO 32000-1:2008 excerpts
 │   ├── ARCHITECTURE.md       # System design
-│   ├── CODE_DOCUMENTATION.md # Code documentation
-│   └── DEVELOPMENT_GUIDE.md  # This file
+│   ├── DEVELOPMENT_GUIDE.md  # This file
+│   ├── MARKDOWN_CONVERTER_USAGE.md # Markdown export guide
+│   └── ML_INTEGRATION.md     # OCR and ML features
 │
 ├── src/
 │   ├── lib.rs                # Library entry point
@@ -692,8 +693,9 @@ Brief description of the feature or fix being implemented.
 
 - [CLAUDE.md](../CLAUDE.md) - Project context for Claude Code
 - [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture overview
-- [CODE_DOCUMENTATION.md](CODE_DOCUMENTATION.md) - Code documentation
 - [CONTRIBUTING.md](../CONTRIBUTING.md) - Contribution guidelines
+- [ML_INTEGRATION.md](ML_INTEGRATION.md) - OCR and ML features guide
+- [MARKDOWN_CONVERTER_USAGE.md](MARKDOWN_CONVERTER_USAGE.md) - Markdown export feature guide
 
 ### External References
 
