@@ -707,7 +707,6 @@ pub mod ocr {
 #### 📚 Documentation
 - **README.md Complete Rewrite**
   - Updated feature descriptions (v0.2.0 specific)
-  - "Forever 0.x" versioning philosophy explanation
   - Bidirectional roadmap with Read ↔ Write notation (v0.3.0-v0.7.0+)
   - 4 Rust examples (HTML conversion, Markdown config, OCR detection, form extraction)
   - 4 Python examples (parallel to Rust, easy comparison)

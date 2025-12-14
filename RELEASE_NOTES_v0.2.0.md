@@ -1,7 +1,7 @@
 # PDF Oxide v0.2.0 Release Notes
 
 **Release Date:** December 13, 2025
-**Version:** 0.2.0 (Forever 0.x Philosophy)
+**Version:** 0.2.0
 **Status:** Production Ready | 906 Tests | 47.9× faster than PyMuPDF4LLM
 
 ---
