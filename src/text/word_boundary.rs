@@ -54,16 +54,13 @@ pub struct CharacterInfo {
     pub font_size: f32,
 
     /// Whether this character is a ligature (U+FB00-U+FB04)
-    /// Week 2 Day 6: Ligature Expansion Enhancement (2A)
     pub is_ligature: bool,
 
     /// Original ligature character if this was split from a ligature
     /// Used for debugging and tracking ligature expansion
-    /// Week 2 Day 6: Ligature Expansion Enhancement (2A)
     pub original_ligature: Option<char>,
 
     /// Whether this character is protected from word boundary splitting
-    /// Week 2 Day 7: Email/URL Pattern Preservation (2C)
     ///
     /// When true, word boundary detection will skip creating boundaries
     /// before or after this character. Used to preserve email addresses
@@ -424,7 +421,7 @@ impl WordBoundaryDetector {
         curr_char: &CharacterInfo,
         context: &BoundaryContext,
     ) -> bool {
-        // Week 2 Day 7 (2C): Skip boundaries in protected contexts (emails, URLs)
+        // Skip boundaries in protected contexts (emails, URLs)
         if prev_char.protected_from_split || curr_char.protected_from_split {
             return false;
         }
@@ -473,14 +470,14 @@ impl WordBoundaryDetector {
 
             // Mixed path: Check all detection functions (original behavior)
             DocumentScript::Mixed => {
-                // Week 2 Day 10: RTL (Arabic/Hebrew) boundary detection
+                // RTL (Arabic/Hebrew) boundary detection
                 if let Some(decision) =
                     should_split_at_rtl_boundary(prev_char, curr_char, Some(context))
                 {
                     return decision;
                 }
 
-                // Week 2 Days 8-9 (3A-3D): CJK script-aware boundaries
+                // CJK script-aware boundaries
                 if self.detect_script_transitions {
                     if let Some(decision) = self.should_split_at_cjk_boundary(prev_char, curr_char)
                     {
@@ -488,7 +485,7 @@ impl WordBoundaryDetector {
                     }
                 }
 
-                // Week 3 Days 11-12: Complex script boundary detection
+                // Complex script boundary detection
                 if let Some(decision) =
                     self.should_split_at_complex_script_boundary(prev_char, curr_char)
                 {
@@ -541,7 +538,7 @@ impl WordBoundaryDetector {
 
     /// Determine if a complex script boundary should be created.
     ///
-    /// This implements Week 3 Days 11-12 Complex Script support:
+    /// This implements Complex Script support:
     /// - Devanagari virama and matras
     /// - Thai tone marks and vowel modifiers
     /// - Khmer COENG and vowels
@@ -602,7 +599,7 @@ impl WordBoundaryDetector {
 
     /// Determine if a CJK boundary should be created based on script analysis.
     ///
-    /// This implements Week 2 Days 8-9 CJK script support:
+    /// This implements CJK script support:
     /// - CJK punctuation detection
     /// - Script type detection
     /// - Language-specific transition rules

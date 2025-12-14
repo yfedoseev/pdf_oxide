@@ -1,4 +1,4 @@
-//! Week 3 Days 11-12: Complex Script Support
+//! Complex Script Support
 //!
 //! This module provides comprehensive support for Devanagari, Thai, Khmer, and South Asian scripts,
 //! including:

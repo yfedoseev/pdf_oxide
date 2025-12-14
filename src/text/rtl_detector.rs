@@ -1,4 +1,4 @@
-//! Week 2 Day 10: Right-to-Left (RTL) Script Support
+//! Right-to-Left (RTL) Script Support
 //!
 //! This module provides comprehensive support for Arabic and Hebrew scripts,
 //! including:

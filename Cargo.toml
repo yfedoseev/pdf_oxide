@@ -114,7 +114,7 @@ gpu = ["dep:ort", "ml"]
 wasm = ["dep:wasm-bindgen", "dep:web-sys", "dep:js-sys", "dep:console_error_panic_hook", "dep:getrandom"]
 wasm-ml = ["wasm", "ml"]
 
-# Debug feature for span merging analysis (Phase 7)
+# Debug feature for span merging analysis
 debug-span-merging = []
 
 [profile.release]

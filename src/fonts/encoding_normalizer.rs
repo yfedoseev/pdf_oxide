@@ -1,7 +1,5 @@
 //! Encoding normalization for custom font encodings.
 //!
-//! Week 2 Day 7 - Custom Encoding Support (2B)
-//!
 //! This module provides lightweight encoding normalization to convert raw character
 //! codes through font-specific encodings (standard or custom) before word boundary
 //! detection. This ensures that word boundary detection works on actual Unicode

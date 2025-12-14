@@ -494,7 +494,7 @@ pdf_oxide/
 │   ├── config.rs           # Configuration
 │   └── ml/                 # ML integration (optional)
 │
-├── python/                 # Python bindings (Phase 7)
+├── python/                 # Python bindings
 │   ├── src/lib.rs          # PyO3 bindings
 │   └── pdf_oxide.pyi     # Type stubs
 │
@@ -510,10 +510,8 @@ pdf_oxide/
 │   └── python/             # Python examples
 │
 ├── docs/                   # Documentation
-│   └── planning/           # Planning documents (16 files)
-│       ├── README.md       # Overview
-│       ├── PHASE_*.md      # Phase-specific plans
-│       └── *.md            # Additional docs
+│   └── spec/               # PDF specification reference
+│       └── pdf.md          # ISO 32000-1:2008 excerpts
 │
 ├── training/               # ML training scripts (optional)
 │   ├── dataset/            # Dataset tools
@@ -762,15 +760,8 @@ cargo tarpaulin --out Html
 
 ## Documentation
 
-### Planning Documents
-Comprehensive planning in `docs/planning/`:
-- **README.md** - Overview and navigation
-- **PROJECT_OVERVIEW.md** - Architecture and design decisions
-- **PHASE_*.md** - 13 phase-specific implementation guides
-- **TESTING_STRATEGY.md** - Testing approach
-
-### Quality Analysis
-- **QUALITY_COMPARISON_REPORT.md** - Comprehensive quality assessment and PyMuPDF4LLM comparison (validated 49ms median performance, 100% extraction success)
+### Specification References
+- **docs/spec/pdf.md** - ISO 32000-1:2008 sections 9, 14.7-14.8 (PDF specification excerpts)
 
 ### API Documentation
 
@@ -828,14 +819,14 @@ dual licensed as above, without any additional terms or conditions.
 
 ## Contributing
 
-We welcome contributions! Please see our planning documents for task lists.
+We welcome contributions! To get started:
 
 ### Getting Started
 
-1. Read `docs/planning/README.md` for project overview
-2. Pick a task from any phase document
+1. Familiarize yourself with the codebase: `src/` for Rust, `python/` for Python bindings
+2. Check open issues for areas needing help
 3. Create an issue to discuss your approach
-4. Submit a pull request
+4. Submit a pull request with tests
 
 ### Development Setup
 

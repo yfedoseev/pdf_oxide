@@ -91,26 +91,12 @@ pdf_oxide/
 └── training/         # ML training scripts
 ```
 
-### Phase-Based Development
-
-The project is organized into phases. See `docs/planning/PHASE_*.md` for detailed task lists:
-
-- **Phase 1**: PDF Parsing Foundation
-- **Phase 2**: Stream Decoders
-- **Phase 3**: Layout Analysis
-- **Phase 4**: Text Extraction
-- **Phase 5**: Image Extraction
-- **Phase 6**: Format Converters
-- **Phase 7**: Python Bindings
-- **Phase 8**: ML Integration
-- **Phase 9A-E**: Advanced features (optional)
-
 ## Development Workflow
 
 ### 1. Pick a Task
 
 - Check [Issues](https://github.com/yfedoseev/pdf-library/issues)
-- Or browse `docs/planning/PHASE_*.md` for specific tasks
+- Look for issues labeled `help-wanted` or `good-first-issue`
 - Comment on the issue to claim it
 
 ### 2. Create a Branch
@@ -168,7 +154,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 ```bash
 git commit -m "feat: add PDF object parser"
 git commit -m "fix: correct unicode mapping in ToUnicode CMap"
-git commit -m "docs: update Phase 1 documentation"
+git commit -m "docs: update API documentation"
 ```
 
 Commit types:
@@ -446,7 +432,7 @@ When working on performance-critical code:
 
 ## ML Features
 
-When working on ML features (Phases 8, 9):
+When working on ML features (OCR, layout analysis):
 
 - Document model requirements
 - Provide ONNX conversion scripts
@@ -465,7 +451,8 @@ This means:
 
 ## Questions?
 
-- Check `docs/planning/` for detailed technical docs
+- Check `docs/spec/` for PDF specification references
+- Read code comments and documentation
 - Open an issue for questions
 - Join discussions on GitHub Discussions
 

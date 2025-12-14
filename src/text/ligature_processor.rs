@@ -1,11 +1,9 @@
-//! Ligature Expansion Enhancement (2A)
+//! Ligature Expansion Enhancement
 //!
 //! This module implements intelligent ligature splitting at word boundaries.
 //! When a ligature (fi, fl, ffi, ffl, ff) is followed by a word boundary,
 //! it is split into component characters. When not followed by a boundary,
 //! it is kept as a ligature.
-//!
-//! Week 2 Day 6 - Latin Script Enhancements
 //!
 //! Per ISO 32000-1:2008 Section 9.10, ligatures are Unicode characters
 //! (U+FB00-U+FB04) that represent multiple glyphs as a single character.

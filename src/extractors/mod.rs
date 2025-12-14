@@ -1,6 +1,6 @@
 //! Text and content extraction from PDF documents.
 //!
-//! Phase 4 (text), Phase 5 (images), and Phase 5.1 (gap analysis)
+//! Provides high-performance extraction of text, images, and layout analysis.
 
 pub mod ccitt_bilevel;
 pub mod forms;

@@ -1,7 +1,5 @@
 //! Email and URL pattern detection for text extraction.
 //!
-//! Week 2 Day 7 - Email/URL Pattern Preservation (2C)
-//!
 //! This module provides pattern detection to identify email addresses and URLs
 //! in character sequences, marking them as protected from word boundary splitting.
 //! This ensures patterns like "user@example.com" and "http://example.com" are

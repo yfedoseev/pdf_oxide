@@ -4097,7 +4097,7 @@ impl TextExtractor {
                         if let Some(font) = self.fonts.get(name) {
                             // Process each byte in the string
                             for &byte in s.iter() {
-                                // Week 2 Day 7 (2B): Normalize character code through encoding
+                                // Normalize character code through encoding.
                                 // This ensures word boundary detection works on actual characters,
                                 // not raw byte codes from custom encodings
                                 let char_code = font
@@ -4107,7 +4107,7 @@ impl TextExtractor {
 
                                 let glyph_width = font.get_glyph_width(byte as u16);
 
-                                // Week 2 Day 6: Check if this is a ligature character (U+FB00-U+FB04)
+                                // Check if this is a ligature character (U+FB00-U+FB04)
                                 let is_ligature = Self::is_ligature_code(char_code);
 
                                 // Create CharacterInfo for this character
@@ -4267,7 +4267,7 @@ impl TextExtractor {
     /// Per Phase 9.2.C, this implementation:
     /// 1. Creates BoundaryContext from graphics state
     /// 2. Calls WordBoundaryDetector to detect boundaries in tj_character_array
-    /// 3. Week 2 Day 6 (2A): Apply ligature expansion decisions
+    /// 3. Apply ligature expansion decisions
     /// 4. Partitions characters into clusters at boundary positions
     /// 5. Converts each cluster to a TextSpan with proper bounding boxes
     /// 6. Marks spans with primary_detected flag
@@ -4279,7 +4279,7 @@ impl TextExtractor {
             return self.process_tj_array_tiebreaker(array);
         }
 
-        // Week 2 Day 7 (2C): Mark pattern contexts BEFORE boundary detection
+        // Mark pattern contexts BEFORE boundary detection
         // This protects email and URL patterns from being split at word boundaries
         let pattern_config = crate::extractors::PatternPreservationConfig::default();
         crate::extractors::PatternDetector::mark_pattern_contexts(
@@ -4302,7 +4302,7 @@ impl TextExtractor {
             return self.process_tj_array_tiebreaker(array);
         }
 
-        // Step 3.5 (Week 2 Day 6 - 2A): Apply ligature expansion decisions
+        // Step 3.5: Apply ligature expansion decisions
         // This intelligently splits ligatures at word boundaries
         self.apply_ligature_decisions()?;
 
@@ -4477,8 +4477,6 @@ impl TextExtractor {
 
     /// Check if a character code is a ligature (U+FB00-U+FB04).
     ///
-    /// Week 2 Day 6: Ligature Expansion Enhancement (2A)
-    ///
     /// Standard ligatures supported:
     /// - U+FB00: ff (LATIN SMALL LIGATURE FF)
     /// - U+FB01: fi (LATIN SMALL LIGATURE FI)
@@ -4490,8 +4488,6 @@ impl TextExtractor {
     }
 
     /// Apply ligature expansion decisions after word boundary detection.
-    ///
-    /// Week 2 Day 6: Ligature Expansion Enhancement (2A)
     ///
     /// This method processes the character array after boundary detection,
     /// making intelligent decisions about whether to split ligatures.
