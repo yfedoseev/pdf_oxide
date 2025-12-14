@@ -1,8 +1,8 @@
-# ML Integration Guide - Phase 8
+# ML Integration Guide
 
 ## Overview
 
-Phase 8 adds optional ML-enhanced PDF analysis capabilities to the pdf_oxide. The hybrid architecture automatically chooses between fast classical algorithms and accurate ML models based on document complexity.
+Optional ML-enhanced PDF analysis capabilities for pdf_oxide. The hybrid architecture automatically chooses between fast classical algorithms and accurate ML models based on document complexity.
 
 ## Features
 
@@ -175,7 +175,7 @@ The hybrid system estimates page complexity using:
 - **Output**: Reading order embeddings
 - **Accuracy**: 93% on complex PDFs vs 70% classical
 
-**Note**: Current MVP uses spatial heuristics. Full LayoutLM integration planned for Phase 8.1.
+**Note**: Current MVP uses spatial heuristics. Full LayoutLM integration planned for v0.3+.
 
 ### HeadingClassifier (Heading Detection)
 
@@ -185,7 +185,7 @@ The hybrid system estimates page complexity using:
 - **Input**: Text content + styling features
 - **Accuracy**: 91% vs 84% classical font-based
 
-**Note**: Current MVP uses enhanced rule-based classification. Full transformer integration planned for Phase 8.1.
+**Note**: Current MVP uses enhanced rule-based classification. Full transformer integration planned for v0.3+.
 
 ## Configuration
 
@@ -342,21 +342,20 @@ ML models work on AWS Lambda! Recommendations:
 
 ## Roadmap
 
-### Phase 8.1 (Planned)
+### v0.3+ (Future Enhancements)
 
+**Advanced Layout Recognition**:
 - [ ] Full LayoutLM integration with tokenization
 - [ ] Full transformer-based heading classification
 - [ ] Fine-tuning scripts for custom datasets
 - [ ] GPU support (optional CUDA backend)
 
-### Phase 9 (Table Detection)
-
+**Table Detection**:
 - [ ] ML-based table detection
 - [ ] Table structure recognition
 - [ ] Cell content extraction
 
-### Phase 10 (OCR Integration)
-
+**OCR Integration**:
 - [ ] Tesseract integration for scanned PDFs
 - [ ] OCR preprocessing
 - [ ] Text/image classification
@@ -381,5 +380,5 @@ This library is licensed under AGPL-3.0-or-later. ML models use pre-trained weig
 
 ---
 
-**Phase 8 Status**: ✅ Complete (MVP with simplified ML, full integration in 8.1)
-**Last Updated**: 2025-10-29
+**ML Status**: ✅ v0.2.0 - MVP with simplified ML (full integration planned for v0.3+)
+**Last Updated**: 2025-12-14

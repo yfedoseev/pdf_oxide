@@ -1,9 +1,10 @@
 # ADR-001: PDF Structure Limitations in Text Extraction
 
 **Status:** Accepted
-**Date:** 2024-12-03
+**Date:** 2024-12-03 (Updated: 2025-12-14)
 **Context:** TJ operator offset analysis for word fusion detection
 **Stakeholders:** Core extraction team, Quality assurance
+**Version:** v0.2.0+
 
 ---
 

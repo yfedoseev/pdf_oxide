@@ -651,8 +651,8 @@ pub trait LayoutAnalyzer {
 
 ## References
 
-- **Planning Documents**: `docs/planning/` - Detailed phase-by-phase design
-- **PDF Specification**: ISO 32000-1:2008 (PDF 1.7)
+- **PDF Specification**: ISO 32000-1:2008 (PDF 1.7) - `docs/spec/pdf.md`
+- **Architecture**: ARCHITECTURE.md - Detailed system design
 - **DBSCAN**: Ester et al., "A Density-Based Algorithm for Discovering Clusters" (1996)
 - **XY-Cut**: Nagy & Seth, "Hierarchical Representation of Optically Scanned Documents" (1984)
 - **R*-tree**: Beckmann et al., "The R*-tree: An Efficient and Robust Access Method" (1990)

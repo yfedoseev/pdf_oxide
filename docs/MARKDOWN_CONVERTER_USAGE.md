@@ -407,6 +407,6 @@ impl OutputConverter for MyCustomMarkdown {
 
 ## See Also
 
-- [Phase 1.5 Completion Report](PHASE_1_5_MARKDOWN_FEATURES.md)
-- [PDF Specification](spec/pdf.md) - ISO 32000-1:2008
-- [Text Extraction Pipeline](../src/pipeline/mod.rs)
+- [PDF Specification](../spec/pdf.md) - ISO 32000-1:2008
+- [Architecture](ARCHITECTURE.md) - System design
+- [Code Documentation](CODE_DOCUMENTATION.md) - Implementation details

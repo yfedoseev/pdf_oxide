@@ -72,11 +72,10 @@ pdf_oxide/
 │       └── release.yml       # Release automation
 │
 ├── docs/
-│   ├── planning/              # Phase-by-phase plans
-│   │   ├── PROJECT_OVERVIEW.md
-│   │   ├── PHASE_1_*.md      # Detailed phase docs
-│   │   └── ...
-│   ├── HOOKS.md              # Hooks documentation
+│   ├── spec/                 # PDF specification reference
+│   │   └── pdf.md            # ISO 32000-1:2008 excerpts
+│   ├── ARCHITECTURE.md       # System design
+│   ├── CODE_DOCUMENTATION.md # Code documentation
 │   └── DEVELOPMENT_GUIDE.md  # This file
 │
 ├── src/
@@ -187,12 +186,10 @@ Read by Claude Code automatically to understand project context.
 Quick access to common tasks:
 
 ```bash
-/phase <N>           # Start implementing phase N
 /review              # Run code review checklist
 /test <module>       # Test specific module
 /bench <name>        # Run benchmarks
 /lint                # Run all linters
-/next                # Get next task
 /doc [module]        # Generate/check docs
 /check-features      # Test feature combinations
 ```
@@ -229,23 +226,21 @@ Code templates in `.claude/templates/`:
 
 ## Development Workflow
 
-### Starting a Phase
+### Starting a New Feature
 
-1. **Read planning document**:
-   ```bash
-   cat docs/planning/PHASE_X_*.md
-   ```
-   Or use: `/phase X`
+1. **Check GitHub Issues**:
+   - Browse open issues for areas needing help
+   - Look for `help-wanted` or `good-first-issue` labels
 
 2. **Create feature branch**:
    ```bash
-   git checkout -b phase-X-feature-name
+   git checkout -b feature/your-feature-name
    ```
 
 3. **Break down tasks**:
-   - Use task breakdown template
    - Create TodoList for tracking
-   - Estimate time
+   - Reference relevant code sections
+   - Check ARCHITECTURE.md for module organization
 
 ### Implementing a Feature
 
@@ -628,8 +623,8 @@ cargo doc --no-deps --all-features --open
 ### Branching Strategy
 
 - `main` - Stable, always working
-- `phase-X-feature-name` - Feature branches
-- `fix/issue-number` - Bug fixes
+- `feature/...` - Feature branches
+- `fix/...` - Bug fixes
 
 ### Commit Messages
 
@@ -665,8 +660,8 @@ Reason for changes
 ## Testing
 How tested
 
-## Phase/Task
-Phase X, Task Y from docs/planning/PHASE_X.md
+## Description
+Brief description of the feature or fix being implemented.
 
 ## Checklist
 - [x] Tests pass
@@ -696,8 +691,8 @@ Phase X, Task Y from docs/planning/PHASE_X.md
 ### Documentation
 
 - [CLAUDE.md](../CLAUDE.md) - Project context for Claude Code
-- [HOOKS.md](HOOKS.md) - Automated validation hooks
-- [Planning docs](planning/) - Phase-by-phase implementation guide
+- [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture overview
+- [CODE_DOCUMENTATION.md](CODE_DOCUMENTATION.md) - Code documentation
 - [CONTRIBUTING.md](../CONTRIBUTING.md) - Contribution guidelines
 
 ### External References
@@ -720,17 +715,16 @@ Phase X, Task Y from docs/planning/PHASE_X.md
 
 ```bash
 /help              # Claude Code help
-/phase <N>         # Phase context
-/next              # Next task
-/review            # Code review
+/review            # Code review checklist
+/test <module>     # Run tests for module
 ```
 
-### Documentation
+### Before Starting
 
-1. Read relevant planning doc
-2. Check CLAUDE.md for standards
+1. Read ARCHITECTURE.md for module structure
+2. Check CLAUDE.md for coding standards
 3. Review similar implementations
-4. Consult PDF specification
+4. Consult PDF specification (docs/spec/pdf.md)
 
 ### Troubleshooting
 
