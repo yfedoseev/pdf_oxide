@@ -57,7 +57,7 @@ A production-ready, high-performance PDF parsing and conversion library with Pyt
 
 ### Future Enhancements (v0.3.0+) - Bidirectional Features
 
-**v0.3.0 - PDF Creation Foundations** (Q1 2025)
+**v0.3.0 - PDF Creation Foundations**
 - 📝 **PDF Creation API** - Fluent PdfBuilder for programmatic PDF generation
 - 🔀 **Markdown → PDF** - Convert Markdown files to PDF documents
 - 🌐 **HTML → PDF** - Convert HTML content to PDF (basic CSS support)
@@ -65,22 +65,22 @@ A production-ready, high-performance PDF parsing and conversion library with Pyt
 - 🎨 **PDF Templates** - Reusable document templates and code-based layouts
 - 🖼️ **Image Embedding** - JPEG/PNG/TIFF image support in generated PDFs
 
-**v0.4.0 - Structured Data** (Q2 2025)
+**v0.4.0 - Structured Data**
 - 📊 **Tables** (Read ↔ Write) - Extract table structure ↔ Generate tables with borders/headers
 - 📋 **Forms** (Read ↔ Write) - Extract filled forms ↔ Create fillable interactive forms
 - 🗂️ **Document Hierarchy** (Read ↔ Write) - Parse outlines ↔ Generate bookmarks/TOC
 
-**v0.5.0 - Advanced Structure** (Q2-Q3 2025)
+**v0.5.0 - Advanced Structure**
 - 🖼️ **Figures & Captions** (Read ↔ Write) - Extract with context ↔ Place with auto-numbering
 - 📚 **Citations** (Read ↔ Write) - Parse bibliography ↔ Generate citations
 - 📝 **Footnotes** (Read ↔ Write) - Extract footnotes ↔ Create footnotes automatically
 
-**v0.6.0 - Interactivity & Accessibility** (Q3-Q4 2025)
+**v0.6.0 - Interactivity & Accessibility**
 - 💬 **Annotations** (Read ↔ Write) - Extract comments/highlights ↔ Add programmatically
 - ♿ **Tagged PDF** (Read ↔ Write) - Parse structure trees ↔ Create accessible PDFs (WCAG/Section 508)
 - 🔗 **Hyperlinks** (Read ↔ Write) - Extract URLs/links ↔ Create clickable links
 
-**v0.7.0+ - Specialized Features** (2026)
+**v0.7.0+ - Specialized Features**
 - 🧮 **Math Formulas** (Read ↔ Write) - Extract equations ↔ LaTeX to PDF
 - 🌍 **Multi-Script** (Read ↔ Write) - Bidirectional text, vertical CJK, complex ligatures
 - 🔐 **Encryption** (Read ↔ Write) - Decrypt/permissions ↔ Encrypt/sign PDFs
