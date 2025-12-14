@@ -27,16 +27,16 @@ doc = PdfDocument("document.pdf")
 print(f"PDF version: {doc.version()}")
 print(f"Pages: {doc.page_count()}")
 
-# Extract text (with automatic reading order)
+# Extract raw text (no reading order, no formatting)
 text = doc.extract_text(0)
 print(text)
 
-# Convert to Markdown (with intelligent layout handling)
+# Convert to Markdown (with automatic reading order & layout handling)
 markdown = doc.to_markdown(0, detect_headings=True)
 with open("output.md", "w") as f:
     f.write(markdown)
 
-# Convert to HTML (with multi-column support)
+# Convert to HTML (with multi-column support & semantic structure)
 html = doc.to_html(0, preserve_layout=False)
 with open("output.html", "w") as f:
     f.write(html)

@@ -6,9 +6,9 @@ class PdfDocument:
     """
     PDF document parser and converter with specification compliance.
 
-    Provides high-performance PDF parsing with intelligent text extraction,
-    automatic reading order detection (multi-column support), and conversion
-    to Markdown, HTML, and PlainText formats.
+    Provides high-performance PDF parsing with two extraction methods:
+    - extract_text(): Raw text extraction (no reading order)
+    - to_markdown()/to_html(): Formatted output with automatic reading order
 
     Features:
         - ISO 32000-1:2008 PDF specification compliance
@@ -18,11 +18,18 @@ class PdfDocument:
         - OCR support for scanned PDFs (optional)
         - 47.9× faster than PyMuPDF4LLM
 
+    Methods:
+        - extract_text(page): Raw text (no formatting or reading order)
+        - to_markdown(page, ...): Formatted markdown with reading order
+        - to_html(page, ...): Semantic HTML with reading order
+
     Example:
         >>> doc = PdfDocument("sample.pdf")
         >>> print(doc.version())
         (1, 7)
+        >>> # Raw text extraction
         >>> text = doc.extract_text(0)
+        >>> # Formatted output with reading order
         >>> markdown = doc.to_markdown(0, detect_headings=True)
     """
 
@@ -73,16 +80,16 @@ class PdfDocument:
 
     def extract_text(self, page: int) -> str:
         """
-        Extract text from a page with intelligent reading order.
+        Extract raw text from a page without formatting.
 
-        Uses PDF specification-compliant text extraction with automatic
-        multi-column layout detection. Supports complex scripts (RTL, CJK).
+        Returns plain text extraction using PDF spec-compliant character mapping.
+        For formatted output with reading order, use to_markdown() or to_html().
 
         Args:
             page: Page index (0-based)
 
         Returns:
-            Extracted text with proper reading order
+            Raw extracted text (no formatting, no reading order applied)
 
         Raises:
             RuntimeError: If text extraction fails or page index is invalid
@@ -90,7 +97,10 @@ class PdfDocument:
         Example:
             >>> doc = PdfDocument("paper.pdf")
             >>> text = doc.extract_text(0)
-            >>> print(text)  # Automatically ordered for multi-column PDFs
+            >>> print(text)  # Raw text without reading order
+            >>>
+            >>> # For formatted output with reading order:
+            >>> markdown = doc.to_markdown(0)
         """
         ...
 
