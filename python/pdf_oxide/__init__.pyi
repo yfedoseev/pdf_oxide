@@ -6,9 +6,8 @@ class PdfDocument:
     """
     PDF document parser and converter with specification compliance.
 
-    Provides high-performance PDF parsing with two extraction methods:
-    - extract_text(): Raw text extraction (no reading order)
-    - to_markdown()/to_html(): Formatted output with automatic reading order
+    Provides high-performance PDF parsing with multiple output formats,
+    all supporting automatic reading order detection for multi-column layouts.
 
     Features:
         - ISO 32000-1:2008 PDF specification compliance
@@ -19,16 +18,16 @@ class PdfDocument:
         - 47.9× faster than PyMuPDF4LLM
 
     Methods:
-        - extract_text(page): Raw text (no formatting or reading order)
-        - to_markdown(page, ...): Formatted markdown with reading order
-        - to_html(page, ...): Semantic HTML with reading order
+        - to_plain_text(page, ...): Plain text with optional layout preservation
+        - to_markdown(page, ...): Formatted markdown with automatic reading order
+        - to_html(page, ...): Semantic HTML with automatic reading order
 
     Example:
         >>> doc = PdfDocument("sample.pdf")
         >>> print(doc.version())
         (1, 7)
-        >>> # Raw text extraction
-        >>> text = doc.extract_text(0)
+        >>> # Plain text (with reading order)
+        >>> text = doc.to_plain_text(0)
         >>> # Formatted output with reading order
         >>> markdown = doc.to_markdown(0, detect_headings=True)
     """
@@ -75,32 +74,6 @@ class PdfDocument:
         Example:
             >>> doc = PdfDocument("sample.pdf")
             >>> print(f"Pages: {doc.page_count()}")
-        """
-        ...
-
-    def extract_text(self, page: int) -> str:
-        """
-        Extract raw text from a page without formatting.
-
-        Returns plain text extraction using PDF spec-compliant character mapping.
-        For formatted output with reading order, use to_markdown() or to_html().
-
-        Args:
-            page: Page index (0-based)
-
-        Returns:
-            Raw extracted text (no formatting, no reading order applied)
-
-        Raises:
-            RuntimeError: If text extraction fails or page index is invalid
-
-        Example:
-            >>> doc = PdfDocument("paper.pdf")
-            >>> text = doc.extract_text(0)
-            >>> print(text)  # Raw text without reading order
-            >>>
-            >>> # For formatted output with reading order:
-            >>> markdown = doc.to_markdown(0)
         """
         ...
 

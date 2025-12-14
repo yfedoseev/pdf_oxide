@@ -21,8 +21,8 @@ from pdf_oxide import PdfDocument
 # Open a PDF
 doc = PdfDocument("document.pdf")
 
-# Extract text with automatic reading order
-text = doc.extract_text(0)
+# Extract as plain text (with automatic reading order)
+text = doc.to_plain_text(0)
 print(text)
 
 # Convert to Markdown

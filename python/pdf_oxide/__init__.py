@@ -27,8 +27,8 @@ doc = PdfDocument("document.pdf")
 print(f"PDF version: {doc.version()}")
 print(f"Pages: {doc.page_count()}")
 
-# Extract raw text (no reading order, no formatting)
-text = doc.extract_text(0)
+# Extract as plain text (with automatic reading order)
+text = doc.to_plain_text(0)
 print(text)
 
 # Convert to Markdown (with automatic reading order & layout handling)

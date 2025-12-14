@@ -124,28 +124,6 @@ impl PyPdfDocument {
         }
     }
 
-    /// Extract text from a page.
-    ///
-    /// Args:
-    ///     page (int): Page index (0-based)
-    ///
-    /// Returns:
-    ///     str: Extracted text
-    ///
-    /// Raises:
-    ///     RuntimeError: If text extraction fails or page index is invalid
-    ///
-    /// Example:
-    ///     >>> doc = PdfDocument("sample.pdf")
-    ///     >>> text = doc.extract_text(0)
-    ///     >>> print(text[:100])
-    ///     This is the text from the first page...
-    fn extract_text(&mut self, page: usize) -> PyResult<String> {
-        self.inner
-            .extract_text(page)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to extract text: {}", e)))
-    }
-
     /// Convert page to plain text.
     ///
     /// Args:
