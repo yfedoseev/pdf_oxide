@@ -47,15 +47,6 @@ impl Default for TocDetector {
     }
 }
 
-/// Represents common dot leader glyphs from Adobe Glyph List
-const DOT_LEADER_GLYPHS: &[&str] = &[
-    "period",         // . (U+002E)
-    "onedotenleader", // ․ (U+2024)
-    "twodotenleader", // ‥ (U+2025)
-    "ellipsis",       // … (U+2026)
-    "hyphen",         // - (U+002D)
-];
-
 impl TocDetector {
     /// Create a new TOC detector with default settings
     pub fn new() -> Self {

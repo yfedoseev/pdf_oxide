@@ -17,7 +17,6 @@
 //! - ISO 32000-1:2008 Section 9.3: Text State Parameters (Tc, Tw, Tz, TL)
 //! - ISO 32000-1:2008 Section 9.6-9.8: Font Metrics
 
-use crate::extract_log_trace;
 use crate::text::cjk_punctuation;
 use crate::text::complex_script_detector::{
     ComplexScript, detect_complex_script, handle_devanagari_boundary, handle_indic_boundary,

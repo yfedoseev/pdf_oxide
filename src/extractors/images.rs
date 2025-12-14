@@ -246,25 +246,25 @@ impl PdfImage {
             },
             ImageData::Raw { pixels, format } => {
                 // Special handling for 1-bit bilevel images (typically CCITT compressed)
-                if self.bits_per_component == 1 && matches!(self.color_space, ColorSpace::DeviceGray) {
+                if self.bits_per_component == 1
+                    && matches!(self.color_space, ColorSpace::DeviceGray)
+                {
                     // Use CCITT parameters if available, otherwise use defaults
-                    let params = self.ccitt_params.clone().unwrap_or_else(|| {
-                        crate::decoders::CcittParams {
-                            columns: self.width,
-                            rows: Some(self.height),
-                            ..Default::default()
-                        }
-                    });
+                    let params =
+                        self.ccitt_params
+                            .clone()
+                            .unwrap_or_else(|| crate::decoders::CcittParams {
+                                columns: self.width,
+                                rows: Some(self.height),
+                                ..Default::default()
+                            });
 
                     // Decompress CCITT data using extracted parameters
                     let decompressed = ccitt_bilevel::decompress_ccitt(pixels, &params)?;
 
                     // Convert 1-bit bilevel to 8-bit grayscale
-                    let grayscale = ccitt_bilevel::bilevel_to_grayscale(
-                        &decompressed,
-                        self.width,
-                        self.height,
-                    );
+                    let grayscale =
+                        ccitt_bilevel::bilevel_to_grayscale(&decompressed, self.width, self.height);
 
                     // Create Luma8 image
                     image::ImageBuffer::<image::Luma<u8>, Vec<u8>>::from_raw(
@@ -603,7 +603,7 @@ pub fn extract_image_from_xobject(
     let color_space = parse_color_space(color_space_obj)?;
 
     // Check if this is a JPEG image (DCTDecode filter)
-    let mut filter_names = if let Some(filter_obj) = dict.get("Filter") {
+    let filter_names = if let Some(filter_obj) = dict.get("Filter") {
         match filter_obj {
             Object::Name(name) => vec![name.clone()],
             Object::Array(filters) => filters
@@ -622,17 +622,22 @@ pub fn extract_image_from_xobject(
 
     // Check for CCITT parameter mismatch (incorrectly labeled as JBIG2Decode)
     let mut ccitt_params_override: Option<crate::decoders::CcittParams> = None;
-    if (filter_names.contains(&"JBIG2Decode".to_string()) ||
-        filter_names.contains(&"Jbig2Decode".to_string())) &&
-       bits_per_component == 1 {
+    if (filter_names.contains(&"JBIG2Decode".to_string())
+        || filter_names.contains(&"Jbig2Decode".to_string()))
+        && bits_per_component == 1
+    {
         // Check if DecodeParms looks like CCITT parameters
-        let mut ccitt_params = crate::object::extract_ccitt_params_with_width(dict.get("DecodeParms"), Some(width));
+        let mut ccitt_params =
+            crate::object::extract_ccitt_params_with_width(dict.get("DecodeParms"), Some(width));
 
         // If we extracted CCITT parameters but rows is missing, use image height
         if let Some(ref mut params) = ccitt_params {
             if params.rows.is_none() {
                 params.rows = Some(height);
-                log::debug!("Added image height {} to CCITT parameters (was missing from /DecodeParms)", height);
+                log::debug!(
+                    "Added image height {} to CCITT parameters (was missing from /DecodeParms)",
+                    height
+                );
             }
         }
 
@@ -662,7 +667,7 @@ pub fn extract_image_from_xobject(
                     pixels: data.to_vec(),
                     format: PixelFormat::Grayscale,
                 }
-            }
+            },
             _ => return Err(Error::Image("XObject is not a stream".to_string())),
         }
     } else {
@@ -695,11 +700,16 @@ pub fn extract_image_from_xobject(
         image.set_ccitt_params(ccitt_params);
     } else if bits_per_component == 1 && image.color_space == ColorSpace::DeviceGray {
         // Try to extract CCITT decompression parameters normally
-        if let Some(mut ccitt_params) = crate::object::extract_ccitt_params_with_width(dict.get("DecodeParms"), Some(width)) {
+        if let Some(mut ccitt_params) =
+            crate::object::extract_ccitt_params_with_width(dict.get("DecodeParms"), Some(width))
+        {
             // If rows is missing from /DecodeParms, use image height
             if ccitt_params.rows.is_none() {
                 ccitt_params.rows = Some(height);
-                log::debug!("Added image height {} to CCITT parameters (was missing from /DecodeParms)", height);
+                log::debug!(
+                    "Added image height {} to CCITT parameters (was missing from /DecodeParms)",
+                    height
+                );
             }
 
             log::debug!(

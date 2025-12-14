@@ -51,7 +51,6 @@ fn analyze_pdf(pdf_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let default_config = SpanMergingConfig::default();
-    let mut selected_page = 0;
     let mut spans = Vec::new();
 
     // Try to find first page with >= 50 spans
@@ -60,11 +59,10 @@ fn analyze_pdf(pdf_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             Ok(page_spans) => {
                 println!("  Page {}: {} spans", page_num, page_spans.len());
                 if page_spans.len() >= 50 {
-                    selected_page = page_num;
                     spans = page_spans;
                     println!(
                         "  ✅ Selected page {} for analysis ({} spans)\n",
-                        selected_page,
+                        page_num,
                         spans.len()
                     );
                     break;

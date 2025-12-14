@@ -45,10 +45,7 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
 
     // Support both Group 3 and Group 4
     if params.is_group_3() {
-        log::debug!(
-            "CCITT Group 3 decompression requested (K={})",
-            params.k
-        );
+        log::debug!("CCITT Group 3 decompression requested (K={})", params.k);
     } else {
         log::debug!("CCITT Group 4 decompression requested");
     }
@@ -70,7 +67,7 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
 
             log::info!("CCITT decompression successful!");
             Ok(output)
-        }
+        },
         Err(e) => {
             log::warn!(
                 "CCITT decompression failed: {}x{} pixels, {} bytes: {}",
@@ -89,7 +86,7 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
             let expected_bytes = height_opt.unwrap_or(1) as usize * ((width as usize + 7) / 8);
             log::info!("Returning {} bytes of white pixels as fallback", expected_bytes);
             Ok(vec![0; expected_bytes])
-        }
+        },
     }
 }
 
@@ -118,17 +115,18 @@ fn decompress_with_fax(
     match try_decode_with_fax(data, width_usize, height, params) {
         Ok(output) if !output.is_empty() => {
             return Ok(output);
-        }
+        },
         Ok(_empty) => {
             log::debug!("First attempt returned no data, trying with leading zeros stripped");
-        }
+        },
         Err(e) => {
             log::debug!("First attempt failed: {}, trying with leading zeros stripped", e);
-        }
+        },
     }
 
     // If that failed, try stripping leading zeros (common in some PDFs)
-    let trimmed_data = data.iter()
+    let trimmed_data = data
+        .iter()
         .skip_while(|b| **b == 0)
         .copied()
         .collect::<Vec<_>>();
@@ -143,7 +141,9 @@ fn decompress_with_fax(
 
         log::debug!(
             "Data after stripping zeros, first 32 bytes: {}",
-            trimmed_data.iter().take(32)
+            trimmed_data
+                .iter()
+                .take(32)
                 .map(|b| format!("{:02x}", b))
                 .collect::<Vec<_>>()
                 .join(" ")
@@ -153,19 +153,19 @@ fn decompress_with_fax(
             Ok(output) if !output.is_empty() => {
                 log::info!("Successfully decompressed after stripping leading zeros!");
                 return Ok(output);
-            }
+            },
             Ok(_) => {
                 log::debug!("Strip attempt also returned no data");
-            }
+            },
             Err(e) => {
                 log::debug!("Strip attempt also failed: {}", e);
-            }
+            },
         }
     }
 
     // Both attempts failed - return error
     Err(Error::Decode(
-        "CCITT decompression failed: fax decoder returned no output".to_string()
+        "CCITT decompression failed: fax decoder returned no output".to_string(),
     ))
 }
 
@@ -265,7 +265,10 @@ fn transitions_to_bytes(transitions: &[u16], width: usize) -> Vec<u8> {
 /// Decompresses CCITT Group 4 encoded data (legacy API for backwards compatibility).
 ///
 /// This is a convenience function that uses default CCITT parameters.
-#[deprecated(since = "0.1.5", note = "Use decompress_ccitt with CcittParams instead")]
+#[deprecated(
+    since = "0.1.5",
+    note = "Use decompress_ccitt with CcittParams instead"
+)]
 pub fn decompress_ccitt_group4(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
     let params = CcittParams {
         columns: width,
@@ -286,7 +289,6 @@ fn invert_bilevel_pixels(data: &mut [u8]) {
         *byte = !*byte;
     }
 }
-
 
 /// Convert 1-bit bilevel image to 8-bit grayscale.
 ///
@@ -350,23 +352,30 @@ mod tests {
     #[test]
     fn test_bilevel_to_grayscale_padding() {
         // Test with non-byte-aligned width
+        // Pattern: 10000001
+        // Pixels 0-4: 1=black, 0=white, 0=white, 0=white, 0=white
         let bilevel = vec![0b10000001];
         let grayscale = bilevel_to_grayscale(&bilevel, 5, 1);
 
         assert_eq!(grayscale.len(), 5);
-        assert_eq!(grayscale[0], 0x00); // bit 7
-        assert_eq!(grayscale[4], 0x00); // bit 3
+        assert_eq!(grayscale[0], 0x00); // bit 7 = 1 (black)
+        assert_eq!(grayscale[1], 0xFF); // bit 6 = 0 (white)
+        assert_eq!(grayscale[4], 0xFF); // bit 3 = 0 (white)
     }
 
     #[test]
     fn test_transitions_to_bytes() {
-        // Test transitions: white=3, black=2, white=3
-        // Should produce: 0b00111001 = 0x39
-        let transitions = vec![3, 2, 3];
+        // Test transitions to build pattern: WW|BBB|WW|B
+        // Transitions at positions [2, 5, 7]:
+        // - White from 0-2 (2 pixels)
+        // - Black from 2-5 (3 pixels)
+        // - White from 5-7 (2 pixels)
+        // - Black from 7-8 (1 pixel)
+        // Should produce: 0b00111001 = 57 (0x39)
+        let transitions = vec![2, 5, 7];
         let row = transitions_to_bytes(&transitions, 8);
 
         assert_eq!(row.len(), 1);
-        // WW WBBWWW = 00111001
         assert_eq!(row[0], 0b00111001);
     }
 }

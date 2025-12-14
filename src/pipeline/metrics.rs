@@ -189,6 +189,7 @@ pub struct BatchMetrics {
 
     /// Total across all documents
     pub total_characters: usize,
+    /// Total time spent in extraction across all documents in milliseconds
     pub total_extraction_time_ms: u128,
 }
 

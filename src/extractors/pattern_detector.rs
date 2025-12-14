@@ -49,22 +49,17 @@ impl Default for PatternPreservationConfig {
 /// This struct provides methods to detect email and URL patterns in character
 /// sequences and mark them as protected from word boundary splitting.
 #[derive(Debug)]
-pub struct PatternDetector {
-    /// Configuration for pattern detection
-    config: PatternPreservationConfig,
-}
+pub struct PatternDetector;
 
 impl PatternDetector {
-    /// Create a new pattern detector with the given configuration.
-    pub fn new(config: PatternPreservationConfig) -> Self {
-        Self { config }
+    /// Create a new pattern detector.
+    pub fn new(_config: PatternPreservationConfig) -> Self {
+        Self
     }
 
     /// Create a pattern detector with default configuration.
     pub fn default_config() -> Self {
-        Self {
-            config: PatternPreservationConfig::default(),
-        }
+        Self
     }
 
     /// Check if characters contain an email pattern.

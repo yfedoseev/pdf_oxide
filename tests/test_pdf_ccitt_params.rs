@@ -30,7 +30,7 @@ mod ccitt_params {
             Err(e) => {
                 println!("❌ Failed to open PDF: {}", e);
                 return;
-            }
+            },
         };
 
         // Get page count
@@ -39,7 +39,7 @@ mod ccitt_params {
             Err(e) => {
                 println!("❌ Failed to get page count: {}", e);
                 return;
-            }
+            },
         };
 
         println!("\n✅ PDF opened: {} pages", page_count);
@@ -63,8 +63,10 @@ mod ccitt_params {
             println!("    Filter: {}", info.filter);
             println!("    Compressed size: {} bytes", info.compressed_size);
             println!("    Expected decompressed: {} bytes", info.expected_decompressed);
-            println!("    Compression ratio: {:.2}%",
-                (info.compressed_size as f64 / info.expected_decompressed as f64) * 100.0);
+            println!(
+                "    Compression ratio: {:.2}%",
+                (info.compressed_size as f64 / info.expected_decompressed as f64) * 100.0
+            );
             println!("    Color space: DeviceGray (bilevel)");
 
             println!("\n    DecodeParms (NEEDS TO BE EXTRACTED FROM PDF):");

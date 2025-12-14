@@ -1,8 +1,8 @@
 #[cfg(feature = "ocr")]
 #[test]
 fn test_extract_and_output_markdown() {
-    use pdf_oxide::document::PdfDocument;
     use pdf_oxide::converters::ConversionOptions;
+    use pdf_oxide::document::PdfDocument;
 
     let pdf_path = "scanned_samples/pride_prejudice.pdf";
     if !std::path::Path::new(pdf_path).exists() {
@@ -17,7 +17,7 @@ fn test_extract_and_output_markdown() {
         Err(e) => {
             println!("❌ Failed to open: {}", e);
             return;
-        }
+        },
     };
 
     // Get page count
@@ -26,7 +26,7 @@ fn test_extract_and_output_markdown() {
         Err(e) => {
             println!("Failed to get page count: {}", e);
             return;
-        }
+        },
     };
     println!("Total pages: {}", page_count);
 
@@ -40,7 +40,7 @@ fn test_extract_and_output_markdown() {
                     let preview = text.chars().take(100).collect::<String>();
                     println!("  Preview: {}", preview);
                 }
-            }
+            },
             Err(e) => println!("  ✗ Text extraction failed: {}", e),
         }
 
@@ -61,15 +61,15 @@ fn test_extract_and_output_markdown() {
                 let preview = markdown.chars().take(300).collect::<String>();
                 println!("{}", preview);
             }
-            
+
             // Save it
             if let Ok(_) = std::fs::write("/tmp/pride_prejudice_output.md", &markdown) {
                 println!("\n✅ Saved to /tmp/pride_prejudice_output.md");
                 println!("File size: {} bytes", markdown.len());
             }
-        }
+        },
         Err(e) => {
             println!("❌ FAILED: {}", e);
-        }
+        },
     }
 }

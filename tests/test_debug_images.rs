@@ -27,34 +27,45 @@ mod debug_tests {
                                     println!("  Format: JPEG-encoded");
                                     println!("  Size: {} bytes", jpeg_data.len());
                                     println!("  ✓ JPEG images can be decoded directly!");
-                                }
-                                pdf_oxide::extractors::images::ImageData::Raw { pixels, format } => {
+                                },
+                                pdf_oxide::extractors::images::ImageData::Raw {
+                                    pixels,
+                                    format,
+                                } => {
                                     println!("  Format: Raw pixels");
                                     println!("  Pixel format: {:?}", format);
                                     println!("  Pixel data size: {} bytes", pixels.len());
-                                    
+
                                     // Calculate expected size
                                     let width = img.width();
                                     let height = img.height();
                                     let color_space = img.color_space();
-                                    
+
                                     let components = match color_space {
                                         pdf_oxide::extractors::images::ColorSpace::DeviceRGB => 3,
                                         pdf_oxide::extractors::images::ColorSpace::DeviceGray => 1,
                                         pdf_oxide::extractors::images::ColorSpace::DeviceCMYK => 4,
                                         _ => 1,
                                     };
-                                    
-                                    let expected_size = width as usize * height as usize * components;
+
+                                    let expected_size =
+                                        width as usize * height as usize * components;
                                     println!("  Expected size: {} bytes", expected_size);
-                                    println!("  Match: {}", if pixels.len() == expected_size { "✓ YES" } else { "✗ NO" });
-                                }
+                                    println!(
+                                        "  Match: {}",
+                                        if pixels.len() == expected_size {
+                                            "✓ YES"
+                                        } else {
+                                            "✗ NO"
+                                        }
+                                    );
+                                },
                             }
                         }
-                    }
+                    },
                     Err(e) => println!("✗ Error extracting images: {:?}", e),
                 }
-            }
+            },
             Err(e) => println!("✗ Failed to open PDF: {:?}", e),
         }
     }

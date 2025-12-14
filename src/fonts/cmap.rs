@@ -127,25 +127,6 @@ impl CMap {
     fn insert(&mut self, code: u32, unicode: String) {
         self.chars.insert(code, unicode);
     }
-
-    /// Insert a range entry, keeping ranges sorted.
-    fn insert_range(&mut self, start: u32, end: u32, target: u32) {
-        let entry = RangeEntry { start, end, target };
-        // Insert maintaining sorted order for binary search
-        match self.ranges.binary_search_by_key(&start, |e| e.start) {
-            Ok(pos) => self.ranges[pos] = entry,
-            Err(pos) => self.ranges.insert(pos, entry),
-        }
-    }
-
-    /// Insert a notdef range entry, keeping notdef_ranges sorted.
-    fn insert_notdef_range(&mut self, start: u32, end: u32, target: u32) {
-        let entry = RangeEntry { start, end, target };
-        match self.notdef_ranges.binary_search_by_key(&start, |e| e.start) {
-            Ok(pos) => self.notdef_ranges[pos] = entry,
-            Err(pos) => self.notdef_ranges.insert(pos, entry),
-        }
-    }
 }
 
 /// Key for indexing into the global CMap cache.

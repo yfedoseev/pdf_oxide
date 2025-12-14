@@ -116,10 +116,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Process each PDF
     let start = Instant::now();
-    let mut successful = 0;
-    let mut failed = 0;
 
-    for (pdf_path, relative_path) in &pdfs {
+    for (_pdf_path, relative_path) in &pdfs {
         let output_filename = relative_path.replace(".pdf", ".md");
         let output_path = config.output_dir.join(&output_filename);
 
@@ -177,8 +175,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(mut file) = File::create(&output_path) {
             let _ = file.write_all(error_msg.as_bytes());
         }
-
-        failed += 1;
     }
 
     let elapsed = start.elapsed();

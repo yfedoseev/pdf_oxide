@@ -21,7 +21,7 @@ mod ccitt_extraction_tests {
             Err(e) => {
                 println!("❌ Failed to open PDF: {}", e);
                 return;
-            }
+            },
         };
 
         // Get page count
@@ -30,7 +30,7 @@ mod ccitt_extraction_tests {
             Err(e) => {
                 println!("❌ Failed to get page count: {}", e);
                 return;
-            }
+            },
         };
 
         println!("✅ PDF opened: {} pages\n", page_count);
@@ -51,12 +51,14 @@ mod ccitt_extraction_tests {
                 }
 
                 println!("\n✅ Test passed: Images extracted successfully");
-                println!("   With our changes, CCITT parameters should be extracted and logged at DEBUG level");
-            }
+                println!(
+                    "   With our changes, CCITT parameters should be extracted and logged at DEBUG level"
+                );
+            },
             Err(e) => {
                 println!("⚠️  Could not extract images: {}", e);
                 println!("   This is expected if the PDF structure is unexpected");
-            }
+            },
         }
     }
 
@@ -108,7 +110,7 @@ mod ccitt_extraction_tests {
             Err(e) => {
                 println!("❌ Failed to open PDF: {}", e);
                 return;
-            }
+            },
         };
 
         match doc.extract_images(1) {
@@ -116,48 +118,62 @@ mod ccitt_extraction_tests {
                 println!("✅ Extracted {} images from page 1\n", images.len());
 
                 for (idx, image) in images.iter().enumerate() {
-                    if let pdf_oxide::extractors::images::ImageData::Raw { pixels, .. } = image.data() {
+                    if let pdf_oxide::extractors::images::ImageData::Raw { pixels, .. } =
+                        image.data()
+                    {
                         println!("Image {}: {}x{}", idx, image.width(), image.height());
 
                         println!("  Raw stream bytes: {}", pixels.len());
-                        println!("  Expected decompressed bytes: {}", ((image.width() as u64 + 7) / 8) * image.height() as u64);
+                        println!(
+                            "  Expected decompressed bytes: {}",
+                            ((image.width() as u64 + 7) / 8) * image.height() as u64
+                        );
 
                         // Try to decompress if we have CCITT parameters
                         if let Some(ccitt_params) = image.ccitt_params() {
                             println!("\n  Attempting CCITT decompression...");
-                            println!("    K={}, columns={}, rows={:?}",
-                                ccitt_params.k,
-                                ccitt_params.columns,
-                                ccitt_params.rows
+                            println!(
+                                "    K={}, columns={}, rows={:?}",
+                                ccitt_params.k, ccitt_params.columns, ccitt_params.rows
                             );
 
                             match ccitt_bilevel::decompress_ccitt(pixels, ccitt_params) {
                                 Ok(decompressed) => {
-                                    println!("    ✅ Decompression successful: {} bytes", decompressed.len());
+                                    println!(
+                                        "    ✅ Decompression successful: {} bytes",
+                                        decompressed.len()
+                                    );
 
                                     let non_zero = decompressed.iter().filter(|b| **b != 0).count();
-                                    let non_ff = decompressed.iter().filter(|b| **b != 0xFF).count();
+                                    let non_ff =
+                                        decompressed.iter().filter(|b| **b != 0xFF).count();
 
                                     println!("    Non-zero bytes: {}", non_zero);
                                     println!("    Non-0xFF bytes: {}", non_ff);
 
                                     if non_zero == 0 {
-                                        println!("    ⚠️ All bytes are zero (fallback - decompression failed)");
+                                        println!(
+                                            "    ⚠️ All bytes are zero (fallback - decompression failed)"
+                                        );
                                     } else if non_ff == 0 {
                                         println!("    ⚠️ All bytes are 0xFF (all white)");
                                     } else {
                                         println!("    ✅ Valid decompressed data");
                                     }
 
-                                    println!("    First 32 bytes: {}",
-                                        decompressed.iter().take(32)
+                                    println!(
+                                        "    First 32 bytes: {}",
+                                        decompressed
+                                            .iter()
+                                            .take(32)
                                             .map(|b| format!("{:02x}", b))
                                             .collect::<Vec<_>>()
-                                            .join(" "));
-                                }
+                                            .join(" ")
+                                    );
+                                },
                                 Err(e) => {
                                     println!("    ❌ Decompression failed: {}", e);
-                                }
+                                },
                             }
                         } else {
                             println!("    ⚠️ No CCITT parameters stored on image");
@@ -166,7 +182,7 @@ mod ccitt_extraction_tests {
                         println!();
                     }
                 }
-            }
+            },
             Err(e) => println!("Error: {}", e),
         }
     }

@@ -19,13 +19,15 @@ mod ccitt_edge_cases {
             Err(e) => {
                 println!("❌ Failed to open PDF: {}", e);
                 return;
-            }
+            },
         };
 
         match doc.extract_images(1) {
             Ok(images) => {
                 for (idx, image) in images.iter().enumerate() {
-                    if let pdf_oxide::extractors::images::ImageData::Raw { pixels, .. } = image.data() {
+                    if let pdf_oxide::extractors::images::ImageData::Raw { pixels, .. } =
+                        image.data()
+                    {
                         println!("Image {}:", idx);
                         println!("  Total bytes: {}", pixels.len());
 
@@ -34,17 +36,26 @@ mod ccitt_edge_cases {
                         println!("  Leading zero bytes: {}", leading_zeros);
 
                         if leading_zeros > 0 {
-                            println!("  First {} bytes: {}",
+                            println!(
+                                "  First {} bytes: {}",
                                 leading_zeros,
-                                pixels.iter().take(leading_zeros)
+                                pixels
+                                    .iter()
+                                    .take(leading_zeros)
                                     .map(|b| format!("{:02x}", b))
                                     .collect::<Vec<_>>()
-                                    .join(" "));
-                            println!("  After leading zeros: {}",
-                                pixels.iter().skip(leading_zeros).take(16)
+                                    .join(" ")
+                            );
+                            println!(
+                                "  After leading zeros: {}",
+                                pixels
+                                    .iter()
+                                    .skip(leading_zeros)
+                                    .take(16)
                                     .map(|b| format!("{:02x}", b))
                                     .collect::<Vec<_>>()
-                                    .join(" "));
+                                    .join(" ")
+                            );
 
                             // Try decoding with leading zeros stripped
                             println!("\n  Testing fax decoder with leading zeros stripped:");
@@ -61,7 +72,7 @@ mod ccitt_edge_cases {
                         println!();
                     }
                 }
-            }
+            },
             Err(e) => println!("Error: {}", e),
         }
     }
@@ -86,7 +97,7 @@ mod ccitt_edge_cases {
                 if output_count == 0 {
                     println!("       ⚠️  But no output was produced - data may be valid but empty");
                 }
-            }
+            },
             None => println!("    ❌ Decoder returned None"),
         }
     }
@@ -108,12 +119,13 @@ mod ccitt_edge_cases {
             Err(e) => {
                 println!("❌ Failed to open PDF: {}", e);
                 return;
-            }
+            },
         };
 
         match doc.extract_images(1) {
             Ok(images) => {
-                let ccitt_override_count = images.iter()
+                let ccitt_override_count = images
+                    .iter()
                     .filter(|img| img.bits_per_component() == 1)
                     .count();
 
@@ -128,7 +140,7 @@ mod ccitt_edge_cases {
                         println!("    (CCITT parameters extracted during creation)");
                     }
                 }
-            }
+            },
             Err(e) => println!("Error: {}", e),
         }
     }

@@ -24,7 +24,6 @@
 
 use super::{OrderedTextSpan, ReadingOrderContext, ReadingOrderStrategy};
 use crate::error::Result;
-use crate::geometry::Rect;
 use crate::layout::TextSpan;
 
 /// XY-Cut recursive spatial partitioning strategy.
@@ -210,8 +209,6 @@ impl XYCutStrategy {
             density,
             x_min,
             y_min,
-            width: width as f32,
-            height: y_max - y_min,
         })
     }
 
@@ -253,8 +250,6 @@ impl XYCutStrategy {
             density,
             x_min,
             y_min,
-            width: x_max - x_min,
-            height: height as f32,
         })
     }
 
@@ -335,10 +330,6 @@ struct ProjectionProfile {
     /// Origin coordinates
     x_min: f32,
     y_min: f32,
-
-    /// Dimensions of the region
-    width: f32,
-    height: f32,
 }
 
 impl ReadingOrderStrategy for XYCutStrategy {
@@ -376,6 +367,7 @@ impl ReadingOrderStrategy for XYCutStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::Rect;
 
     fn make_span(x: f32, y: f32, width: f32, height: f32) -> TextSpan {
         use crate::layout::{Color, FontWeight};

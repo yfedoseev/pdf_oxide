@@ -1,7 +1,7 @@
 #[cfg(feature = "ocr")]
 mod stream_filters_test {
-    use pdf_oxide::object::Object;
     use pdf_oxide::document::PdfDocument;
+    use pdf_oxide::object::Object;
 
     #[test]
     fn test_inspect_stream_filters_for_images() {
@@ -20,7 +20,7 @@ mod stream_filters_test {
             Err(e) => {
                 println!("❌ Failed to open PDF: {}", e);
                 return;
-            }
+            },
         };
 
         // Try to inspect the actual stream objects
@@ -37,12 +37,16 @@ mod stream_filters_test {
                 println!("✅ Extracted {} images\n", images.len());
                 println!("Image streams are being processed through the decode pipeline:");
                 println!("  - extract_image_from_xobject() calls decode_stream_data()");
-                println!("  - Which applies filters in order: FlateDecode → ASCIIHexDecode → LZWDecode → CCITTFaxDecode, etc.");
+                println!(
+                    "  - Which applies filters in order: FlateDecode → ASCIIHexDecode → LZWDecode → CCITTFaxDecode, etc."
+                );
                 println!("\nFor CCITT-encoded images, the stream dictionary includes:");
                 println!("  - /Filter: \"CCITTFaxDecode\" (name or array)");
                 println!("  - /DecodeParms: Dictionary with CCITT parameters\n");
 
-                println!("The issue: We're seeing the data AFTER decompression from earlier filters");
+                println!(
+                    "The issue: We're seeing the data AFTER decompression from earlier filters"
+                );
                 println!("This means any FlateDecode or other pre-processing is already done.\n");
 
                 println!("Hypothesis: The PDF may use multiple filters where:");
@@ -53,7 +57,7 @@ mod stream_filters_test {
                 println!("  is being pre-decoded differently.\n");
 
                 println!("Next step: Check if /Filter is actually an array in the PDF");
-            }
+            },
             Err(e) => println!("Error: {}", e),
         }
     }

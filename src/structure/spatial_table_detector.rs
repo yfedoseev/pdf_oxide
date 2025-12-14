@@ -224,8 +224,6 @@ struct RowCluster {
 struct GridStructure {
     /// Column definitions (left to right)
     columns: Vec<ColumnCluster>,
-    /// Row definitions (top to bottom)
-    rows: Vec<RowCluster>,
     /// Grid cells: cells[row_idx][col_idx] = Vec<span_indices>
     cells: Vec<Vec<Vec<usize>>>,
 }
@@ -387,7 +385,6 @@ fn assign_spans_to_cells(
 
     GridStructure {
         columns: columns.to_vec(),
-        rows: rows.to_vec(),
         cells,
     }
 }
@@ -454,30 +451,6 @@ fn validate_table_structure(grid: &GridStructure, config: &TableDetectionConfig)
     }
 
     true
-}
-
-/// Detect if row is a header row (heuristic: bold or larger font)
-///
-/// Checks if the majority of spans in a row are bold to identify header rows.
-/// This is a simple heuristic that works for many PDFs but may not be universal.
-///
-/// # Arguments
-/// * `row_spans` - Spans that make up the row
-///
-/// # Returns
-/// * `bool` - True if >70% of spans are bold
-fn detect_header_row(row_spans: &[&TextSpan]) -> bool {
-    if row_spans.is_empty() {
-        return false;
-    }
-
-    // Check if most spans are bold
-    let bold_count = row_spans
-        .iter()
-        .filter(|span| span.font_weight.is_bold())
-        .count();
-
-    bold_count as f32 / row_spans.len() as f32 > 0.7
 }
 
 /// Detected table structure (used by markdown converter for backward compatibility).

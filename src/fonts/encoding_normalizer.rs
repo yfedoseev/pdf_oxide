@@ -17,8 +17,6 @@
 //! Given a custom encoding with /Differences [0x64 /rho], the byte 0x64 should
 //! normalize to the Greek letter 'ρ' (U+03C1), not the ASCII 'd' (U+0064).
 
-use std::collections::HashMap;
-
 use super::Encoding;
 
 /// Normalize character codes through font encoding.
@@ -135,6 +133,7 @@ impl EncodingNormalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_custom_encoding_normalization() {

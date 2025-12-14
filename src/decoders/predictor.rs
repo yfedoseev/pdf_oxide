@@ -98,13 +98,13 @@ pub struct CcittParams {
 impl Default for CcittParams {
     fn default() -> Self {
         Self {
-            k: -1,                     // Group 4
+            k: -1, // Group 4
             columns: 1,
             rows: None,
-            black_is_1: false,          // PDF default: white=0, black=1
+            black_is_1: false, // PDF default: white=0, black=1
             end_of_line: false,
             encoded_byte_align: false,
-            end_of_block: true,         // PDF default: RTC code present
+            end_of_block: true, // PDF default: RTC code present
         }
     }
 }

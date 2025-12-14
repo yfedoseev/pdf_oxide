@@ -1,7 +1,7 @@
 #[cfg(feature = "ocr")]
 mod ccitt_decoder_diagnosis {
-    use pdf_oxide::document::PdfDocument;
     use pdf_oxide::decoders::CcittParams;
+    use pdf_oxide::document::PdfDocument;
 
     #[test]
     fn test_fax_decoder_with_pride_prejudice_data() {
@@ -22,7 +22,7 @@ mod ccitt_decoder_diagnosis {
             Err(e) => {
                 println!("❌ Failed to open PDF: {}", e);
                 return;
-            }
+            },
         };
 
         // Extract images to get the raw CCITT data
@@ -48,31 +48,31 @@ mod ccitt_decoder_diagnosis {
                             let width = image.width();
                             let height = image.height();
                             let bytes_per_row = (width + 7) / 8;
-                            let expected_decompressed = (height as usize) * (bytes_per_row as usize);
+                            let expected_decompressed =
+                                (height as usize) * (bytes_per_row as usize);
                             println!("  Expected decompressed: {} bytes", expected_decompressed);
-                            println!("  Compression ratio: {:.2}%",
-                                (pixels.len() as f64 / expected_decompressed as f64) * 100.0);
-                            println!("  Compression: 1:{:.0}",
-                                expected_decompressed as f64 / pixels.len() as f64);
+                            println!(
+                                "  Compression ratio: {:.2}%",
+                                (pixels.len() as f64 / expected_decompressed as f64) * 100.0
+                            );
+                            println!(
+                                "  Compression: 1:{:.0}",
+                                expected_decompressed as f64 / pixels.len() as f64
+                            );
 
                             // Test the fax decoder directly
                             println!("\n📋 Testing fax decoder:");
-                            test_fax_decoder_directly(
-                                pixels,
-                                width,
-                                height,
-                                idx,
-                            );
-                        }
+                            test_fax_decoder_directly(pixels, width, height, idx);
+                        },
                         _ => println!("  Not raw CCITT data"),
                     }
 
                     println!();
                 }
-            }
+            },
             Err(e) => {
                 println!("⚠️  Could not extract images: {}", e);
-            }
+            },
         }
     }
 
@@ -98,10 +98,12 @@ mod ccitt_decoder_diagnosis {
             Some(()) => {
                 println!("    ✅ decode_g4 returned Some(())");
                 println!("    Output transitions collected: {} items", output.len());
-            }
+            },
             None => {
                 println!("    ❌ decode_g4 returned None");
-                println!("    This suggests the CCITT data structure is incompatible with fax crate");
+                println!(
+                    "    This suggests the CCITT data structure is incompatible with fax crate"
+                );
 
                 // Provide diagnostic hints
                 println!("\n  Possible causes:");
@@ -115,7 +117,7 @@ mod ccitt_decoder_diagnosis {
                 println!("       - May need hex or ASCII85 pre-decoding");
                 println!("    5. Black/white inversion");
                 println!("       - /BlackIs1 parameter mismatch");
-            }
+            },
         }
 
         // Test 2: Check data patterns
@@ -129,24 +131,32 @@ mod ccitt_decoder_diagnosis {
             return;
         }
 
-        println!("    First 16 bytes (hex): {}",
-            data.iter().take(16)
+        println!(
+            "    First 16 bytes (hex): {}",
+            data.iter()
+                .take(16)
                 .map(|b| format!("{:02x}", b))
                 .collect::<Vec<_>>()
-                .join(" "));
+                .join(" ")
+        );
 
-        println!("    Last 16 bytes (hex): {}",
-            data.iter().rev().take(16).collect::<Vec<_>>()
-                .iter().rev()
+        println!(
+            "    Last 16 bytes (hex): {}",
+            data.iter()
+                .rev()
+                .take(16)
+                .collect::<Vec<_>>()
+                .iter()
+                .rev()
                 .map(|b| format!("{:02x}", b))
                 .collect::<Vec<_>>()
-                .join(" "));
+                .join(" ")
+        );
 
         // Look for RTC code (000000110101 in binary = 0x00 0x1D pattern, may vary)
-        let has_rtc_like = data.windows(2).any(|w|
-            (w[0] == 0x00 && w[1] == 0x1D) ||
-            (w[0] == 0x1D && w[1] == 0x00)
-        );
+        let has_rtc_like = data
+            .windows(2)
+            .any(|w| (w[0] == 0x00 && w[1] == 0x1D) || (w[0] == 0x1D && w[1] == 0x00));
 
         if has_rtc_like {
             println!("    ℹ️  Possible RTC (Return To Control) code detected");
@@ -162,8 +172,16 @@ mod ccitt_decoder_diagnosis {
         let zeros = data.iter().filter(|b| **b == 0x00).count();
         let ones = data.iter().filter(|b| **b == 0xFF).count();
         println!("    Statistics:");
-        println!("      - 0x00 bytes: {} ({:.1}%)", zeros, (zeros as f64 / data.len() as f64) * 100.0);
-        println!("      - 0xFF bytes: {} ({:.1}%)", ones, (ones as f64 / data.len() as f64) * 100.0);
+        println!(
+            "      - 0x00 bytes: {} ({:.1}%)",
+            zeros,
+            (zeros as f64 / data.len() as f64) * 100.0
+        );
+        println!(
+            "      - 0xFF bytes: {} ({:.1}%)",
+            ones,
+            (ones as f64 / data.len() as f64) * 100.0
+        );
     }
 
     #[test]
@@ -175,7 +193,15 @@ mod ccitt_decoder_diagnosis {
         // Test default parameters
         let params = CcittParams::default();
         println!("Default CcittParams:");
-        println!("  K: {} ({})", params.k, if params.is_group_4() { "Group 4" } else { "Group 3" });
+        println!(
+            "  K: {} ({})",
+            params.k,
+            if params.is_group_4() {
+                "Group 4"
+            } else {
+                "Group 3"
+            }
+        );
         println!("  Columns: {}", params.columns);
         println!("  Rows: {:?}", params.rows);
         println!("  BlackIs1: {}", params.black_is_1);

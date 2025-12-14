@@ -1,8 +1,8 @@
 #[cfg(feature = "ocr")]
 #[test]
 fn test_practical_pdf_to_markdown() {
-    use pdf_oxide::document::PdfDocument;
     use pdf_oxide::converters::ConversionOptions;
+    use pdf_oxide::document::PdfDocument;
 
     let pdf_path = "scanned_samples/pride_prejudice.pdf";
     if !std::path::Path::new(pdf_path).exists() {
@@ -19,7 +19,7 @@ fn test_practical_pdf_to_markdown() {
         Err(e) => {
             println!("❌ Failed to open: {}", e);
             return;
-        }
+        },
     };
 
     let page_count = match doc.page_count() {
@@ -27,7 +27,7 @@ fn test_practical_pdf_to_markdown() {
         Err(e) => {
             println!("Failed to get page count: {}", e);
             return;
-        }
+        },
     };
 
     println!("✓ PDF opened: {} pages total", page_count);
@@ -45,8 +45,8 @@ fn test_practical_pdf_to_markdown() {
         match doc.extract_text(page_num) {
             Ok(text) => {
                 chars_extracted += text.len();
-            }
-            Err(_) => {}
+            },
+            Err(_) => {},
         }
 
         match doc.to_markdown(page_num, &options) {
@@ -56,8 +56,8 @@ fn test_practical_pdf_to_markdown() {
                     markdown_content.push_str("\n\n---\n\n");
                     pages_processed += 1;
                 }
-            }
-            Err(_) => {}
+            },
+            Err(_) => {},
         }
     }
 
@@ -67,28 +67,34 @@ fn test_practical_pdf_to_markdown() {
     println!("✓ Pages processed: {}", pages_processed);
     println!("✓ Text extracted: {} characters", chars_extracted);
     println!("✓ Markdown generated: {} characters", markdown_content.len());
-    println!("✓ Average per page: {} chars", 
-             if pages_processed > 0 { markdown_content.len() / pages_processed } else { 0 });
+    println!(
+        "✓ Average per page: {} chars",
+        if pages_processed > 0 {
+            markdown_content.len() / pages_processed
+        } else {
+            0
+        }
+    );
 
     if markdown_content.len() > 0 {
         // Save the markdown
         match std::fs::write("/tmp/pride_prejudice_50pages.md", &markdown_content) {
             Ok(_) => {
                 println!("✓ Saved to: /tmp/pride_prejudice_50pages.md");
-                
+
                 let lines = markdown_content.lines().count();
                 let word_count = markdown_content.split_whitespace().count();
                 println!("\nMARKDOWN STATISTICS:");
                 println!("  - Lines: {}", lines);
                 println!("  - Words: {}", word_count);
                 println!("  - File size: {} KB", markdown_content.len() / 1024);
-                
+
                 println!("\nFIRST 400 CHARACTERS:");
                 println!("────────────────────────────────────────");
                 println!("{}", markdown_content.chars().take(400).collect::<String>());
                 println!("────────────────────────────────────────");
                 println!("\n✅ PDF TO MARKDOWN CONVERSION: SUCCESS");
-            }
+            },
             Err(e) => println!("❌ Failed to save: {}", e),
         }
     } else {

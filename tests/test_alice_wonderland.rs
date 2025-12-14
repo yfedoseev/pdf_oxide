@@ -37,20 +37,18 @@ mod alice_tests {
         }
 
         println!("\n=== Alice in Wonderland - Document Analysis ===");
-        
+
         match PdfDocument::open(ALICE_PDF) {
-            Ok(mut doc) => {
-                match doc.page_count() {
-                    Ok(count) => {
-                        println!("✓ PDF opened successfully");
-                        println!("  Pages: {}", count);
-                    }
-                    Err(e) => println!("✗ Error getting page count: {:?}", e),
-                }
-            }
+            Ok(mut doc) => match doc.page_count() {
+                Ok(count) => {
+                    println!("✓ PDF opened successfully");
+                    println!("  Pages: {}", count);
+                },
+                Err(e) => println!("✗ Error getting page count: {:?}", e),
+            },
             Err(e) => {
                 println!("✗ Failed to open PDF: {:?}", e);
-            }
+            },
         }
     }
 
@@ -67,7 +65,7 @@ mod alice_tests {
             Ok(mut doc) => {
                 if let Ok(page_count) = doc.page_count() {
                     let pages_to_check = page_count.min(10);
-                    
+
                     for page_idx in 0..pages_to_check {
                         print!("Page {}: ", page_idx);
 
@@ -76,13 +74,13 @@ mod alice_tests {
                             Ok(text) => {
                                 let text_len = text.trim().len();
                                 println!("{} chars", text_len);
-                                
+
                                 if text_len > 0 {
                                     // Show sample
                                     let sample = &text[..100.min(text_len)];
                                     println!("        Sample: {}...", sample.replace('\n', " "));
                                 }
-                            }
+                            },
                             Err(_) => println!("? Error reading text"),
                         }
 
@@ -90,14 +88,18 @@ mod alice_tests {
                         if let Ok(images) = doc.extract_images(page_idx) {
                             if !images.is_empty() {
                                 for (idx, img) in images.iter().enumerate() {
-                                    println!("        Image {}: {}x{} pixels", 
-                                        idx, img.width(), img.height());
+                                    println!(
+                                        "        Image {}: {}x{} pixels",
+                                        idx,
+                                        img.width(),
+                                        img.height()
+                                    );
                                 }
                             }
                         }
                     }
                 }
-            }
+            },
             Err(e) => println!("✗ Failed to open PDF: {:?}", e),
         }
     }
@@ -138,7 +140,7 @@ mod alice_tests {
                     println!("  Total images found: {}", images_found);
                     println!("  Document type: Scanned with OCR layer");
                 }
-            }
+            },
             Err(e) => println!("✗ Error: {:?}", e),
         }
     }

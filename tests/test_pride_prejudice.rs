@@ -37,18 +37,16 @@ mod pride_tests {
         }
 
         match PdfDocument::open(PRIDE_PDF) {
-            Ok(mut doc) => {
-                match doc.page_count() {
-                    Ok(count) => {
-                        println!("\n✓ Pride and Prejudice opened successfully");
-                        println!("  Pages: {}", count);
-                    }
-                    Err(e) => println!("✗ Error getting page count: {:?}", e),
-                }
-            }
+            Ok(mut doc) => match doc.page_count() {
+                Ok(count) => {
+                    println!("\n✓ Pride and Prejudice opened successfully");
+                    println!("  Pages: {}", count);
+                },
+                Err(e) => println!("✗ Error getting page count: {:?}", e),
+            },
             Err(e) => {
                 println!("✗ Failed to open PDF: {:?}", e);
-            }
+            },
         }
     }
 
@@ -62,7 +60,7 @@ mod pride_tests {
         match PdfDocument::open(PRIDE_PDF) {
             Ok(mut doc) => {
                 println!("\n=== Pride and Prejudice - Page 0 Analysis ===");
-                
+
                 // Get text
                 match doc.extract_text(0) {
                     Ok(text) => {
@@ -72,7 +70,7 @@ mod pride_tests {
                             println!("  Sample (first 200 chars):");
                             println!("  {}", &text[..200].replace('\n', " "));
                         }
-                    }
+                    },
                     Err(e) => println!("✗ Error extracting text: {:?}", e),
                 }
 
@@ -83,13 +81,13 @@ mod pride_tests {
                         for (idx, img) in images.iter().enumerate() {
                             println!("  Image {}: {}x{} pixels", idx, img.width(), img.height());
                         }
-                    }
+                    },
                     Err(e) => println!("✗ Error extracting images: {:?}", e),
                 }
-            }
+            },
             Err(e) => {
                 println!("✗ Failed to open PDF: {:?}", e);
-            }
+            },
         }
     }
 
@@ -105,7 +103,7 @@ mod pride_tests {
                 match doc.page_count() {
                     Ok(page_count) => {
                         println!("\n=== Pride and Prejudice - OCR Readiness ===");
-                        
+
                         let mut with_text = 0;
                         let mut image_only = 0;
 
@@ -123,17 +121,17 @@ mod pride_tests {
                         println!("  Pages with text: {}", with_text);
                         println!("  Image-only pages: {}", image_only);
                         println!("  Total pages: {}", page_count);
-                        
+
                         if image_only > 0 {
                             println!("✓ This PDF has scanned image pages suitable for OCR!");
                         }
-                    }
+                    },
                     Err(e) => println!("✗ Error getting page count: {:?}", e),
                 }
-            }
+            },
             Err(e) => {
                 println!("✗ Failed to open PDF: {:?}", e);
-            }
+            },
         }
     }
 }

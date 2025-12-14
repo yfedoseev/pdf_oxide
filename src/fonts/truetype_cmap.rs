@@ -363,8 +363,6 @@ impl TrueTypeCMap {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_sfnt_header_parsing() {
         // This would require actual font data - skip for now

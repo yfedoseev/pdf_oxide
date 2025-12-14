@@ -370,7 +370,22 @@ pub fn extract_ccitt_params(params_obj: Option<&Object>) -> Option<crate::decode
     extract_ccitt_params_with_width(params_obj, None)
 }
 
-pub fn extract_ccitt_params_with_width(params_obj: Option<&Object>, image_width: Option<u32>) -> Option<crate::decoders::CcittParams> {
+/// Extract CCITT decompression parameters from a PDF object with optional width override.
+///
+/// This function extracts CCITT Group 3 or Group 4 decompression parameters from a PDF
+/// /DecodeParms dictionary. If image_width is provided, it will be used as the /Columns
+/// parameter, overriding any value in the dictionary.
+///
+/// # Arguments
+/// * `params_obj` - Optional PDF object containing CCITT parameters (Dictionary or Array)
+/// * `image_width` - Optional width override to use as /Columns parameter
+///
+/// # Returns
+/// Some(CcittParams) if valid parameters are found, None otherwise
+pub fn extract_ccitt_params_with_width(
+    params_obj: Option<&Object>,
+    image_width: Option<u32>,
+) -> Option<crate::decoders::CcittParams> {
     let dict = match params_obj? {
         Object::Dictionary(d) => d,
         Object::Array(arr) => {
@@ -381,10 +396,7 @@ pub fn extract_ccitt_params_with_width(params_obj: Option<&Object>, image_width:
     };
 
     // Extract CCITT parameters with PDF defaults
-    let k = dict
-        .get("K")
-        .and_then(|obj| obj.as_integer())
-        .unwrap_or(-1); // Default: Group 4
+    let k = dict.get("K").and_then(|obj| obj.as_integer()).unwrap_or(-1); // Default: Group 4
 
     let columns = dict
         .get("Columns")
