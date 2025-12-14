@@ -114,6 +114,10 @@ models/*.pt
 models/*.pth
 models/*.h5
 models/*.pb
+.models/                    # OCR model files
+.models/**/*.onnx
+.models/**/*.tar
+.models/**/inference.*
 training/output/
 training/data/raw/
 
@@ -223,6 +227,34 @@ PLAN_*.md
 CLEANUP_ROADMAP.md
 WORD_BOUNDARY_ANALYSIS.md
 examples/test_pdf.rs
+
+# Temporary working documents (NOT for public repo)
+COMPLETION_CHECKLIST.md
+DEBUG_FINDINGS.md
+DELIVERABLES_FIX_*.md
+EXAMPLES_OF_ISSUES.md
+EXECUTE_VALIDATION.txt
+EXECUTIVE_SOLUTION_SUMMARY.md
+GOLDEN_FILES_QUICK_START.md
+GOLDEN_FILES_README.md
+OCR_INTEGRATION_NOTES.md
+PHASE3_*.md
+QUALITY_REPORT.md
+QUICK_START_FIX_*.md
+VERIFICATION_REPORT_*.md
+VISUAL_CHANGES_FIX_*.txt
+INTELLIGENT_PROCESSOR_INTEGRATION.md
+TEXTSOURCE_NAMING_RATIONALE.md
+
+# Temporary directories
+batch_analysis/
+rust_out/
+scanned_samples/
+
+# Temporary test outputs
+*_enhanced.md
+*_formatted.md
+*_unformatted.md
 
 # Temporary analysis files
 *.backup
