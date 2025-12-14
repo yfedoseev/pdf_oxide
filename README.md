@@ -876,8 +876,8 @@ If you use this library in academic research, please cite:
 
 ```bibtex
 @software{pdf_oxide,
-  title = {PDF Library: High-Performance PDF Parsing in Rust},
-  author = {Your Name},
+  title = {PDF Oxide: High-Performance PDF Parsing in Rust},
+  author = {Yury Fedoseev},
   year = {2025},
   url = {https://github.com/yfedoseev/pdf_oxide}
 }
