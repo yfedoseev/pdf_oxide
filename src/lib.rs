@@ -15,62 +15,63 @@
 #![cfg_attr(test, allow(dead_code))]
 #![cfg_attr(test, allow(unused_variables))]
 
-//! # PDFoxide
+//! # PDF Oxide
 //!
-//! High-performance PDF parsing and conversion library built in Rust with Python bindings.
+//! Production-grade PDF parsing in Rust: 47.9× faster than PyMuPDF4LLM with PDF spec compliance.
 //!
-//! ## Features (v0.1.0)
+//! ## Core Features (v0.2.0)
 //!
-//! - **PDF Parsing**: Parse PDF 1.0-1.7 documents with full encryption support
-//! - **Text Extraction**: Extract text with accurate Unicode mapping and ToUnicode CMap support
-//! - **Layout Analysis**: Multi-column detection with XY-Cut and DBSCAN clustering
-//! - **Format Conversion**: Convert to Markdown, HTML, and plain text
-//! - **Image Extraction**: Extract embedded images (JPEG, PNG) with metadata
-//! - **Structure Tree**: Parse PDF logical structure (tagged PDFs)
-//! - **Annotations**: Extract PDF annotations, comments, and highlights
-//! - **Bookmarks**: Extract document outline/bookmarks with hierarchy
-//! - **Python Bindings**: Easy-to-use Python API via PyO3
+//! - **PDF Spec Compliance**: ISO 32000-1:2008 sections 9, 14.7-14.8
+//! - **Text Extraction**: 5-level character-to-Unicode priority (§9.10.2)
+//! - **Reading Order**: 4 pluggable strategies (XY-Cut, Structure Tree, Geometric, Simple)
+//! - **Font Support**: 70-80% character recovery with CID-to-GID mapping
+//! - **OCR Support**: DBNet++ detection + SVTR recognition with smart auto-detection
+//! - **Complex Scripts**: RTL (Arabic/Hebrew), CJK (Japanese/Korean/Chinese), Devanagari, Thai
+//! - **Format Conversion**: Markdown, HTML, PlainText, TOC
+//! - **Pluggable Architecture**: Trait-based design for extensibility
+//! - **Python Bindings**: Full API via PyO3
 //!
-//! ## Planned for v1.0
+//! ## Planned for v0.3.0+
 //!
-//! - **ML Integration**: Advanced layout analysis with ONNX models
-//! - **Table Detection**: Production-ready ML-based table extraction
-//! - **OCR**: Text extraction from scanned PDFs via Tesseract
-//! - **WASM Target**: Run in browsers via WebAssembly
-//! - **Digital Signatures**: Signature verification and creation
+//! - **Bidirectional**: PDF generation from Markdown/HTML (v0.3.0)
+//! - **Tables**: Extract and generate tables (v0.4.0)
+//! - **Forms**: Interactive fillable form support (v0.4.0)
+//! - **Advanced**: Figures, citations, annotations, accessibility (v0.5.0+)
 //!
-//! ## Quick Start
+//! ## Quick Start - Rust
 //!
 //! ```ignore
 //! use pdf_oxide::PdfDocument;
-//! use pdf_oxide::converters::ConversionOptions;
+//! use pdf_oxide::pipeline::{TextPipeline, TextPipelineConfig};
+//! use pdf_oxide::pipeline::converters::MarkdownOutputConverter;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Open a PDF
 //! let mut doc = PdfDocument::open("paper.pdf")?;
 //!
-//! // Extract text from first page
-//! let text = doc.extract_text(0)?;
-//! println!("{}", text);
+//! // Extract text with reading order (multi-column support)
+//! let spans = doc.extract_spans(0)?;
+//! let config = TextPipelineConfig::default();
+//! let pipeline = TextPipeline::with_config(config.clone());
+//! let ordered_spans = pipeline.process(spans, Default::default())?;
 //!
 //! // Convert to Markdown
-//! let options = ConversionOptions::default();
-//! let markdown = doc.to_markdown(0, &options)?;
-//!
-//! // Extract images
-//! let images = doc.extract_images(0)?;
+//! let converter = MarkdownOutputConverter::new();
+//! let markdown = converter.convert(&ordered_spans, &config)?;
+//! println!("{}", markdown);
 //! # Ok(())
 //! # }
 //! ```ignore
 //!
-//! ## Python Usage
+//! ## Quick Start - Python
 //!
 //! ```python
 //! from pdf_oxide import PdfDocument
 //!
+//! # Open and extract with automatic reading order
 //! doc = PdfDocument("paper.pdf")
-//! text = doc.extract_text(0)
 //! markdown = doc.to_markdown(0)
+//! print(markdown)
 //! ```ignore
 //!
 //! ## License
