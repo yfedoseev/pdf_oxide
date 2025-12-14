@@ -1,3 +1,4 @@
+#![allow(warnings)]
 //! Tests for ISO 32000-1:2008 Section 14.7.4.4 Parent Tree Lookup
 //!
 //! The parent tree provides a reverse mapping from marked content IDs (MCIDs)
@@ -302,7 +303,7 @@ fn test_parent_tree_specification_reference() {
     // 3. Supports both direct and indirect references
     // 4. Page-specific MCID numbering
 
-    let spec_requirements = vec![
+    let spec_requirements = [
         "Maps MCID to structure element",
         "Enables reverse structure lookup",
         "Supports direct and indirect refs",

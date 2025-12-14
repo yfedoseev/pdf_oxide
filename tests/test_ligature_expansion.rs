@@ -11,7 +11,7 @@
 use pdf_oxide::text::ligature_processor::{
     expand_ligature_to_chars, get_ligature_components, LigatureDecision, LigatureDecisionMaker,
 };
-use pdf_oxide::text::{BoundaryContext, CharacterInfo, WordBoundaryDetector};
+use pdf_oxide::text::{BoundaryContext, CharacterInfo};
 
 /// Helper: Create a CharacterInfo for testing
 fn create_char_info(

@@ -1,3 +1,5 @@
+#![allow(clippy::manual_is_multiple_of)]
+#![allow(dead_code)]
 //! OCR integration tests.
 //!
 //! These tests verify the OCR pipeline works correctly.

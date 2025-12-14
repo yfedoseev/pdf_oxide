@@ -1,3 +1,4 @@
+#![allow(clippy::useless_vec)]
 //! Right-to-Left (RTL) Script Benchmarks
 //!
 //! This benchmark suite measures the performance of RTL script processing,

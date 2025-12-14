@@ -1,3 +1,4 @@
+#![allow(clippy::field_reassign_with_default)]
 //! Phase 9.2.A: WordBoundaryMode Configuration Tests
 //!
 //! Tests for WordBoundaryMode enum and its integration with TextPipelineConfig.
@@ -21,7 +22,7 @@ fn test_word_boundary_mode_default_is_tiebreaker() {
 #[test]
 fn test_word_boundary_mode_clone_and_debug() {
     let mode = WordBoundaryMode::Primary;
-    let mode_clone = mode.clone();
+    let mode_clone = mode;
     assert_eq!(mode, mode_clone);
     // Debug should not panic
     let _ = format!("{:?}", mode);

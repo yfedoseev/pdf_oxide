@@ -168,7 +168,7 @@ end
 
     // Range 50: 0xC800-0xC8FF -> 0x4E00+(50*256)-0x4E00+(50*256+255)
     let range_50_start = 50 * 256;
-    let range_50_unicode = 0x4E00 + 50 as u32 * 256;
+    let range_50_unicode = 0x4E00 + 50_u32 * 256;
     assert_eq!(
         font.char_to_unicode(range_50_start),
         Some(
@@ -181,7 +181,7 @@ end
 
     // Range 99: 0xFF00-0xFFFF -> highest range
     let range_99_start = 99 * 256;
-    let range_99_unicode = 0x4E00 + 99 as u32 * 256;
+    let range_99_unicode = 0x4E00 + 99_u32 * 256;
     assert_eq!(
         font.char_to_unicode(range_99_start),
         Some(

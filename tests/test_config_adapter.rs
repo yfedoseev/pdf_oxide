@@ -21,8 +21,8 @@ fn test_conversion_options_to_pipeline_config_basic() {
     assert_eq!(config.reading_order.strategy, ReadingOrderStrategyType::XYCut);
 
     // Verify output config fields
-    assert_eq!(config.output.detect_headings, true);
-    assert_eq!(config.output.include_images, true);
+    assert!(config.output.detect_headings);
+    assert!(config.output.include_images);
 }
 
 #[test]
@@ -93,8 +93,8 @@ fn test_config_adapter_all_fields() {
     let config = TextPipelineConfig::from_conversion_options(&options);
 
     // Verify all output config fields
-    assert_eq!(config.output.detect_headings, true);
-    assert_eq!(config.output.include_images, false);
+    assert!(config.output.detect_headings);
+    assert!(!config.output.include_images);
     assert_eq!(config.output.bold_marker_behavior, BoldMarkerBehavior::Aggressive);
 }
 
@@ -111,7 +111,7 @@ fn test_config_adapter_preserves_layout() {
     let config = TextPipelineConfig::from_conversion_options(&options);
 
     // Verify preserve_layout is transferred
-    assert_eq!(config.output.preserve_layout, true);
+    assert!(config.output.preserve_layout);
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn test_config_adapter_extract_tables() {
     let config = TextPipelineConfig::from_conversion_options(&options);
 
     // Verify extract_tables is transferred
-    assert_eq!(config.output.extract_tables, true);
+    assert!(config.output.extract_tables);
 }
 
 #[test]
@@ -157,10 +157,10 @@ fn test_config_adapter_defaults() {
 
     // Verify sensible defaults are applied
     // ConversionOptions defaults: detect_headings=true, include_images=true
-    assert_eq!(config.output.detect_headings, true);
-    assert_eq!(config.output.include_images, true);
-    assert_eq!(config.output.preserve_layout, false);
-    assert_eq!(config.output.extract_tables, false);
+    assert!(config.output.detect_headings);
+    assert!(config.output.include_images);
+    assert!(!config.output.preserve_layout);
+    assert!(!config.output.extract_tables);
 }
 
 #[test]
@@ -189,10 +189,10 @@ fn test_config_adapter_all_options_combined() {
 
     // Verify all fields are correctly transferred
     assert_eq!(config.reading_order.strategy, ReadingOrderStrategyType::StructureTreeFirst);
-    assert_eq!(config.output.detect_headings, true);
-    assert_eq!(config.output.include_images, false);
+    assert!(config.output.detect_headings);
+    assert!(!config.output.include_images);
     assert_eq!(config.output.bold_marker_behavior, BoldMarkerBehavior::Conservative);
-    assert_eq!(config.output.preserve_layout, true);
-    assert_eq!(config.output.extract_tables, true);
+    assert!(config.output.preserve_layout);
+    assert!(config.output.extract_tables);
     assert_eq!(config.output.image_output_dir, Some("/output/images".to_string()));
 }

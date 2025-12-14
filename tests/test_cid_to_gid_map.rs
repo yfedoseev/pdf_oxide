@@ -61,7 +61,7 @@ fn test_cidtogidmap_explicit_stream_basic() {
     // Stream: [0x00, 0x0A, 0x00, 0x14, 0x00, 0x1E]
     // CID 0 → GID 10, CID 1 → GID 20, CID 2 → GID 30
 
-    let stream_data = vec![0x00, 0x0A, 0x00, 0x14, 0x00, 0x1E];
+    let stream_data = [0x00, 0x0A, 0x00, 0x14, 0x00, 0x1E];
     let map = CIDToGIDMap::Explicit(
         stream_data
             .chunks(2)
@@ -84,7 +84,7 @@ fn test_cidtogidmap_truncated_stream_returns_error() {
     // Test 6: Reject streams with odd length (not valid uint16 array)
     // This should fail validation
 
-    let stream_data = vec![0x00, 0x0A, 0x00]; // Odd length - invalid!
+    let stream_data = [0x00, 0x0A, 0x00]; // Odd length - invalid!
     assert_eq!(stream_data.len() % 2, 1, "Test setup: stream has odd length");
 }
 

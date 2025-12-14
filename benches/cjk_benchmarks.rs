@@ -1,3 +1,4 @@
+#![allow(clippy::useless_vec)]
 //! CJK Processing Benchmarks
 //!
 //! This benchmark suite measures the performance of CJK-specific processing,

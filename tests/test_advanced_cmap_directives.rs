@@ -7,8 +7,6 @@
 //!
 //! Spec: PDF 32000-1:2008 Section 9.10.3 (ToUnicode CMaps)
 
-use pdf_oxide::fonts::FontInfo;
-
 #[test]
 fn test_cmap_beginnotdefrange_section() {
     //! Test 1: beginnotdefrange sections should map undefined characters

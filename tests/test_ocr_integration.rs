@@ -1,3 +1,4 @@
+#![allow(warnings)]
 //! Integration tests for OCR module API
 //!
 //! Tests the high-level OCR API including:

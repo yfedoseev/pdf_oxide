@@ -1,3 +1,4 @@
+#![allow(deprecated, clippy::useless_vec)]
 //! Integration tests for PDF converters.
 //!
 //! Phase 6, Task 6.7

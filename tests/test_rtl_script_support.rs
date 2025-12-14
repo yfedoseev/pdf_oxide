@@ -1,3 +1,5 @@
+#![allow(clippy::useless_vec)]
+#![allow(dead_code)]
 //! Week 2 Day 10: Right-to-Left Script Support Test Suite
 //!
 //! Comprehensive tests for Arabic and Hebrew script handling:
@@ -10,7 +12,7 @@
 //! - Integration scenarios
 
 use pdf_oxide::text::rtl_detector::*;
-use pdf_oxide::text::{BoundaryContext, CharacterInfo, WordBoundaryDetector};
+use pdf_oxide::text::{BoundaryContext, CharacterInfo};
 
 /// Helper to create CharacterInfo for testing
 fn make_char(code: u32, x_position: f32, tj_offset: Option<i32>) -> CharacterInfo {

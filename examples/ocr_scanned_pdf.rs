@@ -20,8 +20,6 @@
 //!     --dict models/en_dict.txt
 //! ```
 
-use std::env;
-
 #[cfg(feature = "ocr")]
 use pdf_oxide::document::PdfDocument;
 #[cfg(feature = "ocr")]

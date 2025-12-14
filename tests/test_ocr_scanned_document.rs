@@ -1,3 +1,5 @@
+#![allow(clippy::single_match)]
+#![allow(dead_code)]
 //! OCR testing with real scanned PDF document
 //!
 //! Tests OCR functionality with "A Grammar Of The Vulgate"

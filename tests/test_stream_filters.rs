@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 #[cfg(feature = "ocr")]
 mod stream_filters_test {
     use pdf_oxide::document::PdfDocument;

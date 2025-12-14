@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use pdf_oxide::converters::{ConversionOptions, MarkdownConverter};
 use pdf_oxide::document::PdfDocument;
 use pdf_oxide::extractors::SpanMergingConfig;
@@ -61,15 +62,9 @@ fn inspect_academic_pdf_markdown() {
     println!("Lines with multiple consecutive spaces (first 20):");
     let mut count = 0;
     for (line_num, line) in markdown.lines().enumerate() {
-        if line.contains("  ") {
-            if count < 20 {
-                println!(
-                    "  Line {}: {:?}",
-                    line_num + 1,
-                    line.chars().take(100).collect::<String>()
-                );
-                count += 1;
-            }
+        if line.contains("  ") && count < 20 {
+            println!("  Line {}: {:?}", line_num + 1, line.chars().take(100).collect::<String>());
+            count += 1;
         }
     }
     println!();
@@ -88,27 +83,27 @@ fn inspect_academic_pdf_markdown() {
                 let right_start = parts[i + 1].trim_start();
 
                 // Check if we have word boundary
-                if !left_end.is_empty() && !right_start.is_empty() {
-                    if left_end
+                if !left_end.is_empty()
+                    && !right_start.is_empty()
+                    && left_end
                         .chars()
                         .last()
                         .map(|c| c.is_alphabetic())
                         .unwrap_or(false)
-                        && right_start
-                            .chars()
-                            .next()
-                            .map(|c| c.is_alphabetic())
-                            .unwrap_or(false)
-                    {
-                        suspicious += 1;
-                        if suspicious <= 10 {
-                            println!(
-                                "  Line {}: \"{}  {}\"",
-                                line_num + 1,
-                                left_end.chars().rev().take(20).collect::<String>(),
-                                right_start.chars().take(20).collect::<String>()
-                            );
-                        }
+                    && right_start
+                        .chars()
+                        .next()
+                        .map(|c| c.is_alphabetic())
+                        .unwrap_or(false)
+                {
+                    suspicious += 1;
+                    if suspicious <= 10 {
+                        println!(
+                            "  Line {}: \"{}  {}\"",
+                            line_num + 1,
+                            left_end.chars().rev().take(20).collect::<String>(),
+                            right_start.chars().take(20).collect::<String>()
+                        );
                     }
                 }
             }

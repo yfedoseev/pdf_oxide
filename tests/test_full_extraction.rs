@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unnecessary_cast,
+    clippy::single_match,
+    clippy::len_zero,
+    clippy::redundant_pattern_matching
+)]
 #[cfg(feature = "ocr")]
 #[test]
 fn test_full_document_extraction() {

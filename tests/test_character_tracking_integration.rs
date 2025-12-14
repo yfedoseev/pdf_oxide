@@ -1,3 +1,4 @@
+#![allow(clippy::assertions_on_constants, clippy::useless_vec)]
 //! Integration tests for character-level tracking in PDF text extraction
 //!
 //! These tests verify that character-level data is collected during TJ array processing

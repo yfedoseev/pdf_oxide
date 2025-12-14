@@ -1,3 +1,4 @@
+#![allow(warnings)]
 //! Tests for ISO 32000-1:2008 Section 14.7-14.8 Reading Order Priority
 //!
 //! PDF spec defines reading order priority as:
@@ -41,7 +42,7 @@ fn test_priority_1_structure_tree_over_physical_order() {
 
     // When extracted by structure tree (MCID order), should be 1, 2, not physical order
     // This test defines expected behavior once structure tree reading is implemented
-    let expected_order = vec!["First paragraph", "Second paragraph"];
+    let expected_order = ["First paragraph", "Second paragraph"];
 
     // Structure tree says MCID 1 comes first, MCID 2 comes second
     // So even though block 2 appears first physically, it should appear second in output
@@ -78,7 +79,7 @@ fn test_priority_2_physical_order_when_no_structure_tree() {
     ];
 
     // Without structure tree, should follow top-to-bottom order
-    let expected = vec!["First", "Second", "Third"];
+    let expected = ["First", "Second", "Third"];
 
     for (i, block) in blocks.iter().enumerate() {
         assert_eq!(block.text, expected[i]);
@@ -231,7 +232,7 @@ fn test_fallback_to_physical_when_no_structure() {
     // With no structure tree, order should be:
     // Row 1 (y=100): First (100x), Second (400x) - left to right
     // Row 2 (y=300): Third (100x), Fourth (400x) - left to right
-    let expected_order = vec!["First", "Second", "Third", "Fourth"];
+    let expected_order = ["First", "Second", "Third", "Fourth"];
 
     let actual_order: Vec<&str> = text_items.iter().map(|(t, _, _)| *t).collect();
 
@@ -268,12 +269,12 @@ fn test_structure_tree_completely_overrides_physical_order() {
 fn test_nested_structure_elements_ordering() {
     // Nested structure elements (section > paragraph) should be extracted in order
 
-    let section1_paragraphs = vec![
+    let section1_paragraphs = [
         (1, "Section 1 - Paragraph 1"),
         (2, "Section 1 - Paragraph 2"),
     ];
 
-    let section2_paragraphs = vec![
+    let section2_paragraphs = [
         (3, "Section 2 - Paragraph 1"),
         (4, "Section 2 - Paragraph 2"),
     ];
@@ -312,9 +313,9 @@ fn test_structure_order_persists_across_document_sections() {
 fn test_reading_order_with_sidebars() {
     // Sidebars should follow structure tree order, not physical position
 
-    let main_content = vec![(1, "Main paragraph 1"), (2, "Main paragraph 2")];
+    let main_content = [(1, "Main paragraph 1"), (2, "Main paragraph 2")];
 
-    let sidebar_content = vec![(3, "Sidebar content")];
+    let sidebar_content = [(3, "Sidebar content")];
 
     // If sidebar appears on right but is MCID 3 (after main paragraphs)
     // It should appear after main content in output, even if physically appears first
@@ -332,7 +333,7 @@ fn test_reading_order_with_sidebars() {
 fn test_empty_structure_tree_uses_physical_order() {
     // If structure tree exists but is empty, should fallback to physical order
 
-    let text_blocks = vec![("Top text", 100.0), ("Bottom text", 300.0)];
+    let text_blocks = [("Top text", 100.0), ("Bottom text", 300.0)];
 
     // No MCIDs (empty structure tree) - use Y coordinate (physical order)
     let sorted_by_y: Vec<&str> = text_blocks.iter().map(|(text, _)| *text).collect();
@@ -349,7 +350,7 @@ fn test_specification_reference_iso_14_7_8() {
     // Key requirement: Structure tree's reading order is AUTHORITATIVE
     // Implementation must check structure tree BEFORE physical layout
 
-    let spec_priority = vec![
+    let spec_priority = [
         "1. Structure tree (tagged PDF)",
         "2. Physical page order (top-to-bottom, left-to-right)",
         "3. Content stream order",
@@ -365,7 +366,7 @@ fn test_structure_type_detection_for_reading_order() {
     // Different structure types (P, H1-H6, Table, List) should be preserved
     // in their structure tree order, not reordered by physical position
 
-    let elements = vec![
+    let elements = [
         (StructType::H1, "Heading 1"),
         (StructType::P, "Paragraph"),
         (StructType::H2, "Heading 2"),

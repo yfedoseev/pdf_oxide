@@ -1,3 +1,4 @@
+#![allow(warnings)]
 //! Integration tests for Phase 4 spacing fixes (PDF-spec compliant only)
 //!
 //! Phase 4: Spacing & Word Boundary Fixes
@@ -97,7 +98,7 @@ fn test_justified_text_variable_tj_offsets_no_false_spaces() {
     //! Per ISO 32000-1:2008 Section 9.4.4: TJ offsets are typographic hints,
     //! not semantic word boundaries.
 
-    let tj_distribution = vec![-30.0, -180.0, -50.0, -200.0, -100.0, -250.0];
+    let tj_distribution = [-30.0, -180.0, -50.0, -200.0, -100.0, -250.0];
 
     // Calculate coefficient of variation (measures distribution variance)
     // High CV > 0.5 indicates justified text with variable spacing
@@ -397,7 +398,7 @@ fn test_spec_compliance_only_pdf_defined_signals() {
     // PDF-spec-defined fields (ALLOWED)
     assert!(!span.text.is_empty(), "Text content (spec field)");
     assert!(span.bbox.width > 0.0 && span.bbox.height > 0.0, "Bbox has valid dimensions");
-    assert!(span.font_name.len() > 0, "Font name (spec field)");
+    assert!(!span.font_name.is_empty(), "Font name (spec field)");
     assert!(span.font_size > 0.0, "Font size (spec field)");
     assert_eq!(span.char_spacing, 0.0, "Char spacing Tc (spec field)");
     assert_eq!(span.word_spacing, 0.0, "Word spacing Tw (spec field)");

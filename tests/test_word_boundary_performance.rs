@@ -1,3 +1,4 @@
+#![allow(clippy::field_reassign_with_default)]
 //! Performance profiling and baseline metrics for Word Boundary Enhancement (Phase 9)
 //!
 //! This test suite establishes baseline performance metrics for the word boundary detection
@@ -673,28 +674,28 @@ fn test_baseline_hotspot_identification() {
 
     println!("Performance Baseline Summary (Week 1 Day 5):");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("");
+    println!();
     println!("1. Character Collection:");
     println!("   - Cost: < 1µs per character (allocation overhead)");
     println!("   - Hotspot: Vec reallocation without capacity hint");
     println!("   - Week 2 Fix: Use Vec::with_capacity() in process_tj_array");
-    println!("");
+    println!();
     println!("2. Boundary Detection:");
     println!("   - Cost: < 10µs per character (detection loop)");
     println!("   - Hotspot: Linear scan through character array");
     println!("   - Week 2 Fix: Early exit optimizations, cache font metrics");
-    println!("");
+    println!();
     println!("3. Full Pipeline:");
     println!("   - Overhead: < 5% for Primary vs Tiebreaker mode");
     println!("   - Hotspot: Additional boundary detection pass");
     println!("   - Week 2 Fix: Vectorize boundary checks, reduce cloning");
-    println!("");
+    println!();
     println!("4. Memory Efficiency:");
     println!("   - Pre-allocation improves performance by 10-30%");
     println!("   - Week 2 Fix: Estimate character count from TJ array size");
-    println!("");
+    println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("");
+    println!();
     println!("✓ Baseline profiling complete");
     println!("✓ Hotspots identified for Week 2 optimization");
     println!("✓ Target: Reduce overhead from <5% to <2%");

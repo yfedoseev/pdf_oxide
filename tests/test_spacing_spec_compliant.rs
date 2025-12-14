@@ -60,7 +60,7 @@ fn create_test_span(text: &str, x: f32, y: f32, width: f32, height: f32) -> Text
 fn test_tj_distribution_analysis() {
     // Case 1: Justified text with high variance
     // Real justified text TJ offsets: large variance to distribute whitespace
-    let offsets_justified = vec![-30.0, -180.0, -50.0, -200.0, -100.0, -250.0];
+    let offsets_justified = [-30.0, -180.0, -50.0, -200.0, -100.0, -250.0];
 
     let sum: f32 = offsets_justified.iter().sum();
     let mean = sum / offsets_justified.len() as f32;
@@ -95,7 +95,7 @@ fn test_tj_distribution_analysis() {
     );
 
     // Case 2: Normal text with low variance
-    let offsets_normal = vec![-120.0, -118.0, -122.0, -120.0];
+    let offsets_normal = [-120.0, -118.0, -122.0, -120.0];
 
     let sum2: f32 = offsets_normal.iter().sum();
     let mean2 = sum2 / offsets_normal.len() as f32;

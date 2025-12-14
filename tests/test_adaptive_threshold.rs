@@ -196,7 +196,7 @@ mod gap_extraction_tests {
         let result = analyze_document_gaps(&spans, None);
 
         // Should handle gracefully with fallback
-        assert!(!result.stats.is_some());
+        assert!(result.stats.is_none());
     }
 
     /// Test gap extraction with a single span.
@@ -209,7 +209,7 @@ mod gap_extraction_tests {
         let result = analyze_document_gaps(&spans, None);
 
         // Single span = no gaps = fallback
-        assert!(!result.stats.is_some());
+        assert!(result.stats.is_none());
     }
 }
 
@@ -280,7 +280,7 @@ mod statistics_calculation_tests {
 
         let result = analyze_document_gaps(&spans, Some(config));
         // With only 1 gap and min_samples=10, should fallback
-        assert!(!result.stats.is_some());
+        assert!(result.stats.is_none());
     }
 
     /// Test statistics with uniform gaps.
@@ -440,12 +440,12 @@ mod threshold_determination_tests {
         // Zero gaps should fallback
         let empty_spans: Vec<TextSpan> = vec![];
         let result = analyze_document_gaps(&empty_spans, None);
-        assert!(!result.stats.is_some());
+        assert!(result.stats.is_none());
 
         // Single gap should fallback (insufficient samples)
         let single_span = vec![create_test_span("word", 0.0, 0.0, 10.0, 12.0)];
         let result = analyze_document_gaps(&single_span, None);
-        assert!(!result.stats.is_some());
+        assert!(result.stats.is_none());
     }
 }
 
@@ -738,7 +738,7 @@ mod edge_case_tests {
         let result = analyze_document_gaps(&spans, None);
 
         // Single span = no gaps = fallback
-        assert!(!result.stats.is_some());
+        assert!(result.stats.is_none());
         assert!(!result.reason.is_empty()); // Reason should be populated
     }
 
@@ -756,7 +756,7 @@ mod edge_case_tests {
         let result = analyze_document_gaps(&spans, None);
 
         // All overlaps should fallback (no positive gaps)
-        assert!(!result.stats.is_some());
+        assert!(result.stats.is_none());
     }
 
     /// Test mostly overlapping with one outlier gap.
@@ -850,7 +850,7 @@ mod edge_case_tests {
 
         // Should handle gracefully without panicking
         // May fallback or compute a value
-        assert!(result.threshold_pt >= 0.0 || !result.stats.is_some());
+        assert!(result.threshold_pt >= 0.0 || result.stats.is_none());
     }
 }
 

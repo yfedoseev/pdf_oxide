@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(dead_code)]
 //! Tests for ISO 32000-1:2008 Section 9.4.4 Word Boundary Detection
 //!
 //! The PDF spec defines word boundaries through multiple mechanisms:
@@ -1303,7 +1305,7 @@ fn test_specification_reference_iso_9_4_4() {
     // 5. CJK text requires different word breaking rules (no spaces)
     // 6. Custom encodings need character mapping before boundary detection
 
-    let spec_sections = vec![
+    let spec_sections = [
         "ISO 32000-1:2008 Section 9.4: Text Objects",
         "ISO 32000-1:2008 Section 9.4.3: Text Positioning Operators",
         "ISO 32000-1:2008 Section 9.4.4: Text Objects and Word Spacing",

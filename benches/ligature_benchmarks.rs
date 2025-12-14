@@ -215,7 +215,7 @@ fn bench_batch_ligature_processing(c: &mut Criterion) {
 
     // All ligatures - worst case
     group.bench_function("process_all_ligatures", |b| {
-        let chars = vec![
+        let chars = [
             create_ligature(0xFB01, 0.0, 6.0),
             create_ligature(0xFB02, 6.0, 6.0),
             create_ligature(0xFB03, 12.0, 8.0),
@@ -237,7 +237,7 @@ fn bench_batch_ligature_processing(c: &mut Criterion) {
 
     // No ligatures - best case
     group.bench_function("process_no_ligatures", |b| {
-        let chars = vec![
+        let chars = [
             create_char(0x0074, 0.0, 6.0, None),
             create_char(0x0068, 6.0, 6.0, None),
             create_char(0x0065, 12.0, 6.0, None),

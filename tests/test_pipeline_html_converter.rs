@@ -119,7 +119,7 @@ fn test_html_layout_mode_basic() {
     config.output.preserve_layout = true;
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Output has CSS absolute positioning
     assert!(output.contains("style"), "Output should contain style attribute");
@@ -139,7 +139,7 @@ fn test_html_layout_mode_preserves_coordinates() {
     config.output.preserve_layout = true;
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Coordinates should be preserved in output
     assert!(output.contains("150"), "Should preserve X coordinate (150)");
@@ -180,7 +180,7 @@ fn test_html_layout_mode_font_size_preservation() {
     config.output.preserve_layout = true;
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Font size should be in output
     assert!(output.contains("18"), "Should preserve font size (18)");
@@ -200,7 +200,7 @@ fn test_html_semantic_paragraph_basic() {
     config.output.preserve_layout = false;
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Output should have <p> tags
     assert!(output.contains("<p>"), "Should contain opening <p> tag");
@@ -218,7 +218,7 @@ fn test_html_semantic_heading_h1() {
     config.output.detect_headings = true;
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Output should contain heading tag
     assert!(output.contains("Main Title"), "Should contain the heading text");
@@ -237,7 +237,7 @@ fn test_html_semantic_heading_h2() {
 
     let converter = HtmlOutputConverter::new();
     let output = converter
-        .convert(&vec![base_span, heading_span], &config)
+        .convert(&[base_span, heading_span], &config)
         .unwrap();
 
     // Then: Output should recognize heading level
@@ -280,7 +280,7 @@ fn test_html_bold_strong() {
     let config = TextPipelineConfig::default();
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Output should contain <strong> tags
     assert!(output.contains("<strong>"), "Should contain opening <strong> tag");
@@ -297,7 +297,7 @@ fn test_html_italic_em() {
     let config = TextPipelineConfig::default();
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Output should contain <em> tags
     assert!(output.contains("<em>"), "Should contain opening <em> tag");
@@ -314,7 +314,7 @@ fn test_html_bold_and_italic() {
     let config = TextPipelineConfig::default();
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Output should contain both <strong> and <em> tags
     assert!(output.contains("<strong>"), "Should contain <strong> tag");
@@ -332,7 +332,7 @@ fn test_html_color_preservation() {
     let config = TextPipelineConfig::default();
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Output should contain color information
     assert!(output.contains("Red Text"), "Should contain the text");
@@ -348,7 +348,7 @@ fn test_html_color_black() {
     let config = TextPipelineConfig::default();
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Output should contain the text
     assert!(output.contains("Black"), "Should contain the text");
@@ -423,7 +423,7 @@ fn test_html_escape_ampersand() {
     let config = TextPipelineConfig::default();
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Ampersand should be escaped
     assert!(output.contains("&amp;"), "Ampersand should be escaped");
@@ -439,7 +439,7 @@ fn test_html_escape_less_than() {
     let config = TextPipelineConfig::default();
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: < should be escaped
     assert!(output.contains("&lt;"), "Less-than should be escaped");
@@ -454,7 +454,7 @@ fn test_html_escape_greater_than() {
     let config = TextPipelineConfig::default();
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: > should be escaped
     assert!(output.contains("&gt;"), "Greater-than should be escaped");
@@ -469,7 +469,7 @@ fn test_html_escape_quotes() {
     let config = TextPipelineConfig::default();
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Quotes should be escaped
     assert!(output.contains("&quot;"), "Quotes should be escaped");
@@ -484,7 +484,7 @@ fn test_html_escape_xss_attempt() {
     let config = TextPipelineConfig::default();
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Script tags should be escaped and safe
     assert!(output.contains("&lt;script&gt;"), "Script tag should be escaped");
@@ -520,7 +520,7 @@ fn test_html_whitespace_only() {
     let config = TextPipelineConfig::default();
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Should handle gracefully
     assert!(!output.is_empty(), "Should produce output for whitespace");
@@ -536,7 +536,7 @@ fn test_html_very_long_text() {
     let config = TextPipelineConfig::default();
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Should handle long text
     assert!(output.contains(&long_text), "Should preserve long text");
@@ -556,7 +556,7 @@ fn test_html_layout_with_bold_styling() {
     config.output.preserve_layout = true;
 
     let converter = HtmlOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Should combine both features
     assert!(output.contains("position:absolute"), "Should have layout positioning");

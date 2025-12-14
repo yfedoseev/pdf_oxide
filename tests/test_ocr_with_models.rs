@@ -1,3 +1,4 @@
+#![allow(clippy::manual_flatten)]
 //! Integration tests for OCR with actual PaddleOCR models
 //!
 //! These tests verify that the OCR module can load and initialize

@@ -78,7 +78,7 @@ fn test_heading_detection_h1() {
     };
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Output starts with "# " (H1)
     assert!(output.starts_with("# "), "Output: {}", output);
@@ -102,9 +102,7 @@ fn test_heading_detection_h2() {
     let converter = MarkdownOutputConverter::new();
     // Include a normal span to establish base font size
     let normal_span = make_span("Normal text", 0.0, 80.0, 12.0, FontWeight::Normal, false);
-    let output = converter
-        .convert(&vec![normal_span, span], &config)
-        .unwrap();
+    let output = converter.convert(&[normal_span, span], &config).unwrap();
 
     // Then: Output contains "## " (H2)
     assert!(output.contains("## "), "Output: {}", output);
@@ -128,9 +126,7 @@ fn test_heading_detection_h3() {
     let converter = MarkdownOutputConverter::new();
     // Include a normal span to establish base font size
     let normal_span = make_span("Normal text", 0.0, 80.0, 12.0, FontWeight::Normal, false);
-    let output = converter
-        .convert(&vec![normal_span, span], &config)
-        .unwrap();
+    let output = converter.convert(&[normal_span, span], &config).unwrap();
 
     // Then: Output contains "### " (H3)
     assert!(output.contains("### "), "Output: {}", output);
@@ -152,7 +148,7 @@ fn test_heading_detection_disabled() {
     };
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Output does NOT start with "#"
     assert!(!output.starts_with("#"), "Output: {}", output);
@@ -179,7 +175,7 @@ fn test_bold_marker_conservative() {
     };
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Output contains bold markers
     assert!(output.contains("**Important**"), "Output: {}", output);
@@ -201,7 +197,7 @@ fn test_bold_marker_conservative_whitespace() {
     };
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Output does NOT contain bold markers (Conservative skips whitespace)
     assert!(!output.contains("**"), "Output: {}", output);
@@ -224,7 +220,7 @@ fn test_bold_marker_aggressive() {
     };
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![span1, span2], &config).unwrap();
+    let output = converter.convert(&[span1, span2], &config).unwrap();
 
     // Then: Both text and whitespace get bold markers
     assert!(output.contains("**Bold**"), "Output: {}", output);
@@ -239,7 +235,7 @@ fn test_italic_formatting() {
     let config = TextPipelineConfig::default();
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Output contains italic markers
     assert!(output.contains("*Emphasized*"), "Output: {}", output);
@@ -260,7 +256,7 @@ fn test_bold_and_italic() {
     };
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Output contains both bold and italic markers
     assert!(output.contains("***Strong emphasis***"), "Output: {}", output);
@@ -289,7 +285,7 @@ fn test_table_detection_simple_2x2() {
 
     let converter = MarkdownOutputConverter::new();
     let output = converter
-        .convert(&vec![cell_11, cell_12, cell_21, cell_22], &config)
+        .convert(&[cell_11, cell_12, cell_21, cell_22], &config)
         .unwrap();
 
     // Then: Output contains markdown table syntax
@@ -312,7 +308,7 @@ fn test_table_detection_disabled() {
     };
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![cell_11, cell_12], &config).unwrap();
+    let output = converter.convert(&[cell_11, cell_12], &config).unwrap();
 
     // Then: Output does not contain table markers (though pipes may appear in regular text)
     // This is a looser assertion since we can't guarantee no pipes in normal text
@@ -339,7 +335,7 @@ fn test_preserve_layout_enabled() {
     };
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![col1, col2], &config).unwrap();
+    let output = converter.convert(&[col1, col2], &config).unwrap();
 
     // Then: Whitespace is preserved for column alignment
     assert!(!output.trim().is_empty());
@@ -361,7 +357,7 @@ fn test_preserve_layout_disabled() {
     };
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![col1, col2], &config).unwrap();
+    let output = converter.convert(&[col1, col2], &config).unwrap();
 
     // Then: Text is normalized without column preservation
     assert!(!output.is_empty());
@@ -418,7 +414,7 @@ fn test_url_linkification() {
     let config = TextPipelineConfig::default();
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: URL is converted to markdown link syntax
     assert!(
@@ -438,7 +434,7 @@ fn test_email_linkification() {
     let config = TextPipelineConfig::default();
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Email is detected in output
     assert!(output.contains("info@example.com"), "Output: {}", output);
@@ -457,7 +453,7 @@ fn test_whitespace_normalization() {
     let config = TextPipelineConfig::default();
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![span], &config).unwrap();
+    let output = converter.convert(&[span], &config).unwrap();
 
     // Then: Multiple spaces are normalized to single space
     // Count consecutive spaces - should be max 1
@@ -475,7 +471,7 @@ fn test_line_ending_normalization() {
     let config = TextPipelineConfig::default();
 
     let converter = MarkdownOutputConverter::new();
-    let output = converter.convert(&vec![span1, span2], &config).unwrap();
+    let output = converter.convert(&[span1, span2], &config).unwrap();
 
     // Then: Line endings are normalized
     let double_newline_count = output.matches("\n\n").count();
@@ -509,7 +505,7 @@ fn test_mixed_formatting() {
 
     let converter = MarkdownOutputConverter::new();
     let output = converter
-        .convert(&vec![heading, bold_text, italic_text, normal_text], &config)
+        .convert(&[heading, bold_text, italic_text, normal_text], &config)
         .unwrap();
 
     // Then: All formatting is preserved

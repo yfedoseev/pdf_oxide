@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Integration tests for markdown extraction quality issues.
 //!
 //! Tests for:

@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)]
 //! Test suite for Week 2 Day 7: Email/URL Pattern Preservation (2C)
 //!
 //! This test suite verifies that email addresses and URLs are detected and

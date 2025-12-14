@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Corpus loader for loading PDFs from test directories.
 //!
 //! Provides utilities to:

@@ -28,8 +28,6 @@
 //! - ISO 32000-1:2008 Section 9.3.1: Text Positioning
 //! - ISO 32000-1:2008 Section 9.2.4: Text Showing Operators (Tj, TJ, etc.)
 
-use pdf_oxide::structure::types::StructType;
-
 /// Mock text segment with spacing information for justification analysis
 #[derive(Clone, Debug)]
 struct TextSegment {
@@ -241,7 +239,7 @@ fn test_fully_justified_text_variable_spacing() {
     };
 
     // Fully-justified should have variable word spacing
-    let word_spacings = vec![8.0, 5.0, 6.0];
+    let word_spacings = [8.0, 5.0, 6.0];
     let spacing_variance = word_spacings
         .iter()
         .map(|w| (w - line.avg_word_spacing).powi(2))
@@ -525,7 +523,7 @@ fn test_specification_reference_iso_9_3_1() {
     // - Tz (horizontal scaling)
     // - Font size and metrics
 
-    let spec_elements = vec![
+    let spec_elements = [
         "Character Spacing (Tc)",
         "Word Spacing (Tw)",
         "Horizontal Scaling (Tz)",

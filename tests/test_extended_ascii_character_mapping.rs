@@ -138,7 +138,6 @@ fn test_extended_ascii_euro() {
 #[test]
 fn test_map_character_with_extended_ascii() {
     use pdf_oxide::fonts::character_mapper::CharacterMapper;
-    use std::collections::HashMap;
 
     let mut mapper = CharacterMapper::new();
 

@@ -1,3 +1,4 @@
+#![allow(warnings)]
 //! TDD Tests for Word Boundary Character-Level Tracking
 //!
 //! Tests verify that process_tj_array() properly collects character-level data
@@ -125,7 +126,7 @@ mod tests {
         // THEN: They should be: H(0), e(1), l(2), l(3), o(4)
         //       with indices corresponding to position in array
 
-        let chars = vec![
+        let chars = [
             CharacterInfo {
                 code: 'H' as u32,
                 glyph_id: None,
@@ -274,7 +275,7 @@ mod tests {
         // WHEN: Collected with x_position values
         // THEN: x_position should increase monotonically
 
-        let chars = vec![
+        let chars = [
             CharacterInfo {
                 code: 'T' as u32,
                 glyph_id: None,

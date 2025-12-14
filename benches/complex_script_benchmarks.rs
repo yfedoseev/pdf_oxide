@@ -1,3 +1,4 @@
+#![allow(clippy::useless_vec)]
 //! Complex Script Processing Benchmarks
 //!
 //! This benchmark suite measures the performance of complex script processing,

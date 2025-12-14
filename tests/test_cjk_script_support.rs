@@ -12,8 +12,7 @@
 //! - Integration with word boundary detector
 
 use pdf_oxide::text::{
-    cjk_punctuation, script_detector, BoundaryContext, CharacterInfo, DocumentLanguage,
-    WordBoundaryDetector,
+    cjk_punctuation, BoundaryContext, CharacterInfo, DocumentLanguage, WordBoundaryDetector,
 };
 
 /// Helper to create a test character

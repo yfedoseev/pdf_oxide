@@ -60,7 +60,7 @@ mod document_pipeline_integration {
                 assert!(!markdown.is_empty(), "Markdown output should not be empty");
 
                 // Should contain valid content
-                assert!(markdown.len() > 0, "Output length should be > 0");
+                assert!(!markdown.is_empty(), "Output length should be > 0");
             },
             Err(e) => {
                 // Some PDFs may fail, but the interface should work
@@ -96,7 +96,7 @@ mod document_pipeline_integration {
                 assert!(!html.is_empty(), "HTML output should not be empty");
 
                 // Should contain some HTML structure
-                assert!(html.len() > 0, "Output length should be > 0");
+                assert!(!html.is_empty(), "Output length should be > 0");
             },
             Err(e) => {
                 // Some PDFs may fail, but the interface should work
@@ -201,9 +201,9 @@ mod document_pipeline_integration {
         let config = TextPipelineConfig::from_conversion_options(&options);
 
         // Verify the config was properly created
-        assert_eq!(config.output.detect_headings, true, "detect_headings should be preserved");
-        assert_eq!(config.output.preserve_layout, true, "preserve_layout should be preserved");
-        assert_eq!(config.output.extract_tables, true, "extract_tables should be preserved");
+        assert!(config.output.detect_headings, "detect_headings should be preserved");
+        assert!(config.output.preserve_layout, "preserve_layout should be preserved");
+        assert!(config.output.extract_tables, "extract_tables should be preserved");
     }
 
     #[test]

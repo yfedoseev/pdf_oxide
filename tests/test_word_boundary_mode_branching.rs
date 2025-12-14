@@ -1,3 +1,4 @@
+#![allow(warnings)]
 use pdf_oxide::extractors::{TextExtractionConfig, TextExtractor};
 use pdf_oxide::pipeline::config::WordBoundaryMode;
 

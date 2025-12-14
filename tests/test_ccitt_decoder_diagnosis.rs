@@ -1,3 +1,4 @@
+#![allow(warnings)]
 #[cfg(feature = "ocr")]
 mod ccitt_decoder_diagnosis {
     use pdf_oxide::decoders::CcittParams;
