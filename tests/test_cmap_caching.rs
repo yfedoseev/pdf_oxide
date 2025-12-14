@@ -14,8 +14,8 @@
 //!
 //! Spec: PDF 32000-1:2008 Section 9.10.2-9.10.3 (ToUnicode CMaps)
 
-use pdf_oxide::fonts::FontInfo;
 use pdf_oxide::fonts::cmap::LazyCMap;
+use pdf_oxide::fonts::FontInfo;
 
 #[test]
 fn test_cmap_cache_hit_same_font_multiple_references() {

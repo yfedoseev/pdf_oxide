@@ -398,7 +398,8 @@ mod tests {
         assert!(BoldMarkerValidator::validate_boundary_context("the ", "General", "")); // Valid if preceded by space
 
         // But if no space (as in CamelCase fusion case):
-        assert!(!BoldMarkerValidator::validate_boundary_context("the", "General", "")); // Invalid: mid-word
+        assert!(!BoldMarkerValidator::validate_boundary_context("the", "General", ""));
+        // Invalid: mid-word
     }
 
     #[test]

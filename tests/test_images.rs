@@ -3,7 +3,7 @@
 //! Phase 5, Task 5.4
 
 use pdf_oxide::extractors::images::{
-    ColorSpace, ImageData, PdfImage, PixelFormat, extract_image_from_xobject, parse_color_space,
+    extract_image_from_xobject, parse_color_space, ColorSpace, ImageData, PdfImage, PixelFormat,
 };
 use pdf_oxide::object::Object;
 use std::collections::HashMap;

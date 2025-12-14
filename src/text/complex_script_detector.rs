@@ -560,13 +560,13 @@ mod tests {
     fn test_indic_diacritic_detection() {
         // Bengali
         assert!(is_indic_diacritic(0x09CD)); // Virama
-        // Tamil
+                                             // Tamil
         assert!(is_indic_diacritic(0x0BCD)); // Virama
-        // Telugu
+                                             // Telugu
         assert!(is_indic_diacritic(0x0C4D)); // Virama
-        // Kannada
+                                             // Kannada
         assert!(is_indic_diacritic(0x0CCD)); // Virama
-        // Malayalam
+                                             // Malayalam
         assert!(is_indic_diacritic(0x0D4D)); // Virama
     }
 }

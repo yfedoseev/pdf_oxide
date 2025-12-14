@@ -12,16 +12,14 @@
 //!   (Hello, World!) Tj
 //! ET
 //! ```
-//!
-//! Phase 4, Task 4.2
 
 use crate::content::operators::{Operator, TextElement};
 use crate::error::Result;
 use crate::object::Object;
 use crate::parser::parse_object;
-use nom::IResult;
 use nom::bytes::complete::take_while1;
 use nom::character::complete::multispace0;
+use nom::IResult;
 use std::collections::HashMap;
 
 /// Parse a content stream into a sequence of operators.

@@ -1,5 +1,3 @@
-//! WebAssembly bindings (Phase 9E).
+//! WebAssembly bindings (future enhancement).
 //!
-//! This module will be implemented in Phase 9E (optional).
-
-// Placeholder for Phase 9E implementation
+//! This module provides WebAssembly support for use in browser environments.

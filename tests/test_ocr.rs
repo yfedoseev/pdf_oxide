@@ -9,8 +9,8 @@
 
 use image::{DynamicImage, GenericImageView, RgbImage};
 use pdf_oxide::ocr::{
-    OcrConfig, OcrConfigBuilder, OcrExtractOptions, OcrOutput, OcrSpan, crop_text_region,
-    preprocess_for_detection, preprocess_for_recognition,
+    crop_text_region, preprocess_for_detection, preprocess_for_recognition, OcrConfig,
+    OcrConfigBuilder, OcrExtractOptions, OcrOutput, OcrSpan,
 };
 
 /// Create a simple test image with solid color.
@@ -345,8 +345,8 @@ fn test_ocr_simple_image() {
 #[ignore = "Requires ONNX model files and scanned PDF"]
 fn test_ocr_scanned_pdf() {
     use pdf_oxide::{
-        PdfDocument,
         ocr::{self, OcrConfig, OcrEngine, OcrExtractOptions},
+        PdfDocument,
     };
 
     let det_model = "tests/fixtures/ocr/models/en_PP-OCRv5_det_infer.onnx";
@@ -375,8 +375,8 @@ fn test_ocr_scanned_pdf() {
 #[ignore = "Requires ONNX model files"]
 fn test_extract_text_with_ocr_auto() {
     use pdf_oxide::{
-        PdfDocument,
         ocr::{self, OcrConfig, OcrEngine, OcrExtractOptions},
+        PdfDocument,
     };
 
     let det_model = "tests/fixtures/ocr/models/en_PP-OCRv5_det_infer.onnx";

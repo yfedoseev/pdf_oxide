@@ -12,8 +12,8 @@
 //! - Integration with word boundary detector
 
 use pdf_oxide::text::{
-    BoundaryContext, CharacterInfo, DocumentLanguage, WordBoundaryDetector, cjk_punctuation,
-    script_detector,
+    cjk_punctuation, script_detector, BoundaryContext, CharacterInfo, DocumentLanguage,
+    WordBoundaryDetector,
 };
 
 /// Helper to create a test character
@@ -141,7 +141,7 @@ mod punctuation_tests {
 
 mod script_detection_tests {
     use super::*;
-    use pdf_oxide::text::script_detector::{CJKScript, detect_cjk_script};
+    use pdf_oxide::text::script_detector::{detect_cjk_script, CJKScript};
 
     #[test]
     fn test_detect_han_main_range() {
@@ -183,7 +183,8 @@ mod script_detection_tests {
     fn test_detect_halfwidth_katakana() {
         // U+FF61-U+FF9F is Halfwidth Katakana
         assert_eq!(detect_cjk_script(0xFF66), Some(CJKScript::HalfwidthKatakana)); // ｦ
-        assert_eq!(detect_cjk_script(0xFF9D), Some(CJKScript::HalfwidthKatakana)); // ﾝ
+        assert_eq!(detect_cjk_script(0xFF9D), Some(CJKScript::HalfwidthKatakana));
+        // ﾝ
     }
 
     #[test]

@@ -13,14 +13,14 @@ pub mod rtl_detector;
 pub mod script_detector;
 pub mod word_boundary;
 
-pub use complex_script_detector::{ComplexScript, detect_complex_script, is_complex_script};
+pub use complex_script_detector::{detect_complex_script, is_complex_script, ComplexScript};
 pub use document_classifier::{DocumentClassifier, DocumentStats};
 pub use hyphenation::HyphenationHandler;
 pub use justification::{JustificationDetector, JustificationMode};
 pub use rtl_detector::{
-    RTLScript, detect_rtl_script, is_arabic_diacritic, is_hebrew_diacritic, is_rtl_text,
+    detect_rtl_script, is_arabic_diacritic, is_hebrew_diacritic, is_rtl_text, RTLScript,
 };
 pub use script_detector::{CJKScript, DocumentLanguage};
 pub use word_boundary::{
-    BoundaryContext, CharacterInfo, DocumentScript, WordBoundaryDetector, detect_word_boundaries,
+    detect_word_boundaries, BoundaryContext, CharacterInfo, DocumentScript, WordBoundaryDetector,
 };

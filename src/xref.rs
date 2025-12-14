@@ -5,8 +5,6 @@
 //!
 //! Supports both traditional xref tables (PDF 1.0-1.4) and
 //! cross-reference streams (PDF 1.5+).
-//!
-//! Phase 1, Task 1.7
 
 use crate::error::{Error, Result};
 use crate::object::Object;

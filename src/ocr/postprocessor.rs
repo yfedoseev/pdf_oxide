@@ -211,7 +211,11 @@ fn calculate_contour_score(prob_map: ArrayView2<f32>, contour: &[[usize; 2]]) ->
         }
     }
 
-    if count > 0 { sum / count as f32 } else { 0.0 }
+    if count > 0 {
+        sum / count as f32
+    } else {
+        0.0
+    }
 }
 
 /// Get minimum area bounding rectangle from contour points.

@@ -5,7 +5,7 @@
 
 use pdf_oxide::geometry::Rect;
 use pdf_oxide::layout::TextBlock;
-use pdf_oxide::structure::table_extractor::{ExtractedTable, TableCell, TableRow, extract_table};
+use pdf_oxide::structure::table_extractor::{extract_table, ExtractedTable, TableCell, TableRow};
 use pdf_oxide::structure::types::{StructChild, StructElem, StructType};
 
 /// Helper to create a mock text block with specific MCID

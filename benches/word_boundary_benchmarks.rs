@@ -15,7 +15,7 @@
 //! - 100 chars: ~1µs
 //! - 1000 chars: ~10µs
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use pdf_oxide::text::{BoundaryContext, CharacterInfo, WordBoundaryDetector};
 
 // ============================================================================

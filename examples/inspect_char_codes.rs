@@ -1,7 +1,7 @@
 //! Inspect raw character codes from PDF to debug Unicode mapping issues.
 //!
 //! Usage: cargo run --example inspect_char_codes <pdf_path> [page_num]
-use pdf_oxide::{PdfDocument, error::Result};
+use pdf_oxide::{error::Result, PdfDocument};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();

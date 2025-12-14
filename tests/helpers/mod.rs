@@ -10,6 +10,6 @@ pub mod corpus_loader;
 pub mod golden_file_manager;
 
 pub use corpus_loader::{
-    CorpusLoader, PdfMetadata, get_pdf_metadata, list_corpus_pdfs, load_test_pdf,
+    get_pdf_metadata, list_corpus_pdfs, load_test_pdf, CorpusLoader, PdfMetadata,
 };
 pub use golden_file_manager::{ComparisonResult, ComparisonStatus, GoldenFile, GoldenFileManager};

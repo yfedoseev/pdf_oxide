@@ -3,8 +3,6 @@
 //! This module executes content stream operators to extract positioned
 //! text characters with their Unicode mappings, font information, and
 //! bounding boxes.
-//!
-//! Phase 4, Task 4.6
 
 use crate::config::ExtractionProfile;
 use crate::content::graphics_state::{GraphicsStateStack, Matrix};
@@ -174,7 +172,7 @@ pub struct TextExtractionConfig {
     ///
     /// **Default**: true (adaptive approach enabled)
     ///
-    /// Set to `false` for backward compatibility with pre-Phase 8 behavior, which
+    /// Set to `false` for backward compatibility with legacy behavior, which
     /// uses only the static `space_insertion_threshold`.
     ///
     /// # Benefits
@@ -185,7 +183,7 @@ pub struct TextExtractionConfig {
     /// - Maintains word boundary detection in academic documents
     pub use_adaptive_tj_threshold: bool,
 
-    /// Word boundary detection mode for TJ array processing (Phase 9.2)
+    /// Word boundary detection mode for TJ array processing
     ///
     /// Controls whether WordBoundaryDetector is used as:
     /// - Tiebreaker: Only when TJ and geometric signals conflict (default)
@@ -401,7 +399,7 @@ pub struct SpanMergingConfig {
     /// - Smaller than typical letter spacing in justified text
     /// - Catches actual overlaps/reversals while preserving character adjacency
     ///
-    /// **Note (Phase 4)**: Changed from 0.3 to 0.1 after regression testing revealed
+    /// **Note**: Changed from 0.3 to 0.1 after regression testing revealed
     /// that 0.3pt was too conservative for policy documents (0.1-0.3pt word spacing),
     /// causing word fusion. Adaptive threshold analysis recommended for future improvement.
     ///
@@ -441,14 +439,14 @@ pub struct SpanMergingConfig {
     /// - More negative (-1.0, -2.0): Allow some overlap to merge adjacent text
     pub severe_overlap_threshold_pt: f32,
 
-    /// Enable adaptive threshold analysis (default: true as of Phase 8).
+    /// Enable adaptive threshold analysis (default: true).
     ///
     /// When true, the `conservative_threshold_pt` is automatically calculated
     /// based on the gap distribution within the document. This overrides the fixed
     /// threshold value and adapts to different document types.
     ///
     /// **Default**: true (adaptive enabled)
-    /// **Phase 8 Change**: Enabled by default to improve extraction quality across document types.
+    /// Enabled by default to improve extraction quality across document types.
     /// Use `SpanMergingConfig::legacy()` for the old fixed-threshold behavior.
     ///
     /// # Performance
@@ -523,7 +521,7 @@ impl Default for SpanMergingConfig {
             conservative_threshold_pt: 0.1, // Reverted from 0.3 after regression testing
             column_boundary_threshold_pt: 5.0,
             severe_overlap_threshold_pt: -0.5,
-            use_adaptive_threshold: true, // Phase 8: Enabled by default for better quality
+            use_adaptive_threshold: true, // Enabled by default for better quality
             adaptive_config: None,
             detect_email_patterns: false,
             email_threshold_multiplier: 2.5,
@@ -726,7 +724,7 @@ impl SpanMergingConfig {
 
     /// Create a configuration using the legacy fixed-threshold approach.
     ///
-    /// This provides backward compatibility with the pre-Phase 8 behavior where
+    /// This provides backward compatibility with legacy behavior where
     /// adaptive threshold was disabled by default. All thresholds are fixed values.
     ///
     /// **Default values**:
@@ -738,7 +736,7 @@ impl SpanMergingConfig {
     ///
     /// # When to Use
     ///
-    /// Use this when you need the exact behavior from Phase 7.x and earlier:
+    /// Use this when you need the fixed-threshold behavior:
     /// - Testing regression against old baselines
     /// - Documents with known quirks that required specific thresholds
     /// - Performance-critical applications where adaptive overhead is unacceptable
@@ -882,7 +880,7 @@ fn should_insert_space(
         return SpaceDecision::no_space(SpaceSource::NoSpace, 1.0);
     }
 
-    // Phase 4 (Fix 3): Line Break Handling
+    // Line Break Handling
     // ==============================================================================
     // Per ISO 32000-1:2008 Section 5.2 (geometric positioning):
     // Line breaks are detected using bbox Y-coordinates (vertical positioning).
@@ -955,7 +953,7 @@ fn should_insert_space(
         }
     }
 
-    // Phase 4 (Fix 2): Consensus-Based Spacing Logic
+    // Consensus-Based Spacing Logic
     // ==============================================================================
     // Per ISO 32000-1:2008 Section 9.4.4 and 9.10:
     // "Determining word boundaries is not specified by PDF."
@@ -996,7 +994,7 @@ fn should_insert_space(
 
     let geometric_suggests_space = gap_pt > geometric_threshold;
 
-    // Phase 4 (Fix 2): Consensus checking
+    // Consensus checking
     // Only insert space if BOTH signals agree OR geometric signal is very strong
     // This reduces false positives in justified text where TJ offsets are arbitrary
     if tj_offset_triggered && geometric_suggests_space {
@@ -1009,7 +1007,7 @@ fn should_insert_space(
         return SpaceDecision::insert(SpaceSource::TjOffset, 1.0);
     }
 
-    // Phase 7: WordBoundaryDetector tiebreaker when TJ and geometric signals conflict
+    // WordBoundaryDetector tiebreaker when TJ and geometric signals conflict
     // Per ISO 32000-1:2008 Section 9.4.4, use multiple signals to determine word boundaries
     if tj_offset_triggered != geometric_suggests_space {
         if let (Some(prev_box), Some(next_box)) = (prev_bbox, next_bbox) {
@@ -1647,13 +1645,13 @@ pub struct TextExtractor {
     /// Used as a tie-breaker when sorting spans by Y-coordinate. Ensures
     /// that spans with identical Y-coordinates maintain extraction order.
     span_sequence_counter: usize,
-    /// History of TJ array offsets for statistical analysis (Phase 4)
+    /// History of TJ array offsets for statistical analysis
     ///
     /// Tracks TJ offset values to detect justified vs. normal text through
     /// statistical distribution analysis (coefficient of variation).
     /// Used to dynamically adjust spacing thresholds per ISO 32000-1:2008 Section 9.4.4.
     tj_offset_history: Vec<f32>,
-    /// Character-level tracking for word boundary detection (Phase 9)
+    /// Character-level tracking for word boundary detection
     ///
     /// Collects CharacterInfo for each character during TJ array processing.
     /// This provides character-level positioning, width, and TJ offset data
@@ -1665,7 +1663,7 @@ pub struct TextExtractor {
     /// Updated as each character in a TJ array is processed. Used to calculate
     /// x_position for CharacterInfo entries (not used after character collection).
     current_x_position: f32,
-    /// Word boundary detection mode (Phase 9.2)
+    /// Word boundary detection mode
     ///
     /// Controls whether WordBoundaryDetector is used as:
     /// - Tiebreaker: Only when TJ and geometric signals conflict (default)
@@ -1720,10 +1718,10 @@ impl TextExtractor {
             span_sequence_counter: 0, // Initialize sequence counter
             marked_content_stack: Vec::new(), // Track marked content contexts
             inside_artifact: false,   // Track artifact state
-            tj_offset_history: Vec::with_capacity(1000), // Phase 4: Track TJ offsets for statistical analysis
-            tj_character_array: Vec::new(), // Phase 9: Character tracking for word boundaries
-            current_x_position: 0.0,        // Phase 9: Start at origin
-            word_boundary_mode,             // Phase 9.2: Word boundary detection mode
+            tj_offset_history: Vec::with_capacity(1000), // Track TJ offsets for statistical analysis
+            tj_character_array: Vec::new(),              // Character tracking for word boundaries
+            current_x_position: 0.0,                     // Start at origin
+            word_boundary_mode,                          // Word boundary detection mode
         }
     }
 
@@ -1767,7 +1765,7 @@ impl TextExtractor {
         self.document = Some(document);
     }
 
-    /// Calculate adaptive TJ offset threshold based on font size and text justification (Phase 4).
+    /// Calculate adaptive TJ offset threshold based on font size and text justification.
     ///
     /// When `use_adaptive_tj_threshold` is enabled, this method calculates the TJ offset
     /// threshold dynamically using the formula:
@@ -1781,7 +1779,7 @@ impl TextExtractor {
     ///   to prevent false space insertions from arbitrary TJ offsets
     /// - **Normal text** (low CV ≤ 0.5): Uses the default ratio (aggressive)
     ///
-    /// # Phase 4 Enhancement
+    /// # Adaptive Threshold Enhancement
     ///
     /// Per ISO 32000-1:2008 Section 9.4.4, justified text uses arbitrary TJ offsets to
     /// distribute whitespace. This method detects justified text through statistical
@@ -1806,7 +1804,7 @@ impl TextExtractor {
         let state = self.state_stack.current();
 
         // ==============================================================================
-        // FONT-AWARE ADAPTIVE THRESHOLD WITH JUSTIFIED TEXT DETECTION (Phase 4)
+        // FONT-AWARE ADAPTIVE THRESHOLD WITH JUSTIFIED TEXT DETECTION
         // (ISO 32000-1:2008 Section 9.4.4, 9.6.3, 9.10)
         // ==============================================================================
 
@@ -1821,7 +1819,7 @@ impl TextExtractor {
             .map(|font| font.get_space_glyph_width())
             .unwrap_or(250.0); // Fallback: Times-Roman typical space width
 
-        // Phase 4: Detect justified vs normal text
+        // Detect justified vs normal text
         let (is_justified, cv) = self.analyze_tj_distribution();
 
         // Adjust margin ratio based on text justification
@@ -1838,7 +1836,7 @@ impl TextExtractor {
         let adaptive_threshold = -((space_width_units * font_size * margin_ratio) / 1000.0);
 
         log::debug!(
-            "TJ threshold (Phase 4): {} (justified={}, cv={:.2}, margin_ratio={:.3}, ISO 32000-1 §9.4.4)",
+            "TJ threshold: {} (justified={}, cv={:.2}, margin_ratio={:.3}, ISO 32000-1 §9.4.4)",
             adaptive_threshold,
             is_justified,
             cv,
@@ -1848,7 +1846,7 @@ impl TextExtractor {
         adaptive_threshold
     }
 
-    /// Analyze TJ offset distribution to detect justified vs normal text (Phase 4).
+    /// Analyze TJ offset distribution to detect justified vs normal text.
     ///
     /// This method performs statistical analysis on collected TJ offsets to determine
     /// if the document uses justified alignment. Justified text has high variance in TJ
@@ -1908,7 +1906,7 @@ impl TextExtractor {
         let is_justified = cv > 0.5;
 
         log::debug!(
-            "TJ distribution analysis (Phase 4): mean={:.2}, std_dev={:.2}, cv={:.2}, justified={}",
+            "TJ distribution analysis: mean={:.2}, std_dev={:.2}, cv={:.2}, justified={}",
             mean,
             std_dev,
             cv,
@@ -2408,8 +2406,8 @@ impl TextExtractor {
     /// Deduplicate overlapping text spans on the same line.
     ///
     /// Uses hybrid geometric + content-based deduplication:
-    /// - Phase 1: Geometric check (same Y, X within 2pt) - catches identical positions
-    /// - Phase 2: Content check (same text, same line Y, different X) - catches duplicates across columns
+    /// - Geometric check (same Y, X within 2pt) - catches identical positions
+    /// - Content check (same text, same line Y, different X) - catches duplicates across columns
     fn deduplicate_overlapping_spans(&mut self) {
         if self.spans.is_empty() {
             return;
@@ -2561,7 +2559,7 @@ impl TextExtractor {
                 let merged_text = if next_is_whitespace_only {
                     // Next span is already space-only: just concatenate without adding more space
                     log::debug!(
-                        "Merging with whitespace-only span (Phase 1 fix): '{}' + '{}' (whitespace, offset_semantic={})",
+                        "Merging with whitespace-only span: '{}' + '{}' (whitespace, offset_semantic={})",
                         current.text,
                         span.text.escape_default(),
                         span.offset_semantic
@@ -2571,7 +2569,7 @@ impl TextExtractor {
                     // Use unified space decision function with detected document type
                     // If we have a split_boundary_before flag, FORCE a space by treating it like a TJ offset
                     // This ensures "length" + "This" becomes "length This" not "lengthThis"
-                    // Document type adjustment (Phase 8): Use adaptive thresholds based on document characteristics
+                    // Document type adjustment: Use adaptive thresholds based on document characteristics
                     // Fix 2: Use font-aware spacing thresholds instead of fixed 0.25em
                     let tj_offset_triggered_override = has_split_boundary;
                     let space_decision = should_insert_space(
@@ -2603,7 +2601,7 @@ impl TextExtractor {
                         // But SKIP if this span is already a TJ-offset space (would create double space)
                         if next_is_offset_semantic_space {
                             log::debug!(
-                                "Suppressing space insertion: next span is already TJ-offset space (Phase 1 enhanced)"
+                                "Suppressing space insertion: next span is already TJ-offset space"
                             );
                             format!("{}{}", current.text, span.text)
                         } else {
@@ -2943,7 +2941,7 @@ impl TextExtractor {
                     return Ok(());
                 }
 
-                // Phase 7C.2: ActualText override
+                // ActualText override
                 // Per PDF Spec ISO 32000-1:2008, Section 14.9.4:
                 // ActualText provides replacement text for content that cannot be
                 // automatically extracted (e.g., figures, symbols, decorative text).
@@ -3004,7 +3002,7 @@ impl TextExtractor {
                     return Ok(());
                 }
 
-                // Phase 7C.2: ActualText override
+                // ActualText override
                 // Per PDF Spec ISO 32000-1:2008, Section 14.9.4:
                 // When ActualText is present, use it instead of the TJ array contents.
                 // The entire TJ array is replaced with the ActualText string.
@@ -3071,7 +3069,7 @@ impl TextExtractor {
                                     // not as explicit space characters. For example:
                                     // [(Text1) -200 (Text2)] TJ  <- the -200 creates visual spacing
                                     //
-                                    // Phase 8: Geometry-based adaptive threshold (based on font metrics)
+                                    // Geometry-based adaptive threshold (based on font metrics)
                                     // Formula: adaptive_threshold = -(average_glyph_width * word_margin_ratio)
                                     // This adapts to different font sizes and families.
                                     // Fallback: static threshold if font unavailable or adaptive disabled.
@@ -3989,7 +3987,7 @@ impl TextExtractor {
             word_spacing: buffer.word_space, // Tw - captured from PDF content stream
             horizontal_scaling: buffer.horizontal_scaling, // Tz - captured from PDF content stream
             is_italic: is_italic_span,
-            primary_detected: false, // Phase 9.2.C: Default to false for backward compatibility
+            primary_detected: false, // Default to false for backward compatibility
         };
         self.span_sequence_counter += 1;
 
@@ -4042,10 +4040,10 @@ impl TextExtractor {
 
     /// Process TJ array according to configured word boundary detection mode.
     ///
-    /// Per PDF Spec ISO 32000-1:2008 Section 9.4.4 and Phase 9.2 design,
+    /// Per PDF Spec ISO 32000-1:2008 Section 9.4.4,
     /// this method dispatches to either:
     /// - process_tj_array_tiebreaker(): WordBoundaryMode::Tiebreaker (default)
-    /// - process_tj_array_primary(): WordBoundaryMode::Primary (Phase 9.2.C+)
+    /// - process_tj_array_primary(): WordBoundaryMode::Primary
     fn process_tj_array(&mut self, array: &[TextElement]) -> Result<()> {
         match self.word_boundary_mode {
             WordBoundaryMode::Tiebreaker => self.process_tj_array_tiebreaker(array),
@@ -4055,7 +4053,7 @@ impl TextExtractor {
 
     /// Process TJ array using tiebreaker mode (backward compatible).
     ///
-    /// Per Phase 9.2.B, this is the legacy code path used when
+    /// This is the legacy code path used when
     /// WordBoundaryMode::Tiebreaker is configured.
     ///
     /// Maintains 100% backward compatibility with existing behavior.
@@ -4070,7 +4068,7 @@ impl TextExtractor {
     /// - Large negative offsets (indicating word boundaries)
     /// - End of TJ array
     fn process_tj_array_tiebreaker(&mut self, array: &[TextElement]) -> Result<()> {
-        // Phase 9: Character-level tracking for word boundary detection
+        // Character-level tracking for word boundary detection
         // Collect detailed character information during TJ array processing
         // Per ISO 32000-1:2008 Section 9.4.4, character-level data improves accuracy
 
@@ -4091,7 +4089,7 @@ impl TextExtractor {
             _element_count += 1;
             match element {
                 TextElement::String(s) => {
-                    // Phase 9: First, collect character-level data before processing buffer
+                    // Collect character-level data before processing buffer
                     // Extract individual characters with their properties
                     if let Some(ref name) = font_name {
                         if let Some(font) = self.fonts.get(name) {
@@ -4189,7 +4187,7 @@ impl TextExtractor {
                     self.advance_position_for_string(s)?;
                 },
                 TextElement::Offset(offset) => {
-                    // Phase 4: Track TJ offset for statistical analysis
+                    // Track TJ offset for statistical analysis
                     // Per ISO 32000-1:2008 Section 9.4.4, collect all TJ values
                     // to detect justified vs normal text through coefficient of variation
                     if self.tj_offset_history.len() < 10000 {
@@ -4197,7 +4195,7 @@ impl TextExtractor {
                         self.tj_offset_history.push(*offset);
                     }
 
-                    // Phase 9: Associate TJ offset with the last character
+                    // Associate TJ offset with the last character
                     // The offset applies AFTER the previous string, affecting spacing to next string
                     if !self.tj_character_array.is_empty() {
                         let last_idx = self.tj_character_array.len() - 1;
@@ -4206,10 +4204,10 @@ impl TextExtractor {
 
                     // Check if this offset indicates a word boundary
                     // Per PDF spec: negative offsets increase spacing
-                    // Phase 8: Use geometry-based adaptive threshold
+                    // Use geometry-based adaptive threshold
                     let threshold = self.calculate_adaptive_tj_threshold();
                     if *offset < threshold {
-                        // Phase 7.2+ Fix: Check if buffer ends with space BEFORE flushing
+                        // Check if buffer ends with space BEFORE flushing
                         // This prevents double spaces when TJ processor inserts space
                         // AND span merging would insert space at the same boundary.
                         let buffer_ends_with_space = !buffer.unicode.is_empty()
@@ -4223,7 +4221,7 @@ impl TextExtractor {
                         // Flush buffer before space
                         self.flush_tj_buffer(&buffer)?;
 
-                        // Phase 7.2 Fix: Check if the next element in the TJ array is a string
+                        // Check if the next element in the TJ array is a string
                         // that starts with whitespace. If so, DON'T insert a space to avoid doubling.
                         // This prevents patterns like "word " + " next" = "word  next" (double space)
                         let next_element_starts_with_space = if idx + 1 < array.len() {
@@ -4264,7 +4262,7 @@ impl TextExtractor {
 
     /// Process TJ array using primary detection mode.
     ///
-    /// Per Phase 9.2.C, this implementation:
+    /// This implementation:
     /// 1. Creates BoundaryContext from graphics state
     /// 2. Calls WordBoundaryDetector to detect boundaries in tj_character_array
     /// 3. Apply ligature expansion decisions
@@ -4272,7 +4270,7 @@ impl TextExtractor {
     /// 5. Converts each cluster to a TextSpan with proper bounding boxes
     /// 6. Marks spans with primary_detected flag
     fn process_tj_array_primary(&mut self, array: &[TextElement]) -> Result<()> {
-        // Phase 9.2.C: Primary detection mode implementation
+        // Primary detection mode implementation
 
         // Step 1: If no characters collected, fall back to tiebreaker behavior
         if self.tj_character_array.is_empty() {
@@ -4502,7 +4500,7 @@ impl TextExtractor {
     /// 3. Recalculate x_positions for all following characters after splits
     fn apply_ligature_decisions(&mut self) -> Result<()> {
         use crate::text::ligature_processor::{
-            LigatureDecision, LigatureDecisionMaker, expand_ligature_to_chars,
+            expand_ligature_to_chars, LigatureDecision, LigatureDecisionMaker,
         };
 
         let context = self.create_boundary_context();
@@ -4681,7 +4679,7 @@ impl TextExtractor {
             word_spacing: state.word_space, // Tw - captured from PDF content stream
             horizontal_scaling: state.horizontal_scaling, // Tz - captured from PDF content stream
             is_italic: is_italic_space,
-            primary_detected: false, // Phase 9.2.C: Default to false for backward compatibility
+            primary_detected: false, // Default to false for backward compatibility
         };
         self.span_sequence_counter += 1;
 
@@ -4780,12 +4778,12 @@ impl TextExtractor {
                     word_spacing: 0.0, // Tw - per ISO 32000-1:2008 Section 9.3.1
                     horizontal_scaling: 100.0, // Tz - per ISO 32000-1:2008 Section 9.3.1
                     is_italic: is_italic_buf,
-                    primary_detected: false, // Phase 9.2.C: Default to false for backward compatibility
+                    primary_detected: false, // Default to false for backward compatibility
                 };
                 self.span_sequence_counter += 1;
 
                 log::info!(
-                    "FLUSH_TJ_SPAN_BUFFER creating span: text='{}', offset_semantic={} (Phase 1 enhancement: space-only spans marked as offset_semantic)",
+                    "FLUSH_TJ_SPAN_BUFFER creating span: text='{}', offset_semantic={} (space-only spans marked as offset_semantic)",
                     if span.text.chars().all(|c| c.is_whitespace()) {
                         "<space-only>"
                     } else {
@@ -5004,11 +5002,11 @@ impl Default for TextExtractor {
 /// - Acronyms like "HTML", "PDF", "API" (all uppercase)
 /// - Normal word boundaries (already handled by gap detection)
 /// - Intentional concatenations within words
-// PHASE 10: DELETED should_insert_space_heuristic()
+// DELETED: should_insert_space_heuristic()
 // Character pattern heuristics (CamelCase detection, number-letter transitions)
-// are not defined in ISO 32000-1:2008 PDF spec. Per Phase 10 spec-compliance
-// refactoring, only spec-defined signals (TJ offsets, geometric gaps, boundary
-// whitespace) are used for space insertion decisions.
+// are not defined in ISO 32000-1:2008 PDF spec. Per spec-compliance refactoring,
+// only spec-defined signals (TJ offsets, geometric gaps, boundary whitespace)
+// are used for space insertion decisions.
 // See: PHASE10_PDF_SPEC_COMPLIANCE.md
 
 #[cfg(test)]
@@ -5448,7 +5446,7 @@ fn test_space_threshold_disabled() {
 
 #[test]
 fn test_adaptive_enabled_by_default() {
-    // Test that adaptive threshold is enabled by default (Phase 8)
+    // Test that adaptive threshold is enabled by default
     let config = SpanMergingConfig::default();
     assert!(config.use_adaptive_threshold, "Adaptive threshold should be enabled by default");
 }

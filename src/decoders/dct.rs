@@ -1,8 +1,7 @@
-//! DCTDecode (JPEG) implementation.
+//! DCTDecode (JPEG) filter implementation.
 //!
-//! This is a pass-through decoder for JPEG data. JPEG images are already
-//! in final compressed format, so we just return them unchanged.
-//! Actual JPEG decoding will be handled in Phase 5 (image extraction).
+//! Pass-through decoder for JPEG data. JPEG images are already in compressed
+//! format and are returned unchanged for later image extraction.
 
 use crate::decoders::StreamDecoder;
 use crate::error::Result;

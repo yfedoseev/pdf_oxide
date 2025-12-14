@@ -134,7 +134,11 @@ pub fn authenticate_user_password(
     // Compare first 16 bytes (constant-time comparison)
     let matches = constant_time_compare(&user_key[..16], &expected_user_key[..16]);
 
-    if matches { Some(key) } else { None }
+    if matches {
+        Some(key)
+    } else {
+        None
+    }
 }
 
 /// Compute the user password hash for R=2 (Algorithm 4).

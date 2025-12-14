@@ -24,8 +24,8 @@
 
 use crate::error::Result;
 use regex::Regex;
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
@@ -614,7 +614,11 @@ fn parse_bfrange_line(line: &str) -> Option<Vec<(u32, String)>> {
                     .as_str()
                     .trim()
                     .replace(char::is_whitespace, "");
-                if !s.is_empty() { Some(s) } else { None }
+                if !s.is_empty() {
+                    Some(s)
+                } else {
+                    None
+                }
             })
             .collect();
 

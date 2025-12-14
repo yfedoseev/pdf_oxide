@@ -9,7 +9,7 @@
 //! makes them pass.
 
 use pdf_oxide::text::ligature_processor::{
-    LigatureDecision, LigatureDecisionMaker, expand_ligature_to_chars, get_ligature_components,
+    expand_ligature_to_chars, get_ligature_components, LigatureDecision, LigatureDecisionMaker,
 };
 use pdf_oxide::text::{BoundaryContext, CharacterInfo, WordBoundaryDetector};
 
@@ -180,7 +180,7 @@ fn test_ligature_with_geometric_gap() {
     // Expected: Split because geometric gap indicates boundary
 
     let ligature_fi = create_char_info(0xFB01, 500.0, 0.0, None, true); // 'ﬁ'
-    // Next char has large gap (500 + 600 = 1100, gap of 600 units)
+                                                                        // Next char has large gap (500 + 600 = 1100, gap of 600 units)
     let next_char = create_char_info(0x61, 400.0, 1100.0, None, false); // 'a' far away
 
     let context = BoundaryContext::new(12.0);

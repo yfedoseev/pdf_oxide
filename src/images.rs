@@ -1,12 +1,10 @@
-//! Image extraction.
+//! Image extraction from PDFs.
 //!
-//! Phase 5
+//! Handles extraction and management of images embedded in PDF documents.
 
-// use crate::error::Result; // Will be used in Phase 5
+// use crate::error::Result;
 
 /// PDF image.
 pub struct PdfImage {
     // TODO: Add fields
 }
-
-// TODO: Implement in Phase 5

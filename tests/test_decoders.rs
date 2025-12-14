@@ -7,16 +7,16 @@
 //! - Integration with Object::decode_stream_data()
 
 use bytes::Bytes;
-use flate2::Compression;
 use flate2::write::ZlibEncoder;
+use flate2::Compression;
 use pdf_oxide::decoders::{
-    Ascii85Decoder, AsciiHexDecoder, DctDecoder, FlateDecoder, LzwDecoder, RunLengthDecoder,
-    StreamDecoder, decode_stream,
+    decode_stream, Ascii85Decoder, AsciiHexDecoder, DctDecoder, FlateDecoder, LzwDecoder,
+    RunLengthDecoder, StreamDecoder,
 };
 use pdf_oxide::object::Object;
 use std::collections::HashMap;
 use std::io::Write;
-use weezl::{BitOrder, encode::Encoder as LzwEncoder};
+use weezl::{encode::Encoder as LzwEncoder, BitOrder};
 
 #[test]
 fn test_flate_decoder_integration() {

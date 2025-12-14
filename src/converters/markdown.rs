@@ -6,7 +6,6 @@
 //! - Image embedding
 //! - Reading order determination
 
-use crate::XYCutStrategy;
 use crate::converters::text_post_processor::TextPostProcessor;
 use crate::converters::whitespace::cleanup_markdown;
 use crate::converters::{BoldMarkerBehavior, ConversionOptions, ReadingOrderMode};
@@ -21,6 +20,7 @@ use crate::layout::{
 };
 use crate::structure::spatial_table_detector::SpatialTableDetector;
 use crate::structure::table_extractor::{ExtractedTable, TableRow};
+use crate::XYCutStrategy;
 use lazy_static::lazy_static;
 use regex::{Captures, Regex};
 
@@ -37,7 +37,7 @@ lazy_static! {
     /// Regex for cleaning space after dash in numeric contexts
     static ref RE_DASH_AFTER: Regex = Regex::new(r"(\d)(–|—)\s+(\d)").unwrap();
 
-    /// Phase 1.3: Regex for detecting missing spaces after punctuation
+    /// Regex for detecting missing spaces after punctuation
     /// Pattern: punctuation immediately followed by a letter (no space)
     /// Note: Rust regex crate doesn't support look-behind, using simple pattern
     /// False positives (URLs) are filtered by context in replacement
@@ -216,7 +216,7 @@ impl MarkdownConverter {
             return Ok(String::new());
         }
 
-        // Phase 3 Step 3: Detect and mark non-text content (figures, diagrams)
+        // Detect and mark non-text content (figures, diagrams)
         // Use NonTextDetector to identify likely figure content
         let detector = crate::fonts::non_text_detection::NonTextDetector::default();
         let span_classifications = detector.mark_non_text_spans(spans);
@@ -227,14 +227,10 @@ impl MarkdownConverter {
             .filter(|c| c.is_non_text)
             .count();
         if figures_detected > 0 {
-            log::debug!(
-                "Phase 3 Step 3: Detected {} figure(s) out of {} spans",
-                figures_detected,
-                spans.len()
-            );
+            log::debug!("Detected {} figure(s) out of {} spans", figures_detected, spans.len());
         }
 
-        // Phase 5B: Spatial table detection
+        // Spatial table detection
         // Detect tables from current spans if enabled in options
         let detected_tables = if options.extract_tables {
             let detector_config = options.table_detection_config.clone().unwrap_or_default();
@@ -242,11 +238,7 @@ impl MarkdownConverter {
             let tables = table_detector.detect_tables(spans);
 
             if !tables.is_empty() {
-                log::debug!(
-                    "Phase 5B: Detected {} table(s) from {} spans",
-                    tables.len(),
-                    spans.len()
-                );
+                log::debug!("Detected {} table(s) from {} spans", tables.len(), spans.len());
             }
             tables
         } else {
@@ -302,7 +294,7 @@ impl MarkdownConverter {
         });
 
         // **Task B.1: Pre-Validation Bold Filter (BEFORE any grouping)**
-        // Phase 1.2a: Filter whitespace-only blocks BEFORE merging
+        // Filter whitespace-only blocks BEFORE merging
         // This prevents empty blocks from entering the bold grouping pipeline.
         // Per Solution 3 in comprehensive plan: validate content BEFORE processing.
         let initial_count = blocks.len();
@@ -322,7 +314,7 @@ impl MarkdownConverter {
             filtered_count
         );
 
-        // Phase 1.2b: Neutralize bold on non-word-character blocks
+        // Neutralize bold on non-word-character blocks
         // Blocks containing only punctuation, symbols, or special characters
         // should not be marked as bold, even if they inherited the flag from context.
         // This includes content that has no alphanumeric characters AND
@@ -353,10 +345,7 @@ impl MarkdownConverter {
             }
         }
         if neutralized_count > 0 {
-            log::debug!(
-                "Phase 1.2b: Neutralized {} bold flags on non-word blocks",
-                neutralized_count
-            );
+            log::debug!("Neutralized {} bold flags on non-word blocks", neutralized_count);
         }
 
         // PDF Spec ISO 32000-1:2008 Section 9.4.4 NOTE 6:
@@ -466,7 +455,7 @@ impl MarkdownConverter {
                     BoldMarkerBehavior::Conservative => is_content_block(&cleaned_text),
                 };
 
-                // Phase 2: Validate bold markers with BoldMarkerValidator
+                // Validate bold markers with BoldMarkerValidator
                 let group = BoldGroup {
                     text: cleaned_text.clone(),
                     is_bold,
@@ -479,7 +468,7 @@ impl MarkdownConverter {
                 let should_check_validator =
                     is_bold && can_insert_open && can_insert_close && should_render_bold_markers;
 
-                // Validate before inserting markers using Phase 2 validator
+                // Validate before inserting markers
                 let marker_decision = if should_check_validator {
                     BoldMarkerValidator::can_insert_markers(&group)
                 } else {
@@ -525,7 +514,7 @@ impl MarkdownConverter {
                 i = j;
             }
 
-            // Structure-aware rendering (Phase 2.1: Document Structure Hierarchy)
+            // Structure-aware rendering
             // Infrastructure added to support heading/list detection from structure tree
             // See StructType::heading_level(), StructType::is_list(), StructType::markdown_prefix()
             // Full integration requires passing structure tree through ConversionOptions
@@ -556,7 +545,7 @@ impl MarkdownConverter {
         // Don't forget to render the last line
         render_line(&current_line, &mut markdown);
 
-        // Phase 1.3: Insert missing spaces after punctuation (post-processing)
+        // Insert missing spaces after punctuation (post-processing)
         // Catches punctuation-letter patterns that TJ offset processing missed
         let spaced = Self::insert_missing_punctuation_spaces(&markdown);
 
@@ -772,7 +761,7 @@ impl MarkdownConverter {
                 });
             },
             ReadingOrderMode::ColumnAware => {
-                // Phase 7.3: Use XY-Cut algorithm for multi-column layout detection
+                // Use XY-Cut algorithm for multi-column layout detection
                 // XY-Cut is ISO 32000-1:2008 Section 9.4 compliant for geometric analysis
                 indices = Self::xycut_reading_order(blocks);
                 log::info!("Using XY-Cut algorithm for column-aware reading order");
@@ -1039,7 +1028,7 @@ impl MarkdownConverter {
         result
     }
 
-    /// Phase 1.3: Insert missing spaces after punctuation.
+    /// Insert missing spaces after punctuation.
     ///
     /// Some PDFs have punctuation directly followed by a letter with no space,
     /// which TJ offset processing fails to catch. This post-processing regex
@@ -1451,7 +1440,7 @@ mod tests {
 
     #[test]
     fn test_column_aware_xycut_two_column_layout() {
-        // Phase 7.3: Test XY-Cut algorithm properly orders multi-column text
+        // Test XY-Cut algorithm properly orders multi-column text
         let converter = MarkdownConverter::new();
 
         // Create a two-column layout:

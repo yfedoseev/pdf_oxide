@@ -1,4 +1,4 @@
-use pdf_oxide::{PdfDocument, extractors::StructuredExtractor};
+use pdf_oxide::{extractors::StructuredExtractor, PdfDocument};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();

@@ -11,12 +11,10 @@
 //! These tests validate the complete extraction pipeline on real-world documents.
 
 mod helpers;
-mod quality_metrics;
 
 use helpers::corpus_loader::CorpusLoader;
 use helpers::golden_file_manager::{ComparisonStatus, GoldenFileManager};
 use pdf_oxide::document::PdfDocument;
-use quality_metrics::analyze_quality;
 use std::time::Instant;
 
 /// Extract text from a PDF with Primary mode detection

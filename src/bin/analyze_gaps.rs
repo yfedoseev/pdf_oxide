@@ -3,7 +3,7 @@
 /// Usage: cargo run --release --bin analyze_gaps -- <pdf_path>
 /// Example: cargo run --release --bin analyze_gaps -- tests/fixtures/regression/policy/Anti-bribery.pdf
 use pdf_oxide::document::PdfDocument;
-use pdf_oxide::extractors::{SpanMergingConfig, gap_statistics};
+use pdf_oxide::extractors::{gap_statistics, SpanMergingConfig};
 use std::env;
 use std::path::Path;
 

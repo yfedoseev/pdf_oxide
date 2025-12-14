@@ -9,7 +9,7 @@
 //! - O(1) performance with fast paths
 //! - Range checks should be extremely fast
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use pdf_oxide::text::script_detector::detect_cjk_script;
 use pdf_oxide::text::{detect_complex_script, detect_rtl_script, is_complex_script, is_rtl_text};
 

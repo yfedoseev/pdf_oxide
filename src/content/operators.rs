@@ -3,8 +3,6 @@
 //! This module defines the operator types used in PDF content streams.
 //! Content streams contain a sequence of operators that define the appearance
 //! of a page, including text positioning, graphics state, and colors.
-//!
-//! Phase 4, Task 4.1
 
 use crate::object::Object;
 

@@ -10,7 +10,7 @@
 //!   cargo run --release --bin export_to_markdown
 //!   cargo run --release --bin export_to_markdown -- --output-dir custom/path
 
-use pdf_oxide::content::{Operator, parse_content_stream};
+use pdf_oxide::content::{parse_content_stream, Operator};
 use pdf_oxide::converters::{ConversionOptions, MarkdownConverter};
 use pdf_oxide::document::PdfDocument;
 use pdf_oxide::extractors::forms::{FieldValue, FormExtractor};

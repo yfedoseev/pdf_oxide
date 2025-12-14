@@ -16,7 +16,7 @@ pub mod non_text_detection;
 pub mod truetype_cmap;
 
 pub use character_mapper::CharacterMapper;
-pub use cmap::{CMap, LazyCMap, parse_tounicode_cmap};
+pub use cmap::{parse_tounicode_cmap, CMap, LazyCMap};
 pub use encoding_normalizer::EncodingNormalizer;
 pub use font_dict::{CIDSystemInfo, CIDToGIDMap, Encoding, FontInfo};
 pub use non_text_detection::{

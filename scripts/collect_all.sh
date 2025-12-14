@@ -91,14 +91,14 @@ echo "  Financial: $financial"
 echo ""
 
 if [ $total_pdfs -lt 100 ]; then
-    echo "⚠️  Less than 100 PDFs collected. This is Phase 1."
+    echo "⚠️  Less than 100 PDFs collected."
     echo "Continue collecting manually or run additional scripts."
 elif [ $total_pdfs -lt 500 ]; then
-    echo "✓ Phase 1 complete (100+ PDFs)"
-    echo "Continue to Phase 2: Collect 500+ PDFs"
+    echo "✓ Milestone 1: 100+ PDFs collected"
+    echo "Continue collecting 500+ PDFs"
 elif [ $total_pdfs -lt 1000 ]; then
-    echo "✓ Phase 2 complete (500+ PDFs)"
-    echo "Continue to Phase 3: Reach 1000+ PDFs"
+    echo "✓ Milestone 2: 500+ PDFs collected"
+    echo "Continue collecting 1000+ PDFs"
 else
     echo "✅ Target reached! 1000+ PDFs collected"
     echo "Ready for comprehensive testing"

@@ -16,7 +16,7 @@
 //! descriptive messages about what went wrong and where.
 
 use crate::error::{Error, Result};
-use crate::lexer::{Token, token};
+use crate::lexer::{token, Token};
 use crate::object::{Object, ObjectRef};
 use nom::IResult;
 use std::collections::HashMap;

@@ -89,7 +89,7 @@
 // Error handling
 pub mod error;
 
-// Core PDF parsing (Phase 1)
+// Core PDF parsing
 pub mod document;
 pub mod lexer;
 pub mod object;
@@ -100,32 +100,32 @@ pub mod parser_config;
 pub mod xref;
 pub mod xref_reconstruction;
 
-// Stream decoders (Phase 2)
+// Stream decoders
 pub mod decoders;
 
-// Encryption support (Phase 8)
+// Encryption support
 pub mod encryption;
 
-// Layout analysis (Phase 3)
+// Layout analysis
 pub mod geometry;
 pub mod layout;
 
-// Text extraction (Phase 4)
+// Text extraction
 pub mod content;
 pub mod extractors;
 pub mod fonts;
 pub mod text;
 
-// Image extraction (Phase 5)
+// Image extraction
 pub mod images;
 
-// Document structure (Phase 9)
+// Document structure
 pub mod annotations;
 pub mod outline;
 /// PDF logical structure (Tagged PDFs)
 pub mod structure;
 
-// Converters (Phase 6)
+// Format converters
 pub mod converters;
 
 // Pipeline architecture for text extraction
@@ -137,19 +137,19 @@ pub use pipeline::XYCutStrategy;
 // Configuration
 pub mod config;
 
-// Hybrid classical + ML orchestration (Phase 8)
+// Hybrid classical + ML orchestration
 pub mod hybrid;
 
-// OCR - PaddleOCR via ONNX Runtime (Phase 10 - optional)
+// OCR - PaddleOCR via ONNX Runtime (optional)
 #[cfg(feature = "ocr")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ocr")))]
 pub mod ocr;
 
-// Python bindings (Phase 7 - optional)
+// Python bindings (optional)
 #[cfg(feature = "python")]
 mod python;
 
-// WASM bindings (Phase 9E - optional)
+// WASM bindings (optional)
 #[cfg(target_arch = "wasm32")]
 #[cfg(feature = "wasm")]
 pub mod wasm;

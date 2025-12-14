@@ -3,14 +3,12 @@
 //! This module handles parsing of PDF font dictionaries and encoding information.
 //! Fonts in PDF can have various encodings, and the ToUnicode CMap provides the
 //! most accurate character-to-Unicode mapping.
-//!
-//! Phase 4, Task 4.5
 
 use super::adobe_glyph_list::ADOBE_GLYPH_LIST;
 use crate::document::PdfDocument;
 use crate::error::{Error, Result};
+use crate::fonts::cmap::{parse_tounicode_cmap, LazyCMap};
 use crate::fonts::TrueTypeCMap;
-use crate::fonts::cmap::{LazyCMap, parse_tounicode_cmap};
 use crate::layout::text_block::FontWeight;
 use crate::object::Object;
 use std::collections::HashMap;
@@ -200,12 +198,9 @@ impl FontInfo {
             .unwrap_or("Unknown")
             .to_string();
 
-        // Log Type 3 fonts for Phase 7C tracking
+        // Log Type 3 fonts - may require special glyph name mapping
         if subtype == "Type3" {
-            log::warn!(
-                "Font '{}' is Type 3 - may require special glyph name mapping (Phase 7C)",
-                base_font
-            );
+            log::warn!("Font '{}' is Type 3 - may require special glyph name mapping", base_font);
         }
 
         // Parse FontDescriptor FIRST to get font flags (needed for encoding decision)
@@ -237,59 +232,58 @@ impl FontInfo {
 
                         // Load embedded font data from FontFile2 (TrueType), FontFile (Type 1), or FontFile3 (CFF/OpenType)
                         // IMPORTANT: Track whether font is TrueType or CFF - only TrueType fonts have cmaps!
-                        let (embedded_font, is_truetype_font) = if let Some(ff2_obj) =
-                            descriptor_dict.get("FontFile2")
-                        {
-                            log::info!("Font '{}' has FontFile2 entry (TrueType)", base_font);
-                            let font_data = ff2_obj
-                                .as_reference()
-                                .and_then(|ff2_ref| {
-                                    doc.load_object(ff2_ref).ok().map(|obj| (obj, ff2_ref))
-                                })
-                                .and_then(|(ff2_stream, ff2_ref)| {
-                                    doc.decode_stream_with_encryption(&ff2_stream, ff2_ref).ok()
-                                })
-                                .map(|data| {
-                                    log::info!(
-                                        "Font '{}' loaded embedded TrueType font ({} bytes)",
-                                        base_font,
-                                        data.len()
-                                    );
-                                    Arc::new(data)
-                                });
-                            (font_data, true) // TrueType - can have cmaps
-                        } else if let Some(ff3_obj) = descriptor_dict.get("FontFile3") {
-                            log::info!(
+                        let (embedded_font, is_truetype_font) =
+                            if let Some(ff2_obj) = descriptor_dict.get("FontFile2") {
+                                log::info!("Font '{}' has FontFile2 entry (TrueType)", base_font);
+                                let font_data = ff2_obj
+                                    .as_reference()
+                                    .and_then(|ff2_ref| {
+                                        doc.load_object(ff2_ref).ok().map(|obj| (obj, ff2_ref))
+                                    })
+                                    .and_then(|(ff2_stream, ff2_ref)| {
+                                        doc.decode_stream_with_encryption(&ff2_stream, ff2_ref).ok()
+                                    })
+                                    .map(|data| {
+                                        log::info!(
+                                            "Font '{}' loaded embedded TrueType font ({} bytes)",
+                                            base_font,
+                                            data.len()
+                                        );
+                                        Arc::new(data)
+                                    });
+                                (font_data, true) // TrueType - can have cmaps
+                            } else if let Some(ff3_obj) = descriptor_dict.get("FontFile3") {
+                                log::info!(
                                 "Font '{}' has FontFile3 entry (CFF/OpenType - no TrueType cmap)",
                                 base_font
                             );
-                            let font_data = ff3_obj
-                                .as_reference()
-                                .and_then(|ff3_ref| {
-                                    doc.load_object(ff3_ref).ok().map(|obj| (obj, ff3_ref))
-                                })
-                                .and_then(|(ff3_stream, ff3_ref)| {
-                                    doc.decode_stream_with_encryption(&ff3_stream, ff3_ref).ok()
-                                })
-                                .map(|data| {
-                                    log::info!(
+                                let font_data = ff3_obj
+                                    .as_reference()
+                                    .and_then(|ff3_ref| {
+                                        doc.load_object(ff3_ref).ok().map(|obj| (obj, ff3_ref))
+                                    })
+                                    .and_then(|(ff3_stream, ff3_ref)| {
+                                        doc.decode_stream_with_encryption(&ff3_stream, ff3_ref).ok()
+                                    })
+                                    .map(|data| {
+                                        log::info!(
                                         "Font '{}' loaded embedded CFF/OpenType font ({} bytes)",
                                         base_font,
                                         data.len()
                                     );
-                                    Arc::new(data)
-                                });
-                            (font_data, false) // CFF - no TrueType cmap
-                        } else if descriptor_dict.get("FontFile").is_some() {
-                            log::info!(
+                                        Arc::new(data)
+                                    });
+                                (font_data, false) // CFF - no TrueType cmap
+                            } else if descriptor_dict.get("FontFile").is_some() {
+                                log::info!(
                                 "Font '{}' has FontFile entry (Type 1 - not supported for cmap)",
                                 base_font
                             );
-                            (None, false) // Type 1 - no TrueType cmap
-                        } else {
-                            log::debug!("Font '{}' has no embedded font data", base_font);
-                            (None, false)
-                        };
+                                (None, false) // Type 1 - no TrueType cmap
+                            } else {
+                                log::debug!("Font '{}' has no embedded font data", base_font);
+                                (None, false)
+                            };
 
                         (weight, descriptor_flags, stem_v_value, embedded_font, is_truetype_font)
                     } else {
@@ -2008,7 +2002,7 @@ impl FontInfo {
 
     /// Get character from encoding (custom or standard).
     ///
-    /// Week 2 Day 7 - Custom Encoding Support (2B)
+    /// Custom encoding support
     ///
     /// This method normalizes a raw character code through the font's encoding,
     /// converting it to the actual Unicode character. This ensures word boundary
@@ -2047,19 +2041,27 @@ impl FontInfo {
                 // Standard encoding: for now, assume ToUnicode CMap handles this
                 // If we need explicit standard encoding tables, add them here
                 // For basic ASCII range, we can pass through
-                if code < 128 { Some(code as char) } else { None }
+                if code < 128 {
+                    Some(code as char)
+                } else {
+                    None
+                }
             },
             Encoding::Identity => {
                 // Identity encoding: code == Unicode (for CID fonts)
                 // For single-byte codes, treat as Unicode
-                if code < 128 { Some(code as char) } else { None }
+                if code < 128 {
+                    Some(code as char)
+                } else {
+                    None
+                }
             },
         }
     }
 
     /// Check if font has custom encoding.
     ///
-    /// Week 2 Day 7 - Custom Encoding Support (2B)
+    /// Custom encoding support
     ///
     /// Returns true if the font uses a custom encoding with /Differences array,
     /// which overrides standard encoding for specific character codes.

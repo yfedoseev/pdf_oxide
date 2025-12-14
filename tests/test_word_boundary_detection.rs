@@ -1506,7 +1506,7 @@ fn test_word_boundary_with_numbers() {
     // Pattern: gaps are consistent, no explicit space character
     assert!(stream_attached.characters[0].code == 0x74); // 't'
     assert!(stream_attached.characters[4].code == 0x31); // '1'
-    // No space characters in the stream means no word boundary
+                                                         // No space characters in the stream means no word boundary
     let has_space = stream_attached.characters.iter().any(|c| c.code == 0x20);
     assert!(!has_space, "Stream should have no space characters for attached word");
 }

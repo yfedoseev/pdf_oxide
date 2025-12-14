@@ -5,8 +5,8 @@
 //!
 //! PDF Spec: Section 7.6.2 - General Encryption Algorithm
 
-use aes::Aes128;
 use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use aes::Aes128;
 use cbc::{Decryptor, Encryptor};
 
 #[allow(dead_code)]

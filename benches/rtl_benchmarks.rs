@@ -11,7 +11,7 @@
 //! - Boundary detection: <20µs
 //! - LAM-ALEF handling: <15µs
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use pdf_oxide::text::rtl_detector::*;
 use pdf_oxide::text::{BoundaryContext, CharacterInfo};
 

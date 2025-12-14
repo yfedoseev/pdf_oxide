@@ -13,8 +13,8 @@
 //!
 //! Spec: PDF 32000-1:2008 Section 9.7.6 (CID Fonts)
 
-use pdf_oxide::fonts::FontInfo;
 use pdf_oxide::fonts::cmap::LazyCMap;
+use pdf_oxide::fonts::FontInfo;
 
 #[test]
 fn test_multibyte_cid_2byte_codes() {

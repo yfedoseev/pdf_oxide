@@ -2,8 +2,6 @@
 //!
 //! This module provides the graphics state machine that tracks transformations,
 //! text positioning, colors, and other parameters as operators are executed.
-//!
-//! Phase 4, Task 4.3
 
 use crate::geometry::Point;
 

@@ -263,3 +263,6 @@ scanned_samples/
 
 # Golden files for regression testing (generated, not committed)
 tests/golden_files/
+
+# Claude Code AI assistant configuration (internal development tool)
+.claude/

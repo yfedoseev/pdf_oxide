@@ -1,6 +1,4 @@
 //! PDF object types.
-//!
-//! Phase 1, Task 1.3
 
 use crate::error::{Error, Result};
 

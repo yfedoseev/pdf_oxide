@@ -38,7 +38,7 @@ impl StreamDecoder for LzwDecoder {
 
 /// Decode using weezl crate (well-tested LZW implementation).
 fn decode_lzw_weezl(input: &[u8]) -> Result<Vec<u8>> {
-    use weezl::{BitOrder, decode::Decoder as WeezlDecoder};
+    use weezl::{decode::Decoder as WeezlDecoder, BitOrder};
 
     // PDF uses MSB bit order, 8-bit minimum code size
     let mut decoder = WeezlDecoder::new(BitOrder::Msb, 8);
@@ -213,7 +213,7 @@ impl<'a> BitReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use weezl::{BitOrder, encode::Encoder as LzwEncoder};
+    use weezl::{encode::Encoder as LzwEncoder, BitOrder};
 
     #[test]
     fn test_lzw_decode_simple() {

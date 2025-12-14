@@ -23,8 +23,8 @@ pub use xycut::XYCutStrategy;
 use crate::error::Result;
 use crate::geometry::Rect;
 use crate::layout::TextSpan;
-use crate::pipeline::OrderedTextSpan;
 use crate::pipeline::config::ReadingOrderStrategyType;
+use crate::pipeline::OrderedTextSpan;
 
 /// Trait for determining reading order of text spans.
 ///

@@ -352,7 +352,11 @@ impl PatternDetector {
         }
 
         // End is now one past the last URL character, so return end - 1
-        if end > start_idx { end - 1 } else { start_idx }
+        if end > start_idx {
+            end - 1
+        } else {
+            start_idx
+        }
     }
 
     /// Check if a character is valid in a URL.

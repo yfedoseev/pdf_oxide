@@ -21,7 +21,7 @@
 //! - Total extraction: < 55ms for academic PDFs
 //! - Profile detection: < 2ms overhead for document classification
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use pdf_oxide::PdfDocument;
 use std::path::PathBuf;
 

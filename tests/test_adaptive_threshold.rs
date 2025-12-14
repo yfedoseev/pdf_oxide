@@ -486,7 +486,7 @@ mod factory_method_tests {
         assert_eq!(config.median_multiplier, 1.2);
         // Lower minimum threshold
         assert_eq!(config.min_threshold_pt, 0.05); // Same as default
-        // Require fewer samples is NOT the case, defaults to 10
+                                                   // Require fewer samples is NOT the case, defaults to 10
         assert_eq!(config.min_samples, 10);
     }
 
@@ -679,7 +679,7 @@ mod mixed_document_tests {
             let stats = &result.stats.as_ref().unwrap();
             // Median should be robust to outliers, focusing on text spacing
             assert!(stats.median < 1.0); // Should be closer to text gaps
-            // Max should reflect outliers
+                                         // Max should reflect outliers
             assert!(stats.max > 5.0);
         }
     }

@@ -32,12 +32,10 @@
 //! ```
 
 mod helpers;
-mod quality_metrics;
 
 use helpers::corpus_loader::CorpusLoader;
 use helpers::golden_file_manager::{ComparisonResult, ComparisonStatus, GoldenFileManager};
 use pdf_oxide::document::PdfDocument;
-use quality_metrics::analyze_quality;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;

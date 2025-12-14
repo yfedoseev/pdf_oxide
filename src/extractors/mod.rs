@@ -16,11 +16,11 @@ pub mod debug_span_merging;
 
 pub use forms::{FieldType, FieldValue, FormExtractor, FormField};
 pub use gap_statistics::{
-    AdaptiveThresholdConfig, AdaptiveThresholdResult, GapStatistics, analyze_document_gaps,
-    calculate_statistics, determine_adaptive_threshold, extract_gaps,
+    analyze_document_gaps, calculate_statistics, determine_adaptive_threshold, extract_gaps,
+    AdaptiveThresholdConfig, AdaptiveThresholdResult, GapStatistics,
 };
-pub use geometric_spacing::{SpaceInsertion, SpacingConfig, should_insert_space};
-pub use images::{ColorSpace, ImageData, PdfImage, PixelFormat, extract_image_from_xobject};
+pub use geometric_spacing::{should_insert_space, SpaceInsertion, SpacingConfig};
+pub use images::{extract_image_from_xobject, ColorSpace, ImageData, PdfImage, PixelFormat};
 pub use pattern_detector::{PatternDetector, PatternPreservationConfig};
 pub use structured::{
     BoundingBox, DocumentElement, DocumentMetadata, ExtractorConfig, ListItem, StructuredDocument,

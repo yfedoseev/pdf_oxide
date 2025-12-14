@@ -17,7 +17,7 @@
 //! - Academic PDFs: Complex layouts, multi-column
 //! - Mixed PDFs: Multiple languages and scripts
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use pdf_oxide::PdfDocument;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -28,7 +28,11 @@ use std::time::Duration;
 
 fn get_simple_pdf() -> Option<PathBuf> {
     let path = PathBuf::from("tests/fixtures/simple.pdf");
-    if path.exists() { Some(path) } else { None }
+    if path.exists() {
+        Some(path)
+    } else {
+        None
+    }
 }
 
 fn get_academic_pdfs() -> Vec<(String, PathBuf)> {

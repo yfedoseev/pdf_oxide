@@ -25,14 +25,14 @@ mod lzw;
 mod predictor;
 mod runlength;
 
-pub use ascii_hex::AsciiHexDecoder;
 pub use ascii85::Ascii85Decoder;
+pub use ascii_hex::AsciiHexDecoder;
 pub use ccitt::CcittFaxDecoder;
 pub use dct::DctDecoder;
 pub use flate::FlateDecoder;
 pub use jbig2::Jbig2Decoder;
 pub use lzw::LzwDecoder;
-pub use predictor::{CcittParams, DecodeParams, PngPredictor, decode_predictor};
+pub use predictor::{decode_predictor, CcittParams, DecodeParams, PngPredictor};
 pub use runlength::RunLengthDecoder;
 
 /// Security limits for decompression (decompression bomb protection).

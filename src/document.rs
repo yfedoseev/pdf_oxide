@@ -1,6 +1,4 @@
 //! PDF document model.
-//!
-//! Phase 1, Tasks 1.6 and 1.8
 
 use crate::encryption::EncryptionHandler;
 use crate::error::{Error, Result};
@@ -8,11 +6,11 @@ use crate::layout::TextSpan;
 use crate::object::{Object, ObjectRef};
 use crate::parser::parse_object;
 use crate::pipeline::{
-    HtmlOutputConverter, MarkdownOutputConverter, PlainTextConverter, ReadingOrderContext,
-    TextPipeline, TextPipelineConfig, converters::OutputConverter,
+    converters::OutputConverter, HtmlOutputConverter, MarkdownOutputConverter, PlainTextConverter,
+    ReadingOrderContext, TextPipeline, TextPipelineConfig,
 };
 use crate::structure::traverse_structure_tree;
-use crate::xref::{CrossRefTable, find_xref_offset, parse_xref};
+use crate::xref::{find_xref_offset, parse_xref, CrossRefTable};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;

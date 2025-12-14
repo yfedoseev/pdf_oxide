@@ -8,4 +8,4 @@ Scripts for training and fine-tuning ML models.
 - `output/` - Training outputs (checkpoints, logs)
 - `*.py` - Training scripts
 
-See Phase 9C documentation for details.
+For OCR documentation, see the OCR module documentation.

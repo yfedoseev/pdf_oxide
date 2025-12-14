@@ -19,13 +19,13 @@
 
 use crate::text::cjk_punctuation;
 use crate::text::complex_script_detector::{
-    ComplexScript, detect_complex_script, handle_devanagari_boundary, handle_indic_boundary,
-    handle_khmer_boundary, handle_thai_boundary,
+    detect_complex_script, handle_devanagari_boundary, handle_indic_boundary,
+    handle_khmer_boundary, handle_thai_boundary, ComplexScript,
 };
 use crate::text::rtl_detector::should_split_at_rtl_boundary;
 use crate::text::script_detector::{
-    DocumentLanguage, detect_cjk_script, handle_japanese_text, handle_korean_text,
-    should_split_on_script_transition,
+    detect_cjk_script, handle_japanese_text, handle_korean_text, should_split_on_script_transition,
+    DocumentLanguage,
 };
 
 /// Information about a character in the text stream for boundary detection.

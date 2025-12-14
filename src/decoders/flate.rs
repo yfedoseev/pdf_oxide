@@ -282,8 +282,8 @@ impl StreamDecoder for FlateDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::Compression;
     use flate2::write::ZlibEncoder;
+    use flate2::Compression;
     use std::io::Write;
 
     #[test]

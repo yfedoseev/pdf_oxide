@@ -13,7 +13,7 @@ use ort::value::TensorRef;
 
 use super::config::OcrConfig;
 use super::error::{OcrError, OcrResult};
-use super::postprocessor::{DetectedBox, extract_boxes};
+use super::postprocessor::{extract_boxes, DetectedBox};
 use super::preprocessor::preprocess_for_detection;
 
 /// Text detector using DBNet++ ONNX model.

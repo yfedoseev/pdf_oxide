@@ -10,8 +10,7 @@
 //! - Boundary detection: <20µs
 //! - All 15 complex scripts: O(1) detection
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use pdf_oxide::text::CharacterInfo;
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use pdf_oxide::text::complex_script_detector::{
     detect_complex_script, handle_devanagari_boundary, handle_indic_boundary,
     handle_khmer_boundary, handle_thai_boundary, is_complex_script, is_devanagari_anusvar_visarga,
@@ -19,6 +18,7 @@ use pdf_oxide::text::complex_script_detector::{
     is_devanagari_virama, is_thai_digit, is_thai_major_punctuation, is_thai_tone_mark,
     is_thai_vowel_modifier,
 };
+use pdf_oxide::text::CharacterInfo;
 
 // ============================================================================
 // DEVANAGARI BENCHMARKS

@@ -11,8 +11,8 @@
 
 #[cfg(feature = "ocr")]
 mod ocr_inference_tests {
-    use pdf_oxide::PdfDocument;
     use pdf_oxide::ocr::{OcrConfig, OcrEngine};
+    use pdf_oxide::PdfDocument;
     use std::path::Path;
     use std::time::Instant;
 

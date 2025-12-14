@@ -17,8 +17,8 @@
 //!
 //! Spec: PDF 32000-1:2008 Section 9.7.6.2 (CID Fonts)
 
-use pdf_oxide::fonts::FontInfo;
 use pdf_oxide::fonts::cmap::LazyCMap;
+use pdf_oxide::fonts::FontInfo;
 
 #[test]
 fn test_4byte_cmap_extended_range_parsing() {
