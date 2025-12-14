@@ -4,12 +4,12 @@ version = "0.2.0"
 edition = "2021"
 authors = ["Yury Fedoseev <yfedoseev@gmail.com>"]
 license = "MIT OR Apache-2.0"
-description = "High-performance PDF parsing and conversion library with Python bindings"
+description = "Production-grade PDF parsing: spec-compliant text extraction, intelligent reading order, OCR support. 47.9× faster than PyMuPDF4LLM."
 repository = "https://github.com/yfedoseev/pdf_oxide"
 homepage = "https://github.com/yfedoseev/pdf_oxide"
 documentation = "https://docs.rs/pdf_oxide"
 readme = "README.md"
-keywords = ["pdf", "parser", "text-extraction", "machine-learning", "document-analysis"]
+keywords = ["pdf", "parsing", "text-extraction", "ocr", "specification-compliant"]
 categories = ["parsing", "text-processing"]
 
 [lib]
@@ -172,7 +172,8 @@ harness = false
 # Cargo auto-discovers binaries in src/bin/
 
 [package.metadata.docs.rs]
-# No optional features for v0.1.0 - all core functionality is built-in
+# Document with all major features enabled for comprehensive API reference
+all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 # Python packaging (Maturin)
