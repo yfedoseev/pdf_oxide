@@ -155,8 +155,6 @@ fn test_word_fusion_regression_policy() {
 
 ### Step 2: Document Limitation (30 min)
 - ✅ Create `docs/ADR-001-pdf-structure-limitations.md` (this file)
-- ✅ Create `docs/pdf-quality-guide.md` (user-facing guide)
-- ✅ Update `tests/fixtures/regression/README.md`
 - ✅ Update root `README.md`
 
 ### Step 3: Update Quality Metrics (20 min)

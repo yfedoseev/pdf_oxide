@@ -122,7 +122,7 @@ The project uses Claude Code hooks for automatic validation:
 - Full test suite
 - Runs in 10-40 seconds
 
-See [`docs/HOOKS.md`](HOOKS.md) for details.
+See `.claude/hooks.json` for hook configuration.
 
 ### Code Quality Tools
 
@@ -510,7 +510,7 @@ Use checklist: `.claude/checklists/code_review.md`
 
 ### Performance Targets
 
-From planning documents:
+Performance goals for core components:
 
 | Component | Target | Acceptable |
 |-----------|--------|------------|
@@ -518,7 +518,7 @@ From planning documents:
 | **DBSCAN (10k pts)** | 50ms | 100ms |
 | **XY-Cut** | 30ms/page | 50ms/page |
 | **Text extraction** | 50ms/page | 100ms/page |
-| **ML inference** | 100ms/page | 200ms/page |
+| **OCR inference** | 800-1000ms/page | (A4, 300 DPI) |
 
 ### Optimization Strategy
 
@@ -746,13 +746,13 @@ Brief description of the feature or fix being implemented.
 **Hooks blocking**:
 - Read hook output
 - Fix the specific issue
-- See docs/HOOKS.md
+- Check `.claude/hooks.json` for hook configuration
 
 ## Best Practices Summary
 
 ### Development
 
-1. **Read planning docs first**
+1. **Understand the architecture first** (read ARCHITECTURE.md)
 2. **Write tests before code** (TDD)
 3. **Keep changes small** (easy to review)
 4. **Run checks frequently** (catch issues early)
