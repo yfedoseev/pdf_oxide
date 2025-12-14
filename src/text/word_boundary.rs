@@ -181,6 +181,7 @@ impl DocumentScript {
         }
 
         // Decision tree: classify based on what we found
+        #[allow(clippy::let_and_return)]
         let script = match (has_rtl, has_cjk, has_complex) {
             (false, false, false) => Self::Latin, // Pure Latin (fast path)
             (false, true, _) => Self::CJK,        // CJK-dominant (skip RTL)

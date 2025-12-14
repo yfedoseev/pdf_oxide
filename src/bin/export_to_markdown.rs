@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 #![allow(unused_assignments)]
+#![allow(deprecated)]
 //!   cargo run --release --bin export_to_markdown
 //!   cargo run --release --bin export_to_markdown -- --output-dir custom/path
 

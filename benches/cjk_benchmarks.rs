@@ -107,7 +107,7 @@ fn bench_punctuation_detection(c: &mut Criterion) {
         ];
         b.iter(|| {
             for &code in &chars {
-                black_box(get_cjk_punctuation_boundary_score(black_box(code)));
+                black_box(get_cjk_punctuation_boundary_score(black_box(code), None));
             }
         });
     });

@@ -2893,10 +2893,7 @@ fn lookup_adobe_cns1_to_unicode(cid: u16) -> Option<u32> {
         // ASCII range: direct mapping
         0x0000..=0x007F => Some(cid as u32),
 
-        // Traditional Chinese character "一" (U+4E00) - test case
-        0x4E00 => Some(0x4E00),
-
-        // CJK Unified Ideographs range (partial)
+        // CJK Unified Ideographs range (partial, includes U+4E00 "一")
         0x4E00..=0x9FFF => Some(cid as u32),
 
         // Additional ASCII characters
@@ -2924,10 +2921,7 @@ fn lookup_adobe_korea1_to_unicode(cid: u16) -> Option<u32> {
         // ASCII range: direct mapping
         0x0000..=0x007F => Some(cid as u32),
 
-        // Korean Hangul syllable "가" (U+AC00) - test case
-        0xAC00 => Some(0xAC00),
-
-        // Hangul syllables range (partial)
+        // Hangul syllables range (partial, includes U+AC00 "가")
         0xAC00..=0xD7AF => Some(cid as u32),
 
         // Additional ASCII characters
@@ -3975,7 +3969,7 @@ mod tests {
         for (gid, expected_glyph, expected_unicode) in test_cases {
             // Step 1: GID -> Glyph name
             let glyph_name = FontInfo::gid_to_standard_glyph_name(gid as u16)
-                .expect(&format!("GID 0x{:02X} should map to a glyph name", gid));
+                .unwrap_or_else(|| panic!("GID 0x{:02X} should map to a glyph name", gid));
             assert_eq!(glyph_name, expected_glyph);
 
             // Step 2: Glyph name -> Unicode (via AGL)

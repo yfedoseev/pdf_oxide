@@ -94,7 +94,7 @@ impl HyphenationHandler {
         before_hyphen
             .chars()
             .last()
-            .map_or(false, |c| c.is_alphabetic())
+            .is_some_and(|c| c.is_alphabetic())
     }
 
     /// Check if a word appears to be a compound word that should keep its hyphen.
@@ -148,10 +148,7 @@ impl HyphenationHandler {
         // e.g., "content-coding" vs "Govern-" + "ment"
         if let Some(first_char) = second_part.chars().next() {
             if first_char.is_lowercase()
-                && first_part
-                    .chars()
-                    .last()
-                    .map_or(false, |c| c.is_lowercase())
+                && first_part.chars().last().is_some_and(|c| c.is_lowercase())
             {
                 // Both parts lowercase - more likely compound
                 // But check if the combined form is a common word

@@ -57,6 +57,7 @@ lazy_static! {
 )]
 pub struct HtmlConverter;
 
+#[allow(deprecated)]
 impl HtmlConverter {
     /// Create a new HTML converter.
     ///
@@ -547,6 +548,7 @@ impl HtmlConverter {
     }
 }
 
+#[allow(deprecated)]
 impl Default for HtmlConverter {
     fn default() -> Self {
         Self::new()
@@ -625,6 +627,7 @@ pub fn linkify_urls_and_emails(text: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::geometry::Rect;

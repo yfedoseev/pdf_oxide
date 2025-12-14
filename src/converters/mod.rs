@@ -41,7 +41,9 @@ pub mod text_post_processor;
 pub mod whitespace;
 
 // Re-export main types
+#[allow(deprecated)]
 pub use html::HtmlConverter;
+#[allow(deprecated)]
 pub use markdown::MarkdownConverter;
 pub use table_formatter::MarkdownTableFormatter;
 pub use text_post_processor::TextPostProcessor;

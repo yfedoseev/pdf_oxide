@@ -10,24 +10,19 @@
 ///
 /// Controls the verbosity of logging output during text extraction.
 /// When the `logging` feature is enabled, logging is written to stderr.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LogLevel {
     /// Only critical errors are logged
     Error,
     /// Warnings and errors are logged
     Warn,
     /// General information (default level)
+    #[default]
     Info,
     /// Detailed debug information for troubleshooting
     Debug,
     /// Very detailed trace information (character-level details)
     Trace,
-}
-
-impl Default for LogLevel {
-    fn default() -> Self {
-        Self::Info
-    }
 }
 
 /// Document type classification for optimized extraction settings.
@@ -59,12 +54,12 @@ pub enum DocumentType {
     /// CJK documents: Chinese, Japanese, Korean
     /// Characteristics: Different word boundaries, no spaces, special punctuation
     /// Optimizations: CJK-aware boundaries, density-adaptive scoring, custom punctuation
-    CJK,
+    Cjk,
 
     /// RTL documents: Arabic, Hebrew
     /// Characteristics: Right-to-left text flow, special diacritics, ligatures
     /// Optimizations: RTL detection, diacritic handling, ligature support
-    RTL,
+    Rtl,
 
     /// Generic/unknown documents - balanced defaults
     Generic,
@@ -77,8 +72,8 @@ impl DocumentType {
             Self::Academic => Self::academic_config(),
             Self::Business => Self::business_config(),
             Self::Novel => Self::novel_config(),
-            Self::CJK => Self::cjk_config(),
-            Self::RTL => Self::rtl_config(),
+            Self::Cjk => Self::cjk_config(),
+            Self::Rtl => Self::rtl_config(),
             Self::Generic => TextPipelineConfig::default(),
         }
     }
@@ -222,12 +217,12 @@ impl DocumentType {
 
         // CJK if >10% of text is CJK characters
         if cjk_ratio > 0.1 {
-            return Self::CJK;
+            return Self::Cjk;
         }
 
         // RTL if >20% of text is RTL characters
         if rtl_ratio > 0.2 {
-            return Self::RTL;
+            return Self::Rtl;
         }
 
         // Check business patterns first
@@ -687,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_document_type_cjk_config() {
-        let config = DocumentType::CJK.create_config();
+        let config = DocumentType::Cjk.create_config();
         assert!(!config.enable_hyphenation_reconstruction);
         assert_eq!(config.log_level, LogLevel::Info);
         assert!(config.output.preserve_layout);
@@ -698,7 +693,7 @@ mod tests {
 
     #[test]
     fn test_document_type_rtl_config() {
-        let config = DocumentType::RTL.create_config();
+        let config = DocumentType::Rtl.create_config();
         assert!(!config.enable_hyphenation_reconstruction);
         assert!(config.output.preserve_layout);
         assert!(config.output.extract_tables);
@@ -711,7 +706,7 @@ mod tests {
         // Generic should match the default config structure
         assert_eq!(config.log_level, LogLevel::default());
         assert_eq!(config.word_boundary_mode, WordBoundaryMode::default());
-        assert_eq!(config.enable_hyphenation_reconstruction, true);
+        assert!(config.enable_hyphenation_reconstruction);
     }
 
     // Document type detection tests
@@ -726,35 +721,35 @@ mod tests {
     fn test_detect_cjk_sample() {
         let sample = "これは日本語です。This is bilingual text.";
         let doc_type = DocumentType::detect_from_sample(sample);
-        assert_eq!(doc_type, DocumentType::CJK);
+        assert_eq!(doc_type, DocumentType::Cjk);
     }
 
     #[test]
     fn test_detect_cjk_chinese() {
         let sample = "这是中文文本。";
         let doc_type = DocumentType::detect_from_sample(sample);
-        assert_eq!(doc_type, DocumentType::CJK);
+        assert_eq!(doc_type, DocumentType::Cjk);
     }
 
     #[test]
     fn test_detect_cjk_korean() {
         let sample = "이것은 한국어 텍스트입니다.";
         let doc_type = DocumentType::detect_from_sample(sample);
-        assert_eq!(doc_type, DocumentType::CJK);
+        assert_eq!(doc_type, DocumentType::Cjk);
     }
 
     #[test]
     fn test_detect_rtl_sample() {
         let sample = "مرحبا بك في النص العربي";
         let doc_type = DocumentType::detect_from_sample(sample);
-        assert_eq!(doc_type, DocumentType::RTL);
+        assert_eq!(doc_type, DocumentType::Rtl);
     }
 
     #[test]
     fn test_detect_rtl_hebrew() {
         let sample = "זה טקסט בעברית";
         let doc_type = DocumentType::detect_from_sample(sample);
-        assert_eq!(doc_type, DocumentType::RTL);
+        assert_eq!(doc_type, DocumentType::Rtl);
     }
 
     #[test]
@@ -827,7 +822,7 @@ mod tests {
 
     #[test]
     fn test_for_document_type_cjk_spacing() {
-        let config = TextPipelineConfig::for_document_type(DocumentType::CJK);
+        let config = TextPipelineConfig::for_document_type(DocumentType::Cjk);
         // CJK should have tighter spacing
         assert!(config.spacing.word_margin < 0.1);
     }
@@ -843,7 +838,7 @@ mod tests {
     fn test_detect_sample_with_high_cjk_ratio() {
         let sample = "これはひらがなですあ。カタカナです。テスト。";
         let doc_type = DocumentType::detect_from_sample(sample);
-        assert_eq!(doc_type, DocumentType::CJK);
+        assert_eq!(doc_type, DocumentType::Cjk);
     }
 
     #[test]
@@ -851,7 +846,7 @@ mod tests {
         let sample = "This is mostly English text with some 日本語 mixed in.";
         let doc_type = DocumentType::detect_from_sample(sample);
         // Should be Generic since CJK ratio is too low
-        assert_ne!(doc_type, DocumentType::CJK);
+        assert_ne!(doc_type, DocumentType::Cjk);
     }
 
     #[test]

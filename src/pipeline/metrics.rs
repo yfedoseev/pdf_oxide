@@ -20,7 +20,7 @@
 ///
 /// Captures detailed statistics about the extraction process to enable
 /// quality tracking and analysis.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ExtractionMetrics {
     /// Total characters extracted
     pub total_characters: usize,
@@ -54,24 +54,6 @@ pub struct ExtractionMetrics {
 
     /// Document type inferred
     pub inferred_document_type: Option<String>,
-}
-
-impl Default for ExtractionMetrics {
-    fn default() -> Self {
-        Self {
-            total_characters: 0,
-            total_words: 0,
-            word_boundaries_detected: 0,
-            hyphenated_words_reconstructed: 0,
-            agl_fallback_mappings: 0,
-            density_adaptive_applications: 0,
-            cjk_characters_detected: 0,
-            rtl_characters_detected: 0,
-            detected_script: None,
-            extraction_time_ms: 0,
-            inferred_document_type: None,
-        }
-    }
 }
 
 impl ExtractionMetrics {
@@ -261,8 +243,10 @@ mod tests {
 
     #[test]
     fn test_quality_score_with_hyphenation() {
-        let mut metrics = ExtractionMetrics::default();
-        metrics.hyphenated_words_reconstructed = 50;
+        let metrics = ExtractionMetrics {
+            hyphenated_words_reconstructed: 50,
+            ..Default::default()
+        };
         let score = metrics.estimate_quality_score();
         assert!(score > 7.0);
         assert!(score <= 10.0);
@@ -270,11 +254,13 @@ mod tests {
 
     #[test]
     fn test_quality_score_capped_at_10() {
-        let mut metrics = ExtractionMetrics::default();
-        metrics.hyphenated_words_reconstructed = 1000;
-        metrics.agl_fallback_mappings = 1000;
-        metrics.cjk_characters_detected = 1000;
-        metrics.rtl_characters_detected = 1000;
+        let metrics = ExtractionMetrics {
+            hyphenated_words_reconstructed: 1000,
+            agl_fallback_mappings: 1000,
+            cjk_characters_detected: 1000,
+            rtl_characters_detected: 1000,
+            ..Default::default()
+        };
         assert!(metrics.estimate_quality_score() <= 10.0);
     }
 

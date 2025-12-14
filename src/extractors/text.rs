@@ -5008,7 +5008,6 @@ impl Default for TextExtractor {
 // only spec-defined signals (TJ offsets, geometric gaps, boundary whitespace)
 // are used for space insertion decisions.
 // See: PHASE10_PDF_SPEC_COMPLIANCE.md
-
 #[cfg(test)]
 mod tests {
     use super::*;

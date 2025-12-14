@@ -52,7 +52,7 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
 
     match decompress_with_fax(data, width, height_opt, params) {
         Ok(mut output) => {
-            let rows = output.len() / ((width as usize + 7) / 8);
+            let rows = output.len() / (width as usize).div_ceil(8);
             log::debug!(
                 "CCITT decompressed: {} bytes -> {} bytes ({} rows)",
                 data.len(),
@@ -83,7 +83,7 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
                 params.end_of_block
             );
             // Fallback: return white pixels
-            let expected_bytes = height_opt.unwrap_or(1) as usize * ((width as usize + 7) / 8);
+            let expected_bytes = height_opt.unwrap_or(1) as usize * (width as usize).div_ceil(8);
             log::info!("Returning {} bytes of white pixels as fallback", expected_bytes);
             Ok(vec![0; expected_bytes])
         },
@@ -178,7 +178,7 @@ fn try_decode_with_fax(
     use fax::decoder;
 
     let mut output_rows = Vec::new();
-    let bytes_per_row = (width + 7) / 8;
+    let bytes_per_row = width.div_ceil(8);
 
     // Use fax crate's decoder which is more lenient with malformed EOFB
     let bytes_iter = data.iter().copied();
@@ -229,7 +229,7 @@ fn try_decode_with_fax(
 /// - Pixels 3-4: black
 /// - Pixels 5-7: white
 fn transitions_to_bytes(transitions: &[u16], width: usize) -> Vec<u8> {
-    let bytes_per_row = (width + 7) / 8;
+    let bytes_per_row = width.div_ceil(8);
     let mut row_bytes = vec![0u8; bytes_per_row];
 
     let mut is_black = false; // Start with white
@@ -282,6 +282,7 @@ pub fn decompress_ccitt_group4(data: &[u8], width: u32, height: u32) -> Result<V
 ///
 /// This is used when /BlackIs1=true to convert from:
 /// - white=1, black=0 (inverted representation)
+///
 /// to standard PDF representation:
 /// - white=0, black=1
 fn invert_bilevel_pixels(data: &mut [u8]) {
@@ -312,7 +313,7 @@ pub fn bilevel_to_grayscale(bilevel_data: &[u8], width: u32, height: u32) -> Vec
 
     for row_idx in 0..height {
         // Each row in bilevel data is padded to byte boundary
-        let row_start = row_idx * ((width + 7) / 8);
+        let row_start = row_idx * width.div_ceil(8);
 
         for col_idx in 0..width {
             let byte_idx = row_start + (col_idx / 8);

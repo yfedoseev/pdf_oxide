@@ -73,6 +73,7 @@ lazy_static! {
 )]
 pub struct MarkdownConverter;
 
+#[allow(deprecated)]
 impl MarkdownConverter {
     /// Create a new Markdown converter.
     ///
@@ -1053,6 +1054,7 @@ impl MarkdownConverter {
     }
 }
 
+#[allow(deprecated)]
 impl Default for MarkdownConverter {
     fn default() -> Self {
         Self::new()
@@ -1222,6 +1224,7 @@ fn render_table_row(row: &TableRow) -> String {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::geometry::Rect;

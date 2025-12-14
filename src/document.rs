@@ -2436,11 +2436,13 @@ impl PdfDocument {
         ocr_engine: Option<&crate::ocr::OcrEngine>,
         ocr_options: &crate::ocr::OcrExtractOptions,
     ) -> Result<String> {
+        #[allow(deprecated)]
         use crate::converters::{MarkdownConverter, ReadingOrderMode};
         use crate::structure::traversal::extract_reading_order;
 
         // Extract spans with OCR fallback
         let spans = self.extract_spans_with_ocr(page_index, ocr_engine, ocr_options)?;
+        #[allow(deprecated)]
         let converter = MarkdownConverter::new();
 
         // Check if we need to extract structure tree for StructureTreeFirst mode
