@@ -282,7 +282,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Python
+### Python - HTML Conversion
+
+```python
+from pdf_oxide import PdfDocument
+
+# Open PDF and extract spans
+doc = PdfDocument("document.pdf")
+spans = doc.extract_spans(0)
+
+# Apply intelligent text processing
+processed_spans = doc.apply_intelligent_text_processing(spans)
+
+# Convert to HTML (semantic mode - best for readability)
+html = doc.to_html(
+    0,
+    preserve_layout=False,
+    detect_headings=True,
+    include_images=True,
+    image_output_dir="./images"
+)
+
+print(html)
+
+# Or use layout mode (preserves visual positioning)
+html_layout = doc.to_html(0, preserve_layout=True)
+```
+
+### Python - Markdown with Configuration
 
 ```python
 from pdf_oxide import PdfDocument
@@ -290,31 +317,75 @@ from pdf_oxide import PdfDocument
 # Open a PDF
 doc = PdfDocument("paper.pdf")
 
-# Get document info
-print(f"PDF Version: {doc.version()}")
-print(f"Pages: {doc.page_count()}")
-
-# Extract text
-text = doc.extract_text(0)
-print(text)
-
 # Convert to Markdown with options
 markdown = doc.to_markdown(
     0,
-    detect_headings=True,
-    include_images=True,
-    image_output_dir="./images"
+    detect_headings=True,      # Auto-detect heading levels
+    include_images=True,        # Extract and reference images
+    image_output_dir="./extracted_images"
 )
 
-# Convert to HTML (semantic mode)
+print(markdown)
+
+# Convert entire document to single Markdown file
+full_markdown = doc.to_markdown_all(
+    detect_headings=True,
+    include_images=True,
+    image_output_dir="./doc_images"
+)
+
+# Save to file
+with open("output.md", "w") as f:
+    f.write(full_markdown)
+```
+
+### Python - Intelligent OCR Detection
+
+```python
+from pdf_oxide import PdfDocument
+
+# Open PDF with mixed native and scanned content
+doc = PdfDocument("mixed_content.pdf")
+
+# Extract spans (text with positions)
+spans = doc.extract_spans(0)
+
+# Apply intelligent text processing
+# Automatically detects and cleans OCR blocks:
+# - Punctuation reconstruction
+# - Ligature handling (fi, fl, etc.)
+# - Hyphenation cleanup
+processed = doc.apply_intelligent_text_processing(spans)
+
+# Use processed spans for higher quality conversion
+markdown = doc.to_markdown(0, detect_headings=True)
 html = doc.to_html(0, preserve_layout=False, detect_headings=True)
+```
 
-# Convert to HTML (layout mode - preserves visual positioning)
-html_layout = doc.to_html(0, preserve_layout=True)
+### Python - Form Field Extraction
 
-# Convert entire document
-full_markdown = doc.to_markdown_all(detect_headings=True)
-full_html = doc.to_html_all(preserve_layout=False)
+```python
+from pdf_oxide import PdfDocument
+
+# Open PDF with form fields
+doc = PdfDocument("form.pdf")
+
+# Extract form fields
+fields = doc.extract_form_fields(0)
+
+# Access field information
+for field in fields:
+    print(f"Field Name: {field.name}")
+    print(f"Type: {field.field_type}")        # Text, Checkbox, Radio, Dropdown, etc.
+    print(f"Value: {field.value}")
+    print(f"Required: {field.required}")
+    if field.options:                         # For dropdown/radio buttons
+        print(f"Options: {field.options}")
+    print()
+
+# Extract all form data from page
+form_data = {field.name: field.value for field in fields}
+print(f"Form Data: {form_data}")
 ```
 
 ## What's Coming in v0.3.0 - PDF Creation
