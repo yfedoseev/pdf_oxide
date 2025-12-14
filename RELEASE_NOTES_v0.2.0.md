@@ -21,7 +21,7 @@ Previous versions (v0.1.x) had a monolithic converter architecture where text ex
 ### Before (v0.1.x)
 ```
 PDF → TextExtractor → TextSpan[]
-  → MarkdownConverter (monolithic, 1000+ lines)
+  → MarkdownConverter (monolithic, tightly coupled)
       ├─ Hardcoded reading order
       ├─ Tightly coupled formatting
       └─ No pluggability
@@ -85,7 +85,7 @@ v0.1.x relied on machine learning and heuristic patterns to understand PDF struc
 
 ### Heuristic Code Removed
 
-**ML Feature Extraction (850 lines)** - Extracted hand-crafted features to detect headings
+**ML Feature Extraction** - Extracted hand-crafted features to detect headings
 ```rust
 // DELETED: Pattern-based heading detection
 fn is_heading(&self, span: &TextSpan) -> bool {
@@ -95,14 +95,14 @@ fn is_heading(&self, span: &TextSpan) -> bool {
 }
 ```
 
-**Hardcoded Column Detection (644 lines)** - Fixed Gaussian sigma for gap analysis
+**Hardcoded Column Detection** - Fixed Gaussian sigma for gap analysis
 ```rust
 // DELETED: Hardcoded sigma = 2.0 for all PDFs
 let sigma = 2.0;  // ❌ Wrong for different document types
 let threshold = mean + sigma * std_dev;
 ```
 
-**Linguistic Table Detection (425 lines)** - Pattern matching on content
+**Linguistic Table Detection** - Pattern matching on content
 ```rust
 // DELETED: Content pattern matching
 fn looks_like_table(&self, text: &str) -> bool {
@@ -111,22 +111,19 @@ fn looks_like_table(&self, text: &str) -> bool {
 }
 ```
 
-**Total Deleted**: 1,919 lines of unreliable heuristic code
+### Spec-Compliant Implementations Added
 
-### Spec-Compliant Code Added
+| Component | PDF Spec Sections | Improvement |
+|-----------|-------------------|-------------|
+| **Character-to-Unicode Mapping** | §9.10.2 (5-level priority) | Reliable mapping hierarchy |
+| **Word Boundary Detection** | §9.4.4 (TJ offset analysis) | Per-spec positioning analysis |
+| **Text State Parameters** | §9.3 (Tc, Tw, Tz, TL, Tf, Tr, Ts) | Full spec compliance |
+| **Tagged PDF Structure** | §14.7-14.8 | Structure tree traversal |
+| **Adaptive Gap Analysis** | §14.8.2 (positioning) | Statistics-based thresholds |
+| **Ligature Expansion** | Custom (with PDF constraints) | Multi-signal decision tree |
+| **Complex Scripts** | Unicode Standard Annex | RTL, CJK, Devanagari, Thai |
 
-| Component | Lines | PDF Spec Sections | Improvement |
-|-----------|-------|-------------------|-------------|
-| **Character-to-Unicode Mapping** | 412 | §9.10.2 (5-level priority) | Reliable mapping hierarchy |
-| **Word Boundary Detection** | 1,675 | §9.4.4 (TJ offset analysis) | Per-spec positioning analysis |
-| **Text State Parameters** | 5,702 | §9.3 (Tc, Tw, Tz, TL, Tf, Tr, Ts) | Full spec compliance |
-| **Tagged PDF Structure** | 228 | §14.7-14.8 | Structure tree traversal |
-| **Adaptive Gap Analysis** | 1,016 | §14.8.2 (positioning) | Statistics-based thresholds |
-| **Ligature Expansion** | 340 | Custom (with PDF constraints) | Multi-signal decision tree |
-| **Other Improvements** | 94,598 | Various | Comprehensive spec coverage |
-
-**Total Added**: 104,571 lines of spec-compliant code
-**Net**: +104,571 lines of reliable, testable, spec-compliant code
+Replaced unreliable heuristics with PDF specification-compliant implementations backed by 906 tests.
 
 ### Key Implementation Examples
 
@@ -189,7 +186,7 @@ impl WordBoundaryAnalyzer {
 
 ## 3. Sophisticated Text Intelligence
 
-### Adaptive Thresholding (1,016 lines)
+### Adaptive Thresholding
 
 Instead of hardcoded gap thresholds, gap distribution analysis adapts to each document.
 
@@ -215,7 +212,7 @@ impl GapAnalyzer {
 }
 ```
 
-### Complex Script Support (1,665+ lines)
+### Complex Script Support
 
 Handles RTL (Arabic, Hebrew), CJK (Japanese, Korean, Chinese), and other complex scripts per Unicode standard.
 
@@ -243,7 +240,7 @@ impl ScriptAnalyzer {
 }
 ```
 
-### Ligature Expansion (340 lines)
+### Ligature Expansion
 
 Expands fi, fl, ffi, ffl ligatures with multi-signal decision tree (not heuristic pattern matching).
 

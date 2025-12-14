@@ -70,15 +70,15 @@ PDF → TextExtractor → TextSpan[] → TextPipeline (orchestrator)
 - **Extensible**: Developers can implement custom converters via trait
 
 ### Technical Implementation
-- `src/pipeline/mod.rs` (356 lines) - Orchestrator
-- `src/pipeline/ordered_span.rs` (147 lines) - Shared representation
-- `src/pipeline/converters/` (3 implementations, 1,500+ lines) - Pluggable outputs
-- `src/pipeline/reading_order/` (4 strategies, 1,192 lines) - Pluggable inputs
-- **Result**: 28% code reduction vs v0.1.x converters while adding features
+- `src/pipeline/mod.rs` - Orchestrator with trait composition
+- `src/pipeline/ordered_span.rs` - Shared OrderedTextSpan representation
+- `src/pipeline/converters/` - 3 pluggable output converters (Markdown, HTML, PlainText)
+- `src/pipeline/reading_order/` - 4 pluggable reading order strategies
+- **Result**: Modular design with composition over monolithic coupling
 
 ---
 
-## 📖 2. PDF SPEC-COMPLIANT CODE (850+ Lines Removed, 104k+ Added)
+## 📖 2. PDF SPEC-COMPLIANT CODE (Replaced Heuristics with Specification)
 
 ### Removed: Heuristic-Based Modules
 Deleted entire modules that violated PDF specification:
@@ -123,7 +123,7 @@ if text.contains("Total") || text.contains("Sum") {
 
 ### Added: PDF Spec-Compliant Implementations
 
-#### **Character-to-Unicode Mapping** (412 lines)
+#### **Character-to-Unicode Mapping**
 Per **ISO 32000-1:2008 Section 9.10.2** - 5-level priority hierarchy:
 
 ```rust
@@ -158,7 +158,7 @@ impl CharacterMapper {
 - ✅ Section 9.6: Font dictionary structure
 - ✅ Section 9.7-9.9: Standard font handling
 
-#### **Word Boundary Detection** (1,675 lines)
+#### **Word Boundary Detection**
 Per **ISO 32000-1:2008 Section 9.4.4** - 5 independent signals:
 
 ```rust
@@ -189,7 +189,7 @@ impl WordBoundaryDetector {
 - ✅ Section 9.4.4: Character positioning and spacing
 - ✅ NOTE 6: White space boundary decisions
 
-#### **Text State Parameters** (5,702 lines in text.rs)
+#### **Text State Parameters**
 Per **ISO 32000-1:2008 Section 9.3** - Full text state implementation:
 
 ```rust
@@ -217,7 +217,7 @@ impl TextExtractor {
 - ✅ Section 9.4: Position operators (Td, TD, T*, Tm, etc.)
 - ✅ Section 9.4.4: Word and character spacing calculations
 
-#### **Tagged PDF Structure** (228 lines, structure_tree.rs)
+#### **Tagged PDF Structure**
 Per **ISO 32000-1:2008 Sections 14.7-14.8**:
 
 ```rust
@@ -237,17 +237,19 @@ impl StructureTreeReader {
 - ✅ Section 14.8: Marked content sequence handling
 - ✅ Section 14.8.4: PDF/UA accessibility rules
 
-### Code Quality Metrics
-- **Deleted**: 850+ lines of unreliable heuristic code
-- **Added**: 104,571 lines of spec-compliant code
-- **Result**: 1,032 tests ensuring correctness (906 in this branch)
-- **Coverage**: All major PDF spec sections 9, 14.7-14.8
+### Specification Coverage
+- **Section 9**: Text extraction (Tj, TJ, T* operators, character spacing)
+- **Section 9.3**: Text state parameters (all 7 operators)
+- **Section 9.4.4**: Text positioning (TJ offset analysis, word boundaries)
+- **Section 9.10.2**: Character-to-Unicode mapping (5-level priority)
+- **Section 14.7-14.8**: Tagged PDF and logical structure
+- **Result**: 906 tests ensuring correctness across all implementations
 
 ---
 
 ## 🧠 3. SOPHISTICATED TEXT INTELLIGENCE (Not Heuristics - Algorithms)
 
-### Adaptive Thresholding System (1,016 lines, gap_statistics.rs)
+### Adaptive Thresholding System
 **Problem v0.1.x**: Fixed spacing thresholds failed on variable fonts/sizes
 
 **Solution v0.2.0**: Analyze gap distribution per document
@@ -285,10 +287,10 @@ impl GapAnalyzer {
 - Handles variable spacing in justified text
 - Adapts to different document types (dense academic vs sparse novel)
 
-### Complex Script Support (1,665+ lines, 4 modules)
-Not heuristics - linguistic algorithms per Unicode standard:
+### Complex Script Support
+Linguistic algorithms per Unicode standard (not heuristics):
 
-#### **RTL (Right-to-Left) Support** (407 lines)
+#### **RTL (Right-to-Left) Support**
 ```rust
 impl RtlDetector {
     fn detect_rtl_runs(&self, text: &str) -> Vec<TextRun> {
@@ -308,7 +310,7 @@ impl RtlDetector {
 }
 ```
 
-#### **CJK Support** (606 lines)
+#### **CJK Support**
 ```rust
 impl CjkDetector {
     fn detect_language(&self, chars: Vec<char>) -> Language {
@@ -334,7 +336,7 @@ impl CjkDetector {
 }
 ```
 
-#### **Complex Scripts** (572 lines)
+#### **Complex Scripts**
 ```rust
 impl ComplexScriptDetector {
     fn detect(&self, chars: &[char]) -> ComplexScript {
@@ -356,8 +358,8 @@ impl ComplexScriptDetector {
 }
 ```
 
-### Ligature Expansion Intelligence (340 lines)
-**Not pattern matching** - decision tree with signals:
+### Ligature Expansion Intelligence
+Multi-signal decision tree (not pattern matching):
 
 ```rust
 impl LigatureProcessor {
@@ -388,7 +390,7 @@ impl LigatureProcessor {
 }
 ```
 
-### Justification & Hyphenation (800+ lines)
+### Justification & Hyphenation
 Per **ISO 32000-1:2008 Section 9.3.3**:
 
 ```rust
@@ -444,7 +446,7 @@ impl CIDToGIDMap {
 }
 ```
 
-#### **TrueType CMap Extraction** (370 lines)
+#### **TrueType CMap Extraction**
 ```rust
 impl TrueTypeCMap {
     fn parse_cmap_table(&mut self, font_data: &[u8]) -> Result<()> {
@@ -460,7 +462,7 @@ impl TrueTypeCMap {
 }
 ```
 
-#### **Lazy CMap Loading** (965 lines, cmap.rs)
+#### **Lazy CMap Loading**
 ```rust
 pub struct LazyCMap {
     ranges: Vec<RangeEntry>,  // Lazy: parsed on first access
@@ -492,7 +494,7 @@ impl LazyCMap {
 - Cache hits after first access
 - Perfect for large CMaps (1000+ ranges)
 
-#### **Adobe Glyph List Fallback** (4,256 entries)
+#### **Adobe Glyph List Fallback**
 ```rust
 const ADOBE_GLYPH_LIST: phf::Map<&str, &str> = phf_map! {
     "A" => "A",
@@ -507,7 +509,7 @@ const ADOBE_GLYPH_LIST: phf::Map<&str, &str> = phf_map! {
 - Static compile-time lookup (zero runtime overhead)
 - Handles edge cases from pre-2000 PDFs
 
-#### **Predefined CMaps** (100+)
+#### **Predefined CMaps**
 ```rust
 // WinAnsi, MacRoman, Identity-H, etc.
 // Pre-loaded for instant O(1) lookup
