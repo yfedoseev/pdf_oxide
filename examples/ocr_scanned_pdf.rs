@@ -20,9 +20,11 @@
 //!     --dict models/en_dict.txt
 //! ```
 
+#[cfg(feature = "ocr")]
 use pdf_oxide::document::PdfDocument;
 #[cfg(feature = "ocr")]
 use pdf_oxide::ocr::{self, OcrConfigBuilder, OcrEngine, OcrExtractOptions};
+#[cfg(feature = "ocr")]
 use std::env;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
