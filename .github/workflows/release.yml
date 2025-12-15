@@ -45,6 +45,21 @@ jobs:
             exit 1
           fi
 
+      - name: Verify release is from main branch
+        run: |
+          # Fetch main branch
+          git fetch origin main
+          # Get the commit SHA the tag points to
+          TAG_SHA=$(git rev-parse HEAD)
+          # Check if this commit is reachable from main
+          if ! git merge-base --is-ancestor $TAG_SHA origin/main; then
+            echo "Error: Release tags must be created from commits on the main branch"
+            echo "Tag SHA: $TAG_SHA"
+            echo "Please merge your changes to main first, then create the release tag"
+            exit 1
+          fi
+          echo "✓ Verified: Tag points to a commit on main branch"
+
   # Build binaries for all platforms
   build-binaries:
     name: Build ${{ matrix.target }}
