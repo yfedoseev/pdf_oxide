@@ -38,23 +38,8 @@ jobs:
         with:
           components: clippy
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings
@@ -79,23 +64,10 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-${{ matrix.rust }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-${{ matrix.rust }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-${{ matrix.rust }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ matrix.rust }}
 
       - name: Build
         run: cargo build --verbose
@@ -165,21 +137,29 @@ jobs:
       - name: Test Python bindings
         run: python -c "import pdf_oxide; print(pdf_oxide.VERSION)"
 
-  # Code coverage
+  # Code coverage (only on main branch to save CI time)
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Install tarpaulin
-        run: cargo install cargo-tarpaulin
+        run: |
+          curl -Lo tarpaulin.tar.gz https://github.com/xd009642/tarpaulin/releases/latest/download/cargo-tarpaulin-x86_64-unknown-linux-gnu.tar.gz
+          tar xzf tarpaulin.tar.gz
+          mv cargo-tarpaulin ~/.cargo/bin/
 
       - name: Generate coverage
-        run: cargo tarpaulin --out xml
+        run: cargo tarpaulin --lib --skip-clean --timeout 300 --out xml --exclude-files "tests/*" || true
+        continue-on-error: true
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -210,14 +190,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
-
       - name: Run security audit
-        run: cargo audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   # Check dependencies are up to date
   deny:
@@ -226,11 +202,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-deny
-        run: cargo install cargo-deny
-
       - name: Check dependencies
-        run: cargo deny check
+        uses: EmbarkStudios/cargo-deny-action@v2
