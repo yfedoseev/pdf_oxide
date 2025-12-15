@@ -179,7 +179,7 @@ jobs:
         run: cargo install cargo-tarpaulin
 
       - name: Generate coverage
-        run: cargo tarpaulin --out xml
+        run: cargo tarpaulin --lib --out xml
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
