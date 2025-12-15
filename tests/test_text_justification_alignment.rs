@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables)]
 //! Tests for ISO 32000-1:2008 Section 9.3.1 Text Justification & Alignment
 //!
 //! The PDF specification defines text alignment (justification) through spacing parameters:

@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-#![allow(dead_code)]
 //! Tests for ISO 32000-1:2008 Section 9.4.4 Word Boundary Detection
 //!
 //! The PDF spec defines word boundaries through multiple mechanisms:

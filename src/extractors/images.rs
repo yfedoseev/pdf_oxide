@@ -641,10 +641,10 @@ pub fn extract_image_from_xobject(
             }
         }
 
-        if ccitt_params.is_some() {
+        if let Some(ref params) = ccitt_params {
             log::warn!(
                 "PDF incorrectly labeled 1-bit image with JBIG2Decode filter but has CCITT parameters (K={})",
-                ccitt_params.as_ref().unwrap().k
+                params.k
             );
             ccitt_params_override = ccitt_params;
         }

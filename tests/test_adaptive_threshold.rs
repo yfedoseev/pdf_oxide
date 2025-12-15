@@ -1,3 +1,4 @@
+#![allow(clippy::useless_vec)]
 //! Comprehensive test suite for adaptive threshold algorithm.
 //!
 //! Phase 5.3: Tests for gap analysis, statistics calculation, threshold determination,

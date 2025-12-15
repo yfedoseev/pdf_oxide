@@ -1,5 +1,6 @@
 #[cfg(feature = "ocr")]
 mod ccitt_params {
+    #![allow(dead_code, clippy::manual_div_ceil)]
     use pdf_oxide::document::PdfDocument;
     use std::collections::HashMap;
 

@@ -1,3 +1,4 @@
+#![allow(clippy::useless_vec)]
 //! Optimized CMap Parsing Tests for Phase 5.3
 //!
 //! Tests for performance optimization of CMap parsing:

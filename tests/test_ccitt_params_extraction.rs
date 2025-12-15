@@ -1,5 +1,6 @@
 #[cfg(feature = "ocr")]
 mod ccitt_extraction_tests {
+    #![allow(clippy::bool_assert_comparison, clippy::manual_div_ceil)]
     use pdf_oxide::document::PdfDocument;
 
     #[test]

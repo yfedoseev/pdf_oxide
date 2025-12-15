@@ -6,6 +6,8 @@
 //! Tests follow TDD practices: they define expected behavior before
 //! implementation is complete.
 
+#![allow(clippy::field_reassign_with_default)]
+
 #[cfg(test)]
 mod document_pipeline_integration {
     use pdf_oxide::converters::ConversionOptions;
@@ -289,9 +291,6 @@ mod document_pipeline_integration {
             Ok(spans) => {
                 // Should be able to get spans
                 println!("Successfully extracted {} spans", spans.len());
-
-                // Spans should be valid (at minimum non-null)
-                assert!(spans.len() >= 0, "Spans vector should be valid");
             },
             Err(e) => {
                 eprintln!("extract_spans failed: {}", e);

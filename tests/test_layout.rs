@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-#![allow(dead_code)]
 //! Integration tests for layout analysis algorithms.
 //!
 //! These tests verify the complete layout analysis pipeline with mock data
