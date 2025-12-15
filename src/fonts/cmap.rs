@@ -407,11 +407,11 @@ fn decode_utf16_surrogate_pair(value: u32) -> Option<String> {
 /// # Examples
 ///
 /// ```
-/// use pdf_oxide::fonts::parse_tounicode_cmap;
+/// use pdf_oxide::fonts::cmap::parse_tounicode_cmap;
 ///
 /// let cmap_data = b"beginbfchar\n<0041> <0041>\nendbfchar";
 /// let cmap = parse_tounicode_cmap(cmap_data).unwrap();
-/// assert_eq!(cmap.get(&0x41), Some("A".to_string()));
+/// assert_eq!(cmap.get(&0x41), Some(&"A".to_string()));
 /// ```
 pub fn parse_tounicode_cmap(data: &[u8]) -> Result<CMap> {
     let mut cmap = CMap::new();

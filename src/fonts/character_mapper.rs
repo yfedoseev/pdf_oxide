@@ -22,21 +22,19 @@ use std::collections::HashMap;
 ///
 /// # Example
 ///
-/// ```no_run
+/// ```
 /// use pdf_oxide::fonts::character_mapper::CharacterMapper;
 ///
-/// let mut mapper = CharacterMapper::new();
+/// let mapper = CharacterMapper::new();
 ///
-/// // Set ToUnicode CMap (priority 1)
-/// let mut tounicode = std::collections::HashMap::new();
-/// tounicode.insert(0x41, "A".to_string());
-/// mapper.set_tounicode_cmap(Some(tounicode));
-///
-/// // Character 0x41 maps to "A" from ToUnicode
+/// // Character 0x41 (ASCII 'A') maps via Adobe Glyph List to "A"
 /// assert_eq!(mapper.map_character(0x41), Some("A".to_string()));
 ///
-/// // Character 0x42 not in ToUnicode, falls back to Adobe Glyph List -> "B"
+/// // Character 0x42 (ASCII 'B') maps via Adobe Glyph List to "B"
 /// assert_eq!(mapper.map_character(0x42), Some("B".to_string()));
+///
+/// // Character 0x20 (space) maps via Adobe Glyph List to " "
+/// assert_eq!(mapper.map_character(0x20), Some(" ".to_string()));
 /// ```
 #[derive(Clone)]
 pub struct CharacterMapper {
