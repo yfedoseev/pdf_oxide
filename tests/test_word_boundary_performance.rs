@@ -367,6 +367,7 @@ fn test_baseline_boundary_detection_with_cjk() {
 }
 
 #[test]
+#[ignore] // Performance test with strict timing - run manually, not in CI
 fn test_baseline_boundary_detection_edge_cases() {
     println!("\n=== Baseline: Boundary Detection Edge Cases ===");
 
