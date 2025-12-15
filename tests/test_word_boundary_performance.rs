@@ -34,7 +34,6 @@
 //! Phase 9 Week 1 Day 5
 
 use pdf_oxide::document::PdfDocument;
-use pdf_oxide::extractors::TextExtractionConfig;
 use pdf_oxide::pipeline::config::WordBoundaryMode;
 use pdf_oxide::text::word_boundary::{BoundaryContext, CharacterInfo, WordBoundaryDetector};
 use std::time::{Duration, Instant};
@@ -500,9 +499,8 @@ fn try_measure_extraction_mode(
         // Open PDF fresh each iteration to avoid caching effects
         let mut doc = PdfDocument::open(pdf_path)?;
 
-        // Configure extractor with the specified mode
-        let mut config = TextExtractionConfig::default();
-        config.word_boundary_mode = mode;
+        // Note: mode parameter is for future use when API supports configuration
+        let _ = mode;
 
         let start = Instant::now();
 
