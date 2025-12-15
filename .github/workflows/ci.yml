@@ -101,7 +101,7 @@ jobs:
         run: cargo build --verbose
 
       - name: Run tests
-        run: cargo test --lib --verbose
+        run: cargo test --verbose
 
       - name: Build documentation
         run: cargo doc --no-deps
@@ -179,7 +179,7 @@ jobs:
         run: cargo install cargo-tarpaulin
 
       - name: Generate coverage
-        run: cargo tarpaulin --lib --out xml
+        run: cargo tarpaulin --out xml
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
