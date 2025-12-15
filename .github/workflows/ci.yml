@@ -190,10 +190,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
       - name: Run security audit
-        uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo audit
 
   # Check dependencies are up to date
   deny:
@@ -204,3 +211,5 @@ jobs:
 
       - name: Check dependencies
         uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          arguments: ""

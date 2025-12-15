@@ -165,6 +165,7 @@ fn create_test_character_array(word_count: usize, chars_per_word: usize) -> Vec<
 }
 
 #[test]
+#[ignore] // Performance test with strict timing - run manually, not in CI
 fn test_baseline_boundary_detection_small() {
     println!("\n=== Baseline: Boundary Detection (Small) ===");
 
@@ -199,6 +200,7 @@ fn test_baseline_boundary_detection_small() {
 }
 
 #[test]
+#[ignore] // Performance test with strict timing - run manually, not in CI
 fn test_baseline_boundary_detection_medium() {
     println!("\n=== Baseline: Boundary Detection (Medium) ===");
 
@@ -233,6 +235,7 @@ fn test_baseline_boundary_detection_medium() {
 }
 
 #[test]
+#[ignore] // Performance test with strict timing - run manually, not in CI
 fn test_baseline_boundary_detection_large() {
     println!("\n=== Baseline: Boundary Detection (Large) ===");
 
@@ -315,6 +318,7 @@ fn test_baseline_boundary_detection_scaling() {
 }
 
 #[test]
+#[ignore] // Performance test with strict timing - run manually, not in CI
 fn test_baseline_boundary_detection_with_cjk() {
     println!("\n=== Baseline: Boundary Detection (CJK Text) ===");
 
@@ -516,6 +520,7 @@ fn try_measure_extraction_mode(
 }
 
 #[test]
+#[ignore] // Performance test with strict timing - run manually, not in CI
 fn test_baseline_character_collection_simulation() {
     println!("\n=== Baseline: Character Collection Simulation ===");
 
