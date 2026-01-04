@@ -4002,11 +4002,22 @@ impl TextExtractor {
     ///
     /// For TJ arrays without offset adjustments (Tj=0 for strings):
     /// tx = (w0 × Tfs / 1000 + Tc + Tw) × Th
+    ///
+    /// Note: Tfs (text font size) must account for the text matrix scaling.
+    /// Per Section 9.4.4, the text matrix (Tm) can include scaling factors
+    /// that affect the effective font size. The formula uses the effective
+    /// font size: font_size × |text_matrix.d|
     fn calculate_tj_buffer_width(&self, buffer: &TjBuffer) -> Result<f32> {
         let font = buffer
             .font_name
             .as_ref()
             .and_then(|name| self.fonts.get(name));
+
+        // Calculate effective font size accounting for text matrix scaling.
+        // Per PDF Spec Section 9.4.4, the text matrix can scale the font.
+        // A common pattern is: `/Font 1 Tf` followed by `scale 0 0 scale x y Tm`
+        // where the actual font size is 1 × scale.
+        let effective_font_size = buffer.font_size * buffer.start_matrix.d.abs();
 
         let mut total_width = 0.0;
 
@@ -4019,7 +4030,7 @@ impl TextExtractor {
             };
 
             // 1. Convert glyph width to user space: w0 * Tfs / 1000
-            let mut char_width = glyph_width * buffer.font_size / 1000.0;
+            let mut char_width = glyph_width * effective_font_size / 1000.0;
 
             // 2. Add character spacing (Tc) - applies to ALL characters
             char_width += buffer.char_space;
