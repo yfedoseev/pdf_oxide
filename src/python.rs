@@ -254,7 +254,7 @@ impl PyPdfDocument {
     ///     >>> markdown = doc.to_markdown(0, detect_headings=True)
     ///     >>> with open("output.md", "w") as f:
     ///     ...     f.write(markdown)
-    #[pyo3(signature = (page, preserve_layout=false, detect_headings=true, include_images=true, image_output_dir=None))]
+    #[pyo3(signature = (page, preserve_layout=false, detect_headings=true, include_images=true, image_output_dir=None, embed_images=true))]
     fn to_markdown(
         &mut self,
         page: usize,
@@ -262,6 +262,7 @@ impl PyPdfDocument {
         detect_headings: bool,
         include_images: bool,
         image_output_dir: Option<String>,
+        embed_images: bool,
     ) -> PyResult<String> {
         let options = RustConversionOptions {
             preserve_layout,
@@ -269,6 +270,7 @@ impl PyPdfDocument {
             extract_tables: false,
             include_images,
             image_output_dir,
+            embed_images,
             ..Default::default()
         };
 
@@ -297,7 +299,7 @@ impl PyPdfDocument {
     ///     >>> html = doc.to_html(0, preserve_layout=False)
     ///     >>> with open("output.html", "w") as f:
     ///     ...     f.write(html)
-    #[pyo3(signature = (page, preserve_layout=false, detect_headings=true, include_images=true, image_output_dir=None))]
+    #[pyo3(signature = (page, preserve_layout=false, detect_headings=true, include_images=true, image_output_dir=None, embed_images=true))]
     fn to_html(
         &mut self,
         page: usize,
@@ -305,6 +307,7 @@ impl PyPdfDocument {
         detect_headings: bool,
         include_images: bool,
         image_output_dir: Option<String>,
+        embed_images: bool,
     ) -> PyResult<String> {
         let options = RustConversionOptions {
             preserve_layout,
@@ -312,6 +315,7 @@ impl PyPdfDocument {
             extract_tables: false,
             include_images,
             image_output_dir,
+            embed_images,
             ..Default::default()
         };
 
@@ -339,13 +343,14 @@ impl PyPdfDocument {
     ///     >>> markdown = doc.to_markdown_all(detect_headings=True)
     ///     >>> with open("book.md", "w") as f:
     ///     ...     f.write(markdown)
-    #[pyo3(signature = (preserve_layout=false, detect_headings=true, include_images=true, image_output_dir=None))]
+    #[pyo3(signature = (preserve_layout=false, detect_headings=true, include_images=true, image_output_dir=None, embed_images=true))]
     fn to_markdown_all(
         &mut self,
         preserve_layout: bool,
         detect_headings: bool,
         include_images: bool,
         image_output_dir: Option<String>,
+        embed_images: bool,
     ) -> PyResult<String> {
         let options = RustConversionOptions {
             preserve_layout,
@@ -353,6 +358,7 @@ impl PyPdfDocument {
             extract_tables: false,
             include_images,
             image_output_dir,
+            embed_images,
             ..Default::default()
         };
 
@@ -380,13 +386,14 @@ impl PyPdfDocument {
     ///     >>> html = doc.to_html_all(preserve_layout=True)
     ///     >>> with open("book.html", "w") as f:
     ///     ...     f.write(html)
-    #[pyo3(signature = (preserve_layout=false, detect_headings=true, include_images=true, image_output_dir=None))]
+    #[pyo3(signature = (preserve_layout=false, detect_headings=true, include_images=true, image_output_dir=None, embed_images=true))]
     fn to_html_all(
         &mut self,
         preserve_layout: bool,
         detect_headings: bool,
         include_images: bool,
         image_output_dir: Option<String>,
+        embed_images: bool,
     ) -> PyResult<String> {
         let options = RustConversionOptions {
             preserve_layout,
@@ -394,6 +401,7 @@ impl PyPdfDocument {
             extract_tables: false,
             include_images,
             image_output_dir,
+            embed_images,
             ..Default::default()
         };
 

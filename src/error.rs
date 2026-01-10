@@ -77,6 +77,10 @@ pub enum Error {
     #[error("Stream decoding error: {0}")]
     Decode(String),
 
+    /// Encoding error (e.g., image encoding)
+    #[error("Encoding error: {0}")]
+    Encode(String),
+
     /// Unsupported stream filter
     #[error("Unsupported filter: {0}")]
     UnsupportedFilter(String),

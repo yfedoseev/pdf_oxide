@@ -232,6 +232,64 @@ impl PdfImage {
         }
     }
 
+    /// Convert image to PNG bytes in memory.
+    ///
+    /// Returns the PNG-encoded bytes without writing to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the image cannot be encoded.
+    pub fn to_png_bytes(&self) -> Result<Vec<u8>> {
+        use image::ImageEncoder;
+        use std::io::Cursor;
+
+        let dynamic_image = self.to_dynamic_image()?;
+        let rgba = dynamic_image.to_rgba8();
+
+        let mut buffer = Cursor::new(Vec::new());
+        image::codecs::png::PngEncoder::new(&mut buffer)
+            .write_image(rgba.as_raw(), self.width, self.height, image::ColorType::Rgba8)
+            .map_err(|e| Error::Encode(format!("Failed to encode PNG: {}", e)))?;
+
+        Ok(buffer.into_inner())
+    }
+
+    /// Convert image to a base64 data URI for embedding in HTML.
+    ///
+    /// Returns a string like `data:image/png;base64,iVBORw0KGgo...`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the image cannot be encoded.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use pdf_oxide::extractors::images::PdfImage;
+    /// # fn example(image: PdfImage) -> Result<(), Box<dyn std::error::Error>> {
+    /// let data_uri = image.to_base64_data_uri()?;
+    /// println!("<img src=\"{}\">", data_uri);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn to_base64_data_uri(&self) -> Result<String> {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+
+        // For JPEG images, use JPEG directly (smaller file size)
+        match &self.data {
+            ImageData::Jpeg(jpeg_data) => {
+                let base64_str = STANDARD.encode(jpeg_data);
+                Ok(format!("data:image/jpeg;base64,{}", base64_str))
+            },
+            ImageData::Raw { .. } => {
+                // Convert to PNG for raw images
+                let png_bytes = self.to_png_bytes()?;
+                let base64_str = STANDARD.encode(&png_bytes);
+                Ok(format!("data:image/png;base64,{}", base64_str))
+            },
+        }
+    }
+
     /// Convert this PDF image to a `DynamicImage` for processing by image crate.
     ///
     /// This enables integration with image processing libraries like OCR engines.
@@ -1365,5 +1423,77 @@ mod tests {
             ImageData::Jpeg(data) => assert_eq!(data, &jpeg_data),
             _ => panic!("Expected JPEG data"),
         }
+    }
+
+    #[test]
+    fn test_to_png_bytes_raw_rgb() {
+        // Create a 2x2 RGB image
+        let raw_data = vec![
+            255, 0, 0, // Red
+            0, 255, 0, // Green
+            0, 0, 255, // Blue
+            255, 255, 255, // White
+        ];
+
+        let image = PdfImage::new(
+            2,
+            2,
+            ColorSpace::DeviceRGB,
+            8,
+            ImageData::Raw {
+                pixels: raw_data,
+                format: PixelFormat::RGB,
+            },
+        );
+
+        let png_bytes = image.to_png_bytes().unwrap();
+
+        // PNG files start with specific magic bytes
+        assert!(png_bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]));
+        assert!(!png_bytes.is_empty());
+    }
+
+    #[test]
+    fn test_to_base64_data_uri_raw() {
+        // Create a small 1x1 grayscale image
+        let raw_data = vec![128];
+
+        let image = PdfImage::new(
+            1,
+            1,
+            ColorSpace::DeviceGray,
+            8,
+            ImageData::Raw {
+                pixels: raw_data,
+                format: PixelFormat::Grayscale,
+            },
+        );
+
+        let data_uri = image.to_base64_data_uri().unwrap();
+
+        // Should start with PNG data URI prefix
+        assert!(data_uri.starts_with("data:image/png;base64,"));
+        // Should have base64 content after the prefix
+        assert!(data_uri.len() > "data:image/png;base64,".len());
+    }
+
+    #[test]
+    fn test_to_base64_data_uri_jpeg() {
+        // Minimal JPEG header (not a valid image but sufficient for data URI test)
+        let jpeg_data = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46];
+
+        let image =
+            PdfImage::new(1, 1, ColorSpace::DeviceRGB, 8, ImageData::Jpeg(jpeg_data.clone()));
+
+        let data_uri = image.to_base64_data_uri().unwrap();
+
+        // Should start with JPEG data URI prefix
+        assert!(data_uri.starts_with("data:image/jpeg;base64,"));
+
+        // Verify the base64 decodes back to original data
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let base64_part = data_uri.strip_prefix("data:image/jpeg;base64,").unwrap();
+        let decoded = STANDARD.decode(base64_part).unwrap();
+        assert_eq!(decoded, jpeg_data);
     }
 }

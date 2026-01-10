@@ -2466,7 +2466,69 @@ impl PdfDocument {
 
         // Step 7: Use pipeline converter
         let converter = MarkdownOutputConverter::new();
-        converter.convert(&ordered_spans, &pipeline_config)
+        let mut markdown = converter.convert(&ordered_spans, &pipeline_config)?;
+
+        // Step 8: Extract and include images if enabled
+        if options.include_images {
+            let images = self.extract_images(page_index).unwrap_or_default();
+            if !images.is_empty() {
+                let image_markdown = self.generate_image_markdown(&images, options, page_index)?;
+                markdown.push_str(&image_markdown);
+            }
+        }
+
+        Ok(markdown)
+    }
+
+    /// Generate Markdown for extracted images.
+    fn generate_image_markdown(
+        &self,
+        images: &[crate::extractors::PdfImage],
+        options: &crate::converters::ConversionOptions,
+        page_index: usize,
+    ) -> Result<String> {
+        use std::path::Path;
+
+        let mut markdown = String::new();
+        markdown.push_str("\n\n---\n\n");
+
+        for (i, image) in images.iter().enumerate() {
+            let alt = format!("Image {} from page {}", i + 1, page_index + 1);
+
+            if options.embed_images {
+                // Embed as base64 data URI (works in Obsidian, Typora, VS Code, Jupyter, etc.)
+                match image.to_base64_data_uri() {
+                    Ok(data_uri) => {
+                        markdown.push_str(&format!("![{}]({})\n\n", alt, data_uri));
+                    },
+                    Err(e) => {
+                        log::warn!("Failed to encode image {}: {}", i, e);
+                    },
+                }
+            } else if let Some(ref output_dir) = options.image_output_dir {
+                // Save to file and reference by path
+                let filename = format!("page{}_{}.png", page_index + 1, i + 1);
+                let filepath = Path::new(output_dir).join(&filename);
+
+                // Create directory if needed
+                if let Some(parent) = filepath.parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+
+                match image.save_as_png(&filepath) {
+                    Ok(()) => {
+                        let relative_path = format!("{}/{}", output_dir, filename);
+                        markdown.push_str(&format!("![{}]({})\n\n", alt, relative_path));
+                    },
+                    Err(e) => {
+                        log::warn!("Failed to save image {}: {}", i, e);
+                    },
+                }
+            }
+            // If embed_images=false and no output_dir, skip image
+        }
+
+        Ok(markdown)
     }
 
     /// Convert a page to Markdown with automatic OCR fallback for scanned pages.
@@ -2625,7 +2687,83 @@ impl PdfDocument {
 
         // Step 6: Use pipeline converter
         let converter = HtmlOutputConverter::new();
-        converter.convert(&ordered_spans, &pipeline_config)
+        let mut html = converter.convert(&ordered_spans, &pipeline_config)?;
+
+        // Step 7: Extract and embed images if enabled
+        if options.include_images {
+            let images = self.extract_images(page_index).unwrap_or_default();
+            if !images.is_empty() {
+                let image_html = self.generate_image_html(&images, options, page_index)?;
+                // Insert images before closing </body> or at end
+                if let Some(pos) = html.rfind("</body>") {
+                    html.insert_str(pos, &image_html);
+                } else {
+                    html.push_str(&image_html);
+                }
+            }
+        }
+
+        Ok(html)
+    }
+
+    /// Generate HTML for extracted images.
+    fn generate_image_html(
+        &self,
+        images: &[crate::extractors::PdfImage],
+        options: &crate::converters::ConversionOptions,
+        page_index: usize,
+    ) -> Result<String> {
+        use std::path::Path;
+
+        let mut html = String::new();
+        html.push_str("\n<div class=\"page-images\">\n");
+
+        for (i, image) in images.iter().enumerate() {
+            let alt = format!("Image {} from page {}", i + 1, page_index + 1);
+
+            if options.embed_images {
+                // Embed as base64 data URI
+                match image.to_base64_data_uri() {
+                    Ok(data_uri) => {
+                        html.push_str(&format!(
+                            "  <img src=\"{}\" alt=\"{}\" style=\"max-width: 100%;\">\n",
+                            data_uri, alt
+                        ));
+                    },
+                    Err(e) => {
+                        // Log error but continue with other images
+                        log::warn!("Failed to encode image {}: {}", i, e);
+                    },
+                }
+            } else if let Some(ref output_dir) = options.image_output_dir {
+                // Save to file and reference by path
+                let filename = format!("page{}_{}.png", page_index + 1, i + 1);
+                let filepath = Path::new(output_dir).join(&filename);
+
+                // Create directory if needed
+                if let Some(parent) = filepath.parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+
+                match image.save_as_png(&filepath) {
+                    Ok(()) => {
+                        // Use relative path in HTML
+                        let relative_path = format!("{}/{}", output_dir, filename);
+                        html.push_str(&format!(
+                            "  <img src=\"{}\" alt=\"{}\" style=\"max-width: 100%;\">\n",
+                            relative_path, alt
+                        ));
+                    },
+                    Err(e) => {
+                        log::warn!("Failed to save image {}: {}", i, e);
+                    },
+                }
+            }
+            // If embed_images=false and no output_dir, skip image
+        }
+
+        html.push_str("</div>\n");
+        Ok(html)
     }
 
     /// Convert a page to plain text.

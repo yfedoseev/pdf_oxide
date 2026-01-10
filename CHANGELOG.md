@@ -2,6 +2,18 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.2.5] - 2026-01-09
+
+### Added
+- **Image embedding**: Both HTML and Markdown now support embedded base64 images when `embed_images=true` (default)
+  - HTML: `<img src="data:image/png;base64,...">`
+  - Markdown: `![alt](data:image/png;base64,...)` (works in Obsidian, Typora, VS Code, Jupyter)
+- **Image file export**: Set `embed_images=false` + `image_output_dir` to save images as files with relative path references
+- New `embed_images` option in `ConversionOptions` to control embedding behavior
+- `PdfImage::to_base64_data_uri()` method for converting images to data URIs
+- `PdfImage::to_png_bytes()` method for in-memory PNG encoding
+- Python bindings: new `embed_images` parameter for `to_html`, `to_markdown`, and `*_all` methods
+
 ## [0.2.4] - 2026-01-09
 
 ### Fixed

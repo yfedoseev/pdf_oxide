@@ -1,6 +1,6 @@
 [package]
 name = "pdf_oxide"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 authors = ["Yury Fedoseev <yfedoseev@gmail.com>"]
 license = "MIT OR Apache-2.0"

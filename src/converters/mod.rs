@@ -197,6 +197,16 @@ pub struct ConversionOptions {
     /// If Some(path), images are saved to the specified directory.
     pub image_output_dir: Option<String>,
 
+    /// Embed images as base64 data URIs in output.
+    ///
+    /// When true (default), images are embedded directly as base64 data URIs.
+    /// This creates self-contained files that don't require external image files.
+    /// Works in HTML and Markdown (Obsidian, Typora, VS Code, Jupyter support base64).
+    ///
+    /// When false, images are saved to `image_output_dir` and referenced by path.
+    /// Note: GitHub/GitLab Markdown renderers block base64 images for security.
+    pub embed_images: bool,
+
     /// Reading order determination mode.
     ///
     /// Controls how text blocks are ordered in the output.
@@ -245,6 +255,7 @@ impl Default for ConversionOptions {
     /// - extract_tables: false
     /// - include_images: true
     /// - image_output_dir: None
+    /// - embed_images: true (base64 for HTML)
     /// - reading_order_mode: StructureTreeFirst (PDF-spec-compliant for Tagged PDFs, falls back to XY-Cut for untagged)
     /// - bold_marker_behavior: Conservative (no bold markers for whitespace-only content)
     /// - table_detection_config: None (uses defaults when table detection is enabled)
@@ -258,6 +269,7 @@ impl Default for ConversionOptions {
             extract_tables: false,
             include_images: true,
             image_output_dir: None,
+            embed_images: true,
             reading_order_mode: ReadingOrderMode::StructureTreeFirst { mcid_order: vec![] },
             bold_marker_behavior: BoldMarkerBehavior::Conservative,
             table_detection_config: None,
@@ -358,10 +370,27 @@ mod tests {
         assert!(!opts.extract_tables);
         assert!(opts.include_images);
         assert_eq!(opts.image_output_dir, None);
+        assert!(opts.embed_images);
         assert_eq!(
             opts.reading_order_mode,
             ReadingOrderMode::StructureTreeFirst { mcid_order: vec![] }
         );
+    }
+
+    #[test]
+    fn test_conversion_options_embed_images() {
+        // Default: embed_images = true
+        let opts = ConversionOptions::default();
+        assert!(opts.embed_images);
+
+        // Custom: embed_images = false
+        let opts = ConversionOptions {
+            embed_images: false,
+            image_output_dir: Some("images/".to_string()),
+            ..Default::default()
+        };
+        assert!(!opts.embed_images);
+        assert_eq!(opts.image_output_dir, Some("images/".to_string()));
     }
 
     #[test]

@@ -95,6 +95,7 @@ impl DocumentType {
                 preserve_layout: true, // Preserve formatting
                 extract_tables: true,  // Detect tables
                 image_output_dir: None,
+                embed_images: true,
             },
             word_boundary_mode: WordBoundaryMode::Primary,
             enable_hyphenation_reconstruction: true, // Aggressive hyphenation
@@ -120,6 +121,7 @@ impl DocumentType {
                 preserve_layout: true, // Headers/footers matter
                 extract_tables: true,  // Essential for reports
                 image_output_dir: None,
+                embed_images: true,
             },
             word_boundary_mode: WordBoundaryMode::Primary,
             enable_hyphenation_reconstruction: true,
@@ -145,6 +147,7 @@ impl DocumentType {
                 preserve_layout: false, // Minimal formatting
                 extract_tables: false,
                 image_output_dir: None,
+                embed_images: true,
             },
             word_boundary_mode: WordBoundaryMode::Tiebreaker,
             enable_hyphenation_reconstruction: true, // Essential for novels
@@ -170,6 +173,7 @@ impl DocumentType {
                 preserve_layout: true,
                 extract_tables: true,
                 image_output_dir: None,
+                embed_images: true,
             },
             word_boundary_mode: WordBoundaryMode::Primary,
             enable_hyphenation_reconstruction: false, // Not applicable to CJK
@@ -195,6 +199,7 @@ impl DocumentType {
                 preserve_layout: true,
                 extract_tables: true,
                 image_output_dir: None,
+                embed_images: true,
             },
             word_boundary_mode: WordBoundaryMode::Tiebreaker,
             enable_hyphenation_reconstruction: false, // Different rules
@@ -516,6 +521,7 @@ impl TextPipelineConfig {
                 preserve_layout: opts.preserve_layout,
                 extract_tables: opts.extract_tables,
                 image_output_dir: opts.image_output_dir.clone(),
+                embed_images: opts.embed_images,
             },
             word_boundary_mode: WordBoundaryMode::Tiebreaker, // Keep old behavior compatible
             enable_hyphenation_reconstruction: true,
@@ -1060,6 +1066,19 @@ pub struct OutputConfig {
     ///
     /// Default: None
     pub image_output_dir: Option<String>,
+
+    /// Embed images as base64 data URIs.
+    ///
+    /// When true (default):
+    /// - HTML output embeds images as base64 data URIs
+    /// - Creates self-contained HTML files
+    ///
+    /// When false:
+    /// - Images are saved to `image_output_dir` and referenced by path
+    /// - Markdown always uses file references (base64 not well supported)
+    ///
+    /// Default: true
+    pub embed_images: bool,
 }
 
 impl Default for OutputConfig {
@@ -1071,6 +1090,7 @@ impl Default for OutputConfig {
             preserve_layout: false,
             extract_tables: false,
             image_output_dir: None,
+            embed_images: true,
         }
     }
 }
