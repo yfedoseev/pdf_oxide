@@ -1238,6 +1238,10 @@ struct TjBuffer {
     unicode: String,
     /// Text matrix at the start of this buffer
     start_matrix: Matrix,
+    /// Current transformation matrix at the start of this buffer
+    /// Per PDF Spec ISO 32000-1:2008 Section 9.4.4, CTM must be applied
+    /// to convert text space coordinates to user space
+    start_ctm: Matrix,
     /// Font name when buffer started
     font_name: Option<String>,
     /// Font size when buffer started
@@ -1261,6 +1265,7 @@ impl TjBuffer {
             text: Vec::new(),
             unicode: String::new(),
             start_matrix: state.text_matrix,
+            start_ctm: state.ctm,
             font_name: state.font_name.clone(),
             font_size: state.font_size,
             fill_color_rgb: state.fill_color_rgb,
@@ -3076,6 +3081,7 @@ impl TextExtractor {
                                     let threshold = self.calculate_adaptive_tj_threshold();
                                     if offset < threshold {
                                         let text_matrix = state.text_matrix;
+                                        let ctm = state.ctm;
                                         let font_name = state.font_name.clone();
                                         let font_size = state.font_size;
                                         let fill_color_rgb = state.fill_color_rgb;
@@ -3098,6 +3104,9 @@ impl TextExtractor {
                                         };
 
                                         // Create space character at current position
+                                        // Apply CTM to get position in user space
+                                        let text_pos = text_matrix.transform_point(0.0, 0.0);
+                                        let pos = ctm.transform_point(text_pos.x, text_pos.y);
                                         let (r, g, b) = fill_color_rgb;
                                         let is_italic_space = font_name
                                             .as_ref()
@@ -3108,8 +3117,8 @@ impl TextExtractor {
                                         let space_char = TextChar {
                                             char: ' ',
                                             bbox: Rect::new(
-                                                text_matrix.e,       // Current X position
-                                                text_matrix.f,       // Current Y position
+                                                pos.x,               // X position in user space
+                                                pos.y,               // Y position in user space
                                                 tx.abs(), // Width = the gap being created
                                                 effective_font_size, // Height = effective font size
                                             ),
@@ -3961,6 +3970,11 @@ impl TextExtractor {
             FontWeight::Normal
         };
 
+        // Apply CTM to convert from text space to user space
+        // Per PDF Spec ISO 32000-1:2008 Section 9.4.4
+        let text_pos = buffer.start_matrix.transform_point(0.0, 0.0);
+        let user_pos = buffer.start_ctm.transform_point(text_pos.x, text_pos.y);
+
         // Create single span for entire buffer
         let font_name_span = buffer
             .font_name
@@ -3975,8 +3989,8 @@ impl TextExtractor {
         let span = TextSpan {
             text: buffer.unicode.clone(),
             bbox: Rect {
-                x: buffer.start_matrix.e,
-                y: buffer.start_matrix.f,
+                x: user_pos.x,
+                y: user_pos.y,
                 width: total_width,
                 height: effective_font_size,
             },
@@ -4390,21 +4404,30 @@ impl TextExtractor {
 
         let state = self.state_stack.current();
 
-        // Step 1: Calculate bounding box from character positions
+        // Step 1: Calculate bounding box from character positions in text space
         // X position: from first character to end of last character
-        let min_x = cluster[0].x_position;
-        let max_x = cluster.last().unwrap().x_position + cluster.last().unwrap().width;
-        let width = (max_x - min_x).max(0.0);
+        let text_min_x = cluster[0].x_position;
+        let text_max_x = cluster.last().unwrap().x_position + cluster.last().unwrap().width;
+        let text_width = (text_max_x - text_min_x).max(0.0);
 
-        // Y position: from text matrix, height from font size
-        let y = state.text_matrix.f;
+        // Height from font size
         let height = cluster[0].font_size.abs() * state.text_matrix.d.abs().max(1.0);
 
-        // Step 2: Create bounding box rectangle
+        // Step 2: Apply CTM to convert from text space to user space
+        // Per PDF Spec ISO 32000-1:2008 Section 9.4.4
+        let text_matrix = state.text_matrix;
+        let ctm = state.ctm;
+        let text_pos = text_matrix.transform_point(text_min_x, 0.0);
+        let user_pos = ctm.transform_point(text_pos.x, text_pos.y);
+
+        // Transform the width as well (accounting for matrix scaling)
+        let user_width = text_width * text_matrix.a.abs() * ctm.a.abs();
+
+        // Step 3: Create bounding box rectangle in user space
         let bbox = Rect {
-            x: min_x,
-            y,
-            width,
+            x: user_pos.x,
+            y: user_pos.y,
+            width: user_width.max(text_width), // Use larger of the two for safety
             height,
         };
 
@@ -4641,6 +4664,7 @@ impl TextExtractor {
         let state = self.state_stack.current();
         let font_size = state.font_size;
         let text_matrix = state.text_matrix;
+        let ctm = state.ctm;
         let effective_font_size = font_size * text_matrix.d.abs();
         let word_space = state.word_space;
         let horizontal_scaling = state.horizontal_scaling;
@@ -4648,10 +4672,15 @@ impl TextExtractor {
         // Calculate space width
         let space_width = (250.0 * font_size / 1000.0 + word_space) * horizontal_scaling / 100.0;
 
+        // Apply CTM to get position in user space
+        // Per PDF Spec ISO 32000-1:2008 Section 9.4.4
+        let text_pos = text_matrix.transform_point(0.0, 0.0);
+        let user_pos = ctm.transform_point(text_pos.x, text_pos.y);
+
         log::trace!(
             "Inserting space span from TJ offset (offset_semantic=true) at position ({:.2}, {:.2})",
-            text_matrix.e,
-            text_matrix.f
+            user_pos.x,
+            user_pos.y
         );
 
         let font_name_space = state
@@ -4667,8 +4696,8 @@ impl TextExtractor {
         let span = TextSpan {
             text: " ".to_string(),
             bbox: Rect {
-                x: text_matrix.e,
-                y: text_matrix.f,
+                x: user_pos.x,
+                y: user_pos.y,
                 width: space_width,
                 height: effective_font_size,
             },
@@ -4815,6 +4844,7 @@ impl TextExtractor {
             let state = self.state_stack.current();
             let font_name = state.font_name.clone();
             let text_matrix = state.text_matrix;
+            let ctm = state.ctm;
             let font_size = state.font_size;
             let horizontal_scaling = state.horizontal_scaling;
             let char_space = state.char_space;
@@ -4858,7 +4888,11 @@ impl TextExtractor {
             };
 
             // Calculate character position in user space
-            let pos = text_matrix.transform_point(0.0, 0.0);
+            // Per PDF Spec ISO 32000-1:2008 Section 9.4.4, the rendering matrix is:
+            // Trm = [fontSize 0 0 fontSize 0 rise] × Th × Tm × CTM
+            // To get position in user space, we apply: text_matrix × CTM
+            let text_pos = text_matrix.transform_point(0.0, 0.0);
+            let pos = ctm.transform_point(text_pos.x, text_pos.y);
 
             // BUG FIX #1: Calculate effective font size from text matrix
             // The text matrix scales the font size - the vertical scaling component (d)
@@ -5088,6 +5122,97 @@ mod tests {
         assert_eq!(chars[1].char, 'i');
         // Position should be around (100, 700)
         assert!(chars[0].bbox.x >= 99.0 && chars[0].bbox.x <= 101.0);
+    }
+
+    /// Regression test for Issue #11: CTM must be applied to text positions
+    ///
+    /// Per PDF Spec ISO 32000-1:2008 Section 9.4.4, the text rendering matrix is:
+    /// T_rm = [font_matrix] × T_m × CTM
+    ///
+    /// This test verifies that when CTM contains a translation, text positions
+    /// are correctly transformed from text space to user space.
+    #[test]
+    fn test_ctm_applied_to_text_position() {
+        let mut extractor = TextExtractor::new();
+        let font = create_test_font();
+        extractor.add_font("F1".to_string(), font);
+
+        // CTM translates by (100, 200), text matrix at origin
+        // Final position should be (100, 200), not (0, 0)
+        let stream = b"q 1 0 0 1 100 200 cm BT /F1 12 Tf (A) Tj ET Q";
+        let chars = extractor.extract(stream).unwrap();
+
+        assert_eq!(chars.len(), 1);
+        assert_eq!(chars[0].char, 'A');
+        // Position should be translated by CTM: (100, 200)
+        assert!(
+            chars[0].bbox.x >= 99.0 && chars[0].bbox.x <= 101.0,
+            "X position should be ~100 (got {})",
+            chars[0].bbox.x
+        );
+        assert!(
+            chars[0].bbox.y >= 199.0 && chars[0].bbox.y <= 201.0,
+            "Y position should be ~200 (got {})",
+            chars[0].bbox.y
+        );
+    }
+
+    /// Regression test for Issue #11: CTM scaling must affect text positions
+    ///
+    /// This test verifies that CTM scaling is correctly applied to text positions.
+    #[test]
+    fn test_ctm_scaling_applied_to_text_position() {
+        let mut extractor = TextExtractor::new();
+        let font = create_test_font();
+        extractor.add_font("F1".to_string(), font);
+
+        // CTM scales by 2x, text at position (50, 100) in text space
+        // Final position should be (100, 200) in user space
+        let stream = b"q 2 0 0 2 0 0 cm BT /F1 12 Tf 1 0 0 1 50 100 Tm (B) Tj ET Q";
+        let chars = extractor.extract(stream).unwrap();
+
+        assert_eq!(chars.len(), 1);
+        assert_eq!(chars[0].char, 'B');
+        // Position should be scaled: (50*2, 100*2) = (100, 200)
+        assert!(
+            chars[0].bbox.x >= 99.0 && chars[0].bbox.x <= 101.0,
+            "X position should be ~100 (got {})",
+            chars[0].bbox.x
+        );
+        assert!(
+            chars[0].bbox.y >= 199.0 && chars[0].bbox.y <= 201.0,
+            "Y position should be ~200 (got {})",
+            chars[0].bbox.y
+        );
+    }
+
+    /// Regression test for Issue #11: Combined CTM translation and text matrix
+    ///
+    /// This test verifies the complete transformation chain works correctly.
+    #[test]
+    fn test_ctm_combined_with_text_matrix() {
+        let mut extractor = TextExtractor::new();
+        let font = create_test_font();
+        extractor.add_font("F1".to_string(), font);
+
+        // CTM translates by (50, 50), text matrix positions at (25, 25)
+        // Final position should be (75, 75)
+        let stream = b"q 1 0 0 1 50 50 cm BT /F1 12 Tf 1 0 0 1 25 25 Tm (C) Tj ET Q";
+        let chars = extractor.extract(stream).unwrap();
+
+        assert_eq!(chars.len(), 1);
+        assert_eq!(chars[0].char, 'C');
+        // Position: text_matrix(25,25) + CTM_translation(50,50) = (75, 75)
+        assert!(
+            chars[0].bbox.x >= 74.0 && chars[0].bbox.x <= 76.0,
+            "X position should be ~75 (got {})",
+            chars[0].bbox.x
+        );
+        assert!(
+            chars[0].bbox.y >= 74.0 && chars[0].bbox.y <= 76.0,
+            "Y position should be ~75 (got {})",
+            chars[0].bbox.y
+        );
     }
 
     #[test]

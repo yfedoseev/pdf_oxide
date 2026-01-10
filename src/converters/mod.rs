@@ -34,6 +34,7 @@
 //! # }
 //! ```
 
+pub mod formula_renderer;
 pub mod html;
 pub mod markdown;
 pub mod table_formatter;
@@ -41,6 +42,7 @@ pub mod text_post_processor;
 pub mod whitespace;
 
 // Re-export main types
+pub use formula_renderer::{FormulaRenderer, RenderedFormula};
 #[allow(deprecated)]
 pub use html::HtmlConverter;
 #[allow(deprecated)]
@@ -161,6 +163,7 @@ impl Default for TableFormatConfig {
 ///     reading_order_mode: ReadingOrderMode::ColumnAware,
 ///     bold_marker_behavior: BoldMarkerBehavior::Conservative,
 ///     table_detection_config: None,
+///     ..Default::default()
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq)]
@@ -211,6 +214,26 @@ pub struct ConversionOptions {
     /// If None, uses default configuration.
     /// Only applies when extract_tables = true.
     pub table_detection_config: Option<crate::structure::TableDetectionConfig>,
+
+    /// Render formulas as embedded base64 images.
+    ///
+    /// When true and page_images are provided, formulas from the structure tree
+    /// are cropped from rendered page images and embedded as base64 data URIs.
+    /// Requires a Tagged PDF with Formula structure elements.
+    pub render_formulas: bool,
+
+    /// Paths to pre-rendered page images for formula extraction.
+    ///
+    /// Each path should point to a PNG image of the corresponding page.
+    /// Index 0 = page 0, index 1 = page 1, etc.
+    /// Required when render_formulas = true.
+    pub page_images: Option<Vec<std::path::PathBuf>>,
+
+    /// Page dimensions in PDF points (width, height).
+    ///
+    /// Required for coordinate conversion when render_formulas = true.
+    /// Defaults to A4 (595.276 x 841.89) if not specified.
+    pub page_dimensions: Option<(f32, f32)>,
 }
 
 impl Default for ConversionOptions {
@@ -225,6 +248,9 @@ impl Default for ConversionOptions {
     /// - reading_order_mode: StructureTreeFirst (PDF-spec-compliant for Tagged PDFs, falls back to XY-Cut for untagged)
     /// - bold_marker_behavior: Conservative (no bold markers for whitespace-only content)
     /// - table_detection_config: None (uses defaults when table detection is enabled)
+    /// - render_formulas: false
+    /// - page_images: None
+    /// - page_dimensions: None (defaults to A4 when needed)
     fn default() -> Self {
         Self {
             preserve_layout: false,
@@ -235,6 +261,9 @@ impl Default for ConversionOptions {
             reading_order_mode: ReadingOrderMode::StructureTreeFirst { mcid_order: vec![] },
             bold_marker_behavior: BoldMarkerBehavior::Conservative,
             table_detection_config: None,
+            render_formulas: false,
+            page_images: None,
+            page_dimensions: None,
         }
     }
 }
@@ -346,6 +375,7 @@ mod tests {
             reading_order_mode: ReadingOrderMode::ColumnAware,
             bold_marker_behavior: BoldMarkerBehavior::Aggressive,
             table_detection_config: None,
+            ..Default::default()
         };
 
         assert!(opts.preserve_layout);

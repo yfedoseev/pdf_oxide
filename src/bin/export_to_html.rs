@@ -124,6 +124,7 @@ fn export_pdf_to_html(
         reading_order_mode: pdf_oxide::converters::ReadingOrderMode::ColumnAware,
         bold_marker_behavior: pdf_oxide::converters::BoldMarkerBehavior::default(),
         table_detection_config: None,
+        ..Default::default()
     };
 
     // Convert to HTML

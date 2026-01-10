@@ -18,6 +18,19 @@ fn resolve_object(document: &mut PdfDocument, obj: &Object) -> Result<Object, Er
     }
 }
 
+/// Build a mapping from page object IDs to page indices.
+/// This allows resolving /Pg references in marked content references.
+fn build_page_map(document: &mut PdfDocument) -> HashMap<u32, u32> {
+    let mut page_map = HashMap::new();
+    let page_count = document.page_count().unwrap_or(0);
+    for i in 0..page_count {
+        if let Ok(page_ref) = document.get_page_ref(i) {
+            page_map.insert(page_ref.id, i as u32);
+        }
+    }
+    page_map
+}
+
 /// Parse the structure tree from a PDF document.
 ///
 /// Reads the StructTreeRoot from the document catalog and recursively parses
@@ -43,6 +56,9 @@ pub fn parse_structure_tree(document: &mut PdfDocument) -> Result<Option<StructT
         Some(obj) => obj,
         None => return Ok(None), // Not a tagged PDF
     };
+
+    // Build page map for resolving /Pg references
+    let page_map = build_page_map(document);
 
     // Resolve the StructTreeRoot object
     let struct_tree_root_obj = resolve_object(document, struct_tree_root_ref)?;
@@ -81,7 +97,7 @@ pub fn parse_structure_tree(document: &mut PdfDocument) -> Result<Option<StructT
                 // Multiple root elements
                 for elem_obj in arr {
                     if let Some(elem) =
-                        parse_struct_elem(document, &elem_obj, &struct_tree.role_map)?
+                        parse_struct_elem(document, &elem_obj, &struct_tree.role_map, &page_map)?
                     {
                         struct_tree.add_root_element(elem);
                     }
@@ -89,7 +105,9 @@ pub fn parse_structure_tree(document: &mut PdfDocument) -> Result<Option<StructT
             },
             _ => {
                 // Single root element
-                if let Some(elem) = parse_struct_elem(document, &k_obj, &struct_tree.role_map)? {
+                if let Some(elem) =
+                    parse_struct_elem(document, &k_obj, &struct_tree.role_map, &page_map)?
+                {
                     struct_tree.add_root_element(elem);
                 }
             },
@@ -105,6 +123,7 @@ pub fn parse_structure_tree(document: &mut PdfDocument) -> Result<Option<StructT
 /// * `document` - The PDF document
 /// * `obj` - The object to parse (should be a dictionary)
 /// * `role_map` - RoleMap for custom structure types
+/// * `page_map` - Mapping from page object IDs to page indices
 ///
 /// # Returns
 /// * `Ok(Some(StructElem))` - Successfully parsed structure element
@@ -114,6 +133,7 @@ fn parse_struct_elem(
     document: &mut PdfDocument,
     obj: &Object,
     role_map: &HashMap<String, String>,
+    page_map: &HashMap<u32, u32>,
 ) -> Result<Option<StructElem>, Error> {
     let obj = resolve_object(document, obj)?;
 
@@ -145,10 +165,11 @@ fn parse_struct_elem(
 
     let mut struct_elem = StructElem::new(struct_type);
 
-    // Get /Pg (page) - optional
-    if let Some(_pg_obj) = dict.get("Pg") {
-        // Page reference - we'd need to resolve this to a page number
-        // For now, skip (requires page tree traversal)
+    // Get /Pg (page) - optional, resolve to page number
+    if let Some(Object::Reference(pg_ref)) = dict.get("Pg") {
+        if let Some(&page_num) = page_map.get(&pg_ref.id) {
+            struct_elem.page = Some(page_num);
+        }
     }
 
     // Get /A (attributes) - optional
@@ -161,6 +182,16 @@ fn parse_struct_elem(
         }
     }
 
+    // Get /Alt (alternate description) - optional, per PDF spec Section 14.9.3
+    // This provides a human-readable description of the element's content
+    // (e.g., for formulas: "E equals m c squared")
+    if let Some(alt_obj) = dict.get("Alt") {
+        let alt_obj = resolve_object(document, alt_obj)?;
+        if let Some(alt_bytes) = alt_obj.as_string() {
+            struct_elem.alt_text = Some(String::from_utf8_lossy(alt_bytes).to_string());
+        }
+    }
+
     // Parse /K (children) - can be:
     // 1. A single integer (MCID)
     // 2. A dictionary (marked content reference with MCID and Pg)
@@ -168,7 +199,7 @@ fn parse_struct_elem(
     // 4. Another StructElem (dictionary with /Type /StructElem)
     if let Some(k_obj) = dict.get("K") {
         let k_obj = resolve_object(document, k_obj)?;
-        parse_k_children(document, &k_obj, &mut struct_elem, role_map)?;
+        parse_k_children(document, &k_obj, &mut struct_elem, role_map, page_map)?;
     }
 
     Ok(Some(struct_elem))
@@ -180,6 +211,7 @@ fn parse_k_children(
     k_obj: &Object,
     parent: &mut StructElem,
     role_map: &HashMap<String, String>,
+    page_map: &HashMap<u32, u32>,
 ) -> Result<(), Error> {
     match k_obj {
         Object::Integer(mcid) => {
@@ -206,12 +238,13 @@ fn parse_k_children(
 
                     Object::Dictionary(_) => {
                         // Could be a StructElem or marked content reference
-                        if let Some(child_elem) = parse_struct_elem(document, &child_obj, role_map)?
+                        if let Some(child_elem) =
+                            parse_struct_elem(document, &child_obj, role_map, page_map)?
                         {
                             parent.add_child(StructChild::StructElem(Box::new(child_elem)));
                         } else {
                             // Try parsing as marked content reference
-                            if let Some(mcr) = parse_marked_content_ref(&child_obj)? {
+                            if let Some(mcr) = parse_marked_content_ref(&child_obj, page_map)? {
                                 parent.add_child(mcr);
                             }
                         }
@@ -231,11 +264,11 @@ fn parse_k_children(
 
         Object::Dictionary(_) => {
             // Single dictionary child
-            if let Some(child_elem) = parse_struct_elem(document, k_obj, role_map)? {
+            if let Some(child_elem) = parse_struct_elem(document, k_obj, role_map, page_map)? {
                 parent.add_child(StructChild::StructElem(Box::new(child_elem)));
             } else {
                 // Try parsing as marked content reference
-                if let Some(mcr) = parse_marked_content_ref(k_obj)? {
+                if let Some(mcr) = parse_marked_content_ref(k_obj, page_map)? {
                     parent.add_child(mcr);
                 }
             }
@@ -260,7 +293,10 @@ fn parse_k_children(
 /// - /Type /MCR
 /// - /Pg - Page containing the marked content
 /// - /MCID - Marked content ID
-fn parse_marked_content_ref(obj: &Object) -> Result<Option<StructChild>, Error> {
+fn parse_marked_content_ref(
+    obj: &Object,
+    page_map: &HashMap<u32, u32>,
+) -> Result<Option<StructChild>, Error> {
     let dict = match obj.as_dict() {
         Some(d) => d,
         None => return Ok(None),
@@ -281,9 +317,17 @@ fn parse_marked_content_ref(obj: &Object) -> Result<Option<StructChild>, Error> 
         .and_then(|obj| obj.as_integer())
         .ok_or_else(|| Error::InvalidPdf("MCR missing /MCID".into()))?;
 
-    // Get /Pg (page reference)
-    // For now, we'll use 0 as placeholder - proper implementation would resolve page reference
-    let page = 0; // TODO: Resolve page reference
+    // Get /Pg (page reference) and resolve to page number
+    let page = dict
+        .get("Pg")
+        .and_then(|pg_obj| {
+            if let Object::Reference(pg_ref) = pg_obj {
+                page_map.get(&pg_ref.id).copied()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0); // Default to page 0 if no /Pg
 
     Ok(Some(StructChild::MarkedContentRef {
         mcid: mcid as u32,
@@ -357,10 +401,16 @@ fn parse_parent_tree_entry(
 ) -> Result<ParentTreeEntry, Error> {
     let obj = resolve_object(document, obj)?;
 
+    // Note: Parent tree entries don't need page resolution since they're
+    // used for reverse lookups, not for primary structure traversal
+    let empty_page_map = HashMap::new();
+
     match obj {
         Object::Dictionary(_) => {
             // Could be a StructElem dictionary or ObjectRef
-            if let Some(struct_elem) = parse_struct_elem(document, &obj, &HashMap::new())? {
+            if let Some(struct_elem) =
+                parse_struct_elem(document, &obj, &HashMap::new(), &empty_page_map)?
+            {
                 Ok(ParentTreeEntry::StructElem(Box::new(struct_elem)))
             } else {
                 // Fallback: treat as empty StructElem

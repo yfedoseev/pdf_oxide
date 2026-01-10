@@ -55,6 +55,7 @@ impl Default for StructTreeRoot {
 /// - `/P` - Parent structure element
 /// - `/Pg` - Page containing this element (optional)
 /// - `/A` - Attributes (optional)
+/// - `/Alt` - Alternate description (optional, per Section 14.9.3)
 #[derive(Debug, Clone)]
 pub struct StructElem {
     /// Structure type (e.g., "Document", "P", "H1", "Sect")
@@ -68,6 +69,11 @@ pub struct StructElem {
 
     /// Attributes (optional)
     pub attributes: HashMap<String, Object>,
+
+    /// Alternate description for accessibility (optional)
+    /// Per PDF spec Section 14.9.3, this provides a human-readable
+    /// description of the element's content (e.g., formula LaTeX or description)
+    pub alt_text: Option<String>,
 }
 
 impl StructElem {
@@ -78,6 +84,7 @@ impl StructElem {
             children: Vec::new(),
             page: None,
             attributes: HashMap::new(),
+            alt_text: None,
         }
     }
 

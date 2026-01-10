@@ -183,6 +183,7 @@ fn test_config_adapter_all_options_combined() {
         extract_tables: true,
         image_output_dir: Some("/output/images".to_string()),
         table_detection_config: None,
+        ..Default::default()
     };
 
     let config = TextPipelineConfig::from_conversion_options(&options);

@@ -385,6 +385,7 @@ fn test_comprehensive_document_conversion() {
         reading_order_mode: ReadingOrderMode::TopToBottomLeftToRight,
         bold_marker_behavior: BoldMarkerBehavior::Conservative,
         table_detection_config: None,
+        ..Default::default()
     };
 
     let mut chars = Vec::new();

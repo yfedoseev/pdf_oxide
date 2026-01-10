@@ -1,6 +1,6 @@
 [package]
 name = "pdf_oxide"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 authors = ["Yury Fedoseev <yfedoseev@gmail.com>"]
 license = "MIT OR Apache-2.0"
@@ -45,6 +45,7 @@ phf = { version = "0.11", features = ["macros"] }  # Perfect hash maps for Adobe
 
 # Image processing
 image = { version = "0.24", default-features = false, features = ["png", "jpeg", "tiff"] }
+base64 = "0.22"  # For embedding images as data URIs
 tiff = "0.9"  # TIFF support including CCITT decompression
 fax = "0.2"   # CCITT Group 3/4 decompression for scanned PDFs (more lenient with malformed EOFB)
 

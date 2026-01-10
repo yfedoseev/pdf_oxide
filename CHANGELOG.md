@@ -2,6 +2,18 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.2.4] - 2026-01-09
+
+### Fixed
+- CTM (Current Transformation Matrix) now correctly applied to text positions per PDF Spec ISO 32000-1:2008 Section 9.4.4 (#11)
+
+### Added
+- Structure tree: `/Alt` (alternate description) parsing for accessibility text on formulas and figures
+- Structure tree: `/Pg` (page reference) resolution - correctly maps structure elements to page numbers
+- `FormulaRenderer` module for extracting formula regions as base64 images from rendered pages
+- `ConversionOptions`: new fields `render_formulas`, `page_images`, `page_dimensions` for formula image embedding
+- Regression tests for CTM transformation
+
 ## [0.2.3] - 2026-01-07
 
 ### Fixed
