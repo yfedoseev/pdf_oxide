@@ -118,7 +118,7 @@ calamine = { version = "0.26", optional = true }
 zip = { version = "7.0", optional = true, default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 proptest = "1.4"
 regex = "1.10"
 tempfile = "3.10"
