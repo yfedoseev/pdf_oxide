@@ -39,7 +39,7 @@ flate2 = "1.0"
 weezl = "0.1"  # LZW compression
 inflate = "0.4"  # Alternative inflate for better error recovery
 libflate = "2.1"  # Another inflate implementation for error recovery
-brotli = "7"  # Brotli compression (PDF 2.0, ISO 32000-2:2020)
+brotli = "8"  # Brotli compression (PDF 2.0, ISO 32000-2:2020)
 
 # Font parsing
 ttf-parser = "0.24"  # TrueType font parser for embedded font cmap tables
