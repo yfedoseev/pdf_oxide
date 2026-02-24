@@ -76,7 +76,7 @@ linfa = { version = "0.7", optional = true }
 linfa-clustering = { version = "0.8", optional = true }
 
 # ML (CPU-only)
-tract-onnx = { version = "0.21", optional = true }
+tract-onnx = { version = "0.22", optional = true }
 tokenizers = { version = "0.15", optional = true, default-features = false, features = ["onig"] }
 
 # OCR - PaddleOCR via ONNX Runtime (optional)
