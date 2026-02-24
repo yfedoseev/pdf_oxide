@@ -107,7 +107,7 @@ pdfium-render = { version = "0.8", optional = true }
 # Rendering (optional - for page to image conversion)
 tiny-skia = { version = "0.11", optional = true }
 fontdb = { version = "0.23", optional = true }
-rustybuzz = { version = "0.14", optional = true }
+rustybuzz = { version = "0.20", optional = true }
 
 lzw = "0.10.0"
 uuid = { version = "1.0", features = ["v4"] }
