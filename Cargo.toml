@@ -42,7 +42,7 @@ libflate = "2.1"  # Another inflate implementation for error recovery
 brotli = "7"  # Brotli compression (PDF 2.0, ISO 32000-2:2020)
 
 # Font parsing
-ttf-parser = "0.24"  # TrueType font parser for embedded font cmap tables
+ttf-parser = "0.25"  # TrueType font parser for embedded font cmap tables
 phf = { version = "0.13", features = ["macros"] }  # Perfect hash maps for Adobe Glyph List
 encoding_rs = "0.8"  # Shift-JIS, EUC-JP, and other CJK encodings for predefined CMaps
 
