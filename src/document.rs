@@ -8220,12 +8220,12 @@ impl PdfDocument {
         };
 
         // Decode form stream — check cache first to avoid repeated decompression
-        let stream_data = if let Some(cached) = self
+        let cached_stream = self
             .xobject_stream_cache
             .borrow()
             .get(&xobject_ref)
-            .cloned()
-        {
+            .cloned();
+        let stream_data = if let Some(cached) = cached_stream {
             cached.as_ref().clone()
         } else {
             match self.decode_stream_with_encryption(xobject, xobject_ref) {
