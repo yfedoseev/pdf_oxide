@@ -2,6 +2,12 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [Unreleased]
+
+### Bug Fixes
+
+- **Fixed `extract_images()` panic on pages with Form XObjects** — Resolved a `RefCell already borrowed` runtime error.
+
 ## [0.3.16] - 2026-03-08
 > Advanced Visual Table Detection and Automated Python Stubs
 
