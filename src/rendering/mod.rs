@@ -109,3 +109,29 @@ pub fn render_page(
     let mut renderer = PageRenderer::new(options.clone());
     renderer.render_page(doc, page_num)
 }
+
+/// Render a rectangular region of a PDF page to an image.
+///
+/// This is a convenience function that creates a PageRenderer and renders
+/// a region of a single page. The region is specified in PDF coordinate
+/// space (points, origin at bottom-left).
+///
+/// # Arguments
+///
+/// * `doc` - The PDF document
+/// * `page_num` - Zero-based page number
+/// * `region` - Rectangle in PDF coordinates to render
+/// * `options` - Rendering options (DPI, format, etc.)
+///
+/// # Returns
+///
+/// The rendered image as bytes in the specified format.
+pub fn render_region(
+    doc: &mut crate::document::PdfDocument,
+    page_num: usize,
+    region: &crate::geometry::Rect,
+    options: &RenderOptions,
+) -> Result<RenderedImage> {
+    let mut renderer = PageRenderer::new(options.clone());
+    renderer.render_region(doc, page_num, region)
+}

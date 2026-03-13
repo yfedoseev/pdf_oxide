@@ -1069,6 +1069,124 @@ impl Pdf {
         image.save(path)
     }
 
+    /// Render a rectangular region of a page to an image.
+    ///
+    /// The region is specified in PDF coordinate space (points, origin at
+    /// bottom-left).
+    ///
+    /// Requires the `rendering` feature.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use pdf_oxide::geometry::Rect;
+    ///
+    /// let mut pdf = Pdf::open("input.pdf")?;
+    /// let region = Rect::new(100.0, 200.0, 300.0, 150.0);
+    /// let img = pdf.render_region(0, &region, None)?;
+    /// img.save("region.png")?;
+    /// ```
+    #[cfg(feature = "rendering")]
+    pub fn render_region(
+        &mut self,
+        page_index: usize,
+        region: &crate::geometry::Rect,
+        options: Option<&crate::rendering::RenderOptions>,
+    ) -> Result<crate::rendering::RenderedImage> {
+        let default_opts;
+        let opts = match options {
+            Some(o) => o,
+            None => {
+                default_opts = crate::rendering::RenderOptions::default();
+                &default_opts
+            },
+        };
+        self.render_region_with_options(page_index, region, opts)
+    }
+
+    /// Render a rectangular region of a page with custom options.
+    ///
+    /// Requires the `rendering` feature.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use pdf_oxide::geometry::Rect;
+    /// use pdf_oxide::rendering::RenderOptions;
+    ///
+    /// let mut pdf = Pdf::open("input.pdf")?;
+    /// let region = Rect::new(100.0, 200.0, 300.0, 150.0);
+    /// let options = RenderOptions::with_dpi(300);
+    /// let img = pdf.render_region_with_options(0, &region, &options)?;
+    /// img.save("region.png")?;
+    /// ```
+    #[cfg(feature = "rendering")]
+    pub fn render_region_with_options(
+        &mut self,
+        page_index: usize,
+        region: &crate::geometry::Rect,
+        options: &crate::rendering::RenderOptions,
+    ) -> Result<crate::rendering::RenderedImage> {
+        self.ensure_editor()?;
+        if let Some(ref mut editor) = self.editor {
+            crate::rendering::render_region(editor.source_mut(), page_index, region, options)
+        } else {
+            Err(Error::InvalidOperation(
+                "No document loaded. Use Pdf::open() or create one from content.".to_string(),
+            ))
+        }
+    }
+
+    /// Render a rectangular region of a page to a file with default options
+    /// (150 DPI).
+    #[cfg(feature = "rendering")]
+    pub fn render_region_to_file(
+        &mut self,
+        page: usize,
+        region: &crate::geometry::Rect,
+        path: impl AsRef<Path>,
+    ) -> Result<()> {
+        let path = path.as_ref();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("png")
+            .to_lowercase();
+
+        let mut options = crate::rendering::RenderOptions::default();
+        if ext == "jpg" || ext == "jpeg" {
+            options.format = crate::rendering::ImageFormat::Jpeg;
+        }
+
+        let image = self.render_region_with_options(page, region, &options)?;
+        image.save(path)
+    }
+
+    /// Render a rectangular region of a page to a file with custom DPI.
+    #[cfg(feature = "rendering")]
+    pub fn render_region_to_file_with_dpi(
+        &mut self,
+        page: usize,
+        region: &crate::geometry::Rect,
+        path: impl AsRef<Path>,
+        dpi: u32,
+    ) -> Result<()> {
+        let path = path.as_ref();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("png")
+            .to_lowercase();
+
+        let mut options = crate::rendering::RenderOptions::with_dpi(dpi);
+        if ext == "jpg" || ext == "jpeg" {
+            options.format = crate::rendering::ImageFormat::Jpeg;
+        }
+
+        let image = self.render_region_with_options(page, region, &options)?;
+        image.save(path)
+    }
+
     // ========================================================================
     // Text Search
     // ========================================================================
