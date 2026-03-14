@@ -2958,9 +2958,9 @@ impl TextExtractor {
                 // Font change: merge with space between font runs
                 log::debug!(
                     "Font change word boundary: '{}' ({}) + '{}' ({}) gap={:.2}pt",
-                    &current.text[current.text.len().saturating_sub(10)..],
+                    crate::utils::safe_suffix(&current.text, 10),
                     current.font_name,
-                    &span.text[..span.text.len().min(10)],
+                    crate::utils::safe_prefix(&span.text, 10),
                     span.font_name,
                     gap
                 );
@@ -5694,7 +5694,7 @@ impl TextExtractor {
                     if span.text.chars().all(|c| c.is_whitespace()) {
                         "<space-only>"
                     } else {
-                        &span.text[..span.text.len().min(20)]
+                        crate::utils::safe_prefix(&span.text, 20)
                     },
                     span.offset_semantic
                 );

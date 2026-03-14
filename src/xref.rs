@@ -388,7 +388,7 @@ fn parse_xref_iterative<R: Read + Seek>(
             "Parsing xref at offset {} (original: {}), peek: {:?} [chain depth: {}]",
             actual_offset,
             offset,
-            &peek_str[..peek_str.len().min(15)],
+            crate::utils::safe_prefix(&peek_str, 15),
             visited.len()
         );
 
@@ -418,7 +418,7 @@ fn parse_xref_iterative<R: Read + Seek>(
             log::debug!(
                 "Xref at offset {} starts with unexpected data: {:?}",
                 actual_offset,
-                &trimmed[..trimmed.len().min(20)]
+                crate::utils::safe_prefix(trimmed, 20)
             );
             return Err(Error::InvalidXref);
         };

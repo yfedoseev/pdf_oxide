@@ -273,6 +273,43 @@ pub(crate) mod utils {
 
     use std::cmp::Ordering;
 
+    /// Safely truncate a string to at most `max_bytes` from the start
+    /// without splitting a multi-byte UTF-8 character.
+    ///
+    /// Returns the full string if it is shorter than `max_bytes`.
+    /// When truncation lands inside a multi-byte character, the boundary
+    /// is rounded **down** to the nearest char boundary (floor).
+    #[inline]
+    pub fn safe_prefix(s: &str, max_bytes: usize) -> &str {
+        if s.len() <= max_bytes {
+            return s;
+        }
+        let mut end = max_bytes;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
+    }
+
+    /// Safely take the last `max_bytes` of a string without splitting
+    /// a multi-byte UTF-8 character.
+    ///
+    /// Returns the full string if it is shorter than `max_bytes`.
+    /// When the computed start offset lands inside a multi-byte character,
+    /// the boundary is rounded **up** to the nearest char boundary (ceil).
+    #[inline]
+    pub fn safe_suffix(s: &str, max_bytes: usize) -> &str {
+        if s.len() <= max_bytes {
+            return s;
+        }
+        let start = s.len() - max_bytes;
+        let mut safe_start = start;
+        while safe_start < s.len() && !s.is_char_boundary(safe_start) {
+            safe_start += 1;
+        }
+        &s[safe_start..]
+    }
+
     /// Safely compare two floating point numbers, handling NaN cases.
     ///
     /// NaN values are treated as equal to each other and greater than all other values.
@@ -369,6 +406,37 @@ pub(crate) mod utils {
             }
             // Must not panic
             values.sort_by(|a, b| safe_float_cmp(*a, *b));
+        }
+
+        #[test]
+        fn test_safe_prefix_ascii() {
+            assert_eq!(safe_prefix("hello", 3), "hel");
+            assert_eq!(safe_prefix("hello", 10), "hello");
+            assert_eq!(safe_prefix("", 5), "");
+            assert_eq!(safe_prefix("hi", 0), "");
+        }
+
+        #[test]
+        fn test_safe_prefix_multibyte() {
+            let text = "✚✳★✵"; // 4 × 3-byte chars = 12 bytes
+            assert_eq!(safe_prefix(text, 10), "✚✳★"); // rounds down from 10 to 9
+            assert_eq!(safe_prefix(text, 9), "✚✳★"); // exact boundary
+            assert_eq!(safe_prefix(text, 12), "✚✳★✵"); // full string
+        }
+
+        #[test]
+        fn test_safe_suffix_ascii() {
+            assert_eq!(safe_suffix("hello", 3), "llo");
+            assert_eq!(safe_suffix("hello", 10), "hello");
+            assert_eq!(safe_suffix("", 5), "");
+            assert_eq!(safe_suffix("hi", 0), "");
+        }
+
+        #[test]
+        fn test_safe_suffix_multibyte() {
+            let text = "AB✚✳★✵"; // 14 bytes: A(0) B(1) ✚(2..5) ✳(5..8) ★(8..11) ✵(11..14)
+                                 // 14 - 10 = 4, byte 4 is inside ✚ → rounds up to 5
+            assert_eq!(safe_suffix(text, 10), "✳★✵");
         }
     }
 }

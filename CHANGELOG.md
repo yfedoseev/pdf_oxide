@@ -2,6 +2,12 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [Unreleased]
+
+### Bug Fixes
+
+- **Fixed panic on multi-byte UTF-8 in debug log string slicing** — Replaced raw byte-offset string slices in `log::debug!`/`log::trace!` macros with char-boundary-safe helpers. The old code panicked with `byte index N is not a char boundary` when extracting text from PDFs containing CJK, emoji, dingbats, or other multi-byte UTF-8 characters while debug logging was enabled (e.g., via `tracing-subscriber`).
+
 ## [0.3.17] - 2026-03-08
 > Stable Recursion and Refined Table Heuristics
 
