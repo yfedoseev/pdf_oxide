@@ -1131,9 +1131,7 @@ impl Pdf {
         if let Some(ref mut editor) = self.editor {
             crate::rendering::render_region(editor.source_mut(), page_index, region, options)
         } else {
-            Err(Error::InvalidOperation(
-                "No document loaded. Use Pdf::open() or create one from content.".to_string(),
-            ))
+            Err(Error::InvalidOperation("No document loaded".to_string()))
         }
     }
 
