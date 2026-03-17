@@ -119,44 +119,13 @@ impl PageRenderer {
         page_num: usize,
         region: &crate::geometry::Rect,
     ) -> Result<RenderedImage> {
-        let (full, media_box) = self.render_page_to_pixmap(doc, page_num)?;
-        let scale = self.options.dpi as f32 / 72.0;
-
-        // Convert PDF coordinates (origin bottom-left) to pixel coordinates (origin top-left).
-        // PDF y increases upward; pixel y increases downward.
-        let px_left = ((region.x - media_box.x) * scale).round() as i32;
-        let px_top =
-            ((media_box.y + media_box.height - region.y - region.height) * scale).round() as i32;
-        let px_width = (region.width * scale).round() as u32;
-        let px_height = (region.height * scale).round() as u32;
-
-        // Clamp to pixmap bounds, adjusting dimensions for any clamped offset
-        let src_x = px_left.max(0);
-        let src_y = px_top.max(0);
-        let adj_w = px_width.saturating_sub((src_x - px_left) as u32);
-        let adj_h = px_height.saturating_sub((src_y - px_top) as u32);
-        let crop_w = adj_w.min(full.width().saturating_sub(src_x as u32)).max(1);
-        let crop_h = adj_h.min(full.height().saturating_sub(src_y as u32)).max(1);
-
-        let crop_rect =
-            tiny_skia::IntRect::from_xywh(src_x, src_y, crop_w, crop_h).ok_or_else(|| {
-                Error::InvalidPdf(format!(
-                    "Invalid crop region {}x{} at ({},{})",
-                    crop_w, crop_h, src_x, src_y
-                ))
-            })?;
-        let cropped = full
-            .clone_rect(crop_rect)
-            .ok_or_else(|| Error::InvalidPdf("Crop region outside rendered page".to_string()))?;
-        // Free the full-page pixmap before encoding to reduce peak memory
-        drop(full);
-
-        self.encode_to_image(&cropped)
+        let pixmap = self.render_to_pixmap(doc, page_num, Some(region))?;
+        self.encode_to_image(&pixmap)
     }
 
     /// Render a page to an image.
     pub fn render_page(&mut self, doc: &mut PdfDocument, page_num: usize) -> Result<RenderedImage> {
-        let (pixmap, _media_box) = self.render_page_to_pixmap(doc, page_num)?;
+        let pixmap = self.render_to_pixmap(doc, page_num, None)?;
         self.encode_to_image(&pixmap)
     }
 
@@ -177,15 +146,21 @@ impl PageRenderer {
         })
     }
 
-    /// Render a page to a raw RGBA pixmap.
-    fn render_page_to_pixmap(
+    /// Render a page (or a region of a page) to a raw RGBA pixmap.
+    ///
+    /// When `viewport` is `None`, the full page is rendered. When `Some`,
+    /// the pixmap is sized to just the viewport region and the transform is
+    /// shifted so only that region is rendered.
+    fn render_to_pixmap(
         &mut self,
         doc: &mut PdfDocument,
         page_num: usize,
-    ) -> Result<(Pixmap, crate::geometry::Rect)> {
+        media_box: Option<&crate::geometry::Rect>,
+    ) -> Result<Pixmap> {
         // Get page dimensions
         let page_info = doc.get_page_info(page_num)?;
-        let media_box = page_info.media_box;
+        // use the the provided media_box or else the entire page
+        let media_box = media_box.unwrap_or(&page_info.media_box);
 
         // Calculate pixel dimensions based on DPI
         let scale = self.options.dpi as f32 / 72.0; // PDF uses 72 points per inch
@@ -193,7 +168,7 @@ impl PageRenderer {
         let height = (media_box.height * scale).ceil() as u32;
 
         // Create pixmap with background
-        let mut pixmap = Pixmap::new(width, height).ok_or_else(|| {
+        let mut pixmap = Pixmap::new(width.max(1), height.max(1)).ok_or_else(|| {
             Error::InvalidPdf(format!("Failed to create pixmap {}x{}", width, height))
         })?;
 
@@ -220,7 +195,7 @@ impl PageRenderer {
         // Execute operators and render
         self.execute_operators(&mut pixmap, transform, &operators, doc, page_num, &resources)?;
 
-        Ok((pixmap, media_box))
+        Ok(pixmap)
     }
 
     /// Execute content stream operators and render to pixmap.
