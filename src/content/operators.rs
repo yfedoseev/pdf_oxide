@@ -317,8 +317,14 @@ pub enum Operator {
     Fill,
     /// Fill path (even-odd) (f*)
     FillEvenOdd,
+    /// Fill and stroke path (B)
+    FillStroke,
+    /// Fill and stroke path (even-odd) (B*)
+    FillStrokeEvenOdd,
     /// Close, fill and stroke (b)
     CloseFillStroke,
+    /// Close, fill and stroke (even-odd) (b*)
+    CloseFillStrokeEvenOdd,
     /// End path without filling or stroking (n)
     EndPath,
     /// Modify clipping path using non-zero winding rule (W)

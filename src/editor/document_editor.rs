@@ -5399,7 +5399,10 @@ impl DocumentEditor {
             Operator::Stroke => output.extend_from_slice(b"S\n"),
             Operator::Fill => output.extend_from_slice(b"f\n"),
             Operator::FillEvenOdd => output.extend_from_slice(b"f*\n"),
+            Operator::FillStroke => output.extend_from_slice(b"B\n"),
+            Operator::FillStrokeEvenOdd => output.extend_from_slice(b"B*\n"),
             Operator::CloseFillStroke => output.extend_from_slice(b"b\n"),
+            Operator::CloseFillStrokeEvenOdd => output.extend_from_slice(b"b*\n"),
             Operator::EndPath => output.extend_from_slice(b"n\n"),
 
             // Clipping

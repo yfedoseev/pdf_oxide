@@ -332,7 +332,7 @@ impl PageRenderer {
                     }
                     current_path = PathBuilder::new();
                 },
-                Operator::Fill | Operator::CloseFillStroke => {
+                Operator::Fill | Operator::CloseFillStroke | Operator::FillStroke => {
                     apply_pending_clip(
                         &mut pending_clip,
                         &mut clip_stack,
@@ -352,14 +352,14 @@ impl PageRenderer {
                             FillRule::Winding,
                             clip,
                         );
-                        if matches!(op, Operator::CloseFillStroke) {
+                        if matches!(op, Operator::CloseFillStroke | Operator::FillStroke) {
                             self.path_rasterizer
                                 .stroke_path_clipped(pixmap, &path, transform, gs, clip);
                         }
                     }
                     current_path = PathBuilder::new();
                 },
-                Operator::FillEvenOdd => {
+                Operator::FillEvenOdd | Operator::FillStrokeEvenOdd | Operator::CloseFillStrokeEvenOdd => {
                     apply_pending_clip(
                         &mut pending_clip,
                         &mut clip_stack,
@@ -379,6 +379,10 @@ impl PageRenderer {
                             FillRule::EvenOdd,
                             clip,
                         );
+                        if matches!(op, Operator::FillStrokeEvenOdd | Operator::CloseFillStrokeEvenOdd) {
+                            self.path_rasterizer
+                                .stroke_path_clipped(pixmap, &path, transform, gs, clip);
+                        }
                     }
                     current_path = PathBuilder::new();
                 },
