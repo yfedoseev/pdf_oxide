@@ -2388,6 +2388,46 @@ fn path_to_py_dict(py: Python<'_>, path: &crate::elements::PathContent) -> PyRes
         d.set_item("fill_color", py.None())?;
     }
     d.set_item("operations_count", path.operations.len())?;
+
+    // Expose path operations as list of dicts for vector extraction use cases
+    let ops_list = pyo3::types::PyList::empty(py);
+    for op in &path.operations {
+        let op_dict = pyo3::types::PyDict::new(py);
+        match op {
+            crate::elements::PathOperation::MoveTo(x, y) => {
+                op_dict.set_item("op", "move_to")?;
+                op_dict.set_item("x", *x)?;
+                op_dict.set_item("y", *y)?;
+            },
+            crate::elements::PathOperation::LineTo(x, y) => {
+                op_dict.set_item("op", "line_to")?;
+                op_dict.set_item("x", *x)?;
+                op_dict.set_item("y", *y)?;
+            },
+            crate::elements::PathOperation::CurveTo(cx1, cy1, cx2, cy2, x, y) => {
+                op_dict.set_item("op", "curve_to")?;
+                op_dict.set_item("cx1", *cx1)?;
+                op_dict.set_item("cy1", *cy1)?;
+                op_dict.set_item("cx2", *cx2)?;
+                op_dict.set_item("cy2", *cy2)?;
+                op_dict.set_item("x", *x)?;
+                op_dict.set_item("y", *y)?;
+            },
+            crate::elements::PathOperation::Rectangle(x, y, w, h) => {
+                op_dict.set_item("op", "rectangle")?;
+                op_dict.set_item("x", *x)?;
+                op_dict.set_item("y", *y)?;
+                op_dict.set_item("width", *w)?;
+                op_dict.set_item("height", *h)?;
+            },
+            crate::elements::PathOperation::ClosePath => {
+                op_dict.set_item("op", "close_path")?;
+            },
+        }
+        ops_list.append(op_dict)?;
+    }
+    d.set_item("operations", ops_list)?;
+
     Ok(d.into())
 }
 

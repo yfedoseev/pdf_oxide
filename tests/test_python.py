@@ -784,6 +784,35 @@ def test_extract_paths():
         pytest.skip("Test fixture 'simple.pdf' not available or invalid")
 
 
+def test_extract_paths_operations():
+    """Test that extract_paths returns operations with coordinates."""
+    try:
+        doc = PdfDocument("tests/fixtures/1.pdf")
+        paths = doc.extract_paths(0)
+        assert isinstance(paths, list)
+        assert len(paths) > 0, "Expected at least one path"
+
+        for path in paths:
+            assert "operations" in path, "Path dict should contain 'operations' field"
+            assert isinstance(path["operations"], list)
+            assert len(path["operations"]) == path["operations_count"]
+
+            for op in path["operations"]:
+                assert isinstance(op, dict)
+                assert "op" in op, "Each operation should have an 'op' field"
+                op_type = op["op"]
+                assert op_type in ("move_to", "line_to", "curve_to", "rectangle", "close_path")
+
+                if op_type in ("move_to", "line_to"):
+                    assert "x" in op and "y" in op
+                elif op_type == "curve_to":
+                    assert all(k in op for k in ("cx1", "cy1", "cx2", "cy2", "x", "y"))
+                elif op_type == "rectangle":
+                    assert all(k in op for k in ("x", "y", "width", "height"))
+    except (OSError, RuntimeError):
+        pytest.skip("Test fixture '1.pdf' not available or invalid")
+
+
 def test_extract_images_invalid_page():
     """Test extract_images with invalid page index."""
     try:
