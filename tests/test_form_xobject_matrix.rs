@@ -417,3 +417,211 @@ fn test_form_xobject_matrix_does_not_leak_to_parent() {
         span.font_size
     );
 }
+
+#[test]
+fn test_form_xobject_nested_matrix_composition() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    // Build a PDF with a nested Form XObject chain:
+    // Page → Form1 (translate +100,+50) → Form2 (scale 0.5×)
+    // Text at (200, 300) in Form2's space should end up at:
+    //   Form2 scale: (200*0.5, 300*0.5) = (100, 150)
+    //   Form1 translate: (100+100, 150+50) = (200, 200)
+    let mut pdf = Vec::new();
+    let mut offsets: Vec<usize> = Vec::new();
+
+    pdf.extend_from_slice(b"%PDF-1.4\n");
+
+    // Object 1: Catalog
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+    // Object 2: Pages
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+    // Object 3: Page
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]\n\
+          /Contents 4 0 R\n\
+          /Resources << /Font << /F1 7 0 R >> /XObject << /Form1 5 0 R >> >>\n\
+          >>\nendobj\n",
+    );
+
+    // Object 4: Page content — invokes outer Form XObject
+    let content = b"/Form1 Do";
+    offsets.push(pdf.len());
+    let header = format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len());
+    pdf.extend_from_slice(header.as_bytes());
+    pdf.extend_from_slice(content);
+    pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+    // Object 5: Outer Form XObject — translate (100, 50), invokes inner Form2
+    let form1_stream = b"/Form2 Do";
+    offsets.push(pdf.len());
+    let form1_obj = format!(
+        "5 0 obj\n<< /Type /XObject /Subtype /Form /BBox [0 0 612 792]\n\
+         /Matrix [1 0 0 1 100 50]\n\
+         /Resources << /Font << /F1 7 0 R >> /XObject << /Form2 6 0 R >> >>\n\
+         /Length {} >>\nstream\n",
+        form1_stream.len()
+    );
+    pdf.extend_from_slice(form1_obj.as_bytes());
+    pdf.extend_from_slice(form1_stream);
+    pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+    // Object 6: Inner Form XObject — scale 0.5×, contains text at (200, 300)
+    let form2_stream = b"BT /F1 24 Tf 200 300 Td (Nested) Tj ET";
+    offsets.push(pdf.len());
+    let form2_obj = format!(
+        "6 0 obj\n<< /Type /XObject /Subtype /Form /BBox [0 0 1224 1584]\n\
+         /Matrix [0.5 0 0 0.5 0 0]\n\
+         /Resources << /Font << /F1 7 0 R >> >>\n\
+         /Length {} >>\nstream\n",
+        form2_stream.len()
+    );
+    pdf.extend_from_slice(form2_obj.as_bytes());
+    pdf.extend_from_slice(form2_stream);
+    pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+    // Object 7: Font
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(
+        b"7 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+    );
+
+    let xref_offset = pdf.len();
+    let total_objects = offsets.len() + 1;
+    pdf.extend_from_slice(b"xref\n");
+    pdf.extend_from_slice(format!("0 {}\n", total_objects).as_bytes());
+    pdf.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in &offsets {
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            total_objects, xref_offset
+        )
+        .as_bytes(),
+    );
+
+    let mut doc = PdfDocument::from_bytes(pdf).expect("Failed to parse test PDF");
+    let spans = doc.extract_spans(0).expect("Failed to extract spans");
+
+    let nested_span = spans.iter().find(|s| s.text.contains("Nested"));
+    assert!(
+        nested_span.is_some(),
+        "Should find 'Nested' span, got: {:?}",
+        spans.iter().map(|s| &s.text).collect::<Vec<_>>()
+    );
+
+    let span = nested_span.unwrap();
+
+    // Expected: x = 200*0.5 + 100 = 200, y = 300*0.5 + 50 = 200
+    assert!(
+        span.bbox.x > 160.0 && span.bbox.x < 240.0,
+        "X should be ~200 (nested transform composition), got {}",
+        span.bbox.x
+    );
+
+    // Font size: 24 * 0.5 = 12 (only inner scale applies to font)
+    assert!(
+        span.font_size > 8.0 && span.font_size < 16.0,
+        "Font size should be ~12 (24 * 0.5 from inner scale), got {}",
+        span.font_size
+    );
+}
+
+#[test]
+fn test_rotated_text_does_not_produce_extreme_coordinates() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    // Build a PDF with 90°-rotated text (simulating chart Y-axis labels).
+    // The text matrix has d≈0 and b=1, which previously caused a
+    // divide-by-zero in the text matrix advance calculation.
+    let mut pdf = Vec::new();
+    let mut offsets: Vec<usize> = Vec::new();
+
+    pdf.extend_from_slice(b"%PDF-1.4\n");
+
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]\n\
+          /Contents 4 0 R\n\
+          /Resources << /Font << /F1 5 0 R >> >>\n\
+          >>\nendobj\n",
+    );
+
+    // Content: 90° rotated text using Tm with [0 1 -1 0 x y] (rotation matrix)
+    // Multiple text show operations to exercise the advance calculation
+    let content = b"BT\n\
+        /F1 12 Tf\n\
+        0 1 -1 0 50 400 Tm\n\
+        (Rotated Label One) Tj\n\
+        0 1 -1 0 80 400 Tm\n\
+        (Rotated Label Two) Tj\n\
+        ET";
+    offsets.push(pdf.len());
+    let header = format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len());
+    pdf.extend_from_slice(header.as_bytes());
+    pdf.extend_from_slice(content);
+    pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(
+        b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+    );
+
+    let xref_offset = pdf.len();
+    let total_objects = offsets.len() + 1;
+    pdf.extend_from_slice(b"xref\n");
+    pdf.extend_from_slice(format!("0 {}\n", total_objects).as_bytes());
+    pdf.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in &offsets {
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            total_objects, xref_offset
+        )
+        .as_bytes(),
+    );
+
+    let mut doc = PdfDocument::from_bytes(pdf).expect("Failed to parse test PDF");
+    let spans = doc.extract_spans(0).expect("Failed to extract spans");
+
+    assert!(!spans.is_empty(), "Should extract rotated text spans");
+
+    // All spans must have coordinates within the page bounds.
+    // Before the fix, the divide-by-zero in text matrix advance produced
+    // coordinates in the hundreds of millions.
+    for span in &spans {
+        assert!(
+            span.bbox.x.abs() < 1000.0,
+            "Rotated text X should be within page bounds, got {} for {:?}",
+            span.bbox.x,
+            span.text
+        );
+        assert!(
+            span.bbox.y.abs() < 1000.0,
+            "Rotated text Y should be within page bounds, got {} for {:?}",
+            span.bbox.y,
+            span.text
+        );
+        assert!(
+            span.font_size < 100.0,
+            "Rotated text font size should be reasonable, got {} for {:?}",
+            span.font_size,
+            span.text
+        );
+    }
+}
