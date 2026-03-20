@@ -4526,6 +4526,33 @@ impl TextExtractor {
                     return Ok(());
                 }
 
+                // Parse /Matrix from Form XObject dict (default: identity per ISO 32000-1 §8.10.1)
+                let form_matrix = if let Some(Object::Array(arr)) = xobject_dict.get("Matrix") {
+                    let get_f32 = |i: usize| -> f32 {
+                        match arr.get(i) {
+                            Some(Object::Real(v)) => *v as f32,
+                            Some(Object::Integer(v)) => *v as f32,
+                            _ => {
+                                if i == 0 || i == 3 {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
+                            },
+                        }
+                    };
+                    Matrix {
+                        a: get_f32(0),
+                        b: get_f32(1),
+                        c: get_f32(2),
+                        d: get_f32(3),
+                        e: get_f32(4),
+                        f: get_f32(5),
+                    }
+                } else {
+                    Matrix::identity()
+                };
+
                 // Only save/restore fonts+resources when XObject has its own Resources.
                 // Avoids expensive HashMap clone for XObjects that inherit page fonts.
                 let has_own_resources = xobject_dict.contains_key("Resources");
@@ -4571,6 +4598,13 @@ impl TextExtractor {
                 // Track span count for result caching
                 let spans_before = self.spans.len();
 
+                // Save graphics state (implicit q per ISO 32000-1 §8.10.1)
+                self.state_stack.save();
+
+                // Concatenate Form XObject /Matrix with CTM
+                let state = self.state_stack.current_mut();
+                state.ctm = form_matrix.multiply(&state.ctm);
+
                 // Streaming parse+execute: avoids allocating Vec<Operator>
                 self.xobject_depth += 1;
                 let parse_result =
@@ -4596,6 +4630,17 @@ impl TextExtractor {
                         .borrow_mut()
                         .insert(xobject_ref, new_spans);
                 }
+
+                // Restore graphics state (implicit Q per ISO 32000-1 §8.10.1)
+                self.state_stack.restore();
+                // Sync cached font with restored state
+                self.cached_current_font = self
+                    .state_stack
+                    .current()
+                    .font_name
+                    .as_ref()
+                    .and_then(|name| self.fonts.get(name))
+                    .cloned();
 
                 // Restore fonts, resources, and XObject cache only if saved
                 if let Some(fonts) = saved_fonts {
