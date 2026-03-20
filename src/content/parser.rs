@@ -241,7 +241,288 @@ pub fn parse_content_stream_text_only(data: &[u8]) -> Result<Vec<Operator>> {
 /// preceding graphics state (q..cm) needed for correct CTM.
 ///
 /// Returns `None` on ambiguous cases (fallback to full scan).
-fn prescan_text_regions(data: &[u8]) -> Option<Vec<(usize, usize)>> {
+/// Lightweight forward scan that tracks graphics state (`q`/`Q`/`cm`) across
+/// the full content stream and records the accumulated CTM at each BT/Do position.
+///
+/// This is much cheaper than full parsing — it only recognizes three operator
+/// types and skips all path, color, and text operators. Numeric operands are
+/// tracked in a rolling buffer so `cm` operands are always available when the
+/// operator is encountered.
+///
+/// Graphics state snapshot at a text position: CTM + current font.
+#[derive(Debug)]
+struct PrescanState {
+    ctm: (f32, f32, f32, f32, f32, f32),
+    /// Current font name and size (from most recent Tf), if any.
+    font: Option<(String, f32)>,
+}
+
+/// Returns one `PrescanState` per entry in `text_positions` (same order).
+/// Returns `None` if the scan encounters problems it can't recover from.
+fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<PrescanState>> {
+    use crate::content::graphics_state::Matrix;
+
+    if text_positions.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let mut ctm_stack: Vec<(Matrix, Option<(String, f32)>)> = Vec::with_capacity(32);
+    let mut ctm = Matrix::identity();
+    let mut font: Option<(String, f32)> = None;
+
+    // Rolling buffer of recent numeric operands (for cm's 6 floats)
+    let mut num_buf: [f32; 6] = [0.0; 6];
+    let mut num_count: usize = 0;
+
+    // Track last name operand for Tf (font name like /F1)
+    let mut last_name: Option<String> = None;
+
+    // Sort positions so we can walk forward and match them in order
+    let mut sorted_positions: Vec<(usize, usize)> =
+        text_positions.iter().copied().enumerate().collect();
+    sorted_positions.sort_by_key(|&(_, pos)| pos);
+    let mut next_tp_idx = 0;
+
+    // Results in original order
+    let mut results: Vec<PrescanState> = (0..text_positions.len())
+        .map(|_| PrescanState {
+            ctm: (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            font: None,
+        })
+        .collect();
+
+    let len = data.len();
+    let mut i = 0;
+
+    while i < len {
+        // Record state at any text positions we've passed
+        while next_tp_idx < sorted_positions.len() && sorted_positions[next_tp_idx].1 <= i {
+            let (orig_idx, _) = sorted_positions[next_tp_idx];
+            results[orig_idx] = PrescanState {
+                ctm: (ctm.a, ctm.b, ctm.c, ctm.d, ctm.e, ctm.f),
+                font: font.clone(),
+            };
+            next_tp_idx += 1;
+        }
+
+        if next_tp_idx >= sorted_positions.len() {
+            break; // All text positions recorded
+        }
+
+        let b = data[i];
+
+        // Skip whitespace
+        if b.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+
+        // Parse numeric tokens into the rolling buffer
+        if b.is_ascii_digit()
+            || b == b'-'
+            || b == b'+'
+            || (b == b'.' && i + 1 < len && data[i + 1].is_ascii_digit())
+        {
+            let start = i;
+            i += 1;
+            while i < len && (data[i].is_ascii_digit() || data[i] == b'.') {
+                i += 1;
+            }
+            if let Ok(val) = std::str::from_utf8(&data[start..i])
+                .unwrap_or("")
+                .parse::<f32>()
+            {
+                // Shift buffer left and append
+                if num_count < 6 {
+                    num_buf[num_count] = val;
+                    num_count += 1;
+                } else {
+                    num_buf.rotate_left(1);
+                    num_buf[5] = val;
+                }
+            }
+            continue;
+        }
+
+        // Operator detection — only care about q, Q, cm
+        if b.is_ascii_alphabetic() {
+            let op_start = i;
+            i += 1;
+            while i < len
+                && (data[i].is_ascii_alphabetic()
+                    || data[i] == b'*'
+                    || data[i] == b'\''
+                    || data[i] == b'"')
+            {
+                i += 1;
+            }
+            let op = &data[op_start..i];
+
+            match op {
+                b"q" => {
+                    ctm_stack.push((ctm, font.clone()));
+                    num_count = 0;
+                },
+                b"Q" => {
+                    if let Some((saved_ctm, saved_font)) = ctm_stack.pop() {
+                        ctm = saved_ctm;
+                        font = saved_font;
+                    }
+                    num_count = 0;
+                },
+                b"cm" => {
+                    if num_count >= 6 {
+                        let base = num_count - 6;
+                        let new_ctm = Matrix {
+                            a: num_buf[base],
+                            b: num_buf[base + 1],
+                            c: num_buf[base + 2],
+                            d: num_buf[base + 3],
+                            e: num_buf[base + 4],
+                            f: num_buf[base + 5],
+                        };
+                        ctm = new_ctm.multiply(&ctm);
+                    }
+                    num_count = 0;
+                },
+                b"Tf" => {
+                    // Font set: last_name has font name, last num has size
+                    if num_count >= 1 {
+                        let size = num_buf[num_count - 1];
+                        if let Some(ref name) = last_name {
+                            font = Some((name.clone(), size));
+                        }
+                    }
+                    num_count = 0;
+                    last_name = None;
+                },
+                _ => {
+                    num_count = 0;
+                },
+            }
+            continue;
+        }
+
+        // Skip string literals to avoid false matches
+        if b == b'(' {
+            i += 1;
+            let mut depth = 1u32;
+            while i < len && depth > 0 {
+                match data[i] {
+                    b'\\' => i += 1, // skip escaped char
+                    b'(' => depth += 1,
+                    b')' => depth -= 1,
+                    _ => {},
+                }
+                i += 1;
+            }
+            num_count = 0;
+            continue;
+        }
+        if b == b'<' {
+            if i + 1 < len && data[i + 1] == b'<' {
+                // Dict << >> — skip to matching >>
+                i += 2;
+                let mut depth = 1u32;
+                while i + 1 < len && depth > 0 {
+                    if data[i] == b'<' && data[i + 1] == b'<' {
+                        depth += 1;
+                        i += 2;
+                    } else if data[i] == b'>' && data[i + 1] == b'>' {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+            } else {
+                // Hex string <...>
+                i += 1;
+                while i < len && data[i] != b'>' {
+                    i += 1;
+                }
+                if i < len {
+                    i += 1;
+                }
+            }
+            num_count = 0;
+            continue;
+        }
+
+        // Names (/Foo) — track for Tf font name
+        if b == b'/' {
+            let name_start = i + 1;
+            i += 1;
+            while i < len
+                && !data[i].is_ascii_whitespace()
+                && !matches!(
+                    data[i],
+                    b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
+                )
+            {
+                i += 1;
+            }
+            last_name = std::str::from_utf8(&data[name_start..i])
+                .ok()
+                .map(|s| s.to_string());
+            num_count = 0;
+            continue;
+        }
+        if b == b'%' {
+            // Comment — skip to end of line
+            while i < len && data[i] != b'\n' && data[i] != b'\r' {
+                i += 1;
+            }
+            continue;
+        }
+
+        i += 1;
+    }
+
+    // Record state for any remaining text positions
+    while next_tp_idx < sorted_positions.len() {
+        let (orig_idx, _) = sorted_positions[next_tp_idx];
+        results[orig_idx] = PrescanState {
+            ctm: (ctm.a, ctm.b, ctm.c, ctm.d, ctm.e, ctm.f),
+            font: font.clone(),
+        };
+        next_tp_idx += 1;
+    }
+
+    Some(results)
+}
+
+/// Result of pre-scanning a content stream for text regions.
+#[derive(Debug)]
+enum PrescanResult {
+    /// No text operators in the stream.
+    Empty,
+    /// Text regions found with complete CTM context from backward scan alone.
+    Regions(Vec<(usize, usize)>),
+    /// Text regions found but backward scan hit 4KB limit for at least one BT.
+    /// Includes per-text-position CTM from a forward scan of the full stream.
+    /// Each entry in `ctms` corresponds to one text position (before merging).
+    RegionsWithCtm {
+        regions: Vec<(usize, usize)>,
+        /// Graphics state at each text position. After region merging, only the
+        /// state for the first text position in each merged region is used.
+        region_states: Vec<PrescanState>,
+    },
+}
+
+impl PrescanResult {
+    /// Get the regions from any variant (for testing).
+    #[cfg(test)]
+    fn regions(&self) -> &[(usize, usize)] {
+        match self {
+            PrescanResult::Empty => &[],
+            PrescanResult::Regions(r) => r,
+            PrescanResult::RegionsWithCtm { regions, .. } => regions,
+        }
+    }
+}
+
+fn prescan_text_regions(data: &[u8]) -> Option<PrescanResult> {
     fn is_boundary(b: u8) -> bool {
         b.is_ascii_whitespace()
             || matches!(b, b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%')
@@ -282,17 +563,21 @@ fn prescan_text_regions(data: &[u8]) -> Option<Vec<(usize, usize)>> {
     }
 
     if text_positions.is_empty() {
-        // No text operators — caller can skip the entire stream
-        return Some(Vec::new());
+        return Some(PrescanResult::Empty);
     }
 
     // For each text position, scan backwards to find the nearest unmatched 'q'
     // to capture CTM state (cm operators between q and BT/Do).
     let mut regions: Vec<(usize, usize)> = Vec::new();
+    let mut needs_forward_ctm = false;
 
     for &tp in &text_positions {
         // Find region start: scan backwards for unmatched q
-        let region_start = find_region_start(data, tp);
+        let (region_start, hit_limit) = find_region_start(data, tp);
+
+        if hit_limit {
+            needs_forward_ctm = true;
+        }
 
         // Find region end: for BT, find matching ET; for Do, end after "Do"
         let region_end = if data[tp] == b'B' {
@@ -309,8 +594,56 @@ fn prescan_text_regions(data: &[u8]) -> Option<Vec<(usize, usize)>> {
 
     // Merge overlapping/adjacent regions
     if regions.is_empty() {
-        return Some(Vec::new());
+        return Some(PrescanResult::Empty);
     }
+
+    if needs_forward_ctm {
+        // At least one BT was too far from the start of the stream for the
+        // backward scan to capture all enclosing CTM context. Run a lightweight
+        // forward scan to get the full graphics state at each BT/Do position.
+        //
+        // Regions start at the BT/Do position itself (not the backward-scanned
+        // q) to avoid q/Q nesting issues with the SaveState/RestoreState
+        // wrapping. The forward scan also tracks font state so BT blocks that
+        // inherit fonts from prior state get the correct Tf injected.
+        let states = forward_scan_ctm(data, &text_positions)?;
+
+        // Build BT-based regions with their graphics state
+        let mut ctm_regions: Vec<(usize, usize)> = Vec::new();
+        for &tp in &text_positions {
+            let region_end = if data[tp] == b'B' {
+                find_matching_et(data, tp + 2).unwrap_or(len)
+            } else {
+                tp + 2
+            };
+            ctm_regions.push((tp, region_end.min(len)));
+        }
+
+        // Merge overlapping regions and track which state goes with each.
+        let mut indexed: Vec<((usize, usize), PrescanState)> =
+            ctm_regions.into_iter().zip(states).collect();
+        indexed.sort_by_key(|&(r, _)| r.0);
+
+        let mut merged: Vec<(usize, usize)> = Vec::new();
+        let mut merged_states: Vec<PrescanState> = Vec::new();
+
+        for (r, state) in indexed {
+            if let Some(last) = merged.last_mut() {
+                if r.0 <= last.1 {
+                    last.1 = last.1.max(r.1);
+                    continue; // Merged — keep the state from the first region
+                }
+            }
+            merged.push(r);
+            merged_states.push(state);
+        }
+
+        return Some(PrescanResult::RegionsWithCtm {
+            regions: merged,
+            region_states: merged_states,
+        });
+    }
+
     regions.sort_unstable_by_key(|r| r.0);
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for r in regions {
@@ -323,12 +656,18 @@ fn prescan_text_regions(data: &[u8]) -> Option<Vec<(usize, usize)>> {
         merged.push(r);
     }
 
-    Some(merged)
+    Some(PrescanResult::Regions(merged))
 }
 
 /// Scan backwards from `pos` to find the start of the graphics state context.
 /// Looks for an unmatched 'q' operator, handling nesting.
-fn find_region_start(data: &[u8], pos: usize) -> usize {
+///
+/// Returns `(offset, hit_limit)` where `hit_limit` is true if the backward
+/// scan could not guarantee that all enclosing graphics state context was
+/// captured. This happens when the 4KB scan window doesn't reach the
+/// beginning of the data — there may be additional enclosing `q`/`cm`
+/// operators beyond the window that affect the CTM.
+fn find_region_start(data: &[u8], pos: usize) -> (usize, bool) {
     // Simple backward scan: find the nearest line that starts with 'q' or
     // the beginning of data. We limit backward scan to 4KB for performance.
     let scan_start = pos.saturating_sub(4096);
@@ -377,7 +716,12 @@ fn find_region_start(data: &[u8], pos: usize) -> usize {
         }
     }
 
-    best_q_pos
+    // We can only guarantee complete CTM context if we scanned all the way
+    // to the beginning of the data. Even if we found an unmatched 'q' within
+    // 4KB, there may be additional enclosing q/cm operators before the scan
+    // window that establish scaling transforms we're missing.
+    let hit_limit = scan_start > 0;
+    (best_q_pos, hit_limit)
 }
 
 /// Find the position after matching "ET" for a BT starting at `start`.
@@ -421,16 +765,42 @@ where
     // For large streams (>256KB), use SIMD pre-scan to identify text regions.
     // This avoids byte-by-byte scanning of megabytes of path/color operators.
     if data.len() > 256 * 1024 {
-        if let Some(regions) = prescan_text_regions(data) {
-            if regions.is_empty() {
-                return Ok(()); // No text operators in stream
+        if let Some(result) = prescan_text_regions(data) {
+            match result {
+                PrescanResult::Empty => return Ok(()),
+                PrescanResult::Regions(regions) => {
+                    for (start, end) in &regions {
+                        parse_region_text_only(&data[*start..*end], &mut handler)?;
+                    }
+                    return Ok(());
+                },
+                PrescanResult::RegionsWithCtm {
+                    regions,
+                    region_states,
+                } => {
+                    // Inject the correct graphics state before each BT region.
+                    // Each region is wrapped in SaveState/RestoreState so state
+                    // from one region doesn't leak into the next.
+                    for (i, (start, end)) in regions.iter().enumerate() {
+                        let state = &region_states[i];
+                        let (a, b, c, d, e, f) = state.ctm;
+                        handler(Operator::SaveState)?;
+                        handler(Operator::Cm { a, b, c, d, e, f })?;
+                        // Inject font state if the forward scan tracked one.
+                        // This handles BT blocks that inherit Tf from a prior
+                        // scope instead of setting their own.
+                        if let Some((ref font_name, font_size)) = state.font {
+                            handler(Operator::Tf {
+                                font: font_name.clone(),
+                                size: font_size,
+                            })?;
+                        }
+                        parse_region_text_only(&data[*start..*end], &mut handler)?;
+                        handler(Operator::RestoreState)?;
+                    }
+                    return Ok(());
+                },
             }
-            // Parse only the identified text-bearing regions
-            for (start, end) in &regions {
-                let region_data = &data[*start..*end];
-                parse_region_text_only(region_data, &mut handler)?;
-            }
-            return Ok(());
         }
         // Fallback: pre-scan inconclusive, use full scan below
     }
@@ -3216,11 +3586,10 @@ mod tests {
     #[test]
     fn test_prescan_single_bt_et() {
         let stream = b"BT /F1 12 Tf (Hello) Tj ET";
-        let regions = prescan_text_regions(stream);
-        assert!(regions.is_some(), "Should return Some for valid stream");
-        let regions = regions.unwrap();
+        let result = prescan_text_regions(stream);
+        assert!(result.is_some(), "Should return Some for valid stream");
+        let regions = result.unwrap().regions().to_vec();
         assert!(!regions.is_empty(), "Should find at least 1 region");
-        // The region should cover the BT..ET block
         let (start, end) = regions[0];
         assert_eq!(start, 0, "Region should start at BT");
         assert!(end >= 26, "Region should extend to or past ET");
@@ -3229,30 +3598,27 @@ mod tests {
     #[test]
     fn test_prescan_multiple_bt_et() {
         let stream = b"BT (A) Tj ET BT (B) Tj ET BT (C) Tj ET";
-        let regions = prescan_text_regions(stream);
-        assert!(regions.is_some());
-        let regions = regions.unwrap();
-        // Should have 1-3 regions (may merge adjacent ones)
+        let result = prescan_text_regions(stream);
+        assert!(result.is_some());
+        let regions = result.unwrap().regions().to_vec();
         assert!(!regions.is_empty(), "Should find regions for 3 BT/ET blocks");
     }
 
     #[test]
     fn test_prescan_do_operator() {
-        // Stream with only Do (no BT) should still find a region
         let stream = b"/Im1 Do";
-        let regions = prescan_text_regions(stream);
-        assert!(regions.is_some());
-        let regions = regions.unwrap();
+        let result = prescan_text_regions(stream);
+        assert!(result.is_some());
+        let regions = result.unwrap().regions().to_vec();
         assert!(!regions.is_empty(), "Should find region for Do operator");
     }
 
     #[test]
     fn test_prescan_no_text_ops() {
-        // Pure path data — no BT, no Do
         let stream = b"100 200 m 300 400 l S 0 0 100 100 re f";
-        let regions = prescan_text_regions(stream);
-        assert!(regions.is_some());
-        let regions = regions.unwrap();
+        let result = prescan_text_regions(stream);
+        assert!(result.is_some());
+        let regions = result.unwrap().regions().to_vec();
         assert!(
             regions.is_empty(),
             "Pure graphics should return empty regions, got {:?}",
@@ -3262,26 +3628,18 @@ mod tests {
 
     #[test]
     fn test_prescan_bt_in_string_literal() {
-        // "BT" inside a string literal should NOT be matched as an operator.
-        // The string (text BT here) is an operand, not a BT operator.
-        // However, prescan is a heuristic — it may or may not correctly
-        // handle this case. What matters is it doesn't panic and returns
-        // a valid result. We verify it returns Some (not None/panic).
         let stream = b"(text BT here) Tj";
-        let regions = prescan_text_regions(stream);
-        // The function should handle this gracefully
-        assert!(regions.is_some(), "Should not return None for string containing BT");
+        let result = prescan_text_regions(stream);
+        assert!(result.is_some(), "Should not return None for string containing BT");
     }
 
     #[test]
     fn test_prescan_merges_overlapping_regions() {
-        // Two BT blocks close together — regions should merge or be adjacent
         let stream = b"q BT (A) Tj ET Q q BT (B) Tj ET Q";
-        let regions = prescan_text_regions(stream);
-        assert!(regions.is_some());
-        let regions = regions.unwrap();
+        let result = prescan_text_regions(stream);
+        assert!(result.is_some());
+        let regions = result.unwrap().regions().to_vec();
         assert!(!regions.is_empty());
-        // Verify regions are sorted and non-overlapping after merge
         for i in 1..regions.len() {
             assert!(
                 regions[i].0 >= regions[i - 1].1,
@@ -4130,6 +4488,75 @@ mod tests {
         })
         .unwrap();
         assert!(ops.is_empty());
+    }
+
+    #[test]
+    fn test_prescan_preserves_outer_ctm_for_deeply_nested_text() {
+        // Regression test for issue #265: prescan_text_regions loses outer CTM
+        // context when text is deeply nested in graphics state with scaling cm
+        // operators separated by >4KB of path data.
+        //
+        // Build a >256KB stream with:
+        //   q / cm (scaling) / >4KB of filler / q / cm (translation) / BT...ET / Q / Q
+        //
+        // The forward CTM scan should capture the outer scaling and inject it
+        // as part of the accumulated CTM before the text region. The injected
+        // Cm should reflect the combined outer scaling × inner translation.
+        let mut cs = Vec::new();
+
+        // Outer graphics state with scaling
+        cs.extend_from_slice(b"q\n");
+        cs.extend_from_slice(b"0.1 0 0 0.1 50 50 cm\n");
+
+        // >260KB of path filler to exceed the 256KB prescan threshold
+        // and push the outer cm beyond the 4KB backward scan limit
+        for i in 0..13000u32 {
+            let line = format!(
+                "{}.0 {}.0 m {}.0 {}.0 l n\n",
+                i % 500,
+                (i * 7) % 500,
+                (i * 3) % 500,
+                (i * 11) % 500
+            );
+            cs.extend_from_slice(line.as_bytes());
+        }
+        assert!(cs.len() > 256 * 1024, "stream must exceed 256KB prescan threshold");
+
+        // Nested text with large-coordinate translation (scaled by outer 0.1x)
+        cs.extend_from_slice(b"q\n");
+        cs.extend_from_slice(b"1 0 0 1 3000 4000 cm\n");
+        cs.extend_from_slice(b"BT\n");
+        cs.extend_from_slice(b"/F1 80 Tf\n");
+        cs.extend_from_slice(b"(Test) Tj\n");
+        cs.extend_from_slice(b"ET\n");
+        cs.extend_from_slice(b"Q\n");
+        cs.extend_from_slice(b"Q\n");
+
+        let mut ops = Vec::new();
+        parse_and_execute_text_only(&cs, |op| {
+            ops.push(op);
+            Ok(())
+        })
+        .unwrap();
+
+        // The injected Cm should reflect the accumulated CTM at the BT position:
+        // outer scaling (0.1) × inner translation (3000, 4000).
+        // Net: a=0.1, d=0.1, e=0.1*3000+50=350, f=0.1*4000+50=450
+        let cm_ops: Vec<_> = ops
+            .iter()
+            .filter(|op| matches!(op, Operator::Cm { .. }))
+            .collect();
+        assert!(!cm_ops.is_empty(), "expected at least 1 Cm operator (injected CTM)");
+
+        // Verify the injected Cm includes the outer 0.1x scaling
+        let has_scaled_cm = cm_ops.iter().any(|op| {
+            matches!(op, Operator::Cm { a, d, .. } if (*a - 0.1).abs() < 0.01 && (*d - 0.1).abs() < 0.02)
+        });
+        assert!(
+            has_scaled_cm,
+            "injected Cm should include outer 0.1x scaling, got: {:?}",
+            cm_ops
+        );
     }
 
     // ── Error handling / malformed streams ───────────────────────────
