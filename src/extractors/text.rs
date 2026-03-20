@@ -3600,7 +3600,9 @@ impl TextExtractor {
                                     }
 
                                     let state_mut = self.state_stack.current_mut();
-                                    state_mut.text_matrix.e += tx;
+                                    let tm = state_mut.text_matrix;
+                                    state_mut.text_matrix.e += tx * tm.a;
+                                    state_mut.text_matrix.f += tx * tm.b;
                                 },
                             }
                         }
@@ -5370,12 +5372,12 @@ impl TextExtractor {
             w_sum
         };
 
-        // Update text matrix position
+        // Update text matrix position per ISO 32000-1:2008 §9.4.4:
+        // Tm_new = [1 0 0 1 tx 0] × Tm_old, where tx = total_width (text-space displacement)
         let state = self.state_stack.current_mut();
         let text_matrix = state.text_matrix;
-        let advance = total_width / text_matrix.d.abs();
-        state.text_matrix.e += advance * text_matrix.a;
-        state.text_matrix.f += advance * text_matrix.b;
+        state.text_matrix.e += total_width * text_matrix.a;
+        state.text_matrix.f += total_width * text_matrix.b;
 
         Ok(total_width)
     }
@@ -5479,12 +5481,11 @@ impl TextExtractor {
 
         buffer.accumulated_width += total_width;
 
-        // Update text matrix position
+        // Update text matrix position per ISO 32000-1:2008 §9.4.4
         let state = self.state_stack.current_mut();
         let text_matrix = state.text_matrix;
-        let advance = total_width / text_matrix.d.abs();
-        state.text_matrix.e += advance * text_matrix.a;
-        state.text_matrix.f += advance * text_matrix.b;
+        state.text_matrix.e += total_width * text_matrix.a;
+        state.text_matrix.f += total_width * text_matrix.b;
 
         Ok(())
     }
@@ -5581,9 +5582,8 @@ impl TextExtractor {
 
         let state = self.state_stack.current_mut();
         let text_matrix = state.text_matrix;
-        let advance = total_width / text_matrix.d.abs();
-        state.text_matrix.e += advance * text_matrix.a;
-        state.text_matrix.f += advance * text_matrix.b;
+        state.text_matrix.e += total_width * text_matrix.a;
+        state.text_matrix.f += total_width * text_matrix.b;
 
         Ok(())
     }
@@ -5657,11 +5657,10 @@ impl TextExtractor {
 
         self.spans.push(span);
 
-        // Advance position
+        // Advance position per ISO 32000-1:2008 §9.4.4
         let state = self.state_stack.current_mut();
-        let advance = space_width / text_matrix.d.abs();
-        state.text_matrix.e += advance * text_matrix.a;
-        state.text_matrix.f += advance * text_matrix.b;
+        state.text_matrix.e += space_width * text_matrix.a;
+        state.text_matrix.f += space_width * text_matrix.b;
 
         Ok(())
     }
@@ -5672,13 +5671,15 @@ impl TextExtractor {
         let font_size = state.font_size;
         let horizontal_scaling = state.horizontal_scaling;
 
-        // Calculate horizontal displacement per PDF spec
+        // Calculate horizontal displacement per PDF spec §9.4.4
         // tx = -offset / 1000.0 * font_size * horizontal_scaling / 100.0
         let tx = -offset / 1000.0 * font_size * horizontal_scaling / 100.0;
 
-        // Update text matrix position
+        // Update text matrix: Tm_new = [1 0 0 1 tx 0] × Tm_old
         let state = self.state_stack.current_mut();
-        state.text_matrix.e += tx;
+        let text_matrix = state.text_matrix;
+        state.text_matrix.e += tx * text_matrix.a;
+        state.text_matrix.f += tx * text_matrix.b;
 
         Ok(())
     }
@@ -5908,9 +5909,11 @@ impl TextExtractor {
                 tx += word_space * hs_factor;
             }
 
-            // Update text matrix in current state
+            // Update text matrix in current state per ISO 32000-1:2008 §9.4.4
             let state_mut = self.state_stack.current_mut();
-            state_mut.text_matrix.e += tx;
+            let tm = state_mut.text_matrix;
+            state_mut.text_matrix.e += tx * tm.a;
+            state_mut.text_matrix.f += tx * tm.b;
         }
 
         Ok(())
