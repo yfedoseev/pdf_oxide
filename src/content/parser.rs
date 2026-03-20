@@ -233,14 +233,6 @@ pub fn parse_content_stream_text_only(data: &[u8]) -> Result<Vec<Operator>> {
     Ok(operators)
 }
 
-/// SIMD-accelerated pre-scan to identify text-bearing regions in large content streams.
-///
-/// For streams > 256KB that are mostly graphics (path operators, color ops), this uses
-/// memchr to locate BT/Do operator positions in ~1ms instead of byte-by-byte scanning
-/// at ~500ms. Returns parse regions that cover BT..ET blocks and Do operators, plus
-/// preceding graphics state (q..cm) needed for correct CTM.
-///
-/// Returns `None` on ambiguous cases (fallback to full scan).
 /// Graphics state snapshot captured at a text position by [`forward_scan_ctm`].
 #[derive(Debug)]
 struct PrescanState {
