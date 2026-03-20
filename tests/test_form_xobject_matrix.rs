@@ -230,8 +230,7 @@ fn test_form_xobject_matrix_scaling_applied_to_spans() {
     let _ = env_logger::builder().is_test(true).try_init();
     let pdf_bytes = build_form_xobject_with_matrix_pdf();
 
-    let mut doc = PdfDocument::from_bytes(pdf_bytes)
-        .expect("Failed to parse test PDF");
+    let mut doc = PdfDocument::from_bytes(pdf_bytes).expect("Failed to parse test PDF");
 
     let spans = doc.extract_spans(0).expect("Failed to extract spans");
     assert!(!spans.is_empty(), "Should extract at least one span");
@@ -253,11 +252,7 @@ fn test_form_xobject_matrix_scaling_applied_to_spans() {
         "X coordinate should be ~100 (scaled from 200), got {}",
         span.bbox.x
     );
-    assert!(
-        span.bbox.x > 50.0,
-        "X coordinate should be ~100, got {}",
-        span.bbox.x
-    );
+    assert!(span.bbox.x > 50.0, "X coordinate should be ~100, got {}", span.bbox.x);
 
     // Font size should also be scaled: 24 * 0.5 = 12
     assert!(
@@ -265,11 +260,7 @@ fn test_form_xobject_matrix_scaling_applied_to_spans() {
         "Font size should be ~12 (24 * 0.5), got {}",
         span.font_size
     );
-    assert!(
-        span.font_size > 8.0,
-        "Font size should be ~12, got {}",
-        span.font_size
-    );
+    assert!(span.font_size > 8.0, "Font size should be ~12, got {}", span.font_size);
 }
 
 #[test]
@@ -277,8 +268,7 @@ fn test_form_xobject_matrix_translation_applied_to_spans() {
     let _ = env_logger::builder().is_test(true).try_init();
     let pdf_bytes = build_form_xobject_with_translation_pdf();
 
-    let mut doc = PdfDocument::from_bytes(pdf_bytes)
-        .expect("Failed to parse test PDF");
+    let mut doc = PdfDocument::from_bytes(pdf_bytes).expect("Failed to parse test PDF");
 
     let spans = doc.extract_spans(0).expect("Failed to extract spans");
     assert!(!spans.is_empty(), "Should extract at least one span");
@@ -306,8 +296,7 @@ fn test_form_xobject_without_matrix_uses_identity() {
     let _ = env_logger::builder().is_test(true).try_init();
     let pdf_bytes = build_form_xobject_without_matrix_pdf();
 
-    let mut doc = PdfDocument::from_bytes(pdf_bytes)
-        .expect("Failed to parse test PDF");
+    let mut doc = PdfDocument::from_bytes(pdf_bytes).expect("Failed to parse test PDF");
 
     let spans = doc.extract_spans(0).expect("Failed to extract spans");
     assert!(!spans.is_empty(), "Should extract at least one span");
@@ -402,8 +391,7 @@ fn test_form_xobject_matrix_does_not_leak_to_parent() {
         .as_bytes(),
     );
 
-    let mut doc =
-        PdfDocument::from_bytes(pdf).expect("Failed to parse test PDF");
+    let mut doc = PdfDocument::from_bytes(pdf).expect("Failed to parse test PDF");
 
     let spans = doc.extract_spans(0).expect("Failed to extract spans");
 
