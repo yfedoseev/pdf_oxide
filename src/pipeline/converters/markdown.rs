@@ -466,7 +466,27 @@ impl MarkdownOutputConverter {
 
             let normalized;
             if !config.output.preserve_layout {
-                normalized = self.normalize_whitespace(text);
+                // In PDFs, adjacent spans on the same line often have slightly
+                // overlapping bboxes (negative horizontal gap) with the inter-span
+                // whitespace encoded as leading/trailing spaces in the span text
+                // itself.  normalize_whitespace collapses internal runs of spaces
+                // but would also strip these boundary spaces, causing words from
+                // neighbouring spans to merge (e.g. "visitwww.example.comto").
+                // Preserve a leading space when a same-line predecessor exists and
+                // a trailing space unconditionally so the next span can abut
+                // correctly.  The plain-text converter avoids this problem by
+                // skipping per-span normalization entirely.
+                let had_leading_space =
+                    same_line && prev_span.is_some() && text.starts_with(char::is_whitespace);
+                let had_trailing_space = text.ends_with(char::is_whitespace);
+                let mut norm = self.normalize_whitespace(text);
+                if had_leading_space && !norm.starts_with(' ') {
+                    norm.insert(0, ' ');
+                }
+                if had_trailing_space && !norm.ends_with(' ') && !norm.is_empty() {
+                    norm.push(' ');
+                }
+                normalized = norm;
                 text = &normalized;
             }
 

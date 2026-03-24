@@ -50,6 +50,30 @@ fn make_span_with_order(
     )
 }
 
+/// Helper to create a text span with explicit width and reading order.
+fn make_span_sized(
+    text: &str,
+    x: f32,
+    y: f32,
+    width: f32,
+    font_size: f32,
+    weight: FontWeight,
+    is_italic: bool,
+    reading_order: usize,
+) -> OrderedTextSpan {
+    OrderedTextSpan::new(
+        TextSpan {
+            text: text.to_string(),
+            bbox: Rect::new(x, y, width, font_size),
+            font_size,
+            font_weight: weight,
+            is_italic,
+            ..Default::default()
+        },
+        reading_order,
+    )
+}
+
 // ============================================================================
 // FEATURE 1: Heading Detection Tests
 // ============================================================================
@@ -530,4 +554,73 @@ fn test_empty_spans() {
 
     // Then: Output is empty
     assert_eq!(output, "");
+}
+
+// ============================================================================
+// BUG FIX: Spacing around annotated/styled text on the same line
+// ============================================================================
+
+#[test]
+fn test_same_line_spans_with_overlapping_bboxes_preserve_spaces() {
+    // Adjacent spans on the same line with slightly overlapping bboxes
+    // (gap < 0).  The inter-span whitespace is encoded as trailing/leading
+    // spaces in the span text.  Before the fix, normalize_whitespace
+    // stripped those boundary spaces, producing "visitwww.example.comto".
+    let fs = 12.0;
+
+    // "...please visit " — trailing space encodes the gap before the link
+    let span1 = make_span_sized(
+        "please visit ", 56.7, 317.3, 358.6, fs, FontWeight::Normal, false, 0,
+    );
+    // "www.example.com" — link span, bbox overlaps previous by ~0.7pt
+    let span2 = make_span_sized(
+        "www.example.com", 414.6, 317.3, 103.3, fs, FontWeight::Normal, false, 1,
+    );
+    // " to " — leading and trailing spaces encode gaps on both sides
+    let span3 = make_span_sized(
+        " to ", 517.1, 317.3, 15.3, fs, FontWeight::Normal, false, 2,
+    );
+
+    let config = TextPipelineConfig::default();
+    let converter = MarkdownOutputConverter::new();
+    let output = converter.convert(&[span1, span2, span3], &config).unwrap();
+
+    assert!(
+        !output.contains("visitwww") && !output.contains("visit["),
+        "Missing space before link. Output: {}", output
+    );
+    assert!(
+        !output.contains("comto") && !output.contains("]to"),
+        "Missing space after link. Output: {}", output
+    );
+}
+
+#[test]
+fn test_same_line_spans_with_overlapping_bboxes_styled_text() {
+    // Italic (underlined) text mid-sentence with overlapping bboxes.
+    // "for September. " + "*Closing date 7th July.*" + " Please book early"
+    let fs = 12.0;
+
+    let span1 = make_span_sized(
+        "for September. ", 56.7, 302.3, 278.9, fs, FontWeight::Normal, false, 0,
+    );
+    let span2 = make_span_sized(
+        "Closing date 7th July.", 334.3, 302.3, 104.7, fs, FontWeight::Normal, true, 1,
+    );
+    let span3 = make_span_sized(
+        " Please book early", 438.2, 302.3, 90.6, fs, FontWeight::Normal, false, 2,
+    );
+
+    let config = TextPipelineConfig::default();
+    let converter = MarkdownOutputConverter::new();
+    let output = converter.convert(&[span1, span2, span3], &config).unwrap();
+
+    assert!(
+        !output.contains("September.*Closing") && !output.contains("September.Closing"),
+        "Missing space before styled text. Output: {}", output
+    );
+    assert!(
+        !output.contains("July.*Please") && !output.contains("July.Please"),
+        "Missing space after styled text. Output: {}", output
+    );
 }
