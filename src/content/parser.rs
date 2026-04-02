@@ -1193,8 +1193,8 @@ fn build_operator(name: &str, operands: SmallVec<[Object; 6]>) -> Operator {
             }
         },
         "S" => Operator::Stroke,
-        "f" => Operator::Fill,
-        "f*" | "F" => Operator::FillEvenOdd,
+        "f" | "F" => Operator::Fill, // "F" is obsolete equivalent of "f" (nonzero winding fill)
+        "f*" => Operator::FillEvenOdd,
         "b" => Operator::CloseFillStroke,
         "b*" => Operator::CloseFillStrokeEvenOdd,
         "B" => Operator::FillStroke,

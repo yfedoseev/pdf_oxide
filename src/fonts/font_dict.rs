@@ -705,13 +705,12 @@ impl FontInfo {
         // Type0/CID fonts use Identity-H encoding and CIDToGIDMap, not CFF Standard Encoding.
         let cff_gid_map = if subtype != "Type0" {
             embedded_font_data.as_ref().and_then(|data| {
-                super::cff_encoding::parse_cff_gid_mapping(data).map(|map| {
+                super::cff_encoding::parse_cff_gid_mapping(data).inspect(|map| {
                     log::debug!(
                         "Font '{}': parsed CFF GID mapping ({} entries)",
                         base_font,
                         map.len()
                     );
-                    map
                 })
             })
         } else {

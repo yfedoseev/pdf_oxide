@@ -107,6 +107,7 @@ web-sys = { version = "0.3", optional = true, features = ["console"] }
 js-sys = { version = "0.3", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 getrandom = { version = "0.4", optional = true, features = ["wasm_js"] }
+getrandom_02 = { package = "getrandom", version = "0.2", optional = true, features = ["js"] }
 serde-wasm-bindgen = { version = "0.6", optional = true }
 
 # Table detection - page rendering (optional)
@@ -151,7 +152,7 @@ ml = ["dep:tract-onnx", "dep:ndarray", "dep:linfa", "dep:linfa-clustering", "dep
 table-ml = ["ml", "dep:pdfium-render"]
 ocr = ["dep:ort", "dep:imageproc", "dep:ndarray"]
 gpu = ["dep:ort", "ml"]
-wasm = ["dep:wasm-bindgen", "dep:web-sys", "dep:js-sys", "dep:console_error_panic_hook", "dep:getrandom", "dep:serde-wasm-bindgen", "logging", "signatures", "barcodes", "office"]
+wasm = ["dep:wasm-bindgen", "dep:web-sys", "dep:js-sys", "dep:console_error_panic_hook", "dep:getrandom", "dep:getrandom_02", "dep:serde-wasm-bindgen", "logging", "signatures", "barcodes", "office"]
 wasm-ml = ["wasm", "ml"]
 
 # Debug feature for span merging analysis

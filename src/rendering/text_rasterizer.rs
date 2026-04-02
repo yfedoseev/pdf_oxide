@@ -3,6 +3,7 @@
 //! Text rendering in PDF is complex because:
 //! - Fonts may be embedded or use standard PDF fonts
 //! - Character encoding varies (identity-H, MacRoman, custom ToUnicode, etc.)
+#![allow(clippy::collapsible_if, clippy::vec_box)]
 //! - Glyph positioning is explicit via TJ arrays
 //!
 //! This module provides a text rendering implementation that:
@@ -58,6 +59,7 @@ impl TextRasterizer {
 
     /// Render a text string (Tj operator).
     /// Returns the total horizontal advance in PDF points.
+    #[allow(unused_variables)]
     pub fn render_text(
         &self,
         pixmap: &mut Pixmap,
@@ -81,7 +83,11 @@ impl TextRasterizer {
         log::debug!("Decoded text: '{}' (font={:?})", unicode_text, gs.font_name);
 
         // Create paint from fill color
-        let paint = create_fill_paint(gs, "Normal");
+        let mut paint = create_fill_paint(gs, "Normal");
+        // Text rendering mode 3 = invisible text (used for searchable OCR layers)
+        if gs.render_mode == 3 {
+            paint.set_color(tiny_skia::Color::from_rgba(0.0, 0.0, 0.0, 0.0).unwrap());
+        }
 
         // Find and load font - prioritize embedded font data
         let pdf_font_name = gs.font_name.as_deref().unwrap_or("Helvetica");
@@ -163,7 +169,7 @@ impl TextRasterizer {
                         if let Some((fallback_data, fallback_idx)) =
                             self.load_font_data(pdf_font_name)
                         {
-                            return Ok(self.render_unicode_text(
+                            return self.render_unicode_text(
                                 pixmap,
                                 &unicode_text,
                                 text,
@@ -176,7 +182,7 @@ impl TextRasterizer {
                                 clip_mask,
                                 pdf_font_name,
                                 false,
-                            )?);
+                            );
                         }
                     },
                 }
@@ -314,6 +320,7 @@ impl TextRasterizer {
     }
 
     /// Get font info for a specific font name from resources.
+    #[allow(dead_code)]
     fn get_font_info(
         &self,
         doc: &mut PdfDocument,
@@ -512,22 +519,24 @@ impl TextRasterizer {
         let rb_face_opt = rustybuzz::Face::from_slice(font_data, index);
 
         if rb_face_opt.is_none() {
-            log::warn!("Failed to create rustybuzz face from embedded data for '{}', falling back to system font", pdf_font_name);
-            if let Some((fallback_data, fallback_index)) = self.load_font_data(pdf_font_name) {
-                return self.render_unicode_text(
-                    pixmap,
-                    text,
-                    bytes,
-                    font_info,
-                    &fallback_data,
-                    fallback_index,
-                    paint,
-                    base_transform,
-                    gs,
-                    clip_mask,
-                    pdf_font_name,
-                    false, // don't allow infinite fallback
-                );
+            if allow_fallback {
+                log::warn!("Failed to create rustybuzz face from embedded data for '{}', falling back to system font", pdf_font_name);
+                if let Some((fallback_data, fallback_index)) = self.load_font_data(pdf_font_name) {
+                    return self.render_unicode_text(
+                        pixmap,
+                        text,
+                        bytes,
+                        font_info,
+                        &fallback_data,
+                        fallback_index,
+                        paint,
+                        base_transform,
+                        gs,
+                        clip_mask,
+                        pdf_font_name,
+                        false, // don't allow infinite fallback
+                    );
+                }
             }
             return self.render_text_fallback(pixmap, text, paint, base_transform, gs, clip_mask);
         }

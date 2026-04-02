@@ -57,21 +57,24 @@ New methods on `PdfDocument`:
 - `delete_page(index)` — Remove a page by index
 - `move_page(from, to)` — Reorder pages
 - `flatten_to_images(dpi)` — Create flattened PDF from rendered pages
+- `PdfDocument(path, password=)` — Open encrypted PDFs in one step (#247)
+- `PdfDocument.from_bytes(data, password=)` — Same for in-memory PDFs
+- `Pdf.merge(paths)` — Merge multiple PDF files into one
 
 ### API — WASM / JavaScript
 
 New methods on `WasmPdfDocument`:
 - `validatePdfA(level)` — PDF/A compliance validation
-- `addLink(page, x, y, w, h, url)` — Add link annotations
-- `addHighlight(page, x, y, w, h)` — Add highlight annotations
-- `addNote(page, x, y, text)` — Add text note annotations
 - `deletePage(index)` — Remove a page
 - `extractPages(pages)` — Extract pages to new PDF bytes
-- `flattenToImages(dpi)` — Create flattened PDF from rendered pages
+- `save()` — Save modified PDF (alias for `saveToBytes()`)
+- `new WasmPdfDocument(data, password?)` — Open encrypted PDFs (#247)
+- `WasmPdf.merge(pdfs)` — Merge multiple PDFs from byte arrays
 
 ### Core Rust API
 
 - `rendering::flatten_to_images(doc, dpi)` — Shared implementation for all bindings
+- `api::merge_pdfs(paths)` — Merge multiple PDFs (shared across all bindings)
 
 ### Features
 
@@ -90,7 +93,9 @@ New methods on `WasmPdfDocument`:
 
 🏅 **@XO9A8** — Thank you for improving the `PdfDocument::from_bytes` documentation (#276)! 🚀
 
-🏅 **@monchin** — Thank you for replacing manual stub generation with Rylai (#250), eliminating thousands of lines of maintenance burden! 🚀
+🏅 **@monchin** — Thank you for replacing manual stub generation with Rylai (#250) and for helping diagnose the password API issue (#247) with a clear workaround and API improvement suggestion! 🚀
+
+🏅 **@marph91** — Thank you for reporting the password constructor issue (#247), improving the developer experience for encrypted PDF workflows! 🚀
 
 ## [0.3.17] - 2026-03-08
 > Stable Recursion and Refined Table Heuristics

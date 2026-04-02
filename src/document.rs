@@ -2129,6 +2129,7 @@ impl PdfDocument {
     /// Pre-populate `image_xobject_cache` for all XObject refs across all cached pages.
     /// Collects all unique XObject references, sorts them by xref offset for sequential
     /// I/O (avoids random seeking in large files), then peeks each one via `is_form_xobject()`.
+    #[allow(dead_code)]
     fn prefetch_xobject_subtypes(&mut self) {
         // Collect all unique XObject refs from all cached pages
         let mut xobj_refs: Vec<ObjectRef> = Vec::new();

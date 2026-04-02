@@ -2,6 +2,16 @@
 //!
 //! This module implements the core PDF rendering logic, converting
 //! PDF operators into tiny-skia drawing commands.
+#![allow(
+    clippy::manual_div_ceil,
+    clippy::field_reassign_with_default,
+    clippy::collapsible_if,
+    clippy::needless_borrow,
+    clippy::get_first,
+    clippy::if_same_then_else,
+    clippy::needless_return_with_question_mark,
+    clippy::ptr_arg
+)]
 
 use crate::content::graphics_state::{GraphicsState, GraphicsStateStack, Matrix};
 use crate::content::operators::Operator;
@@ -54,6 +64,14 @@ impl Default for RenderOptions {
 }
 
 impl RenderOptions {
+    /// Set a transparent background (no background fill).
+    pub fn with_transparent_background(mut self) -> Self {
+        self.background = None;
+        self
+    }
+}
+
+impl RenderOptions {
     /// Create options with specified DPI.
     pub fn with_dpi(dpi: u32) -> Self {
         Self {
@@ -62,10 +80,10 @@ impl RenderOptions {
         }
     }
 
-    /// Set format to JPEG with quality.
+    /// Set format to JPEG with quality (clamped to 1-100).
     pub fn as_jpeg(mut self, quality: u8) -> Self {
         self.format = ImageFormat::Jpeg;
-        self.jpeg_quality = quality;
+        self.jpeg_quality = quality.clamp(1, 100);
         self
     }
 }
@@ -1477,7 +1495,7 @@ impl PageRenderer {
                 _ => 0.0,
             }
         };
-        let (x0, y0, _r0, x1, y1, r1) =
+        let (_x0, _y0, _r0, x1, y1, r1) =
             (get_f(0), get_f(1), get_f(2), get_f(3), get_f(4), get_f(5));
 
         let (c0, c1) = self.evaluate_shading_function(shading, doc)?;
@@ -1813,7 +1831,9 @@ impl PageRenderer {
                                                     .and_then(|o| o.as_integer())
                                                     .unwrap_or(0);
                                                 if k == -1 {
-                                                    match crate::extractors::ccitt_bilevel::decompress_ccitt_group4(&raw_mask_data, mw, mh) {
+                                                    #[allow(deprecated)]
+                                                    let ccitt_result = crate::extractors::ccitt_bilevel::decompress_ccitt_group4(&raw_mask_data, mw, mh);
+                                                    match ccitt_result {
                                                         Ok(decompressed) => {
                                                             log::debug!("CCITT Group4 decompressed mask: {} → {} bytes", raw_mask_data.len(), decompressed.len());
                                                             decompressed
@@ -1821,7 +1841,7 @@ impl PageRenderer {
                                                         Err(e) => {
                                                             log::debug!("CCITT decompression failed: {}, using raw data", e);
                                                             raw_mask_data
-                                                        }
+                                                        },
                                                     }
                                                 } else {
                                                     raw_mask_data

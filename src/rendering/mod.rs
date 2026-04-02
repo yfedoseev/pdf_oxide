@@ -45,12 +45,9 @@ pub(crate) fn create_fill_paint(gs: &GraphicsState, blend_mode: &str) -> Paint<'
     let (r, g, b) = gs.fill_color_rgb;
     let mut paint = Paint::default();
 
-    // If text rendering mode is 3 (Invisible), make it transparent
-    if gs.render_mode == 3 {
-        paint.set_color(Color::from_rgba(r, g, b, 0.0).unwrap_or(Color::BLACK));
-    } else {
-        paint.set_color(Color::from_rgba(r, g, b, gs.fill_alpha).unwrap_or(Color::BLACK));
-    }
+    // Note: render_mode == 3 (invisible text) is handled in the text rendering path,
+    // not here, since this paint is also used for non-text fills (paths, shapes).
+    paint.set_color(Color::from_rgba(r, g, b, gs.fill_alpha).unwrap_or(Color::BLACK));
 
     paint.anti_alias = true;
 

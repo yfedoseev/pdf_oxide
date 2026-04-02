@@ -472,25 +472,23 @@ mod tests {
         );
     }
 
+    // Single test for env var to avoid parallel race conditions.
+    // Tests all three cases sequentially in one function.
     #[test]
-    fn test_effective_limit_default() {
-        // Without env var set, should return the compile-time default
+    fn test_effective_limit_env_variable() {
+        // Default (no env var)
         std::env::remove_var("PDF_OXIDE_MAX_DECOMPRESS_MB");
         assert_eq!(effective_limit(), DEFAULT_MAX_DECOMPRESSED_BYTES);
-    }
 
-    #[test]
-    fn test_effective_limit_env_override() {
-        std::env::set_var("PDF_OXIDE_MAX_DECOMPRESS_MB", "64");
+        // Valid override
+        unsafe { std::env::set_var("PDF_OXIDE_MAX_DECOMPRESS_MB", "64") };
         assert_eq!(effective_limit(), 64 * 1024 * 1024);
-        // Cleanup
-        std::env::remove_var("PDF_OXIDE_MAX_DECOMPRESS_MB");
-    }
 
-    #[test]
-    fn test_effective_limit_invalid_env() {
-        std::env::set_var("PDF_OXIDE_MAX_DECOMPRESS_MB", "not_a_number");
+        // Invalid value falls back to default
+        unsafe { std::env::set_var("PDF_OXIDE_MAX_DECOMPRESS_MB", "not_a_number") };
         assert_eq!(effective_limit(), DEFAULT_MAX_DECOMPRESSED_BYTES);
-        std::env::remove_var("PDF_OXIDE_MAX_DECOMPRESS_MB");
+
+        // Cleanup
+        unsafe { std::env::remove_var("PDF_OXIDE_MAX_DECOMPRESS_MB") };
     }
 }

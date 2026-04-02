@@ -136,3 +136,19 @@ pub use crate::xfa::{
     ConvertedField, ConvertedPage, XfaAnalysis, XfaConversionOptions, XfaConversionResult,
     XfaConverter, XfaExtractor, XfaField, XfaFieldType, XfaForm, XfaOption, XfaPage, XfaParser,
 };
+
+/// Merge multiple PDF files into a single PDF.
+///
+/// Returns the merged PDF as bytes.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn merge_pdfs<P: AsRef<std::path::Path>>(paths: &[P]) -> crate::error::Result<Vec<u8>> {
+    if paths.is_empty() {
+        return Err(crate::error::Error::InvalidPdf("No PDF paths provided".to_string()));
+    }
+    let first = crate::document::PdfDocument::open(paths[0].as_ref())?;
+    let mut editor = crate::editor::DocumentEditor::from_document(first)?;
+    for path in &paths[1..] {
+        editor.merge_from(path)?;
+    }
+    editor.save_to_bytes()
+}

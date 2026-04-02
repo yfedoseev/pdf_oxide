@@ -60,12 +60,22 @@ impl PyPdfDocument {
 impl PyPdfDocument {
     /// Open a PDF file.
     ///
+    /// Open a PDF file, optionally with a password for encrypted documents.
+    ///
     /// Args:
     ///     path (str | pathlib.Path): Path to the PDF file
+    ///     password (str, optional): Password for encrypted PDFs
     #[new]
-    fn new(path: PathBuf) -> PyResult<Self> {
-        let doc = RustPdfDocument::open(&path)
+    #[pyo3(signature = (path, password=None))]
+    #[allow(unused_mut)]
+    fn new(path: PathBuf, password: Option<&str>) -> PyResult<Self> {
+        let mut doc = RustPdfDocument::open(&path)
             .map_err(|e| PyIOError::new_err(format!("Failed to open PDF: {}", e)))?;
+
+        if let Some(pw) = password {
+            doc.authenticate(pw.as_bytes())
+                .map_err(|e| PyRuntimeError::new_err(format!("Authentication failed: {}", e)))?;
+        }
 
         let path_str = path.to_string_lossy().into_owned();
         Ok(PyPdfDocument {
@@ -76,12 +86,19 @@ impl PyPdfDocument {
         })
     }
 
-    /// Open a PDF from bytes.
+    /// Open a PDF from bytes, optionally with a password.
     #[staticmethod]
-    fn from_bytes(data: &Bound<'_, PyBytes>) -> PyResult<Self> {
+    #[pyo3(signature = (data, password=None))]
+    #[allow(unused_mut)]
+    fn from_bytes(data: &Bound<'_, PyBytes>, password: Option<&str>) -> PyResult<Self> {
         let bytes = data.as_bytes().to_vec();
-        let doc = RustPdfDocument::from_bytes(bytes.clone())
+        let mut doc = RustPdfDocument::from_bytes(bytes.clone())
             .map_err(|e| PyIOError::new_err(format!("Failed to open PDF from bytes: {}", e)))?;
+
+        if let Some(pw) = password {
+            doc.authenticate(pw.as_bytes())
+                .map_err(|e| PyRuntimeError::new_err(format!("Authentication failed: {}", e)))?;
+        }
 
         Ok(PyPdfDocument {
             inner: doc,
@@ -1850,6 +1867,20 @@ impl PyPdf {
         Ok(PyPdf {
             bytes: pdf.into_bytes(),
         })
+    }
+
+    /// Merge multiple PDF files into one.
+    ///
+    /// Args:
+    ///     paths (list[str]): List of paths to PDF files to merge
+    ///
+    /// Returns:
+    ///     Pdf: A new PDF containing all pages from the input files
+    #[staticmethod]
+    fn merge(paths: Vec<String>) -> PyResult<Self> {
+        let bytes =
+            crate::api::merge_pdfs(&paths).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(PyPdf { bytes })
     }
 
     fn __len__(&self) -> usize {

@@ -9,7 +9,7 @@
 use crate::error::{Error, Result};
 use crate::extractors::ccitt_bilevel;
 use crate::geometry::Rect;
-use crate::object::{Object, ObjectRef};
+use crate::object::ObjectRef;
 use std::cmp::min;
 use std::path::Path;
 
@@ -362,14 +362,19 @@ impl PdfImage {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(untagged)]
 pub enum ImageData {
+    /// JPEG-encoded image data.
     Jpeg(Vec<u8>),
+    /// Raw pixel data with a specified format.
     Raw {
+        /// Raw pixel bytes.
         pixels: Vec<u8>,
+        /// Pixel format (RGB, Grayscale, CMYK).
         format: PixelFormat,
     },
 }
 
 impl ImageData {
+    /// Returns true if the image data is empty.
     pub fn is_empty(&self) -> bool {
         match self {
             ImageData::Jpeg(data) => data.is_empty(),
@@ -381,20 +386,32 @@ impl ImageData {
 /// PDF color space types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ColorSpace {
+    /// RGB color space (3 components).
     DeviceRGB,
+    /// Grayscale color space (1 component).
     DeviceGray,
+    /// CMYK color space (4 components).
     DeviceCMYK,
+    /// Indexed (palette-based) color space.
     Indexed,
+    /// Calibrated grayscale.
     CalGray,
+    /// Calibrated RGB.
     CalRGB,
+    /// CIE L*a*b* color space.
     Lab,
+    /// ICC profile-based color space with N components.
     ICCBased(usize),
+    /// Separation (spot color) space.
     Separation,
+    /// DeviceN (multi-ink) color space.
     DeviceN,
+    /// Pattern color space.
     Pattern,
 }
 
 impl ColorSpace {
+    /// Returns the number of color components for this color space.
     pub fn components(&self) -> usize {
         match self {
             ColorSpace::DeviceGray => 1,
@@ -416,12 +433,16 @@ impl ColorSpace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum PixelFormat {
+    /// RGB format (3 bytes per pixel).
     RGB,
+    /// Grayscale format (1 byte per pixel).
     Grayscale,
+    /// CMYK format (4 bytes per pixel).
     CMYK,
 }
 
 impl PixelFormat {
+    /// Returns the number of bytes per pixel for this format.
     pub fn bytes_per_pixel(&self) -> usize {
         match self {
             PixelFormat::Grayscale => 1,
@@ -597,14 +618,7 @@ pub fn extract_image_from_xobject(
         }
     }
 
-    let data = if is_jpeg_only {
-        let decoded = if let (Some(d), Some(ref_id)) = (doc.as_mut(), obj_ref) {
-            d.decode_stream_with_encryption(xobject, ref_id)?
-        } else {
-            xobject.decode_stream_data()?
-        };
-        ImageData::Jpeg(decoded)
-    } else if is_jpeg_chain {
+    let data = if is_jpeg_only || is_jpeg_chain {
         let decoded = if let (Some(d), Some(ref_id)) = (doc.as_mut(), obj_ref) {
             d.decode_stream_with_encryption(xobject, ref_id)?
         } else {
@@ -650,6 +664,7 @@ pub fn extract_image_from_xobject(
     Ok(image)
 }
 
+/// Convert CMYK pixel bytes to RGB.
 pub fn cmyk_to_rgb(cmyk: &[u8]) -> Vec<u8> {
     let mut rgb = Vec::with_capacity((cmyk.len() / 4) * 3);
 
@@ -743,6 +758,7 @@ fn save_raw_as_jpeg(
     }
 }
 
+/// Expand abbreviated inline image dictionary keys to full names.
 pub fn expand_inline_image_dict(
     dict: std::collections::HashMap<String, crate::object::Object>,
 ) -> std::collections::HashMap<String, crate::object::Object> {
