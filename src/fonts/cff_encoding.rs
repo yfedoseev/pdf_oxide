@@ -413,6 +413,16 @@ fn sid_to_name(sid: u16) -> Option<&'static str> {
     }
 }
 
+/// Look up the SID for a standard glyph name by searching the predefined SID table.
+fn glyph_name_to_sid(name: &str) -> Option<u16> {
+    for sid in 0u16..391 {
+        if sid_to_name(sid) == Some(name) {
+            return Some(sid);
+        }
+    }
+    None
+}
+
 /// Parse a CFF INDEX structure, returning byte slices for each entry.
 fn parse_index(data: &[u8], offset: usize) -> Option<(Vec<&[u8]>, usize)> {
     if offset + 2 > data.len() {
@@ -887,6 +897,77 @@ pub fn parse_cff_encoding(font_data: &[u8]) -> Option<HashMap<u8, char>> {
         log::debug!("CFF built-in encoding parsed: {} character mappings", encoding_map.len());
         Some(encoding_map)
     }
+}
+
+/// Parse a CFF font program and return a byte_code → glyph_id mapping.
+/// This allows rendering CFF subset fonts by mapping PDF character codes
+/// directly to glyph indices without needing a Unicode cmap.
+pub fn parse_cff_gid_mapping(font_data: &[u8]) -> Option<HashMap<u8, u16>> {
+    if font_data.len() < 4 {
+        return None;
+    }
+
+    let cff_data = if font_data[0] != 1 {
+        extract_cff_from_opentype(font_data)?
+    } else {
+        font_data
+    };
+
+    if cff_data.len() < 4 || cff_data[0] != 1 {
+        return None;
+    }
+    let hdr_size = cff_data[2] as usize;
+
+    let (_, after_name) = parse_index(cff_data, hdr_size)?;
+    let (top_dicts, after_top_dict) = parse_index(cff_data, after_name)?;
+    if top_dicts.is_empty() {
+        return None;
+    }
+
+    let (_string_index, _after_string) = parse_index(cff_data, after_top_dict)?;
+    let (encoding_offset, charset_offset) = parse_top_dict(top_dicts[0]);
+
+    if encoding_offset == 0 && charset_offset > 2 {
+        // StandardEncoding + custom charset:
+        // byte_code → SID (via CFF Standard Encoding) → GID (via charset)
+        let num_glyphs = 256usize;
+        if let Some(charset_sids) = parse_charset(cff_data, charset_offset as usize, num_glyphs) {
+            // Build SID → GID reverse map from charset
+            let mut sid_to_gid: HashMap<u16, u16> = HashMap::new();
+            for (gid, &sid) in charset_sids.iter().enumerate() {
+                if gid > 0 {
+                    sid_to_gid.entry(sid).or_insert(gid as u16);
+                }
+            }
+            // CFF Standard Encoding: byte_code → SID
+            // Map byte codes through standard encoding to SIDs, then to GIDs
+            let mut map = HashMap::new();
+            for byte_code in 0u16..256 {
+                // Get the glyph name for this byte code using standard encoding
+                let glyph_name = super::font_dict::FontInfo::gid_to_standard_glyph_name(byte_code);
+                if let Some(name) = glyph_name {
+                    // Find the SID for this glyph name
+                    if let Some(sid) = glyph_name_to_sid(name) {
+                        if let Some(&gid) = sid_to_gid.get(&sid) {
+                            map.insert(byte_code as u8, gid);
+                        }
+                    }
+                }
+            }
+            if !map.is_empty() {
+                log::debug!("CFF StandardEncoding→charset GID mapping: {} entries", map.len());
+                return Some(map);
+            }
+        }
+        return None;
+    }
+
+    if encoding_offset <= 1 {
+        return None;
+    }
+
+    // Custom encoding: parse byte_code → GID mapping directly
+    parse_encoding_table(cff_data, encoding_offset as usize)
 }
 
 #[cfg(test)]
@@ -1685,5 +1766,55 @@ mod tests {
         for entry in entries {
             data.extend_from_slice(entry);
         }
+    }
+
+    // ==========================================
+    // glyph_name_to_sid tests
+    // ==========================================
+
+    #[test]
+    fn test_glyph_name_to_sid_known_names() {
+        assert_eq!(glyph_name_to_sid(".notdef"), Some(0));
+        assert_eq!(glyph_name_to_sid("space"), Some(1));
+        assert_eq!(glyph_name_to_sid("A"), Some(34));
+        assert_eq!(glyph_name_to_sid("B"), Some(35));
+        assert_eq!(glyph_name_to_sid("Z"), Some(59));
+        assert_eq!(glyph_name_to_sid("a"), Some(66));
+        assert_eq!(glyph_name_to_sid("z"), Some(91));
+        assert_eq!(glyph_name_to_sid("zero"), Some(17));
+        assert_eq!(glyph_name_to_sid("nine"), Some(26));
+    }
+
+    #[test]
+    fn test_glyph_name_to_sid_unknown() {
+        assert_eq!(glyph_name_to_sid("nonexistent_glyph_xyz"), None);
+        assert_eq!(glyph_name_to_sid(""), None);
+    }
+
+    #[test]
+    fn test_glyph_name_to_sid_roundtrip() {
+        // Verify sid_to_name and glyph_name_to_sid are consistent
+        for sid in 0u16..391 {
+            if let Some(name) = sid_to_name(sid) {
+                assert_eq!(
+                    glyph_name_to_sid(name),
+                    Some(sid),
+                    "Roundtrip failed for SID {} (name '{}')",
+                    sid,
+                    name
+                );
+            }
+        }
+    }
+
+    // ==========================================
+    // parse_cff_gid_mapping tests
+    // ==========================================
+
+    #[test]
+    fn test_parse_cff_gid_mapping_invalid_data() {
+        assert!(parse_cff_gid_mapping(&[]).is_none());
+        assert!(parse_cff_gid_mapping(&[0, 1, 2]).is_none());
+        assert!(parse_cff_gid_mapping(&[2, 0, 4, 2]).is_none()); // wrong version
     }
 }

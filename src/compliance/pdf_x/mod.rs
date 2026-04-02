@@ -51,8 +51,8 @@
 //! | External ICC | No | No | X-4p | X-5n |
 //! | External Graphics | No | No | No | X-5g |
 
-mod types;
-mod validator;
+pub(crate) mod types;
+pub(crate) mod validator;
 
 pub use types::{
     PdfXLevel, XComplianceError, XErrorCode, XSeverity, XValidationResult, XValidationStats,

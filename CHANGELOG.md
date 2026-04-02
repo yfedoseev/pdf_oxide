@@ -2,16 +2,95 @@
 
 All notable changes to PDFOxide are documented here.
 
-## [Unreleased]
+## [0.3.18] - 2026-04-01
+> Rendering Engine Overhaul, Visual Parity, and Expanded API
+
+### Rendering Engine — Visual Parity
+
+Major rendering improvements achieving near-perfect visual fidelity across academic papers, government documents, CJK content, presentations, forms, and complex multi-layer PDFs.
+
+#### Font Rendering
+- **Correct Character Spacing** — Fixed proportional width resolution for CID, CFF, and TrueType subset fonts. Documents that previously rendered with monospace-like spacing now display with correct kerning and proportional widths.
+- **Embedded Font Support** — Render directly from embedded CFF and TrueType font programs, producing accurate glyph shapes that match the original document's typography.
+- **Standard Font Metrics** — Built-in width tables for the PDF standard 14 fonts (Times, Helvetica, Courier). Fixes uniform character spacing when explicit widths are absent.
+- **Improved Font Matching** — Better system font fallback for URW, LaTeX, and other common font families. Automatic serif/sans-serif detection for appropriate substitution.
+
+#### Operators & Path Rendering
+- **Fill-and-Stroke Support** — Full implementation of combined fill-and-stroke operators (`B`, `B*`, `b`, `b*`), fixing missing border strokes on rectangles and paths.
+- **Clip Path Support** — Proper handling of clip-without-paint patterns, resolving issues where body text was hidden behind unclipped background fills.
+- **Gradient Shading** — Axial (linear) and radial gradient rendering with support for exponential interpolation and stitching functions.
+- **Negative Rectangle Handling** — Correct normalization of rectangles with negative dimensions per the PDF specification.
+
+#### Transparency & Compositing
+- **Alpha Transparency** — Fixed fill and stroke alpha application per PDF specification. Semi-transparent rectangles, images, and paths now blend correctly.
+- **Graphics State Resolution** — Proper indirect reference resolution for extended graphics state parameters, ensuring alpha and blend mode values are applied.
+- **Isolated Transparency Groups** — Support for rendering transparency groups to separate compositing surfaces.
+
+#### Image Rendering
+- **Stencil Image Masks** — Support for 1-bit stencil masks with CCITT Group 4 decompression. Fixes decorative borders, corner ornaments, and masked image elements.
+
+#### Page Handling
+- **Page Rotation** — Full support for the `/Rotate` attribute (90°, 180°, 270°), correctly rendering landscape slides and rotated documents.
+
+#### Color Space
+- **Separation Color Spaces** — Proper tint transform evaluation for Separation and DeviceN colors against their alternate color spaces.
 
 ### Bug Fixes
 
 - **Fixed process abort on degenerate CTM coordinates** — A malformed CTM could place text spans at extreme coordinates, causing allocation abort. Projection functions now safely skip the split instead of crashing.
-- **FlateDecode flate-bomb protection** — All zlib/deflate decompression paths are now capped, preventing a crafted PDF stream from exhausting virtual memory. The cap defaults to 256 MB and can be adjusted per-decoder.
+- **FlateDecode flate-bomb protection** — All zlib/deflate decompression paths are now capped, preventing a crafted PDF stream from exhausting virtual memory. The cap defaults to 256 MB and can be adjusted via the `PDF_OXIDE_MAX_DECOMPRESS_MB` environment variable or programmatically with `FlateDecoder::with_limit(n)`.
+- **Fixed Clipping Stack Synchronization** — Resolved a critical issue where the clipping stack could get out of sync with the graphics state, leading to incorrect content being hidden.
+- **Standardized Image Extraction** — Refactored the image extraction logic to support document-wide color space resolution.
+- **Fixed Python Rendering Accessibility** (#240) — Resolved an issue where the `render_page` method was unreachable in standard Python builds.
 
 ### Changed
 
 - **Python type stubs** — Switched from mypy stubgen to [Rylai](https://github.com/monchin/Rylai) for generating `.pyi` from PyO3 Rust source statically (no compilation). CI and release workflows updated.
+
+### API — Python
+
+New methods on `PdfDocument`:
+- `validate_pdf_a(level)` — PDF/A compliance validation (1a/1b/2a/2b/2u/3a/3b/3u)
+- `validate_pdf_ua()` — PDF/UA accessibility validation
+- `validate_pdf_x(level)` — PDF/X print compliance
+- `extract_pages(pages, output)` — Extract page subset to a new PDF file
+- `delete_page(index)` — Remove a page by index
+- `move_page(from, to)` — Reorder pages
+- `flatten_to_images(dpi)` — Create flattened PDF from rendered pages
+
+### API — WASM / JavaScript
+
+New methods on `WasmPdfDocument`:
+- `validatePdfA(level)` — PDF/A compliance validation
+- `addLink(page, x, y, w, h, url)` — Add link annotations
+- `addHighlight(page, x, y, w, h)` — Add highlight annotations
+- `addNote(page, x, y, text)` — Add text note annotations
+- `deletePage(index)` — Remove a page
+- `extractPages(pages)` — Extract pages to new PDF bytes
+- `flattenToImages(dpi)` — Create flattened PDF from rendered pages
+
+### Core Rust API
+
+- `rendering::flatten_to_images(doc, dpi)` — Shared implementation for all bindings
+
+### Features
+
+- **Rendering Engine Overhaul** — Major improvements to the rendering pipeline, achieving high visual parity with industry standards.
+- **Batteries-Included Python Bindings** — The Python distribution now automatically enables page rendering, parallel extraction, digital signatures, and office document conversion by default. (#240)
+
+### 🏆 Community Contributors
+
+🥇 **@tiennh-h2** — Thank you for reporting the rendering accessibility issue (#240). Your feedback helped us identify that our Python distribution was too minimal, leading to an improved "batteries-included" experience for all Python users! 🚀
+
+🥈 **@Suleman-Elahi** — Thank you for the suggestion to add flattened PDF creation (#240). This led to the new `flatten_to_images()` API available across Rust, Python, and WASM! 🚀
+
+🥉 **@hoesler** — Thank you for the XY-cut projection fix (#274) that prevents allocation abort on degenerate CTM coordinates, and the FlateDecoder configurability improvement (#275)! 🚀
+
+🏅 **@Leon-Degel-Koehn** — Thank you for fixing the Quick Start Rust documentation (#277)! 🚀
+
+🏅 **@XO9A8** — Thank you for improving the `PdfDocument::from_bytes` documentation (#276)! 🚀
+
+🏅 **@monchin** — Thank you for replacing manual stub generation with Rylai (#250), eliminating thousands of lines of maintenance burden! 🚀
 
 ## [0.3.17] - 2026-03-08
 > Stable Recursion and Refined Table Heuristics

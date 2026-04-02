@@ -61,13 +61,23 @@ impl PathRasterizer {
     pub fn fill_path_clipped(
         &self,
         pixmap: &mut Pixmap,
-        path: &Path,
+        path: &tiny_skia::Path,
         transform: Transform,
         gs: &GraphicsState,
         fill_rule: FillRule,
         clip_mask: Option<&tiny_skia::Mask>,
     ) {
         let paint = create_fill_paint(gs, &gs.blend_mode);
+        let bounds = path.bounds();
+        let pixel_bounds = path.clone().transform(transform).map(|p| p.bounds());
+
+        log::debug!(
+            "PathRasterizer::fill_path: color={:?}, alpha={}, bounds={:?}, pixel_bounds={:?}",
+            gs.fill_color_rgb,
+            gs.fill_alpha,
+            bounds,
+            pixel_bounds
+        );
         pixmap.fill_path(path, &paint, fill_rule, transform, clip_mask);
     }
 
@@ -81,6 +91,15 @@ impl PathRasterizer {
         clip_mask: Option<&tiny_skia::Mask>,
     ) {
         let paint = create_stroke_paint(gs, &gs.blend_mode);
+        let bounds = path.bounds();
+        let pixel_bounds = path.clone().transform(transform).map(|p| p.bounds());
+        log::debug!(
+            "PathRasterizer::stroke_path: color={:?}, alpha={}, bounds={:?}, pixel_bounds={:?}",
+            gs.stroke_color_rgb,
+            gs.stroke_alpha,
+            bounds,
+            pixel_bounds
+        );
 
         let dash = if !gs.dash_pattern.0.is_empty() {
             tiny_skia::StrokeDash::new(gs.dash_pattern.0.clone(), gs.dash_pattern.1)

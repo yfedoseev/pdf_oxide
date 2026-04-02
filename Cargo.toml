@@ -3,7 +3,7 @@ members = [".", "pdf_oxide_mcp", "pdf_oxide_cli"]
 
 [package]
 name = "pdf_oxide"
-version = "0.3.17"
+version = "0.3.18"
 edition = "2021"
 authors = ["Yury Fedoseev <yfedoseev@gmail.com>"]
 license = "MIT OR Apache-2.0"
@@ -143,7 +143,7 @@ default = []
 logging = []
 
 # Python bindings (v0.1.0)
-python = ["pyo3"]
+python = ["pyo3", "rendering", "parallel", "logging", "signatures", "barcodes", "office"]
 
 # The following features are planned for v1.0 and are not yet production-ready.
 # We define them here to avoid check-cfg warnings, but their dependencies are commented out.
@@ -151,7 +151,7 @@ ml = ["dep:tract-onnx", "dep:ndarray", "dep:linfa", "dep:linfa-clustering", "dep
 table-ml = ["ml", "dep:pdfium-render"]
 ocr = ["dep:ort", "dep:imageproc", "dep:ndarray"]
 gpu = ["dep:ort", "ml"]
-wasm = ["dep:wasm-bindgen", "dep:web-sys", "dep:js-sys", "dep:console_error_panic_hook", "dep:getrandom", "dep:serde-wasm-bindgen"]
+wasm = ["dep:wasm-bindgen", "dep:web-sys", "dep:js-sys", "dep:console_error_panic_hook", "dep:getrandom", "dep:serde-wasm-bindgen", "logging", "signatures", "barcodes", "office"]
 wasm-ml = ["wasm", "ml"]
 
 # Debug feature for span merging analysis

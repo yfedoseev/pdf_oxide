@@ -44,7 +44,14 @@ use tiny_skia::{Color, Paint};
 pub(crate) fn create_fill_paint(gs: &GraphicsState, blend_mode: &str) -> Paint<'static> {
     let (r, g, b) = gs.fill_color_rgb;
     let mut paint = Paint::default();
-    paint.set_color(Color::from_rgba(r, g, b, gs.fill_alpha).unwrap_or(Color::BLACK));
+
+    // If text rendering mode is 3 (Invisible), make it transparent
+    if gs.render_mode == 3 {
+        paint.set_color(Color::from_rgba(r, g, b, 0.0).unwrap_or(Color::BLACK));
+    } else {
+        paint.set_color(Color::from_rgba(r, g, b, gs.fill_alpha).unwrap_or(Color::BLACK));
+    }
+
     paint.anti_alias = true;
 
     if blend_mode != "Normal" {
@@ -69,7 +76,7 @@ pub(crate) fn create_stroke_paint(gs: &GraphicsState, blend_mode: &str) -> Paint
 }
 
 /// Convert PDF blend mode to tiny-skia.
-fn pdf_blend_mode_to_skia(mode: &str) -> tiny_skia::BlendMode {
+pub(crate) fn pdf_blend_mode_to_skia(mode: &str) -> tiny_skia::BlendMode {
     match mode {
         "Normal" => tiny_skia::BlendMode::SourceOver,
         "Multiply" => tiny_skia::BlendMode::Multiply,
@@ -108,4 +115,38 @@ pub fn render_page(
 ) -> Result<RenderedImage> {
     let mut renderer = PageRenderer::new(options.clone());
     renderer.render_page(doc, page_num)
+}
+
+/// Create a flattened PDF where each page is rendered as an image.
+///
+/// This "burns in" all annotations, form fields, overlays, and text into
+/// a flat raster representation. Useful for redaction, archival, or
+/// ensuring consistent visual output across viewers.
+///
+/// Returns the flattened PDF as bytes.
+pub fn flatten_to_images(doc: &mut crate::document::PdfDocument, dpi: u32) -> Result<Vec<u8>> {
+    let page_count = doc.page_count()?;
+    let options = RenderOptions::with_dpi(dpi);
+
+    // Render each page to PNG
+    let tmp_dir = std::env::temp_dir().join(format!("pdf_oxide_flatten_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp_dir)?;
+
+    let mut paths: Vec<String> = Vec::new();
+    for page_idx in 0..page_count {
+        let mut renderer = PageRenderer::new(options.clone());
+        let rendered = renderer.render_page(doc, page_idx)?;
+        let path = tmp_dir.join(format!("page_{}.png", page_idx));
+        std::fs::write(&path, &rendered.data)?;
+        paths.push(path.to_string_lossy().to_string());
+    }
+
+    // Build a new PDF from the rendered images
+    let pdf = crate::api::Pdf::from_images(&paths)?;
+    let bytes = pdf.into_bytes();
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    Ok(bytes)
 }

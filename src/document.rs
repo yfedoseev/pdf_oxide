@@ -266,7 +266,7 @@ impl PdfDocument {
     /// Open a PDF document from in-memory bytes.
     ///
     /// This is the primary constructor for cases where
-    /// the PDF data is already fully loaded in memory. This parses the PDF by 
+    /// the PDF data is already fully loaded in memory. This parses the PDF by
     /// wrapping the bytes in a memory reader and delegating to internal parsers.
     ///
     /// # Errors
@@ -2047,9 +2047,8 @@ impl PdfDocument {
                     e
                 );
             }
-            // Pre-populate image_xobject_cache for all XObject refs across all pages.
-            // Sorts refs by xref offset for sequential I/O on large files.
-            self.prefetch_xobject_subtypes();
+            // DISABLED: extremely slow on large/malformed documents
+            // self.prefetch_xobject_subtypes();
         }
 
         // Check cache again after bulk population
@@ -2073,7 +2072,18 @@ impl PdfDocument {
         let mut inherited = HashMap::new();
 
         let page = match self.get_page_from_tree(pages_ref, page_index, &mut 0, &mut inherited) {
-            Ok(page) => Ok(page),
+            Ok(page) => {
+                if let Some(dict) = page.as_dict() {
+                    log::debug!("Collected page {}, keys: {:?}", page_index, dict.keys());
+                    if let Some(contents) = dict.get("Contents") {
+                        log::debug!("  -> /Contents: {:?}", contents);
+                    }
+                    if let Some(rotate) = dict.get("Rotate") {
+                        log::debug!("  -> /Rotate: {:?}", rotate);
+                    }
+                }
+                Ok(page)
+            },
             Err(e) => {
                 if matches!(
                     e,
@@ -2215,9 +2225,22 @@ impl PdfDocument {
                 for attr_name in &["Resources", "MediaBox", "CropBox", "Rotate"] {
                     if !page_dict.contains_key(*attr_name) {
                         if let Some(inherited_value) = inherited.get(*attr_name) {
+                            log::debug!(
+                                "Page {} inheriting {}: {:?}",
+                                *page_index,
+                                attr_name,
+                                inherited_value
+                            );
                             page_dict.insert(attr_name.to_string(), inherited_value.clone());
                         }
                     }
+                }
+                log::debug!("Collected page {}, keys: {:?}", *page_index, page_dict.keys());
+                if let Some(contents) = page_dict.get("Contents") {
+                    log::debug!("  -> /Contents: {:?}", contents);
+                }
+                if let Some(rotate) = page_dict.get("Rotate") {
+                    log::debug!("  -> /Rotate: {:?}", rotate);
                 }
                 self.page_cache
                     .insert(*page_index, Object::Dictionary(page_dict));
@@ -2232,6 +2255,12 @@ impl PdfDocument {
                 // the recursion, so this node's values apply only to its subtree.
                 for attr_name in &["Resources", "MediaBox", "CropBox", "Rotate"] {
                     if let Some(attr_value) = node_dict.get(*attr_name) {
+                        log::debug!(
+                            "Pages node at {:?} providing inheritable {}: {:?}",
+                            node_ref,
+                            attr_name,
+                            attr_value
+                        );
                         inherited.insert(attr_name.to_string(), attr_value.clone());
                     }
                 }
@@ -5638,6 +5667,12 @@ impl PdfDocument {
             contents_ref.decode_stream_data()?
         };
 
+        log::debug!(
+            "Retrieved {} bytes of content data for page {}: {:?}",
+            content_data.len(),
+            page_index,
+            String::from_utf8_lossy(&content_data)
+        );
         Ok(content_data)
     }
 
@@ -8084,9 +8119,12 @@ impl PdfDocument {
                 };
 
                 // Extract as Image XObject
-                if let Ok(mut image) =
-                    extract_image_from_xobject(Some(self), xobject_for_extract, xobject_ref_opt)
-                {
+                if let Ok(mut image) = extract_image_from_xobject(
+                    Some(self),
+                    xobject_for_extract,
+                    xobject_ref_opt,
+                    None,
+                ) {
                     // In PDF, images are mapped from unit square (0,0 to 1,1) to the CTM.
                     let unit_rect = crate::geometry::Rect::new(0.0, 0.0, 1.0, 1.0);
                     let bbox = self.transform_bbox_with_ctm(&unit_rect, ctm);
@@ -8343,7 +8381,7 @@ impl PdfDocument {
 
         // Use existing extraction logic
         let mut image =
-            crate::extractors::extract_image_from_xobject(Some(self), &stream_obj, None)?;
+            crate::extractors::extract_image_from_xobject(Some(self), &stream_obj, None, None)?;
 
         // In PDF, images are mapped from unit square (0,0 to 1,1) to the CTM.
         let unit_rect = crate::geometry::Rect::new(0.0, 0.0, 1.0, 1.0);

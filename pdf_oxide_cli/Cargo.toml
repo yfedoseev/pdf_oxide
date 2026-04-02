@@ -1,6 +1,6 @@
 [package]
 name = "pdf_oxide_cli"
-version = "0.3.17"
+version = "0.3.18"
 edition = "2021"
 description = "CLI for pdf-oxide — the fastest PDF toolkit. 22 commands: text extraction, PDF to markdown, search, merge, split, images, compress, encrypt, watermark, forms, and more."
 license = "MIT OR Apache-2.0"
@@ -16,7 +16,7 @@ name = "pdf-oxide"
 path = "src/main.rs"
 
 [dependencies]
-pdf_oxide = { version = "0.3.17", path = "..", features = ["rendering", "logging"] }
+pdf_oxide = { version = "0.3.18", path = "..", features = ["rendering", "logging"] }
 clap = { version = "4", features = ["derive"] }
 is-terminal = "0.4"
 serde_json = "1.0"

@@ -16,8 +16,21 @@ use std::io::Read;
 /// triggering an allocator abort (SIGABRT / exit 134).
 ///
 /// 256 MB accommodates A4 @ 600 DPI RGB (~99 MB) with headroom.
-/// Override via [`FlateDecoder::with_limit`] when a different cap is needed.
+///
+/// Override via:
+/// - `PDF_OXIDE_MAX_DECOMPRESS_MB` environment variable (e.g. `64` for 64 MB)
+/// - [`FlateDecoder::with_limit`] for programmatic control
 pub const DEFAULT_MAX_DECOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Read the decompression limit from the environment, falling back to the
+/// compile-time default.
+fn effective_limit() -> u64 {
+    std::env::var("PDF_OXIDE_MAX_DECOMPRESS_MB")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|mb| mb * 1024 * 1024)
+        .unwrap_or(DEFAULT_MAX_DECOMPRESSED_BYTES)
+}
 
 /// Returns `Err` if `output` reached the decompression cap, indicating that the
 /// stream was truncated rather than fully decoded.
@@ -46,7 +59,7 @@ pub struct FlateDecoder {
 impl Default for FlateDecoder {
     fn default() -> Self {
         Self {
-            max_decompressed_bytes: DEFAULT_MAX_DECOMPRESSED_BYTES,
+            max_decompressed_bytes: effective_limit(),
         }
     }
 }
@@ -457,5 +470,27 @@ mod tests {
             !msg.contains("MAX_DECOMPRESSED_BYTES"),
             "error message must not reference internal symbol names: {msg}"
         );
+    }
+
+    #[test]
+    fn test_effective_limit_default() {
+        // Without env var set, should return the compile-time default
+        std::env::remove_var("PDF_OXIDE_MAX_DECOMPRESS_MB");
+        assert_eq!(effective_limit(), DEFAULT_MAX_DECOMPRESSED_BYTES);
+    }
+
+    #[test]
+    fn test_effective_limit_env_override() {
+        std::env::set_var("PDF_OXIDE_MAX_DECOMPRESS_MB", "64");
+        assert_eq!(effective_limit(), 64 * 1024 * 1024);
+        // Cleanup
+        std::env::remove_var("PDF_OXIDE_MAX_DECOMPRESS_MB");
+    }
+
+    #[test]
+    fn test_effective_limit_invalid_env() {
+        std::env::set_var("PDF_OXIDE_MAX_DECOMPRESS_MB", "not_a_number");
+        assert_eq!(effective_limit(), DEFAULT_MAX_DECOMPRESSED_BYTES);
+        std::env::remove_var("PDF_OXIDE_MAX_DECOMPRESS_MB");
     }
 }

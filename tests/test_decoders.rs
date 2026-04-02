@@ -20,7 +20,7 @@ use weezl::{encode::Encoder as LzwEncoder, BitOrder};
 
 #[test]
 fn test_flate_decoder_integration() {
-    let decoder = FlateDecoder;
+    let decoder = FlateDecoder::default();
 
     // Create test data
     let original = b"This is a test of FlateDecode compression in a PDF stream.";
@@ -218,7 +218,7 @@ fn test_object_stream_decode_error_not_stream() {
 #[test]
 fn test_all_decoders_name() {
     // Verify all decoders have correct names
-    assert_eq!(FlateDecoder.name(), "FlateDecode");
+    assert_eq!(FlateDecoder::default().name(), "FlateDecode");
     assert_eq!(AsciiHexDecoder.name(), "ASCIIHexDecode");
     assert_eq!(Ascii85Decoder.name(), "ASCII85Decode");
     assert_eq!(LzwDecoder.name(), "LZWDecode");

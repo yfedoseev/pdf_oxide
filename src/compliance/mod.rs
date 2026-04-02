@@ -82,10 +82,10 @@
 //! - ISO 14289-1:2014 (PDF/UA-1)
 
 mod converter;
-mod pdf_a;
-mod pdf_ua;
-mod pdf_x;
-mod types;
+pub(crate) mod pdf_a;
+pub(crate) mod pdf_ua;
+pub(crate) mod pdf_x;
+pub(crate) mod types;
 mod validators;
 
 pub use converter::{

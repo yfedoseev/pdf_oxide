@@ -2387,6 +2387,229 @@ impl WasmPdfDocument {
             .save_to_bytes_with_options(options)
             .map_err(|e| JsValue::from_str(&format!("Failed to save encrypted PDF: {}", e)))
     }
+
+    // ========================================================================
+    // Group 9: Validation — PDF/A, PDF/UA, PDF/X
+    // ========================================================================
+
+    /// Validate PDF/A compliance. Level: "1b", "2b", etc.
+    #[wasm_bindgen(js_name = "validatePdfA")]
+    pub fn validate_pdf_a(&mut self, level: &str) -> Result<JsValue, JsValue> {
+        use crate::compliance::pdf_a::validate_pdf_a;
+        use crate::compliance::types::PdfALevel;
+        let pdf_level = match level {
+            "1a" => PdfALevel::A1a,
+            "1b" => PdfALevel::A1b,
+            "2a" => PdfALevel::A2a,
+            "2b" => PdfALevel::A2b,
+            "2u" => PdfALevel::A2u,
+            "3a" => PdfALevel::A3a,
+            "3b" => PdfALevel::A3b,
+            "3u" => PdfALevel::A3u,
+            _ => return Err(JsValue::from_str(&format!("Unknown PDF/A level: {}", level))),
+        };
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Lock failed"))?;
+        let result =
+            validate_pdf_a(&mut inner, pdf_level).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let errors: Vec<String> = result.errors.iter().map(|e| e.to_string()).collect();
+        let warnings: Vec<String> = result.warnings.iter().map(|w| w.to_string()).collect();
+        serde_wasm_bindgen::to_value(&serde_json::json!({
+            "valid": errors.is_empty(),
+            "level": level,
+            "errors": errors,
+            "warnings": warnings,
+        }))
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    // ========================================================================
+    // Group 10: Annotations (add)
+    // ========================================================================
+
+    /// Add a link annotation to a page.
+    #[wasm_bindgen(js_name = "addLink")]
+    pub fn add_link(
+        &mut self,
+        page: usize,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        url: &str,
+    ) -> Result<(), JsValue> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Lock failed"))?;
+        let bytes = inner
+            .save_to_bytes()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        drop(inner);
+        let mut editor = crate::editor::DocumentEditor::from_bytes(bytes)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let mut page_obj = editor
+            .get_page(page)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        page_obj.add_link(x, y, w, h, url);
+        editor
+            .save_page(page_obj)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let new_bytes = editor
+            .save_to_bytes()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Lock failed"))?;
+        *inner = crate::document::PdfDocument::from_bytes(&new_bytes)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(())
+    }
+
+    /// Add a highlight annotation to a page.
+    #[wasm_bindgen(js_name = "addHighlight")]
+    pub fn add_highlight(
+        &mut self,
+        page: usize,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    ) -> Result<(), JsValue> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Lock failed"))?;
+        let bytes = inner
+            .save_to_bytes()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        drop(inner);
+        let mut editor = crate::editor::DocumentEditor::from_bytes(bytes)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let mut page_obj = editor
+            .get_page(page)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        page_obj.add_highlight(x, y, w, h, None);
+        editor
+            .save_page(page_obj)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let new_bytes = editor
+            .save_to_bytes()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Lock failed"))?;
+        *inner = crate::document::PdfDocument::from_bytes(&new_bytes)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(())
+    }
+
+    /// Add a text note annotation to a page.
+    #[wasm_bindgen(js_name = "addNote")]
+    pub fn add_note(&mut self, page: usize, x: f32, y: f32, text: &str) -> Result<(), JsValue> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Lock failed"))?;
+        let bytes = inner
+            .save_to_bytes()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        drop(inner);
+        let mut editor = crate::editor::DocumentEditor::from_bytes(bytes)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let mut page_obj = editor
+            .get_page(page)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        page_obj.add_note(x, y, text);
+        editor
+            .save_page(page_obj)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let new_bytes = editor
+            .save_to_bytes()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Lock failed"))?;
+        *inner = crate::document::PdfDocument::from_bytes(&new_bytes)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(())
+    }
+
+    // ========================================================================
+    // Group 11: Page Operations
+    // ========================================================================
+
+    /// Delete a page by index (0-based).
+    #[wasm_bindgen(js_name = "deletePage")]
+    pub fn delete_page(&mut self, index: usize) -> Result<(), JsValue> {
+        use crate::editor::EditableDocument;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Lock failed"))?;
+        let bytes = inner
+            .save_to_bytes()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        drop(inner);
+        let mut editor = crate::editor::DocumentEditor::from_bytes(bytes)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        editor
+            .remove_page(index)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let new_bytes = editor
+            .save_to_bytes()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Lock failed"))?;
+        *inner = crate::document::PdfDocument::from_bytes(&new_bytes)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(())
+    }
+
+    /// Extract specific pages to a new PDF (returns bytes).
+    #[wasm_bindgen(js_name = "extractPages")]
+    pub fn extract_pages(&mut self, pages: Vec<usize>) -> Result<Vec<u8>, JsValue> {
+        let tmp =
+            std::env::temp_dir().join(format!("pdf_oxide_extract_{}.pdf", std::process::id()));
+        let tmp_path = tmp.to_string_lossy().to_string();
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Lock failed"))?;
+        let bytes = inner
+            .save_to_bytes()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        drop(inner);
+        let mut editor = crate::editor::DocumentEditor::from_bytes(bytes)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        editor
+            .extract_pages(&pages, &tmp_path)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let result = std::fs::read(&tmp_path).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let _ = std::fs::remove_file(&tmp_path);
+        Ok(result)
+    }
+
+    /// Create a flattened PDF where each page is rendered as an image.
+    /// Burns in all annotations, form fields, and overlays.
+    /// Returns the flattened PDF as bytes.
+    #[wasm_bindgen(js_name = "flattenToImages")]
+    pub fn flatten_to_images(&mut self, dpi: Option<u32>) -> Result<Vec<u8>, JsValue> {
+        let dpi = dpi.unwrap_or(150);
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Lock failed"))?;
+        crate::rendering::flatten_to_images(&mut inner, dpi)
+            .map_err(|e| JsValue::from_str(&format!("Failed to flatten: {}", e)))
+    }
 }
 
 // ============================================================================
@@ -3459,5 +3682,67 @@ mod tests {
             0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFF, 0xDA, 0x00, 0x08,
             0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0xFB, 0xD5, 0xDB, 0x20, 0xA8, 0xF9, 0xFF, 0xD9,
         ]
+    }
+
+    // ========================================================================
+    // Tests for new binding methods (v0.3.18)
+    // ========================================================================
+
+    #[test]
+    fn test_validate_pdf_a() {
+        let mut doc = doc_from_text("Hello World");
+        let result = doc.validate_pdf_a("1b");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_pdf_a_invalid_level() {
+        let mut doc = doc_from_text("Hello");
+        let result = doc.validate_pdf_a("invalid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delete_page() {
+        // Create a 2-page PDF
+        let bytes = make_markdown_pdf("# Page 1\n\n---\n\n# Page 2");
+        let mut doc = WasmPdfDocument::new(&bytes).unwrap();
+        let initial_count = doc.page_count().unwrap();
+        if initial_count >= 2 {
+            assert!(doc.delete_page(0).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_add_link_annotation() {
+        let mut doc = doc_from_text("Click here for link");
+        let result = doc.add_link(0, 10.0, 10.0, 100.0, 20.0, "https://example.com");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_add_highlight_annotation() {
+        let mut doc = doc_from_text("Highlighted text");
+        let result = doc.add_highlight(0, 10.0, 10.0, 100.0, 20.0);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_add_note_annotation() {
+        let mut doc = doc_from_text("Text with note");
+        let result = doc.add_note(0, 50.0, 50.0, "This is a note");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_extract_pages() {
+        let mut doc = doc_from_text("Extract me");
+        let result = doc.extract_pages(vec![0]);
+        assert!(result.is_ok());
+        let bytes = result.unwrap();
+        assert!(!bytes.is_empty());
+        // Verify the extracted PDF is valid
+        let extracted = WasmPdfDocument::new(&bytes);
+        assert!(extracted.is_ok());
     }
 }

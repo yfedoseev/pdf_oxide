@@ -1194,8 +1194,11 @@ fn build_operator(name: &str, operands: SmallVec<[Object; 6]>) -> Operator {
         },
         "S" => Operator::Stroke,
         "f" => Operator::Fill,
-        "f*" => Operator::FillEvenOdd,
+        "f*" | "F" => Operator::FillEvenOdd,
         "b" => Operator::CloseFillStroke,
+        "b*" => Operator::CloseFillStrokeEvenOdd,
+        "B" => Operator::FillStroke,
+        "B*" => Operator::FillStrokeEvenOdd,
         "n" => Operator::EndPath,
         "W" => Operator::ClipNonZero,
         "W*" => Operator::ClipEvenOdd,
@@ -1713,7 +1716,7 @@ fn is_skippable_graphics_op_bytes(op: &[u8]) -> bool {
         op,
         b"m" | b"l" | b"c" | b"v" | b"y" | b"h" | b"re"       // path construction
         | b"S" | b"s" | b"f" | b"F" | b"f*"                     // path painting
-        | b"B" | b"B*" | b"b" | b"b*" | b"n"                    // path painting
+        | b"B" | b"B*" | b"b" | b"b*" | b"n"                    // path painting (fill+stroke)
         | b"W" | b"W*"                                           // clipping
         | b"w" | b"J" | b"j" | b"M" | b"d" | b"i" | b"ri" | b"sh" // non-text graphics state
         | b"rg" | b"RG" | b"g" | b"G" | b"k" | b"K"            // color (rgb/gray/cmyk)

@@ -1,6 +1,6 @@
 {
   "name": "pdf-oxide-wasm",
-  "version": "0.3.17",
+  "version": "0.3.18",
   "description": "Fast, zero-dependency PDF toolkit for Node.js, browsers, and edge runtimes — text extraction, markdown/HTML conversion, search, form filling, creation, and editing. Rust core compiled to WebAssembly.",
   "license": "MIT OR Apache-2.0",
   "repository": {
