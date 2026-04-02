@@ -99,7 +99,7 @@ quick-xml = "0.39"
 
 # Python bindings (optional)
 # Using latest version to support Python 3.14+
-pyo3 = { version = "0.27", features = ["abi3-py38"], optional = true }
+pyo3 = { version = "0.28", features = ["abi3-py38"], optional = true }
 
 # WASM support (optional)
 wasm-bindgen = { version = "0.2", optional = true }
