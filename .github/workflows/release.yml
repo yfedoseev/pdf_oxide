@@ -246,21 +246,45 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux x86_64 (glibc)
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact_name: wheels-linux-x86_64
 
+          # Linux ARM64 (glibc)
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: wheels-linux-aarch64
+
+          # Linux x86_64 (musl)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact_name: wheels-linux-x86_64-musl
+
+          # Linux ARM64 (musl)
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            artifact_name: wheels-linux-aarch64-musl
+
+          # macOS x86_64 (Intel)
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: wheels-macos-x86_64
 
+          # macOS ARM64 (Apple Silicon)
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: wheels-macos-aarch64
 
+          # Windows x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: wheels-windows-x86_64
+
+          # Windows ARM64
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            artifact_name: wheels-windows-aarch64
 
     steps:
       - uses: actions/checkout@v6
@@ -281,12 +305,29 @@ jobs:
       - name: Install maturin
         run: uv pip install --system maturin
 
+      - name: Install musl tools (Linux musl x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: contains(matrix.target, 'aarch64-unknown-linux')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu musl-tools
+
       # Generate .pyi stubs automatically using mypy stubgen
       - name: Generate type stubs
         run: uvx rylai -o python/pdf_oxide/
 
       - name: Build wheels
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'aarch64-linux-gnu-gcc' || '' }}
         run: maturin build --release --features python --target ${{ matrix.target }} --out dist
+
+      - name: Build sdist
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: maturin sdist --out dist
 
       - name: Upload wheels
         uses: actions/upload-artifact@v7
