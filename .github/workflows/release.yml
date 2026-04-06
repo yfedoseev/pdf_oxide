@@ -323,6 +323,7 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'aarch64-linux-gnu-gcc' || '' }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'aarch64-linux-gnu-gcc' || '' }}
         run: maturin build --release --features python --target ${{ matrix.target }} --out dist
 
       - name: Build sdist
@@ -333,7 +334,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/*.whl
+          path: dist/*
           retention-days: 7
 
   # Create GitHub Release
