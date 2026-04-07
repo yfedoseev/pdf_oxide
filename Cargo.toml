@@ -60,7 +60,7 @@ fax = "0.2"   # CCITT Group 3/4 decompression for scanned PDFs (more lenient wit
 aes = "0.8"          # AES encryption for PDF 1.6+
 cbc = "0.1"          # CBC mode for AES
 md-5 = "0.10"        # MD5 for key derivation
-sha2 = "0.10"        # SHA-256 for newer encryption
+sha2 = "0.11"        # SHA-256 for newer encryption
 stringprep = "0.1"   # SASLprep for Unicode PDF passwords (R>=5)
 
 # Digital signatures (optional)
