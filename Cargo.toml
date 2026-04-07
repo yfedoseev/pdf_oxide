@@ -72,7 +72,7 @@ spki = { version = "0.7", optional = true }           # SubjectPublicKeyInfo
 pkcs1 = { version = "0.7", optional = true }          # PKCS#1 RSA format
 pkcs8 = { version = "0.10", optional = true }         # PKCS#8 private keys
 signature = { version = "2.2", optional = true }      # Signature traits
-sha1 = { version = "0.10", optional = true }          # SHA-1 for legacy signatures
+sha1 = { version = "0.11", optional = true }          # SHA-1 for legacy signatures
 
 # Parallel extraction
 rayon = { version = "1.10", optional = true }
