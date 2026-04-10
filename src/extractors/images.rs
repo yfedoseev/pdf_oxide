@@ -718,6 +718,26 @@ fn resolve_indexed_palette(
     };
     let base_cs = parse_color_space(&base_obj)?;
     let base_fmt = color_space_to_pixel_format(&base_cs);
+    let n = base_fmt.bytes_per_pixel();
+
+    // hival bounds the valid index range. Resolve via indirect reference if
+    // needed; treat invalid / missing values as "unknown" and skip truncation.
+    let hival_obj = if let Some(ref mut d) = doc {
+        if let Some(r) = arr[2].as_reference() {
+            d.load_object(r)?
+        } else {
+            arr[2].clone()
+        }
+    } else {
+        arr[2].clone()
+    };
+    let hival: Option<usize> = hival_obj.as_integer().and_then(|i| {
+        if (0..=255).contains(&i) {
+            Some(i as usize)
+        } else {
+            None
+        }
+    });
 
     let lookup_obj = if let Some(ref mut d) = doc {
         if let Some(r) = arr[3].as_reference() {
@@ -728,7 +748,7 @@ fn resolve_indexed_palette(
     } else {
         arr[3].clone()
     };
-    let palette_bytes = match &lookup_obj {
+    let mut palette_bytes = match &lookup_obj {
         Object::String(s) => s.clone(),
         Object::Stream { .. } => lookup_obj.decode_stream_data()?,
         _ => return Ok(None),
@@ -736,6 +756,18 @@ fn resolve_indexed_palette(
     if palette_bytes.is_empty() {
         return Ok(None);
     }
+
+    // Truncate palette to the logical length implied by hival so that indices
+    // greater than hival fall into the out-of-range branch of the expander.
+    // Per PDF 32000-1:2008 §8.6.6.3 the lookup is exactly (hival + 1) * N bytes;
+    // anything beyond that is stray data that must not be mapped to pixels.
+    if let Some(h) = hival {
+        let expected = (h + 1).saturating_mul(n);
+        if expected > 0 && palette_bytes.len() > expected {
+            palette_bytes.truncate(expected);
+        }
+    }
+
     Ok(Some((base_fmt, palette_bytes)))
 }
 
@@ -810,13 +842,15 @@ fn expand_indexed_to_rgb(
                     out.push(g);
                 },
                 PixelFormat::CMYK => {
-                    let c = palette[off] as u32;
-                    let m = palette[off + 1] as u32;
-                    let y_c = palette[off + 2] as u32;
-                    let k = palette[off + 3] as u32;
-                    out.push(((255 - c) * (255 - k) / 255) as u8);
-                    out.push(((255 - m) * (255 - k) / 255) as u8);
-                    out.push(((255 - y_c) * (255 - k) / 255) as u8);
+                    let [r, g, b] = cmyk_pixel_to_rgb(
+                        palette[off],
+                        palette[off + 1],
+                        palette[off + 2],
+                        palette[off + 3],
+                    );
+                    out.push(r);
+                    out.push(g);
+                    out.push(b);
                 },
             }
         }
@@ -824,20 +858,29 @@ fn expand_indexed_to_rgb(
     out
 }
 
+/// Convert a single CMYK pixel to RGB.
+///
+/// Shared conversion math used by both bulk CMYK→RGB and Indexed palette
+/// expansion so the two paths cannot drift apart.
+pub(crate) fn cmyk_pixel_to_rgb(c: u8, m: u8, y: u8, k: u8) -> [u8; 3] {
+    let c = c as f32 / 255.0;
+    let m = m as f32 / 255.0;
+    let y = y as f32 / 255.0;
+    let k = k as f32 / 255.0;
+
+    let r = ((1.0 - c) * (1.0 - k) * 255.0) as u8;
+    let g = ((1.0 - m) * (1.0 - k) * 255.0) as u8;
+    let b = ((1.0 - y) * (1.0 - k) * 255.0) as u8;
+
+    [r, g, b]
+}
+
 /// Convert CMYK pixel bytes to RGB.
 pub fn cmyk_to_rgb(cmyk: &[u8]) -> Vec<u8> {
     let mut rgb = Vec::with_capacity((cmyk.len() / 4) * 3);
 
     for chunk in cmyk.chunks_exact(4) {
-        let c = chunk[0] as f32 / 255.0;
-        let m = chunk[1] as f32 / 255.0;
-        let y = chunk[2] as f32 / 255.0;
-        let k = chunk[3] as f32 / 255.0;
-
-        let r = ((1.0 - c) * (1.0 - k) * 255.0) as u8;
-        let g = ((1.0 - m) * (1.0 - k) * 255.0) as u8;
-        let b = ((1.0 - y) * (1.0 - k) * 255.0) as u8;
-
+        let [r, g, b] = cmyk_pixel_to_rgb(chunk[0], chunk[1], chunk[2], chunk[3]);
         rgb.push(r);
         rgb.push(g);
         rgb.push(b);
@@ -978,6 +1021,43 @@ mod indexed_tests {
         let raw = vec![0, 5];
         let out = expand_indexed_to_rgb(&raw, &palette, PixelFormat::RGB, 2, 1, 8);
         assert_eq!(out, vec![10, 20, 30, 0, 0, 0]);
+    }
+
+    #[test]
+    fn resolve_indexed_palette_truncates_to_hival() {
+        use crate::object::Object;
+        // [/Indexed /DeviceRGB 1 <inline palette>] — hival = 1, so 2 entries * 3 = 6 bytes.
+        // Provide an oversized 12-byte palette; the extra 6 bytes must be dropped so
+        // that indices > hival cannot pick up stray lookup data.
+        let cs = Object::Array(vec![
+            Object::Name("Indexed".to_string()),
+            Object::Name("DeviceRGB".to_string()),
+            Object::Integer(1),
+            Object::String(vec![
+                10, 20, 30, // entry 0
+                40, 50, 60, // entry 1
+                70, 80, 90, // stray — beyond hival
+                100, 110, 120,
+            ]),
+        ]);
+        let (fmt, palette) = resolve_indexed_palette(None, &cs).unwrap().unwrap();
+        assert_eq!(fmt, PixelFormat::RGB);
+        assert_eq!(palette, vec![10, 20, 30, 40, 50, 60]);
+
+        // Index 2 (> hival) must now be treated as out-of-range → black pixel.
+        let raw = vec![0, 1, 2];
+        let out = expand_indexed_to_rgb(&raw, &palette, fmt, 3, 1, 8);
+        assert_eq!(out, vec![10, 20, 30, 40, 50, 60, 0, 0, 0]);
+    }
+
+    #[test]
+    fn expand_indexed_cmyk_base_matches_cmyk_to_rgb() {
+        // Palette has a single CMYK entry; expansion must match the shared helper.
+        let palette = vec![64, 128, 192, 32];
+        let raw = vec![0];
+        let out = expand_indexed_to_rgb(&raw, &palette, PixelFormat::CMYK, 1, 1, 8);
+        let expected = cmyk_pixel_to_rgb(64, 128, 192, 32);
+        assert_eq!(out, expected.to_vec());
     }
 
     #[test]
