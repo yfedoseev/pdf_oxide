@@ -589,12 +589,11 @@ pub fn extract_image_from_xobject(
     // can expand indices to RGB after decoding the stream. Without this, raw
     // Indexed pixel data (1 byte per pixel) is mislabelled as RGB (3 bytes per
     // pixel) and ImageBuffer::from_raw rejects the wrong length.
-    let indexed_palette: Option<(PixelFormat, Vec<u8>)> =
-        if color_space == ColorSpace::Indexed {
-            resolve_indexed_palette(doc.as_deref_mut(), &resolved_color_space)?
-        } else {
-            None
-        };
+    let indexed_palette: Option<(PixelFormat, Vec<u8>)> = if color_space == ColorSpace::Indexed {
+        resolve_indexed_palette(doc.as_deref_mut(), &resolved_color_space)?
+    } else {
+        None
+    };
 
     let filter_names = if let Some(filter_obj) = dict.get("Filter") {
         match filter_obj {
@@ -756,7 +755,7 @@ fn expand_indexed_to_rgb(
     let h = height as usize;
     let n = base_fmt.bytes_per_pixel();
     let bpc = bpc.max(1);
-    let bytes_per_row = (w * bpc as usize + 7) / 8;
+    let bytes_per_row = (w * bpc as usize).div_ceil(8);
     let mut out = Vec::with_capacity(w * h * 3);
 
     let read_index = |row: &[u8], x: usize| -> usize {
@@ -765,7 +764,11 @@ fn expand_indexed_to_rgb(
             4 => {
                 let byte_idx = x / 2;
                 let b = row.get(byte_idx).copied().unwrap_or(0);
-                if x % 2 == 0 { (b >> 4) as usize } else { (b & 0x0F) as usize }
+                if x.is_multiple_of(2) {
+                    (b >> 4) as usize
+                } else {
+                    (b & 0x0F) as usize
+                }
             },
             2 => {
                 let byte_idx = x / 4;
