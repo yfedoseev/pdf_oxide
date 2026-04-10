@@ -585,6 +585,17 @@ pub fn extract_image_from_xobject(
 
     let color_space = parse_color_space(&resolved_color_space)?;
 
+    // For Indexed color spaces, resolve the base color space and palette now so we
+    // can expand indices to RGB after decoding the stream. Without this, raw
+    // Indexed pixel data (1 byte per pixel) is mislabelled as RGB (3 bytes per
+    // pixel) and ImageBuffer::from_raw rejects the wrong length.
+    let indexed_palette: Option<(PixelFormat, Vec<u8>)> =
+        if color_space == ColorSpace::Indexed {
+            resolve_indexed_palette(doc.as_deref_mut(), &resolved_color_space)?
+        } else {
+            None
+        };
+
     let filter_names = if let Some(filter_obj) = dict.get("Filter") {
         match filter_obj {
             Object::Name(name) => vec![name.clone()],
@@ -639,10 +650,25 @@ pub fn extract_image_from_xobject(
         } else {
             xobject.decode_stream_data()?
         };
-        let pixel_format = color_space_to_pixel_format(&color_space);
-        ImageData::Raw {
-            pixels: decoded_data,
-            format: pixel_format,
+        if let Some((base_fmt, palette)) = indexed_palette.as_ref() {
+            let expanded = expand_indexed_to_rgb(
+                &decoded_data,
+                palette,
+                *base_fmt,
+                width,
+                height,
+                bits_per_component,
+            );
+            ImageData::Raw {
+                pixels: expanded,
+                format: PixelFormat::RGB,
+            }
+        } else {
+            let pixel_format = color_space_to_pixel_format(&color_space);
+            ImageData::Raw {
+                pixels: decoded_data,
+                format: pixel_format,
+            }
         }
     };
 
@@ -662,6 +688,137 @@ pub fn extract_image_from_xobject(
     }
 
     Ok(image)
+}
+
+/// Resolve an Indexed color space's base color space and palette lookup bytes.
+///
+/// PDF Indexed color spaces are `[/Indexed base hival lookup]` where `lookup`
+/// is either a byte string or a stream of `(hival + 1) * N` bytes (N = number
+/// of components in the base color space).
+fn resolve_indexed_palette(
+    mut doc: Option<&mut crate::document::PdfDocument>,
+    cs_obj: &crate::object::Object,
+) -> Result<Option<(PixelFormat, Vec<u8>)>> {
+    use crate::object::Object;
+
+    let Object::Array(arr) = cs_obj else {
+        return Ok(None);
+    };
+    if arr.len() < 4 {
+        return Ok(None);
+    }
+
+    let base_obj = if let Some(ref mut d) = doc {
+        if let Some(r) = arr[1].as_reference() {
+            d.load_object(r)?
+        } else {
+            arr[1].clone()
+        }
+    } else {
+        arr[1].clone()
+    };
+    let base_cs = parse_color_space(&base_obj)?;
+    let base_fmt = color_space_to_pixel_format(&base_cs);
+
+    let lookup_obj = if let Some(ref mut d) = doc {
+        if let Some(r) = arr[3].as_reference() {
+            d.load_object(r)?
+        } else {
+            arr[3].clone()
+        }
+    } else {
+        arr[3].clone()
+    };
+    let palette_bytes = match &lookup_obj {
+        Object::String(s) => s.clone(),
+        Object::Stream { .. } => lookup_obj.decode_stream_data()?,
+        _ => return Ok(None),
+    };
+    if palette_bytes.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((base_fmt, palette_bytes)))
+}
+
+/// Expand packed Indexed image indices into RGB bytes using the palette.
+///
+/// Supports 1, 2, 4, and 8 bit-per-component index streams. Rows are padded
+/// to byte boundaries per the PDF spec.
+fn expand_indexed_to_rgb(
+    raw: &[u8],
+    palette: &[u8],
+    base_fmt: PixelFormat,
+    width: u32,
+    height: u32,
+    bpc: u8,
+) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let n = base_fmt.bytes_per_pixel();
+    let bpc = bpc.max(1);
+    let bytes_per_row = (w * bpc as usize + 7) / 8;
+    let mut out = Vec::with_capacity(w * h * 3);
+
+    let read_index = |row: &[u8], x: usize| -> usize {
+        match bpc {
+            8 => row.get(x).copied().unwrap_or(0) as usize,
+            4 => {
+                let byte_idx = x / 2;
+                let b = row.get(byte_idx).copied().unwrap_or(0);
+                if x % 2 == 0 { (b >> 4) as usize } else { (b & 0x0F) as usize }
+            },
+            2 => {
+                let byte_idx = x / 4;
+                let b = row.get(byte_idx).copied().unwrap_or(0);
+                let shift = 6 - (x % 4) * 2;
+                ((b >> shift) & 0x03) as usize
+            },
+            1 => {
+                let byte_idx = x / 8;
+                let b = row.get(byte_idx).copied().unwrap_or(0);
+                let shift = 7 - (x % 8);
+                ((b >> shift) & 0x01) as usize
+            },
+            _ => 0,
+        }
+    };
+
+    for y in 0..h {
+        let row_start = y * bytes_per_row;
+        let row_end = (row_start + bytes_per_row).min(raw.len());
+        let row: &[u8] = if row_start < raw.len() {
+            &raw[row_start..row_end]
+        } else {
+            &[]
+        };
+        for x in 0..w {
+            let idx = read_index(row, x);
+            let off = idx * n;
+            if off + n > palette.len() {
+                out.extend_from_slice(&[0, 0, 0]);
+                continue;
+            }
+            match base_fmt {
+                PixelFormat::RGB => out.extend_from_slice(&palette[off..off + 3]),
+                PixelFormat::Grayscale => {
+                    let g = palette[off];
+                    out.push(g);
+                    out.push(g);
+                    out.push(g);
+                },
+                PixelFormat::CMYK => {
+                    let c = palette[off] as u32;
+                    let m = palette[off + 1] as u32;
+                    let y_c = palette[off + 2] as u32;
+                    let k = palette[off + 3] as u32;
+                    out.push(((255 - c) * (255 - k) / 255) as u8);
+                    out.push(((255 - m) * (255 - k) / 255) as u8);
+                    out.push(((255 - y_c) * (255 - k) / 255) as u8);
+                },
+            }
+        }
+    }
+    out
 }
 
 /// Convert CMYK pixel bytes to RGB.
@@ -782,4 +939,56 @@ pub fn expand_inline_image_dict(
         expanded.insert(expanded_key.to_string(), value);
     }
     expanded
+}
+
+#[cfg(test)]
+mod indexed_tests {
+    use super::*;
+
+    #[test]
+    fn expand_indexed_rgb_8bpc() {
+        // 2x2 image, 4 palette entries, each RGB
+        let palette = vec![
+            0, 0, 0, // index 0 black
+            255, 0, 0, // index 1 red
+            0, 255, 0, // index 2 green
+            0, 0, 255, // index 3 blue
+        ];
+        let raw = vec![0, 1, 2, 3];
+        let out = expand_indexed_to_rgb(&raw, &palette, PixelFormat::RGB, 2, 2, 8);
+        assert_eq!(out, vec![0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn expand_indexed_gray_base_to_rgb() {
+        // Base color space is Grayscale, palette is 1 byte per entry
+        let palette = vec![10, 128, 255];
+        let raw = vec![0, 1, 2];
+        let out = expand_indexed_to_rgb(&raw, &palette, PixelFormat::Grayscale, 3, 1, 8);
+        assert_eq!(out, vec![10, 10, 10, 128, 128, 128, 255, 255, 255]);
+    }
+
+    #[test]
+    fn expand_indexed_out_of_range_index() {
+        // Palette only has 2 entries but raw has index 5 → zeroed
+        let palette = vec![10, 20, 30, 40, 50, 60];
+        let raw = vec![0, 5];
+        let out = expand_indexed_to_rgb(&raw, &palette, PixelFormat::RGB, 2, 1, 8);
+        assert_eq!(out, vec![10, 20, 30, 0, 0, 0]);
+    }
+
+    #[test]
+    fn expand_indexed_4bpc_packs_two_per_byte() {
+        // 4x1 image, 4bpc: 2 indices per byte, high nibble first
+        let palette = vec![
+            0, 0, 0, // 0
+            10, 20, 30, // 1
+            40, 50, 60, // 2
+            70, 80, 90, // 3
+        ];
+        // indices: 0,1,2,3 → packed: 0x01, 0x23
+        let raw = vec![0x01, 0x23];
+        let out = expand_indexed_to_rgb(&raw, &palette, PixelFormat::RGB, 4, 1, 4);
+        assert_eq!(out, vec![0, 0, 0, 10, 20, 30, 40, 50, 60, 70, 80, 90]);
+    }
 }

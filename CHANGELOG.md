@@ -2,6 +2,18 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.25] - 2026-04-10
+
+### Bug Fixes
+
+- **Image extraction: `Invalid RGB image dimensions` error on PDFs with Indexed color space images (#311)** — running `pdf-oxide images report.pdf -o ./images/` on a PDF containing Indexed (palette-based) images failed with `Error: Image error: Invalid RGB image dimensions`. The root cause was that `parse_color_space` for `Indexed` returned `ColorSpace::Indexed` while discarding the base color space and palette lookup data, and downstream `color_space_to_pixel_format` mapped Indexed to `PixelFormat::RGB` (3 bytes/pixel). The raw decoded stream, however, contained one palette index per pixel (1 byte/pixel), so `ImageBuffer::from_raw` rejected the mismatched buffer length. Now `extract_image_from_xobject` resolves the Indexed palette via a new `resolve_indexed_palette` helper — loading the base color space and lookup bytes (from either a byte string or a stream, with indirect reference resolution) — and expands the decoded indices into RGB bytes through `expand_indexed_to_rgb` before constructing `ImageData::Raw`. The expander supports 1/2/4/8 bpc index streams and RGB, Grayscale, and CMYK base color spaces, handles packed indices and out-of-range palette indices defensively, and yields valid RGB PNGs at the correct dimensions. The report PDF from the issue now extracts all 218 images successfully. Reported by @Charltsing.
+
+### Community Contributors
+
+Thank you to everyone who reported issues for this release!
+
+- **@Charltsing** — Reported the Indexed color space image extraction failure (#311) with a reproduction PDF that exposed a long-standing gap in palette handling.
+
 ## [0.3.23] - 2026-04-09
 
 ### Bug Fixes
