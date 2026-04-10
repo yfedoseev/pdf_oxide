@@ -588,9 +588,15 @@ pub fn extract_image_from_xobject(
     // For Indexed color spaces, resolve the base color space and palette now so we
     // can expand indices to RGB after decoding the stream. Without this, raw
     // Indexed pixel data (1 byte per pixel) is mislabelled as RGB (3 bytes per
-    // pixel) and ImageBuffer::from_raw rejects the wrong length.
+    // pixel) and ImageBuffer::from_raw rejects the wrong length. Fail fast if
+    // the palette cannot be resolved so the error points at the real root cause
+    // instead of the downstream "Invalid RGB image dimensions" symptom.
     let indexed_palette: Option<(PixelFormat, Vec<u8>)> = if color_space == ColorSpace::Indexed {
-        resolve_indexed_palette(doc.as_deref_mut(), &resolved_color_space)?
+        let resolved = resolve_indexed_palette(doc.as_deref_mut(), &resolved_color_space)?;
+        if resolved.is_none() {
+            return Err(Error::Image("Unable to resolve Indexed color space palette".to_string()));
+        }
+        resolved
     } else {
         None
     };
@@ -1058,6 +1064,38 @@ mod indexed_tests {
         let out = expand_indexed_to_rgb(&raw, &palette, PixelFormat::CMYK, 1, 1, 8);
         let expected = cmyk_pixel_to_rgb(64, 128, 192, 32);
         assert_eq!(out, expected.to_vec());
+    }
+
+    #[test]
+    fn expand_indexed_1bpc_with_row_padding() {
+        // 2-entry palette, 5x2 image at 1 bpc. 5 bits → 1 byte per row (3 bits padding).
+        // Row 0 indices: 0,1,0,1,0 → top nibble 01010xxx = 0x50
+        // Row 1 indices: 1,1,0,0,1 → top nibble 11001xxx = 0xC8
+        let palette = vec![10, 20, 30, 200, 210, 220];
+        let raw = vec![0x50, 0xC8];
+        let out = expand_indexed_to_rgb(&raw, &palette, PixelFormat::RGB, 5, 2, 1);
+        assert_eq!(
+            out,
+            vec![
+                10, 20, 30, 200, 210, 220, 10, 20, 30, 200, 210, 220, 10, 20, 30, // row 0
+                200, 210, 220, 200, 210, 220, 10, 20, 30, 10, 20, 30, 200, 210, 220, // row 1
+            ]
+        );
+    }
+
+    #[test]
+    fn expand_indexed_2bpc_with_row_padding() {
+        // 4-entry palette, 3x1 image at 2 bpc. 6 bits → 1 byte per row (2 bits padding).
+        // indices 0,1,2 → 00 01 10 xx → 0x18
+        let palette = vec![
+            0, 0, 0, // 0
+            10, 20, 30, // 1
+            40, 50, 60, // 2
+            70, 80, 90, // 3
+        ];
+        let raw = vec![0x18];
+        let out = expand_indexed_to_rgb(&raw, &palette, PixelFormat::RGB, 3, 1, 2);
+        assert_eq!(out, vec![0, 0, 0, 10, 20, 30, 40, 50, 60]);
     }
 
     #[test]
