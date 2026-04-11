@@ -150,12 +150,15 @@ impl TableDetectionConfig {
 ///
 /// Rejects:
 /// - Tables with too many empty cells (> 60%).
-/// - Narrow tables (≤ 2 columns) that contain any empty cell. Product
-///   data sheets draw faint cell backgrounds behind label/value rows,
-///   which the spatial detector can cluster into tiny 2-column tables;
-///   wrapping continuation rows then leave an empty left-hand cell.
-///   A genuine 2-column data table fills every cell, so an empty cell
-///   in this shape is a reliable false-positive signal.
+/// - 2-column tables that contain a **continuation-row signature**: any
+///   row whose left-hand cell is empty while the right-hand cell is
+///   non-empty. Product data sheets draw faint cell backgrounds behind
+///   label/value rows, which the spatial detector can cluster into tiny
+///   2-column tables; when the right-hand value wraps onto a second line,
+///   the continuation row leaves an empty left-hand label cell beside
+///   the wrapped value text. This exact shape is a reliable false-positive
+///   signal. Sparse 2-column tables with *legitimately* missing right-hand
+///   values (e.g. "Fax: ", "N/A" rows) are NOT rejected by this rule.
 fn is_valid_table(table: &ExtractedTable) -> bool {
     if table.rows.is_empty() || table.col_count == 0 {
         return false;

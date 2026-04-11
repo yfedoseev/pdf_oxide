@@ -198,7 +198,7 @@ impl XYCutStrategy {
         let mut wide_dense_lines = 0usize;
         for line_spans in lines.values() {
             let mut sorted = line_spans.clone();
-            sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            sorted.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
             let extent_left = sorted.first().unwrap().0;
             let extent_right = sorted.iter().map(|(_, r)| *r).fold(f32::MIN, f32::max);
             let extent = extent_right - extent_left;
@@ -230,7 +230,7 @@ impl XYCutStrategy {
         let max_gap = self.min_valley_width;
         for line_spans in lines.values() {
             let mut sorted = line_spans.clone();
-            sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            sorted.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
             for w in sorted.windows(2) {
                 let gap = w[1].0 - w[0].1;
                 if gap >= max_gap {
@@ -300,12 +300,17 @@ impl XYCutStrategy {
 
         let split_y = profile.y_min + (valley_start + valley_end) as f32 / 2.0;
 
-        // Partition by the span's top edge. `bbox.top()` returns the larger Y
-        // coordinate of the normalized rectangle, which in PDF coords is the
-        // upper edge of the glyph's bounding box. A span is considered "above"
-        // the split line when its top edge is at or above `split_y`; spans
-        // whose boxes straddle `split_y` therefore stay in the upper partition
-        // because their top edge is still above the cut.
+        // `Rect::top()` returns `self.y`, the SMALLER Y coordinate of the
+        // normalized rectangle — the method name follows a screen-coordinate
+        // convention (Y grows downward) but PDF user space has Y growing
+        // upward, so in PDF terms `bbox.top()` is actually the LOWER edge of
+        // the glyph's bounding box. The predicate `bbox.top() >= split_y`
+        // therefore classifies a span into `above` only when its *lowest*
+        // point is already above the split line, i.e. the entire span sits
+        // above the cut. Since `split_y` is the midpoint of a horizontal
+        // projection valley (an empty band by construction), spans should
+        // not straddle it in practice; any that do (e.g. a tall header
+        // glyph whose ascenders dip into the valley) fall into `below`.
         let (above, below): (Vec<usize>, Vec<usize>) = indices
             .iter()
             .partition(|&&i| all_spans[i].bbox.top() >= split_y);
