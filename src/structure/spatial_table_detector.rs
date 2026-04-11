@@ -148,11 +148,18 @@ impl TableDetectionConfig {
 
 /// Validate that an extracted table is not a false positive.
 ///
-/// Rejects tables with too many empty cells (>60%).
+/// Rejects:
+/// - Tables with too many empty cells (> 60%).
+/// - Narrow tables (≤ 2 columns) that contain ANY empty cell. This
+///   catches the Issue #315 pattern: product data sheet label/value
+///   rows whose continuation lines create empty cells in a synthetic
+///   "2-column table" built from faint cell backgrounds. A genuine
+///   2-column data table fills every cell.
 fn is_valid_table(table: &ExtractedTable) -> bool {
     if table.rows.is_empty() || table.col_count == 0 {
         return false;
     }
+
     let total_cells = table.rows.len() * table.col_count;
     let empty_cells = table
         .rows
@@ -162,10 +169,19 @@ fn is_valid_table(table: &ExtractedTable) -> bool {
         .count();
     let empty_ratio = empty_cells as f32 / total_cells.max(1) as f32;
 
-    // Reject tables with >60% empty cells
+    // Reject tables with >60% empty cells.
     if empty_ratio > 0.6 {
         return false;
     }
+
+    // Narrow 2-column tables must have every cell filled. Any empty cell
+    // in a 2-column table is a strong signal that we're looking at
+    // wrapping continuation rows in a spec sheet, not a real table.
+    // Issue #315.
+    if table.col_count <= 2 && empty_cells > 0 {
+        return false;
+    }
+
     true
 }
 
@@ -4165,6 +4181,100 @@ mod tests {
             bbox: None,
         };
         assert!(is_valid_table(&table), "Well-populated table should pass validation");
+    }
+
+    /// Regression test for Issue #315: product data sheets have label/value
+    /// rows that look like 2-column tables to spatial detection (rows with
+    /// key text on the left and value text on the right, plus faint cell
+    /// backgrounds). When the right-hand value wraps, the detector emits
+    /// a continuation row whose left cell is empty — a hallmark of the
+    /// false positive. These should NOT be treated as tables, so their
+    /// rows remain in the flow text.
+    #[test]
+    fn test_narrow_shallow_table_rejected_as_false_positive() {
+        use crate::structure::table_extractor::{ExtractedTable, TableCell, TableRow};
+        let col_count = 2;
+        let rows_data: Vec<(&str, &str)> = vec![
+            ("Temperature resistance", "adhered to aluminium, -56° C to +82° C"),
+            (
+                "Resistance to cleaning agents",
+                "adhered to aluminium, 8 h in solution (0.5% household",
+            ),
+            // Wrapping continuation → empty left cell.
+            ("", "cleaning agents) at room temperature and 65° C, no"),
+        ];
+        let mut rows = Vec::new();
+        for (label, value) in &rows_data {
+            let mut row = TableRow::new(false);
+            row.cells.push(TableCell {
+                text: label.to_string(),
+                colspan: 1,
+                rowspan: 1,
+                mcids: vec![],
+                bbox: None,
+                is_header: false,
+            });
+            row.cells.push(TableCell {
+                text: value.to_string(),
+                colspan: 1,
+                rowspan: 1,
+                mcids: vec![],
+                bbox: None,
+                is_header: false,
+            });
+            rows.push(row);
+        }
+        let table = ExtractedTable {
+            rows,
+            has_header: false,
+            col_count,
+            bbox: None,
+        };
+        assert!(
+            !is_valid_table(&table),
+            "Narrow 2-column 'table' with an empty continuation cell must \
+             be rejected so its rows stay in the flow text"
+        );
+    }
+
+    /// A 2-column data table with ENOUGH rows is still a real table and
+    /// must continue to pass validation. This pins the threshold so the
+    /// #315 fix does not regress genuine two-column tables.
+    #[test]
+    fn test_narrow_deep_table_still_accepted() {
+        use crate::structure::table_extractor::{ExtractedTable, TableCell, TableRow};
+        let col_count = 2;
+        let mut rows = Vec::new();
+        for i in 0..6 {
+            let mut row = TableRow::new(i == 0);
+            row.cells.push(TableCell {
+                text: format!("Key {i}"),
+                colspan: 1,
+                rowspan: 1,
+                mcids: vec![],
+                bbox: None,
+                is_header: i == 0,
+            });
+            row.cells.push(TableCell {
+                text: format!("Value {i}"),
+                colspan: 1,
+                rowspan: 1,
+                mcids: vec![],
+                bbox: None,
+                is_header: i == 0,
+            });
+            rows.push(row);
+        }
+        let table = ExtractedTable {
+            rows,
+            has_header: true,
+            col_count,
+            bbox: None,
+        };
+        assert!(
+            is_valid_table(&table),
+            "A 2-col × 6-row data table should still be accepted"
+        );
     }
 
     #[test]
