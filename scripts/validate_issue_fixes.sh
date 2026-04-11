@@ -35,6 +35,11 @@ if [ -f "$TESTS/pdfs_pdfjs/secHandler.pdf" ]; then
         "Security Handler" \
         313 "$TESTS/pdfs_pdfjs/secHandler.pdf" 0
 fi
+if [ -f "$TESTS/pdfs_pdfjs/pr6531_2.pdf" ]; then
+    run "pr6531_2.pdf AES-256 R=6 owner-password extracts plaintext" \
+        "Bluebeam should be encrypting this" \
+        313 "$TESTS/pdfs_pdfjs/pr6531_2.pdf" 0
+fi
 
 echo
 echo "=== Issue #314: ColumnAware fragmentation on single-column pages ==="

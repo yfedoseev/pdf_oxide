@@ -13243,6 +13243,27 @@ mod tests {
             .expect("extract_text should work after auth");
     }
 
+    /// AES-256 (V=5, R=6) PDF that only authenticates via the owner
+    /// password with an empty input. Exercises Algorithm 2.B termination
+    /// (off-by-one would produce a wrong file encryption key) plus the
+    /// end-to-end string decryption path that surfaces annotation text.
+    #[test]
+    fn test_encrypted_aes256_r6_owner_password_empty() {
+        let pdf_path = "tests/fixtures/encrypted_aes256_r6_owner_password.pdf";
+        if !std::path::Path::new(pdf_path).exists() {
+            eprintln!("Skipping: fixture not found at {}", pdf_path);
+            return;
+        }
+        let mut doc = PdfDocument::open(pdf_path).expect("open should succeed");
+        assert!(doc.is_encrypted(), "fixture is AES-256 encrypted");
+        let text = doc.extract_text(0).expect("extract_text should succeed");
+        assert!(
+            text.contains("Bluebeam should be encrypting this."),
+            "expected annotation text in extracted output, got: {:?}",
+            text
+        );
+    }
+
     /// Copy-protected (AES-256, V=5, R=6) PDFs with widget text must
     /// decrypt string values inside object dictionaries so that form
     /// field content appears in `extract_text` output. Without per-object

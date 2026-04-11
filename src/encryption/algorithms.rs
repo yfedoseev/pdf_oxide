@@ -323,15 +323,14 @@ fn algorithm_2b(password: &[u8], salt: &[u8], user_key: &[u8]) -> Vec<u8> {
             },
         };
 
-        // Step e: Check termination condition
-        // Continue until round >= 63 AND last byte of E <= round - 32
-        if round >= 63 {
-            let last_byte = *e.last().unwrap_or(&0) as usize;
-            if last_byte <= round - 32 {
-                break;
-            }
-        }
+        // Step e: per ISO 32000-2:2020 Algorithm 2.B step f, the round
+        // counter increments before the termination check. Stop once at
+        // least 64 rounds have run AND the last byte of E is ≤ round - 32.
         round += 1;
+        let last_byte = *e.last().unwrap_or(&0) as usize;
+        if round >= 64 && last_byte <= round.saturating_sub(32) {
+            break;
+        }
     }
 
     // Return first 32 bytes
