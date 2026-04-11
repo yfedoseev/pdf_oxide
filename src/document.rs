@@ -155,6 +155,12 @@ pub struct PdfDocument {
     /// Encryption handler (if PDF is encrypted).
     /// Wrapped in RefCell for interior mutability (lazy initialization from &self).
     encryption_handler: Mutex<Option<EncryptionHandler>>,
+    /// ObjectRef of the /Encrypt dictionary, cached so that its own strings
+    /// are skipped during string decryption (Issue #313). The entries in the
+    /// encryption dict (/O, /U, /OE, /UE, /Perms, …) are **not** encrypted
+    /// content — they are the key material used to derive the encryption
+    /// key, and must never be passed through `decrypt_string`.
+    encrypt_dict_ref: Mutex<Option<ObjectRef>>,
     /// Parser configuration options for error handling and recovery
     #[allow(dead_code)]
     options: ParserOptions,
@@ -432,6 +438,7 @@ impl PdfDocument {
             resolving_stack: Mutex::new(HashSet::new()),
             recursion_depth: Mutex::new(0),
             encryption_handler: Mutex::new(None),
+            encrypt_dict_ref: Mutex::new(None),
             options: ParserOptions::default(),
             header_offset,
             font_cache: Mutex::new(HashMap::new()),
@@ -556,6 +563,9 @@ impl PdfDocument {
             Object::Dictionary(_) => encrypt_ref,
             Object::Reference(obj_ref) => {
                 log::debug!("Loading /Encrypt object reference {} {}", obj_ref.id, obj_ref.gen);
+                // Record the encryption dict's ObjectRef so its strings are
+                // skipped during per-object string decryption (Issue #313).
+                *self.encrypt_dict_ref.lock().unwrap() = Some(obj_ref);
                 self.load_object(obj_ref)?
             },
             _ => {
@@ -1278,6 +1288,59 @@ impl PdfDocument {
         self.load_uncompressed_object_impl(obj_ref, offset, false)
     }
 
+    /// Recursively decrypt every `Object::String` inside `obj` using the
+    /// per-object key derived from `obj_num`/`gen_num`. Streams are left
+    /// untouched — they are decrypted lazily at read time through
+    /// `decode_stream_with_encryption`. The `/Encrypt` dictionary itself
+    /// must never be passed to this function (its strings are key
+    /// material, not ciphertext). Issue #313.
+    ///
+    /// Per ISO 32000-1:2008 §7.6.2, strings inside encrypted-document
+    /// objects are individually encrypted with the standard encryption
+    /// algorithm. When pdf_oxide parses an uncompressed object, the string
+    /// tokens still hold the raw ciphertext and must be decrypted before
+    /// downstream consumers (widget text, form field values, outlines,
+    /// document info) can read them.
+    fn decrypt_strings_in_object(
+        handler: &EncryptionHandler,
+        obj: &mut Object,
+        obj_num: u32,
+        gen_num: u32,
+    ) {
+        match obj {
+            Object::String(bytes) => match handler.decrypt_string(bytes, obj_num, gen_num) {
+                Ok(decrypted) => *bytes = decrypted,
+                Err(e) => {
+                    log::debug!(
+                        "String decryption failed for object {} {}: {}",
+                        obj_num,
+                        gen_num,
+                        e
+                    );
+                },
+            },
+            Object::Array(items) => {
+                for item in items {
+                    Self::decrypt_strings_in_object(handler, item, obj_num, gen_num);
+                }
+            },
+            Object::Dictionary(dict) => {
+                for (_, value) in dict.iter_mut() {
+                    Self::decrypt_strings_in_object(handler, value, obj_num, gen_num);
+                }
+            },
+            Object::Stream { dict, .. } => {
+                // Stream *data* is decrypted separately in
+                // `decode_stream_with_encryption`. Its dict may still
+                // contain encrypted strings (e.g., /Metadata).
+                for (_, value) in dict.iter_mut() {
+                    Self::decrypt_strings_in_object(handler, value, obj_num, gen_num);
+                }
+            },
+            _ => {},
+        }
+    }
+
     /// Implementation with recursion guard to prevent infinite loops.
     fn load_uncompressed_object_impl(
         &self,
@@ -1481,7 +1544,7 @@ impl PdfDocument {
         // Phase 6B: Graceful degradation for corrupted objects
         // Instead of failing on parse errors, return Null placeholder
         // This allows partial content extraction from PDFs with truncated objects
-        let obj = match parse_object(&data) {
+        let mut obj = match parse_object(&data) {
             Ok((_, parsed_obj)) => parsed_obj,
             Err(e) => {
                 // Extract error kind without printing raw bytes
@@ -1506,6 +1569,28 @@ impl PdfDocument {
                 Object::Null
             },
         };
+
+        // Issue #313: decrypt string values inside uncompressed objects
+        // after parsing but before caching. Skip the /Encrypt dict (its
+        // contents are key material, not ciphertext) and skip the
+        // non-authenticated case (handler cannot decrypt yet). Strings
+        // inside compressed objects are already decrypted as part of the
+        // ObjStm payload — see ISO 32000-1:2008 §7.6.2 — so this path is
+        // only triggered for uncompressed objects.
+        let is_encrypt_dict = *self.encrypt_dict_ref.lock().unwrap() == Some(obj_ref);
+        if !is_encrypt_dict {
+            let handler_guard = self.encryption_handler.lock().unwrap();
+            if let Some(handler) = handler_guard.as_ref() {
+                if handler.is_authenticated() {
+                    Self::decrypt_strings_in_object(
+                        handler,
+                        &mut obj,
+                        obj_ref.id,
+                        obj_ref.gen as u32,
+                    );
+                }
+            }
+        }
 
         // Cache the object
         self.object_cache
@@ -4037,8 +4122,17 @@ impl PdfDocument {
                 },
                 Some("Btn") => {
                     if ff & field_flags::PUSH_BUTTON != 0 {
-                        // Push button: skip (action trigger, no data value)
-                        None
+                        // Push button: caption is in /MK /CA per PDF Spec
+                        // ISO 32000-1:2008 §12.5.6.19 (Appearance Characteristics
+                        // Dictionary). Extracting it lets screen readers and
+                        // text-extraction consumers see the button label.
+                        dict.get("MK")
+                            .and_then(|mk| mk.as_dict())
+                            .and_then(|mk| Self::parse_string_value_static(mk.get("CA")))
+                            .and_then(|s| {
+                                let t = s.trim().to_string();
+                                if t.is_empty() { None } else { Some(t) }
+                            })
                     } else {
                         // Checkbox or radio button
                         let value = Self::parse_string_value_static(dict.get("V"))
@@ -13154,6 +13248,30 @@ mod tests {
         let _text = doc
             .extract_text(0)
             .expect("extract_text should work after auth");
+    }
+
+    /// Regression test for Issue #313: copy-protected (AES-256, V=5, R=6)
+    /// PDFs with widget text must decrypt string values inside object
+    /// dictionaries so that form field content appears in extract_text
+    /// output. Prior to the fix, strings in uncompressed objects were
+    /// never decrypted and the page rendered as an empty string.
+    #[test]
+    fn test_encrypted_aes256_widget_decrypts_string_values() {
+        let pdf_path = "tests/fixtures/encrypted_aes256_widget.pdf";
+        if !std::path::Path::new(pdf_path).exists() {
+            eprintln!("Skipping: fixture not found at {}", pdf_path);
+            return;
+        }
+
+        let mut doc = PdfDocument::open(pdf_path).expect("open should succeed");
+        assert!(doc.is_encrypted(), "fixture is AES-256 encrypted");
+
+        let text = doc.extract_text(0).expect("extract_text should succeed");
+        assert!(
+            text.contains("Security Handler"),
+            "expected widget text 'Security Handler' in extracted text, got: {:?}",
+            text
+        );
     }
 
     /// PDFs that are encrypted but authenticated with empty password (the common
