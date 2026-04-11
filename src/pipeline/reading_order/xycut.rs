@@ -114,17 +114,34 @@ impl XYCutStrategy {
             return vec![self.sort_indices(all_spans, indices)];
         }
 
-        // Try horizontal partitioning (vertical line split)
+        // Issue #314: detect single-column body text up-front and skip all
+        // spatial splits. Real body text has density dips (indented code,
+        // short last-lines, paragraph breaks) that would otherwise trigger
+        // spurious horizontal (column) or vertical (row) splits, scrambling
+        // reading order. The subsequent sort-by-Y already handles row order
+        // within a column.
+        if self.is_single_column_region(all_spans, indices) {
+            return vec![self.sort_indices(all_spans, indices)];
+        }
+
+        // Try horizontal partitioning (vertical line split) — this detects
+        // columns. Per PDF Spec ISO 32000-1:2008 §14.8.4 (Logical Structure
+        // reading order), column detection is the primary purpose of XY-Cut.
         if let Some((left, right)) = self.find_horizontal_split_indexed(all_spans, indices) {
             let mut result = self.partition_indexed(all_spans, &left);
             result.extend(self.partition_indexed(all_spans, &right));
             return result;
         }
 
-        // Try vertical partitioning (horizontal line split)
-        if let Some((top, bottom)) = self.find_vertical_split_indexed(all_spans, indices) {
-            let mut result = self.partition_indexed(all_spans, &top);
-            result.extend(self.partition_indexed(all_spans, &bottom));
+        // Try vertical partitioning (horizontal line split). This handles
+        // the "header band above a multi-column body" case: the split
+        // isolates the header row so the body can subsequently be column-
+        // split. Per PDF coordinate convention (origin at bottom-left, Y
+        // grows upward), the first tuple element is the upper-Y (top-of-
+        // page) partition and must be processed first in reading order.
+        if let Some((above, below)) = self.find_vertical_split_indexed(all_spans, indices) {
+            let mut result = self.partition_indexed(all_spans, &above);
+            result.extend(self.partition_indexed(all_spans, &below));
             return result;
         }
 
@@ -132,7 +149,112 @@ impl XYCutStrategy {
         vec![self.sort_indices(all_spans, indices)]
     }
 
+    /// Heuristic: does the region look like a single column of body text?
+    ///
+    /// Called **before** horizontal split attempts. When true, the region
+    /// is returned as a single sorted group, bypassing both horizontal
+    /// (column) and vertical (row) splits. This prevents XY-Cut from
+    /// fragmenting body text at density dips caused by indentation or
+    /// short last-lines.
+    ///
+    /// Detection: cluster spans into lines by rounded top-Y, then count
+    /// lines that are both **wide** (extent ≥ 60% region width) and
+    /// **dense** (covered ratio ≥ 80%). Body-text lines satisfy both.
+    /// Aligned multi-column rows look "wide" because their extent spans
+    /// the gutter, but fail the density check because the gutter is empty.
+    fn is_single_column_region(&self, all_spans: &[TextSpan], indices: &[usize]) -> bool {
+        if indices.len() < 3 {
+            return false;
+        }
+        let mut x_min = f32::MAX;
+        let mut x_max = f32::MIN;
+        for &i in indices {
+            x_min = x_min.min(all_spans[i].bbox.left());
+            x_max = x_max.max(all_spans[i].bbox.right());
+        }
+        let region_width = x_max - x_min;
+        if region_width <= 10.0 {
+            return true;
+        }
+
+        let mut lines: std::collections::BTreeMap<i32, Vec<(f32, f32)>> =
+            std::collections::BTreeMap::new();
+        for &i in indices {
+            let s = &all_spans[i];
+            let y_key = s.bbox.top().round() as i32;
+            lines
+                .entry(y_key)
+                .or_default()
+                .push((s.bbox.left(), s.bbox.right()));
+        }
+        if lines.len() < 3 {
+            return false;
+        }
+
+        // Primary check: majority of lines are wide AND densely covered.
+        // This catches clean body text where every line covers most of the
+        // region width with almost no intra-line gaps.
+        let width_threshold = region_width * 0.6;
+        let mut wide_dense_lines = 0usize;
+        for line_spans in lines.values() {
+            let mut sorted = line_spans.clone();
+            sorted.sort_by(|a, b| {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let extent_left = sorted.first().unwrap().0;
+            let extent_right = sorted
+                .iter()
+                .map(|(_, r)| *r)
+                .fold(f32::MIN, f32::max);
+            let extent = extent_right - extent_left;
+            if extent < width_threshold {
+                continue;
+            }
+            let mut covered = 0.0f32;
+            let mut last_end = f32::MIN;
+            for &(l, r) in &sorted {
+                let start = l.max(last_end);
+                if r > start {
+                    covered += r - start;
+                    last_end = r;
+                }
+            }
+            if covered >= extent * 0.8 {
+                wide_dense_lines += 1;
+            }
+        }
+        if wide_dense_lines * 2 >= lines.len() {
+            return true;
+        }
+
+        // Fallback check: no line has a significant intra-line gap. Catches
+        // sparse-but-aligned single-column layouts like TOCs, dot-leader
+        // entries, and justified text where word gaps dominate. Any real
+        // multi-column layout has an inter-column gutter ≥ `min_valley_width`
+        // on at least some lines.
+        let max_gap = self.min_valley_width;
+        for line_spans in lines.values() {
+            let mut sorted = line_spans.clone();
+            sorted.sort_by(|a, b| {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            for w in sorted.windows(2) {
+                let gap = w[1].0 - w[0].1;
+                if gap >= max_gap {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     /// Find vertical line (X-axis) split using index-based partitioning.
+    ///
+    /// Rejects lopsided splits where one side contains fewer than ~10% of
+    /// the region's spans — those come from single-column pages where
+    /// indentation or stray content creates a spurious density dip at one
+    /// edge of the projection, not from a real column boundary. See
+    /// Issue #314.
     fn find_horizontal_split_indexed(
         &self,
         all_spans: &[TextSpan],
@@ -155,10 +277,23 @@ impl XYCutStrategy {
             return None;
         }
 
+        // Real column splits produce balanced partitions. A 95/5 split is
+        // almost always from edge dips or stray content, not a column.
+        let min_side = (indices.len() / 10).max(2);
+        if left.len() < min_side || right.len() < min_side {
+            return None;
+        }
+
         Some((left, right))
     }
 
     /// Find horizontal line (Y-axis) split using index-based partitioning.
+    ///
+    /// Returns `(above, below)` where `above` holds spans whose rectangle
+    /// edge is at larger Y (higher on page in PDF coordinates) and must be
+    /// processed first in reading order. PDF Spec ISO 32000-1:2008 §8.3.2.3
+    /// defines the default user-space coordinate system with origin at the
+    /// lower-left corner and Y increasing upward.
     fn find_vertical_split_indexed(
         &self,
         all_spans: &[TextSpan],
@@ -173,15 +308,27 @@ impl XYCutStrategy {
 
         let split_y = profile.y_min + (valley_start + valley_end) as f32 / 2.0;
 
-        let (top, bottom): (Vec<usize>, Vec<usize>) = indices
+        // `Rect::y` stores the smaller Y coordinate of the rectangle (normalized
+        // at construction). In PDF coords this is the bottom edge of the
+        // glyph's bounding box. A span is "above" the split line when its
+        // bottom edge is higher on the page (larger Y) than split_y.
+        let (above, below): (Vec<usize>, Vec<usize>) = indices
             .iter()
-            .partition(|&&i| all_spans[i].bbox.top() <= split_y);
+            .partition(|&&i| all_spans[i].bbox.top() >= split_y);
 
-        if top.is_empty() || bottom.is_empty() {
+        if above.is_empty() || below.is_empty() {
             return None;
         }
 
-        Some((top, bottom))
+        // Reject lopsided splits (see `find_horizontal_split_indexed`). A
+        // real row split has content on both sides; otherwise we're chasing
+        // a stray page header/footer.
+        let min_side = (indices.len() / 10).max(2);
+        if above.len() < min_side || below.len() < min_side {
+            return None;
+        }
+
+        Some((above, below))
     }
 
     /// Calculate horizontal projection profile from indexed spans.
@@ -469,6 +616,131 @@ mod tests {
         let groups = strategy.partition_region(&spans);
         assert_eq!(groups.len(), 1); // No split for single column
         assert_eq!(groups[0].len(), 3);
+    }
+
+    /// Regression test for Issue #314: ColumnAware over-fragments single-column
+    /// body text into many spatial partitions, scrambling reading order.
+    ///
+    /// Realistic A4/Letter single-column page: 60 lines of body text, 14-pt
+    /// leading, one paragraph-gap (30pt) mid-page. Only ONE body "column"
+    /// exists — XY-Cut must return exactly ONE group so reading order is
+    /// preserved top-to-bottom. Previously it would split at the paragraph
+    /// gap (vertical split) and recurse until each paragraph ran out of spans,
+    /// producing many groups and a non-monotonic Y sequence.
+    #[test]
+    fn test_single_column_body_text_no_fragmentation() {
+        let strategy = XYCutStrategy::new();
+        // Simulate 60 lines of body text at x=72..540 (letter page, 1" margins).
+        // Each line is a single span; line height 12pt, leading 14pt.
+        let mut spans = Vec::new();
+        let line_height = 12.0;
+        let leading = 14.0;
+        let left = 72.0;
+        let right = 540.0;
+        let width = right - left;
+        let mut y = 720.0; // start near top of letter page
+        for i in 0..60 {
+            // Insert a paragraph gap in the middle (30pt, larger than min_valley_width=15pt)
+            if i == 30 {
+                y -= 30.0;
+            }
+            // Lines are ~full-width body text
+            spans.push(make_span(left, y, width, line_height));
+            y -= leading;
+        }
+
+        let groups = strategy.partition_region(&spans);
+        assert_eq!(
+            groups.len(),
+            1,
+            "single-column body text must not be split by XY-Cut (got {} groups)",
+            groups.len()
+        );
+        assert_eq!(groups[0].len(), 60, "all 60 spans must be preserved");
+
+        // Verify the group preserves monotonic top-to-bottom reading order
+        // (each subsequent span's Y should be <= previous Y).
+        let mut last_y = f32::MAX;
+        for s in &groups[0] {
+            assert!(
+                s.bbox.top() <= last_y + 0.01,
+                "reading order must be top-to-bottom: {} > {}",
+                s.bbox.top(),
+                last_y
+            );
+            last_y = s.bbox.top();
+        }
+    }
+
+    /// Regression test for Issue #314: after a vertical (row) split, the
+    /// partition at higher Y (top of page in PDF coords) must be processed
+    /// **first** in reading order. Previously the naming in
+    /// `find_vertical_split_indexed` was inverted and the bottom-of-page
+    /// partition came out first, scrambling header/body ordering.
+    #[test]
+    fn test_vertical_split_preserves_top_to_bottom_order() {
+        use crate::pipeline::reading_order::{ReadingOrderContext, ReadingOrderStrategy};
+
+        let mut strategy = XYCutStrategy::new();
+        strategy.min_spans_for_split = 2;
+
+        // Header line at high Y (top of page in PDF coords).
+        // Body block at lower Y values. Gap between them > min_valley_width.
+        let make = |text: &str, x: f32, y: f32, w: f32| {
+            let mut s = make_span(x, y, w, 12.0);
+            s.text = text.to_string();
+            s
+        };
+        // Two columns at y ∈ {200, 180, 160} (body), header at y=400.
+        // Horizontal split will find the column gutter first; within each
+        // column the header must still come out first in reading order.
+        let spans = vec![
+            make("HEADER LEFT", 50.0, 400.0, 200.0),
+            make("HEADER RIGHT", 300.0, 400.0, 200.0),
+            make("body-L1", 50.0, 200.0, 150.0),
+            make("body-R1", 300.0, 200.0, 150.0),
+            make("body-L2", 50.0, 180.0, 150.0),
+            make("body-R2", 300.0, 180.0, 150.0),
+        ];
+        let context = ReadingOrderContext::new();
+        let ordered = strategy.apply(spans, &context).unwrap();
+
+        let texts: Vec<&str> = ordered.iter().map(|o| o.span.text.as_str()).collect();
+        // First output must be from y=400 (header), not y=180 (body bottom).
+        assert!(
+            texts[0].contains("HEADER"),
+            "expected HEADER first, got sequence {:?}",
+            texts
+        );
+    }
+
+    /// Regression test for Issue #314: single-column page with a tall header
+    /// band ("Title" or "Chapter heading") at top. XY-Cut may validly split
+    /// header from body (vertical Y-split), but must NOT further split the
+    /// body into per-paragraph chunks.
+    #[test]
+    fn test_single_column_with_header_at_most_two_groups() {
+        let strategy = XYCutStrategy::new();
+        let mut spans = Vec::new();
+
+        // Tall header band
+        spans.push(make_span(72.0, 750.0, 468.0, 24.0));
+
+        // 40 lines of body text below, separated by a ~50pt gap
+        let mut y = 670.0;
+        for _ in 0..40 {
+            spans.push(make_span(72.0, y, 468.0, 12.0));
+            y -= 14.0;
+        }
+
+        let groups = strategy.partition_region(&spans);
+        assert!(
+            groups.len() <= 2,
+            "single-column with header should produce at most 2 groups, got {}",
+            groups.len()
+        );
+        let total: usize = groups.iter().map(|g| g.len()).sum();
+        assert_eq!(total, 41);
     }
 
     #[test]
