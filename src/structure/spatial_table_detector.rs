@@ -150,11 +150,12 @@ impl TableDetectionConfig {
 ///
 /// Rejects:
 /// - Tables with too many empty cells (> 60%).
-/// - Narrow tables (≤ 2 columns) that contain ANY empty cell. This
-///   catches the Issue #315 pattern: product data sheet label/value
-///   rows whose continuation lines create empty cells in a synthetic
-///   "2-column table" built from faint cell backgrounds. A genuine
-///   2-column data table fills every cell.
+/// - Narrow tables (≤ 2 columns) that contain any empty cell. Product
+///   data sheets draw faint cell backgrounds behind label/value rows,
+///   which the spatial detector can cluster into tiny 2-column tables;
+///   wrapping continuation rows then leave an empty left-hand cell.
+///   A genuine 2-column data table fills every cell, so an empty cell
+///   in this shape is a reliable false-positive signal.
 fn is_valid_table(table: &ExtractedTable) -> bool {
     if table.rows.is_empty() || table.col_count == 0 {
         return false;
@@ -169,15 +170,11 @@ fn is_valid_table(table: &ExtractedTable) -> bool {
         .count();
     let empty_ratio = empty_cells as f32 / total_cells.max(1) as f32;
 
-    // Reject tables with >60% empty cells.
     if empty_ratio > 0.6 {
         return false;
     }
 
-    // Narrow 2-column tables must have every cell filled. Any empty cell
-    // in a 2-column table is a strong signal that we're looking at
-    // wrapping continuation rows in a spec sheet, not a real table.
-    // Issue #315.
+    // Narrow 2-column tables must have every cell filled.
     if table.col_count <= 2 && empty_cells > 0 {
         return false;
     }
@@ -4183,13 +4180,12 @@ mod tests {
         assert!(is_valid_table(&table), "Well-populated table should pass validation");
     }
 
-    /// Regression test for Issue #315: product data sheets have label/value
-    /// rows that look like 2-column tables to spatial detection (rows with
-    /// key text on the left and value text on the right, plus faint cell
-    /// backgrounds). When the right-hand value wraps, the detector emits
-    /// a continuation row whose left cell is empty — a hallmark of the
-    /// false positive. These should NOT be treated as tables, so their
-    /// rows remain in the flow text.
+    /// Product data sheets have label/value rows that look like 2-column
+    /// tables to the spatial detector (key text on the left, value on
+    /// the right, with faint cell backgrounds). When the right-hand
+    /// value wraps, the detector emits a continuation row whose left
+    /// cell is empty — the hallmark of this false positive. Such tables
+    /// must be rejected so their rows remain in the flow text.
     #[test]
     fn test_narrow_shallow_table_rejected_as_false_positive() {
         use crate::structure::table_extractor::{ExtractedTable, TableCell, TableRow};
@@ -4237,9 +4233,9 @@ mod tests {
         );
     }
 
-    /// A 2-column data table with ENOUGH rows is still a real table and
-    /// must continue to pass validation. This pins the threshold so the
-    /// #315 fix does not regress genuine two-column tables.
+    /// A 2-column data table with enough filled rows is a real table
+    /// and must continue to pass validation. Pins the threshold so the
+    /// narrow-table guard does not regress genuine two-column tables.
     #[test]
     fn test_narrow_deep_table_still_accepted() {
         use crate::structure::table_extractor::{ExtractedTable, TableCell, TableRow};

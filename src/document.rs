@@ -155,11 +155,11 @@ pub struct PdfDocument {
     /// Encryption handler (if PDF is encrypted).
     /// Wrapped in RefCell for interior mutability (lazy initialization from &self).
     encryption_handler: Mutex<Option<EncryptionHandler>>,
-    /// ObjectRef of the /Encrypt dictionary, cached so that its own strings
-    /// are skipped during string decryption (Issue #313). The entries in the
-    /// encryption dict (/O, /U, /OE, /UE, /Perms, …) are **not** encrypted
-    /// content — they are the key material used to derive the encryption
-    /// key, and must never be passed through `decrypt_string`.
+    /// ObjectRef of the /Encrypt dictionary, cached so its strings are
+    /// skipped during per-object string decryption. The entries in the
+    /// encryption dict (/O, /U, /OE, /UE, /Perms, …) are key material used
+    /// to derive the encryption key, not ciphertext, and must never be
+    /// passed through `decrypt_string`.
     encrypt_dict_ref: Mutex<Option<ObjectRef>>,
     /// Parser configuration options for error handling and recovery
     #[allow(dead_code)]
@@ -563,8 +563,8 @@ impl PdfDocument {
             Object::Dictionary(_) => encrypt_ref,
             Object::Reference(obj_ref) => {
                 log::debug!("Loading /Encrypt object reference {} {}", obj_ref.id, obj_ref.gen);
-                // Record the encryption dict's ObjectRef so its strings are
-                // skipped during per-object string decryption (Issue #313).
+                // Remember which object holds the /Encrypt dict so its own
+                // strings are skipped during per-object string decryption.
                 *self.encrypt_dict_ref.lock().unwrap() = Some(obj_ref);
                 self.load_object(obj_ref)?
             },
@@ -1292,15 +1292,14 @@ impl PdfDocument {
     /// per-object key derived from `obj_num`/`gen_num`. Streams are left
     /// untouched — they are decrypted lazily at read time through
     /// `decode_stream_with_encryption`. The `/Encrypt` dictionary itself
-    /// must never be passed to this function (its strings are key
-    /// material, not ciphertext). Issue #313.
+    /// must never be passed to this function; its strings are key material,
+    /// not ciphertext.
     ///
     /// Per ISO 32000-1:2008 §7.6.2, strings inside encrypted-document
     /// objects are individually encrypted with the standard encryption
-    /// algorithm. When pdf_oxide parses an uncompressed object, the string
-    /// tokens still hold the raw ciphertext and must be decrypted before
-    /// downstream consumers (widget text, form field values, outlines,
-    /// document info) can read them.
+    /// algorithm. Parsed string tokens hold raw ciphertext and must be
+    /// decrypted before downstream consumers (widget text, form field
+    /// values, outlines, document info) can read them.
     fn decrypt_strings_in_object(
         handler: &EncryptionHandler,
         obj: &mut Object,
@@ -1541,13 +1540,11 @@ impl PdfDocument {
             data.len()
         );
 
-        // Phase 6B: Graceful degradation for corrupted objects
-        // Instead of failing on parse errors, return Null placeholder
-        // This allows partial content extraction from PDFs with truncated objects
+        // Corrupted objects degrade to Null so extraction can continue on
+        // partial PDFs rather than aborting.
         let mut obj = match parse_object(&data) {
             Ok((_, parsed_obj)) => parsed_obj,
             Err(e) => {
-                // Extract error kind without printing raw bytes
                 let error_kind = match &e {
                     nom::Err::Incomplete(_) => "Incomplete data",
                     nom::Err::Error(err) | nom::Err::Failure(err) => match err.code {
@@ -1564,19 +1561,15 @@ impl PdfDocument {
                     offset,
                     error_kind
                 );
-                // Return Null object instead of failing
-                // This allows extraction to continue with partial content
                 Object::Null
             },
         };
 
-        // Issue #313: decrypt string values inside uncompressed objects
-        // after parsing but before caching. Skip the /Encrypt dict (its
-        // contents are key material, not ciphertext) and skip the
-        // non-authenticated case (handler cannot decrypt yet). Strings
-        // inside compressed objects are already decrypted as part of the
-        // ObjStm payload — see ISO 32000-1:2008 §7.6.2 — so this path is
-        // only triggered for uncompressed objects.
+        // Decrypt string values inside this uncompressed object before
+        // caching. Skip the /Encrypt dict (its entries are key material)
+        // and the non-authenticated case (no key derived yet). Strings
+        // inside compressed objects ride along with the ObjStm payload
+        // and are already in clear text per ISO 32000-1:2008 §7.6.2.
         let is_encrypt_dict = *self.encrypt_dict_ref.lock().unwrap() == Some(obj_ref);
         if !is_encrypt_dict {
             let handler_guard = self.encryption_handler.lock().unwrap();
@@ -3150,10 +3143,11 @@ impl PdfDocument {
                 });
             }
 
-            // Sort combined spans by position: row-aware (Y-band descending,
-            // X ascending within a row). Pure-Y sort interleaves cells from
-            // the same tabular row when their Y values differ by typographic
-            // jitter, scrambling CJK tables (Issue #316).
+            // Row-aware ordering: quantize Y into bands and sort band-
+            // descending, then X ascending within a band. Strict Y sorting
+            // would interleave cells from the same tabular row whose Y
+            // values differ by typographic jitter (common in CJK layouts,
+            // superscripts, and centered multi-line labels).
             spans.sort_by(|a, b| {
                 let cmp = crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x);
                 if cmp != std::cmp::Ordering::Equal {
@@ -5220,7 +5214,7 @@ impl PdfDocument {
                 spans_without_mcid.len()
             );
             // Row-aware sort: Y-band descending (top→bottom), then X
-            // ascending (left→right within a row). See Issue #316.
+            // ascending (left→right within a row).
             spans_without_mcid.sort_by(|a, b| {
                 crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
             });
@@ -5289,7 +5283,7 @@ impl PdfDocument {
         let mut spans = self.extract_spans_raw(page_index)?;
 
         // Row-aware reading order: Y-band descending (top→bottom), X
-        // ascending within a row. See Issue #316.
+        // ascending within a row.
         spans.sort_by(|a, b| {
             crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
         });
@@ -5411,8 +5405,7 @@ impl PdfDocument {
         // Apply reading order strategy
         match reading_order {
             ReadingOrder::TopToBottom => {
-                // Row-aware sort: Y-band descending then X ascending. See
-                // Issue #316.
+                // Row-aware sort: Y-band descending, then X ascending.
                 spans.sort_by(|a, b| {
                     crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
                 });
@@ -13250,11 +13243,10 @@ mod tests {
             .expect("extract_text should work after auth");
     }
 
-    /// Regression test for Issue #313: copy-protected (AES-256, V=5, R=6)
-    /// PDFs with widget text must decrypt string values inside object
-    /// dictionaries so that form field content appears in extract_text
-    /// output. Prior to the fix, strings in uncompressed objects were
-    /// never decrypted and the page rendered as an empty string.
+    /// Copy-protected (AES-256, V=5, R=6) PDFs with widget text must
+    /// decrypt string values inside object dictionaries so that form
+    /// field content appears in `extract_text` output. Without per-object
+    /// string decryption, the page renders as an empty string.
     #[test]
     fn test_encrypted_aes256_widget_decrypts_string_values() {
         let pdf_path = "tests/fixtures/encrypted_aes256_widget.pdf";

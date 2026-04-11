@@ -312,12 +312,12 @@ pub(crate) mod utils {
         &s[safe_start..]
     }
 
-    /// Y-band tolerance used by `row_aware_span_cmp` (Issue #316).
+    /// Y-band tolerance used by `row_aware_span_cmp`.
     ///
-    /// Two spans whose top-Y differs by less than this amount are considered
-    /// to lie on the same row. Chosen to match typographic baseline jitter
-    /// for 10-12pt body text and glyph-cluster offsets in CJK fonts without
-    /// merging adjacent 14pt-leading lines.
+    /// Two spans whose top-Y differs by less than this amount are treated
+    /// as lying on the same row. Chosen to absorb typographic baseline
+    /// jitter for 10-12pt body text and glyph-cluster offsets in CJK
+    /// fonts without merging adjacent 14pt-leading lines.
     pub const ROW_BAND_TOLERANCE_PT: f32 = 3.0;
 
     /// Row-aware reading-order comparator for spans.
@@ -327,11 +327,11 @@ pub(crate) mod utils {
     /// §8.3.2.3) and secondarily by X (left-to-right within a row). This
     /// keeps tabular layouts where cells in the same logical row have
     /// slightly different Y values (font-metric jitter, superscripts, CJK
-    /// glyph centering) from being interleaved by pure-Y sort (Issue #316).
+    /// glyph centering) from being interleaved by a strict Y sort.
     ///
     /// Uses `i32` band keys so the ordering is a valid total order —
-    /// comparing the raw Y values with tolerance is non-transitive and
-    /// would break `sort_by`.
+    /// comparing raw Y values with tolerance is non-transitive and would
+    /// break `sort_by`.
     #[inline]
     pub fn row_aware_span_cmp(a_y: f32, a_x: f32, b_y: f32, b_x: f32) -> Ordering {
         let band_a = (a_y / ROW_BAND_TOLERANCE_PT).round() as i32;
@@ -429,15 +429,15 @@ pub(crate) mod utils {
             assert_eq!(safe_float_cmp(a, nan), Ordering::Less);
         }
 
-        /// Regression test for Issue #316: cells in the same tabular row
-        /// with slightly-different Y values must stay together and be
-        /// ordered by X, not interleaved with cells from other rows.
+        /// Cells in the same tabular row with slightly-different Y values
+        /// must stay together and be ordered by X, not interleaved with
+        /// cells from other rows.
         #[test]
         fn test_row_aware_span_cmp_tolerates_y_jitter() {
             // Row 1 at y ≈ 100 with small per-cell jitter.
             // Row 2 at y ≈ 86 (14pt leading below).
-            // Pure-Y sort would interleave them because some row-1 cells
-            // have lower Y than some row-2 cells. Row-aware sort must not.
+            // A strict Y sort would interleave them because some row-1
+            // cells have lower Y than some row-2 cells.
             #[derive(Debug, Clone, Copy)]
             struct Cell {
                 y: f32,

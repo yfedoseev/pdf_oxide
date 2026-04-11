@@ -114,12 +114,12 @@ impl XYCutStrategy {
             return vec![self.sort_indices(all_spans, indices)];
         }
 
-        // Issue #314: detect single-column body text up-front and skip all
-        // spatial splits. Real body text has density dips (indented code,
-        // short last-lines, paragraph breaks) that would otherwise trigger
-        // spurious horizontal (column) or vertical (row) splits, scrambling
-        // reading order. The subsequent sort-by-Y already handles row order
-        // within a column.
+        // Detect single-column body text up-front and skip all spatial
+        // splits. Real body text has density dips (indented code, short
+        // last-lines, paragraph breaks) that would otherwise trigger
+        // spurious horizontal (column) or vertical (row) splits,
+        // scrambling reading order. The subsequent sort-by-Y already
+        // handles row order within a column.
         if self.is_single_column_region(all_spans, indices) {
             return vec![self.sort_indices(all_spans, indices)];
         }
@@ -252,9 +252,8 @@ impl XYCutStrategy {
     ///
     /// Rejects lopsided splits where one side contains fewer than ~10% of
     /// the region's spans — those come from single-column pages where
-    /// indentation or stray content creates a spurious density dip at one
-    /// edge of the projection, not from a real column boundary. See
-    /// Issue #314.
+    /// indentation or stray content creates a spurious density dip at
+    /// one edge of the projection, not from a real column boundary.
     fn find_horizontal_split_indexed(
         &self,
         all_spans: &[TextSpan],
@@ -618,15 +617,12 @@ mod tests {
         assert_eq!(groups[0].len(), 3);
     }
 
-    /// Regression test for Issue #314: ColumnAware over-fragments single-column
-    /// body text into many spatial partitions, scrambling reading order.
-    ///
-    /// Realistic A4/Letter single-column page: 60 lines of body text, 14-pt
-    /// leading, one paragraph-gap (30pt) mid-page. Only ONE body "column"
-    /// exists — XY-Cut must return exactly ONE group so reading order is
-    /// preserved top-to-bottom. Previously it would split at the paragraph
-    /// gap (vertical split) and recurse until each paragraph ran out of spans,
-    /// producing many groups and a non-monotonic Y sequence.
+    /// Realistic A4/Letter single-column page: 60 lines of body text,
+    /// 14pt leading, one paragraph gap (30pt) mid-page. Only one body
+    /// column exists, so XY-Cut must return exactly one group and
+    /// preserve top-to-bottom reading order. A density-dip split at the
+    /// paragraph gap would fragment the page and non-monotonically
+    /// interleave paragraph contents.
     #[test]
     fn test_single_column_body_text_no_fragmentation() {
         let strategy = XYCutStrategy::new();
@@ -672,11 +668,9 @@ mod tests {
         }
     }
 
-    /// Regression test for Issue #314: after a vertical (row) split, the
-    /// partition at higher Y (top of page in PDF coords) must be processed
-    /// **first** in reading order. Previously the naming in
-    /// `find_vertical_split_indexed` was inverted and the bottom-of-page
-    /// partition came out first, scrambling header/body ordering.
+    /// After a vertical (row) split, the partition at higher Y (top of
+    /// page in PDF coords) must be processed first in reading order so
+    /// that header content appears before body content.
     #[test]
     fn test_vertical_split_preserves_top_to_bottom_order() {
         use crate::pipeline::reading_order::{ReadingOrderContext, ReadingOrderStrategy};
@@ -714,10 +708,10 @@ mod tests {
         );
     }
 
-    /// Regression test for Issue #314: single-column page with a tall header
-    /// band ("Title" or "Chapter heading") at top. XY-Cut may validly split
-    /// header from body (vertical Y-split), but must NOT further split the
-    /// body into per-paragraph chunks.
+    /// Single-column page with a tall header band ("Title" or "Chapter
+    /// heading") at the top. XY-Cut may validly split the header from
+    /// the body (vertical Y-split) but must not further split the body
+    /// into per-paragraph chunks.
     #[test]
     fn test_single_column_with_header_at_most_two_groups() {
         let strategy = XYCutStrategy::new();
