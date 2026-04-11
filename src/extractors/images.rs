@@ -804,7 +804,7 @@ fn expand_indexed_to_rgb(
 ) -> Result<Vec<u8>> {
     if !matches!(bpc, 1 | 2 | 4 | 8) {
         return Err(Error::Image(format!(
-            "Indexed image has unsupported bits-per-component: {}; only 1, 2, 4, 8 are valid",
+            "Indexed image has unsupported bits-per-component {}; valid values are 1, 2, 4, 8",
             bpc
         )));
     }
@@ -812,19 +812,20 @@ fn expand_indexed_to_rgb(
     let w = width as usize;
     let h = height as usize;
     let n = base_fmt.bytes_per_pixel();
+    const RGB_OUT: usize = 3; // output is always RGB regardless of base format
 
     // Checked arithmetic prevents usize overflow on extreme (malicious) dimensions.
     let bits_per_row = w
         .checked_mul(bpc as usize)
-        .ok_or_else(|| Error::Image("Indexed image dimensions overflow".to_string()))?;
+        .ok_or_else(|| Error::Image("Indexed image width × bpc overflows usize".to_string()))?;
     let bytes_per_row = bits_per_row.div_ceil(8);
     let expected_input = bytes_per_row
         .checked_mul(h)
-        .ok_or_else(|| Error::Image("Indexed image dimensions overflow".to_string()))?;
+        .ok_or_else(|| Error::Image("Indexed image bytes_per_row × height overflows usize".to_string()))?;
     let output_len = w
         .checked_mul(h)
-        .and_then(|wh| wh.checked_mul(3))
-        .ok_or_else(|| Error::Image("Indexed image output size overflow".to_string()))?;
+        .and_then(|wh| wh.checked_mul(RGB_OUT))
+        .ok_or_else(|| Error::Image("Indexed image output size overflows usize".to_string()))?;
 
     if output_len > MAX_INDEXED_OUTPUT_BYTES {
         return Err(Error::Image(format!(
