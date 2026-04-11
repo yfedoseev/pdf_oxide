@@ -312,6 +312,37 @@ pub(crate) mod utils {
         &s[safe_start..]
     }
 
+    /// Y-band tolerance used by `row_aware_span_cmp` (Issue #316).
+    ///
+    /// Two spans whose top-Y differs by less than this amount are considered
+    /// to lie on the same row. Chosen to match typographic baseline jitter
+    /// for 10-12pt body text and glyph-cluster offsets in CJK fonts without
+    /// merging adjacent 14pt-leading lines.
+    pub const ROW_BAND_TOLERANCE_PT: f32 = 3.0;
+
+    /// Row-aware reading-order comparator for spans.
+    ///
+    /// Sorts primarily by "row band" (top-Y quantized to
+    /// `ROW_BAND_TOLERANCE_PT`, larger Y first per PDF Spec ISO 32000-1:2008
+    /// §8.3.2.3) and secondarily by X (left-to-right within a row). This
+    /// keeps tabular layouts where cells in the same logical row have
+    /// slightly different Y values (font-metric jitter, superscripts, CJK
+    /// glyph centering) from being interleaved by pure-Y sort (Issue #316).
+    ///
+    /// Uses `i32` band keys so the ordering is a valid total order —
+    /// comparing the raw Y values with tolerance is non-transitive and
+    /// would break `sort_by`.
+    #[inline]
+    pub fn row_aware_span_cmp(a_y: f32, a_x: f32, b_y: f32, b_x: f32) -> Ordering {
+        let band_a = (a_y / ROW_BAND_TOLERANCE_PT).round() as i32;
+        let band_b = (b_y / ROW_BAND_TOLERANCE_PT).round() as i32;
+        // Larger Y = higher on page → descending band order.
+        match band_b.cmp(&band_a) {
+            Ordering::Equal => safe_float_cmp(a_x, b_x),
+            other => other,
+        }
+    }
+
     /// Safely compare two floating point numbers, handling NaN cases.
     ///
     /// NaN values are treated as equal to each other and greater than all other values.
@@ -396,6 +427,64 @@ pub(crate) mod utils {
             assert_eq!(safe_float_cmp(b, nan), Ordering::Less);
             // Therefore a < NaN (transitivity)
             assert_eq!(safe_float_cmp(a, nan), Ordering::Less);
+        }
+
+        /// Regression test for Issue #316: cells in the same tabular row
+        /// with slightly-different Y values must stay together and be
+        /// ordered by X, not interleaved with cells from other rows.
+        #[test]
+        fn test_row_aware_span_cmp_tolerates_y_jitter() {
+            // Row 1 at y ≈ 100 with small per-cell jitter.
+            // Row 2 at y ≈ 86 (14pt leading below).
+            // Pure-Y sort would interleave them because some row-1 cells
+            // have lower Y than some row-2 cells. Row-aware sort must not.
+            #[derive(Debug, Clone, Copy)]
+            struct Cell {
+                y: f32,
+                x: f32,
+                id: &'static str,
+            }
+            let mut cells = vec![
+                Cell { y: 100.5, x: 50.0, id: "r1-c1" },
+                Cell { y: 99.7, x: 150.0, id: "r1-c2" },
+                Cell { y: 100.2, x: 250.0, id: "r1-c3" },
+                Cell { y: 86.4, x: 50.0, id: "r2-c1" },
+                Cell { y: 85.8, x: 150.0, id: "r2-c2" },
+                Cell { y: 86.1, x: 250.0, id: "r2-c3" },
+            ];
+            cells.sort_by(|a, b| row_aware_span_cmp(a.y, a.x, b.y, b.x));
+            let order: Vec<&str> = cells.iter().map(|c| c.id).collect();
+            assert_eq!(
+                order,
+                vec!["r1-c1", "r1-c2", "r1-c3", "r2-c1", "r2-c2", "r2-c3"],
+                "cells from the same row must stay contiguous and X-sorted"
+            );
+        }
+
+        /// Row-aware comparator must still put distinct-leading rows in
+        /// top-to-bottom reading order.
+        #[test]
+        fn test_row_aware_span_cmp_distinct_rows_descending() {
+            let mut rows = vec![
+                (100.0f32, 0.0f32, "top"),
+                (50.0, 0.0, "middle"),
+                (10.0, 0.0, "bottom"),
+            ];
+            rows.sort_by(|a, b| row_aware_span_cmp(a.0, a.1, b.0, b.1));
+            assert_eq!(rows[0].2, "top");
+            assert_eq!(rows[1].2, "middle");
+            assert_eq!(rows[2].2, "bottom");
+        }
+
+        /// The comparator is used by sort_by, which requires a valid total
+        /// order. Run a randomized stress test to confirm no transitivity
+        /// panics.
+        #[test]
+        fn test_row_aware_span_cmp_is_total_order() {
+            let mut v: Vec<(f32, f32)> = (0..200)
+                .map(|i| ((i as f32) * 0.73, ((i * 17) % 500) as f32))
+                .collect();
+            v.sort_by(|a, b| row_aware_span_cmp(a.0, a.1, b.0, b.1));
         }
 
         /// Sort a large array with mixed NaN/normal values to stress-test.

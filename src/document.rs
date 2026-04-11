@@ -3065,15 +3065,14 @@ impl PdfDocument {
                 });
             }
 
-            // Sort combined spans by position: Y descending (top→bottom), then X ascending (left→right)
+            // Sort combined spans by position: row-aware (Y-band descending,
+            // X ascending within a row). Pure-Y sort interleaves cells from
+            // the same tabular row when their Y values differ by typographic
+            // jitter, scrambling CJK tables (Issue #316).
             spans.sort_by(|a, b| {
-                let y_cmp = crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y);
-                if y_cmp != std::cmp::Ordering::Equal {
-                    return y_cmp;
-                }
-                let x_cmp = crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x);
-                if x_cmp != std::cmp::Ordering::Equal {
-                    return x_cmp;
+                let cmp = crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x);
+                if cmp != std::cmp::Ordering::Equal {
+                    return cmp;
                 }
                 a.sequence.cmp(&b.sequence)
             });
@@ -5126,13 +5125,10 @@ impl PdfDocument {
                 "Found {} text spans without MCID (including form field widgets) - appending sorted by position",
                 spans_without_mcid.len()
             );
-            // Sort by Y descending (top→bottom), then X ascending (left→right)
+            // Row-aware sort: Y-band descending (top→bottom), then X
+            // ascending (left→right within a row). See Issue #316.
             spans_without_mcid.sort_by(|a, b| {
-                let y_cmp = crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y);
-                if y_cmp != std::cmp::Ordering::Equal {
-                    return y_cmp;
-                }
-                crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x)
+                crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
             });
             for span in &spans_without_mcid {
                 if let Some(prev) = prev_span {
@@ -5198,15 +5194,10 @@ impl PdfDocument {
     pub fn extract_spans(&mut self, page_index: usize) -> Result<Vec<crate::layout::TextSpan>> {
         let mut spans = self.extract_spans_raw(page_index)?;
 
-        // Sort spans by reading order (Y-descending, then X-ascending)
+        // Row-aware reading order: Y-band descending (top→bottom), X
+        // ascending within a row. See Issue #316.
         spans.sort_by(|a, b| {
-            // Y-descending (top-to-bottom)
-            let y_cmp = crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y);
-            if y_cmp != std::cmp::Ordering::Equal {
-                return y_cmp;
-            }
-            // X-ascending (left-to-right)
-            crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x)
+            crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
         });
 
         // Filter out spans in erase regions
@@ -5326,13 +5317,10 @@ impl PdfDocument {
         // Apply reading order strategy
         match reading_order {
             ReadingOrder::TopToBottom => {
-                // Same sort as extract_spans: Y-descending, X-ascending
+                // Row-aware sort: Y-band descending then X ascending. See
+                // Issue #316.
                 spans.sort_by(|a, b| {
-                    let y_cmp = crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y);
-                    if y_cmp != std::cmp::Ordering::Equal {
-                        return y_cmp;
-                    }
-                    crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x)
+                    crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
                 });
             },
             ReadingOrder::ColumnAware => {
@@ -5656,11 +5644,7 @@ impl PdfDocument {
                 let config = crate::extractors::TextExtractionConfig::new().with_profile(p);
                 let mut s = self.extract_spans_raw_with_extraction_config(page_index, config)?;
                 s.sort_by(|a, b| {
-                    let y_cmp = crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y);
-                    if y_cmp != std::cmp::Ordering::Equal {
-                        return y_cmp;
-                    }
-                    crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x)
+                    crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
                 });
                 if let Some(regions) = self.erase_regions.get(&page_index) {
                     s.retain(|span| !regions.iter().any(|r| r.intersects(&span.bbox)));
@@ -5800,11 +5784,7 @@ impl PdfDocument {
                 let config = crate::extractors::TextExtractionConfig::new().with_profile(p);
                 let mut s = self.extract_spans_raw_with_extraction_config(page_index, config)?;
                 s.sort_by(|a, b| {
-                    let y_cmp = crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y);
-                    if y_cmp != std::cmp::Ordering::Equal {
-                        return y_cmp;
-                    }
-                    crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x)
+                    crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
                 });
                 if let Some(regions) = self.erase_regions.get(&page_index) {
                     s.retain(|span| !regions.iter().any(|r| r.intersects(&span.bbox)));
