@@ -334,6 +334,14 @@ pub(crate) mod utils {
     /// break `sort_by`.
     #[inline]
     pub fn row_aware_span_cmp(a_y: f32, a_x: f32, b_y: f32, b_x: f32) -> Ordering {
+        // Non-finite Y (NaN/±Inf) cannot be quantized into an i32 band —
+        // `as i32` saturates, collapsing distinct non-finite values into
+        // the same band and reordering them unpredictably against finite
+        // spans. Fall back to `safe_float_cmp` so non-finite values follow
+        // the same NaN-last / total-order policy used everywhere else.
+        if !a_y.is_finite() || !b_y.is_finite() {
+            return safe_float_cmp(b_y, a_y).then_with(|| safe_float_cmp(a_x, b_x));
+        }
         let band_a = (a_y / ROW_BAND_TOLERANCE_PT).round() as i32;
         let band_b = (b_y / ROW_BAND_TOLERANCE_PT).round() as i32;
         // Larger Y = higher on page → descending band order.
@@ -444,13 +452,37 @@ pub(crate) mod utils {
                 x: f32,
                 id: &'static str,
             }
-            let mut cells = vec![
-                Cell { y: 100.5, x: 50.0, id: "r1-c1" },
-                Cell { y: 99.7, x: 150.0, id: "r1-c2" },
-                Cell { y: 100.2, x: 250.0, id: "r1-c3" },
-                Cell { y: 86.4, x: 50.0, id: "r2-c1" },
-                Cell { y: 85.8, x: 150.0, id: "r2-c2" },
-                Cell { y: 86.1, x: 250.0, id: "r2-c3" },
+            let mut cells = [
+                Cell {
+                    y: 100.5,
+                    x: 50.0,
+                    id: "r1-c1",
+                },
+                Cell {
+                    y: 99.7,
+                    x: 150.0,
+                    id: "r1-c2",
+                },
+                Cell {
+                    y: 100.2,
+                    x: 250.0,
+                    id: "r1-c3",
+                },
+                Cell {
+                    y: 86.4,
+                    x: 50.0,
+                    id: "r2-c1",
+                },
+                Cell {
+                    y: 85.8,
+                    x: 150.0,
+                    id: "r2-c2",
+                },
+                Cell {
+                    y: 86.1,
+                    x: 250.0,
+                    id: "r2-c3",
+                },
             ];
             cells.sort_by(|a, b| row_aware_span_cmp(a.y, a.x, b.y, b.x));
             let order: Vec<&str> = cells.iter().map(|c| c.id).collect();
@@ -465,7 +497,7 @@ pub(crate) mod utils {
         /// top-to-bottom reading order.
         #[test]
         fn test_row_aware_span_cmp_distinct_rows_descending() {
-            let mut rows = vec![
+            let mut rows = [
                 (100.0f32, 0.0f32, "top"),
                 (50.0, 0.0, "middle"),
                 (10.0, 0.0, "bottom"),

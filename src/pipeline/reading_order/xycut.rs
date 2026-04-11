@@ -198,14 +198,9 @@ impl XYCutStrategy {
         let mut wide_dense_lines = 0usize;
         for line_spans in lines.values() {
             let mut sorted = line_spans.clone();
-            sorted.sort_by(|a, b| {
-                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
             let extent_left = sorted.first().unwrap().0;
-            let extent_right = sorted
-                .iter()
-                .map(|(_, r)| *r)
-                .fold(f32::MIN, f32::max);
+            let extent_right = sorted.iter().map(|(_, r)| *r).fold(f32::MIN, f32::max);
             let extent = extent_right - extent_left;
             if extent < width_threshold {
                 continue;
@@ -235,9 +230,7 @@ impl XYCutStrategy {
         let max_gap = self.min_valley_width;
         for line_spans in lines.values() {
             let mut sorted = line_spans.clone();
-            sorted.sort_by(|a, b| {
-                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
             for w in sorted.windows(2) {
                 let gap = w[1].0 - w[0].1;
                 if gap >= max_gap {
@@ -701,11 +694,7 @@ mod tests {
 
         let texts: Vec<&str> = ordered.iter().map(|o| o.span.text.as_str()).collect();
         // First output must be from y=400 (header), not y=180 (body bottom).
-        assert!(
-            texts[0].contains("HEADER"),
-            "expected HEADER first, got sequence {:?}",
-            texts
-        );
+        assert!(texts[0].contains("HEADER"), "expected HEADER first, got sequence {:?}", texts);
     }
 
     /// Single-column page with a tall header band ("Title" or "Chapter

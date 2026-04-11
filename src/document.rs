@@ -1363,28 +1363,21 @@ impl PdfDocument {
 
         // Most populous column, used for anchor Y lookups regardless.
         let dense_col = &columns[col_order[0]];
-        let mut dense_ys: Vec<f32> =
-            dense_col.iter().map(|&i| spans[i].bbox.y).collect();
+        let mut dense_ys: Vec<f32> = dense_col.iter().map(|&i| spans[i].bbox.y).collect();
         dense_ys.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
 
         // Compute the set of Y bands that count as "data". When several
         // dense columns are available, require a band to have support in
         // the top three; otherwise fall back to the single dense column's
         // own Y values.
-        const BAND_PT: f32 = 3.0;
-        let band_of = |y: f32| (y / BAND_PT).round() as i32;
+        let band_of = |y: f32| (y / crate::utils::ROW_BAND_TOLERANCE_PT).round() as i32;
         use std::collections::{BTreeSet, HashMap as StdHashMap, HashSet};
 
         let data_bands: BTreeSet<i32> = if dense_cols_count >= 3 {
-            let top: Vec<&Vec<usize>> = col_order
-                .iter()
-                .take(3)
-                .map(|&i| &columns[i])
-                .collect();
+            let top: Vec<&Vec<usize>> = col_order.iter().take(3).map(|&i| &columns[i]).collect();
             let mut support: StdHashMap<i32, usize> = StdHashMap::new();
             for col in &top {
-                let bands: HashSet<i32> =
-                    col.iter().map(|&i| band_of(spans[i].bbox.y)).collect();
+                let bands: HashSet<i32> = col.iter().map(|&i| band_of(spans[i].bbox.y)).collect();
                 for b in bands {
                     *support.entry(b).or_insert(0) += 1;
                 }
@@ -1405,14 +1398,18 @@ impl PdfDocument {
                 .collect();
             a.intersection(&b).copied().collect()
         } else {
-            dense_col.iter().map(|&i| band_of(spans[i].bbox.y)).collect()
+            dense_col
+                .iter()
+                .map(|&i| band_of(spans[i].bbox.y))
+                .collect()
         };
 
         if data_bands.len() < 4 {
             return;
         }
-        let data_top = (*data_bands.iter().next_back().unwrap() as f32) * BAND_PT + BAND_PT / 2.0;
-        let data_bot = (*data_bands.iter().next().unwrap() as f32) * BAND_PT - BAND_PT / 2.0;
+        let band_pt = crate::utils::ROW_BAND_TOLERANCE_PT;
+        let data_top = (*data_bands.iter().next_back().unwrap() as f32) * band_pt + band_pt / 2.0;
+        let data_bot = (*data_bands.iter().next().unwrap() as f32) * band_pt - band_pt / 2.0;
 
         // Collect "label" candidates: spans that sit in a "sparse"
         // column — one that holds meaningfully fewer spans than the
@@ -4367,7 +4364,11 @@ impl PdfDocument {
                             .and_then(|mk| Self::parse_string_value_static(mk.get("CA")))
                             .and_then(|s| {
                                 let t = s.trim().to_string();
-                                if t.is_empty() { None } else { Some(t) }
+                                if t.is_empty() {
+                                    None
+                                } else {
+                                    Some(t)
+                                }
                             })
                     } else {
                         // Checkbox or radio button
@@ -13530,10 +13531,7 @@ mod tests {
         //   and label2 should be centered in rows 50..30 → y=40 but we choose 45 to be clearly in 2nd block).
         // Target split: Label1 owns rows 100,90,80,70,60,50; Label2 owns 40,30,20,10.
         // Both labels' Y (75 and 45) sit between their block rows.
-        let mut spans = vec![
-            mk("L1", 50.0, 75.0, 40.0),
-            mk("L2", 50.0, 45.0, 40.0),
-        ];
+        let mut spans = vec![mk("L1", 50.0, 75.0, 40.0), mk("L2", 50.0, 45.0, 40.0)];
         for i in 0..12 {
             let y = 100.0 - (i as f32) * 10.0;
             spans.push(mk(&format!("d{:02}", i), 200.0, y, 20.0));
@@ -13545,11 +13543,7 @@ mod tests {
         // L1 must come first, L2 must come before its own block.
         let pos_l1 = texts.iter().position(|t| *t == "L1").expect("L1 present");
         let pos_l2 = texts.iter().position(|t| *t == "L2").expect("L2 present");
-        assert!(
-            pos_l1 < pos_l2,
-            "L1 should precede L2 in reading order, got {:?}",
-            texts
-        );
+        assert!(pos_l1 < pos_l2, "L1 should precede L2 in reading order, got {:?}", texts);
         // L1 must come before ALL data rows that belong to L1's block.
         // With distance-based partitioning, L1 owns rows closer to y=75 than y=45:
         //   100,90,80,70,60 are closer to 75. 50 is equidistant (tie → L1).

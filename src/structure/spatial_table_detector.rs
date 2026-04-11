@@ -4267,10 +4267,7 @@ mod tests {
             col_count,
             bbox: None,
         };
-        assert!(
-            is_valid_table(&table),
-            "A 2-col × 6-row data table should still be accepted"
-        );
+        assert!(is_valid_table(&table), "A 2-col × 6-row data table should still be accepted");
     }
 
     #[test]
