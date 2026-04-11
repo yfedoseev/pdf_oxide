@@ -1317,13 +1317,7 @@ impl PdfDocument {
         // by left edge; start a new cluster whenever the gap exceeds the
         // threshold.
         let mut by_x: Vec<usize> = (0..spans.len()).collect();
-        by_x.sort_by(|&a, &b| {
-            spans[a]
-                .bbox
-                .x
-                .partial_cmp(&spans[b].bbox.x)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        by_x.sort_by(|&a, &b| crate::utils::safe_float_cmp(spans[a].bbox.x, spans[b].bbox.x));
         const X_GAP: f32 = 15.0;
         let mut columns: Vec<Vec<usize>> = Vec::new();
         let mut cur: Vec<usize> = Vec::new();

@@ -19,12 +19,12 @@ run() {
     local expect_pattern="$1"; shift
     local out
     out=$("$HARNESS" "$@" 2>&1)
-    if echo "$out" | /usr/bin/grep -qE "$expect_pattern"; then
+    if echo "$out" | grep -qE "$expect_pattern"; then
         echo "  PASS  $name"
         pass=$((pass + 1))
     else
         echo "  FAIL  $name  (expected pattern: $expect_pattern)"
-        echo "$out" | /usr/bin/tail -10 | /usr/bin/sed 's/^/    | /'
+        echo "$out" | tail -10 | sed 's/^/    | /'
         fail=$((fail + 1))
     fi
 }

@@ -300,10 +300,12 @@ impl XYCutStrategy {
 
         let split_y = profile.y_min + (valley_start + valley_end) as f32 / 2.0;
 
-        // `Rect::y` stores the smaller Y coordinate of the rectangle (normalized
-        // at construction). In PDF coords this is the bottom edge of the
-        // glyph's bounding box. A span is "above" the split line when its
-        // bottom edge is higher on the page (larger Y) than split_y.
+        // Partition by the span's top edge. `bbox.top()` returns the larger Y
+        // coordinate of the normalized rectangle, which in PDF coords is the
+        // upper edge of the glyph's bounding box. A span is considered "above"
+        // the split line when its top edge is at or above `split_y`; spans
+        // whose boxes straddle `split_y` therefore stay in the upper partition
+        // because their top edge is still above the cut.
         let (above, below): (Vec<usize>, Vec<usize>) = indices
             .iter()
             .partition(|&&i| all_spans[i].bbox.top() >= split_y);

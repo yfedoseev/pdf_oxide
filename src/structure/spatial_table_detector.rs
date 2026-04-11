@@ -174,9 +174,22 @@ fn is_valid_table(table: &ExtractedTable) -> bool {
         return false;
     }
 
-    // Narrow 2-column tables must have every cell filled.
-    if table.col_count <= 2 && empty_cells > 0 {
-        return false;
+    // Narrow false-positive signature: a 2-column "table" emitted from
+    // label/value rows with faint cell backgrounds, where the right-hand
+    // value wraps onto a continuation line. The continuation row has an
+    // empty left label cell next to a non-empty right value cell. Reject
+    // only this specific shape so legitimate sparse 2-column tables
+    // (missing values on the right, blank section headers, etc.) still
+    // validate.
+    if table.col_count == 2 {
+        let has_continuation_row = table.rows.iter().any(|r| {
+            r.cells.len() == 2
+                && r.cells[0].text.trim().is_empty()
+                && !r.cells[1].text.trim().is_empty()
+        });
+        if has_continuation_row {
+            return false;
+        }
     }
 
     true
@@ -4268,6 +4281,54 @@ mod tests {
             bbox: None,
         };
         assert!(is_valid_table(&table), "A 2-col × 6-row data table should still be accepted");
+    }
+
+    /// A sparse 2-column table with a missing value on the right is a
+    /// legitimate pattern (key/value lists, form layouts, "N/A" rows) and
+    /// must NOT match the narrow-table false-positive signature, which
+    /// targets empty-LEFT / filled-RIGHT continuation rows specifically.
+    #[test]
+    fn test_narrow_sparse_table_with_missing_right_value_accepted() {
+        use crate::structure::table_extractor::{ExtractedTable, TableCell, TableRow};
+        let col_count = 2;
+        let rows_data: Vec<(&str, &str)> = vec![
+            ("Name", "ACME Corp"),
+            ("Registration", "12345"),
+            ("Fax", ""),
+            ("Email", "info@example.com"),
+        ];
+        let mut rows = Vec::new();
+        for (label, value) in &rows_data {
+            let mut row = TableRow::new(false);
+            row.cells.push(TableCell {
+                text: label.to_string(),
+                colspan: 1,
+                rowspan: 1,
+                mcids: vec![],
+                bbox: None,
+                is_header: false,
+            });
+            row.cells.push(TableCell {
+                text: value.to_string(),
+                colspan: 1,
+                rowspan: 1,
+                mcids: vec![],
+                bbox: None,
+                is_header: false,
+            });
+            rows.push(row);
+        }
+        let table = ExtractedTable {
+            rows,
+            has_header: false,
+            col_count,
+            bbox: None,
+        };
+        assert!(
+            is_valid_table(&table),
+            "A 2-col table with a missing right-hand value but no empty-left \
+             continuation row must still validate"
+        );
     }
 
     #[test]
