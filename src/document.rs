@@ -1288,6 +1288,243 @@ impl PdfDocument {
         self.load_uncompressed_object_impl(obj_ref, offset, false)
     }
 
+    /// Promote labels in rowspan-sparse columns so they sort at the top
+    /// of their data-row block instead of landing mid-group.
+    ///
+    /// A "label" here is a span in an X-cluster that contains far fewer
+    /// spans than the most populous X-cluster (i.e., it spans multiple
+    /// rows of the adjacent data column). Labels are typically vertically
+    /// centred in their block, so a strict Y sort places them between
+    /// the rows they describe. This post-processor detects the pattern
+    /// and rewrites each label's effective sort Y to sit just above the
+    /// topmost data row it visually covers.
+    ///
+    /// Data rows are partitioned between adjacent labels at the midpoint
+    /// of their Y coordinates (nearest-label assignment). The topmost
+    /// data row in a label's partition becomes the anchor for promotion.
+    ///
+    /// Nothing is mutated if there are no sparse columns or not enough
+    /// data rows to confidently infer row-grouping (min 6 rows in the
+    /// dense reference column).
+    pub(crate) fn reorder_rowspan_labels(spans: &mut Vec<crate::layout::TextSpan>) {
+        use std::collections::HashMap;
+
+        if spans.len() < 10 {
+            return;
+        }
+
+        // Cluster by X proximity (15pt gap threshold). Walk spans ordered
+        // by left edge; start a new cluster whenever the gap exceeds the
+        // threshold.
+        let mut by_x: Vec<usize> = (0..spans.len()).collect();
+        by_x.sort_by(|&a, &b| {
+            spans[a]
+                .bbox
+                .x
+                .partial_cmp(&spans[b].bbox.x)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        const X_GAP: f32 = 15.0;
+        let mut columns: Vec<Vec<usize>> = Vec::new();
+        let mut cur: Vec<usize> = Vec::new();
+        let mut last_x = f32::NEG_INFINITY;
+        for &idx in &by_x {
+            let x = spans[idx].bbox.x;
+            if !cur.is_empty() && x - last_x > X_GAP {
+                columns.push(std::mem::take(&mut cur));
+            }
+            cur.push(idx);
+            last_x = x;
+        }
+        if !cur.is_empty() {
+            columns.push(cur);
+        }
+        if columns.len() < 2 {
+            return;
+        }
+
+        // Max column size is our reference for "dense".
+        let max_count = columns.iter().map(|c| c.len()).max().unwrap_or(0);
+        if max_count < 6 {
+            return;
+        }
+
+        // Sort columns by span count descending so we can pick the top
+        // dense cluster for anchor detection.
+        let mut col_order: Vec<usize> = (0..columns.len()).collect();
+        col_order.sort_by(|&a, &b| columns[b].len().cmp(&columns[a].len()));
+
+        // A column is "dense" when it holds a strict majority of the
+        // most populous column's spans. Pages with multiple dense data
+        // columns (three or more) let us derive the data-row range by
+        // intersecting their Y bands — headers and sub-headers populate
+        // only a subset of columns at their Y and fall out.
+        let dense_cols_count = columns.iter().filter(|c| c.len() * 2 > max_count).count();
+
+        // Most populous column, used for anchor Y lookups regardless.
+        let dense_col = &columns[col_order[0]];
+        let mut dense_ys: Vec<f32> =
+            dense_col.iter().map(|&i| spans[i].bbox.y).collect();
+        dense_ys.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Compute the set of Y bands that count as "data". When several
+        // dense columns are available, require a band to have support in
+        // the top three; otherwise fall back to the single dense column's
+        // own Y values.
+        const BAND_PT: f32 = 3.0;
+        let band_of = |y: f32| (y / BAND_PT).round() as i32;
+        use std::collections::{BTreeSet, HashMap as StdHashMap, HashSet};
+
+        let data_bands: BTreeSet<i32> = if dense_cols_count >= 3 {
+            let top: Vec<&Vec<usize>> = col_order
+                .iter()
+                .take(3)
+                .map(|&i| &columns[i])
+                .collect();
+            let mut support: StdHashMap<i32, usize> = StdHashMap::new();
+            for col in &top {
+                let bands: HashSet<i32> =
+                    col.iter().map(|&i| band_of(spans[i].bbox.y)).collect();
+                for b in bands {
+                    *support.entry(b).or_insert(0) += 1;
+                }
+            }
+            support
+                .into_iter()
+                .filter(|(_, c)| *c >= 3)
+                .map(|(b, _)| b)
+                .collect()
+        } else if dense_cols_count == 2 {
+            let a: HashSet<i32> = columns[col_order[0]]
+                .iter()
+                .map(|&i| band_of(spans[i].bbox.y))
+                .collect();
+            let b: HashSet<i32> = columns[col_order[1]]
+                .iter()
+                .map(|&i| band_of(spans[i].bbox.y))
+                .collect();
+            a.intersection(&b).copied().collect()
+        } else {
+            dense_col.iter().map(|&i| band_of(spans[i].bbox.y)).collect()
+        };
+
+        if data_bands.len() < 4 {
+            return;
+        }
+        let data_top = (*data_bands.iter().next_back().unwrap() as f32) * BAND_PT + BAND_PT / 2.0;
+        let data_bot = (*data_bands.iter().next().unwrap() as f32) * BAND_PT - BAND_PT / 2.0;
+
+        // Collect "label" candidates: spans that sit in a "sparse"
+        // column — one that holds meaningfully fewer spans than the
+        // most populous column. A candidate only qualifies when it
+        // sits strictly inside the data Y range AND the sparse column
+        // it belongs to has at least two entries inside that range —
+        // single-span sparse cells are almost always stray annotations,
+        // not labels.
+        let mut labels: Vec<usize> = Vec::new();
+        for col in &columns {
+            if col.len() < 2 || col.len() * 2 >= max_count {
+                continue;
+            }
+            let in_data: Vec<usize> = col
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    let y = spans[i].bbox.y;
+                    y > data_bot && y < data_top
+                })
+                .collect();
+            if in_data.len() >= 2 {
+                labels.extend(in_data);
+            }
+        }
+        if labels.is_empty() {
+            return;
+        }
+        labels.sort_by(|&a, &b| {
+            spans[b]
+                .bbox
+                .y
+                .partial_cmp(&spans[a].bbox.y)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Labels that sit at near-identical Y values almost always
+        // annotate the same logical row block (e.g. a test-name in the
+        // "name" column alongside a unit "×10⁹/L" in the "unit" column,
+        // both vertically centred in the same 6-row group). Cluster
+        // labels by Y proximity so each logical block is promoted as a
+        // unit.
+        const CLUSTER_GAP: f32 = 10.0;
+        let mut clusters: Vec<Vec<usize>> = Vec::new();
+        let mut cur: Vec<usize> = Vec::new();
+        let mut last_y = f32::NAN;
+        for &idx in &labels {
+            let y = spans[idx].bbox.y;
+            if !cur.is_empty() && (last_y - y).abs() > CLUSTER_GAP {
+                clusters.push(std::mem::take(&mut cur));
+            }
+            cur.push(idx);
+            last_y = y;
+        }
+        if !cur.is_empty() {
+            clusters.push(cur);
+        }
+        let cluster_ys: Vec<f32> = clusters
+            .iter()
+            .map(|c| c.iter().map(|&i| spans[i].bbox.y).sum::<f32>() / c.len() as f32)
+            .collect();
+
+        // For each cluster, compute the midpoint partition boundaries
+        // against its immediate neighbour clusters and find the topmost
+        // dense-column Y that falls inside the partition. Promote every
+        // member of the cluster to the same anchor so they sort together
+        // at the top of their row block.
+        let mut promoted: HashMap<usize, f32> = HashMap::new();
+        for (k, cluster) in clusters.iter().enumerate() {
+            let c_y = cluster_ys[k];
+            let upper = if k > 0 {
+                (cluster_ys[k - 1] + c_y) / 2.0
+            } else {
+                f32::INFINITY
+            };
+            let lower = if k + 1 < clusters.len() {
+                (c_y + cluster_ys[k + 1]) / 2.0
+            } else {
+                f32::NEG_INFINITY
+            };
+            let upper_clamped = upper.min(data_top);
+            let lower_clamped = lower.max(data_bot - 1.0);
+            let mut anchor = f32::NEG_INFINITY;
+            for &y in &dense_ys {
+                if y <= upper_clamped && y > lower_clamped && y > anchor {
+                    anchor = y;
+                }
+            }
+            if anchor.is_finite() {
+                for &i in cluster {
+                    promoted.insert(i, anchor + 1.0);
+                }
+            }
+        }
+        if promoted.is_empty() {
+            return;
+        }
+
+        // Re-sort spans using the promoted Ys for labels and actual Ys
+        // for everything else. Keep the row-aware comparator so the
+        // ordering stays consistent with the rest of the pipeline.
+        let mut order: Vec<usize> = (0..spans.len()).collect();
+        order.sort_by(|&a, &b| {
+            let ya = promoted.get(&a).copied().unwrap_or(spans[a].bbox.y);
+            let yb = promoted.get(&b).copied().unwrap_or(spans[b].bbox.y);
+            crate::utils::row_aware_span_cmp(ya, spans[a].bbox.x, yb, spans[b].bbox.x)
+        });
+        let reordered: Vec<crate::layout::TextSpan> =
+            order.into_iter().map(|i| spans[i].clone()).collect();
+        *spans = reordered;
+    }
+
     /// Recursively decrypt every `Object::String` inside `obj` using the
     /// per-object key derived from `obj_num`/`gen_num`. Streams are left
     /// untouched — they are decrypted lazily at read time through
@@ -3155,6 +3392,11 @@ impl PdfDocument {
                 }
                 a.sequence.cmp(&b.sequence)
             });
+
+            // Promote multi-row-spanning labels (sparse-column spans
+            // vertically centred across several dense-column data rows)
+            // to sort at the top of their row block.
+            Self::reorder_rowspan_labels(&mut spans);
 
             // OCR fallback for scanned PDFs
             #[cfg(feature = "ocr")]
@@ -5287,6 +5529,8 @@ impl PdfDocument {
         spans.sort_by(|a, b| {
             crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
         });
+        // Lift multi-row-spanning labels to the top of their block.
+        Self::reorder_rowspan_labels(&mut spans);
 
         // Filter out spans in erase regions
         if let Some(regions) = self.erase_regions.get(&page_index) {
@@ -13241,6 +13485,82 @@ mod tests {
         let _text = doc
             .extract_text(0)
             .expect("extract_text should work after auth");
+    }
+
+    /// Multi-row-spanning label cell (test item name vertically centered
+    /// across N data rows) must be placed at the top of its row block in
+    /// reading-order output, not interleaved mid-group by Y.
+    ///
+    /// Simulates a simplified 2-column table:
+    /// - Column A (sparse, "labels"): 2 labels, each centered in its
+    ///   block of 6 data rows.
+    /// - Column B (dense, "data"): 12 data rows.
+    ///
+    /// Expected sort: Label1, d1..d6, Label2, d7..d12.
+    #[test]
+    fn test_rowspan_label_promoted_to_top_of_block() {
+        use crate::layout::TextSpan;
+
+        fn mk(text: &str, x: f32, y: f32, w: f32) -> TextSpan {
+            TextSpan {
+                artifact_type: None,
+                text: text.to_string(),
+                bbox: crate::geometry::Rect::new(x, y, w, 10.0),
+                font_size: 12.0,
+                font_name: "Arial".into(),
+                font_weight: crate::layout::FontWeight::Normal,
+                is_italic: false,
+                is_monospace: false,
+                color: crate::layout::Color::black(),
+                mcid: None,
+                sequence: 0,
+                split_boundary_before: false,
+                offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+            }
+        }
+
+        // Data rows at x=200, y=100..30 step -10 (12 rows).
+        // Label1 at x=50, y=75 (middle of rows 100..60).
+        // Label2 at x=50, y=45 (middle of rows 50..30... but actually 50..30 is 3 values,
+        //   and label2 should be centered in rows 50..30 → y=40 but we choose 45 to be clearly in 2nd block).
+        // Target split: Label1 owns rows 100,90,80,70,60,50; Label2 owns 40,30,20,10.
+        // Both labels' Y (75 and 45) sit between their block rows.
+        let mut spans = vec![
+            mk("L1", 50.0, 75.0, 40.0),
+            mk("L2", 50.0, 45.0, 40.0),
+        ];
+        for i in 0..12 {
+            let y = 100.0 - (i as f32) * 10.0;
+            spans.push(mk(&format!("d{:02}", i), 200.0, y, 20.0));
+        }
+
+        super::PdfDocument::reorder_rowspan_labels(&mut spans);
+
+        let texts: Vec<&str> = spans.iter().map(|s| s.text.as_str()).collect();
+        // L1 must come first, L2 must come before its own block.
+        let pos_l1 = texts.iter().position(|t| *t == "L1").expect("L1 present");
+        let pos_l2 = texts.iter().position(|t| *t == "L2").expect("L2 present");
+        assert!(
+            pos_l1 < pos_l2,
+            "L1 should precede L2 in reading order, got {:?}",
+            texts
+        );
+        // L1 must come before ALL data rows that belong to L1's block.
+        // With distance-based partitioning, L1 owns rows closer to y=75 than y=45:
+        //   100,90,80,70,60 are closer to 75. 50 is equidistant (tie → L1).
+        //   Expect L1 at index 0 and L2 somewhere after L1's block.
+        assert_eq!(texts[0], "L1", "L1 must be first, got: {:?}", &texts[..5]);
+        // At least some data row must be between L1 and L2.
+        assert!(
+            pos_l2 > pos_l1 + 3,
+            "L2 must come after several data rows of L1's block, got {:?}",
+            texts
+        );
     }
 
     /// AES-256 (V=5, R=6) PDF that only authenticates via the owner

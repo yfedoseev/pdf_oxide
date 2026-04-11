@@ -81,9 +81,16 @@ fi
 echo
 echo "=== Issue #316: CJK tabular reorder ==="
 if [ -f "$REPRO/cn_nhc_ws779.pdf" ]; then
-    run "WS/T 779 p4 extract succeeds (smoke)" \
-        "extract_text:" \
-        316 "$REPRO/cn_nhc_ws779.pdf" 4
+    out=$("$HARNESS" 316 "$REPRO/cn_nhc_ws779.pdf" 4 2>&1)
+    wbc_pos=$(echo "$out" | /usr/bin/grep -aEn "白细胞计数" | /usr/bin/head -1 | /usr/bin/cut -d: -f1)
+    first_age_pos=$(echo "$out" | /usr/bin/grep -aEn "28 天～<6 月" | /usr/bin/head -1 | /usr/bin/cut -d: -f1)
+    if [ -n "$wbc_pos" ] && [ -n "$first_age_pos" ] && [ "$wbc_pos" -lt "$first_age_pos" ]; then
+        echo "  PASS  WS/T 779 p4 白细胞计数 label precedes its first data row (WBC line $wbc_pos < first-age line $first_age_pos)"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  WS/T 779 p4 label ordering (WBC=$wbc_pos age=$first_age_pos)"
+        fail=$((fail + 1))
+    fi
 else
     echo "  SKIP  WS/T 779 (download to /tmp/repro_pdfs/cn_nhc_ws779.pdf)"
 fi
