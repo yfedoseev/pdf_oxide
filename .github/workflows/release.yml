@@ -866,7 +866,7 @@ jobs:
         run: echo "title=$(cat release-title.txt)" >> $GITHUB_OUTPUT
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: ${{ steps.title.outputs.title }}
           body_path: release-notes.md
