@@ -89,7 +89,7 @@ signature = { version = "2.2", optional = true }      # Signature traits
 sha1 = { version = "0.10", optional = true }          # SHA-1 for legacy signatures
 
 # Parallel extraction
-rayon = { version = "1.10", optional = true }
+rayon = { version = "1.12", optional = true }
 
 # Math and algorithms
 ndarray = { version = "0.17", optional = true, features = ["std"] }
