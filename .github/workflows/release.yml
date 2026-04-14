@@ -581,7 +581,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           # #333 targets net8.0 + net10.0, so both SDKs must be present for
           # `dotnet pack` to emit both TFM outputs.
@@ -1174,7 +1174,7 @@ jobs:
     if: ${{ !contains(needs.validate.outputs.version, '-') }}
     steps:
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '8.0.x'
 
