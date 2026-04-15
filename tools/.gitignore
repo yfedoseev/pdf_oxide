@@ -1,4 +1,1 @@
-# Benchmark-harness corpus lives in .fixture-src (clone) + fixtures/ (symlinks).
-# Tracked on the feat/benchmark-harness branch only — on this branch we pull
-# it in on demand and never commit.
 benchmark-harness/

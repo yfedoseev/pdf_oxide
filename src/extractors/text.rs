@@ -2895,6 +2895,16 @@ impl TextExtractor {
             return;
         }
 
+        // Phase 0 (B7): same-text overlapping spans from stroke+fill render
+        // passes. Maps (newspaper / poster) frequently draw every label
+        // twice — once stroked for outline, once filled — and both passes
+        // land at essentially the same CTM. Without this up-front filter,
+        // the merge step later concatenates them into "EverestEverest" /
+        // "CentralCentral". We key a small quadtree-lite on rounded (x, y)
+        // per text; any later span whose bbox overlaps an earlier span of
+        // the same text by >= 70 % is dropped.
+        self.dedup_stroke_fill_overlap();
+
         // Take ownership of spans to avoid cloning during iteration
         let old_len = self.spans.len();
         let spans = std::mem::take(&mut self.spans);
@@ -2968,6 +2978,75 @@ impl TextExtractor {
         );
 
         self.spans = deduplicated;
+    }
+
+    /// Drop same-text spans whose bounding boxes overlap heavily with an
+    /// earlier span. This is the canonical stroke+fill pattern on maps,
+    /// posters, and marketing materials: a label is drawn twice (once
+    /// stroked for the outline, once filled for the glyph) at identical
+    /// positions. Both passes surface as distinct spans; without this
+    /// filter the downstream merge pass concatenates them.
+    ///
+    /// Keyed by lowercased text + rounded (x, y) bucket to make the
+    /// lookup O(1) without quadratic bbox comparisons on large pages.
+    /// The actual overlap check falls through to a real IoU on collision.
+    fn dedup_stroke_fill_overlap(&mut self) {
+        use std::collections::HashMap;
+
+        if self.spans.len() < 2 {
+            return;
+        }
+        let old_len = self.spans.len();
+        let spans = std::mem::take(&mut self.spans);
+        // Bucket text → list of (idx in kept, bbox). Only runs when text
+        // length ≥ 2 — shorter candidates (single letters, digits) rely
+        // on the downstream positional dedup already in place.
+        let mut seen: HashMap<String, Vec<(usize, crate::geometry::Rect)>> = HashMap::new();
+        let mut kept: Vec<TextSpan> = Vec::with_capacity(old_len);
+        let mut skipped = 0usize;
+        for span in spans {
+            let trimmed = span.text.trim();
+            if trimmed.len() < 2 {
+                kept.push(span);
+                continue;
+            }
+            let key = trimmed.to_ascii_lowercase();
+            let b = span.bbox;
+            let mut is_dup = false;
+            if let Some(existing) = seen.get(&key) {
+                for (_, other) in existing {
+                    // IoU — intersection over union. >= 0.7 means the two
+                    // bboxes are almost the same rectangle, which is what
+                    // stroke+fill produces.
+                    let ix1 = b.x.max(other.x);
+                    let iy1 = b.y.max(other.y);
+                    let ix2 = (b.x + b.width).min(other.x + other.width);
+                    let iy2 = (b.y + b.height).min(other.y + other.height);
+                    if ix2 <= ix1 || iy2 <= iy1 {
+                        continue;
+                    }
+                    let inter = (ix2 - ix1) * (iy2 - iy1);
+                    let area_a = b.width * b.height;
+                    let area_b = other.width * other.height;
+                    let union = area_a + area_b - inter;
+                    if union > 0.0 && inter / union >= 0.7 {
+                        is_dup = true;
+                        break;
+                    }
+                }
+            }
+            if is_dup {
+                skipped += 1;
+            } else {
+                let idx = kept.len();
+                seen.entry(key).or_default().push((idx, b));
+                kept.push(span);
+            }
+        }
+        if skipped > 0 {
+            log::debug!("Stroke+fill dedup: dropped {skipped} duplicate spans of {old_len}");
+        }
+        self.spans = kept;
     }
 
     /// Merge adjacent text spans on the same line to reconstruct complete words.
