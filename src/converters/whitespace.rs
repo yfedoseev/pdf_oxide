@@ -338,15 +338,108 @@ pub fn normalize_horizontal_whitespace(text: &str) -> String {
 /// ```
 pub fn cleanup_plain_text(text: &str) -> String {
     // Apply plain text cleanup pipeline:
-    // 1. Normalize horizontal whitespace (reduce double spaces)
-    // 2. Normalize vertical whitespace (limit excessive blank lines)
-    let horizontal_normalized = normalize_horizontal_whitespace(text);
+    // 1. Dehyphenate line-broken words (B8)
+    // 2. Normalize horizontal whitespace (reduce double spaces)
+    // 3. Normalize vertical whitespace (limit excessive blank lines)
+    let dehyphenated = dehyphenate_line_breaks(text);
+    let horizontal_normalized = normalize_horizontal_whitespace(&dehyphenated);
     normalize_whitespace(&horizontal_normalized)
+}
+
+/// Rejoin words split across a line break by a soft hyphen.
+///
+/// Standard typesetting hyphenates a word at a line break and expects the
+/// reader to reassemble it. The PDF content stream preserves both halves
+/// plus the hyphen (e.g. `"scruti-\nneer"` for `"scrutineer"`). pdftotext
+/// handles this by stripping the hyphen + newline when the next line
+/// starts with a lowercase letter — a reliable typographic signal.
+///
+/// We do the same here:
+/// - `word-\nword` → `wordword` (standard soft hyphen)
+/// - `word- \nword` (trailing space before break) → `wordword`
+/// - We leave intact: `word-\nWord` (proper-noun fragment; safer not to
+///   merge), `word—\nword` (em-dash = punctuation, not hyphenation).
+///
+/// Conservative: requires the tail to be lowercase letters so we don't
+/// concatenate unrelated tokens like a numbered bullet or a caps header.
+pub fn dehyphenate_line_breaks(text: &str) -> String {
+    // Pre-size: dehyphenation only removes bytes, never adds.
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = bytes[i];
+        // Look for ASCII "<lowercase>-[ \t]*\n[ \t]*<lowercase>". Only ASCII
+        // matches trigger the rewrite, so non-ASCII bytes can flow through
+        // unchanged below. This keeps us UTF-8-safe without splitting
+        // multi-byte sequences.
+        if c == b'-' && i > 0 && bytes[i - 1].is_ascii_lowercase() {
+            let mut j = i + 1;
+            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'\r' {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'\n' {
+                j += 1;
+                while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j].is_ascii_lowercase() {
+                    // Skip the hyphen + intervening whitespace + newline.
+                    i = j;
+                    continue;
+                }
+            }
+        }
+        // ASCII fast path; otherwise re-decode the UTF-8 scalar at position i.
+        if c.is_ascii() {
+            out.push(c as char);
+            i += 1;
+        } else {
+            // Multi-byte UTF-8: find the character boundary and push the full
+            // scalar value, advancing i past its bytes.
+            let rest = &text[i..];
+            let ch = rest.chars().next().expect("bytes inside str");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dehyphenate_rejoins_soft_hyphen_line_break() {
+        assert_eq!(dehyphenate_line_breaks("scruti-\nneer"), "scrutineer");
+        assert_eq!(dehyphenate_line_breaks("scruti-\r\nneer"), "scrutineer");
+        assert_eq!(dehyphenate_line_breaks("scruti-   \n   neer"), "scrutineer");
+    }
+
+    #[test]
+    fn dehyphenate_does_not_merge_proper_noun_fragment() {
+        // Uppercase start on next line: likely a new sentence / proper noun.
+        assert_eq!(dehyphenate_line_breaks("co-\nWorker"), "co-\nWorker");
+    }
+
+    #[test]
+    fn dehyphenate_requires_hyphen_and_lowercase_both_sides() {
+        assert_eq!(dehyphenate_line_breaks("no\nhyphen"), "no\nhyphen");
+        assert_eq!(dehyphenate_line_breaks("bullet-\n• point"), "bullet-\n• point");
+    }
+
+    #[test]
+    fn dehyphenate_preserves_intentional_hyphens() {
+        // No line break after hyphen → leave it alone.
+        assert_eq!(
+            dehyphenate_line_breaks("state-of-the-art solution"),
+            "state-of-the-art solution"
+        );
+    }
 
     #[test]
     fn test_normalize_whitespace_reduces_excessive_blanks() {

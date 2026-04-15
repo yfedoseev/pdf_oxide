@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "pdf_oxide_mcp", "pdf_oxide_cli"]
+members = [".", "pdf_oxide_mcp", "pdf_oxide_cli", "tools/benchmark-harness"]
 exclude = ["js"]
 
 [package]

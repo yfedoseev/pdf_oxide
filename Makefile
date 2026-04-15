@@ -2,7 +2,33 @@
 #
 # Common development tasks for building and testing the Python package
 
-.PHONY: dev install test build clean help lint-py fmt-py fmt-py-check check-py
+.PHONY: dev install test build clean help lint-py fmt-py fmt-py-check check-py \
+        benchmark benchmark-fetch benchmark-run benchmark-compare
+
+# ─── Benchmark harness (#320) ───────────────────────────────────────────
+# Defaults override on the command line, e.g.
+#   make benchmark-run ENGINE=pdftotext CORPUS=/path/to/pdfs OUTPUT=head.json
+ENGINE ?= pdf_oxide
+CORPUS ?= tools/benchmark-harness/fixtures/kreuzberg/pdfs
+GROUND_TRUTH ?= tools/benchmark-harness/fixtures/kreuzberg/gt
+OUTPUT ?= target/benchmark.json
+BASE ?= base.json
+HEAD ?= head.json
+
+benchmark: benchmark-run
+
+benchmark-fetch:
+	tools/benchmark-harness/scripts/fetch-fixtures.sh
+
+benchmark-run:
+	cargo run --release -p benchmark-harness -- run \
+		--engine $(ENGINE) \
+		--corpus $(CORPUS) \
+		--ground-truth $(GROUND_TRUTH) \
+		--output $(OUTPUT)
+
+benchmark-compare:
+	cargo run --release -p benchmark-harness -- diff $(BASE) $(HEAD)
 
 # Development install (editable mode)
 # Builds the Rust extension and installs the Python package in development mode
@@ -123,6 +149,13 @@ help:
 	@echo ""
 	@echo "Code Quality (All):"
 	@echo "  make check-all        - Run all checks for both Rust and Python"
+	@echo ""
+	@echo "Benchmark harness (#320):"
+	@echo "  make benchmark-fetch   - Clone + link Kreuzberg fixture corpus"
+	@echo "  make benchmark-run     - Run TF1+SF1 scoring on current branch"
+	@echo "                           (ENGINE=pdf_oxide|pdftotext, OUTPUT=report.json)"
+	@echo "  make benchmark-compare - Diff two JSON reports with the regression gate"
+	@echo "                           (BASE=base.json HEAD=head.json)"
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make clean            - Remove all build artifacts"
