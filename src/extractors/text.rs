@@ -2900,9 +2900,9 @@ impl TextExtractor {
         // twice — once stroked for outline, once filled — and both passes
         // land at essentially the same CTM. Without this up-front filter,
         // the merge step later concatenates them into "EverestEverest" /
-        // "CentralCentral". We key a small quadtree-lite on rounded (x, y)
-        // per text; any later span whose bbox overlaps an earlier span of
-        // the same text by >= 70 % is dropped.
+        // "CentralCentral". We bucket by lowercased text and compare each
+        // new span's bbox against prior entries via IoU; any later span
+        // whose bbox overlaps an earlier one by >= 70 % is dropped.
         self.dedup_stroke_fill_overlap();
 
         // Take ownership of spans to avoid cloning during iteration
@@ -2998,15 +2998,16 @@ impl TextExtractor {
         }
         let old_len = self.spans.len();
         let spans = std::mem::take(&mut self.spans);
-        // Bucket text → list of (idx in kept, bbox). Only runs when text
-        // length ≥ 2 — shorter candidates (single letters, digits) rely
-        // on the downstream positional dedup already in place.
-        let mut seen: HashMap<String, Vec<(usize, crate::geometry::Rect)>> = HashMap::new();
+        // Bucket text → list of prior bboxes. Only runs when trimmed text
+        // has ≥ 2 *characters* (not bytes) — shorter candidates (single
+        // letters, digits) rely on the downstream positional dedup already
+        // in place.
+        let mut seen: HashMap<String, Vec<crate::geometry::Rect>> = HashMap::new();
         let mut kept: Vec<TextSpan> = Vec::with_capacity(old_len);
         let mut skipped = 0usize;
         for span in spans {
             let trimmed = span.text.trim();
-            if trimmed.len() < 2 {
+            if trimmed.chars().count() < 2 {
                 kept.push(span);
                 continue;
             }
@@ -3014,7 +3015,7 @@ impl TextExtractor {
             let b = span.bbox;
             let mut is_dup = false;
             if let Some(existing) = seen.get(&key) {
-                for (_, other) in existing {
+                for other in existing {
                     // IoU — intersection over union. >= 0.7 means the two
                     // bboxes are almost the same rectangle, which is what
                     // stroke+fill produces.
@@ -3038,8 +3039,7 @@ impl TextExtractor {
             if is_dup {
                 skipped += 1;
             } else {
-                let idx = kept.len();
-                seen.entry(key).or_default().push((idx, b));
+                seen.entry(key).or_default().push(b);
                 kept.push(span);
             }
         }
@@ -4923,6 +4923,13 @@ impl TextExtractor {
                 // otherwise the stored spans are in caller-specific page
                 // coordinates and would poison identity-CTM hits on other
                 // pages (see issue B1).
+                //
+                // Note: is_identity() is checked AFTER the XObject's
+                // /Matrix is concatenated, so XObjects with their own
+                // /Matrix never cache even when the caller CTM is identity.
+                // That's conservative-safe at the cost of re-extraction;
+                // storing spans in XObject-local coords would fix this but
+                // the complexity isn't justified by the current benchmark.
                 let save_identity_ctm = self.state_stack.current().ctm.is_identity();
                 if has_own_resources && self.extract_spans && save_identity_ctm {
                     let new_spans = if self.spans.len() > spans_before {

@@ -43,15 +43,11 @@ fn running_header_pdf() -> Vec<u8> {
     // of a 900pt page: band is > 792) + unique body text at Y=400.
     let header_y = 860;
     let body_y = 400;
-    for (idx, body) in ["PageOneBody", "PageTwoBody", "PageThreeBody"]
-        .iter()
-        .enumerate()
-    {
+    for body in ["PageOneBody", "PageTwoBody", "PageThreeBody"] {
         let stream = format!(
             "BT /F0 14 Tf 50 {header_y} Td (Universal Title) Tj ET \
              BT /F0 12 Tf 50 {body_y} Td ({body}) Tj ET\n"
         );
-        let _ = idx;
         push(
             &mut out,
             &mut offsets,

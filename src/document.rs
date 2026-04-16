@@ -6221,12 +6221,14 @@ impl PdfDocument {
         // spans at distinct but out-of-bounds Y coordinates. Keep spans
         // that even partially overlap with MediaBox so we don't drop
         // legitimate bleed / trim-mark content.
-        if let Ok((mb_x, mb_y, mb_w, mb_h)) = self.get_page_media_box(page_index) {
+        // get_page_media_box returns (llx, lly, urx, ury) — absolute corner
+        // coordinates per ISO 32000-1 §7.7.3.3, NOT (x, y, width, height).
+        if let Ok((llx, lly, urx, ury)) = self.get_page_media_box(page_index) {
             const EDGE_TOLERANCE_PT: f32 = 2.0;
-            let left = mb_x - EDGE_TOLERANCE_PT;
-            let bottom = mb_y - EDGE_TOLERANCE_PT;
-            let right = mb_x + mb_w + EDGE_TOLERANCE_PT;
-            let top = mb_y + mb_h + EDGE_TOLERANCE_PT;
+            let left = llx - EDGE_TOLERANCE_PT;
+            let bottom = lly - EDGE_TOLERANCE_PT;
+            let right = urx + EDGE_TOLERANCE_PT;
+            let top = ury + EDGE_TOLERANCE_PT;
             spans.retain(|span| {
                 let sx1 = span.bbox.x;
                 let sx2 = span.bbox.x + span.bbox.width;
@@ -6249,6 +6251,8 @@ impl PdfDocument {
             };
             let strategy = XYCutStrategy::new();
             let context = ROContext::new().with_page(page_index as u32);
+            // Clone needed: apply() takes ownership, and the Err branch
+            // falls back to sorting the original vec in place.
             match strategy.apply(spans.clone(), &context) {
                 Ok(ordered) => {
                     spans = ordered.into_iter().map(|o| o.span).collect();
@@ -6329,8 +6333,8 @@ impl PdfDocument {
             return false; // spans cluster in a single vertical line — not columns
         }
 
-        // Bin into 40 buckets; find peaks (> mean + stddev) separated by
-        // at least one low-density bucket.
+        // Bin into 40 buckets; find peaks (≥ mean × 1.5) separated by at
+        // least one empty bucket.
         const BUCKETS: usize = 40;
         let bucket_width = width / BUCKETS as f32;
         if bucket_width <= 0.0 {
@@ -6442,8 +6446,14 @@ impl PdfDocument {
             return Ok(empty);
         }
 
-        // (count of distinct pages seeing the signature, first page it appeared on)
+        // (count of distinct pages seeing the signature, first page it appeared on).
+        // `first_seen_any` tracks the earliest page a signature appeared on
+        // regardless of body-content — so if the cover page is all-chrome
+        // (no body text), it still registers as "first seen" and gets its
+        // title kept by the per-page mark_running_artifact_spans exemption.
         let mut occurrences: std::collections::HashMap<String, (usize, usize)> =
+            std::collections::HashMap::new();
+        let mut first_seen_any: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
         for pi in 0..page_count {
             let spans = match self.extract_spans_raw(pi) {
@@ -6468,11 +6478,9 @@ impl PdfDocument {
                 let top_of_span = s.bbox.y + s.bbox.height;
                 top_of_span <= page_height - band && s.bbox.y >= band
             });
-            if !has_body_content {
-                continue;
-            }
-            // Collect per-page unique signatures to avoid over-counting
-            // repeated intra-page occurrences of the same string.
+            // Collect per-page unique signatures from the chrome bands.
+            // Runs even when there's no body content so `first_seen_any`
+            // registers the cover page even if it's all-chrome.
             let mut seen_this_page = std::collections::HashSet::new();
             for s in spans.iter() {
                 let trimmed = s.text.trim();
@@ -6490,10 +6498,17 @@ impl PdfDocument {
                 }
                 seen_this_page.insert(sig);
             }
+            // Track first-seen across ALL pages (even body-content-skipped)
+            for sig in &seen_this_page {
+                first_seen_any.entry(sig.clone()).or_insert(pi);
+            }
+            if !has_body_content {
+                continue;
+            }
+            // Count only pages with body content for the recurrence threshold
             for sig in seen_this_page {
                 let entry = occurrences.entry(sig).or_insert((0, pi));
                 entry.0 += 1;
-                // first-seen page is the min of existing and current
                 if pi < entry.1 {
                     entry.1 = pi;
                 }
@@ -6503,7 +6518,13 @@ impl PdfDocument {
         let signatures: std::collections::HashMap<String, usize> = occurrences
             .into_iter()
             .filter(|(_, (count, _))| *count >= threshold.max(2))
-            .map(|(sig, (_, first_seen))| (sig, first_seen))
+            .map(|(sig, _)| {
+                // Use the earliest page the signature appeared on — which
+                // may be a body-content-skipped cover page that `occurrences`
+                // didn't count toward the threshold but `first_seen_any` did.
+                let first = first_seen_any.get(&sig).copied().unwrap_or(0);
+                (sig, first)
+            })
             .collect();
         *self.running_artifact_signatures.lock().unwrap() = Some(signatures.clone());
         Ok(signatures)
