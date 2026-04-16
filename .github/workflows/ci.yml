@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, 'release/**']
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, 'release/**']
 
 # Cancel any in-progress run on the same branch when a new one starts.
 # Saves minutes on force-pushes; main merges are unaffected (each push gets a unique ref).
