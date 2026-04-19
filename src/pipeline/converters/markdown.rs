@@ -764,14 +764,32 @@ impl MarkdownOutputConverter {
                 // the geometric gap is small (pdfa_049 has body-tight
                 // inter-paragraph gaps that the gap heuristic never
                 // catches).
+                //
+                // D5b refinement: gate this on `!same_line` so a tagged
+                // form whose horizontal heading band is split into
+                // multiple /P sub-elements on one line (irs_f1040 has
+                // `Form` + `1040` + `U.S. Individual Income Tax Return`
+                // as three sibling /P blocks at the same y) does not
+                // become three separate `# Form` / `# 1040` / ... lines.
+                // Visually-continuous content stays in the same
+                // markdown line / paragraph regardless of how the
+                // structure tree carves it up.
                 let block_changed = match (span.block_id, prev.block_id) {
                     (Some(a), Some(b)) => a != b,
                     _ => false,
-                };
+                } && !same_line;
+
+                // For heading transitions: same logic — visual line
+                // continuity wins over structure-tree fragmentation.
+                // For list-item transitions: ALWAYS break because a
+                // bullet `- ` needs its own markdown line regardless
+                // of whether the source PDF rendered the marker
+                // inline with a leading caption.
+                let heading_changed_break = heading_changed && !same_line;
 
                 if group_flush
                     || self.is_paragraph_break(span, prev)
-                    || heading_changed
+                    || heading_changed_break
                     || list_item_changed
                     || block_changed
                 {
@@ -1527,6 +1545,159 @@ mod tests {
         assert!(
             result.contains("### Section Header") || result.contains("#### Section Header"),
             "expected heading prefix on bold +5% line, got:\n{}",
+            result
+        );
+    }
+
+    /// D5b RED — same-baseline spans with different `block_id`s
+    /// from the structure tree (form-style PDFs that split a single
+    /// horizontal heading into multiple /P sub-elements, e.g.
+    /// `Form` + `1040` + `U.S. Individual Income Tax Return` rendered
+    /// on one line) must NOT trigger a structure-tree paragraph break.
+    /// Otherwise one heading becomes three `#` lines (irs_f1040
+    /// regression observed in v0.3.36).
+    #[test]
+    fn test_same_baseline_blocks_do_not_split_heading() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        // Three pieces of one visual H1, same y=100, same font, but
+        // each with its own structure-tree block_id (mimicking the
+        // tagged form's three /P elements under one /H1 visually
+        // joined in a horizontal heading band).
+        let mk = |t: &str, x: f32, bid: u32| {
+            let mut s = make_span(t, x, 100.0, 18.0, FontWeight::Bold);
+            s.struct_role = Some(StructRole::Heading(1));
+            s.block_id = Some(bid);
+            s
+        };
+        let spans = vec![
+            mk("Form", 0.0, 1),
+            mk("1040", 50.0, 2),
+            mk("U.S. Individual Income Tax Return", 100.0, 3),
+        ];
+        let result = converter.convert(&spans, &config).unwrap();
+        let heading_lines: Vec<&str> = result
+            .lines()
+            .filter(|l| l.trim_start().starts_with("# "))
+            .collect();
+        assert_eq!(
+            heading_lines.len(),
+            1,
+            "expected one combined heading line, got {} in:\n{}",
+            heading_lines.len(),
+            result
+        );
+        assert!(
+            heading_lines[0].contains("Form")
+                && heading_lines[0].contains("1040")
+                && heading_lines[0].contains("U.S. Individual Income Tax Return"),
+            "all three pieces must be in the single heading line, got: {}",
+            heading_lines[0]
+        );
+    }
+
+    /// D5b coverage — same-baseline list-item segments don't fragment.
+    /// Some forms wrap each item label in its own /LI struct elem but
+    /// render the whole list horizontally on one line; the converter
+    /// must keep them together when y matches.
+    #[test]
+    fn test_same_baseline_blocks_do_not_split_list_items() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mk = |t: &str, x: f32, bid: u32| {
+            let mut s = make_span(t, x, 100.0, 12.0, FontWeight::Normal);
+            s.struct_role = Some(StructRole::ListItemBody);
+            s.block_id = Some(bid);
+            s
+        };
+        let spans = vec![mk("Apple", 0.0, 1), mk("Banana", 60.0, 2), mk("Cherry", 120.0, 3)];
+        let result = converter.convert(&spans, &config).unwrap();
+        let bullet_lines: Vec<&str> = result.lines().filter(|l| l.starts_with("- ")).collect();
+        assert_eq!(
+            bullet_lines.len(),
+            1,
+            "horizontal list on one line must stay one bullet, got {} in:\n{}",
+            bullet_lines.len(),
+            result
+        );
+    }
+
+    /// D5b coverage — different baselines must STILL fragment as
+    /// before. Negative regression check on the D5 win: nougat_011
+    /// went from 64 to 266 lines because each /P became its own
+    /// paragraph; our same_line gate must not undo that for spans on
+    /// different baselines.
+    #[test]
+    fn test_different_baseline_blocks_still_split() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mut p1 = make_span("First.", 0.0, 100.0, 12.0, FontWeight::Normal);
+        p1.block_id = Some(1);
+        let mut p2 = make_span("Second.", 0.0, 70.0, 12.0, FontWeight::Normal);
+        p2.block_id = Some(2);
+        let mut p3 = make_span("Third.", 0.0, 40.0, 12.0, FontWeight::Normal);
+        p3.block_id = Some(3);
+        let result = converter.convert(&[p1, p2, p3], &config).unwrap();
+        let paras: Vec<&str> = result
+            .split("\n\n")
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .collect();
+        assert_eq!(
+            paras,
+            vec!["First.", "Second.", "Third."],
+            "different baselines must still produce three paragraphs"
+        );
+    }
+
+    /// D5b coverage — three-piece headings with a TINY (<1pt) y
+    /// jitter still considered same-line. Forms often have minute
+    /// baseline jitter due to font metric variation; the gate must be
+    /// tolerant.
+    #[test]
+    fn test_minor_baseline_jitter_still_joins() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mk = |t: &str, x: f32, y: f32, bid: u32| {
+            let mut s = make_span(t, x, y, 18.0, FontWeight::Bold);
+            s.struct_role = Some(StructRole::Heading(1));
+            s.block_id = Some(bid);
+            s
+        };
+        // y values jitter within 0.5pt — well within the same_line
+        // threshold (font_size * 0.5 = 9pt for an 18pt heading).
+        let spans = vec![mk("A", 0.0, 100.0, 1), mk("B", 30.0, 100.3, 2), mk("C", 60.0, 99.7, 3)];
+        let result = converter.convert(&spans, &config).unwrap();
+        let heading_lines: Vec<&str> = result.lines().filter(|l| l.starts_with("# ")).collect();
+        assert_eq!(
+            heading_lines.len(),
+            1,
+            "tiny jitter must not split heading, got:\n{}",
+            result
+        );
+    }
+
+    /// D5b coverage — large baseline drop (well past same_line) DOES
+    /// split, even with same heading_level. Proves the gate isn't
+    /// over-suppressing.
+    #[test]
+    fn test_large_baseline_drop_still_splits_heading() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mk = |t: &str, y: f32, bid: u32| {
+            let mut s = make_span(t, 0.0, y, 18.0, FontWeight::Bold);
+            s.struct_role = Some(StructRole::Heading(1));
+            s.block_id = Some(bid);
+            s
+        };
+        // 30pt drop between baselines — far beyond `font_size * 0.5`.
+        let spans = vec![mk("First Heading", 100.0, 1), mk("Second Heading", 70.0, 2)];
+        let result = converter.convert(&spans, &config).unwrap();
+        let heading_lines: Vec<&str> = result.lines().filter(|l| l.starts_with("# ")).collect();
+        assert_eq!(
+            heading_lines.len(),
+            2,
+            "two visually-separated headings must both surface, got:\n{}",
             result
         );
     }
