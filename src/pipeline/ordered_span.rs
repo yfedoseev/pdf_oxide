@@ -119,6 +119,25 @@ impl ReadingOrderInfo {
     }
 }
 
+/// Logical role this span carries in the source PDF's structure tree.
+///
+/// Populated by the markdown / HTML converters when the underlying
+/// document has a `/StructTreeRoot` and the span's MCID maps to a
+/// recognised structure type (heading or list item). When `None`, the
+/// converter falls back to its geometric/font-size heuristics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructRole {
+    /// Inside a heading element (H, H1..H6). Carries the level (1..6).
+    Heading(u8),
+    /// The MCR sits in an LI but no Lbl/LBody sub-element wraps it.
+    /// Treat as a list-item body for emit purposes.
+    ListItem,
+    /// Inside the Lbl (label) sub-element of an LI.
+    ListItemLabel,
+    /// Inside the LBody (body) sub-element of an LI.
+    ListItemBody,
+}
+
 /// A text span with an assigned reading order index.
 ///
 /// This wrapper adds ordering information to TextSpan without modifying
@@ -137,6 +156,12 @@ pub struct OrderedTextSpan {
 
     /// Reading order source and confidence information.
     pub order_info: ReadingOrderInfo,
+
+    /// Structure-tree role for this span (heading level, list-item body
+    /// etc.). Populated by the converter from the document's
+    /// `/StructTreeRoot` when present. None when the document is untagged
+    /// or the MCID has no recognised role.
+    pub struct_role: Option<StructRole>,
 }
 
 impl OrderedTextSpan {
@@ -148,6 +173,7 @@ impl OrderedTextSpan {
             reading_order,
             group_id: None,
             order_info: ReadingOrderInfo::default(),
+            struct_role: None,
         }
     }
 
@@ -158,7 +184,15 @@ impl OrderedTextSpan {
             reading_order,
             group_id: None,
             order_info,
+            struct_role: None,
         }
+    }
+
+    /// Set the structure-tree role propagated from the source PDF's
+    /// `/StructTreeRoot`.
+    pub fn with_struct_role(mut self, role: StructRole) -> Self {
+        self.struct_role = Some(role);
+        self
     }
 
     /// Set the group ID for paragraph grouping.

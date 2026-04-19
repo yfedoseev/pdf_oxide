@@ -52,7 +52,9 @@ pub use logging::{
     extract_log_debug, extract_log_error, extract_log_info, extract_log_trace, extract_log_warn,
 };
 pub use metrics::{BatchMetrics, ExtractionMetrics};
-pub use ordered_span::{OrderedSpans, OrderedTextSpan, ReadingOrderInfo, ReadingOrderSource};
+pub use ordered_span::{
+    OrderedSpans, OrderedTextSpan, ReadingOrderInfo, ReadingOrderSource, StructRole,
+};
 pub use reading_order::{ReadingOrderContext, ReadingOrderStrategy, XYCutStrategy};
 pub use text_processing::WhitespaceNormalizer;
 

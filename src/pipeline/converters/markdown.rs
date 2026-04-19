@@ -4,7 +4,7 @@
 
 use crate::error::Result;
 use crate::layout::FontWeight;
-use crate::pipeline::{OrderedTextSpan, TextPipelineConfig};
+use crate::pipeline::{OrderedTextSpan, StructRole, TextPipelineConfig};
 use crate::structure::table_extractor::Table;
 use crate::text::HyphenationHandler;
 use lazy_static::lazy_static;
@@ -598,11 +598,29 @@ impl MarkdownOutputConverter {
                 }
             }
 
-            let span_heading_level = if config.output.detect_headings {
-                self.heading_level_ratio(span, base_font_size)
-            } else {
-                None
+            // Heading level: structure-tree role takes precedence over
+            // font-size heuristics when the source PDF is tagged. This
+            // is the issue #377 D1 unlock — Word/Acrobat tagged PDFs
+            // that set body and heading text in the same point size
+            // would otherwise lose all heading hierarchy.
+            let span_heading_level = match span.struct_role {
+                Some(StructRole::Heading(level)) => Some(level.max(1).min(6)),
+                _ if config.output.detect_headings => {
+                    self.heading_level_ratio(span, base_font_size)
+                },
+                _ => None,
             };
+
+            // List-item role from the structure tree. When set, we emit
+            // a markdown `- ` bullet at the start of the line for this
+            // span (mirroring `is_bullet_span`/`starts_with_bullet`
+            // detection used for untagged docs).
+            let is_list_item_role = matches!(
+                span.struct_role,
+                Some(StructRole::ListItemBody)
+                    | Some(StructRole::ListItem)
+                    | Some(StructRole::ListItemLabel)
+            );
 
             // Check for paragraph break or line break
             let same_line = prev_span
@@ -624,7 +642,19 @@ impl MarkdownOutputConverter {
                 // split elements (e.g. multi-span footer lines) together.
                 let group_flush = group_changed && !same_line;
 
-                if group_flush || self.is_paragraph_break(span, prev) || heading_changed {
+                let prev_was_list_item = matches!(
+                    prev.struct_role,
+                    Some(StructRole::ListItemBody)
+                        | Some(StructRole::ListItem)
+                        | Some(StructRole::ListItemLabel)
+                );
+                let list_item_changed = is_list_item_role != prev_was_list_item;
+
+                if group_flush
+                    || self.is_paragraph_break(span, prev)
+                    || heading_changed
+                    || list_item_changed
+                {
                     close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
                     if !current_line.is_empty() {
                         if let Some(level) = current_heading_level {
@@ -641,12 +671,15 @@ impl MarkdownOutputConverter {
                         current_line.clear();
                     }
                     current_heading_level = span_heading_level;
+                    if is_list_item_role {
+                        current_line.push_str("- ");
+                    }
                 } else if !same_line {
                     // Different visual line but within paragraph spacing.
                     // Check if a bullet item starts here — if so, start a new line.
                     let is_bullet = Self::is_bullet_span(&span.span.text)
                         || Self::starts_with_bullet(&span.span.text);
-                    if is_bullet {
+                    if is_bullet || is_list_item_role {
                         // Bullet on new line → flush current line and start list item
                         close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
                         if !current_line.is_empty() {
@@ -664,6 +697,9 @@ impl MarkdownOutputConverter {
                             current_line.clear();
                         }
                         current_heading_level = span_heading_level;
+                        if is_list_item_role {
+                            current_line.push_str("- ");
+                        }
                     } else {
                         // Different visual line within the same paragraph — close
                         // open formatting before the line-join space so that
@@ -681,6 +717,9 @@ impl MarkdownOutputConverter {
                 }
             } else {
                 current_heading_level = span_heading_level;
+                if is_list_item_role {
+                    current_line.push_str("- ");
+                }
             }
 
             // Standalone bullet-glyph span → markdown list marker.
@@ -927,7 +966,72 @@ mod tests {
     use crate::geometry::Rect;
     use crate::layout::{Color, TextSpan};
     use crate::pipeline::converters::span_in_table;
+    use crate::pipeline::StructRole;
     use crate::structure::table_extractor::{TableCell, TableRow};
+
+    /// D1 RED — when the structure tree carries an explicit heading role
+    /// for a span (Word/Acrobat style: H1 → Span → MCR resolved by D8b),
+    /// the markdown converter must emit `# title` regardless of font-size
+    /// heuristics. Without this, every tagged Word document loses its
+    /// heading hierarchy because body and heading text are often the
+    /// same point size.
+    #[test]
+    fn test_struct_role_heading_emits_markdown_heading() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mut title = make_span("Document Title", 0.0, 100.0, 12.0, FontWeight::Normal);
+        title.struct_role = Some(StructRole::Heading(1));
+        let body = make_span("Body paragraph one.", 0.0, 80.0, 12.0, FontWeight::Normal);
+        let result = converter.convert(&[title, body], &config).unwrap();
+        assert!(
+            result.contains("# Document Title"),
+            "expected '# Document Title' in output, got:\n{}",
+            result
+        );
+        assert!(result.contains("Body paragraph one."));
+    }
+
+    /// D1 RED — heading role precedence: even on the same font size as
+    /// body, Heading(2) must produce `## ...`. Mirrors the `nougat_011`
+    /// failure pattern where per-section headers are body-sized.
+    #[test]
+    fn test_struct_role_h2_overrides_font_size_heuristic() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mut h2 = make_span("Section Header", 0.0, 100.0, 11.0, FontWeight::Normal);
+        h2.struct_role = Some(StructRole::Heading(2));
+        let result = converter.convert(&[h2], &config).unwrap();
+        assert!(
+            result.starts_with("## "),
+            "expected `## ` heading prefix, got:\n{}",
+            result
+        );
+    }
+
+    /// D1 RED — list item body MCRs must emit a bullet on a new line.
+    /// Reproduces the word365_structure / nougat_037 pattern where
+    /// consecutive items collapse into a single line because the
+    /// converter sees them as plain spans.
+    #[test]
+    fn test_struct_role_list_items_emit_bullets() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mut items = Vec::new();
+        for (i, t) in ["Apple", "Banana", "Cherry"].iter().enumerate() {
+            let mut s = make_span(t, 0.0, 100.0 - (i as f32 * 14.0), 12.0, FontWeight::Normal);
+            s.struct_role = Some(StructRole::ListItemBody);
+            items.push(s);
+        }
+        let result = converter.convert(&items, &config).unwrap();
+        for t in ["- Apple", "- Banana", "- Cherry"] {
+            assert!(
+                result.contains(t),
+                "expected `{}` line in output, got:\n{}",
+                t,
+                result
+            );
+        }
+    }
 
     fn make_span_w(
         text: &str,

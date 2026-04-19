@@ -9397,7 +9397,7 @@ impl PdfDocument {
 
         let pipeline_config = TextPipelineConfig::from_conversion_options(options);
 
-        let mcid_order = {
+        let (mcid_order, mcid_to_role) = {
             let cached_tree = match &self.structure_tree_cache {
                 Some(cached) => cached.clone(),
                 None => {
@@ -9415,33 +9415,76 @@ impl PdfDocument {
                     self.structure_content_cache = Some(all_content);
                 }
 
-                // Extract MCID order from cached content for this page
-                let order: Vec<u32> = self
+                // Extract MCID order AND per-MCID structural role for this page.
+                // The role map drives the markdown converter's heading/list
+                // emission (issue #377 D1). Without it, every tagged Word doc
+                // loses its heading hierarchy and consecutive list items
+                // collapse into a single paragraph.
+                let cached_page = self
                     .structure_content_cache
                     .as_ref()
-                    .and_then(|cache| cache.get(&(page_index as u32)))
+                    .and_then(|cache| cache.get(&(page_index as u32)));
+
+                let order: Vec<u32> = cached_page
                     .map(|content| content.iter().filter_map(|c| c.mcid).collect())
                     .unwrap_or_default();
 
+                let mut role_map: std::collections::HashMap<u32, crate::pipeline::StructRole> =
+                    std::collections::HashMap::new();
+                if let Some(content) = cached_page {
+                    for item in content {
+                        if let Some(mcid) = item.mcid {
+                            // Heading takes precedence over list role on the
+                            // same MCR (a heading-marked-content doesn't
+                            // also play a list role in any sane PDF).
+                            let role = if let Some(level) = item.heading_level {
+                                Some(crate::pipeline::StructRole::Heading(level))
+                            } else {
+                                item.list_role.map(|lr| match lr {
+                                    crate::structure::ListRole::LI => {
+                                        crate::pipeline::StructRole::ListItem
+                                    },
+                                    crate::structure::ListRole::Lbl => {
+                                        crate::pipeline::StructRole::ListItemLabel
+                                    },
+                                    crate::structure::ListRole::LBody => {
+                                        crate::pipeline::StructRole::ListItemBody
+                                    },
+                                })
+                            };
+                            if let Some(r) = role {
+                                role_map.entry(mcid).or_insert(r);
+                            }
+                        }
+                    }
+                }
+
+                let role_map_opt = if role_map.is_empty() {
+                    None
+                } else {
+                    Some(role_map)
+                };
+
                 if !order.is_empty() {
                     log::debug!(
-                        "Extracted {} MCIDs from cached structure tree for page {}",
+                        "Extracted {} MCIDs ({} typed) from structure tree for page {}",
                         order.len(),
+                        role_map_opt.as_ref().map(|m| m.len()).unwrap_or(0),
                         page_index
                     );
-                    Some(order)
+                    (Some(order), role_map_opt)
                 } else {
                     log::debug!(
                         "No MCIDs found for page {}, reading order strategy will use geometric fallback",
                         page_index
                     );
-                    None
+                    (None, role_map_opt)
                 }
             } else {
                 log::debug!(
                     "No structure tree found, reading order strategy will use geometric fallback"
                 );
-                None
+                (None, None)
             }
         };
 
@@ -9455,7 +9498,21 @@ impl PdfDocument {
         }
 
         // Step 7: Process through pipeline (applies reading order strategy)
-        let ordered_spans = pipeline.process(spans, context)?;
+        let mut ordered_spans = pipeline.process(spans, context)?;
+
+        // Annotate ordered spans with the per-MCID structural role so the
+        // markdown converter can emit headings and bullets directly from
+        // the source PDF's `/StructTreeRoot` rather than re-deriving them
+        // from font-size heuristics. Issue #377 D1 unlock.
+        if let Some(ref role_map) = mcid_to_role {
+            for s in ordered_spans.iter_mut() {
+                if let Some(mcid) = s.span.mcid {
+                    if let Some(role) = role_map.get(&mcid) {
+                        s.struct_role = Some(*role);
+                    }
+                }
+            }
+        }
 
         // Step 8: Use pipeline converter with tables
         let converter = MarkdownOutputConverter::new();
