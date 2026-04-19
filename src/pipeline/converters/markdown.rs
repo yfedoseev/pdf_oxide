@@ -1053,8 +1053,107 @@ impl MarkdownOutputConverter {
             final_result = handler.process_text(&final_result);
         }
 
+        // RTL bidi reordering (#377 D7). PDF content streams emit Arabic
+        // and Hebrew runs in *visual* order (right-to-left text after
+        // shaping is laid out left-to-right on the page). For markdown /
+        // plain-text output we want *logical* order so search and diff
+        // behave correctly. Applied per-line because UAX #9 paragraph
+        // direction is determined by the first strong character in the
+        // paragraph, and a markdown line is one paragraph for our
+        // purposes. Pure-LTR lines short-circuit and are unchanged
+        // (`reorder_visual_to_logical` returns the input unmodified).
+        // We also strip spurious mid-word `**bold**` markers inside RTL
+        // runs: Arabic contextual glyph forms (initial / medial /
+        // final) regularly trip the font-weight detector and produce
+        // bold markers around individual letters, which corrupts the
+        // bidi reorder and is wrong semantically anyway.
+        if final_result
+            .chars()
+            .any(|c| crate::text::bidi::looks_rtl(&c.to_string()))
+        {
+            final_result = final_result
+                .lines()
+                .map(|line| {
+                    if crate::text::bidi::looks_rtl(line) {
+                        let stripped = strip_inline_emphasis_in_rtl(line);
+                        crate::text::bidi::reorder_visual_to_logical(&stripped)
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+
         Ok(final_result)
     }
+}
+
+/// Remove markdown `**` and `*` emphasis pairs that surround RTL
+/// (Arabic / Hebrew) tokens. Inserted by the bold/italic detector
+/// when the source PDF reports a font-weight change between
+/// contextual glyph forms (initial / medial / final shapes); they
+/// fragment the line into spurious emphasis spans and break bidi
+/// reordering. Keeps emphasis around purely LTR runs intact.
+fn strip_inline_emphasis_in_rtl(line: &str) -> String {
+    // Cheap path: if there are no asterisks, nothing to do.
+    if !line.contains('*') {
+        return line.to_string();
+    }
+    // Scan for `**` or `*` markers and decide whether the wrapped
+    // content is RTL. If so, drop the markers; otherwise keep.
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // Try to match `**` first.
+        if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'*' {
+            if let Some(close) = find_matching(bytes, i + 2, b"**") {
+                let inner = std::str::from_utf8(&bytes[i + 2..close]).unwrap_or("");
+                if crate::text::bidi::looks_rtl(inner) {
+                    out.push_str(inner);
+                    i = close + 2;
+                    continue;
+                }
+                // Otherwise, keep verbatim.
+                out.push_str("**");
+                out.push_str(inner);
+                out.push_str("**");
+                i = close + 2;
+                continue;
+            }
+        }
+        // Then `*` (italic).
+        if bytes[i] == b'*' {
+            if let Some(close) = find_matching(bytes, i + 1, b"*") {
+                let inner = std::str::from_utf8(&bytes[i + 1..close]).unwrap_or("");
+                if crate::text::bidi::looks_rtl(inner) {
+                    out.push_str(inner);
+                    i = close + 1;
+                    continue;
+                }
+                out.push('*');
+                out.push_str(inner);
+                out.push('*');
+                i = close + 1;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+fn find_matching(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    let mut i = from;
+    while i + needle.len() <= bytes.len() {
+        if &bytes[i..i + needle.len()] == needle {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 impl Default for MarkdownOutputConverter {

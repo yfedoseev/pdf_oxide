@@ -3,6 +3,7 @@
 //! This module provides tools for working with extracted text from PDF documents,
 //! including word boundary detection per ISO 32000-1:2008 specification.
 
+pub mod bidi;
 pub mod cjk_punctuation;
 pub mod complex_script_detector;
 pub mod document_classifier;

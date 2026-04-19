@@ -2658,6 +2658,7 @@ dependencies = [
  "tokenizers",
  "tract-onnx",
  "ttf-parser",
+ "unicode-bidi",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-test",
