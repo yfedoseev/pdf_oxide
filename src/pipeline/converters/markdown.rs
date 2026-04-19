@@ -1292,6 +1292,220 @@ mod tests {
         );
     }
 
+    /// D1 coverage — every heading level H1..H6 from the structure tree
+    /// emits the matching markdown prefix. Lock-in for #377 word /
+    /// adobe-tagged docs whose body and heading text share a size.
+    #[test]
+    fn test_struct_role_emits_each_heading_level() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        for level in 1u8..=6 {
+            let mut s = make_span(
+                &format!("Title L{}", level),
+                0.0,
+                100.0,
+                12.0,
+                FontWeight::Normal,
+            );
+            s.struct_role = Some(StructRole::Heading(level));
+            let body = make_span("body", 0.0, 80.0, 12.0, FontWeight::Normal);
+            let result = converter.convert(&[s, body], &config).unwrap();
+            let prefix = "#".repeat(level as usize);
+            let expected = format!("{} Title L{}", prefix, level);
+            assert!(
+                result.contains(&expected),
+                "expected `{}`, got:\n{}",
+                expected,
+                result
+            );
+        }
+    }
+
+    /// D1 coverage — out-of-range Heading level values are clamped to
+    /// the H1..H6 range. Defensive: a malformed structure tree
+    /// reporting Heading(0) or Heading(99) should not produce 0 or
+    /// 99 `#` characters.
+    #[test]
+    fn test_struct_role_heading_level_is_clamped() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        for raw_level in [0u8, 7, 99, 250] {
+            let mut s = make_span("Edgy", 0.0, 100.0, 12.0, FontWeight::Normal);
+            s.struct_role = Some(StructRole::Heading(raw_level));
+            let result = converter.convert(&[s], &config).unwrap();
+            // Find the prefix in the first line: count `#`s.
+            let first_line = result.lines().next().unwrap_or("");
+            let hash_count = first_line.chars().take_while(|c| *c == '#').count();
+            assert!(
+                (1..=6).contains(&hash_count),
+                "raw_level {} produced {} `#`s in `{}`",
+                raw_level,
+                hash_count,
+                first_line
+            );
+        }
+    }
+
+    /// D1 coverage — every list-role variant (LI / Lbl / LBody) on a
+    /// span emits a `- ` bullet prefix. Lock-in against treating the
+    /// three roles inconsistently, which was the original
+    /// word365_structure regression.
+    #[test]
+    fn test_struct_role_all_list_variants_emit_bullets() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        for role in [
+            StructRole::ListItem,
+            StructRole::ListItemLabel,
+            StructRole::ListItemBody,
+        ] {
+            let mut s = make_span("Item", 0.0, 100.0, 12.0, FontWeight::Normal);
+            s.struct_role = Some(role);
+            let result = converter.convert(&[s], &config).unwrap();
+            assert!(
+                result.lines().any(|l| l.starts_with("- ")),
+                "role {:?} did not emit a bullet, got:\n{}",
+                role,
+                result
+            );
+        }
+    }
+
+    /// D1 coverage — heading immediately followed by a list-item must
+    /// transition cleanly: heading flushes, list emits bullet on a
+    /// fresh line. Cross-defect interaction guard.
+    #[test]
+    fn test_heading_then_list_item_transition() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mut h = make_span("Section", 0.0, 100.0, 12.0, FontWeight::Normal);
+        h.struct_role = Some(StructRole::Heading(2));
+        let mut li = make_span("First", 0.0, 80.0, 12.0, FontWeight::Normal);
+        li.struct_role = Some(StructRole::ListItemBody);
+        let result = converter.convert(&[h, li], &config).unwrap();
+        assert!(result.contains("## Section"));
+        assert!(result.contains("- First"));
+        // The heading line must not also carry the bullet.
+        assert!(
+            !result.contains("## - "),
+            "heading prefix and bullet must not co-occur, got:\n{}",
+            result
+        );
+    }
+
+    /// D5 coverage — three sequential block_id transitions produce
+    /// three paragraphs. Lock against off-by-one in the transition
+    /// detector that would group two of three.
+    #[test]
+    fn test_block_id_three_paragraphs_three_breaks() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mut spans = Vec::new();
+        for (i, t) in ["alpha", "beta", "gamma"].iter().enumerate() {
+            let mut s = make_span(
+                t,
+                0.0,
+                100.0 - (i as f32 * 14.0),
+                12.0,
+                FontWeight::Normal,
+            );
+            s.block_id = Some((i + 1) as u32);
+            spans.push(s);
+        }
+        let result = converter.convert(&spans, &config).unwrap();
+        let paras: Vec<&str> = result.split("\n\n").map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+        assert_eq!(
+            paras,
+            vec!["alpha", "beta", "gamma"],
+            "expected 3 separate paragraphs, got {:?}",
+            paras
+        );
+    }
+
+    /// D5 coverage — when only one of two adjacent spans has a
+    /// block_id (mixed tagged + untagged), no spurious break is
+    /// emitted. Defends against the `(Some, None)` case being misread
+    /// as a transition.
+    #[test]
+    fn test_partial_block_id_does_not_force_break() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let s1 = make_span("first", 0.0, 100.0, 12.0, FontWeight::Normal);
+        let mut s2 = make_span("second", 0.0, 88.0, 12.0, FontWeight::Normal);
+        s2.block_id = Some(1);
+        let result = converter.convert(&[s1, s2], &config).unwrap();
+        // Without explicit block transition, fall through to geometry —
+        // 12pt gap below 1.5× threshold, so no double newline.
+        assert!(
+            !result.contains("\n\n"),
+            "partial block_id must not introduce paragraph break, got:\n{}",
+            result
+        );
+    }
+
+    /// D3 coverage — extra whitelist + reject cases for ordered marker
+    /// detection. Locks the conservative behaviour that distinguishes
+    /// real lists from prose / numbers / captions.
+    #[test]
+    fn test_is_ordered_list_marker_extras() {
+        // Recognised: trailing space required, both `.` and `)` close.
+        assert_eq!(MarkdownOutputConverter::is_ordered_list_marker("99. Foo"), Some(99));
+        assert_eq!(MarkdownOutputConverter::is_ordered_list_marker("z) Last"), Some(1));
+        // Without the trailing space, not a list marker.
+        assert!(MarkdownOutputConverter::is_ordered_list_marker("1.Foo").is_none());
+        // Without a digit/letter prefix, not a list marker.
+        assert!(MarkdownOutputConverter::is_ordered_list_marker(". Foo").is_none());
+        assert!(MarkdownOutputConverter::is_ordered_list_marker(") Foo").is_none());
+        // Empty / whitespace-only.
+        assert!(MarkdownOutputConverter::is_ordered_list_marker("").is_none());
+        assert!(MarkdownOutputConverter::is_ordered_list_marker("   ").is_none());
+        // Looks like a list but is currency / unit / decimal.
+        assert!(MarkdownOutputConverter::is_ordered_list_marker("$1. Total").is_none());
+        assert!(MarkdownOutputConverter::is_ordered_list_marker("3.14 pi").is_none());
+        // Long numeric (>3 digits) is not a marker (years, IDs).
+        assert!(MarkdownOutputConverter::is_ordered_list_marker("2024. Year").is_none());
+    }
+
+    /// D6 coverage — superscript inline merging across multiple
+    /// markers in the same line ("On the 1st, 2nd, and 3rd days").
+    /// Each "st"/"nd"/"rd" must inline-merge with its preceding
+    /// number.
+    #[test]
+    fn test_multiple_superscripts_one_line() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        // Body baseline at y=100 with 11pt; three superscripts raised
+        // by 2.5pt with 7pt font.
+        let parts: Vec<OrderedTextSpan> = vec![
+            make_span("On the 1", 0.0, 100.0, 11.0, FontWeight::Normal),
+            make_span("st", 25.0, 102.5, 7.0, FontWeight::Normal),
+            make_span(", 2", 30.0, 100.0, 11.0, FontWeight::Normal),
+            make_span("nd", 40.0, 102.5, 7.0, FontWeight::Normal),
+            make_span(", and 3", 47.0, 100.0, 11.0, FontWeight::Normal),
+            make_span("rd", 70.0, 102.5, 7.0, FontWeight::Normal),
+            make_span(" days", 75.0, 100.0, 11.0, FontWeight::Normal),
+        ];
+        let result = converter.convert(&parts, &config).unwrap();
+        // No bare superscript line.
+        for sup in ["st", "nd", "rd"] {
+            assert!(
+                !result.lines().any(|l| l.trim() == sup),
+                "bare `{}` line found in:\n{}",
+                sup,
+                result
+            );
+        }
+        // Each composed token appears.
+        for token in ["1st", "2nd", "3rd"] {
+            assert!(
+                result.contains(token),
+                "expected `{}` in output, got:\n{}",
+                token,
+                result
+            );
+        }
+    }
+
     /// D2 RED — bold text only slightly larger than body must still be
     /// detected as a heading. Many tagged-but-untyped corporate docs
     /// (amt_handbook_sample, manuals) use bold + 1.05–1.1× body for

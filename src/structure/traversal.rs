@@ -686,6 +686,174 @@ mod tests {
         );
     }
 
+    /// D8b coverage — every standard heading level (H1..H6) propagates
+    /// to a deeply nested MCR. Parametrised over all six levels in the
+    /// same test to keep the lock-in compact.
+    #[test]
+    fn test_nested_heading_propagates_for_h1_through_h6() {
+        let levels = [
+            (StructType::H1, 1u8),
+            (StructType::H2, 2),
+            (StructType::H3, 3),
+            (StructType::H4, 4),
+            (StructType::H5, 5),
+            (StructType::H6, 6),
+        ];
+        for (h_type, expected_level) in levels {
+            // H? → Sect → Span → MCR (3-level nesting, reflects the
+            // worst-case shape seen in word365_structure-class fixtures).
+            let mut head = StructElem::new(h_type.clone());
+            let mut sect = StructElem::new(StructType::Sect);
+            let mut span = StructElem::new(StructType::Span);
+            span.add_child(StructChild::MarkedContentRef { mcid: 42, page: 0 });
+            sect.add_child(StructChild::StructElem(Box::new(span)));
+            head.add_child(StructChild::StructElem(Box::new(sect)));
+            let mut tree = StructTreeRoot::new();
+            tree.add_root_element(head);
+
+            let ordered = traverse_structure_tree(&tree, 0).unwrap();
+            let item = ordered.iter().find(|c| c.mcid == Some(42)).unwrap();
+            assert!(
+                item.is_heading,
+                "H{} → Sect → Span → MCR must carry is_heading=true",
+                expected_level
+            );
+            assert_eq!(
+                item.heading_level,
+                Some(expected_level),
+                "H{} ancestor must propagate heading_level={}",
+                expected_level,
+                expected_level
+            );
+        }
+    }
+
+    /// D8b coverage — generic /H without an explicit level reports
+    /// heading_level=Some(1) (the only sensible default per spec
+    /// §14.8.4.2 when no surrounding heading exists).
+    #[test]
+    fn test_generic_h_without_level_defaults_to_h1() {
+        let mut h = StructElem::new(StructType::H);
+        let mut span = StructElem::new(StructType::Span);
+        span.add_child(StructChild::MarkedContentRef { mcid: 9, page: 0 });
+        h.add_child(StructChild::StructElem(Box::new(span)));
+        let mut tree = StructTreeRoot::new();
+        tree.add_root_element(h);
+        let ordered = traverse_structure_tree(&tree, 0).unwrap();
+        let item = ordered.iter().find(|c| c.mcid == Some(9)).unwrap();
+        assert!(item.is_heading);
+        assert_eq!(item.heading_level, Some(1));
+    }
+
+    /// D8b negative case — adjacent heading and body MCRs at the same
+    /// nesting level must keep their respective roles. A bug that
+    /// "leaked" heading flag from a prior sibling into the next would
+    /// flip every body paragraph after a heading into a heading.
+    #[test]
+    fn test_heading_role_does_not_bleed_into_following_paragraph() {
+        let mut doc = StructElem::new(StructType::Document);
+        let mut h1 = StructElem::new(StructType::H1);
+        h1.add_child(StructChild::MarkedContentRef { mcid: 0, page: 0 });
+        let mut p = StructElem::new(StructType::P);
+        p.add_child(StructChild::MarkedContentRef { mcid: 1, page: 0 });
+        doc.add_child(StructChild::StructElem(Box::new(h1)));
+        doc.add_child(StructChild::StructElem(Box::new(p)));
+        let mut tree = StructTreeRoot::new();
+        tree.add_root_element(doc);
+
+        let ordered = traverse_structure_tree(&tree, 0).unwrap();
+        let h_item = ordered.iter().find(|c| c.mcid == Some(0)).unwrap();
+        let p_item = ordered.iter().find(|c| c.mcid == Some(1)).unwrap();
+        assert!(h_item.is_heading);
+        assert!(!p_item.is_heading, "sibling P must not inherit H1's flag");
+        assert_eq!(p_item.heading_level, None);
+    }
+
+    /// D8b coverage — list role variants on direct MCRs (LI carrying
+    /// its own MCR without LBody/Lbl wrappers) and LBody siblings
+    /// inside one LI.
+    #[test]
+    fn test_list_role_variants() {
+        // Tree:
+        // L
+        //   ├─ LI (mcid=0, direct)         → role = LI
+        //   └─ LI
+        //        ├─ Lbl  (mcid=1)          → role = Lbl
+        //        └─ LBody (mcid=2)         → role = LBody
+        let mut l = StructElem::new(StructType::L);
+        let mut li_a = StructElem::new(StructType::LI);
+        li_a.add_child(StructChild::MarkedContentRef { mcid: 0, page: 0 });
+        let mut li_b = StructElem::new(StructType::LI);
+        let mut lbl = StructElem::new(StructType::Lbl);
+        lbl.add_child(StructChild::MarkedContentRef { mcid: 1, page: 0 });
+        let mut lbody = StructElem::new(StructType::LBody);
+        lbody.add_child(StructChild::MarkedContentRef { mcid: 2, page: 0 });
+        li_b.add_child(StructChild::StructElem(Box::new(lbl)));
+        li_b.add_child(StructChild::StructElem(Box::new(lbody)));
+        l.add_child(StructChild::StructElem(Box::new(li_a)));
+        l.add_child(StructChild::StructElem(Box::new(li_b)));
+        let mut tree = StructTreeRoot::new();
+        tree.add_root_element(l);
+
+        let ordered = traverse_structure_tree(&tree, 0).unwrap();
+        let m0 = ordered.iter().find(|c| c.mcid == Some(0)).unwrap();
+        let m1 = ordered.iter().find(|c| c.mcid == Some(1)).unwrap();
+        let m2 = ordered.iter().find(|c| c.mcid == Some(2)).unwrap();
+        assert!(matches!(m0.list_role, Some(ListRole::LI)));
+        assert!(matches!(m1.list_role, Some(ListRole::Lbl)));
+        assert!(matches!(m2.list_role, Some(ListRole::LBody)));
+        // None of the list MCRs are headings.
+        assert!(!m0.is_heading && !m1.is_heading && !m2.is_heading);
+    }
+
+    /// D5 coverage at the traversal layer — block_id must increment
+    /// across sibling block elements but stay constant inside one
+    /// block, even when the block contains multiple Span children.
+    #[test]
+    fn test_block_id_groups_within_block_and_changes_across() {
+        let mut doc = StructElem::new(StructType::Document);
+        let mut p1 = StructElem::new(StructType::P);
+        let mut span_a = StructElem::new(StructType::Span);
+        span_a.add_child(StructChild::MarkedContentRef { mcid: 0, page: 0 });
+        let mut span_b = StructElem::new(StructType::Span);
+        span_b.add_child(StructChild::MarkedContentRef { mcid: 1, page: 0 });
+        p1.add_child(StructChild::StructElem(Box::new(span_a)));
+        p1.add_child(StructChild::StructElem(Box::new(span_b)));
+        let mut p2 = StructElem::new(StructType::P);
+        p2.add_child(StructChild::MarkedContentRef { mcid: 2, page: 0 });
+        doc.add_child(StructChild::StructElem(Box::new(p1)));
+        doc.add_child(StructChild::StructElem(Box::new(p2)));
+        let mut tree = StructTreeRoot::new();
+        tree.add_root_element(doc);
+
+        let ordered = traverse_structure_tree(&tree, 0).unwrap();
+        let m0 = ordered.iter().find(|c| c.mcid == Some(0)).unwrap();
+        let m1 = ordered.iter().find(|c| c.mcid == Some(1)).unwrap();
+        let m2 = ordered.iter().find(|c| c.mcid == Some(2)).unwrap();
+        assert_eq!(
+            m0.block_id, m1.block_id,
+            "two MCRs inside the same /P must share block_id"
+        );
+        assert_ne!(
+            m0.block_id, m2.block_id,
+            "MCRs in different /P elements must have different block_id"
+        );
+        assert!(m0.block_id > 0, "block_id should be positive once any block is entered");
+    }
+
+    /// D5 coverage — Span elements at the root (no enclosing block)
+    /// keep block_id=0 so the converter's "Some, Some, equal" check
+    /// stays well-defined.
+    #[test]
+    fn test_root_span_has_block_id_zero() {
+        let mut span = StructElem::new(StructType::Span);
+        span.add_child(StructChild::MarkedContentRef { mcid: 0, page: 0 });
+        let mut tree = StructTreeRoot::new();
+        tree.add_root_element(span);
+        let ordered = traverse_structure_tree(&tree, 0).unwrap();
+        assert_eq!(ordered[0].block_id, 0);
+    }
+
     #[test]
     fn test_object_ref_skipped() {
         let mut root = StructElem::new(StructType::Document);

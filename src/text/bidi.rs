@@ -156,4 +156,122 @@ mod tests {
     fn paragraph_is_not_rtl_for_pure_english() {
         assert!(!paragraph_is_rtl("This is English"));
     }
+
+    /// D7 coverage — the looks_rtl quick-check spans every RTL Unicode
+    /// block we declare support for. Used as the converter's gate, so
+    /// any block we miss here would entirely bypass the bidi pass for
+    /// that script.
+    #[test]
+    fn looks_rtl_covers_all_supported_blocks() {
+        let cases: &[(u32, &str)] = &[
+            (0x0590, "Hebrew start"),
+            (0x05F4, "Hebrew end-ish"),
+            (0x0600, "Arabic start"),
+            (0x06FF, "Arabic end"),
+            (0x0750, "Arabic Supplement start"),
+            (0x077F, "Arabic Supplement end"),
+            (0x08A0, "Arabic Extended-A start"),
+            (0x08FF, "Arabic Extended-A end"),
+            (0xFB50, "Arabic Presentation Forms-A start"),
+            (0xFDFF, "Arabic Presentation Forms-A end"),
+            (0xFE70, "Arabic Presentation Forms-B start"),
+            (0xFEFF, "Arabic Presentation Forms-B end"),
+        ];
+        for (cp, name) in cases {
+            if let Some(c) = char::from_u32(*cp) {
+                let s = c.to_string();
+                assert!(
+                    looks_rtl(&s),
+                    "looks_rtl({:?} {}) should be true",
+                    s,
+                    name
+                );
+            }
+        }
+    }
+
+    /// D7 negative coverage — characters that LOOK like they could be
+    /// RTL but are actually neutral or LTR (CJK, math, common
+    /// punctuation, the BOM area near U+FEFF).
+    #[test]
+    fn looks_rtl_rejects_neutral_and_cjk() {
+        for s in [
+            "中文",      // CJK
+            "日本語",    // Japanese
+            "α β γ",     // Greek (LTR)
+            "1234567890",
+            "!@#$%^&*()",
+            "café",
+            "naïve",
+        ] {
+            assert!(!looks_rtl(s), "looks_rtl({:?}) should be false", s);
+        }
+    }
+
+    /// D7 coverage — reorder is byte-stable for pure-ASCII strings of
+    /// many shapes (no RTL means identity).
+    #[test]
+    fn reorder_pure_ltr_identity_extras() {
+        for s in [
+            "",
+            "a",
+            "Hello, world!",
+            "Multi-line\nstays unchanged",
+            "Numbers: 1234 5678",
+            "Symbols: !@#$%^&*",
+            "Whitespace   between   words",
+        ] {
+            assert_eq!(reorder_visual_to_logical(s), s, "identity broken on {:?}", s);
+        }
+    }
+
+    /// D7 coverage — reorder preserves character count and never drops
+    /// or duplicates content. Property-style spot-check across mixed
+    /// inputs.
+    #[test]
+    fn reorder_preserves_character_count() {
+        for s in [
+            "عربي",
+            "هذا نص عربي للاختبار",
+            "year 2024 عام جيد",
+            "שלום world",
+            "Mixed: عربي + 123 + Latin",
+        ] {
+            let out = reorder_visual_to_logical(s);
+            assert_eq!(
+                out.chars().count(),
+                s.chars().count(),
+                "char count changed: {:?} -> {:?}",
+                s,
+                out
+            );
+        }
+    }
+
+    /// D7 coverage — embedded LTR runs (English brand names, codes)
+    /// inside an Arabic paragraph survive intact in the output. The
+    /// English token must still be findable as a contiguous substring,
+    /// not reversed.
+    #[test]
+    fn reorder_keeps_embedded_ltr_token_contiguous() {
+        let line = "هذا منتج Microsoft الجديد";
+        let result = reorder_visual_to_logical(line);
+        assert!(
+            result.contains("Microsoft"),
+            "embedded LTR token reversed: {:?} -> {:?}",
+            line,
+            result
+        );
+    }
+
+    /// D7 coverage — paragraph_is_rtl agrees with looks_rtl on edge
+    /// cases (empty string, whitespace, mixed-script).
+    #[test]
+    fn paragraph_is_rtl_edges() {
+        assert!(!paragraph_is_rtl(""));
+        assert!(!paragraph_is_rtl("   "));
+        assert!(!paragraph_is_rtl("123 456"));
+        // Mixed but RTL-dominated.
+        assert!(paragraph_is_rtl("نص with English"));
+    }
 }
