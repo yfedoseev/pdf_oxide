@@ -1191,19 +1191,42 @@ fn find_matching(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
 /// if their `block_id`s suggest a structural transition would be
 /// suppressed by D5b.
 ///
-/// Threshold: gap from the right edge of the previous span to the
-/// left edge of the current span exceeds `max(3 × font_size, 30 pt)`.
-/// 3× font size catches typical body-text columns (12pt body → 36pt
-/// gutter); the 30pt floor catches small-font cases where a literal
-/// 36pt gap would be too lenient.
+/// Returns true in two distinct shapes (issue #377 D5d):
+///
+/// 1. **Forward column gap.** The horizontal gap from the right edge
+///    of the previous span to the left edge of the current span
+///    exceeds `max(3 × font_size, 30 pt)`. 3× font size catches
+///    typical body-text columns (12pt body → 36pt gutter); the 30pt
+///    floor catches small-font cases where a literal 36pt gap would
+///    be too lenient.
+///
+/// 2. **Backward column wrap (x went backwards on the same baseline).**
+///    LTR text on a single visual line always advances x forward; if
+///    the current span starts to the left of the previous span by
+///    more than `2 × font_size`, that is a column-major reading order
+///    wrapping from the end of one column back to the top of the
+///    next. The IA_0047 newspaper struct tree emits content this way:
+///    `constitution` at x=976 ends a column, `Assailing` at x=192
+///    starts the next, both at the same baseline. Without the
+///    backward-wrap detection the converter joins them into the
+///    nonsense token `constitutionAssailing`.
 fn is_column_gap(prev: &OrderedTextSpan, current: &OrderedTextSpan) -> bool {
     let prev_right = prev.span.bbox.x + prev.span.bbox.width;
     let cur_left = current.span.bbox.x;
+    let font_size = current.span.font_size.max(prev.span.font_size).max(1.0);
+
+    // Backward wrap: x went meaningfully backwards on the same y
+    // baseline. Strongest possible signal of a column-major reading
+    // order transition.
+    if cur_left + font_size * 2.0 < prev.span.bbox.x {
+        return true;
+    }
+
+    // Forward gutter: gap exceeds typical inter-word spacing.
     let gap = cur_left - prev_right;
     if gap <= 0.0 {
         return false;
     }
-    let font_size = current.span.font_size.max(prev.span.font_size);
     let threshold = (font_size * 3.0).max(30.0);
     gap > threshold
 }
@@ -1682,6 +1705,189 @@ mod tests {
             vec!["First.", "Second.", "Third."],
             "different baselines must still produce three paragraphs"
         );
+    }
+
+    /// D5d RED — IA_0047 reproducer. The struct tree emits the last
+    /// span of one column ("constitution" at x=976.7) immediately
+    /// followed by the first span of the next column ("Assailing" at
+    /// x=192.6) at the SAME baseline (y diff ≈ 1.5pt). A naive
+    /// converter joins these into "constitutionAssailing".
+    #[test]
+    fn test_backward_x_wrap_at_same_baseline_splits_paragraph() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mk = |t: &str, x: f32, y: f32| make_span(t, x, y, 12.0, FontWeight::Normal);
+        // Mirrors IA_0047 spans 1677 → 1678 (column wrap on same line).
+        let prev = mk("constitution", 976.7, 1013.2);
+        let cur = mk("Assailing", 192.6, 1011.7);
+        let result = converter.convert(&[prev, cur], &config).unwrap();
+        assert!(
+            !result.contains("constitutionAssailing"),
+            "column wrap created concatenation, got:\n{}",
+            result
+        );
+        // Both words must be present, on different paragraphs.
+        let paras: Vec<&str> = result
+            .split("\n\n")
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .collect();
+        assert!(
+            paras.len() >= 2,
+            "expected ≥2 paragraphs from column wrap, got {} in:\n{}",
+            paras.len(),
+            result
+        );
+        assert!(result.contains("constitution"));
+        assert!(result.contains("Assailing"));
+    }
+
+    /// D5d coverage — minor x backwards (≤ 2× font_size) is NOT a
+    /// column wrap. Could happen with tight kerning, italic
+    /// overhang, or the existing dedup code emitting near-duplicate
+    /// glyphs. Must NOT be promoted to a paragraph break.
+    #[test]
+    fn test_minor_x_backwards_within_tolerance_does_not_split() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        // 12pt font, x backs up by only 8pt (< 2 × 12 = 24pt).
+        let prev = make_span("hello", 100.0, 100.0, 12.0, FontWeight::Normal);
+        let cur = make_span("world", 92.0, 100.0, 12.0, FontWeight::Normal);
+        let result = converter.convert(&[prev, cur], &config).unwrap();
+        let paras: Vec<&str> = result
+            .split("\n\n")
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .collect();
+        assert_eq!(paras.len(), 1, "minor backstep must stay on one paragraph: {:?}", result);
+    }
+
+    /// D5d coverage — the same backward-wrap detector fires when
+    /// block_ids are present (IA_0047 tagged paths) AND when no
+    /// block_ids are present (untagged multi-column docs).
+    #[test]
+    fn test_backward_x_wrap_works_with_or_without_block_id() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        for assign_block in [false, true] {
+            let mut a = make_span("end of col1", 800.0, 100.0, 12.0, FontWeight::Normal);
+            let mut b = make_span("Start of col2", 100.0, 100.0, 12.0, FontWeight::Normal);
+            if assign_block {
+                a.block_id = Some(1);
+                b.block_id = Some(2);
+            }
+            let result = converter.convert(&[a, b], &config).unwrap();
+            assert!(
+                !result.contains("col1Start"),
+                "block_id={}: column wrap concat in:\n{}",
+                assign_block,
+                result
+            );
+        }
+    }
+
+    /// D5d coverage — backward wrap on different baselines should
+    /// also produce a paragraph break (defensive: even if same_line
+    /// is false, a backwards x indicates layout boundary).
+    #[test]
+    fn test_backward_x_wrap_on_different_baseline() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        // Mimics column wrap with different baselines (column 1
+        // bottom at y=200, column 2 top at y=600). is_paragraph_break
+        // catches this via the gap heuristic, but we ensure the
+        // backward-x detector does too as a safety net.
+        let prev = make_span("col1 last", 800.0, 200.0, 12.0, FontWeight::Normal);
+        let cur = make_span("Col2 first", 100.0, 600.0, 12.0, FontWeight::Normal);
+        let result = converter.convert(&[prev, cur], &config).unwrap();
+        assert!(!result.contains("lastCol2"));
+    }
+
+    /// D5d coverage — the exact pattern of all 5 regressions found in
+    /// IA_0047_20200204: lowercase end + uppercase start, same y,
+    /// negative x delta. Each must split into separate paragraphs.
+    #[test]
+    fn test_all_five_ia_0047_patterns_split() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        // Each tuple is (col1-end-word, col2-start-word, y, font_size).
+        let patterns: &[(&str, &str, f32, f32)] = &[
+            ("constitution", "Assailing", 1013.0, 12.0),
+            ("harvesting", "Senator", 1162.0, 12.0),
+            ("humoro", "Spartacus", 950.0, 11.0),
+            ("posscssec", "France", 800.0, 12.0),
+            ("should", "Satisfy", 600.0, 12.0),
+        ];
+        for (a, b, y, sz) in patterns {
+            let prev = make_span(a, 800.0, *y, *sz, FontWeight::Normal);
+            let cur = make_span(b, 150.0, *y - 1.0, *sz, FontWeight::Normal);
+            let result = converter.convert(&[prev, cur], &config).unwrap();
+            let joined = format!("{}{}", a, b);
+            assert!(
+                !result.contains(&joined),
+                "pattern {:?}+{:?} created `{}` in:\n{}",
+                a,
+                b,
+                joined,
+                result
+            );
+        }
+    }
+
+    /// D5d coverage — column-wrap detector composes with D5b form
+    /// fix. A form heading split into pieces on the same baseline
+    /// (small forward gaps) still joins; only when the gap is
+    /// genuinely a column boundary (large forward OR backward) does
+    /// it split.
+    #[test]
+    fn test_column_wrap_does_not_break_form_heading_join() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mk = |t: &str, x: f32, bid: u32| {
+            let mut s = make_span(t, x, 100.0, 18.0, FontWeight::Bold);
+            s.struct_role = Some(StructRole::Heading(1));
+            s.block_id = Some(bid);
+            s
+        };
+        // All forward, small gaps.
+        let spans = vec![mk("Form", 0.0, 1), mk("1040", 35.0, 2), mk("Title", 80.0, 3)];
+        let result = converter.convert(&spans, &config).unwrap();
+        let heading_lines: Vec<&str> = result.lines().filter(|l| l.starts_with("# ")).collect();
+        assert_eq!(heading_lines.len(), 1, "form heading still joins: {}", result);
+    }
+
+    /// D5d unit — the helper itself. Property-style: matrix of
+    /// gap/baseline/font shapes covering positive, zero, small
+    /// negative, large negative, large positive.
+    #[test]
+    fn test_is_column_gap_matrix() {
+        // (prev_x, prev_w, cur_x, font, expected)
+        let cases: &[(f32, f32, f32, f32, bool)] = &[
+            // Word gap inside a normal sentence: prev=Hello (50w) → cur="world".
+            (100.0, 50.0, 154.0, 12.0, false),
+            // Right at the 3× threshold: 36pt forward gap.
+            (100.0, 50.0, 186.5, 12.0, true),
+            // Far below threshold.
+            (100.0, 50.0, 160.0, 12.0, false),
+            // Backward 30pt at 12pt font (>2x = 24pt threshold).
+            (200.0, 50.0, 100.0, 12.0, true),
+            // Backward 8pt at 12pt font (under 24pt threshold).
+            (100.0, 50.0, 92.0, 12.0, false),
+            // Newspaper case: x=976→x=192 with 12pt font.
+            (976.7, 37.8, 192.6, 12.0, true),
+        ];
+        for (px, pw, cx, font, expected) in cases {
+            let prev = make_span("p", *px, 100.0, *font, FontWeight::Normal);
+            let mut prev = prev;
+            prev.span.bbox.width = *pw;
+            let cur = make_span("c", *cx, 100.0, *font, FontWeight::Normal);
+            let actual = is_column_gap(&prev, &cur);
+            assert_eq!(
+                actual, *expected,
+                "(px={}, pw={}, cx={}, font={}) expected {} got {}",
+                px, pw, cx, font, expected, actual
+            );
+        }
     }
 
     /// D5c RED — multi-column newspaper case. Two text spans on the
