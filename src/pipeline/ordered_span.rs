@@ -162,6 +162,14 @@ pub struct OrderedTextSpan {
     /// `/StructTreeRoot` when present. None when the document is untagged
     /// or the MCID has no recognised role.
     pub struct_role: Option<StructRole>,
+
+    /// Block-id of this span's nearest paragraph-level structure
+    /// ancestor (P, H*, LI, Sect, …). Two spans sharing this id belong
+    /// to the same logical paragraph; a change between adjacent spans
+    /// is a paragraph boundary even when the geometric gap is small
+    /// (issue #377 D5 — pdfa_049-style tight inter-paragraph layout).
+    /// None for untagged documents.
+    pub block_id: Option<u32>,
 }
 
 impl OrderedTextSpan {
@@ -174,6 +182,7 @@ impl OrderedTextSpan {
             group_id: None,
             order_info: ReadingOrderInfo::default(),
             struct_role: None,
+            block_id: None,
         }
     }
 
@@ -185,6 +194,7 @@ impl OrderedTextSpan {
             group_id: None,
             order_info,
             struct_role: None,
+            block_id: None,
         }
     }
 

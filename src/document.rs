@@ -9397,7 +9397,7 @@ impl PdfDocument {
 
         let pipeline_config = TextPipelineConfig::from_conversion_options(options);
 
-        let (mcid_order, mcid_to_role) = {
+        let (mcid_order, mcid_to_role, mcid_to_block_id) = {
             let cached_tree = match &self.structure_tree_cache {
                 Some(cached) => cached.clone(),
                 None => {
@@ -9431,6 +9431,8 @@ impl PdfDocument {
 
                 let mut role_map: std::collections::HashMap<u32, crate::pipeline::StructRole> =
                     std::collections::HashMap::new();
+                let mut block_map: std::collections::HashMap<u32, u32> =
+                    std::collections::HashMap::new();
                 if let Some(content) = cached_page {
                     for item in content {
                         if let Some(mcid) = item.mcid {
@@ -9455,6 +9457,11 @@ impl PdfDocument {
                             if let Some(r) = role {
                                 role_map.entry(mcid).or_insert(r);
                             }
+                            // First block_id wins per MCID — multiple OrderedContent
+                            // entries can share an MCID when the same content is
+                            // referenced from sibling structure elements; the first
+                            // emit reflects the document order.
+                            block_map.entry(mcid).or_insert(item.block_id);
                         }
                     }
                 }
@@ -9464,27 +9471,33 @@ impl PdfDocument {
                 } else {
                     Some(role_map)
                 };
+                let block_map_opt = if block_map.is_empty() {
+                    None
+                } else {
+                    Some(block_map)
+                };
 
                 if !order.is_empty() {
                     log::debug!(
-                        "Extracted {} MCIDs ({} typed) from structure tree for page {}",
+                        "Extracted {} MCIDs ({} typed, {} blocked) from structure tree for page {}",
                         order.len(),
                         role_map_opt.as_ref().map(|m| m.len()).unwrap_or(0),
+                        block_map_opt.as_ref().map(|m| m.len()).unwrap_or(0),
                         page_index
                     );
-                    (Some(order), role_map_opt)
+                    (Some(order), role_map_opt, block_map_opt)
                 } else {
                     log::debug!(
                         "No MCIDs found for page {}, reading order strategy will use geometric fallback",
                         page_index
                     );
-                    (None, role_map_opt)
+                    (None, role_map_opt, block_map_opt)
                 }
             } else {
                 log::debug!(
                     "No structure tree found, reading order strategy will use geometric fallback"
                 );
-                (None, None)
+                (None, None, None)
             }
         };
 
@@ -9500,15 +9513,20 @@ impl PdfDocument {
         // Step 7: Process through pipeline (applies reading order strategy)
         let mut ordered_spans = pipeline.process(spans, context)?;
 
-        // Annotate ordered spans with the per-MCID structural role so the
-        // markdown converter can emit headings and bullets directly from
-        // the source PDF's `/StructTreeRoot` rather than re-deriving them
-        // from font-size heuristics. Issue #377 D1 unlock.
-        if let Some(ref role_map) = mcid_to_role {
+        // Annotate ordered spans with the per-MCID structural role and
+        // paragraph block-id so the markdown converter can emit headings
+        // and bullets directly from the source PDF's `/StructTreeRoot`
+        // and respect tagged paragraph boundaries even when the
+        // geometric inter-paragraph gap is too small for the heuristic
+        // (issue #377 D1 + D5 unlock).
+        if mcid_to_role.is_some() || mcid_to_block_id.is_some() {
             for s in ordered_spans.iter_mut() {
                 if let Some(mcid) = s.span.mcid {
-                    if let Some(role) = role_map.get(&mcid) {
+                    if let Some(role) = mcid_to_role.as_ref().and_then(|m| m.get(&mcid)) {
                         s.struct_role = Some(*role);
+                    }
+                    if let Some(bid) = mcid_to_block_id.as_ref().and_then(|m| m.get(&mcid)) {
+                        s.block_id = Some(*bid);
                     }
                 }
             }

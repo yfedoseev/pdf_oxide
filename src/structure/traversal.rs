@@ -63,6 +63,17 @@ pub struct OrderedContent {
     /// to mark word boundaries.
     pub is_word_break: bool,
 
+    /// Identifier of the nearest block-level ancestor (P, H*, LI, Sect,
+    /// Div, Art, …) — increments each time the traversal enters a new
+    /// block element. Two MCRs that share a `block_id` belong to the
+    /// same logical paragraph; a change in `block_id` between adjacent
+    /// MCRs is the structure-tree-authoritative paragraph boundary
+    /// (PDF spec ISO 32000-1:2008 §14.8.4). The markdown / HTML
+    /// converters rely on this to split paragraphs when a tagged PDF's
+    /// inter-paragraph gap is too small for the geometric heuristic.
+    /// 0 means "no enclosing block element seen" (root-level Span).
+    pub block_id: u32,
+
     /// Actual text replacement from /ActualText (optional)
     /// Per PDF spec Section 14.9.4, when present this replaces all
     /// descendant content with the specified text.
@@ -80,10 +91,43 @@ pub struct OrderedContent {
 struct InheritedContext {
     heading_level: Option<u8>,
     list_role: Option<ListRole>,
+    /// Identifier of the nearest block-level ancestor — see
+    /// `OrderedContent::block_id`.
+    block_id: u32,
 }
 
 impl InheritedContext {
-    fn descend(self, child: &StructType) -> Self {
+    /// Returns true when `t` is a block-level element that should bump
+    /// the paragraph counter on entry. Spans, links, and similar inline
+    /// elements do not.
+    fn is_paragraph_block(t: &StructType) -> bool {
+        matches!(
+            t,
+            StructType::P
+                | StructType::H
+                | StructType::H1
+                | StructType::H2
+                | StructType::H3
+                | StructType::H4
+                | StructType::H5
+                | StructType::H6
+                | StructType::LI
+                | StructType::Lbl
+                | StructType::LBody
+                | StructType::Sect
+                | StructType::Div
+                | StructType::Art
+                | StructType::Note
+                | StructType::Reference
+                | StructType::BibEntry
+                | StructType::Code
+                | StructType::TR
+                | StructType::TH
+                | StructType::TD
+        )
+    }
+
+    fn descend(self, child: &StructType, counter: &mut u32) -> Self {
         let heading_level = match child {
             StructType::H1 => Some(1),
             StructType::H2 => Some(2),
@@ -104,9 +148,16 @@ impl InheritedContext {
             StructType::L => self.list_role,
             _ => self.list_role,
         };
+        let block_id = if Self::is_paragraph_block(child) {
+            *counter += 1;
+            *counter
+        } else {
+            self.block_id
+        };
         Self {
             heading_level,
             list_role,
+            block_id,
         }
     }
 }
@@ -127,10 +178,17 @@ pub fn traverse_structure_tree(
     page_num: u32,
 ) -> Result<Vec<OrderedContent>, Error> {
     let mut result = Vec::new();
+    let mut block_counter = 0u32;
 
     // Traverse each root element
     for root_elem in &struct_tree.root_elements {
-        traverse_element(root_elem, page_num, InheritedContext::default(), &mut result)?;
+        traverse_element(
+            root_elem,
+            page_num,
+            InheritedContext::default(),
+            &mut block_counter,
+            &mut result,
+        )?;
     }
 
     Ok(result)
@@ -149,8 +207,14 @@ pub fn traverse_structure_tree_all_pages(
     let mut result: std::collections::HashMap<u32, Vec<OrderedContent>> =
         std::collections::HashMap::new();
 
+    let mut block_counter = 0u32;
     for root_elem in &struct_tree.root_elements {
-        traverse_element_all_pages(root_elem, InheritedContext::default(), &mut result);
+        traverse_element_all_pages(
+            root_elem,
+            InheritedContext::default(),
+            &mut block_counter,
+            &mut result,
+        );
     }
 
     result
@@ -164,11 +228,12 @@ pub fn traverse_structure_tree_all_pages(
 fn traverse_element_all_pages(
     elem: &StructElem,
     ctx: InheritedContext,
+    block_counter: &mut u32,
     result: &mut std::collections::HashMap<u32, Vec<OrderedContent>>,
 ) {
     let struct_type_str = format!("{:?}", elem.struct_type);
     let parsed_type = elem.struct_type.clone();
-    let descended = ctx.descend(&parsed_type);
+    let descended = ctx.descend(&parsed_type, block_counter);
     let is_heading_inherited = descended.heading_level.is_some();
     let is_block = elem.struct_type.is_block();
     let is_word_break = elem.struct_type.is_word_break();
@@ -188,6 +253,7 @@ fn traverse_element_all_pages(
                 list_role: descended.list_role,
                 is_block,
                 is_word_break: false,
+                block_id: descended.block_id,
                 actual_text: Some(actual_text.clone()),
             });
         }
@@ -208,6 +274,7 @@ fn traverse_element_all_pages(
                     list_role: descended.list_role,
                     is_block,
                     is_word_break: false,
+                    block_id: descended.block_id,
                     actual_text: None,
                 });
             },
@@ -227,11 +294,12 @@ fn traverse_element_all_pages(
                             list_role: descended.list_role,
                             is_block: false,
                             is_word_break: true,
+                            block_id: descended.block_id,
                             actual_text: None,
                         });
                     }
                 }
-                traverse_element_all_pages(child_elem, descended, result);
+                traverse_element_all_pages(child_elem, descended, block_counter, result);
             },
 
             StructChild::ObjectRef(_obj_num, _gen) => {
@@ -277,11 +345,12 @@ fn traverse_element(
     elem: &StructElem,
     target_page: u32,
     ctx: InheritedContext,
+    block_counter: &mut u32,
     result: &mut Vec<OrderedContent>,
 ) -> Result<(), Error> {
     let struct_type_str = format!("{:?}", elem.struct_type);
     let parsed_type = elem.struct_type.clone();
-    let descended = ctx.descend(&parsed_type);
+    let descended = ctx.descend(&parsed_type, block_counter);
     let is_heading_inherited = descended.heading_level.is_some();
     let is_block = elem.struct_type.is_block();
     let is_word_break = elem.struct_type.is_word_break();
@@ -299,6 +368,7 @@ fn traverse_element(
                 list_role: descended.list_role,
                 is_block,
                 is_word_break: false,
+                block_id: descended.block_id,
                 actual_text: Some(actual_text.clone()),
             });
             return Ok(());
@@ -317,6 +387,7 @@ fn traverse_element(
             list_role: descended.list_role,
             is_block: false,
             is_word_break: true,
+            block_id: descended.block_id,
             actual_text: None,
         });
         // WB elements typically have no children, but process any just in case
@@ -338,6 +409,7 @@ fn traverse_element(
                         list_role: descended.list_role,
                         is_block,
                         is_word_break: false,
+                        block_id: descended.block_id,
                         actual_text: None,
                     });
                 }
@@ -345,7 +417,7 @@ fn traverse_element(
 
             StructChild::StructElem(child_elem) => {
                 // Recursively traverse child element
-                traverse_element(child_elem, target_page, descended, result)?;
+                traverse_element(child_elem, target_page, descended, block_counter, result)?;
             },
 
             StructChild::ObjectRef(_obj_num, _gen) => {

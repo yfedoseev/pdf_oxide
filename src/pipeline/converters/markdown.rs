@@ -650,10 +650,22 @@ impl MarkdownOutputConverter {
                 );
                 let list_item_changed = is_list_item_role != prev_was_list_item;
 
+                // Tagged-PDF block boundary (issue #377 D5): adjacent
+                // spans whose nearest paragraph-level structure ancestor
+                // differs are explicitly separate paragraphs even when
+                // the geometric gap is small (pdfa_049 has body-tight
+                // inter-paragraph gaps that the gap heuristic never
+                // catches).
+                let block_changed = match (span.block_id, prev.block_id) {
+                    (Some(a), Some(b)) => a != b,
+                    _ => false,
+                };
+
                 if group_flush
                     || self.is_paragraph_break(span, prev)
                     || heading_changed
                     || list_item_changed
+                    || block_changed
                 {
                     close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
                     if !current_line.is_empty() {
@@ -1004,6 +1016,92 @@ mod tests {
         assert!(
             result.starts_with("## "),
             "expected `## ` heading prefix, got:\n{}",
+            result
+        );
+    }
+
+    /// D5 RED — when adjacent spans carry different `block_id` from
+    /// the source PDF's structure tree, force a paragraph break even
+    /// when the geometric gap is too small for the
+    /// `paragraph_gap_ratio` heuristic. Reproduces the pdfa_049
+    /// pattern where two body-sized paragraphs sit ~14pt apart on a
+    /// 12pt body and our 1.5× heuristic (16.5pt threshold) merges
+    /// them. Tagged structure tree gives us authoritative paragraph
+    /// boundaries via `OrderedContent.block_id`.
+    #[test]
+    fn test_block_id_change_forces_paragraph_break() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        // Two paragraphs separated by 12pt (less than 1.5× line_height).
+        let mut p1 = make_span(
+            "Paragraph one body text.",
+            0.0,
+            100.0,
+            12.0,
+            FontWeight::Normal,
+        );
+        p1.block_id = Some(1);
+        let mut p2 = make_span(
+            "Paragraph two starts here.",
+            0.0,
+            88.0,
+            12.0,
+            FontWeight::Normal,
+        );
+        p2.block_id = Some(2);
+        let result = converter.convert(&[p1, p2], &config).unwrap();
+        assert!(
+            result.contains("Paragraph one body text.\n\nParagraph two starts here."),
+            "expected double newline between block_ids 1→2, got:\n{:?}",
+            result
+        );
+    }
+
+    /// D5 RED (negative) — same `block_id` keeps spans on the same
+    /// logical paragraph, even on different baselines (line wrap
+    /// inside one /P struct elem).
+    #[test]
+    fn test_same_block_id_keeps_paragraph_continuous() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mut l1 = make_span("first line", 0.0, 100.0, 12.0, FontWeight::Normal);
+        l1.block_id = Some(7);
+        let mut l2 = make_span("second line", 0.0, 88.0, 12.0, FontWeight::Normal);
+        l2.block_id = Some(7);
+        let result = converter.convert(&[l1, l2], &config).unwrap();
+        // No blank line between them.
+        assert!(
+            !result.contains("\n\n"),
+            "same block_id must not introduce paragraph break, got:\n{:?}",
+            result
+        );
+    }
+
+    /// D6 RED — a small superscript span (≤4 chars, fontSize < 0.7× the
+    /// preceding span) on a slightly raised baseline (PDF Ts/text-rise,
+    /// spec §9.4.3) must merge into the same logical line as the body
+    /// text instead of becoming its own paragraph. Reproduces the
+    /// `21st → "21" + bare "st"` corruption visible in nougat_002 and
+    /// the `23rd Street → "23" + "rd Street"` split visible in
+    /// nougat_011 line 43.
+    #[test]
+    fn test_superscript_text_rise_does_not_split_line() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        // Body baseline at y=100 with 11pt body font.
+        let pre = make_span("On June 21", 0.0, 100.0, 11.0, FontWeight::Normal);
+        // Superscript "st" raised ~2.5pt with 7pt font (smaller than body).
+        let sup = make_span("st", 35.0, 102.5, 7.0, FontWeight::Normal);
+        let post = make_span(" they met.", 42.0, 100.0, 11.0, FontWeight::Normal);
+        let result = converter.convert(&[pre, sup, post], &config).unwrap();
+        assert!(
+            result.contains("21st they met"),
+            "expected '21st they met' inline, got:\n{}",
+            result
+        );
+        assert!(
+            !result.lines().any(|l| l.trim() == "st"),
+            "no bare 'st' line allowed, got:\n{}",
             result
         );
     }
