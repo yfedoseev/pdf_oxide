@@ -115,10 +115,110 @@ impl MarkdownOutputConverter {
     }
 
     /// Detect paragraph breaks between spans based on vertical spacing.
+    ///
+    /// Two break signals:
+    /// 1. Vertical gap larger than `paragraph_gap_ratio × line_height`
+    ///    (the classic geometric heuristic).
+    /// 2. The current line begins with a list marker (bullet glyph or
+    ///    ordered marker) while the previous line did not — list-items
+    ///    must always start a fresh paragraph regardless of how tightly
+    ///    they sit under the preceding paragraph (issue #377 D4: many
+    ///    untagged docs use a sub-1.5× line gap before lists, which
+    ///    glues the first item to the intro sentence).
     fn is_paragraph_break(&self, current: &OrderedTextSpan, previous: &OrderedTextSpan) -> bool {
         let line_height = current.span.font_size.max(previous.span.font_size);
         let gap = (previous.span.bbox.y - current.span.bbox.y).abs();
-        gap > line_height * self.paragraph_gap_ratio
+        if gap > line_height * self.paragraph_gap_ratio {
+            return true;
+        }
+        // List-prefix transition guard. Bullet glyph or `1.` / `a)` /
+        // `i.` ordered marker at the start of the current line, with
+        // the previous line on a different baseline and not itself a
+        // list item. The ordered-marker detection is conservative
+        // (single digit/letter at line start) so figure captions
+        // ("1.1 Foo") and years ("1986") are not promoted to lists.
+        let line_changed = (previous.span.bbox.y - current.span.bbox.y).abs()
+            > current.span.font_size * 0.5;
+        if line_changed {
+            let cur_text = current.span.text.trim_start();
+            let cur_starts_list = Self::is_bullet_span(cur_text)
+                || Self::starts_with_bullet(cur_text)
+                || Self::is_ordered_list_marker(cur_text).is_some();
+            let prev_text = previous.span.text.trim_start();
+            let prev_starts_list = Self::is_bullet_span(prev_text)
+                || Self::starts_with_bullet(prev_text)
+                || Self::is_ordered_list_marker(prev_text).is_some();
+            if cur_starts_list && !prev_starts_list {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Detect a markdown ordered-list marker at the start of `text`.
+    /// Recognises `1.`, `12.`, `a.`, `iv.`, `1)`, `a)` followed by a
+    /// space. Returns the (1-based) position number when known
+    /// (Roman numerals coerced to position 1 for now), or `None`.
+    ///
+    /// Conservative on purpose — only single digit/letter tokens at
+    /// the very start of the trimmed text qualify, so figure captions
+    /// like "1.1 Foo" and years like "1986" are not falsely promoted
+    /// to numbered lists. See issue #377 D3.
+    fn is_ordered_list_marker(text: &str) -> Option<u32> {
+        let t = text.trim_start();
+        let bytes = t.as_bytes();
+        if bytes.is_empty() {
+            return None;
+        }
+        // Find the marker token (digits, single ASCII letter, or short
+        // roman numeral) and the trailing punctuation `.` or `)`.
+        let mut idx = 0;
+        // Numeric form: `\d{1,3}`.
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() && idx < 3 {
+            idx += 1;
+        }
+        let numeric_n = if idx > 0 {
+            std::str::from_utf8(&bytes[..idx])
+                .ok()
+                .and_then(|s| s.parse::<u32>().ok())
+        } else {
+            None
+        };
+        // Single ASCII letter form (a) / b. / I.).
+        if idx == 0 && bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() {
+            // Roman numerals up to 4 chars (i, ii, iii, iv).
+            let mut roman_end = 0;
+            while roman_end < bytes.len().min(4)
+                && matches!(bytes[roman_end], b'i' | b'v' | b'x' | b'I' | b'V' | b'X')
+            {
+                roman_end += 1;
+            }
+            if roman_end >= 1 && bytes.len() > roman_end {
+                let punct = bytes[roman_end];
+                if matches!(punct, b'.' | b')')
+                    && bytes.get(roman_end + 1).copied() == Some(b' ')
+                {
+                    return Some(1); // unknown roman position
+                }
+            }
+            // Single letter: a) Foo, A. Bar.
+            if bytes.len() >= 3
+                && matches!(bytes[1], b'.' | b')')
+                && bytes[2] == b' '
+                && bytes[0].is_ascii_alphabetic()
+            {
+                return Some(1);
+            }
+            return None;
+        }
+        // For the numeric branch, check trailing `.` / `)` and a space.
+        if idx > 0 && bytes.len() > idx {
+            let punct = bytes[idx];
+            if matches!(punct, b'.' | b')') && bytes.get(idx + 1).copied() == Some(b' ') {
+                return numeric_n;
+            }
+        }
+        None
     }
 
     /// Check if a span consists of a single bullet character.
@@ -244,7 +344,14 @@ impl MarkdownOutputConverter {
     /// Detect heading level from the span's font size relative to the
     /// document's body size (caller-provided, typically the mode of
     /// observed sizes). Ratios: H1 >=1.8x, H2 >=1.4x, H3 >=1.2x, or
-    /// H3 for bold at >=1.1x.
+    /// H4 for bold at >=1.05x.
+    ///
+    /// The bold-threshold tier exists for documents whose section
+    /// headings are set in the same family as body text but bumped by
+    /// only a few percent of point size — common in corporate manuals
+    /// (issue #377 D2: amt_handbook_sample, nougat_032, technical
+    /// docs). Without the bold gate this would over-promote
+    /// emphasised inline phrases.
     fn heading_level_ratio(&self, span: &OrderedTextSpan, base_font_size: f32) -> Option<u8> {
         if !Self::is_valid_heading_text(span.span.text.trim()) {
             return None;
@@ -263,9 +370,10 @@ impl MarkdownOutputConverter {
             Some(2)
         } else if size_ratio >= 1.2 {
             Some(3)
-        } else if is_bold && size_ratio >= 1.1 {
-            // Bold text with even slight size increase is a heading signal
-            Some(3)
+        } else if is_bold && size_ratio >= 1.05 {
+            // Bold text with even slight size increase is a heading signal.
+            // H4 (was H3) since the weaker signal warrants a lower level.
+            Some(4)
         } else {
             None
         }
@@ -688,10 +796,16 @@ impl MarkdownOutputConverter {
                     }
                 } else if !same_line {
                     // Different visual line but within paragraph spacing.
-                    // Check if a bullet item starts here — if so, start a new line.
+                    // Check if a bullet or ordered-marker item starts here
+                    // — if so, start a new line. Issue #377 D3 guards
+                    // numbered lists (`1. Foo` / `2. Bar` / `3. Baz`) at
+                    // the same X across consecutive baselines: the items
+                    // must not concatenate into one line of running text.
                     let is_bullet = Self::is_bullet_span(&span.span.text)
                         || Self::starts_with_bullet(&span.span.text);
-                    if is_bullet || is_list_item_role {
+                    let is_ordered =
+                        Self::is_ordered_list_marker(span.span.text.trim_start()).is_some();
+                    if is_bullet || is_ordered || is_list_item_role {
                         // Bullet on new line → flush current line and start list item
                         close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
                         if !current_line.is_empty() {
@@ -1016,6 +1130,90 @@ mod tests {
         assert!(
             result.starts_with("## "),
             "expected `## ` heading prefix, got:\n{}",
+            result
+        );
+    }
+
+    /// D3 unit — `is_ordered_list_marker` recognises common forms and
+    /// rejects look-alikes that are NOT lists (figure captions, years).
+    #[test]
+    fn test_is_ordered_list_marker_recognition() {
+        // Recognised forms.
+        assert_eq!(MarkdownOutputConverter::is_ordered_list_marker("1. Foo"), Some(1));
+        assert_eq!(MarkdownOutputConverter::is_ordered_list_marker("12. Foo"), Some(12));
+        assert_eq!(MarkdownOutputConverter::is_ordered_list_marker("a) Foo"), Some(1));
+        assert_eq!(MarkdownOutputConverter::is_ordered_list_marker("A. Foo"), Some(1));
+        assert_eq!(MarkdownOutputConverter::is_ordered_list_marker("iv. Foo"), Some(1));
+        // Conservative rejections so figure captions and years are not promoted.
+        assert!(MarkdownOutputConverter::is_ordered_list_marker("1.1 Foo").is_none());
+        assert!(MarkdownOutputConverter::is_ordered_list_marker("1986 was").is_none());
+        assert!(MarkdownOutputConverter::is_ordered_list_marker("Item one").is_none());
+    }
+
+    /// D3 RED — three numbered items on consecutive lines must each
+    /// land on their own markdown line. Reproduces the nougat_037
+    /// "1. Treasurer ... 2. Safeguarding ... 3. Volunteering"
+    /// collapse pattern (those three were on different baselines but
+    /// joined by tight gap).
+    #[test]
+    fn test_numbered_list_consecutive_lines_separate() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let s1 = make_span("1. Treasurer", 0.0, 100.0, 12.0, FontWeight::Normal);
+        let s2 = make_span("2. Safeguarding", 0.0, 88.0, 12.0, FontWeight::Normal);
+        let s3 = make_span("3. Volunteering", 0.0, 76.0, 12.0, FontWeight::Normal);
+        let result = converter.convert(&[s1, s2, s3], &config).unwrap();
+        for marker in ["1. Treasurer", "2. Safeguarding", "3. Volunteering"] {
+            assert!(
+                result.lines().any(|l| l.trim_start().starts_with(marker)),
+                "expected line starting with `{}`, got:\n{}",
+                marker,
+                result
+            );
+        }
+    }
+
+    /// D4 RED — when an untagged paragraph is followed by a bullet list
+    /// with a small geometric gap, the list must still start on a new
+    /// line preceded by a blank line. Reproduces the `Intro sentence.•
+    /// First` glue pattern.
+    #[test]
+    fn test_bullet_after_paragraph_forces_break() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        // Tight gap: body 12pt, gap 4pt (well below 1.5×).
+        let intro = make_span("Intro sentence.", 0.0, 100.0, 12.0, FontWeight::Normal);
+        let b1 = make_span("• First item", 0.0, 88.0, 12.0, FontWeight::Normal);
+        let b2 = make_span("• Second item", 0.0, 76.0, 12.0, FontWeight::Normal);
+        let result = converter.convert(&[intro, b1, b2], &config).unwrap();
+        assert!(
+            result.contains("Intro sentence.\n\n- First item"),
+            "expected blank line + bullet after intro, got:\n{}",
+            result
+        );
+    }
+
+    /// D2 RED — bold text only slightly larger than body must still be
+    /// detected as a heading. Many tagged-but-untyped corporate docs
+    /// (amt_handbook_sample, manuals) use bold + 1.05–1.1× body for
+    /// section headings without /H tags. Previous threshold was bold +
+    /// 1.10×.
+    #[test]
+    fn test_bold_slight_size_bump_is_heading() {
+        let converter = MarkdownOutputConverter::new();
+        let mut config = TextPipelineConfig::default();
+        config.output.detect_headings = true;
+        // Body at 11pt, "section header" bold at 11.55pt (1.05× body).
+        let body_a = make_span("First body sentence.", 0.0, 100.0, 11.0, FontWeight::Normal);
+        let body_b = make_span("Second body sentence.", 0.0, 88.0, 11.0, FontWeight::Normal);
+        let head = make_span("Section Header", 0.0, 76.0, 11.55, FontWeight::Bold);
+        let body_c = make_span("After-heading body.", 0.0, 64.0, 11.0, FontWeight::Normal);
+        let result = converter
+            .convert(&[body_a, body_b, head, body_c], &config)
+            .unwrap();
+        assert!(
+            result.contains("### Section Header") || result.contains("#### Section Header"),
+            "expected heading prefix on bold +5% line, got:\n{}",
             result
         );
     }
