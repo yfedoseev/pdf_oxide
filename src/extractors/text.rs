@@ -2738,12 +2738,35 @@ impl TextExtractor {
     /// all renders are extracted. We keep only one character when multiple chars
     /// at nearly the same position exist.
     ///
-    /// Heuristic: If two consecutive characters on the same line (Y rounded to integer)
-    /// are within 2pt horizontally, keep only the first one.
+    /// Heuristic: If two consecutive characters on the same line (Y rounded to
+    /// integer) overlap by a fraction of their own advance width, keep only the
+    /// first one.
+    ///
+    /// The threshold is expressed as a fraction of the glyph's `advance_width`
+    /// rather than an absolute point value. Real rendering duplicates
+    /// (stroke+fill, bold shadow, outline+fill) sit at nearly identical
+    /// positions — well under 30 % of one advance apart. Legitimate adjacent
+    /// doublets of narrow glyphs (`ll`, `rr`, `II`, `ii` at small font sizes)
+    /// are separated by one full advance; an absolute threshold of e.g. 2 pt
+    /// would wrongly collapse them on fonts where a narrow glyph's advance
+    /// drops below ~2 pt (e.g. Helvetica at ≤ 9 pt).
+    ///
+    /// Capped at 2 pt to preserve the existing behaviour for pathologically
+    /// oversized advance values, and falls back to `bbox.width` when
+    /// `advance_width` is missing from the font dictionary.
     fn deduplicate_overlapping_chars(&mut self) {
         if self.chars.is_empty() {
             return;
         }
+
+        /// Fraction of a glyph's advance considered "overlap". 0.30 catches
+        /// the tightest stroke+fill duplicates (~5 % advance apart in the
+        /// wild) without swallowing legitimate narrow-doublet spacing
+        /// (heaviest kerning observed is ≤ 20 % of advance).
+        const OVERLAP_RATIO: f32 = 0.30;
+        /// Absolute cap on the overlap window. Preserves v0.3.x behaviour
+        /// on oversized advance values (drop-caps, large display text).
+        const OVERLAP_CAP_PT: f32 = 2.0;
 
         let mut deduplicated = Vec::with_capacity(self.chars.len());
         let mut prev_y_rounded: Option<i32> = None;
@@ -2758,8 +2781,19 @@ impl TextExtractor {
             let should_skip = if let (Some(prev_y), Some(prev_x_val), Some(prev_ch)) =
                 (prev_y_rounded, prev_x, prev_char)
             {
-                // Same character, same line, and within 2pt horizontally
-                ch.char == prev_ch && y_rounded == prev_y && (x - prev_x_val).abs() < 2.0
+                // Reference width: advance_width if known, else bbox.width,
+                // else the legacy 2 pt cap (keeps behaviour for pathological
+                // inputs without advance metrics).
+                let ref_width = if ch.advance_width > 0.0 {
+                    ch.advance_width
+                } else if ch.bbox.width > 0.0 {
+                    ch.bbox.width
+                } else {
+                    OVERLAP_CAP_PT
+                };
+                let threshold = (ref_width * OVERLAP_RATIO).min(OVERLAP_CAP_PT);
+                // Same character, same line, and within `threshold` horizontally
+                ch.char == prev_ch && y_rounded == prev_y && (x - prev_x_val).abs() < threshold
             } else {
                 false
             };
@@ -2964,12 +2998,26 @@ impl TextExtractor {
     /// Deduplicate overlapping text spans on the same line.
     ///
     /// Uses hybrid geometric + content-based deduplication:
-    /// - Geometric check (same Y, X within 2pt) - catches identical positions
-    /// - Content check (same text, same line Y, different X) - catches duplicates across columns
+    /// - Geometric check (same Y, X within a fraction of the span's per-glyph
+    ///   advance) — catches identical positions
+    /// - Content check (same text, same line Y, different X) — catches
+    ///   duplicates across columns
+    ///
+    /// The geometric threshold is expressed as a fraction of the span's
+    /// per-glyph width (bbox.width / char_count), capped at 2 pt. An absolute
+    /// threshold would wrongly collapse legitimate single-glyph spans of
+    /// adjacent narrow glyphs (`ll`, `rr`, `II`, `ii` at small font sizes) in
+    /// PDFs that emit text glyph-by-glyph with kerning.
     fn deduplicate_overlapping_spans(&mut self) {
         if self.spans.is_empty() {
             return;
         }
+
+        /// Fraction of a span's per-glyph width considered "overlap".
+        /// Mirror of the `deduplicate_overlapping_chars` heuristic.
+        const OVERLAP_RATIO: f32 = 0.30;
+        /// Absolute cap preserving legacy behaviour for oversized spans.
+        const OVERLAP_CAP_PT: f32 = 2.0;
 
         // Phase 0 (B7): same-text overlapping spans from stroke+fill render
         // passes. Maps (newspaper / poster) frequently draw every label
@@ -3002,7 +3050,13 @@ impl TextExtractor {
             let geometric_duplicate = if let (Some(prev_y), Some(prev_x_val), Some(ref prev_txt)) =
                 (prev_y_rounded, prev_x, &prev_text)
             {
-                y_rounded == prev_y && (x - prev_x_val).abs() < 2.0 && span.text == *prev_txt
+                // Threshold scales with the span's per-glyph advance so that
+                // single-glyph narrow spans (`l`, `r`, `I`) are never wrongly
+                // treated as overlapping with their legitimate neighbour.
+                let char_count = span.text.chars().count().max(1) as f32;
+                let per_glyph_width = (span.bbox.width / char_count).max(0.1);
+                let threshold = (per_glyph_width * OVERLAP_RATIO).min(OVERLAP_CAP_PT);
+                y_rounded == prev_y && (x - prev_x_val).abs() < threshold && span.text == *prev_txt
             } else {
                 false
             };
@@ -8517,6 +8571,46 @@ mod tests {
         assert_eq!(extractor.chars[0].char, 'A');
     }
 
+    #[test]
+    fn test_deduplicate_keeps_narrow_glyph_doublets() {
+        // Regression: `ll`, `rr`, `II` in small-font body text were wrongly
+        // collapsed to a single glyph because the dedup threshold was a
+        // hardcoded 2 pt — larger than the advance width of narrow glyphs at
+        // ≤ 9 pt in most fonts (Helvetica `l` ≈ 2.5 pt at 9 pt, smaller
+        // below). This caused visible corruption like `controller → controler`
+        // and `billed → biled`.
+        let mut extractor = TextExtractor::new();
+
+        let narrow = |c: char, x: f32| TextChar {
+            char: c,
+            // bbox.width reflects the visible ink (narrower than advance).
+            bbox: Rect::new(x, 700.0, 1.5, 9.0),
+            font_name: "Helvetica".to_string(),
+            font_size: 9.0,
+            font_weight: FontWeight::Normal,
+            color: Color::black(),
+            mcid: None,
+            is_italic: false,
+            is_monospace: false,
+            origin_x: x,
+            origin_y: 700.0,
+            rotation_degrees: 0.0,
+            // Helvetica `l` advance = 0.278 em → 2.5 pt at 9 pt.
+            advance_width: 2.5,
+            matrix: None,
+        };
+
+        // "ll" in a 9 pt body line: consecutive narrow glyphs one advance apart.
+        extractor.chars = vec![narrow('l', 100.0), narrow('l', 102.5)];
+
+        extractor.deduplicate_overlapping_chars();
+        assert_eq!(
+            extractor.chars.len(),
+            2,
+            "Adjacent narrow-glyph doublets (ll, rr, II) must not be collapsed"
+        );
+    }
+
     // ========================================================================
     // NEW COMPREHENSIVE TESTS: Span deduplication
     // ========================================================================
@@ -8576,6 +8670,49 @@ mod tests {
         let mut extractor = TextExtractor::new();
         extractor.deduplicate_overlapping_spans();
         assert!(extractor.spans.is_empty());
+    }
+
+    #[test]
+    fn test_deduplicate_spans_keeps_narrow_glyph_doublets() {
+        // Regression: PDFs that emit kerned text glyph-by-glyph produce
+        // consecutive single-character spans. Two adjacent narrow-glyph
+        // spans (`l`, `r`, `I` at ≤ 9 pt) sit roughly one advance-width
+        // apart, which used to fall under the hardcoded 2 pt geometric
+        // threshold and get collapsed. The threshold now scales with each
+        // span's per-glyph width so legitimate doublets survive.
+        let mut extractor = TextExtractor::new();
+
+        let narrow = |x: f32, seq: usize| TextSpan {
+            artifact_type: None,
+            text: "l".to_string(),
+            // Per-glyph width (Helvetica `l` ≈ 2.5 pt at 9 pt).
+            bbox: Rect::new(x, 700.0, 2.5, 9.0),
+            font_name: "Helvetica".to_string(),
+            font_size: 9.0,
+            font_weight: FontWeight::Normal,
+            color: Color::black(),
+            mcid: None,
+            sequence: seq,
+            split_boundary_before: false,
+            offset_semantic: false,
+            is_italic: false,
+            is_monospace: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
+            primary_detected: false,
+            char_widths: vec![],
+        };
+
+        // "ll" emitted as two single-glyph spans one advance apart.
+        extractor.spans = vec![narrow(100.0, 0), narrow(102.5, 1)];
+
+        extractor.deduplicate_overlapping_spans();
+        assert_eq!(
+            extractor.spans.len(),
+            2,
+            "Adjacent single-glyph narrow-doublet spans must not be collapsed"
+        );
     }
 
     // ========================================================================
