@@ -2588,7 +2588,7 @@ checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
 
 [[package]]
 name = "pdf_oxide"
-version = "0.3.34"
+version = "0.3.35"
 dependencies = [
  "aes",
  "barcoders",
@@ -2669,7 +2669,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_oxide_cli"
-version = "0.3.34"
+version = "0.3.35"
 dependencies = [
  "clap",
  "is-terminal",
@@ -2680,7 +2680,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_oxide_mcp"
-version = "0.3.34"
+version = "0.3.35"
 dependencies = [
  "pdf_oxide",
  "serde",

@@ -1,6 +1,6 @@
 {
   "name": "pdf-oxide",
-  "version": "0.3.34",
+  "version": "0.3.35",
   "type": "module",
   "description": "High-performance PDF parsing and text extraction library — prebuilt native bindings, no build toolchain required",
   "main": "lib/index.js",

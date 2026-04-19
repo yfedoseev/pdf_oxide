@@ -2,6 +2,45 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.35] - 2026-04-19
+> Narrow-glyph doublet preservation in text extraction
+
+### Text extraction correctness
+
+- **Adjacent narrow-glyph doublets no longer collapsed at small font sizes (#378, PR #379).**
+  `TextExtractor::deduplicate_overlapping_chars` and
+  `deduplicate_overlapping_spans` used a hardcoded 2 pt absolute threshold to
+  detect duplicate glyphs from stroke+fill render passes. For narrow glyphs
+  (`l`, `r`, `I`, `i`) in compact fonts at small sizes the per-glyph advance
+  width drops to ≤ 2 pt (Helvetica `l` ≈ 2.5 pt at 9 pt), so legitimate
+  adjacent doublets one full advance apart fell inside the dedup window and
+  one of the two glyphs was silently dropped. Visible corruption included
+  `controller → controler`, `billed → biled`, `warranty → warrnty`,
+  `following → folowing`, and `VIII → VII`. Builds on prior #102 / #253,
+  which added same-text and same-character identity guards but kept the 2 pt
+  threshold — this fix addresses the residual case where both glyphs are
+  identical (passing the identity check) yet still legitimate neighbours.
+  Threshold now scales with each glyph's own `advance_width` (fallback
+  `bbox.width`) as `min(advance_width * 0.30, 2.0)`. Real render-pass
+  duplicates sit well under 5 % of one advance apart and continue to
+  collapse; heaviest kerning observed in the wild is ≤ 20 % of advance, so
+  legitimate kerned neighbours are preserved. Tunables hoisted to
+  `TextExtractor::DEDUP_OVERLAP_RATIO` / `DEDUP_OVERLAP_CAP_PT` associated
+  constants so both dedup paths share one source of truth. Regression
+  coverage spans the matrix of four narrow glyphs × three small body-text
+  sizes (7 / 9 / 11 pt) on both the per-char and per-span paths, plus
+  positive cases proving stroke+fill duplicates at ~0 pt offset still
+  collapse.
+
+### Community Contributors
+
+- **[@Hugues-DTANKOUO](https://github.com/Hugues-DTANKOUO)** — Reported #378
+  with a precise root-cause analysis (the 2 pt absolute threshold falling
+  below one advance width for narrow glyphs in compact fonts at small sizes)
+  and authored PR #379 with the advance-scaled threshold and a
+  parametrised regression matrix covering the four narrow glyphs across
+  three body-text sizes.
+
 ## [0.3.34] - 2026-04-18
 > Idiomatic page API, structured tables, column-order, image, and ICC colour fixes
 

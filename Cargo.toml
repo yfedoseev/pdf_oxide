@@ -24,7 +24,7 @@ manual_checked_ops = "allow"
 
 [package]
 name = "pdf_oxide"
-version = "0.3.34"
+version = "0.3.35"
 # Anchor patterns with a leading slash — Cargo uses gitignore-style globs, so
 # a bare "README.md" matches every README.md recursively (was pulling in 20+
 # subdir READMEs plus js/node_modules/*/README.md into the sdist). Leading /

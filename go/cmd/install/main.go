@@ -50,7 +50,7 @@ const (
 	// taken from the build info and THIS constant is irrelevant. That's what
 	// lets `@latest` just work — each tagged release resolves to its own
 	// version automatically, without a sed step in release automation.
-	fallbackVersion   = "0.3.34"
+	fallbackVersion   = "0.3.35"
 	BaseURL           = "https://github.com/yfedoseev/pdf_oxide/releases/download"
 	DefaultInstallDir = ".pdf_oxide"
 	dirPerm           = 0o750
