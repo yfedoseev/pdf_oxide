@@ -771,13 +771,20 @@ impl MarkdownOutputConverter {
                 // `Form` + `1040` + `U.S. Individual Income Tax Return`
                 // as three sibling /P blocks at the same y) does not
                 // become three separate `# Form` / `# 1040` / ... lines.
-                // Visually-continuous content stays in the same
-                // markdown line / paragraph regardless of how the
-                // structure tree carves it up.
+                //
+                // D5c refinement: when same_line is true but a
+                // multi-column gutter separates the spans (large
+                // horizontal gap), restore the break. Newspapers
+                // (IA_0047) and other multi-column tagged docs
+                // otherwise produce concatenated tokens like
+                // `andmight` from adjacent-column content sharing a
+                // baseline.
+                let column_gap = is_column_gap(prev, span);
+                let line_truly_continuous = same_line && !column_gap;
                 let block_changed = match (span.block_id, prev.block_id) {
                     (Some(a), Some(b)) => a != b,
                     _ => false,
-                } && !same_line;
+                } && !line_truly_continuous;
 
                 // For heading transitions: same logic — visual line
                 // continuity wins over structure-tree fragmentation.
@@ -785,13 +792,14 @@ impl MarkdownOutputConverter {
                 // bullet `- ` needs its own markdown line regardless
                 // of whether the source PDF rendered the marker
                 // inline with a leading caption.
-                let heading_changed_break = heading_changed && !same_line;
+                let heading_changed_break = heading_changed && !line_truly_continuous;
 
                 if group_flush
                     || self.is_paragraph_break(span, prev)
                     || heading_changed_break
                     || list_item_changed
                     || block_changed
+                    || column_gap
                 {
                     close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
                     if !current_line.is_empty() {
@@ -1172,6 +1180,32 @@ fn find_matching(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
         i += 1;
     }
     None
+}
+
+/// Detect a multi-column gutter between two spans on the same baseline.
+///
+/// Used by the markdown converter to refine its `same_line` gate: two
+/// spans at the same y but separated by a large horizontal gap are
+/// almost certainly in different columns (newspaper / two-column
+/// academic paper). They must NOT be merged into one paragraph even
+/// if their `block_id`s suggest a structural transition would be
+/// suppressed by D5b.
+///
+/// Threshold: gap from the right edge of the previous span to the
+/// left edge of the current span exceeds `max(3 × font_size, 30 pt)`.
+/// 3× font size catches typical body-text columns (12pt body → 36pt
+/// gutter); the 30pt floor catches small-font cases where a literal
+/// 36pt gap would be too lenient.
+fn is_column_gap(prev: &OrderedTextSpan, current: &OrderedTextSpan) -> bool {
+    let prev_right = prev.span.bbox.x + prev.span.bbox.width;
+    let cur_left = current.span.bbox.x;
+    let gap = cur_left - prev_right;
+    if gap <= 0.0 {
+        return false;
+    }
+    let font_size = current.span.font_size.max(prev.span.font_size);
+    let threshold = (font_size * 3.0).max(30.0);
+    gap > threshold
 }
 
 impl Default for MarkdownOutputConverter {
@@ -1647,6 +1681,149 @@ mod tests {
             paras,
             vec!["First.", "Second.", "Third."],
             "different baselines must still produce three paragraphs"
+        );
+    }
+
+    /// D5c RED — multi-column newspaper case. Two text spans on the
+    /// same baseline but in different columns (large horizontal gap
+    /// between the right edge of the previous span and the left edge
+    /// of the current one), with different structure-tree block_ids.
+    /// D5b would join them on one line and produce concatenated
+    /// gibberish like `andmight`. The column-gap detector must split
+    /// them into two paragraphs.
+    #[test]
+    fn test_column_gap_with_block_change_splits() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        // Column 1: "and" at x=0, width 30, baseline 100.
+        // Column 2: "might" at x=180 (column gutter ≈ 150pt), baseline 100.
+        // Body font 12pt, so the gap is well over 3× font_size.
+        let mut col1 = make_span("and", 0.0, 100.0, 12.0, FontWeight::Normal);
+        col1.block_id = Some(1);
+        let mut col2 = make_span("might", 180.0, 100.0, 12.0, FontWeight::Normal);
+        col2.block_id = Some(2);
+        let result = converter.convert(&[col1, col2], &config).unwrap();
+        // The two tokens must NOT be joined into `andmight`.
+        assert!(
+            !result.contains("andmight"),
+            "column-gap join produced concatenated token, got:\n{}",
+            result
+        );
+        // They must appear as separate words on separate lines or with
+        // a paragraph break between them.
+        assert!(result.contains("and"));
+        assert!(result.contains("might"));
+        // No `and might` glued onto one heading or paragraph either —
+        // we want the two columns rendered as separate paragraphs.
+        let paras: Vec<&str> = result.split("\n\n").map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+        assert!(
+            paras.len() >= 2,
+            "expected ≥2 paragraphs separated by column gap, got {} in:\n{}",
+            paras.len(),
+            result
+        );
+    }
+
+    /// D5c coverage — same-baseline pieces of a tagged form heading
+    /// (small inline gap, different block_ids) must still JOIN even
+    /// after the column-gap detector. Regression guard for D5b.
+    #[test]
+    fn test_form_heading_inline_gap_still_joins() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        // `Form` ends at x≈30, `1040` starts at x≈40 — small inline
+        // gap (≈10pt, well under 3× font_size = 54pt for 18pt heading).
+        let mk = |t: &str, x: f32, bid: u32| {
+            let mut s = make_span(t, x, 100.0, 18.0, FontWeight::Bold);
+            s.struct_role = Some(StructRole::Heading(1));
+            s.block_id = Some(bid);
+            s
+        };
+        let spans = vec![mk("Form", 0.0, 1), mk("1040", 40.0, 2), mk("U.S.", 100.0, 3)];
+        let result = converter.convert(&spans, &config).unwrap();
+        let heading_lines: Vec<&str> = result.lines().filter(|l| l.starts_with("# ")).collect();
+        assert_eq!(
+            heading_lines.len(),
+            1,
+            "small-gap form pieces must stay on one heading line, got:\n{}",
+            result
+        );
+    }
+
+    /// D5c coverage — boundary case: a moderate gap (e.g. 2× font
+    /// size, like a wide indent or cell separator) should NOT trigger
+    /// column split. Only truly large gaps (multi-column gutter)
+    /// trigger the break.
+    #[test]
+    fn test_moderate_gap_does_not_force_column_break() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        // Body 12pt, gap of 24pt (2× font_size) — wide indent but not
+        // a column gutter.
+        let mut a = make_span("First field", 0.0, 100.0, 12.0, FontWeight::Normal);
+        a.block_id = Some(1);
+        let mut b = make_span("Second field", 80.0, 100.0, 12.0, FontWeight::Normal);
+        b.block_id = Some(2);
+        // The gap from x=0+50 (text "First field" width=50 in make_span) to x=80 = 30pt = 2.5× font_size.
+        // Just below the column-gap threshold (3× = 36pt).
+        let result = converter.convert(&[a, b], &config).unwrap();
+        let paras: Vec<&str> = result.split("\n\n").map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+        assert_eq!(
+            paras.len(),
+            1,
+            "moderate gap (≈2.5× font) must keep content on one paragraph, got:\n{}",
+            result
+        );
+    }
+
+    /// D5c coverage — three columns at the same baseline with large
+    /// gaps must split into three paragraphs.
+    #[test]
+    fn test_three_column_layout_splits_into_three_paragraphs() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mk = |t: &str, x: f32, bid: u32| {
+            let mut s = make_span(t, x, 100.0, 12.0, FontWeight::Normal);
+            s.block_id = Some(bid);
+            s
+        };
+        // Three 12pt-body columns at x=0, 200, 400 (gaps of ~150pt).
+        let spans = vec![mk("col one", 0.0, 1), mk("col two", 200.0, 2), mk("col three", 400.0, 3)];
+        let result = converter.convert(&spans, &config).unwrap();
+        let paras: Vec<&str> = result.split("\n\n").map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+        assert_eq!(
+            paras.len(),
+            3,
+            "three columns must produce three paragraphs, got:\n{}",
+            result
+        );
+    }
+
+    /// D5c coverage — column-gap detector applies even when no
+    /// block_id is set (untagged document with multi-column layout).
+    /// Without this, untagged newspapers would also produce
+    /// `andmight`-style joins.
+    #[test]
+    fn test_column_gap_without_block_id_still_splits() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        // No block_id assigned (untagged).
+        let a = make_span("left column.", 0.0, 100.0, 12.0, FontWeight::Normal);
+        let b = make_span("right column.", 200.0, 100.0, 12.0, FontWeight::Normal);
+        let result = converter.convert(&[a, b], &config).unwrap();
+        // Pre-existing geometric heuristics should split too via the
+        // group_id / has_horizontal_gap logic — verify the combined
+        // result keeps the two columns as separate words at minimum.
+        assert!(
+            result.contains("left column") && result.contains("right column"),
+            "both columns must surface, got:\n{}",
+            result
+        );
+        // No concatenation across the gap.
+        assert!(
+            !result.contains("column.right"),
+            "must not concatenate across column gap, got:\n{}",
+            result
         );
     }
 
