@@ -9576,6 +9576,15 @@ impl PdfDocument {
         let mut markdown = String::new();
         let mut has_content = false;
 
+        // Cap on base64 data URI size in characters. Anything larger
+        // emits a placeholder instead so a multi-page PDF with high-
+        // resolution images doesn't balloon the markdown output to
+        // megabytes (issue #377 corpus-comparison observation: a
+        // 17-page arxiv paper produced 11 MB of markdown, ~600 KB
+        // per page of base64 PNG data, swamping any text-content
+        // signal). 200 KB per image keeps small thumbnails and
+        // diagrams while skipping full-page renders.
+        const MAX_BASE64_DATA_URI: usize = 200 * 1024;
         for (i, image) in images.iter().enumerate() {
             if options.embed_images {
                 match image.to_base64_data_uri() {
@@ -9585,7 +9594,16 @@ impl PdfDocument {
                             has_content = true;
                         }
                         let alt = format!("Image {} from page {}", i + 1, page_index + 1);
-                        markdown.push_str(&format!("![{}]({})\n\n", alt, data_uri));
+                        if data_uri.len() > MAX_BASE64_DATA_URI {
+                            markdown.push_str(&format!(
+                                "<!-- ![{}] suppressed: {} KB exceeds {} KB inline-image cap -->\n\n",
+                                alt,
+                                data_uri.len() / 1024,
+                                MAX_BASE64_DATA_URI / 1024
+                            ));
+                        } else {
+                            markdown.push_str(&format!("![{}]({})\n\n", alt, data_uri));
+                        }
                     },
                     Err(e) => {
                         log::warn!("Failed to encode image {}: {}", i, e);
