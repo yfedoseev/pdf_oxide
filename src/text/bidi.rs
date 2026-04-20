@@ -138,11 +138,7 @@ mod tests {
         let result = reorder_visual_to_logical(logical);
         // Numerals must still be `2024`, not `4202`, regardless of the
         // surrounding RTL runs.
-        assert!(
-            result.contains("2024"),
-            "expected `2024` in reordered line, got {:?}",
-            result
-        );
+        assert!(result.contains("2024"), "expected `2024` in reordered line, got {:?}", result);
         // Length is preserved (no characters dropped or duplicated).
         assert_eq!(result.chars().count(), logical.chars().count());
     }
@@ -180,12 +176,7 @@ mod tests {
         for (cp, name) in cases {
             if let Some(c) = char::from_u32(*cp) {
                 let s = c.to_string();
-                assert!(
-                    looks_rtl(&s),
-                    "looks_rtl({:?} {}) should be true",
-                    s,
-                    name
-                );
+                assert!(looks_rtl(&s), "looks_rtl({:?} {}) should be true", s, name);
             }
         }
     }
@@ -196,9 +187,9 @@ mod tests {
     #[test]
     fn looks_rtl_rejects_neutral_and_cjk() {
         for s in [
-            "中文",      // CJK
-            "日本語",    // Japanese
-            "α β γ",     // Greek (LTR)
+            "中文",   // CJK
+            "日本語", // Japanese
+            "α β γ",  // Greek (LTR)
             "1234567890",
             "!@#$%^&*()",
             "café",

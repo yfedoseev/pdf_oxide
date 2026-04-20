@@ -137,8 +137,8 @@ impl MarkdownOutputConverter {
         // list item. The ordered-marker detection is conservative
         // (single digit/letter at line start) so figure captions
         // ("1.1 Foo") and years ("1986") are not promoted to lists.
-        let line_changed = (previous.span.bbox.y - current.span.bbox.y).abs()
-            > current.span.font_size * 0.5;
+        let line_changed =
+            (previous.span.bbox.y - current.span.bbox.y).abs() > current.span.font_size * 0.5;
         if line_changed {
             let cur_text = current.span.text.trim_start();
             let cur_starts_list = Self::is_bullet_span(cur_text)
@@ -195,9 +195,7 @@ impl MarkdownOutputConverter {
             }
             if roman_end >= 1 && bytes.len() > roman_end {
                 let punct = bytes[roman_end];
-                if matches!(punct, b'.' | b')')
-                    && bytes.get(roman_end + 1).copied() == Some(b' ')
-                {
+                if matches!(punct, b'.' | b')') && bytes.get(roman_end + 1).copied() == Some(b' ') {
                     return Some(1); // unknown roman position
                 }
             }
@@ -712,7 +710,7 @@ impl MarkdownOutputConverter {
             // that set body and heading text in the same point size
             // would otherwise lose all heading hierarchy.
             let span_heading_level = match span.struct_role {
-                Some(StructRole::Heading(level)) => Some(level.max(1).min(6)),
+                Some(StructRole::Heading(level)) => Some(level.clamp(1, 6)),
                 _ if config.output.detect_headings => {
                     self.heading_level_ratio(span, base_font_size)
                 },
@@ -1301,11 +1299,7 @@ mod tests {
         let mut h2 = make_span("Section Header", 0.0, 100.0, 11.0, FontWeight::Normal);
         h2.struct_role = Some(StructRole::Heading(2));
         let result = converter.convert(&[h2], &config).unwrap();
-        assert!(
-            result.starts_with("## "),
-            "expected `## ` heading prefix, got:\n{}",
-            result
-        );
+        assert!(result.starts_with("## "), "expected `## ` heading prefix, got:\n{}", result);
     }
 
     /// D3 unit — `is_ordered_list_marker` recognises common forms and
@@ -1375,24 +1369,14 @@ mod tests {
         let converter = MarkdownOutputConverter::new();
         let config = TextPipelineConfig::default();
         for level in 1u8..=6 {
-            let mut s = make_span(
-                &format!("Title L{}", level),
-                0.0,
-                100.0,
-                12.0,
-                FontWeight::Normal,
-            );
+            let mut s =
+                make_span(&format!("Title L{}", level), 0.0, 100.0, 12.0, FontWeight::Normal);
             s.struct_role = Some(StructRole::Heading(level));
             let body = make_span("body", 0.0, 80.0, 12.0, FontWeight::Normal);
             let result = converter.convert(&[s, body], &config).unwrap();
             let prefix = "#".repeat(level as usize);
             let expected = format!("{} Title L{}", prefix, level);
-            assert!(
-                result.contains(&expected),
-                "expected `{}`, got:\n{}",
-                expected,
-                result
-            );
+            assert!(result.contains(&expected), "expected `{}`, got:\n{}", expected, result);
         }
     }
 
@@ -1477,18 +1461,16 @@ mod tests {
         let config = TextPipelineConfig::default();
         let mut spans = Vec::new();
         for (i, t) in ["alpha", "beta", "gamma"].iter().enumerate() {
-            let mut s = make_span(
-                t,
-                0.0,
-                100.0 - (i as f32 * 14.0),
-                12.0,
-                FontWeight::Normal,
-            );
+            let mut s = make_span(t, 0.0, 100.0 - (i as f32 * 14.0), 12.0, FontWeight::Normal);
             s.block_id = Some((i + 1) as u32);
             spans.push(s);
         }
         let result = converter.convert(&spans, &config).unwrap();
-        let paras: Vec<&str> = result.split("\n\n").map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+        let paras: Vec<&str> = result
+            .split("\n\n")
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .collect();
         assert_eq!(
             paras,
             vec!["alpha", "beta", "gamma"],
@@ -1572,12 +1554,7 @@ mod tests {
         }
         // Each composed token appears.
         for token in ["1st", "2nd", "3rd"] {
-            assert!(
-                result.contains(token),
-                "expected `{}` in output, got:\n{}",
-                token,
-                result
-            );
+            assert!(result.contains(token), "expected `{}` in output, got:\n{}", token, result);
         }
     }
 
@@ -1667,7 +1644,11 @@ mod tests {
             s.block_id = Some(bid);
             s
         };
-        let spans = vec![mk("Apple", 0.0, 1), mk("Banana", 60.0, 2), mk("Cherry", 120.0, 3)];
+        let spans = vec![
+            mk("Apple", 0.0, 1),
+            mk("Banana", 60.0, 2),
+            mk("Cherry", 120.0, 3),
+        ];
         let result = converter.convert(&spans, &config).unwrap();
         let bullet_lines: Vec<&str> = result.lines().filter(|l| l.starts_with("- ")).collect();
         assert_eq!(
@@ -1850,7 +1831,11 @@ mod tests {
             s
         };
         // All forward, small gaps.
-        let spans = vec![mk("Form", 0.0, 1), mk("1040", 35.0, 2), mk("Title", 80.0, 3)];
+        let spans = vec![
+            mk("Form", 0.0, 1),
+            mk("1040", 35.0, 2),
+            mk("Title", 80.0, 3),
+        ];
         let result = converter.convert(&spans, &config).unwrap();
         let heading_lines: Vec<&str> = result.lines().filter(|l| l.starts_with("# ")).collect();
         assert_eq!(heading_lines.len(), 1, "form heading still joins: {}", result);
@@ -1921,7 +1906,11 @@ mod tests {
         assert!(result.contains("might"));
         // No `and might` glued onto one heading or paragraph either —
         // we want the two columns rendered as separate paragraphs.
-        let paras: Vec<&str> = result.split("\n\n").map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+        let paras: Vec<&str> = result
+            .split("\n\n")
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .collect();
         assert!(
             paras.len() >= 2,
             "expected ≥2 paragraphs separated by column gap, got {} in:\n{}",
@@ -1945,7 +1934,11 @@ mod tests {
             s.block_id = Some(bid);
             s
         };
-        let spans = vec![mk("Form", 0.0, 1), mk("1040", 40.0, 2), mk("U.S.", 100.0, 3)];
+        let spans = vec![
+            mk("Form", 0.0, 1),
+            mk("1040", 40.0, 2),
+            mk("U.S.", 100.0, 3),
+        ];
         let result = converter.convert(&spans, &config).unwrap();
         let heading_lines: Vec<&str> = result.lines().filter(|l| l.starts_with("# ")).collect();
         assert_eq!(
@@ -1973,7 +1966,11 @@ mod tests {
         // The gap from x=0+50 (text "First field" width=50 in make_span) to x=80 = 30pt = 2.5× font_size.
         // Just below the column-gap threshold (3× = 36pt).
         let result = converter.convert(&[a, b], &config).unwrap();
-        let paras: Vec<&str> = result.split("\n\n").map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+        let paras: Vec<&str> = result
+            .split("\n\n")
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .collect();
         assert_eq!(
             paras.len(),
             1,
@@ -1994,15 +1991,18 @@ mod tests {
             s
         };
         // Three 12pt-body columns at x=0, 200, 400 (gaps of ~150pt).
-        let spans = vec![mk("col one", 0.0, 1), mk("col two", 200.0, 2), mk("col three", 400.0, 3)];
+        let spans = vec![
+            mk("col one", 0.0, 1),
+            mk("col two", 200.0, 2),
+            mk("col three", 400.0, 3),
+        ];
         let result = converter.convert(&spans, &config).unwrap();
-        let paras: Vec<&str> = result.split("\n\n").map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
-        assert_eq!(
-            paras.len(),
-            3,
-            "three columns must produce three paragraphs, got:\n{}",
-            result
-        );
+        let paras: Vec<&str> = result
+            .split("\n\n")
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .collect();
+        assert_eq!(paras.len(), 3, "three columns must produce three paragraphs, got:\n{}", result);
     }
 
     /// D5c coverage — column-gap detector applies even when no
@@ -2049,15 +2049,14 @@ mod tests {
         };
         // y values jitter within 0.5pt — well within the same_line
         // threshold (font_size * 0.5 = 9pt for an 18pt heading).
-        let spans = vec![mk("A", 0.0, 100.0, 1), mk("B", 30.0, 100.3, 2), mk("C", 60.0, 99.7, 3)];
+        let spans = vec![
+            mk("A", 0.0, 100.0, 1),
+            mk("B", 30.0, 100.3, 2),
+            mk("C", 60.0, 99.7, 3),
+        ];
         let result = converter.convert(&spans, &config).unwrap();
         let heading_lines: Vec<&str> = result.lines().filter(|l| l.starts_with("# ")).collect();
-        assert_eq!(
-            heading_lines.len(),
-            1,
-            "tiny jitter must not split heading, got:\n{}",
-            result
-        );
+        assert_eq!(heading_lines.len(), 1, "tiny jitter must not split heading, got:\n{}", result);
     }
 
     /// D5b coverage — large baseline drop (well past same_line) DOES
@@ -2098,21 +2097,9 @@ mod tests {
         let converter = MarkdownOutputConverter::new();
         let config = TextPipelineConfig::default();
         // Two paragraphs separated by 12pt (less than 1.5× line_height).
-        let mut p1 = make_span(
-            "Paragraph one body text.",
-            0.0,
-            100.0,
-            12.0,
-            FontWeight::Normal,
-        );
+        let mut p1 = make_span("Paragraph one body text.", 0.0, 100.0, 12.0, FontWeight::Normal);
         p1.block_id = Some(1);
-        let mut p2 = make_span(
-            "Paragraph two starts here.",
-            0.0,
-            88.0,
-            12.0,
-            FontWeight::Normal,
-        );
+        let mut p2 = make_span("Paragraph two starts here.", 0.0, 88.0, 12.0, FontWeight::Normal);
         p2.block_id = Some(2);
         let result = converter.convert(&[p1, p2], &config).unwrap();
         assert!(
@@ -2187,12 +2174,7 @@ mod tests {
         }
         let result = converter.convert(&items, &config).unwrap();
         for t in ["- Apple", "- Banana", "- Cherry"] {
-            assert!(
-                result.contains(t),
-                "expected `{}` line in output, got:\n{}",
-                t,
-                result
-            );
+            assert!(result.contains(t), "expected `{}` line in output, got:\n{}", t, result);
         }
     }
 

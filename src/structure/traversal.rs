@@ -830,10 +830,7 @@ mod tests {
         let m0 = ordered.iter().find(|c| c.mcid == Some(0)).unwrap();
         let m1 = ordered.iter().find(|c| c.mcid == Some(1)).unwrap();
         let m2 = ordered.iter().find(|c| c.mcid == Some(2)).unwrap();
-        assert_eq!(
-            m0.block_id, m1.block_id,
-            "two MCRs inside the same /P must share block_id"
-        );
+        assert_eq!(m0.block_id, m1.block_id, "two MCRs inside the same /P must share block_id");
         assert_ne!(
             m0.block_id, m2.block_id,
             "MCRs in different /P elements must have different block_id"
