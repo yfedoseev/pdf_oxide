@@ -23,7 +23,7 @@
 //! the middle of words because shaping forms confuse the font-weight
 //! detector.
 
-use unicode_bidi::{BidiInfo, Level};
+use unicode_bidi::BidiInfo;
 
 /// Cheap pre-check: does `text` look like it contains any RTL
 /// characters? Used by the converter to skip the bidi pass entirely
@@ -76,11 +76,11 @@ pub fn reorder_visual_to_logical(text: &str) -> String {
     out
 }
 
-/// Whether the dominant paragraph direction of `text` is RTL. Used by
-/// the converter to suppress font-weight-derived `**bold**` styling
-/// inside RTL paragraphs where contextual glyph forms (initial /
-/// medial / final shapes) routinely flip the font's reported weight
-/// and create spurious markdown emphasis on individual letters.
+/// Whether the *dominant* paragraph direction of `text` is RTL,
+/// computed per UAX #9 §3.3.1 from the level of the first strong
+/// character in the first paragraph. Mixed-direction strings whose
+/// first strong char is LTR (e.g. an English label followed by an
+/// Arabic value) report as LTR even though they contain RTL chars.
 pub fn paragraph_is_rtl(text: &str) -> bool {
     if !looks_rtl(text) {
         return false;
@@ -88,9 +88,8 @@ pub fn paragraph_is_rtl(text: &str) -> bool {
     let info = BidiInfo::new(text, None);
     info.paragraphs
         .first()
-        .map(|p| p.level.is_rtl() || p.level == Level::ltr() && info.has_rtl())
+        .map(|p| p.level.is_rtl())
         .unwrap_or(false)
-        && info.has_rtl()
 }
 
 #[cfg(test)]
@@ -171,6 +170,21 @@ mod tests {
     #[test]
     fn paragraph_is_not_rtl_for_pure_english() {
         assert!(!paragraph_is_rtl("This is English"));
+    }
+
+    /// `paragraph_is_rtl` must reflect the *dominant* paragraph
+    /// direction (per UAX #9 §3.3.1 — the level of the first strong
+    /// character). A paragraph led by an LTR token but with RTL
+    /// chars further in (e.g. `Foo بار 1`) is logically LTR and
+    /// must not report as RTL just because some RTL characters
+    /// appear later. Earlier impl returned true on any string
+    /// containing RTL chars, conflating with `looks_rtl`.
+    #[test]
+    fn paragraph_is_rtl_respects_dominant_direction() {
+        // Dominant LTR (first strong char is Latin) → false.
+        assert!(!paragraph_is_rtl("Foo بار 1"));
+        // Dominant RTL (first strong char is Arabic) → true.
+        assert!(paragraph_is_rtl("بار Foo 1"));
     }
 
     /// D7 coverage — the looks_rtl quick-check spans every RTL Unicode

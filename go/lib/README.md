@@ -11,18 +11,18 @@ repository bloat (Rust staticlibs for 6 platforms).
 # Always resolves to the matching FFI assets for the installer's own version.
 go run github.com/yfedoseev/pdf_oxide/go/cmd/install@latest
 # Or pin to a specific version:
-go run github.com/yfedoseev/pdf_oxide/go/cmd/install@v0.3.35
+go run github.com/yfedoseev/pdf_oxide/go/cmd/install@v0.3.36
 ```
 
 The installer detects `GOOS`/`GOARCH`, downloads the matching asset from
-`https://github.com/yfedoseev/pdf_oxide/releases/download/v0.3.35/…`, and
-extracts `libpdf_oxide.a` + `pdf_oxide.h` into `~/.pdf_oxide/v0.3.35/`.
+`https://github.com/yfedoseev/pdf_oxide/releases/download/v0.3.36/…`, and
+extracts `libpdf_oxide.a` + `pdf_oxide.h` into `~/.pdf_oxide/v0.3.36/`.
 
 It then prints the `CGO_CFLAGS` / `CGO_LDFLAGS` you need to export:
 
 ```
-export CGO_CFLAGS="-I$HOME/.pdf_oxide/v0.3.35/include"
-export CGO_LDFLAGS="$HOME/.pdf_oxide/v0.3.35/lib/linux_amd64/libpdf_oxide.a -lm -lpthread -ldl -lrt -lgcc_s -lutil -lc"
+export CGO_CFLAGS="-I$HOME/.pdf_oxide/v0.3.36/include"
+export CGO_LDFLAGS="$HOME/.pdf_oxide/v0.3.36/lib/linux_amd64/libpdf_oxide.a -lm -lpthread -ldl -lrt -lgcc_s -lutil -lc"
 ```
 
 After that, `go build` / `go test` work normally.

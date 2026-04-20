@@ -825,11 +825,30 @@ impl MarkdownOutputConverter {
                     // numbered lists (`1. Foo` / `2. Bar` / `3. Baz`) at
                     // the same X across consecutive baselines: the items
                     // must not concatenate into one line of running text.
+                    //
+                    // Only fire on a list-item *transition* (the body of
+                    // a wrapped LI keeps the same role across visual
+                    // lines and must NOT emit a fresh bullet on each
+                    // wrapped line).
                     let is_bullet = Self::is_bullet_span(&span.span.text)
                         || Self::starts_with_bullet(&span.span.text);
                     let is_ordered =
                         Self::is_ordered_list_marker(span.span.text.trim_start()).is_some();
-                    if is_bullet || is_ordered || is_list_item_role {
+                    // Tagged docs: each /LI gets its own `block_id`,
+                    // so wrapped multi-line items share the same id
+                    // and we should only fire on a TRANSITION
+                    // (different block_id or list_item_changed).
+                    // Untagged docs (block_id None on both): can't
+                    // tell which body lines are wrapped vs which are
+                    // new items, so fall back to "any list-role on a
+                    // new baseline starts a new item".
+                    let starts_new_list_item = if span.block_id.is_some() && prev.block_id.is_some()
+                    {
+                        is_list_item_role && (list_item_changed || block_changed)
+                    } else {
+                        is_list_item_role
+                    };
+                    if is_bullet || is_ordered || starts_new_list_item {
                         // Bullet on new line → flush current line and start list item
                         close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
                         if !current_line.is_empty() {
@@ -847,7 +866,7 @@ impl MarkdownOutputConverter {
                             current_line.clear();
                         }
                         current_heading_level = span_heading_level;
-                        if is_list_item_role {
+                        if starts_new_list_item {
                             current_line.push_str("- ");
                         }
                     } else {
@@ -1091,10 +1110,7 @@ impl MarkdownOutputConverter {
         // `**bold**` / `*italic*` markers that the font-weight
         // detector emits around Arabic contextual glyph forms — is
         // safe and stays.
-        if final_result
-            .chars()
-            .any(|c| crate::text::bidi::looks_rtl(&c.to_string()))
-        {
+        if crate::text::bidi::looks_rtl(&final_result) {
             final_result = final_result
                 .lines()
                 .map(|line| {
@@ -1118,52 +1134,69 @@ impl MarkdownOutputConverter {
 /// contextual glyph forms (initial / medial / final shapes); they
 /// fragment the line into spurious emphasis spans and break bidi
 /// reordering. Keeps emphasis around purely LTR runs intact.
+///
+/// Implementation note: the byte-position search via
+/// `find_matching` is safe even on multi-byte UTF-8 because we only
+/// look for ASCII `*` (0x2A) which never appears as a continuation
+/// byte; matched indices always fall on a UTF-8 boundary. We then
+/// build the output by appending UTF-8 string slices between the
+/// matched positions, never reinterpreting individual bytes as
+/// chars. (Copilot review #3108056051: the previous implementation
+/// emitted `bytes[i] as char` for non-marker bytes and corrupted
+/// non-ASCII content like `בנימין * world` → `×<ctrl>×<ctrl>... * world`.)
 fn strip_inline_emphasis_in_rtl(line: &str) -> String {
     // Cheap path: if there are no asterisks, nothing to do.
     if !line.contains('*') {
         return line.to_string();
     }
-    // Scan for `**` or `*` markers and decide whether the wrapped
-    // content is RTL. If so, drop the markers; otherwise keep.
     let bytes = line.as_bytes();
     let mut out = String::with_capacity(line.len());
     let mut i = 0;
+    let mut last_copy = 0;
     while i < bytes.len() {
         // Try to match `**` first.
         if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'*' {
             if let Some(close) = find_matching(bytes, i + 2, b"**") {
-                let inner = std::str::from_utf8(&bytes[i + 2..close]).unwrap_or("");
+                // Copy any text that came before this `**` token verbatim.
+                if i > last_copy {
+                    out.push_str(&line[last_copy..i]);
+                }
+                let inner = &line[i + 2..close];
                 if crate::text::bidi::looks_rtl(inner) {
                     out.push_str(inner);
-                    i = close + 2;
-                    continue;
+                } else {
+                    out.push_str("**");
+                    out.push_str(inner);
+                    out.push_str("**");
                 }
-                // Otherwise, keep verbatim.
-                out.push_str("**");
-                out.push_str(inner);
-                out.push_str("**");
                 i = close + 2;
+                last_copy = i;
                 continue;
             }
         }
         // Then `*` (italic).
         if bytes[i] == b'*' {
             if let Some(close) = find_matching(bytes, i + 1, b"*") {
-                let inner = std::str::from_utf8(&bytes[i + 1..close]).unwrap_or("");
+                if i > last_copy {
+                    out.push_str(&line[last_copy..i]);
+                }
+                let inner = &line[i + 1..close];
                 if crate::text::bidi::looks_rtl(inner) {
                     out.push_str(inner);
-                    i = close + 1;
-                    continue;
+                } else {
+                    out.push('*');
+                    out.push_str(inner);
+                    out.push('*');
                 }
-                out.push('*');
-                out.push_str(inner);
-                out.push('*');
                 i = close + 1;
+                last_copy = i;
                 continue;
             }
         }
-        out.push(bytes[i] as char);
         i += 1;
+    }
+    if last_copy < bytes.len() {
+        out.push_str(&line[last_copy..]);
     }
     out
 }
@@ -1684,6 +1717,105 @@ mod tests {
             paras,
             vec!["First.", "Second.", "Third."],
             "different baselines must still produce three paragraphs"
+        );
+    }
+
+    /// `strip_inline_emphasis_in_rtl` must preserve non-ASCII (Arabic
+    /// / Hebrew) characters in the non-emphasis portion of an RTL
+    /// line. Earlier the function iterated the UTF-8 byte array and
+    /// pushed each byte as a Latin-1 char, corrupting `בנימין * world`
+    /// into `×<ctrl>×<ctrl>... * world`. The no-`*` short-circuit hid
+    /// the bug from earlier RTL tests.
+    #[test]
+    fn test_strip_inline_emphasis_preserves_rtl_chars_around_lone_asterisk() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let span = make_span("בנימין * world", 0.0, 100.0, 12.0, FontWeight::Normal);
+        let result = converter.convert(&[span], &config).unwrap();
+        assert!(
+            result.contains("בנימין"),
+            "Hebrew letters lost — UTF-8 corruption: {:?}",
+            result
+        );
+        assert!(
+            !result
+                .chars()
+                .any(|c| (c as u32) == 0x91 || (c as u32) == 0xA0),
+            "byte-as-char ghost characters present in: {:?}",
+            result
+        );
+    }
+
+    /// Arabic regression coverage — confirms `strip_inline_emphasis_in_rtl`
+    /// preserves Arabic across the no-`*`, single-`*`, paired-`*`,
+    /// and paired-`**` cases. Locks the Copilot-found UTF-8
+    /// corruption out for good across realistic shapes.
+    #[test]
+    fn test_arabic_strip_inline_emphasis_matrix() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        // Each tuple: (input span text, list of expected substrings).
+        let cases: &[(&str, &[&str])] = &[
+            // No `*` — short-circuit; must round-trip.
+            ("اللغة العربية بسيطة", &["اللغة", "العربية", "بسيطة"]),
+            // Hebrew with stray `*` (lone asterisk, no pair).
+            ("בנימין * world", &["בנימין", "* world"]),
+            // Arabic paragraph with `*emphasis*` around RTL token.
+            ("مرحبا *عالم* اليوم", &["مرحبا", "عالم", "اليوم"]),
+            // Arabic paragraph with `**bold**` around RTL token.
+            ("مرحبا **عالم** اليوم", &["مرحبا", "عالم", "اليوم"]),
+            // Mixed: emphasis around LTR (must keep markers) plus Arabic.
+            ("مرحبا *Hello* اليوم", &["مرحبا", "*Hello*", "اليوم"]),
+        ];
+        for (input, expected_subs) in cases {
+            let span = make_span(input, 0.0, 100.0, 12.0, FontWeight::Normal);
+            let result = converter.convert(&[span], &config).unwrap();
+            for needle in *expected_subs {
+                assert!(
+                    result.contains(needle),
+                    "input {:?} → expected {:?} in output:\n{}",
+                    input,
+                    needle,
+                    result
+                );
+            }
+            // Ghost-byte check: no Latin-1 control chars from
+            // mis-cast UTF-8 should appear.
+            assert!(
+                !result.chars().any(|c| {
+                    let n = c as u32;
+                    (0x80..=0x9F).contains(&n) || n == 0xA0
+                }),
+                "input {:?} produced Latin-1 ghost chars in: {:?}",
+                input,
+                result
+            );
+        }
+    }
+
+    /// Wrapped list-item body that spans multiple visual lines (same
+    /// /LI struct elem, same block_id, same struct_role=ListItemBody)
+    /// must NOT emit a fresh `- ` bullet on the second visual line.
+    /// The break should fire on a list-item *transition*, not on the
+    /// mere presence of a list role.
+    #[test]
+    fn test_wrapped_list_item_body_does_not_emit_extra_bullet() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mut a = make_span("First half of an item", 0.0, 100.0, 12.0, FontWeight::Normal);
+        a.struct_role = Some(StructRole::ListItemBody);
+        a.block_id = Some(7);
+        let mut b = make_span("that wraps to next line.", 0.0, 86.0, 12.0, FontWeight::Normal);
+        b.struct_role = Some(StructRole::ListItemBody);
+        b.block_id = Some(7);
+        let result = converter.convert(&[a, b], &config).unwrap();
+        let bullet_lines: Vec<&str> = result.lines().filter(|l| l.starts_with("- ")).collect();
+        assert_eq!(
+            bullet_lines.len(),
+            1,
+            "wrapped list item body must stay one bullet, got {} lines:\n{}",
+            bullet_lines.len(),
+            result
         );
     }
 

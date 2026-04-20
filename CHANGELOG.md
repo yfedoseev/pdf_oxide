@@ -2,6 +2,139 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.36] - 2026-04-19
+> Markdown structural extraction quality vs pdfium — Tagged-PDF
+> heading and list emission, multi-column reading-order fixes,
+> safer RTL handling, inline-image cap
+
+### Markdown structural extraction (#377)
+
+The headline change of this release. `to_markdown()` previously
+consumed only the MCID *order* from `/StructTreeRoot` and then
+re-derived heading levels from font-size heuristics and list
+markers from glyph detection. For Word/Acrobat tagged PDFs whose
+body and heading text share a point size, this dropped every
+heading; for tagged lists where `LI → LBody → MCR` nests the
+actual content under a Span/P, this dropped every bullet; for
+tagged paragraphs whose inter-paragraph gap was less than 1.5×
+line height, this merged adjacent paragraphs.
+
+This release wires the structure tree directly into the markdown
+pipeline:
+
+- **Heading and list emission from `/StructTreeRoot`.** New
+  `StructRole` (Heading(1..6), ListItem, ListItemLabel, ListItemBody)
+  attached to every span via the per-MCID lookup map. The converter
+  prefers the explicit role over font-size heuristics so Word-tagged
+  documents recover their full heading hierarchy. Lists emit `- item`
+  with paragraph breaks at every role transition. (D1)
+- **Heading / list role propagated through nested MCRs.** Tagged PDFs
+  commonly wrap heading content as `H1 → Span → MCR` and list bodies
+  as `LI → LBody → Span → MCR`. The traversal now threads
+  `InheritedContext { heading_level, list_role }` down both
+  `traverse_element` and `traverse_element_all_pages`, so deeply
+  nested MCRs carry the right semantic role. (D8b)
+- **Per-`/StructTreeRoot` block boundary forces paragraph break.** New
+  `OrderedContent.block_id` increments on every entry into a block
+  element (`/P`, `/H1..6`, `/LI`, `/Lbl`, `/LBody`, `/Sect`, `/Div`,
+  `/Art`, `/TR`, `/TH`, `/TD`, `/Note`, `/Reference`, `/BibEntry`,
+  `/Code`); the converter splits paragraphs whenever this changes
+  between adjacent spans. Tight-gap layouts (pdfa_049-style) no
+  longer merge. (D5)
+- **Same-baseline gate against form-heading over-fragmentation.** D5
+  alone over-split horizontal heading bands like
+  `# Form / # 1040 / # U.S. Individual Income Tax Return` into three
+  separate headings. The block-id transition now fires only when the
+  spans are also on different visual lines; same-baseline pieces
+  re-join into one heading. (D5b)
+- **Multi-column gutter detection.** Two spans on the same baseline
+  separated by a horizontal gap > `max(3 × font_size, 30 pt)` are
+  treated as belonging to different columns even when their
+  block_ids would say otherwise — newspapers and two-column academic
+  papers no longer concatenate cross-column tokens. (D5c)
+- **Backward-x reading-order wrap detection.** When the structure
+  tree's reading order goes column-major (last span of column 1 at
+  x=976 immediately followed by first span of column 2 at x=192,
+  same baseline), the converter now recognises the wrap as a
+  paragraph break instead of joining the two into a nonsense token
+  like `constitutionAssailing`. (D5d)
+- **Geometric heading + list-prefix detection for untagged docs.**
+  Bold + 5 % size bump promotes to H4. New
+  `is_ordered_list_marker(text) -> Option<u32>` recognises `1.` /
+  `12.` / `a)` / `iv.` / `A.` while conservatively rejecting figure
+  captions (`1.1 Foo`) and years (`1986`). Bullet or ordered
+  marker on a new line forces a paragraph break regardless of the
+  geometric gap. (D2 / D3 / D4)
+
+### RTL text — safe-by-default
+
+- **Spurious `**bold**` markers around Arabic contextual glyphs are
+  now stripped.** Initial / medial / final shape transitions
+  routinely flipped the font-weight detector and emitted single-letter
+  emphasis runs; the converter now recognises and removes them.
+- **Bidi reorder is OFF by default.** An earlier draft of D7 ran
+  `unicode-bidi`'s visual→logical reorder on every RTL line; that
+  broke previously-correct logical-order PDFs (Hebrew name `בנימין`
+  was being reversed to `ןימינב`). Without a reliable signal for
+  source order, the safer behaviour is to preserve the input
+  ordering. The reorder helper remains exported from
+  `text::bidi::reorder_visual_to_logical` for callers that *know*
+  their input is in visual order.
+
+### Markdown output
+
+- **Inline-image base64 data URIs capped at 200 KB.** PDFs with
+  high-resolution diagrams previously inflated markdown output by
+  10–20× (one 1.9 MB academic paper produced 11.3 MB of markdown).
+  Images that exceed the cap now emit an HTML-comment placeholder
+  noting the suppression and the original size. File-based image
+  output (`image_output_dir`) is unaffected.
+
+### Tests
+
+- 80+ new unit tests in `pipeline::converters::markdown::tests`,
+  `structure::traversal::tests`, and `text::bidi::tests` covering
+  every defect with TDD-shaped RED→GREEN cases plus parametrised
+  variations (all six heading levels, all three list roles, edge
+  cases like clamped levels, baseline jitter, three-column layouts,
+  the IA_0047 backward-x reproducer, etc.).
+
+### Empirical impact
+
+Validated against v0.3.35 baseline on a 369-PDF regression spanning
+academic, government, forms, newspapers, technical, theses, IRS,
+pdfium, pdfjs, safedocs, and slow-corpus subsets:
+
+- **0 catastrophic regressions** (no `HEAD_FAIL`, no `SHRUNK_BIG` on
+  real content; the three sub-50-byte SHRUNK cases are pdfjs test
+  fixtures where D5b same-line joining suppresses geometric heading
+  detection on minimal content).
+- **Token Jaccard vs pdfium and pdftotext: median 1.000 (perfect),
+  ≥0.95 on 95/106 fixtures.**
+- **Token Jaccard vs pymupdf4llm: median 0.978**, ≥0.95 on 65/106
+  fixtures.
+- **~2× more headings emitted than pymupdf4llm** across the corpus —
+  the structure-tree wiring lets pdf_oxide pick up section titles
+  that font-only heuristics miss.
+- Per fixture (issue #377): nougat_002 0→4 H1s + 5→34 bullets;
+  nougat_011 64→266 lines; word365_structure 0→1 H1 + 2→3 bullets;
+  2023-06-20-PV 0→4 H + 0→5 bullets.
+
+### Community Contributors
+
+- **[@Goldziher](https://github.com/Goldziher)** ([kreuzberg](https://github.com/kreuzberg-dev/kreuzberg)) —
+  filed [#377](https://github.com/yfedoseev/pdf_oxide/issues/377)
+  with a 727-document benchmark methodology (block-level SF1 +
+  token-level TF1) comparing pdf_oxide against pdfium, plus 9
+  reproducer PDFs covering the worst structural-extraction
+  regressions. The clarity of that report (per-pattern bucketing,
+  per-fixture gaps, and an explicit "TF1 within ±3 % so text content
+  is fine, structure is the issue" framing) made the entire
+  investigation tractable. The single-PR unlock that drove this
+  release was identifying that pdf_oxide had a complete structure-tree
+  parser whose output the markdown converter was discarding — that
+  framing came directly from the issue.
+
 ## [0.3.35] - 2026-04-19
 > Narrow-glyph doublet preservation in text extraction
 

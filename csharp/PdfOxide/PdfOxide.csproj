@@ -19,7 +19,7 @@
     <!-- NuGet Package Configuration -->
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     <PackageId>PdfOxide</PackageId>
-    <Version>0.3.35</Version>
+    <Version>0.3.36</Version>
     <Title>PdfOxide</Title>
     <Authors>pdf_oxide Contributors</Authors>
     <Company>pdf_oxide Project</Company>

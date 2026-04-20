@@ -1,6 +1,6 @@
 [package]
 name = "pdf_oxide_mcp"
-version = "0.3.35"
+version = "0.3.36"
 edition = "2021"
 description = "MCP server for PDF extraction — gives Claude, Cursor, and AI assistants the ability to read PDFs locally. Text, markdown, and HTML output. Powered by pdf_oxide."
 license = "MIT OR Apache-2.0"
