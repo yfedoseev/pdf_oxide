@@ -1077,20 +1077,20 @@ impl MarkdownOutputConverter {
             final_result = handler.process_text(&final_result);
         }
 
-        // RTL bidi reordering (#377 D7). PDF content streams emit Arabic
-        // and Hebrew runs in *visual* order (right-to-left text after
-        // shaping is laid out left-to-right on the page). For markdown /
-        // plain-text output we want *logical* order so search and diff
-        // behave correctly. Applied per-line because UAX #9 paragraph
-        // direction is determined by the first strong character in the
-        // paragraph, and a markdown line is one paragraph for our
-        // purposes. Pure-LTR lines short-circuit and are unchanged
-        // (`reorder_visual_to_logical` returns the input unmodified).
-        // We also strip spurious mid-word `**bold**` markers inside RTL
-        // runs: Arabic contextual glyph forms (initial / medial /
-        // final) regularly trip the font-weight detector and produce
-        // bold markers around individual letters, which corrupts the
-        // bidi reorder and is wrong semantically anyway.
+        // RTL emphasis cleanup (#377 D7-fix). The original D7 also
+        // unconditionally re-ordered each RTL line via
+        // `reorder_visual_to_logical`, on the assumption that PDF
+        // content streams always emit RTL runs in *visual* order. In
+        // practice some PDFs (notably the pdfium hebrew_mirrored.pdf
+        // test fixture and Arabic CID-TrueType samples) already store
+        // text in *logical* order and our blanket reorder reversed
+        // them again, breaking previously-correct output (`בנימין` →
+        // `ןימינב`, `# heading` → `heading #`). Without a reliable
+        // way to detect which order the source uses we drop the
+        // reorder step. The other half of D7 — stripping spurious
+        // `**bold**` / `*italic*` markers that the font-weight
+        // detector emits around Arabic contextual glyph forms — is
+        // safe and stays.
         if final_result
             .chars()
             .any(|c| crate::text::bidi::looks_rtl(&c.to_string()))
@@ -1099,8 +1099,7 @@ impl MarkdownOutputConverter {
                 .lines()
                 .map(|line| {
                     if crate::text::bidi::looks_rtl(line) {
-                        let stripped = strip_inline_emphasis_in_rtl(line);
-                        crate::text::bidi::reorder_visual_to_logical(&stripped)
+                        strip_inline_emphasis_in_rtl(line)
                     } else {
                         line.to_string()
                     }
@@ -1686,6 +1685,48 @@ mod tests {
             vec!["First.", "Second.", "Third."],
             "different baselines must still produce three paragraphs"
         );
+    }
+
+    /// D7-fix RED — Hebrew text already in logical Unicode order
+    /// (pdfium hebrew_mirrored.pdf shape) must NOT be reversed by
+    /// the markdown converter. Reproduces the v0.3.36 regression
+    /// where `בנימין` (logical) became `ןימינב` (reversed) after
+    /// the unconditional bidi reorder pass.
+    #[test]
+    fn test_logical_hebrew_passes_through_unchanged() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let span = make_span("בנימין", 0.0, 100.0, 12.0, FontWeight::Normal);
+        let result = converter.convert(&[span], &config).unwrap();
+        assert!(result.contains("בנימין"), "Hebrew must survive intact; got: {:?}", result);
+        assert!(
+            !result.contains("ןימינב"),
+            "must NOT contain reversed Hebrew; got: {:?}",
+            result
+        );
+    }
+
+    /// D7-fix RED — Arabic heading line must keep `#` at the start
+    /// after the converter runs. Reproduces the
+    /// pdfs_pdfjs/ArabicCIDTrueType.pdf regression where `# ﺔﻴﺑﺮﻌﻟا`
+    /// became `ﺔﻴﺑﺮﻌﻟا #` (hash moved to the end).
+    #[test]
+    fn test_arabic_heading_keeps_hash_at_start() {
+        let converter = MarkdownOutputConverter::new();
+        let mut config = TextPipelineConfig::default();
+        config.output.detect_headings = true;
+        let mut h = make_span("ﺔﻴﺑﺮﻌﻟا", 0.0, 100.0, 24.0, FontWeight::Bold);
+        h.struct_role = Some(StructRole::Heading(1));
+        let result = converter.convert(&[h], &config).unwrap();
+        for line in result.lines() {
+            if line.contains("ﺔﻴﺑﺮﻌﻟا") {
+                assert!(
+                    line.trim_start().starts_with('#'),
+                    "heading line must start with `#`, got: {:?}",
+                    line
+                );
+            }
+        }
     }
 
     /// D5d RED — IA_0047 reproducer. The struct tree emits the last

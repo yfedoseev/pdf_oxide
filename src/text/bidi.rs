@@ -121,6 +121,26 @@ mod tests {
         assert_eq!(reorder_visual_to_logical(s), s);
     }
 
+    /// D7-fix documentation — `reorder_visual_to_logical` assumes the
+    /// input is in *visual* order and converts to logical. PDFs vary:
+    /// some store visual order (Arabic news papers, certain Acrobat
+    /// outputs) and some store logical order (most modern publishers,
+    /// the pdfium hebrew_mirrored.pdf test fixture). Callers MUST
+    /// know which case they are in. The default markdown converter
+    /// no longer invokes this function for that reason — see
+    /// pipeline::converters::markdown.rs RTL emphasis-cleanup block.
+    /// This test pins the asymmetric behaviour as a contract.
+    #[test]
+    fn reorder_is_a_visual_to_logical_converter_not_idempotent() {
+        let logical_hebrew = "בנימין";
+        let after_first = reorder_visual_to_logical(logical_hebrew);
+        // First call REVERSES (treating input as visual).
+        assert_ne!(after_first, logical_hebrew);
+        // Second call reverses again — back to the original.
+        let after_second = reorder_visual_to_logical(&after_first);
+        assert_eq!(after_second, logical_hebrew);
+    }
+
     /// D7 RED — A visual-order Arabic line with embedded English
     /// numerals must come back in logical order with the numerals
     /// preserved in their natural reading direction. Reproduces the
