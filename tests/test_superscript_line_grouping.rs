@@ -31,6 +31,43 @@ fn superscript_12pt_offset_stays_on_one_line() {
 }
 
 #[test]
+fn superscript_extracts_with_correct_glyph_order() {
+    let out = build_and_extract(|w| {
+        let mut page = w.add_letter_page();
+        put(&mut page, "8", 140.0, 180.0, "Helvetica", 28.0);
+        put(&mut page, "th", 156.0, 192.0, "Helvetica", 20.0);
+    });
+
+    assert_eq!(out.trim_end(), "8th", "got {:?}", out.trim_end());
+}
+
+#[test]
+fn subscript_between_baseline_letters_stays_in_reading_order() {
+    let out = build_and_extract(|w| {
+        let mut page = w.add_letter_page();
+        put(&mut page, "H", 100.0, 200.0, "Helvetica", 14.0);
+        put(&mut page, "2", 112.0, 197.0, "Helvetica", 9.0);
+        put(&mut page, "O", 122.0, 200.0, "Helvetica", 14.0);
+    });
+
+    let collapsed: String = out.split_whitespace().collect();
+    assert_eq!(collapsed, "H2O", "got {:?}", out.trim_end());
+}
+
+#[test]
+fn three_glyph_run_in_distinct_bands_is_x_ordered() {
+    let out = build_and_extract(|w| {
+        let mut page = w.add_letter_page();
+        put(&mut page, "a", 100.0, 200.0, "Helvetica", 14.0);
+        put(&mut page, "b", 112.0, 203.0, "Helvetica", 12.0);
+        put(&mut page, "c", 124.0, 206.0, "Helvetica", 10.0);
+    });
+
+    let collapsed: String = out.split_whitespace().collect();
+    assert_eq!(collapsed, "abc", "got {:?}", out.trim_end());
+}
+
+#[test]
 fn baseline_same_y_stays_on_one_line() {
     let out = build_and_extract(|w| {
         let mut page = w.add_letter_page();

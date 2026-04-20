@@ -120,6 +120,16 @@ const DEFAULT_XOBJECT_CACHE_MAX_ENTRIES: usize = 1024;
 /// this pairwise heuristic.
 const FORWARD_GAP_K: f32 = 1.25;
 
+/// Fraction of the larger font size used as the Y tolerance for treating
+/// two spans as belonging to the same visual line.
+const SAME_LINE_THRESHOLD_FONT_SIZE_FACTOR: f32 = 0.5;
+
+/// Maximum allowed inter-span X gap inside a candidate same-line reorder run.
+/// If the candidate's tentative X-order contains a larger gap, the run is
+/// probably a disjoint footer/header/field layout rather than a local
+/// mixed-baseline repair.
+const SAME_LINE_REORDER_MAX_GAP_FACTOR: f32 = 3.0;
+
 // Re-export BoundedEntryCache from cache module for local use and backward compatibility
 pub(crate) use crate::cache::BoundedEntryCache;
 
@@ -4265,6 +4275,11 @@ impl PdfDocument {
                 // vertically centred across several dense-column data rows)
                 // to sort at the top of their row block.
                 Self::reorder_rowspan_labels(&mut spans);
+
+                // Restore intra-line reading order after the row-aware band sort.
+                // Off-baseline glyphs (e.g. superscripts/subscripts) can land in
+                // adjacent bands and be emitted out of X order; fix that per line.
+                Self::reorder_same_line_runs(&mut spans);
             }
 
             // OCR fallback for scanned PDFs
@@ -5268,7 +5283,7 @@ impl PdfDocument {
     /// (for example superscripts and subscripts) are not split by a fixed
     /// absolute tolerance.
     fn same_line_threshold(prev: &TextSpan, current: &TextSpan) -> f32 {
-        prev.font_size.max(current.font_size).max(1.0) * 0.5
+        prev.font_size.max(current.font_size).max(1.0) * SAME_LINE_THRESHOLD_FONT_SIZE_FACTOR
     }
 
     /// Returns `true` if `inner` is contained within `outer`,
@@ -5285,6 +5300,104 @@ impl PdfDocument {
             && inner.right() <= outer.right() + eps
             && inner.top() >= outer.top() - eps
             && inner.bottom() <= outer.bottom() + eps
+    }
+
+    /// Returns `true` if a tentative left-to-right X-ordering of `run`
+    /// contains a horizontal gap exceeding
+    /// `SAME_LINE_REORDER_MAX_GAP_FACTOR * max(font_size)` between any
+    /// two consecutive spans. Used by [`reorder_same_line_runs`] to
+    /// reject candidate runs that are vertically close but horizontally
+    /// disjoint (e.g. tightly-set footer/header rows split across the
+    /// page).
+    ///
+    /// The slice is not mutated; the X-order is computed on a local
+    /// copy of `(left_x, right_x, font_size)` triples.
+    fn run_has_large_x_gap(run: &[TextSpan]) -> bool {
+        if run.len() < 2 {
+            return false;
+        }
+
+        let mut edges: Vec<(f32, f32, f32)> = run
+            .iter()
+            .map(|s| (s.bbox.x, s.bbox.x + s.bbox.width, s.font_size))
+            .collect();
+
+        edges.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
+
+        for pair in edges.windows(2) {
+            let prev = pair[0];
+            let cur = pair[1];
+
+            let gap = cur.0 - prev.1;
+            if gap <= 0.0 {
+                continue;
+            }
+
+            let max_fs = prev.2.max(cur.2).max(1.0);
+            if gap > SAME_LINE_REORDER_MAX_GAP_FACTOR * max_fs {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Re-sort same-line spans by X after row-aware band sorting.
+    ///
+    /// Row-aware sorting can place off-baseline glyphs such as superscripts or
+    /// subscripts in adjacent Y bands before their base glyphs. This helper finds
+    /// candidate runs with the existing same-line threshold, then tentatively views
+    /// each candidate in X order. If that tentative X order contains a large gap,
+    /// the candidate is treated as disjoint footer/header/field content and is
+    /// left in the existing row-aware order.
+    ///
+    /// At the slice level no spans are merged or dropped; successful candidates are
+    /// only permuted. Downstream text assembly may then emit the reordered spans
+    /// into one visual line, which is the user-observable effect.
+    fn reorder_same_line_runs(spans: &mut [TextSpan]) {
+        let mut i = 0;
+
+        while i < spans.len() {
+            let mut j = i + 1;
+
+            while j < spans.len() {
+                let anchor = &spans[i];
+                let prev = &spans[j - 1];
+                let cur = &spans[j];
+
+                let to_prev = (cur.bbox.y - prev.bbox.y).abs();
+                let to_anchor = (cur.bbox.y - anchor.bbox.y).abs();
+
+                let tol_prev = Self::same_line_threshold(prev, cur);
+                let tol_anchor = Self::same_line_threshold(anchor, cur);
+
+                if to_prev > tol_prev || to_anchor > tol_anchor {
+                    break;
+                }
+
+                j += 1;
+            }
+
+            if j - i > 1 {
+                if Self::run_has_large_x_gap(&spans[i..j]) {
+                    // Candidate spans are vertically close, but not horizontally
+                    // contiguous. Do not X-sort them into a fake line; preserve
+                    // the row-aware order established before this helper.
+                    i = j;
+                    continue;
+                }
+
+                spans[i..j].sort_by(|a, b| {
+                    let cmp = crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x);
+                    if cmp != std::cmp::Ordering::Equal {
+                        return cmp;
+                    }
+                    a.sequence.cmp(&b.sequence)
+                });
+            }
+
+            i = j;
+        }
     }
 
     /// # Returns
@@ -15888,5 +16001,79 @@ mod tests {
         );
 
         assert!(PdfDocument::contains_rect_with_tolerance(&table, &inside, 0.1));
+    }
+
+    #[test]
+    fn reorder_same_line_runs_preserves_disjoint_x_rows() {
+        use crate::geometry::Rect;
+        use crate::layout::TextSpan;
+
+        // Two rows close enough in Y to pass the existing same_line_threshold:
+        // Δy = 4.5 and fs = 10, so threshold = 5.0.
+        // They are disjoint in X (gap of 225pt = 22.5 * fs, well over the
+        // SAME_LINE_REORDER_MAX_GAP_FACTOR = 3.0 ceiling). The helper must
+        // not X-sort them into [skersey, VerDate]; it must preserve the
+        // row-aware order.
+        let mut spans = vec![
+            TextSpan {
+                text: "VerDate".to_string(),
+                bbox: Rect::new(350.0, 200.0, 85.0, 10.0),
+                font_size: 10.0,
+                sequence: 0,
+                ..Default::default()
+            },
+            TextSpan {
+                text: "skersey".to_string(),
+                bbox: Rect::new(50.0, 195.5, 75.0, 10.0),
+                font_size: 10.0,
+                sequence: 1,
+                ..Default::default()
+            },
+        ];
+
+        PdfDocument::reorder_same_line_runs(&mut spans);
+
+        let texts: Vec<&str> = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, vec!["VerDate", "skersey"]);
+    }
+
+    #[test]
+    fn reorder_same_line_runs_orders_suffix_superscript_by_x() {
+        use crate::geometry::Rect;
+        use crate::layout::TextSpan;
+
+        // Row-aware/Y-desc order can put the superscript first because it
+        // sits higher. The tentative X-gap validation must not reject this
+        // legitimate mixed-baseline run; the X-sorted gaps are 15pt and 0pt
+        // at max_fs=14, both well under 3.0 * 14 = 42. Final order should
+        // be normal left-to-right text.
+        let mut spans = vec![
+            TextSpan {
+                text: "th".to_string(),
+                bbox: Rect::new(180.0, 205.0, 10.0, 10.0),
+                font_size: 10.0,
+                sequence: 0,
+                ..Default::default()
+            },
+            TextSpan {
+                text: "September".to_string(),
+                bbox: Rect::new(100.0, 200.0, 50.0, 14.0),
+                font_size: 14.0,
+                sequence: 1,
+                ..Default::default()
+            },
+            TextSpan {
+                text: "11".to_string(),
+                bbox: Rect::new(165.0, 200.0, 15.0, 14.0),
+                font_size: 14.0,
+                sequence: 2,
+                ..Default::default()
+            },
+        ];
+
+        PdfDocument::reorder_same_line_runs(&mut spans);
+
+        let texts: Vec<&str> = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, vec!["September", "11", "th"]);
     }
 }
