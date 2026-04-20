@@ -9455,7 +9455,32 @@ impl PdfDocument {
                                 })
                             };
                             if let Some(r) = role {
-                                role_map.entry(mcid).or_insert(r);
+                                // Heading wins over list role on the same MCID.
+                                // The comment further up in this function asserts the
+                                // precedence ("Heading takes precedence over list role
+                                // on the same MCR"); plain `or_insert` would silently
+                                // keep whichever role was seen first when the same
+                                // MCID appears in two `OrderedContent` entries
+                                // (e.g. one referenced from an /H1 sibling and one
+                                // from an enclosing /LI in a tagged-tree quirk).
+                                use std::collections::hash_map::Entry;
+                                match role_map.entry(mcid) {
+                                    Entry::Vacant(e) => {
+                                        e.insert(r);
+                                    },
+                                    Entry::Occupied(mut e) => {
+                                        let existing = *e.get();
+                                        let new_is_heading =
+                                            matches!(r, crate::pipeline::StructRole::Heading(_));
+                                        let existing_is_heading = matches!(
+                                            existing,
+                                            crate::pipeline::StructRole::Heading(_)
+                                        );
+                                        if new_is_heading && !existing_is_heading {
+                                            e.insert(r);
+                                        }
+                                    },
+                                }
                             }
                             // First block_id wins per MCID — multiple OrderedContent
                             // entries can share an MCID when the same content is
@@ -9595,9 +9620,20 @@ impl PdfDocument {
                         }
                         let alt = format!("Image {} from page {}", i + 1, page_index + 1);
                         if data_uri.len() > MAX_BASE64_DATA_URI {
+                            // Estimate decoded binary size from the base64
+                            // payload: each 4 chars decode to 3 bytes (minus
+                            // padding). Drop the `data:...;base64,` prefix
+                            // before measuring.
+                            let payload = data_uri
+                                .split_once(',')
+                                .map(|(_, p)| p)
+                                .unwrap_or(&data_uri);
+                            let unpadded = payload.trim_end_matches('=').len();
+                            let approx_binary_kb = (unpadded * 3 / 4) / 1024;
                             markdown.push_str(&format!(
-                                "<!-- ![{}] suppressed: {} KB exceeds {} KB inline-image cap -->\n\n",
+                                "<!-- ![{}] suppressed: ~{} KB decoded image (base64 data URI {} KB) exceeds {} KB inline-image cap -->\n\n",
                                 alt,
+                                approx_binary_kb,
                                 data_uri.len() / 1024,
                                 MAX_BASE64_DATA_URI / 1024
                             ));

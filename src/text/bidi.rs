@@ -1,51 +1,51 @@
 //! Unicode Bidirectional Algorithm (UAX #9) helpers for PDF text
 //! extraction.
 //!
-//! PDF content streams emit Arabic and Hebrew glyphs in *visual order*
-//! (right-to-left runs are stored left-to-right after font shaping).
-//! Converting that to plain text or markdown for downstream consumers
-//! requires reordering each line back into *logical order* so search,
-//! diffing and screen readers behave correctly.
+//! Extracted PDF text can contain Arabic and Hebrew runs in either
+//! *visual order* (typical of older Acrobat outputs and a few
+//! tagged-PDF flows) or *logical order* (the common case for tools
+//! that explicitly post-process to Unicode logical order, including
+//! the pdfium `hebrew_mirrored.pdf` test fixture). The PDF
+//! specification does not constrain which order a producer chooses;
+//! callers must know which case they have before reordering.
 //!
 //! This module is a thin wrapper around the `unicode-bidi` crate
-//! (UAX #9 implementation). It exposes two operations the converters
+//! (UAX #9 implementation). It exposes the operations the converters
 //! actually need:
 //! - `looks_rtl(text)` — quick yes/no check for whether `text` contains
 //!   any RTL characters worth running the bidi algorithm against.
 //! - `reorder_visual_to_logical(text)` — given a single visual-order
 //!   line, returns the logical-order string with embedded LTR runs
 //!   (numerals, English words) preserved in their natural reading
-//!   direction.
+//!   direction. **Caller is responsible for knowing the input is in
+//!   visual order.** The default markdown converter does NOT call
+//!   this for that reason.
+//! - `paragraph_is_rtl(text)` — dominant paragraph direction per UAX
+//!   #9 §3.3.1 (level of the first strong character).
 //!
-//! Issue #377 D7: the `right_to_left_02` fixture is an Arabic government
-//! document where pdf_oxide currently emits visually-correct but
-//! logically-scrambled text and inserts spurious `**bold**` markers in
-//! the middle of words because shaping forms confuse the font-weight
-//! detector.
+//! Issue #377 D7 background: the `right_to_left_02` fixture is an
+//! Arabic government document where pdf_oxide previously inserted
+//! spurious `**bold**` markers around individual letters because
+//! contextual glyph forms (initial / medial / final shapes) flipped
+//! the font-weight detector. The markdown converter strips those
+//! markers (see `pipeline::converters::markdown::strip_inline_emphasis_in_rtl`)
+//! while leaving order alone.
 
 use unicode_bidi::BidiInfo;
 
 /// Cheap pre-check: does `text` look like it contains any RTL
 /// characters? Used by the converter to skip the bidi pass entirely
 /// for pure-LTR pages (the common case).
+///
+/// Delegates to `crate::text::rtl_detector::is_rtl_text` so the
+/// authoritative list of supported RTL Unicode ranges (Hebrew,
+/// Arabic main, Arabic Supplement, Arabic Extended-A, Arabic
+/// Presentation Forms-A and -B) lives in exactly one place. A
+/// previous inline copy of those ranges in this module risked
+/// silent drift when one was updated and the other was not.
 pub fn looks_rtl(text: &str) -> bool {
-    text.chars().any(|c| {
-        let code = c as u32;
-        // Hebrew block (U+0590..U+05FF), Arabic block (U+0600..U+06FF),
-        // Arabic Supplement (U+0750..U+077F), Arabic Extended-A
-        // (U+08A0..U+08FF), Arabic Presentation Forms-A (U+FB50..U+FDFF),
-        // Arabic Presentation Forms-B (U+FE70..U+FEFF). Matches the
-        // ranges in src/text/rtl_detector.rs.
-        matches!(
-            code,
-            0x0590..=0x05FF
-                | 0x0600..=0x06FF
-                | 0x0750..=0x077F
-                | 0x08A0..=0x08FF
-                | 0xFB50..=0xFDFF
-                | 0xFE70..=0xFEFF
-        )
-    })
+    text.chars()
+        .any(|c| crate::text::rtl_detector::is_rtl_text(c as u32))
 }
 
 /// Reorder a single line of visual-order text into logical order using
@@ -170,6 +170,30 @@ mod tests {
     #[test]
     fn paragraph_is_not_rtl_for_pure_english() {
         assert!(!paragraph_is_rtl("This is English"));
+    }
+
+    /// `looks_rtl` and `crate::text::rtl_detector::is_rtl_text` must
+    /// agree on every codepoint, since the bidi module delegates to
+    /// the detector. Pin the parity to catch any future drift in
+    /// either direction.
+    #[test]
+    fn looks_rtl_delegates_to_rtl_detector() {
+        for cp in [
+            // Edges of every supported block.
+            0x058F, 0x0590, 0x05FF, 0x0600, 0x0633, 0x06FF, 0x0700, 0x074F, 0x0750, 0x077F, 0x0780,
+            0x08A0, 0x08FF, 0x0900, 0xFB4F, 0xFB50, 0xFDFF, 0xFE00, 0xFE70, 0xFEFE, 0xFEFF, 0xFF00,
+        ] {
+            if let Some(c) = char::from_u32(cp) {
+                let s = c.to_string();
+                let bidi_says = looks_rtl(&s);
+                let detector_says = crate::text::rtl_detector::is_rtl_text(cp);
+                assert_eq!(
+                    bidi_says, detector_says,
+                    "U+{:04X}: looks_rtl={} but rtl_detector::is_rtl_text={}",
+                    cp, bidi_says, detector_says
+                );
+            }
+        }
     }
 
     /// `paragraph_is_rtl` must reflect the *dominant* paragraph
