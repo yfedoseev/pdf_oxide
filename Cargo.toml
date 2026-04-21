@@ -180,7 +180,7 @@ fontdb = { version = "0.23", optional = true }
 rustybuzz = { version = "0.20", optional = true }
 
 lzw = "0.10.0"
-uuid = { version = "1.0", features = ["v4", "js"] }
+uuid = { version = "1.23", features = ["v4", "js"] }
 
 # Barcode/QR code generation (optional)
 qrcode = { version = "0.14", optional = true }
