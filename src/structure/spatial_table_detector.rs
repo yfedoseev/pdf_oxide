@@ -902,11 +902,24 @@ fn assign_spans_to_cells(
     }
 }
 
+/// Maximum number of detected columns the split-column detector can
+/// analyse. Grids wider than this skip the check; extremely wide
+/// candidates are rare and have other defences upstream.
+const MAX_MASK_COLUMNS: usize = 128;
+
+/// Minimum share of modal rows a column-component must contain to
+/// count as "significant" for split-detection purposes. Chosen to
+/// admit the original split-flow shape (the DB10 reproducer's modal
+/// rows split evenly across two halves) while avoiding obvious
+/// overfitting. Heuristic, not corpus-calibrated.
+const MIN_SPLIT_GROUP_ROW_SHARE: f32 = 0.20;
+
 fn validate_table_structure_internal(grid: &GridStructure, config: &TableDetectionConfig) -> bool {
+    let num_cols = grid.columns.len();
     let total_cells: usize = grid
         .cells
         .iter()
-        .flat_map(|row| row.iter())
+        .flat_map(|row| row.iter().take(num_cols))
         .map(|cell| if cell.is_empty() { 0 } else { 1 })
         .sum();
     if total_cells < config.min_table_cells {
@@ -915,7 +928,12 @@ fn validate_table_structure_internal(grid: &GridStructure, config: &TableDetecti
     let cell_counts: Vec<usize> = grid
         .cells
         .iter()
-        .map(|row| row.iter().filter(|cell| !cell.is_empty()).count())
+        .map(|row| {
+            row.iter()
+                .take(num_cols)
+                .filter(|cell| !cell.is_empty())
+                .count()
+        })
         .collect();
     if cell_counts.is_empty() {
         return false;
@@ -931,7 +949,139 @@ fn validate_table_structure_internal(grid: &GridStructure, config: &TableDetecti
         .iter()
         .filter(|&&count| count == most_common_count)
         .count();
-    (regular_rows as f32 / cell_counts.len() as f32) >= config.regular_row_ratio
+    if (regular_rows as f32 / cell_counts.len() as f32) < config.regular_row_ratio {
+        return false;
+    }
+
+    if has_split_modal_column_groups(grid, most_common_count) {
+        return false;
+    }
+
+    true
+}
+
+/// Returns `true` when the modal rows of `grid` partition into two or
+/// more disconnected column-co-occurrence components, each backed by a
+/// significant share of modal rows. This signature catches "two prose
+/// flows mis-clustered as one table" without rejecting hierarchical
+/// tables whose modal data rows are sparse but internally connected.
+///
+/// The check operates only on rows whose populated-cell count equals
+/// `most_common_count`. For each such row, the populated columns form
+/// a co-occurrence clique. The union of those cliques forms a graph
+/// over columns; its connected components are computed via bitmask
+/// flood-fill. If two or more components each contain at least two
+/// columns and are supported by at least `MIN_SPLIT_GROUP_ROW_SHARE`
+/// of the modal rows, the grid is rejected as split-flow.
+///
+/// Heuristic, not corpus-calibrated.
+fn has_split_modal_column_groups(grid: &GridStructure, most_common_count: usize) -> bool {
+    let num_cols = grid.columns.len();
+
+    // A meaningful split needs at least 4 columns (two groups of >=2)
+    // and at least 2 populated cells per modal row.
+    if !(4..=MAX_MASK_COLUMNS).contains(&num_cols) || most_common_count < 2 {
+        return false;
+    }
+
+    // Collect column-occupancy masks for the modal rows. Bounded by
+    // `num_cols` so `most_common_count` (computed over the same bounded
+    // slice upstream) and `populated` here share one column universe;
+    // also keeps every `1u128 << idx` shift in range of the u128 mask.
+    let modal_masks: Vec<u128> = grid
+        .cells
+        .iter()
+        .filter_map(|row| {
+            let populated = row
+                .iter()
+                .take(num_cols)
+                .filter(|cell| !cell.is_empty())
+                .count();
+
+            if populated != most_common_count {
+                return None;
+            }
+
+            let mut mask = 0u128;
+            for (idx, cell) in row.iter().take(num_cols).enumerate() {
+                if !cell.is_empty() {
+                    mask |= 1u128 << idx;
+                }
+            }
+
+            if mask.count_ones() >= 2 {
+                Some(mask)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Need enough modal rows to make the share threshold meaningful.
+    if modal_masks.len() < 4 {
+        return false;
+    }
+
+    let min_component_rows =
+        ((modal_masks.len() as f32) * MIN_SPLIT_GROUP_ROW_SHARE).ceil() as usize;
+
+    // Build column adjacency: two columns are adjacent iff they ever
+    // co-occur in the same modal row.
+    let mut adjacency: Vec<u128> = vec![0u128; num_cols];
+    let mut active_columns: u128 = 0;
+
+    for &mask in &modal_masks {
+        active_columns |= mask;
+        let mut bits = mask;
+        while bits != 0 {
+            let bit = bits & bits.wrapping_neg();
+            let col = bit.trailing_zeros() as usize;
+            adjacency[col] |= mask;
+            bits &= !bit;
+        }
+    }
+
+    // Walk connected components by bitmask flood-fill. Count how many
+    // are "significant" (>=2 columns AND >=min_component_rows modal
+    // rows containing at least one of their columns).
+    let mut remaining = active_columns;
+    let mut significant_components = 0usize;
+
+    while remaining != 0 {
+        let seed_bit = remaining & remaining.wrapping_neg();
+        let mut component: u128 = 0;
+        let mut frontier: u128 = seed_bit;
+
+        while frontier != 0 {
+            let bit = frontier & frontier.wrapping_neg();
+            frontier &= !bit;
+
+            if component & bit != 0 {
+                continue;
+            }
+
+            component |= bit;
+            let col = bit.trailing_zeros() as usize;
+            frontier |= adjacency[col] & !component;
+        }
+
+        remaining &= !component;
+
+        let component_cols = component.count_ones() as usize;
+        let component_row_support = modal_masks
+            .iter()
+            .filter(|&&mask| mask & component != 0)
+            .count();
+
+        if component_cols >= 2 && component_row_support >= min_component_rows {
+            significant_components += 1;
+            if significant_components >= 2 {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 /// Backward compatibility: Indices of spans belonging to a table.
@@ -4979,5 +5129,240 @@ mod tests {
         for (i, t) in tables.iter().enumerate() {
             assert_eq!(t.col_count, 3, "Table {} should have 3 columns, got {}", i, t.col_count);
         }
+    }
+
+    // -----------------------------------------------------------------
+    // validate_table_structure_internal: split-column-group tests
+    //
+    // These exercise has_split_modal_column_groups, the structural
+    // check that replaced the row-density gate. The detector rejects
+    // grids whose modal rows partition into two or more disconnected
+    // column-co-occurrence components. make_split_grid models the
+    // false-positive shape (two prose flows mis-clustered into one
+    // grid); make_grouped_grid models the sparse grouped-row-header
+    // shape from the scientific-table regression class; the real
+    // failure may also involve upstream column over-counting, while
+    // this unit fixture pins the validator-level property that sparse
+    // modal rows with connected populated columns are accepted.
+    // -----------------------------------------------------------------
+
+    /// Build a minimal GridStructure with `num_rows` rows and
+    /// `num_cols` columns, where every row populates exactly
+    /// `populated_per_row` cells (the first N columns). Numeric
+    /// fields of `ColumnCluster` / `RowCluster` are arbitrary —
+    /// `validate_table_structure_internal` reads only
+    /// `grid.columns.len()` and the emptiness of each cell.
+    fn make_uniform_grid(
+        num_cols: usize,
+        num_rows: usize,
+        populated_per_row: usize,
+    ) -> GridStructure {
+        let columns = (0..num_cols)
+            .map(|_| ColumnCluster {
+                x_center: 0.0,
+                x_min: 0.0,
+                x_max: 0.0,
+                span_indices: vec![],
+            })
+            .collect();
+        let rows = (0..num_rows)
+            .map(|_| RowCluster {
+                y_center: 0.0,
+                y_min: 0.0,
+                y_max: 0.0,
+                span_indices: vec![],
+            })
+            .collect();
+        let cells = (0..num_rows)
+            .map(|_| {
+                (0..num_cols)
+                    .map(|c| {
+                        if c < populated_per_row {
+                            vec![0usize]
+                        } else {
+                            vec![]
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        GridStructure {
+            columns,
+            rows,
+            cells,
+        }
+    }
+
+    /// Build a GridStructure modelling two adjacent text flows
+    /// mis-clustered into one candidate grid. The first `num_cols / 2`
+    /// columns form the "left flow"; the remaining columns form the
+    /// "right flow". Rows alternate between populating only the left
+    /// flow and only the right flow. All rows have the same populated
+    /// cardinality (`num_cols / 2`), so the regular-row-ratio gate
+    /// passes at 1.00. `num_cols` must be even.
+    fn make_split_grid(num_cols: usize, num_rows: usize) -> GridStructure {
+        assert!(num_cols.is_multiple_of(2), "make_split_grid requires even num_cols");
+        let half = num_cols / 2;
+        let columns = (0..num_cols)
+            .map(|_| ColumnCluster {
+                x_center: 0.0,
+                x_min: 0.0,
+                x_max: 0.0,
+                span_indices: vec![],
+            })
+            .collect();
+        let rows = (0..num_rows)
+            .map(|_| RowCluster {
+                y_center: 0.0,
+                y_min: 0.0,
+                y_max: 0.0,
+                span_indices: vec![],
+            })
+            .collect();
+        let cells = (0..num_rows)
+            .map(|r| {
+                let left_row = r % 2 == 0;
+                (0..num_cols)
+                    .map(|c| {
+                        let in_left_half = c < half;
+                        if left_row == in_left_half {
+                            vec![0usize]
+                        } else {
+                            vec![]
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        GridStructure {
+            columns,
+            rows,
+            cells,
+        }
+    }
+
+    /// Build a GridStructure modelling a hierarchical scientific table.
+    /// `total_cols` columns; the first `group_cols` are populated only
+    /// in the first row of each group of `group_size` consecutive rows;
+    /// the remaining columns are populated in every row. Models the
+    /// failure shape from arxiv_2510.24670v2: grouped row-headers above
+    /// dense data columns. The over-counting that the maintainer
+    /// described occurs upstream of this fixture; here we model the
+    /// post-clustering grid the validator actually sees. Numeric
+    /// cluster fields are arbitrary, matching the convention used by
+    /// `make_uniform_grid` and `make_split_grid`.
+    fn make_grouped_grid(
+        total_cols: usize,
+        num_rows: usize,
+        group_cols: usize,
+        group_size: usize,
+    ) -> GridStructure {
+        assert!(group_cols < total_cols, "group_cols must be < total_cols");
+        assert!(group_size > 0, "group_size must be positive");
+        let columns = (0..total_cols)
+            .map(|_| ColumnCluster {
+                x_center: 0.0,
+                x_min: 0.0,
+                x_max: 0.0,
+                span_indices: vec![],
+            })
+            .collect();
+        let rows = (0..num_rows)
+            .map(|_| RowCluster {
+                y_center: 0.0,
+                y_min: 0.0,
+                y_max: 0.0,
+                span_indices: vec![],
+            })
+            .collect();
+        let cells = (0..num_rows)
+            .map(|r| {
+                let is_group_header = r % group_size == 0;
+                (0..total_cols)
+                    .map(|c| {
+                        let populated = if c < group_cols {
+                            is_group_header
+                        } else {
+                            true
+                        };
+                        if populated {
+                            vec![0usize]
+                        } else {
+                            vec![]
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        GridStructure {
+            columns,
+            rows,
+            cells,
+        }
+    }
+
+    /// 6 columns, 6 rows, modal rows alternate between {0,1,2} and
+    /// {3,4,5}. Two disconnected components of 3 columns each, each
+    /// with 3 modal rows of support. Default profile.
+    #[test]
+    fn validate_rejects_split_column_groups() {
+        let grid = make_split_grid(6, 6);
+        let config = TableDetectionConfig::default();
+        assert!(!validate_table_structure_internal(&grid, &config));
+    }
+
+    /// Same fixture, strict profile. The strict profile's stronger
+    /// regular_row_ratio (0.8) does not catch this; the split-column
+    /// detector does.
+    #[test]
+    fn validate_rejects_split_column_groups_under_strict_profile() {
+        let grid = make_split_grid(6, 6);
+        let config = TableDetectionConfig::strict();
+        assert!(!validate_table_structure_internal(&grid, &config));
+    }
+
+    /// 11 columns, 5 rows, every row populates every column. One
+    /// component spanning all columns → accepted.
+    #[test]
+    fn validate_accepts_dense_table() {
+        let grid = make_uniform_grid(11, 5, 11);
+        let config = TableDetectionConfig::default();
+        assert!(validate_table_structure_internal(&grid, &config));
+    }
+
+    /// 6 columns, 5 rows, every row populates the first 4 columns.
+    /// The old density gate would have admitted this at the boundary
+    /// (4/6 = 2/3). One connected component of 4 columns → accepted.
+    #[test]
+    fn validate_accepts_sparse_connected_table() {
+        let grid = make_uniform_grid(6, 5, 4);
+        let config = TableDetectionConfig::default();
+        assert!(validate_table_structure_internal(&grid, &config));
+    }
+
+    /// 8 columns, 12 rows, grouped row-headers occupy the first 2
+    /// columns and are populated only in the first row of each group
+    /// of 4. Models arxiv_2510.24670v2's failure shape (post-
+    /// clustering): 9 modal data rows populate columns 2..8, six data
+    /// columns all connected, one component → accepted. The real
+    /// failure may also involve upstream column over-counting; this
+    /// fixture pins the validator-level property we care about:
+    /// sparse modal rows whose populated columns form one connected
+    /// component must be accepted.
+    #[test]
+    fn validate_accepts_hierarchical_grouped_table() {
+        let grid = make_grouped_grid(8, 12, 2, 4);
+        let config = TableDetectionConfig::default();
+        assert!(validate_table_structure_internal(&grid, &config));
+    }
+
+    /// num_cols = 3 short-circuits has_split_modal_column_groups
+    /// (num_cols < 4), so a small dense grid passes. Documents the
+    /// boundary.
+    #[test]
+    fn validate_accepts_three_column_grid() {
+        let grid = make_uniform_grid(3, 4, 3);
+        let config = TableDetectionConfig::default();
+        assert!(validate_table_structure_internal(&grid, &config));
     }
 }
