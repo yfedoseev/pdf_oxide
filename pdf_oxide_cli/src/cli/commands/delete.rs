@@ -35,13 +35,9 @@ pub fn run(
         editor.remove_page(idx)?;
     }
 
-    let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| {
-        let stem = file
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output");
-        Path::new(&format!("{stem}_trimmed.pdf")).to_path_buf()
-    });
+    let out_path = output
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| super::output_beside(file, "_trimmed.pdf"));
 
     editor.save_with_options(
         &out_path,

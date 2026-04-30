@@ -4,13 +4,9 @@ use std::path::Path;
 pub fn run(file: &Path, _password: &str, output: Option<&Path>) -> pdf_oxide::Result<()> {
     let mut editor = DocumentEditor::open(file)?;
 
-    let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| {
-        let stem = file
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output");
-        std::path::PathBuf::from(format!("{stem}_decrypted.pdf"))
-    });
+    let out_path = output
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| super::output_beside(file, "_decrypted.pdf"));
 
     editor.save_with_options(
         &out_path,
