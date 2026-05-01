@@ -550,7 +550,7 @@ jobs:
       # v2.0.2 was built with go1.24 and can't typecheck go1.26 stdlib.
       - name: golangci-lint
         if: matrix.os == 'ubuntu-latest'
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.11.4
           working-directory: go
