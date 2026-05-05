@@ -523,7 +523,7 @@ jobs:
       # the original target/ directory structure so CGo finds it at the
       # expected path without any extra staging.
       - name: Download native lib artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: native-lib-${{ matrix.os }}-${{ matrix.os == 'ubuntu-latest' && 'extended' || 'go' }}
 
@@ -618,7 +618,7 @@ jobs:
           node-version: '20'
 
       - name: Download native lib artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: native-lib-${{ matrix.os }}-extended
 
@@ -767,7 +767,7 @@ jobs:
       # signatures, tsa-client, system-fonts) so UNSUPPORTED stubs don't
       # shadow the assertions.
       - name: Download native lib artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: native-lib-${{ matrix.os }}-extended
 
@@ -888,7 +888,7 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Download native lib artifact (default features)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: native-lib-ubuntu-latest-default
 
