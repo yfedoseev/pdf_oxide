@@ -163,7 +163,10 @@ jobs:
             --features python,fips \
             --out dist
           if [ "$RUNNER_OS" = "macOS" ]; then
-            delocate-wheel dist/*.whl
+            # DYLD_LIBRARY_PATH lets delocate resolve the @rpath reference to
+            # libaws_lc_fips_*_crypto.dylib which lives in the cargo build dir.
+            FIPS_LIB_DIR=$(find target -name "libaws_lc_fips_*_crypto.dylib" -exec dirname {} \; 2>/dev/null | head -1)
+            DYLD_LIBRARY_PATH="${FIPS_LIB_DIR}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" delocate-wheel dist/*.whl
           fi
           if [ "$RUNNER_OS" = "Windows" ]; then
             DLL_DIR=$(find target -name "aws_lc_fips_*_crypto.dll" -exec dirname {} \; 2>/dev/null | head -1)
