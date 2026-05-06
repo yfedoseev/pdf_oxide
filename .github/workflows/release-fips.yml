@@ -225,6 +225,10 @@ jobs:
         shell: bash
         run: |
           uv tool install maturin
+          # delocate bundles the aws-lc-fips dylib into the macOS wheel so it
+          # is self-contained; maturin calls delocate-wheel automatically when
+          # delocate is on PATH.
+          if [ "$RUNNER_OS" = "macOS" ]; then pip install delocate; fi
           maturin build --release \
             --target ${{ matrix.target }} \
             --features python,fips \
