@@ -125,7 +125,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             artifact: pdf_oxide_fips-python-linux-aarch64
           - label: macOS x86_64
-            runs-on: macos-13
+            runs-on: macos-13-xlarge
             target: x86_64-apple-darwin
             artifact: pdf_oxide_fips-python-macos-x86_64
           - label: macOS arm64
@@ -310,7 +310,7 @@ jobs:
             prebuild_dir: linux-arm64
             lib_name: libpdf_oxide.so
           - label: macOS x64
-            runs-on: macos-13
+            runs-on: macos-13-xlarge
             target: x86_64-apple-darwin
             prebuild_dir: darwin-x64
             lib_name: libpdf_oxide.dylib
@@ -486,7 +486,7 @@ jobs:
             rid: linux-arm64
             lib_name: libpdf_oxide.so
           - label: osx-x64
-            runs-on: macos-13
+            runs-on: macos-13-xlarge
             target: x86_64-apple-darwin
             rid: osx-x64
             lib_name: libpdf_oxide.dylib
@@ -640,7 +640,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             go_dir: linux_arm64
           - label: darwin amd64
-            runs-on: macos-13
+            runs-on: macos-13-xlarge
             target: x86_64-apple-darwin
             go_dir: darwin_amd64
           - label: darwin arm64

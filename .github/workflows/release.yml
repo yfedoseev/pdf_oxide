@@ -1107,17 +1107,15 @@ jobs:
         run: cargo publish -p pdf_oxide --dry-run
 
       - name: Publish to crates.io
-        run: cargo publish -p pdf_oxide
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
-
-      - name: Publish CLI to crates.io
-        run: cargo publish -p pdf_oxide_cli
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
-
-      - name: Publish MCP server to crates.io
-        run: cargo publish -p pdf_oxide_mcp
+        run: |
+          V="${{ needs.validate.outputs.version }}"
+          for crate in pdf_oxide pdf_oxide_cli pdf_oxide_mcp; do
+            if curl -sf "https://crates.io/api/v1/crates/$crate/$V" -H "User-Agent: pdf_oxide-release-ci" > /dev/null; then
+              echo "$crate $V already on crates.io — skipping"
+            else
+              cargo publish -p $crate
+            fi
+          done
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
 
@@ -1177,7 +1175,14 @@ jobs:
 
       - name: Publish to npm
         working-directory: wasm-out
-        run: npm publish --access public
+        run: |
+          V="${{ needs.validate.outputs.version }}"
+          PKG=$(node -p "require('./package.json').name")
+          if npm view "$PKG@$V" version > /dev/null 2>&1; then
+            echo "$PKG $V already on npm — skipping"
+          else
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -1329,7 +1334,14 @@ jobs:
 
       - name: Publish to npm
         working-directory: js
-        run: npm publish --access public
+        run: |
+          V="${{ needs.validate.outputs.version }}"
+          PKG=$(node -p "require('./package.json').name")
+          if npm view "$PKG@$V" version > /dev/null 2>&1; then
+            echo "$PKG $V already on npm — skipping"
+          else
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
