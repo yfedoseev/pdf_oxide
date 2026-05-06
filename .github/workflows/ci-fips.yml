@@ -1,0 +1,171 @@
+name: FIPS CryptoProvider CI
+
+# Validates that the --features fips build compiles and smoke-tests
+# cleanly on every target platform.  Runs on PRs so regressions are
+# caught before a release tag is pushed.  No artifacts are published.
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'pyproject.toml'
+      - '.github/workflows/ci-fips.yml'
+      - '.github/workflows/release-fips.yml'
+  push:
+    branches: [main, develop]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'pyproject.toml'
+      - '.github/workflows/ci-fips.yml'
+      - '.github/workflows/release-fips.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ─── Rust lib: compile + test with --features fips ─────────────────
+  fips-lib:
+    name: Rust lib (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Install build deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm golang-go
+
+      - name: Install build deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake nasm go
+
+      - name: Install build deps (Windows)
+        if: runner.os == 'Windows'
+        run: choco install nasm -y
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-fips-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-fips-cargo-
+
+      - name: Build --features fips
+        run: cargo build --features fips
+
+      - name: Test --features fips
+        run: cargo test --features fips
+
+  # ─── Python wheel: build + smoke-test on all four release platforms
+  # (linux x86_64, linux aarch64, macOS arm64, Windows x86_64) using the
+  # same manylinux_2_28 + clang setup as release-fips.yml.
+  fips-python:
+    name: Python wheel FIPS (${{ matrix.label }})
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux x86_64
+            runs-on: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - label: linux aarch64
+            runs-on: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - label: macOS arm64
+            runs-on: macos-latest
+            target: aarch64-apple-darwin
+          - label: windows x86_64
+            runs-on: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Install build deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm golang-go
+
+      - name: Install build deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake nasm go
+
+      - name: Install build deps (Windows)
+        if: runner.os == 'Windows'
+        run: choco install nasm -y
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build FIPS wheel (Linux — manylinux_2_28)
+        if: runner.os == 'Linux'
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          manylinux: '2_28'
+          # Same deps + clang override as release-fips.yml: GCC in manylinux_2_28
+          # emits .data.rel.ro.local sections that the AWS-LC FIPS delocator rejects.
+          before-script-linux: |
+            if command -v dnf >/dev/null 2>&1; then
+              dnf install -y nasm golang clang || (dnf install -y epel-release && dnf install -y nasm golang clang)
+            else
+              yum install -y nasm golang clang || (yum install -y epel-release && yum install -y nasm golang clang)
+            fi
+            export CC=clang CXX=clang++
+          args: --release --target ${{ matrix.target }} --features python,fips --out dist
+
+      - name: Build FIPS wheel (macOS / Windows)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          uv tool install maturin
+          maturin build --release \
+            --target ${{ matrix.target }} \
+            --features python,fips \
+            --out dist
+
+      - name: Smoke-test wheel
+        if: |
+          (matrix.target == 'x86_64-unknown-linux-gnu' && runner.os == 'Linux' && runner.arch == 'X64') ||
+          (matrix.target == 'aarch64-unknown-linux-gnu' && runner.os == 'Linux' && runner.arch == 'ARM64') ||
+          (matrix.target == 'aarch64-apple-darwin' && runner.os == 'macOS' && runner.arch == 'ARM64') ||
+          (matrix.target == 'x86_64-pc-windows-msvc' && runner.os == 'Windows')
+        shell: bash
+        run: |
+          uv venv
+          uv pip install dist/*.whl
+          uv run --no-sync python -c "import pdf_oxide; pre=pdf_oxide.crypto_active_provider(); assert pre=='rust-crypto (default, lazy)',pre; providers=pdf_oxide.crypto_available_providers(); assert 'aws-lc-rs' in providers,providers; pdf_oxide.crypto_use_fips(); assert pdf_oxide.crypto_active_provider()=='aws-lc-rs'; print('FIPS smoke test passed:',providers)"

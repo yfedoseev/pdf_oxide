@@ -143,11 +143,11 @@ jobs:
 
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake nasm
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm golang-go
 
       - name: Install build deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install cmake nasm
+        run: brew install cmake nasm go
 
       - name: Install build deps (Windows)
         if: runner.os == 'Windows'
@@ -194,14 +194,17 @@ jobs:
         with:
           target: ${{ matrix.target }}
           manylinux: '2_28'
-          # AWS-LC build needs nasm + cmake. cmake is preinstalled in the
-          # manylinux_2_28 image; nasm is not.
+          # AWS-LC FIPS build needs nasm, cmake, golang (for delocate codegen),
+          # and clang.  GCC in manylinux_2_28 emits .data.rel.ro.local sections
+          # that the FIPS delocator rejects as a boundary violation; clang avoids
+          # this.  cmake is preinstalled in the image; the others are not.
           before-script-linux: |
             if command -v dnf >/dev/null 2>&1; then
-              dnf install -y nasm || (dnf install -y epel-release && dnf install -y nasm)
+              dnf install -y nasm golang clang || (dnf install -y epel-release && dnf install -y nasm golang clang)
             else
-              yum install -y nasm || (yum install -y epel-release && yum install -y nasm)
+              yum install -y nasm golang clang || (yum install -y epel-release && yum install -y nasm golang clang)
             fi
+            export CC=clang CXX=clang++
           args: --release --target ${{ matrix.target }} --features python,fips --out dist
 
       - name: Verify manylinux_2_28 tag
@@ -219,6 +222,7 @@ jobs:
 
       - name: Build FIPS wheel (macOS / Windows)
         if: runner.os != 'Linux'
+        shell: bash
         run: |
           uv tool install maturin
           maturin build --release \
@@ -239,20 +243,7 @@ jobs:
         run: |
           uv venv
           uv pip install dist/*.whl
-          uv run python -c "
-          import pdf_oxide
-          # crypto_active_provider() is non-initializing — calling it
-          # before crypto_use_fips() must NOT lazy-install the default
-          # provider. Pre-FIPS, the name carries the lazy marker so we
-          # can distinguish "no provider set" from a committed one.
-          pre = pdf_oxide.crypto_active_provider()
-          assert pre == 'rust-crypto (default, lazy)', pre
-          providers = pdf_oxide.crypto_available_providers()
-          assert 'aws-lc-rs' in providers, providers
-          pdf_oxide.crypto_use_fips()
-          assert pdf_oxide.crypto_active_provider() == 'aws-lc-rs'
-          print('FIPS wheel smoke test passed:', providers)
-          "
+          uv run --no-sync python -c "import pdf_oxide; pre=pdf_oxide.crypto_active_provider(); assert pre=='rust-crypto (default, lazy)',pre; providers=pdf_oxide.crypto_available_providers(); assert 'aws-lc-rs' in providers,providers; pdf_oxide.crypto_use_fips(); assert pdf_oxide.crypto_active_provider()=='aws-lc-rs'; print('FIPS smoke test passed:',providers)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -325,11 +316,11 @@ jobs:
 
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake nasm
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm golang-go
 
       - name: Install build deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install cmake nasm
+        run: brew install cmake nasm go
 
       - name: Install build deps (Windows)
         if: runner.os == 'Windows'
@@ -501,11 +492,11 @@ jobs:
 
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake nasm
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm golang-go
 
       - name: Install build deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install cmake nasm
+        run: brew install cmake nasm go
 
       - name: Install build deps (Windows)
         if: runner.os == 'Windows'
@@ -652,11 +643,11 @@ jobs:
 
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake nasm
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm golang-go
 
       - name: Install build deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install cmake nasm
+        run: brew install cmake nasm go
 
       - name: Install build deps (Windows)
         if: runner.os == 'Windows'

@@ -141,6 +141,10 @@ from .pdf_oxide import (  # noqa: E402
     get_log_level,
     set_log_level,
     setup_logging,
+    # FIPS crypto-provider surface (issue #236)
+    crypto_active_provider,
+    crypto_available_providers,
+    crypto_use_fips,
 )
 
 
@@ -193,5 +197,9 @@ __all__ = [
     "set_log_level",
     "get_log_level",
     "disable_logging",
+    # FIPS crypto-provider surface (issue #236)
+    "crypto_active_provider",
+    "crypto_available_providers",
+    "crypto_use_fips",
 ]
 __version__ = VERSION
