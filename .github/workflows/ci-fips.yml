@@ -153,14 +153,22 @@ jobs:
         shell: bash
         run: |
           uv tool install maturin
-          # delocate bundles the aws-lc-fips dylib into the macOS wheel so it
-          # is self-contained; maturin calls delocate-wheel automatically when
-          # delocate is on PATH.
+          # delocate/delvewheel bundle the aws-lc-fips shared library into the
+          # wheel so it is self-contained (aws-lc-fips-sys builds a .dylib on
+          # macOS and a .dll on Windows rather than a static archive).
           if [ "$RUNNER_OS" = "macOS" ]; then pip install delocate; fi
+          if [ "$RUNNER_OS" = "Windows" ]; then pip install delvewheel; fi
           maturin build --release \
             --target ${{ matrix.target }} \
             --features python,fips \
             --out dist
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            delocate-wheel dist/*.whl
+          fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            DLL_DIR=$(find target -name "aws_lc_fips_*_crypto.dll" -exec dirname {} \; 2>/dev/null | head -1)
+            [ -n "$DLL_DIR" ] && delvewheel repair dist/*.whl --add-path "$DLL_DIR" --wheel-dir dist
+          fi
 
       - name: Smoke-test wheel
         if: |

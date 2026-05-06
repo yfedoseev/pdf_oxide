@@ -7232,7 +7232,7 @@ fn pdf_oxide(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// process-wide registry. That means calling this for display/audit
 /// before :func:`crypto_use_fips` is safe and won't lock the FIPS
 /// opt-in out. Issue #236.
-#[pyo3::pyfunction]
+#[pyfunction]
 fn crypto_active_provider() -> String {
     use crate::crypto::CryptoProvider;
     if crate::crypto::is_set() {
@@ -7247,7 +7247,7 @@ fn crypto_active_provider() -> String {
 /// Always contains ``"rust-crypto"`` (the default permissive
 /// provider). Also contains ``"aws-lc-rs"`` when the wheel was built
 /// with ``--features fips`` — the FIPS 140-3 validated path.
-#[pyo3::pyfunction]
+#[pyfunction]
 fn crypto_available_providers() -> Vec<String> {
     let v = vec!["rust-crypto".to_string()];
     #[cfg(feature = "fips")]
@@ -7271,7 +7271,7 @@ fn crypto_available_providers() -> Vec<String> {
 ///
 /// Raises ``RuntimeError("FIPS feature not compiled in")`` when the
 /// wheel was built without ``--features fips``.
-#[pyo3::pyfunction]
+#[pyfunction]
 fn crypto_use_fips() -> pyo3::PyResult<()> {
     #[cfg(feature = "fips")]
     {
@@ -7304,7 +7304,7 @@ fn crypto_use_fips() -> pyo3::PyResult<()> {
 /// with open("signed.pdf", "wb") as f:
 ///     f.write(signed)
 /// ```
-#[pyo3::pyfunction]
+#[pyfunction]
 #[pyo3(signature = (pdf_data, cert, reason=None, location=None))]
 pub fn py_sign_pdf_bytes<'py>(
     py: pyo3::Python<'py>,
