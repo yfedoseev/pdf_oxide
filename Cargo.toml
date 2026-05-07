@@ -196,7 +196,7 @@ aws-lc-rs = { version = "1", optional = true, features = ["fips"] }
 x509-parser = { version = "0.18", optional = true }   # X.509 certificate parsing
 cms = { version = "0.2", optional = true }            # CMS/PKCS#7 signatures
 rsa = { version = "0.9", optional = true }            # RSA signing
-der = { version = "0.7", optional = true }            # DER encoding
+der = { version = "0.8", optional = true }            # DER encoding
 spki = { version = "0.7", optional = true }           # SubjectPublicKeyInfo — matches der 0.7
 pkcs1 = { version = "0.7", optional = true }          # PKCS#1 RSA format
 pkcs8 = { version = "0.10", optional = true }         # PKCS#8 private keys
