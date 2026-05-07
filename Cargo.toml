@@ -197,7 +197,7 @@ x509-parser = { version = "0.18", optional = true }   # X.509 certificate parsin
 cms = { version = "0.2", optional = true }            # CMS/PKCS#7 signatures
 rsa = { version = "0.9", optional = true }            # RSA signing
 der = { version = "0.7", optional = true }            # DER encoding
-spki = { version = "0.7", optional = true }           # SubjectPublicKeyInfo — matches der 0.7
+spki = { version = "0.7", optional = true }           # SubjectPublicKeyInfo — matches der 0.8
 pkcs1 = { version = "0.7", optional = true }          # PKCS#1 RSA format
 pkcs8 = { version = "0.10", optional = true }         # PKCS#8 private keys
 p12-keystore = { version = "0.2.1", optional = true } # PKCS#12 (.p12/.pfx) parsing
