@@ -6994,6 +6994,21 @@ impl PdfDocument {
         // drop them.
         self.mark_running_artifact_spans(page_index, &mut spans)?;
 
+        // Normalize Unicode typographic spaces (U+2000–U+200B, U+202F, U+205F)
+        // to ASCII space.  Some PDF producers encode word separators as hair-space
+        // or thin-space variants in ToUnicode CMaps (e.g. justified text layouts);
+        // normalising here gives consistent word boundaries to every downstream
+        // consumer (extract_text, kreuzberg word-F1, etc.).
+        for span in &mut spans {
+            if span.text.chars().any(|c| {
+                matches!(c, '\u{2000}'..='\u{200B}' | '\u{202F}' | '\u{205F}')
+            }) {
+                span.text = crate::converters::text_post_processor::TextPostProcessor
+                    ::normalize_unicode_spaces(&span.text)
+                    .into_owned();
+            }
+        }
+
         Ok(spans)
     }
 

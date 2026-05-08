@@ -439,10 +439,41 @@ impl TextPostProcessor {
         )
     }
 
+    /// Map Unicode typographic spaces to U+0020 and strip zero-width spaces.
+    ///
+    /// Some PDF producers use hairspace (U+200A) or other typographic space
+    /// variants (U+2000–U+200A, U+202F, U+205F) as word separators in justified
+    /// layouts, and encode them directly in ToUnicode CMaps.  For extraction
+    /// purposes every Unicode spacing character is equivalent to a regular space;
+    /// keeping the original codepoints breaks word-level tokenisation downstream.
+    ///
+    /// Zero-width space (U+200B) carries no width and is removed entirely.
+    pub(crate) fn normalize_unicode_spaces(text: &str) -> std::borrow::Cow<'_, str> {
+        // Fast path: skip allocation when no typographic spaces are present.
+        let needs_work = text.chars().any(|c| matches!(c,
+            '\u{2000}'..='\u{200B}' | '\u{202F}' | '\u{205F}'
+        ));
+        if !needs_work {
+            return std::borrow::Cow::Borrowed(text);
+        }
+        let mut result = String::with_capacity(text.len());
+        for ch in text.chars() {
+            match ch {
+                // EN QUAD … HAIR SPACE, NARROW NO-BREAK SPACE, MEDIUM MATH SPACE
+                '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' => result.push(' '),
+                // Zero-width space: not a visible character, omit
+                '\u{200B}' => {}
+                _ => result.push(ch),
+            }
+        }
+        std::borrow::Cow::Owned(result)
+    }
+
     /// Apply full text post-processing pipeline.
     ///
-    /// Applies ligature repair, hyphenation removal, whitespace normalization,
-    /// leader dot normalization, and special character spacing in sequence.
+    /// Applies Unicode space normalization, ligature repair, hyphenation
+    /// removal, whitespace normalization, leader dot normalization, and special
+    /// character spacing in sequence.
     ///
     /// # Arguments
     ///
@@ -452,7 +483,8 @@ impl TextPostProcessor {
     ///
     /// Fully processed text with improved extraction quality
     pub fn process(text: &str) -> String {
-        let ligatures_fixed = Self::repair_ligatures(text);
+        let unicode_normalized = Self::normalize_unicode_spaces(text);
+        let ligatures_fixed = Self::repair_ligatures(&unicode_normalized);
         let hyphenated_fixed = Self::rejoin_hyphenated_words(&ligatures_fixed);
         let whitespace_normalized = Self::normalize_whitespace(&hyphenated_fixed);
         let leaders_normalized = Self::normalize_leader_dots(&whitespace_normalized);
@@ -852,5 +884,37 @@ mod tests {
         let output = TextPostProcessor::process(input);
         assert!(output.contains("..."));
         assert!(!output.contains(".................."));
+    }
+
+    #[test]
+    fn test_normalize_unicode_spaces_hair_space() {
+        // U+200A (HAIR SPACE) used as word separator in justified PDFs — must become U+0020
+        let input = "The\u{200A}\u{200A}\u{200A}\u{200A}K2\u{200A}\u{200A}\u{200A}\u{200A}Australian";
+        let output = TextPostProcessor::process(input);
+        assert_eq!(output, "The K2 Australian");
+    }
+
+    #[test]
+    fn test_normalize_unicode_spaces_zero_width() {
+        // U+200B (ZERO WIDTH SPACE) should be removed entirely
+        let input = "word\u{200B}boundary";
+        let output = TextPostProcessor::process(input);
+        assert_eq!(output, "wordboundary");
+    }
+
+    #[test]
+    fn test_normalize_unicode_spaces_range() {
+        // All typographic spaces U+2000–U+200A should collapse to single space
+        let input = "a\u{2000}b\u{2003}c\u{2009}d\u{200A}e";
+        let output = TextPostProcessor::process(input);
+        assert_eq!(output, "a b c d e");
+    }
+
+    #[test]
+    fn test_normalize_unicode_spaces_narrow_no_break() {
+        // U+202F (NARROW NO-BREAK SPACE) → U+0020
+        let input = "100\u{202F}km/h";
+        let output = TextPostProcessor::process(input);
+        assert_eq!(output, "100 km/h");
     }
 }
