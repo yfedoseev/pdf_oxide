@@ -444,6 +444,25 @@ fn parse_r_token(input: &[u8]) -> IResult<&[u8], Token<'_>> {
     Ok((&input[1..], Token::R))
 }
 
+/// Parse a bare identifier as a lenient fallback.
+///
+/// Some malformed PDFs use identifiers without a leading `/`, for example
+/// `OBJR` instead of the spec-correct `/OBJR`. The PDF spec does not define
+/// such bare words, but real-world parsers (poppler, pdfjs) treat them as
+/// Name tokens to avoid failing on otherwise-recoverable documents. We do
+/// the same as a last resort, consuming alphanumeric chars and `_/-+*@`.
+fn parse_bare_identifier(input: &[u8]) -> IResult<&[u8], Token<'_>> {
+    let (rest, word) = take_while(|c: u8| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, b'_' | b'-' | b'+' | b'*' | b'@' | b'.' | b'!' | b'^' | b'~')
+    })(input)?;
+    if word.is_empty() {
+        return Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::TakeWhile1)));
+    }
+    let name = std::str::from_utf8(word).unwrap_or("");
+    Ok((rest, Token::Name(name.to_string())))
+}
+
 /// Parse a single PDF token.
 ///
 /// This is the main entry point for the lexer. It skips whitespace/comments
@@ -456,6 +475,7 @@ fn parse_r_token(input: &[u8]) -> IResult<&[u8], Token<'_>> {
 /// 2. Names (/Type) - must check before numbers (/ could start a name)
 /// 3. Numbers (integers and reals)
 /// 4. Strings (literal and hex)
+/// 5. Bare identifiers (lenient fallback for malformed PDFs like `OBJR`)
 ///
 /// # Errors
 ///
@@ -467,11 +487,12 @@ pub fn token(input: &[u8]) -> IResult<&[u8], Token<'_>> {
 
     // Then parse token
     alt((
-        parse_keyword,        // Check keywords first (true, false, null, etc.)
-        parse_name,           // Then names (/Type)
-        parse_number,         // Then numbers (42, 3.14)
-        parse_literal_string, // Then literal strings
-        parse_hex_string,     // Then hex strings
+        parse_keyword,         // Check keywords first (true, false, null, etc.)
+        parse_name,            // Then names (/Type)
+        parse_number,          // Then numbers (42, 3.14)
+        parse_literal_string,  // Then literal strings
+        parse_hex_string,      // Then hex strings
+        parse_bare_identifier, // Lenient fallback: bare words like OBJR → Name
     ))
     .parse(input)
 }

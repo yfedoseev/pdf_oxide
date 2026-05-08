@@ -226,10 +226,18 @@ pub fn parse_structure_tree(document: &PdfDocument) -> Result<Option<StructTreeR
     // Resolve the StructTreeRoot object
     let struct_tree_root_obj = resolve_object(document, struct_tree_root_ref)?;
 
-    // Parse StructTreeRoot dictionary
-    let struct_tree_dict = struct_tree_root_obj
-        .as_dict()
-        .ok_or_else(|| Error::InvalidPdf("StructTreeRoot is not a dictionary".into()))?;
+    // Parse StructTreeRoot dictionary — treat non-dict (e.g. Null from a
+    // corrupted parse) as "no structure tree" rather than a hard error.
+    let struct_tree_dict = match struct_tree_root_obj.as_dict() {
+        Some(d) => d,
+        None => {
+            log::warn!(
+                "StructTreeRoot resolved to {} (expected dictionary), treating as no structure tree",
+                struct_tree_root_obj.type_name()
+            );
+            return Ok(None);
+        }
+    };
 
     let mut struct_tree = StructTreeRoot::new();
 
