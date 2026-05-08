@@ -211,11 +211,11 @@ fn quality_gate_issue_336() {
 }
 
 // ---------------------------------------------------------------------------
-// nougat_040.pdf — math formula tokenisation gap
-// Remaining gap: math symbol glyph mapping ("!" for certain LaTeX symbols from
-// font F1) and subscripts stored as non-adjacent spans in reading order.
-// These require deep font-encoding or subscript-merging work beyond current scope.
-// Achieved j=0.746 (threshold raised from 0.72 to 0.74 as regression guard).
+// nougat_040.pdf — math formula subscript/notation merging
+// merge_sub_superscript_spans now merges non-adjacent subscript spans (Prx, H1, H2,
+// D1, D2, ∆1, ∆2, ρLap, Xu, etc.) for 1-2 char math variable bases.
+// Remaining gap: "!" glyph mapping (LaTeX font F1 encoding), some compound tokens.
+// Achieved j=0.751 (threshold raised from 0.74 to 0.75 as regression guard).
 // ---------------------------------------------------------------------------
 #[test]
 #[ignore = "requires /tmp/nougat_040.pdf and /tmp/gt_nougat_040.txt"]
@@ -224,17 +224,15 @@ fn quality_gate_nougat_040() {
         "nougat_040",
         "/tmp/nougat_040.pdf",
         "/tmp/gt_nougat_040.txt",
-        0.74,
+        0.75,
     );
 }
 
 // ---------------------------------------------------------------------------
-// pdfa_004.pdf — math subscript/superscript gap
-// Remaining gap: subscript digits ("k₁", "k₂") stored as separate spans at
-// non-adjacent positions in reading order; merging requires knowing which
-// earlier span each subscript belongs to (identified by X-proximity only).
-// Also: math expressions like "(4k)^{4k}" are rendered as separate spans.
-// Achieved j=0.738 (threshold raised from 0.70 to 0.73 as regression guard).
+// pdfa_004.pdf — math subscript/superscript merging IMPROVED in v0.3.46
+// merge_sub_superscript_spans merges k₁→k1, k₂→k2, γk using X-proximity (xd<1.5pt)
+// and Y-offset [12%,75%] of base_fs.  char_widths extended to prevent re-split.
+// Achieved j=0.767 (threshold raised from 0.73 to 0.76 as regression guard).
 // ---------------------------------------------------------------------------
 #[test]
 #[ignore = "requires /tmp/pdfa_004.pdf and /tmp/gt_pdfa_004.txt"]
@@ -243,7 +241,7 @@ fn quality_gate_pdfa_004() {
         "pdfa_004",
         "/tmp/pdfa_004.pdf",
         "/tmp/gt_pdfa_004.txt",
-        0.73,
+        0.76,
     );
 }
 

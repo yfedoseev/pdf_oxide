@@ -4422,6 +4422,11 @@ impl PdfDocument {
                     && s.font_size.is_finite()
             });
 
+            // Merge subscript/superscript spans into their base spans so that
+            // tokens like "k1" and "k2" appear as single words rather than
+            // as isolated fragments interleaved with other spans (pdfa_004).
+            Self::merge_sub_superscript_spans(&mut spans);
+
             // Inline table insertion (issue #315).
             //
             // Tables were previously rendered in a single block appended
@@ -5519,6 +5524,168 @@ impl PdfDocument {
             || (prev_char.is_lowercase() && boundary_char.is_uppercase())
             || (prev_char.is_uppercase() && boundary_char.is_lowercase());
         if is_boundary { Some(boundary_byte) } else { None }
+    }
+
+    /// Merge subscript and superscript spans into their base span.
+    ///
+    /// In math-heavy untagged PDFs, subscript glyphs (e.g. the "1" in "k₁") are
+    /// stored as separate `TextSpan` entries at a slightly lower/higher baseline than
+    /// the base character, and non-adjacent in reading order. The text assembly loop
+    /// emits them as isolated tokens ("k … 1") rather than the expected word ("k1").
+    ///
+    /// A span is classified as a subscript/superscript when ALL of the following hold:
+    ///  - 1–3 ASCII alphanumeric chars (digit or letter, no punctuation)
+    ///  - font_size < 85 % of the page's maximum font size
+    ///  - There exists a preceding "base" span whose right edge (x + width) is within
+    ///    ±0.6 × sub_fs of the subscript's left edge (x-adjacent)
+    ///  - The vertical offset between base and sub is in [8 %, 85 %] of base_fs
+    ///    (distinguishes true sub/superscripts from same-line small caps)
+    ///
+    /// Matched subscript/superscript spans have their text appended to the base and
+    /// are removed from `spans`.
+    fn merge_sub_superscript_spans(spans: &mut Vec<TextSpan>) {
+        let n = spans.len();
+        if n < 2 {
+            return;
+        }
+        let max_fs = spans.iter().map(|s| s.font_size).fold(0f32, f32::max);
+        if max_fs <= 0.0 {
+            return;
+        }
+
+        // For each candidate sub/superscript span, record which base span to merge into.
+        let mut to_merge: Vec<(usize, usize)> = Vec::new(); // (base_idx, sub_idx)
+        let mut already_sub: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+        for i in 0..n {
+            let sub = &spans[i];
+            if sub.text.is_empty() || sub.text.len() > 3 {
+                continue;
+            }
+            if !sub.text.chars().all(|c| c.is_ascii_alphanumeric()) {
+                continue;
+            }
+            // Must be clearly smaller than the dominant font on this page.
+            if sub.font_size >= max_fs * 0.80 {
+                continue;
+            }
+            let sub_fs = sub.font_size;
+            let sub_x = sub.bbox.x;
+            let sub_y = sub.bbox.y;
+
+            // Search backwards for the best-matching base span.
+            let search_limit = 30.min(i);
+            let mut best: Option<(usize, f32)> = None; // (idx, |x_dist|)
+
+            for j in (i.saturating_sub(search_limit)..i).rev() {
+                if already_sub.contains(&j) {
+                    continue;
+                }
+                let base = &spans[j];
+                // Base must be at least 25 % larger than the sub (sub_fs ≤ 0.80×base_fs).
+                if base.font_size < sub_fs * 1.25 {
+                    continue;
+                }
+                // Base span must be a valid subscript host:
+                //   • 1-char bases (single math variable: k, γ, ρ, H, ∆, …)
+                //   • 2-char bases that are NOT two lowercase-ASCII letters
+                //     (accepts "Pr", "εp", "ρε" but rejects "of", "to")
+                // Multi-char lowercase-only strings like "and", "let", "sup"
+                // are English words or common operators; their adjacent digit
+                // spans are handled by the assembly loop and char_widths_boundary_split.
+                let chars: Vec<char> = base.text.chars().collect();
+                let is_valid_base = match chars.len() {
+                    1 => true,
+                    2 => chars.iter().any(|c| !c.is_ascii_lowercase()),
+                    _ => false,
+                };
+                if !is_valid_base {
+                    continue;
+                }
+                let base_right = base.bbox.x + base.bbox.width;
+                let x_dist = sub_x - base_right;
+                let y_diff_abs = (base.bbox.y - sub_y).abs();
+
+                // x must be close to the base's right edge.  Real sub/superscript
+                // glyphs land within ~1.5 pt of the base's advance edge; author
+                // affiliation numbers (which should NOT be merged) typically have a
+                // 3–5 pt gap.  Using an absolute bound (not relative to font size)
+                // keeps the criterion tight across varying font sizes.
+                if x_dist < -0.5 || x_dist > 1.5 {
+                    continue;
+                }
+                // Vertical offset must be in the sub/superscript range.
+                // Lower bound 12 % of base_fs ensures same-line small caps are excluded.
+                // Upper bound 75 % excludes large line-to-line y differences (e.g.
+                // author affiliation numbers on a different baseline row).
+                if y_diff_abs < base.font_size * 0.12 || y_diff_abs > base.font_size * 0.75 {
+                    continue;
+                }
+                let score = x_dist.abs();
+                if best.is_none() || score < best.unwrap().1 {
+                    best = Some((j, score));
+                }
+            }
+
+            if let Some((base_idx, _)) = best {
+                to_merge.push((base_idx, i));
+                already_sub.insert(i);
+            }
+        }
+
+        if to_merge.is_empty() {
+            return;
+        }
+
+        // Collect (base_idx, sub_idx, sub_text, sub_right_edge, sub_char_widths, sub_fs)
+        // before mutating spans.
+        let ops: Vec<(usize, usize, String, f32, Vec<f32>, f32)> = to_merge
+            .iter()
+            .map(|pair| {
+                let (bi, si) = *pair;
+                let sub = &spans[si];
+                (bi, si, sub.text.clone(), sub.bbox.x + sub.bbox.width,
+                 sub.char_widths.clone(), sub.font_size)
+            })
+            .collect();
+
+        // Apply: append sub text to base; extend bbox and char_widths to cover the sub.
+        //
+        // Extending bbox: the assembly loop uses span widths for gap calculations — keeping
+        // the original width would make the gap to the following span appear too large.
+        //
+        // Extending char_widths: char_widths_boundary_split fires whenever cw_len < char_count.
+        // After merging sub text, char_count grows but cw_len stays the same, which would
+        // cause the split to re-separate the merged token (e.g. "k1" → "k 1").  Adding
+        // estimated widths for the sub characters prevents this.
+        for (base_idx, _, sub_text, sub_right, sub_cw, sub_fs) in &ops {
+            let base = &mut spans[*base_idx];
+            base.text.push_str(sub_text);
+            let base_right = base.bbox.x + base.bbox.width;
+            if *sub_right > base_right {
+                base.bbox.width = sub_right - base.bbox.x;
+            }
+            if !base.char_widths.is_empty() {
+                let sub_char_count = sub_text.chars().count();
+                if !sub_cw.is_empty() {
+                    base.char_widths.extend_from_slice(sub_cw);
+                } else {
+                    // Estimate sub char widths at 0.50 em per character.
+                    let w = sub_fs * 0.50;
+                    for _ in 0..sub_char_count {
+                        base.char_widths.push(w);
+                    }
+                }
+            }
+        }
+
+        // Remove the sub spans in reverse index order to preserve earlier indices.
+        let mut to_remove: Vec<usize> = ops.iter().map(|(_, si, _, _, _, _)| *si).collect();
+        to_remove.sort_unstable();
+        to_remove.dedup();
+        for idx in to_remove.iter().rev() {
+            spans.remove(*idx);
+        }
     }
 
     /// Append span text to `out`, splitting merged runs for cleaner word tokenisation.
