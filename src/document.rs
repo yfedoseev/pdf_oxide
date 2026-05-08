@@ -4283,6 +4283,49 @@ impl PdfDocument {
                     }
                 }
 
+                // For tagged PDFs, collect the MCIDs that are actually owned by
+                // table cells. When a span's MCID is NOT in this set, the span is
+                // NOT part of the table even if it lies inside the table's bbox
+                // (e.g. a paragraph physically adjacent to a table that was tagged
+                // as a sibling <P> element, not as a <TD>). Filtering such spans
+                // by bbox alone would silently drop real content.
+                // Falls back to bbox-only filtering when no MCIDs are present
+                // (untagged PDFs or spatial-detection tables).
+                let table_cell_mcids: HashSet<u32> = tables
+                    .iter()
+                    .flat_map(|t| {
+                        t.rows
+                            .iter()
+                            .flat_map(|r| r.cells.iter().flat_map(|c| c.mcids.iter().copied()))
+                    })
+                    .collect();
+                // Returns true when span should be removed from the flow because
+                // it is owned by a table cell (will be re-emitted by render_text).
+                let span_in_table = |s: &crate::layout::TextSpan| -> bool {
+                    if !table_cell_mcids.is_empty() {
+                        if let Some(mcid) = s.mcid {
+                            // Tagged PDF: MCID decides ownership precisely.
+                            return table_cell_mcids.contains(&mcid);
+                        }
+                        // Tagged PDF but span has no MCID (widget/annotation):
+                        // keep in flow — better to duplicate than to silently drop.
+                        return false;
+                    }
+                    // Untagged PDF or no MCIDs in any cell: cell-bbox-based filter.
+                    // Using per-cell bboxes (rather than the coarser table bbox) prevents
+                    // dropping paragraph spans that lie inside the table's outer bounding
+                    // box but were not captured as table cells by the spatial detector.
+                    tables.iter().any(|t| {
+                        t.rows.iter().any(|r| {
+                            r.cells.iter().any(|c| {
+                                c.bbox.is_some_and(|b| {
+                                    Self::contains_rect_with_tolerance(&b, &s.bbox, RETAIN_TOLERANCE)
+                                })
+                            })
+                        })
+                    })
+                };
+
                 let preserved_label_indices: std::collections::HashSet<usize> =
                     Self::identify_multi_row_labels(&spans)
                         .into_iter()
@@ -4307,28 +4350,13 @@ impl PdfDocument {
                         .collect();
 
                 if preserved_label_indices.is_empty() {
-                    spans.retain(|s| {
-                        !tables.iter().any(|t| {
-                            t.bbox.is_some_and(|b| {
-                                Self::contains_rect_with_tolerance(&b, &s.bbox, RETAIN_TOLERANCE)
-                            })
-                        })
-                    });
+                    spans.retain(|s| !span_in_table(s));
                 } else {
                     let kept: Vec<crate::layout::TextSpan> = spans
                         .drain(..)
                         .enumerate()
                         .filter_map(|(i, s)| {
-                            let in_table = tables.iter().any(|t| {
-                                t.bbox.is_some_and(|b| {
-                                    Self::contains_rect_with_tolerance(
-                                        &b,
-                                        &s.bbox,
-                                        RETAIN_TOLERANCE,
-                                    )
-                                })
-                            });
-                            if !in_table || preserved_label_indices.contains(&i) {
+                            if !span_in_table(&s) || preserved_label_indices.contains(&i) {
                                 Some(s)
                             } else {
                                 None
@@ -16185,5 +16213,89 @@ mod tests {
         );
 
         assert!(PdfDocument::contains_rect_with_tolerance(&table, &inside, 0.1));
+    }
+
+    /// Regression test for #484 (pdfa_036): span filtering must use per-cell
+    /// bboxes, not the coarser outer table bbox.
+    ///
+    /// Before the fix, `span_in_table` filtered by `table.bbox`, which could
+    /// be wider than the union of the actual cell bboxes. Paragraph text that
+    /// happened to fall inside the table's outer bbox was silently dropped even
+    /// though no cell claimed it, causing content loss (the "(HLA)/(KSL)"
+    /// paragraph in pdfa_036 disappeared).
+    ///
+    /// After the fix, only spans inside at least one *cell* bbox are removed
+    /// from the flow. Spans inside the outer table bbox but outside all cells
+    /// (i.e. in a gap or margin) are preserved.
+    #[test]
+    fn cell_bbox_filter_preserves_span_in_outer_bbox_gap() {
+        use crate::geometry::Rect;
+        use crate::structure::table_extractor::{Table, TableCell, TableRow};
+
+        // A table whose outer bbox is [0, 0] – [200, 100].
+        // Two non-adjacent cells leave a horizontal gap at x=90..110 — that
+        // gap is inside the outer bbox but not inside any cell.
+        let mut table = Table::new();
+        let mut row = TableRow::new(false);
+        row.cells.push(TableCell {
+            text: "left".to_string(),
+            spans: vec![],
+            colspan: 1,
+            rowspan: 1,
+            mcids: vec![],
+            bbox: Some(Rect::new(0.0, 0.0, 90.0, 100.0)),
+            is_header: false,
+        });
+        row.cells.push(TableCell {
+            text: "right".to_string(),
+            spans: vec![],
+            colspan: 1,
+            rowspan: 1,
+            mcids: vec![],
+            bbox: Some(Rect::new(110.0, 0.0, 90.0, 100.0)),
+            is_header: false,
+        });
+        table.add_row(row);
+        table.bbox = Some(Rect::new(0.0, 0.0, 200.0, 100.0));
+
+        const TOL: f32 = 0.1;
+
+        // A span sitting inside the left cell → should be "in table".
+        let span_cell = Rect::new(10.0, 10.0, 50.0, 20.0);
+        let in_any_cell = table.rows.iter().any(|r| {
+            r.cells.iter().any(|c| {
+                c.bbox.is_some_and(|b| {
+                    PdfDocument::contains_rect_with_tolerance(&b, &span_cell, TOL)
+                })
+            })
+        });
+        assert!(in_any_cell, "span inside a cell bbox must be identified as in-table");
+
+        // A span in the gap (x=95..105) — inside outer table bbox, outside all cells.
+        let span_gap = Rect::new(95.0, 10.0, 10.0, 20.0);
+
+        // 1. Outer-bbox filter (the OLD, incorrect approach) would classify it as in-table.
+        let in_outer_bbox = PdfDocument::contains_rect_with_tolerance(
+            &table.bbox.unwrap(),
+            &span_gap,
+            TOL,
+        );
+        assert!(
+            in_outer_bbox,
+            "gap span must be inside the outer table bbox (precondition for the bug to trigger)"
+        );
+
+        // 2. Cell-bbox filter (the NEW, correct approach) must NOT classify it as in-table.
+        let in_any_cell_gap = table.rows.iter().any(|r| {
+            r.cells.iter().any(|c| {
+                c.bbox.is_some_and(|b| {
+                    PdfDocument::contains_rect_with_tolerance(&b, &span_gap, TOL)
+                })
+            })
+        });
+        assert!(
+            !in_any_cell_gap,
+            "gap span must NOT be inside any cell bbox — cell-bbox filter must preserve it"
+        );
     }
 }

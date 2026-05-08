@@ -208,16 +208,9 @@ impl Table {
             })
             .collect();
 
-        // Build separator line
-        let separator: String = col_widths
-            .iter()
-            .map(|&w| "\u{2500}".repeat(w))
-            .collect::<Vec<_>>()
-            .join("  ");
-
         let mut output = String::new();
 
-        for (r_idx, row) in self.rows.iter().enumerate() {
+        for row in &self.rows {
             let mut col_idx = 0;
             let mut cells_text = Vec::new();
             for cell in &row.cells {
@@ -245,16 +238,6 @@ impl Table {
             }
             output.push_str(cells_text.join("  ").trim_end());
             output.push('\n');
-
-            // Insert separator after header row(s) transition to body
-            if self.has_header
-                && row.is_header
-                && r_idx + 1 < self.rows.len()
-                && !self.rows[r_idx + 1].is_header
-            {
-                output.push_str(&separator);
-                output.push('\n');
-            }
         }
 
         output

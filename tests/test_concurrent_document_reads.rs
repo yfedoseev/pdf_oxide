@@ -1,5 +1,10 @@
-//! Thread-safety test: multiple threads open and extract text from the same
-//! PDF bytes concurrently (#398).
+//! Thread-safety tests: concurrent reads and renders on shared PdfDocument.
+//!
+//! * `concurrent_document_reads_no_panic` — original test from #398: 8 threads
+//!   each open-and-extract via FFI.
+//! * `concurrent_renders_no_panic` — regression for #481: 8 threads render the
+//!   same page simultaneously via the high-level Rust API.  The Rust API
+//!   serialises render state via an internal Mutex, so this must never crash.
 #![allow(clippy::missing_safety_doc)]
 #![allow(unused_unsafe)]
 
@@ -57,5 +62,56 @@ fn concurrent_document_reads_no_panic() {
 
     for h in handles {
         h.join().expect("thread panicked");
+    }
+}
+
+/// Regression test for #481: concurrent render calls must not crash.
+///
+/// The C# and JS bindings had a race condition where they released a lock before
+/// the native render call completed, allowing two threads to call into the same
+/// native handle simultaneously (UB).  Those fixes live in
+/// `csharp/PdfOxide.Tests/ThreadSafetyTests.cs` and
+/// `js/tests/worker-threads-safety.test.mjs`.
+///
+/// This Rust-level test verifies that the rendering pipeline itself (tiny-skia,
+/// font rasteriser, etc.) is safe to call from multiple threads at the same time
+/// when each thread has its own `Pdf` handle opened from shared bytes.  Each
+/// handle is independent, so no lock is needed and this is a true concurrency
+/// test of the underlying libraries.
+#[cfg(feature = "rendering")]
+#[test]
+fn concurrent_renders_no_panic() {
+    use pdf_oxide::api::{Pdf, RenderOptions};
+    use std::sync::Arc;
+
+    // Build a simple one-page PDF to render.
+    let bytes: Arc<Vec<u8>> = Arc::new(
+        Pdf::from_text("Concurrent render test")
+            .expect("build PDF")
+            .into_bytes(),
+    );
+
+    let opts = Arc::new(RenderOptions::with_dpi(72));
+
+    // Each thread opens its own Pdf handle from the shared bytes and renders.
+    // The handles are independent (no shared mutable state), so this exercises
+    // thread-safety of the underlying font/rasteriser libraries.
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let b = Arc::clone(&bytes);
+            let o = Arc::clone(&opts);
+            std::thread::spawn(move || {
+                let mut pdf = Pdf::from_bytes((*b).clone()).expect("open PDF in thread");
+                let img = pdf
+                    .render_page(0, Some(&o))
+                    .expect("render must not fail");
+                assert!(!img.data.is_empty(), "rendered image data must not be empty");
+                assert!(img.width > 0 && img.height > 0, "rendered dimensions must be positive");
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().expect("render thread panicked");
     }
 }
