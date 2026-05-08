@@ -5725,6 +5725,143 @@ impl PdfDocument {
         spans
     }
 
+    /// Extract TextSpan objects from non-Widget, non-Popup annotations on a page.
+    ///
+    /// Sticky note (/Subtype/Text), FreeText, Stamp, and markup annotations carry
+    /// human-readable text in their /Contents field.  Widget annotations are already
+    /// handled by `extract_widget_spans`; Popup annotations hold no independent
+    /// content (their text belongs to the parent annotation).
+    fn extract_non_widget_annotation_spans(&self, page_index: usize) -> Vec<TextSpan> {
+        use crate::geometry::Rect;
+
+        let page_obj = match self.get_page(page_index) {
+            Ok(o) => o,
+            Err(_) => return Vec::new(),
+        };
+        let page_dict = match page_obj.as_dict() {
+            Some(d) => d,
+            None => return Vec::new(),
+        };
+
+        let annots_arr = match page_dict.get("Annots") {
+            Some(Object::Array(arr)) => arr.clone(),
+            Some(Object::Reference(r)) => match self.load_object(*r) {
+                Ok(Object::Array(arr)) => arr,
+                _ => return Vec::new(),
+            },
+            _ => return Vec::new(),
+        };
+
+        let mut spans: Vec<TextSpan> = Vec::new();
+        let base_sequence = 2_000_000usize; // sort after widget spans
+
+        for (idx, annot_obj) in annots_arr.iter().enumerate() {
+            let annot_ref = match annot_obj {
+                Object::Reference(r) => *r,
+                _ => continue,
+            };
+            let dict = match self.load_object(annot_ref) {
+                Ok(obj) => match obj.as_dict() {
+                    Some(d) => d.clone(),
+                    None => continue,
+                },
+                Err(_) => continue,
+            };
+
+            let subtype = match dict.get("Subtype").and_then(|s| s.as_name()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let subtype_lc = subtype.to_ascii_lowercase();
+
+            // Skip Widget (handled by extract_widget_spans) and Popup (no independent content).
+            if subtype_lc == "widget" || subtype_lc == "popup" {
+                continue;
+            }
+
+            // Skip invisible / hidden / NoView annotations.
+            if let Some(Object::Integer(f)) = dict.get("F") {
+                if *f & (0x1 | 0x2 | 0x20) != 0 {
+                    continue;
+                }
+            }
+
+            // Only subtypes that carry human-readable /Contents text.
+            let has_contents = matches!(
+                subtype_lc.as_str(),
+                "text" | "freetext" | "stamp"
+                    | "highlight" | "underline" | "strikeout" | "squiggly"
+                    | "ink" | "polygon" | "polyline" | "line" | "circle" | "square"
+            );
+            if !has_contents {
+                continue;
+            }
+
+            let text = match dict.get("Contents") {
+                Some(Object::String(s)) => {
+                    let decoded = Self::decode_pdf_text_string(s).trim().to_string();
+                    if decoded.is_empty() { continue; }
+                    decoded
+                },
+                _ => continue,
+            };
+
+            // Use /Rect as the annotation's bounding box.
+            // /Rect may be a direct array or an indirect reference to an array.
+            let rect_obj = match dict.get("Rect") {
+                Some(Object::Reference(r)) => match self.load_object(*r) {
+                    Ok(o) => o,
+                    Err(_) => continue,
+                },
+                Some(o) => o.clone(),
+                None => continue,
+            };
+            let rect = match rect_obj.as_array() {
+                Some(arr) if arr.len() == 4 => {
+                    let mut coords = [0.0f32; 4];
+                    let mut ok = true;
+                    for (i, item) in arr.iter().enumerate() {
+                        match item {
+                            Object::Integer(n) => coords[i] = *n as f32,
+                            Object::Real(f) => coords[i] = *f as f32,
+                            _ => { ok = false; break; },
+                        }
+                    }
+                    if !ok { continue; }
+                    let x = coords[0].min(coords[2]);
+                    let y = coords[1].min(coords[3]);
+                    let w = (coords[2] - coords[0]).abs();
+                    let h = (coords[3] - coords[1]).abs();
+                    Rect { x, y, width: w.max(1.0), height: h.max(1.0) }
+                },
+                _ => continue,
+            };
+
+            spans.push(TextSpan {
+                artifact_type: None,
+                text,
+                bbox: rect,
+                font_name: String::new(),
+                font_size: 12.0,
+                font_weight: crate::layout::text_block::FontWeight::Normal,
+                is_italic: false,
+                is_monospace: false,
+                color: crate::layout::text_block::Color { r: 0.0, g: 0.0, b: 0.0 },
+                mcid: None,
+                sequence: base_sequence + idx,
+                split_boundary_before: false,
+                offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+            });
+        }
+
+        spans
+    }
+
     /// Walk /Parent chain to find inherited /Ff (field flags) value.
     fn resolve_inherited_ff(
         &self,
@@ -6833,6 +6970,18 @@ impl PdfDocument {
         if let Some(regions) = erase {
             spans.retain(|span| !regions.iter().any(|r| r.intersects(&span.bbox)));
         }
+
+        // Drop spans whose text is entirely newline/CR characters.  Some PDFs
+        // use a font that maps a glyph code to U+000A as a paragraph-separator
+        // token; these produce spans with text "\n" that carry no readable
+        // content and confuse downstream text-extraction pipelines.
+        spans.retain(|span| !span.text.chars().all(|c| c == '\n' || c == '\r'));
+
+        // Append text from non-Widget annotations (/Subtype /Text, FreeText,
+        // Stamp, Highlight, etc.) that carry a /Contents entry.  These are not
+        // part of the page content stream so they are not picked up by the
+        // regular extractor.
+        spans.extend(self.extract_non_widget_annotation_spans(page_index));
 
         // Mark running headers/footers (untagged-PDF heuristic). Spans whose
         // normalized text recurs on >=50% of pages and sits near the top or
