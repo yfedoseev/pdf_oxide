@@ -51,7 +51,9 @@ namespace PdfOxide.Core
     {
         private NativeHandle _handle;
         private volatile bool _disposed;
-        private readonly ReaderWriterLockSlim _lock = new ReaderWriterLockSlim();
+        // SupportsRecursion: read methods may call other read-locked helpers (e.g. ExtractText
+        // calling PageCount for bounds-checking). Read-read recursion is safe and non-deadlocking.
+        private readonly ReaderWriterLockSlim _lock = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
 
         private PdfDocument(NativeHandle handle)
         {
@@ -210,9 +212,14 @@ namespace PdfOxide.Core
         {
             get
             {
-                ThrowIfDisposed();
-                NativeMethods.PdfDocumentGetVersion(_handle, out var major, out var minor);
-                return (major, minor);
+                _lock.EnterReadLock();
+                try
+                {
+                    ThrowIfDisposed();
+                    NativeMethods.PdfDocumentGetVersion(_handle, out var major, out var minor);
+                    return (major, minor);
+                }
+                finally { _lock.ExitReadLock(); }
             }
         }
 
@@ -226,10 +233,15 @@ namespace PdfOxide.Core
         {
             get
             {
-                ThrowIfDisposed();
-                var count = NativeMethods.PdfDocumentGetPageCount(_handle, out var errorCode);
-                ExceptionMapper.ThrowIfError(errorCode);
-                return count;
+                _lock.EnterReadLock();
+                try
+                {
+                    ThrowIfDisposed();
+                    var count = NativeMethods.PdfDocumentGetPageCount(_handle, out var errorCode);
+                    ExceptionMapper.ThrowIfError(errorCode);
+                    return count;
+                }
+                finally { _lock.ExitReadLock(); }
             }
         }
 
@@ -243,10 +255,15 @@ namespace PdfOxide.Core
         {
             get
             {
-                ThrowIfDisposed();
-                var count = NativeMethods.pdf_document_get_signature_count(_handle, out int err);
-                ExceptionMapper.ThrowIfError(err);
-                return count;
+                _lock.EnterReadLock();
+                try
+                {
+                    ThrowIfDisposed();
+                    var count = NativeMethods.pdf_document_get_signature_count(_handle, out int err);
+                    ExceptionMapper.ThrowIfError(err);
+                    return count;
+                }
+                finally { _lock.ExitReadLock(); }
             }
         }
 
@@ -260,30 +277,35 @@ namespace PdfOxide.Core
         {
             get
             {
-                ThrowIfDisposed();
-                var count = NativeMethods.pdf_document_get_signature_count(_handle, out int err);
-                ExceptionMapper.ThrowIfError(err);
-                var list = new System.Collections.Generic.List<Signature>(count);
+                _lock.EnterReadLock();
                 try
                 {
-                    for (int i = 0; i < count; i++)
+                    ThrowIfDisposed();
+                    var count = NativeMethods.pdf_document_get_signature_count(_handle, out int err);
+                    ExceptionMapper.ThrowIfError(err);
+                    var list = new System.Collections.Generic.List<Signature>(count);
+                    try
                     {
-                        var sigHandle = NativeMethods.pdf_document_get_signature(_handle, i, out int e);
-                        ExceptionMapper.ThrowIfError(e);
-                        if (sigHandle.IsInvalid)
+                        for (int i = 0; i < count; i++)
                         {
-                            throw new PdfException(
-                                $"pdf_document_get_signature({i}) returned null with no error code");
+                            var sigHandle = NativeMethods.pdf_document_get_signature(_handle, i, out int e);
+                            ExceptionMapper.ThrowIfError(e);
+                            if (sigHandle.IsInvalid)
+                            {
+                                throw new PdfException(
+                                    $"pdf_document_get_signature({i}) returned null with no error code");
+                            }
+                            list.Add(Signature.FromHandle(sigHandle));
                         }
-                        list.Add(Signature.FromHandle(sigHandle));
+                        return list;
                     }
-                    return list;
+                    catch
+                    {
+                        foreach (var s in list) s.Dispose();
+                        throw;
+                    }
                 }
-                catch
-                {
-                    foreach (var s in list) s.Dispose();
-                    throw;
-                }
+                finally { _lock.ExitReadLock(); }
             }
         }
 
@@ -296,8 +318,13 @@ namespace PdfOxide.Core
         {
             get
             {
-                ThrowIfDisposed();
-                return NativeMethods.PdfDocumentHasStructureTree(_handle);
+                _lock.EnterReadLock();
+                try
+                {
+                    ThrowIfDisposed();
+                    return NativeMethods.PdfDocumentHasStructureTree(_handle);
+                }
+                finally { _lock.ExitReadLock(); }
             }
         }
 
@@ -318,15 +345,17 @@ namespace PdfOxide.Core
         /// <exception cref="PdfException">Thrown if text extraction fails.</exception>
         public string ExtractText(int pageIndex)
         {
-            ThrowIfDisposed();
-
-            if (pageIndex < 0 || pageIndex >= PageCount)
-                throw new ArgumentOutOfRangeException(nameof(pageIndex));
-
-            var ptr = NativeMethods.PdfDocumentExtractText(_handle, pageIndex, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-
-            return StringMarshaler.PtrToStringAndFree(ptr);
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                if (pageIndex < 0 || pageIndex >= PageCount)
+                    throw new ArgumentOutOfRangeException(nameof(pageIndex));
+                var ptr = NativeMethods.PdfDocumentExtractText(_handle, pageIndex, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>
@@ -356,15 +385,17 @@ namespace PdfOxide.Core
         /// <exception cref="PdfException">Thrown if conversion fails.</exception>
         public string ToMarkdown(int pageIndex)
         {
-            ThrowIfDisposed();
-
-            if (pageIndex < 0 || pageIndex >= PageCount)
-                throw new ArgumentOutOfRangeException(nameof(pageIndex));
-
-            var ptr = NativeMethods.PdfDocumentToMarkdown(_handle, pageIndex, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-
-            return StringMarshaler.PtrToStringAndFree(ptr);
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                if (pageIndex < 0 || pageIndex >= PageCount)
+                    throw new ArgumentOutOfRangeException(nameof(pageIndex));
+                var ptr = NativeMethods.PdfDocumentToMarkdown(_handle, pageIndex, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>
@@ -375,12 +406,15 @@ namespace PdfOxide.Core
         /// <exception cref="PdfException">Thrown if conversion fails.</exception>
         public string ToMarkdownAll()
         {
-            ThrowIfDisposed();
-
-            var ptr = NativeMethods.PdfDocumentToMarkdownAll(_handle, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-
-            return StringMarshaler.PtrToStringAndFree(ptr);
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                var ptr = NativeMethods.PdfDocumentToMarkdownAll(_handle, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>
@@ -393,15 +427,17 @@ namespace PdfOxide.Core
         /// <exception cref="PdfException">Thrown if conversion fails.</exception>
         public string ToHtml(int pageIndex)
         {
-            ThrowIfDisposed();
-
-            if (pageIndex < 0 || pageIndex >= PageCount)
-                throw new ArgumentOutOfRangeException(nameof(pageIndex));
-
-            var ptr = NativeMethods.PdfDocumentToHtml(_handle, pageIndex, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-
-            return StringMarshaler.PtrToStringAndFree(ptr);
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                if (pageIndex < 0 || pageIndex >= PageCount)
+                    throw new ArgumentOutOfRangeException(nameof(pageIndex));
+                var ptr = NativeMethods.PdfDocumentToHtml(_handle, pageIndex, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>
@@ -414,15 +450,17 @@ namespace PdfOxide.Core
         /// <exception cref="PdfException">Thrown if conversion fails.</exception>
         public string ToPlainText(int pageIndex)
         {
-            ThrowIfDisposed();
-
-            if (pageIndex < 0 || pageIndex >= PageCount)
-                throw new ArgumentOutOfRangeException(nameof(pageIndex));
-
-            var ptr = NativeMethods.PdfDocumentToPlainText(_handle, pageIndex, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-
-            return StringMarshaler.PtrToStringAndFree(ptr);
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                if (pageIndex < 0 || pageIndex >= PageCount)
+                    throw new ArgumentOutOfRangeException(nameof(pageIndex));
+                var ptr = NativeMethods.PdfDocumentToPlainText(_handle, pageIndex, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
         }
 
         // ================================================================
@@ -432,28 +470,43 @@ namespace PdfOxide.Core
         /// <summary>Extracts text from all pages.</summary>
         public string ExtractAllText()
         {
-            ThrowIfDisposed();
-            var ptr = NativeMethods.pdf_document_extract_all_text(_handle.Ptr, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            return StringMarshaler.PtrToStringAndFree(ptr);
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                var ptr = NativeMethods.pdf_document_extract_all_text(_handle.Ptr, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Converts all pages to HTML.</summary>
         public string ToHtmlAll()
         {
-            ThrowIfDisposed();
-            var ptr = NativeMethods.pdf_document_to_html_all(_handle.Ptr, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            return StringMarshaler.PtrToStringAndFree(ptr);
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                var ptr = NativeMethods.pdf_document_to_html_all(_handle.Ptr, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Converts all pages to plain text.</summary>
         public string ToPlainTextAll()
         {
-            ThrowIfDisposed();
-            var ptr = NativeMethods.pdf_document_to_plain_text_all(_handle.Ptr, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            return StringMarshaler.PtrToStringAndFree(ptr);
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                var ptr = NativeMethods.pdf_document_to_plain_text_all(_handle.Ptr, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Checks if the document is encrypted.</summary>
@@ -461,17 +514,27 @@ namespace PdfOxide.Core
         {
             get
             {
-                ThrowIfDisposed();
-                return NativeMethods.pdf_document_is_encrypted(_handle.Ptr);
+                _lock.EnterReadLock();
+                try
+                {
+                    ThrowIfDisposed();
+                    return NativeMethods.pdf_document_is_encrypted(_handle.Ptr);
+                }
+                finally { _lock.ExitReadLock(); }
             }
         }
 
         /// <summary>Authenticates with a password. Returns true if successful.</summary>
         public bool Authenticate(string password)
         {
-            ThrowIfDisposed();
             ArgumentNullException.ThrowIfNull(password);
-            return NativeMethods.pdf_document_authenticate(_handle.Ptr, password, out _);
+            _lock.EnterWriteLock();
+            try
+            {
+                ThrowIfDisposed();
+                return NativeMethods.pdf_document_authenticate(_handle.Ptr, password, out _);
+            }
+            finally { _lock.ExitWriteLock(); }
         }
 
         /// <summary>Checks if the document has XFA forms.</summary>
@@ -479,164 +542,214 @@ namespace PdfOxide.Core
         {
             get
             {
-                ThrowIfDisposed();
-                return NativeMethods.pdf_document_has_xfa(_handle.Ptr);
+                _lock.EnterReadLock();
+                try
+                {
+                    ThrowIfDisposed();
+                    return NativeMethods.pdf_document_has_xfa(_handle.Ptr);
+                }
+                finally { _lock.ExitReadLock(); }
             }
         }
 
         /// <summary>Extracts text from a rectangular region on a page.</summary>
         public string ExtractTextInRect(int pageIndex, float x, float y, float width, float height)
         {
-            ThrowIfDisposed();
-            var ptr = NativeMethods.pdf_document_extract_text_in_rect(_handle.Ptr, pageIndex, x, y, width, height, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            return StringMarshaler.PtrToStringAndFree(ptr);
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                var ptr = NativeMethods.pdf_document_extract_text_in_rect(_handle.Ptr, pageIndex, x, y, width, height, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Removes repeated headers across pages. Returns count removed.</summary>
         public int RemoveHeaders(float threshold = 0.8f)
         {
-            ThrowIfDisposed();
-            var n = NativeMethods.pdf_document_remove_headers(_handle.Ptr, threshold, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            return n;
+            _lock.EnterWriteLock();
+            try
+            {
+                ThrowIfDisposed();
+                var n = NativeMethods.pdf_document_remove_headers(_handle.Ptr, threshold, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return n;
+            }
+            finally { _lock.ExitWriteLock(); }
         }
 
         /// <summary>Removes repeated footers across pages. Returns count removed.</summary>
         public int RemoveFooters(float threshold = 0.8f)
         {
-            ThrowIfDisposed();
-            var n = NativeMethods.pdf_document_remove_footers(_handle.Ptr, threshold, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            return n;
+            _lock.EnterWriteLock();
+            try
+            {
+                ThrowIfDisposed();
+                var n = NativeMethods.pdf_document_remove_footers(_handle.Ptr, threshold, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return n;
+            }
+            finally { _lock.ExitWriteLock(); }
         }
 
         /// <summary>Removes headers and footers. Returns count removed.</summary>
         public int RemoveArtifacts(float threshold = 0.8f)
         {
-            ThrowIfDisposed();
-            var n = NativeMethods.pdf_document_remove_artifacts(_handle.Ptr, threshold, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            return n;
+            _lock.EnterWriteLock();
+            try
+            {
+                ThrowIfDisposed();
+                var n = NativeMethods.pdf_document_remove_artifacts(_handle.Ptr, threshold, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return n;
+            }
+            finally { _lock.ExitWriteLock(); }
         }
 
         /// <summary>Opens a PDF with password.</summary>
         public static PdfDocument OpenWithPassword(string path, string password)
         {
             var doc = Open(path);
-            NativeMethods.pdf_document_authenticate(doc._handle.Ptr, password, out _);
+            doc.Authenticate(password);  // Authenticate now holds the write lock
             return doc;
         }
 
         /// <summary>Extracts words from a page. Returns handle-based results (use NativeMethods directly for now).</summary>
         public (string Text, float X, float Y, float W, float H)[] ExtractWords(int pageIndex)
         {
-            ThrowIfDisposed();
-            var handle = NativeMethods.pdf_document_extract_words(_handle.Ptr, pageIndex, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            if (handle == IntPtr.Zero) return Array.Empty<(string, float, float, float, float)>();
+            _lock.EnterReadLock();
             try
             {
-                var count = NativeMethods.pdf_oxide_word_count(handle);
-                var results = new (string, float, float, float, float)[count];
-                for (int i = 0; i < count; i++)
+                ThrowIfDisposed();
+                var handle = NativeMethods.pdf_document_extract_words(_handle.Ptr, pageIndex, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (handle == IntPtr.Zero) return Array.Empty<(string, float, float, float, float)>();
+                try
                 {
-                    var textPtr = NativeMethods.pdf_oxide_word_get_text(handle, i, out _);
-                    var text = StringMarshaler.PtrToStringAndFree(textPtr);
-                    NativeMethods.pdf_oxide_word_get_bbox(handle, i, out var x, out var y, out var w, out var h, out _);
-                    results[i] = (text, x, y, w, h);
+                    var count = NativeMethods.pdf_oxide_word_count(handle);
+                    var results = new (string, float, float, float, float)[count];
+                    for (int i = 0; i < count; i++)
+                    {
+                        var textPtr = NativeMethods.pdf_oxide_word_get_text(handle, i, out _);
+                        var text = StringMarshaler.PtrToStringAndFree(textPtr);
+                        NativeMethods.pdf_oxide_word_get_bbox(handle, i, out var x, out var y, out var w, out var h, out _);
+                        results[i] = (text, x, y, w, h);
+                    }
+                    return results;
                 }
-                return results;
+                finally { NativeMethods.pdf_oxide_word_list_free(handle); }
             }
-            finally { NativeMethods.pdf_oxide_word_list_free(handle); }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Extracts text lines from a page.</summary>
         public (string Text, float X, float Y, float W, float H)[] ExtractTextLines(int pageIndex)
         {
-            ThrowIfDisposed();
-            var handle = NativeMethods.pdf_document_extract_text_lines(_handle.Ptr, pageIndex, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            if (handle == IntPtr.Zero) return Array.Empty<(string, float, float, float, float)>();
+            _lock.EnterReadLock();
             try
             {
-                var count = NativeMethods.pdf_oxide_line_count(handle);
-                var results = new (string, float, float, float, float)[count];
-                for (int i = 0; i < count; i++)
+                ThrowIfDisposed();
+                var handle = NativeMethods.pdf_document_extract_text_lines(_handle.Ptr, pageIndex, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (handle == IntPtr.Zero) return Array.Empty<(string, float, float, float, float)>();
+                try
                 {
-                    var textPtr = NativeMethods.pdf_oxide_line_get_text(handle, i, out _);
-                    var text = StringMarshaler.PtrToStringAndFree(textPtr);
-                    NativeMethods.pdf_oxide_line_get_bbox(handle, i, out var x, out var y, out var w, out var h, out _);
-                    results[i] = (text, x, y, w, h);
+                    var count = NativeMethods.pdf_oxide_line_count(handle);
+                    var results = new (string, float, float, float, float)[count];
+                    for (int i = 0; i < count; i++)
+                    {
+                        var textPtr = NativeMethods.pdf_oxide_line_get_text(handle, i, out _);
+                        var text = StringMarshaler.PtrToStringAndFree(textPtr);
+                        NativeMethods.pdf_oxide_line_get_bbox(handle, i, out var x, out var y, out var w, out var h, out _);
+                        results[i] = (text, x, y, w, h);
+                    }
+                    return results;
                 }
-                return results;
+                finally { NativeMethods.pdf_oxide_line_list_free(handle); }
             }
-            finally { NativeMethods.pdf_oxide_line_list_free(handle); }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Extracts tables from a page. Returns row/col counts per table.</summary>
         public Table[] ExtractTables(int pageIndex)
         {
-            ThrowIfDisposed();
-            var handle = NativeMethods.pdf_document_extract_tables(_handle.Ptr, pageIndex, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            if (handle == IntPtr.Zero) return Array.Empty<Table>();
+            _lock.EnterReadLock();
             try
             {
-                var count = NativeMethods.pdf_oxide_table_count(handle);
-                var results = new Table[count];
-                for (int i = 0; i < count; i++)
+                ThrowIfDisposed();
+                var handle = NativeMethods.pdf_document_extract_tables(_handle.Ptr, pageIndex, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (handle == IntPtr.Zero) return Array.Empty<Table>();
+                try
                 {
-                    var rows = NativeMethods.pdf_oxide_table_get_row_count(handle, i, out _);
-                    var cols = NativeMethods.pdf_oxide_table_get_col_count(handle, i, out _);
-                    var hasHeader = NativeMethods.pdf_oxide_table_has_header(handle, i, out _);
-                    var cells = new string[rows, cols];
-                    for (int r = 0; r < rows; r++)
-                        for (int c = 0; c < cols; c++)
-                        {
-                            var ptr = NativeMethods.pdf_oxide_table_get_cell_text(handle, i, r, c, out _);
-                            if (ptr != IntPtr.Zero)
+                    var count = NativeMethods.pdf_oxide_table_count(handle);
+                    var results = new Table[count];
+                    for (int i = 0; i < count; i++)
+                    {
+                        var rows = NativeMethods.pdf_oxide_table_get_row_count(handle, i, out _);
+                        var cols = NativeMethods.pdf_oxide_table_get_col_count(handle, i, out _);
+                        var hasHeader = NativeMethods.pdf_oxide_table_has_header(handle, i, out _);
+                        var cells = new string[rows, cols];
+                        for (int r = 0; r < rows; r++)
+                            for (int c = 0; c < cols; c++)
                             {
-                                cells[r, c] = System.Runtime.InteropServices.Marshal.PtrToStringUTF8(ptr) ?? string.Empty;
-                                NativeMethods.FreeString(ptr);
+                                var ptr = NativeMethods.pdf_oxide_table_get_cell_text(handle, i, r, c, out _);
+                                if (ptr != IntPtr.Zero)
+                                {
+                                    cells[r, c] = System.Runtime.InteropServices.Marshal.PtrToStringUTF8(ptr) ?? string.Empty;
+                                    NativeMethods.FreeString(ptr);
+                                }
+                                else cells[r, c] = string.Empty;
                             }
-                            else cells[r, c] = string.Empty;
-                        }
-                    results[i] = new Table(rows, cols, hasHeader, cells);
+                        results[i] = new Table(rows, cols, hasHeader, cells);
+                    }
+                    return results;
                 }
-                return results;
+                finally { NativeMethods.pdf_oxide_table_list_free(handle); }
             }
-            finally { NativeMethods.pdf_oxide_table_list_free(handle); }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Searches all pages for text. Returns results with page index and bounding box.</summary>
         public (int Page, string Text, float X, float Y, float W, float H)[] SearchAll(string text, bool caseSensitive = false)
         {
-            ThrowIfDisposed();
             ArgumentNullException.ThrowIfNull(text);
-            var resultsHandle = NativeMethods.pdf_document_search_all(_handle.Ptr, text, caseSensitive, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            if (resultsHandle == IntPtr.Zero) return Array.Empty<(int, string, float, float, float, float)>();
+            _lock.EnterReadLock();
             try
             {
-                return DecodeSearchResults(resultsHandle);
+                ThrowIfDisposed();
+                var resultsHandle = NativeMethods.pdf_document_search_all(_handle.Ptr, text, caseSensitive, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (resultsHandle == IntPtr.Zero) return Array.Empty<(int, string, float, float, float, float)>();
+                try
+                {
+                    return DecodeSearchResults(resultsHandle);
+                }
+                finally { NativeMethods.pdf_oxide_search_result_free(resultsHandle); }
             }
-            finally { NativeMethods.pdf_oxide_search_result_free(resultsHandle); }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Searches a specific page for text.</summary>
         public (int Page, string Text, float X, float Y, float W, float H)[] SearchPage(int pageIndex, string text, bool caseSensitive = false)
         {
-            ThrowIfDisposed();
             ArgumentNullException.ThrowIfNull(text);
-            var resultsHandle = NativeMethods.pdf_document_search_page(_handle.Ptr, pageIndex, text, caseSensitive, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            if (resultsHandle == IntPtr.Zero) return Array.Empty<(int, string, float, float, float, float)>();
+            _lock.EnterReadLock();
             try
             {
-                return DecodeSearchResults(resultsHandle);
+                ThrowIfDisposed();
+                var resultsHandle = NativeMethods.pdf_document_search_page(_handle.Ptr, pageIndex, text, caseSensitive, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (resultsHandle == IntPtr.Zero) return Array.Empty<(int, string, float, float, float, float)>();
+                try
+                {
+                    return DecodeSearchResults(resultsHandle);
+                }
+                finally { NativeMethods.pdf_oxide_search_result_free(resultsHandle); }
             }
-            finally { NativeMethods.pdf_oxide_search_result_free(resultsHandle); }
+            finally { _lock.ExitReadLock(); }
         }
 
         // One FFI crossing → Rust serializes the entire result list to JSON →
@@ -678,135 +791,175 @@ namespace PdfOxide.Core
         /// <summary>Gets page labels as JSON.</summary>
         public string GetPageLabels()
         {
-            ThrowIfDisposed();
-            var ptr = NativeMethods.pdf_document_get_page_labels(_handle.Ptr, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            return StringMarshaler.PtrToStringAndFree(ptr);
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                var ptr = NativeMethods.pdf_document_get_page_labels(_handle.Ptr, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Gets XMP metadata as JSON.</summary>
         public string GetXmpMetadata()
         {
-            ThrowIfDisposed();
-            var ptr = NativeMethods.pdf_document_get_xmp_metadata(_handle.Ptr, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            return StringMarshaler.PtrToStringAndFree(ptr);
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                var ptr = NativeMethods.pdf_document_get_xmp_metadata(_handle.Ptr, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Gets document outline/bookmarks as JSON.</summary>
         public string GetOutline()
         {
-            ThrowIfDisposed();
-            var ptr = NativeMethods.pdf_document_get_outline(_handle.Ptr, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            return StringMarshaler.PtrToStringAndFree(ptr);
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                var ptr = NativeMethods.pdf_document_get_outline(_handle.Ptr, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Extracts individual characters from a page.</summary>
         public (char Char, float X, float Y, float W, float H)[] ExtractChars(int pageIndex)
         {
-            ThrowIfDisposed();
-            var handle = NativeMethods.pdf_document_extract_chars(_handle.Ptr, pageIndex, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            if (handle == IntPtr.Zero) return Array.Empty<(char, float, float, float, float)>();
+            _lock.EnterReadLock();
             try
             {
-                var count = NativeMethods.pdf_oxide_char_count(handle);
-                var results = new (char, float, float, float, float)[count];
-                for (int i = 0; i < count; i++)
+                ThrowIfDisposed();
+                var handle = NativeMethods.pdf_document_extract_chars(_handle.Ptr, pageIndex, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (handle == IntPtr.Zero) return Array.Empty<(char, float, float, float, float)>();
+                try
                 {
-                    var ch = NativeMethods.pdf_oxide_char_get_char(handle, i, out _);
-                    NativeMethods.pdf_oxide_char_get_bbox(handle, i, out var x, out var y, out var w, out var h, out _);
-                    results[i] = ((char)ch, x, y, w, h);
+                    var count = NativeMethods.pdf_oxide_char_count(handle);
+                    var results = new (char, float, float, float, float)[count];
+                    for (int i = 0; i < count; i++)
+                    {
+                        var ch = NativeMethods.pdf_oxide_char_get_char(handle, i, out _);
+                        NativeMethods.pdf_oxide_char_get_bbox(handle, i, out var x, out var y, out var w, out var h, out _);
+                        results[i] = ((char)ch, x, y, w, h);
+                    }
+                    return results;
                 }
-                return results;
+                finally { NativeMethods.pdf_oxide_char_list_free(handle); }
             }
-            finally { NativeMethods.pdf_oxide_char_list_free(handle); }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Extracts paths from a page.</summary>
         public (float X, float Y, float W, float H, float StrokeWidth)[] ExtractPaths(int pageIndex)
         {
-            ThrowIfDisposed();
-            var handle = NativeMethods.pdf_document_extract_paths(_handle.Ptr, pageIndex, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            if (handle == IntPtr.Zero) return Array.Empty<(float, float, float, float, float)>();
+            _lock.EnterReadLock();
             try
             {
-                var count = NativeMethods.pdf_oxide_path_count(handle);
-                var results = new (float, float, float, float, float)[count];
-                for (int i = 0; i < count; i++)
+                ThrowIfDisposed();
+                var handle = NativeMethods.pdf_document_extract_paths(_handle.Ptr, pageIndex, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (handle == IntPtr.Zero) return Array.Empty<(float, float, float, float, float)>();
+                try
                 {
-                    NativeMethods.pdf_oxide_path_get_bbox(handle, i, out var x, out var y, out var w, out var h, out _);
-                    var sw = NativeMethods.pdf_oxide_path_get_stroke_width(handle, i, out _);
-                    results[i] = (x, y, w, h, sw);
+                    var count = NativeMethods.pdf_oxide_path_count(handle);
+                    var results = new (float, float, float, float, float)[count];
+                    for (int i = 0; i < count; i++)
+                    {
+                        NativeMethods.pdf_oxide_path_get_bbox(handle, i, out var x, out var y, out var w, out var h, out _);
+                        var sw = NativeMethods.pdf_oxide_path_get_stroke_width(handle, i, out _);
+                        results[i] = (x, y, w, h, sw);
+                    }
+                    return results;
                 }
-                return results;
+                finally { NativeMethods.pdf_oxide_path_list_free(handle); }
             }
-            finally { NativeMethods.pdf_oxide_path_list_free(handle); }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Extracts words from a rectangular region.</summary>
         public (string Text, float X, float Y, float W, float H)[] ExtractWordsInRect(int pageIndex, float x, float y, float width, float height)
         {
-            ThrowIfDisposed();
-            var handle = NativeMethods.pdf_document_extract_words_in_rect(_handle.Ptr, pageIndex, x, y, width, height, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            if (handle == IntPtr.Zero) return Array.Empty<(string, float, float, float, float)>();
+            _lock.EnterReadLock();
             try
             {
-                var count = NativeMethods.pdf_oxide_word_count(handle);
-                var results = new (string, float, float, float, float)[count];
-                for (int i = 0; i < count; i++)
+                ThrowIfDisposed();
+                var handle = NativeMethods.pdf_document_extract_words_in_rect(_handle.Ptr, pageIndex, x, y, width, height, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (handle == IntPtr.Zero) return Array.Empty<(string, float, float, float, float)>();
+                try
                 {
-                    var textPtr = NativeMethods.pdf_oxide_word_get_text(handle, i, out _);
-                    var text = StringMarshaler.PtrToStringAndFree(textPtr);
-                    NativeMethods.pdf_oxide_word_get_bbox(handle, i, out var wx, out var wy, out var ww, out var wh, out _);
-                    results[i] = (text, wx, wy, ww, wh);
+                    var count = NativeMethods.pdf_oxide_word_count(handle);
+                    var results = new (string, float, float, float, float)[count];
+                    for (int i = 0; i < count; i++)
+                    {
+                        var textPtr = NativeMethods.pdf_oxide_word_get_text(handle, i, out _);
+                        var text = StringMarshaler.PtrToStringAndFree(textPtr);
+                        NativeMethods.pdf_oxide_word_get_bbox(handle, i, out var wx, out var wy, out var ww, out var wh, out _);
+                        results[i] = (text, wx, wy, ww, wh);
+                    }
+                    return results;
                 }
-                return results;
+                finally { NativeMethods.pdf_oxide_word_list_free(handle); }
             }
-            finally { NativeMethods.pdf_oxide_word_list_free(handle); }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Gets font names from a page.</summary>
         public string[] GetFonts(int pageIndex)
         {
-            ThrowIfDisposed();
-            var handle = NativeMethods.pdf_document_get_embedded_fonts(_handle.Ptr, pageIndex, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            if (handle == IntPtr.Zero) return Array.Empty<string>();
+            _lock.EnterReadLock();
             try
             {
-                var count = NativeMethods.pdf_oxide_font_count(handle);
-                var results = new string[count];
-                for (int i = 0; i < count; i++)
+                ThrowIfDisposed();
+                var handle = NativeMethods.pdf_document_get_embedded_fonts(_handle.Ptr, pageIndex, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (handle == IntPtr.Zero) return Array.Empty<string>();
+                try
                 {
-                    var namePtr = NativeMethods.pdf_oxide_font_get_name(handle, i, out _);
-                    results[i] = StringMarshaler.PtrToStringAndFree(namePtr);
+                    var count = NativeMethods.pdf_oxide_font_count(handle);
+                    var results = new string[count];
+                    for (int i = 0; i < count; i++)
+                    {
+                        var namePtr = NativeMethods.pdf_oxide_font_get_name(handle, i, out _);
+                        results[i] = StringMarshaler.PtrToStringAndFree(namePtr);
+                    }
+                    return results;
                 }
-                return results;
+                finally { NativeMethods.pdf_oxide_font_list_free(handle); }
             }
-            finally { NativeMethods.pdf_oxide_font_list_free(handle); }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Renders a page to PNG bytes. format: 0=PNG, 1=JPEG.</summary>
         public byte[] RenderPage(int pageIndex, int format = 0)
         {
-            ThrowIfDisposed();
-            var imgHandle = NativeMethods.pdf_render_page(_handle.Ptr, pageIndex, format, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            if (imgHandle == IntPtr.Zero) return Array.Empty<byte>();
+            _lock.EnterReadLock();
             try
             {
-                var data = NativeMethods.pdf_get_rendered_image_data(imgHandle, out var dataLen, out _);
-                if (data == IntPtr.Zero) return Array.Empty<byte>();
-                var bytes = new byte[dataLen];
-                System.Runtime.InteropServices.Marshal.Copy(data, bytes, 0, dataLen);
-                NativeMethods.FreeBytes(data);
-                return bytes;
+                ThrowIfDisposed();
+                var imgHandle = NativeMethods.pdf_render_page(_handle.Ptr, pageIndex, format, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (imgHandle == IntPtr.Zero) return Array.Empty<byte>();
+                try
+                {
+                    var data = NativeMethods.pdf_get_rendered_image_data(imgHandle, out var dataLen, out _);
+                    if (data == IntPtr.Zero) return Array.Empty<byte>();
+                    var bytes = new byte[dataLen];
+                    System.Runtime.InteropServices.Marshal.Copy(data, bytes, 0, dataLen);
+                    NativeMethods.FreeBytes(data);
+                    return bytes;
+                }
+                finally { NativeMethods.pdf_rendered_image_free(imgHandle); }
             }
-            finally { NativeMethods.pdf_rendered_image_free(imgHandle); }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>
@@ -823,52 +976,61 @@ namespace PdfOxide.Core
         {
             ArgumentNullException.ThrowIfNull(options);
             options.Validate();
-            ThrowIfDisposed();
-
-            var imgHandle = NativeMethods.PdfRenderPageWithOptions(
-                _handle.Ptr,
-                pageIndex,
-                options.Dpi,
-                (int)options.Format,
-                options.Background.R,
-                options.Background.G,
-                options.Background.B,
-                options.Background.A,
-                options.TransparentBackground ? 1 : 0,
-                options.RenderAnnotations ? 1 : 0,
-                options.JpegQuality,
-                out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            if (imgHandle == IntPtr.Zero) return Array.Empty<byte>();
+            _lock.EnterReadLock();
             try
             {
-                var data = NativeMethods.pdf_get_rendered_image_data(imgHandle, out var dataLen, out _);
-                if (data == IntPtr.Zero) return Array.Empty<byte>();
-                var bytes = new byte[dataLen];
-                System.Runtime.InteropServices.Marshal.Copy(data, bytes, 0, dataLen);
-                NativeMethods.FreeBytes(data);
-                return bytes;
+                ThrowIfDisposed();
+                var imgHandle = NativeMethods.PdfRenderPageWithOptions(
+                    _handle.Ptr,
+                    pageIndex,
+                    options.Dpi,
+                    (int)options.Format,
+                    options.Background.R,
+                    options.Background.G,
+                    options.Background.B,
+                    options.Background.A,
+                    options.TransparentBackground ? 1 : 0,
+                    options.RenderAnnotations ? 1 : 0,
+                    options.JpegQuality,
+                    out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (imgHandle == IntPtr.Zero) return Array.Empty<byte>();
+                try
+                {
+                    var data = NativeMethods.pdf_get_rendered_image_data(imgHandle, out var dataLen, out _);
+                    if (data == IntPtr.Zero) return Array.Empty<byte>();
+                    var bytes = new byte[dataLen];
+                    System.Runtime.InteropServices.Marshal.Copy(data, bytes, 0, dataLen);
+                    NativeMethods.FreeBytes(data);
+                    return bytes;
+                }
+                finally { NativeMethods.pdf_rendered_image_free(imgHandle); }
             }
-            finally { NativeMethods.pdf_rendered_image_free(imgHandle); }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Renders a page with zoom factor. Returns PNG bytes.</summary>
         public byte[] RenderPageZoom(int pageIndex, float zoom, int format = 0)
         {
-            ThrowIfDisposed();
-            var imgHandle = NativeMethods.pdf_render_page_zoom(_handle.Ptr, pageIndex, zoom, format, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            if (imgHandle == IntPtr.Zero) return Array.Empty<byte>();
+            _lock.EnterReadLock();
             try
             {
-                var data = NativeMethods.pdf_get_rendered_image_data(imgHandle, out var dataLen, out _);
-                if (data == IntPtr.Zero) return Array.Empty<byte>();
-                var bytes = new byte[dataLen];
-                System.Runtime.InteropServices.Marshal.Copy(data, bytes, 0, dataLen);
-                NativeMethods.FreeBytes(data);
-                return bytes;
+                ThrowIfDisposed();
+                var imgHandle = NativeMethods.pdf_render_page_zoom(_handle.Ptr, pageIndex, zoom, format, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (imgHandle == IntPtr.Zero) return Array.Empty<byte>();
+                try
+                {
+                    var data = NativeMethods.pdf_get_rendered_image_data(imgHandle, out var dataLen, out _);
+                    if (data == IntPtr.Zero) return Array.Empty<byte>();
+                    var bytes = new byte[dataLen];
+                    System.Runtime.InteropServices.Marshal.Copy(data, bytes, 0, dataLen);
+                    NativeMethods.FreeBytes(data);
+                    return bytes;
+                }
+                finally { NativeMethods.pdf_rendered_image_free(imgHandle); }
             }
-            finally { NativeMethods.pdf_rendered_image_free(imgHandle); }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>
@@ -883,64 +1045,105 @@ namespace PdfOxide.Core
         /// <param name="format">0 = PNG (default), 1 = JPEG.</param>
         public byte[] RenderPageFit(int pageIndex, int fitWidth, int fitHeight, int format = 0)
         {
-            ThrowIfDisposed();
             if (fitWidth <= 0)
-            {
-                throw new ArgumentOutOfRangeException(
-                    nameof(fitWidth),
-                    fitWidth,
-                    $"fitWidth must be > 0, got {fitWidth}");
-            }
+                throw new ArgumentOutOfRangeException(nameof(fitWidth), fitWidth, $"fitWidth must be > 0, got {fitWidth}");
             if (fitHeight <= 0)
-            {
-                throw new ArgumentOutOfRangeException(
-                    nameof(fitHeight),
-                    fitHeight,
-                    $"fitHeight must be > 0, got {fitHeight}");
-            }
-            var imgHandle = NativeMethods.pdf_render_page_fit(_handle.Ptr, pageIndex, fitWidth, fitHeight, format, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            if (imgHandle == IntPtr.Zero) return Array.Empty<byte>();
+                throw new ArgumentOutOfRangeException(nameof(fitHeight), fitHeight, $"fitHeight must be > 0, got {fitHeight}");
+            _lock.EnterReadLock();
             try
             {
-                var data = NativeMethods.pdf_get_rendered_image_data(imgHandle, out var dataLen, out _);
-                if (data == IntPtr.Zero) return Array.Empty<byte>();
-                var bytes = new byte[dataLen];
-                System.Runtime.InteropServices.Marshal.Copy(data, bytes, 0, dataLen);
-                NativeMethods.FreeBytes(data);
-                return bytes;
+                ThrowIfDisposed();
+                var imgHandle = NativeMethods.pdf_render_page_fit(_handle.Ptr, pageIndex, fitWidth, fitHeight, format, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (imgHandle == IntPtr.Zero) return Array.Empty<byte>();
+                try
+                {
+                    var data = NativeMethods.pdf_get_rendered_image_data(imgHandle, out var dataLen, out _);
+                    if (data == IntPtr.Zero) return Array.Empty<byte>();
+                    var bytes = new byte[dataLen];
+                    System.Runtime.InteropServices.Marshal.Copy(data, bytes, 0, dataLen);
+                    NativeMethods.FreeBytes(data);
+                    return bytes;
+                }
+                finally { NativeMethods.pdf_rendered_image_free(imgHandle); }
             }
-            finally { NativeMethods.pdf_rendered_image_free(imgHandle); }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Renders a page thumbnail (72 DPI). Returns PNG bytes.</summary>
         public byte[] RenderThumbnail(int pageIndex, int format = 0)
         {
-            ThrowIfDisposed();
-            var imgHandle = NativeMethods.pdf_render_page_thumbnail(_handle.Ptr, pageIndex, 72, format, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            if (imgHandle == IntPtr.Zero) return Array.Empty<byte>();
+            _lock.EnterReadLock();
             try
             {
-                var data = NativeMethods.pdf_get_rendered_image_data(imgHandle, out var dataLen, out _);
-                if (data == IntPtr.Zero) return Array.Empty<byte>();
-                var bytes = new byte[dataLen];
-                System.Runtime.InteropServices.Marshal.Copy(data, bytes, 0, dataLen);
-                NativeMethods.FreeBytes(data);
-                return bytes;
+                ThrowIfDisposed();
+                var imgHandle = NativeMethods.pdf_render_page_thumbnail(_handle.Ptr, pageIndex, 72, format, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (imgHandle == IntPtr.Zero) return Array.Empty<byte>();
+                try
+                {
+                    var data = NativeMethods.pdf_get_rendered_image_data(imgHandle, out var dataLen, out _);
+                    if (data == IntPtr.Zero) return Array.Empty<byte>();
+                    var bytes = new byte[dataLen];
+                    System.Runtime.InteropServices.Marshal.Copy(data, bytes, 0, dataLen);
+                    NativeMethods.FreeBytes(data);
+                    return bytes;
+                }
+                finally { NativeMethods.pdf_rendered_image_free(imgHandle); }
             }
-            finally { NativeMethods.pdf_rendered_image_free(imgHandle); }
+            finally { _lock.ExitReadLock(); }
+        }
+
+        /// <summary>
+        /// Renders a page as premultiplied RGBA8888 pixels without encoding to PNG or JPEG.
+        /// Useful when passing pixel data directly to image-processing libraries (e.g. System.Drawing,
+        /// ImageSharp, SkiaSharp). Data layout: row-major, top-left origin, 4 bytes per pixel,
+        /// width × height × 4 bytes total. Alpha is premultiplied (PDF spec §11 transparency model).
+        /// </summary>
+        /// <param name="pageIndex">Zero-based page index.</param>
+        /// <param name="dpi">Resolution in dots per inch (default 150).</param>
+        /// <returns><see cref="RgbaPixmap"/> with the raw pixel bytes and dimensions.</returns>
+        /// <exception cref="UnsupportedFeatureException">Native lib compiled without rendering feature.</exception>
+        public RgbaPixmap RenderToRgba(int pageIndex, int dpi = 150)
+        {
+            if (dpi <= 0)
+                throw new ArgumentOutOfRangeException(nameof(dpi), dpi, "dpi must be > 0");
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                var imgHandle = NativeMethods.pdf_render_page_raw(
+                    _handle.Ptr, pageIndex, dpi, out int w, out int h, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (imgHandle == IntPtr.Zero) return new RgbaPixmap(ReadOnlyMemory<byte>.Empty, 0, 0);
+                try
+                {
+                    var data = NativeMethods.pdf_get_rendered_image_data(imgHandle, out int dataLen, out _);
+                    if (data == IntPtr.Zero) return new RgbaPixmap(ReadOnlyMemory<byte>.Empty, w, h);
+                    var bytes = new byte[dataLen];
+                    System.Runtime.InteropServices.Marshal.Copy(data, bytes, 0, dataLen);
+                    NativeMethods.FreeBytes(data);
+                    return new RgbaPixmap(bytes, w, h);
+                }
+                finally { NativeMethods.pdf_rendered_image_free(imgHandle); }
+            }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>Saves a rendered page to a file.</summary>
         public void SaveRenderedImage(int pageIndex, string filePath, int format = 0)
         {
-            ThrowIfDisposed();
-            var imgHandle = NativeMethods.pdf_render_page(_handle.Ptr, pageIndex, format, out var errorCode);
-            ExceptionMapper.ThrowIfError(errorCode);
-            if (imgHandle == IntPtr.Zero) return;
-            try { NativeMethods.pdf_save_rendered_image(imgHandle, filePath, out _); }
-            finally { NativeMethods.pdf_rendered_image_free(imgHandle); }
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                var imgHandle = NativeMethods.pdf_render_page(_handle.Ptr, pageIndex, format, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                if (imgHandle == IntPtr.Zero) return;
+                try { NativeMethods.pdf_save_rendered_image(imgHandle, filePath, out _); }
+                finally { NativeMethods.pdf_rendered_image_free(imgHandle); }
+            }
+            finally { _lock.ExitReadLock(); }
         }
 
         /// <summary>
@@ -1181,6 +1384,13 @@ namespace PdfOxide.Core
             }
         }
     }
+
+    /// <summary>
+    /// Premultiplied RGBA8888 pixel buffer returned by <see cref="PdfDocument.RenderToRgba"/>.
+    /// Layout: row-major, top-left origin, 4 bytes (R,G,B,A) per pixel.
+    /// <c>Data.Length == Width * Height * 4</c>.
+    /// </summary>
+    public sealed record RgbaPixmap(ReadOnlyMemory<byte> Data, int Width, int Height);
 
     /// <summary>
     /// A table extracted from a PDF page, with row/column dimensions and per-cell text.

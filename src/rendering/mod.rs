@@ -168,9 +168,9 @@ pub fn render_page_region(
                 .map_err(|e| crate::Error::InvalidPdf(format!("jpeg encode: {e}")))?;
         },
         _ => {
+            use image::codecs::png::{CompressionType, FilterType, PngEncoder};
             use image::ImageEncoder;
-            let encoder = image::codecs::png::PngEncoder::new(&mut buf);
-            encoder
+            PngEncoder::new_with_quality(&mut buf, CompressionType::Fast, FilterType::Sub)
                 .write_image(cropped.as_bytes(), w, h, cropped.color().into())
                 .map_err(|e| crate::Error::InvalidPdf(format!("png encode: {e}")))?;
         },

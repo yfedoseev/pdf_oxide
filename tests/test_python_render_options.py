@@ -72,3 +72,35 @@ def test_render_rejects_invalid_jpeg_quality(one_page_doc):
 def test_render_rejects_bad_background_tuple(one_page_doc):
     with pytest.raises((ValueError, TypeError, RuntimeError)):
         one_page_doc.render_page(0, background=(1.0, 1.0))  # not 4 channels
+
+
+# ── Raw RGBA pixel buffer tests (issue #446) ─────────────────────────────────
+
+def test_render_pixmap_size(one_page_doc):
+    px = one_page_doc.render_pixmap(0, dpi=72)
+    assert px.width > 0
+    assert px.height > 0
+    assert len(px.data) == px.width * px.height * 4
+
+
+def test_render_pixmap_not_png(one_page_doc):
+    px = one_page_doc.render_pixmap(0)
+    assert not px.data[:4] == b"\x89PNG", "render_pixmap should return raw pixels, not PNG"
+
+
+def test_render_pixmap_dimensions_match_png(one_page_doc):
+    import struct
+    png = one_page_doc.render_page(0, dpi=72)
+    px = one_page_doc.render_pixmap(0, dpi=72)
+    # PNG IHDR: width at bytes 16-19, height at 20-23 (big-endian)
+    (png_w,) = struct.unpack(">I", png[16:20])
+    (png_h,) = struct.unpack(">I", png[20:24])
+    assert px.width == png_w, f"width mismatch: pixmap {px.width} vs PNG {png_w}"
+    assert px.height == png_h, f"height mismatch: pixmap {px.height} vs PNG {png_h}"
+
+
+def test_render_pixmap_returns_rendered_pixmap_type(one_page_doc):
+    from pdf_oxide import RenderedPixmap
+    px = one_page_doc.render_pixmap(0)
+    assert isinstance(px, RenderedPixmap)
+    assert hasattr(px, "data") and hasattr(px, "width") and hasattr(px, "height")

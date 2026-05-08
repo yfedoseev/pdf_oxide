@@ -84,3 +84,61 @@ test('estimateRenderTime returns a non-negative number', { skip }, () => {
   assert.equal(typeof ms, 'number');
   assert.ok(ms >= 0);
 });
+
+// Raw RGBA pixel buffer tests (issue #446)
+
+test('renderToPixmap returns premultiplied RGBA buffer', { skip }, () => {
+  const doc = makeDoc();
+  const px = doc.renderToPixmap(0, 72);
+  assert.ok(px.width > 0, 'width > 0');
+  assert.ok(px.height > 0, 'height > 0');
+  assert.strictEqual(px.data.length, px.width * px.height * 4, 'data length = w*h*4');
+});
+
+test('renderToPixmap data is not PNG-encoded', { skip }, () => {
+  const doc = makeDoc();
+  const px = doc.renderToPixmap(0, 72);
+  // PNG magic: 0x89 0x50 0x4E 0x47
+  assert.notEqual(px.data[0], 0x89, 'raw RGBA must not start with PNG magic byte');
+});
+
+test('renderToPixmap dimensions match renderPageWithOptions at same DPI', { skip }, () => {
+  const doc = makeDoc();
+  const pngBytes = doc.renderPageWithOptions(0, { dpi: 72 });
+  const px = doc.renderToPixmap(0, 72);
+  // PNG IHDR: width at bytes 16-19, height at 20-23 (big-endian)
+  const pngW = pngBytes.readUInt32BE(16);
+  const pngH = pngBytes.readUInt32BE(20);
+  assert.strictEqual(px.width, pngW, 'width must match PNG IHDR');
+  assert.strictEqual(px.height, pngH, 'height must match PNG IHDR');
+});
+
+test('renderToPixmap rejects invalid dpi', { skip }, () => {
+  const doc = makeDoc();
+  assert.throws(() => doc.renderToPixmap(0, 0), /dpi/);
+});
+
+// Async render variants (issue #481)
+
+test('renderPageWithOptionsAsync returns PNG bytes', { skip }, async () => {
+  const doc = makeDoc();
+  const bytes = await doc.renderPageWithOptionsAsync(0);
+  assert.ok(isPng(bytes), 'async default format should be PNG');
+});
+
+test('renderPageFitAsync returns PNG bytes', { skip }, async () => {
+  const doc = makeDoc();
+  const bytes = await doc.renderPageFitAsync(0, 400, 600);
+  assert.ok(isPng(bytes), 'renderPageFitAsync should produce PNG');
+});
+
+test('renderToPixmapAsync — same doc concurrent renders produce valid results', { skip }, async () => {
+  const doc = makeDoc();
+  const results = await Promise.all(
+    Array.from({ length: 4 }, () => doc.renderToPixmapAsync(0, 72))
+  );
+  for (const px of results) {
+    assert.ok(px.width > 0 && px.height > 0, 'valid dimensions');
+    assert.strictEqual(px.data.length, px.width * px.height * 4, 'correct data length');
+  }
+});

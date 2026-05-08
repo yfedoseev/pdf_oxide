@@ -20,7 +20,7 @@
     "check:publint": "publint",
     "check:types": "attw --pack . --ignore-rules=cjs-resolves-to-esm",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
-    "test": "node --test tests/smoke.test.mjs tests/feature-guard.test.mjs tests/api-coverage.test.mjs tests/html-css.test.mjs tests/document-builder.test.mjs tests/document-editor.test.mjs tests/render-options.test.mjs tests/tables.test.mjs"
+    "test": "node --test tests/smoke.test.mjs tests/feature-guard.test.mjs tests/api-coverage.test.mjs tests/html-css.test.mjs tests/document-builder.test.mjs tests/document-editor.test.mjs tests/render-options.test.mjs tests/tables.test.mjs tests/worker-threads-safety.test.mjs"
   },
   "files": [
     "lib/",
@@ -65,6 +65,9 @@
       "types": "./lib/errors.d.ts",
       "import": "./lib/errors.js"
     }
+  },
+  "dependencies": {
+    "async-mutex": "^0.5.0"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

@@ -255,3 +255,62 @@ mod error_handling {
         let _ = std::fs::remove_file(&input_path);
     }
 }
+
+mod raw_rgba {
+    use super::*;
+
+    #[test]
+    fn test_raw_rgba_format_flag() {
+        let opts = RenderOptions::with_dpi(72).as_raw();
+        assert_eq!(opts.format, ImageFormat::RawRgba8);
+    }
+
+    #[test]
+    fn test_raw_rgba_size_is_width_times_height_times_4() {
+        let bytes = create_test_pdf();
+        let temp = std::env::temp_dir().join("test_raw_rgba_size.pdf");
+        std::fs::write(&temp, &bytes).unwrap();
+        let mut pdf = Pdf::open(&temp).unwrap();
+
+        let opts = RenderOptions::with_dpi(72).as_raw();
+        let img = pdf.render_page_with_options(0, &opts).unwrap();
+
+        assert_eq!(img.format, ImageFormat::RawRgba8);
+        assert!(img.width > 0);
+        assert!(img.height > 0);
+        assert_eq!(img.data.len(), (img.width * img.height * 4) as usize);
+
+        let _ = std::fs::remove_file(&temp);
+    }
+
+    #[test]
+    fn test_raw_rgba_not_png_magic() {
+        let bytes = create_test_pdf();
+        let temp = std::env::temp_dir().join("test_raw_rgba_magic.pdf");
+        std::fs::write(&temp, &bytes).unwrap();
+        let mut pdf = Pdf::open(&temp).unwrap();
+
+        let opts = RenderOptions::with_dpi(72).as_raw();
+        let img = pdf.render_page_with_options(0, &opts).unwrap();
+
+        assert_ne!(&img.data[..4], b"\x89PNG");
+
+        let _ = std::fs::remove_file(&temp);
+    }
+
+    #[test]
+    fn test_raw_rgba_dimensions_match_png() {
+        let bytes = create_test_pdf();
+        let temp = std::env::temp_dir().join("test_raw_rgba_dims.pdf");
+        std::fs::write(&temp, &bytes).unwrap();
+        let mut pdf = Pdf::open(&temp).unwrap();
+
+        let png_img = pdf.render_page_with_options(0, &RenderOptions::with_dpi(72)).unwrap();
+        let raw_img = pdf.render_page_with_options(0, &RenderOptions::with_dpi(72).as_raw()).unwrap();
+
+        assert_eq!(png_img.width, raw_img.width);
+        assert_eq!(png_img.height, raw_img.height);
+
+        let _ = std::fs::remove_file(&temp);
+    }
+}

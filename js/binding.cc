@@ -2,6 +2,37 @@
 #include <string>
 #include <cstring>
 #include <cstdint>
+#include <mutex>
+
+// Forward declaration needed by DocumentWrapper destructor (full declaration
+// appears in the extern "C" block below).
+extern "C" void pdf_document_free(void*);
+
+// ── Thread-safety wrapper ────────────────────────────────────────────────────
+// Each PdfDocument handle is wrapped in DocumentWrapper so that concurrent
+// worker_threads calls are serialised at the native layer (mirrors Go's
+// sync.Mutex and C#'s ReaderWriterLockSlim).
+struct DocumentWrapper {
+    void* ptr;
+    std::mutex mu;        // exclusive — not movable, always heap-allocated
+    bool closed = false;
+
+    explicit DocumentWrapper(void* p) : ptr(p) {}
+    ~DocumentWrapper() {
+        // Guard against double-free when CloseDocument was called explicitly.
+        if (ptr) { pdf_document_free(ptr); ptr = nullptr; }
+    }
+};
+
+// Acquire the mutex and expose `docPtr` (void*) for the duration of the
+// enclosing function. info[0] must be a Napi::External<DocumentWrapper>.
+#define LOCK_DOC(info, docPtr)                                                \
+    auto* _dw = info[0].As<Napi::External<DocumentWrapper>>().Data();        \
+    std::lock_guard<std::mutex> _dw_guard(_dw->mu);                          \
+    if (_dw->closed || !_dw->ptr)                                            \
+        throw Napi::Error::New(env, "Document is closed");                   \
+    void* docPtr = _dw->ptr;
+// ────────────────────────────────────────────────────────────────────────────
 
 // ============================================================
 // External FFI declarations from Rust
@@ -119,6 +150,9 @@ extern "C" {
   extern int pdf_get_rendered_image_width(const void* image, int* error_code);
   extern int pdf_get_rendered_image_height(const void* image, int* error_code);
   extern void pdf_rendered_image_free(void* image);
+  // Raw RGBA pixel buffer — returns premultiplied RGBA8888, no encode overhead.
+  extern void* pdf_render_page_raw(void* document, int32_t page_index, int32_t dpi,
+    int32_t* out_width, int32_t* out_height, int* error_code);
 
   // OCR Operations (real Rust FFI signatures)
   extern void* pdf_ocr_engine_create(const char* det_model_path, const char* rec_model_path, const char* dict_path, int* error_code);
@@ -698,7 +732,9 @@ Napi::Value OpenDocument(const Napi::CallbackInfo& info) {
     throw Napi::Error::New(env, "Failed to open document: internal error");
   }
 
-  return Napi::External<void>::New(env, handle);
+  auto* wrapper = new DocumentWrapper(handle);
+  return Napi::External<DocumentWrapper>::New(env, wrapper,
+    [](Napi::Env, DocumentWrapper* w) { delete w; });
 }
 
 Napi::Value CloseDocument(const Napi::CallbackInfo& info) {
@@ -708,8 +744,13 @@ Napi::Value CloseDocument(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "handle must be an external pointer");
   }
 
-  void* handle = info[0].As<Napi::External<void>>().Data();
-  pdf_document_free(handle);
+  auto* dw = info[0].As<Napi::External<DocumentWrapper>>().Data();
+  std::lock_guard<std::mutex> lock(dw->mu);
+  if (!dw->closed && dw->ptr) {
+    pdf_document_free(dw->ptr);
+    dw->ptr = nullptr;
+    dw->closed = true;
+  }
 
   return env.Undefined();
 }
@@ -721,7 +762,7 @@ Napi::Value GetPageCount(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "handle must be an external pointer");
   }
 
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int errorCode = 0;
   int32_t count = pdf_document_get_page_count(handle, &errorCode);
 
@@ -739,7 +780,7 @@ Napi::Value GetVersion(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "handle must be an external pointer");
   }
 
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   uint8_t major = 0, minor = 0;
   pdf_document_get_version(handle, &major, &minor);
 
@@ -757,7 +798,7 @@ Napi::Value HasStructureTree(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "handle must be an external pointer");
   }
 
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   bool hasTree = pdf_document_has_structure_tree(handle);
 
   return Napi::Boolean::New(env, hasTree);
@@ -770,7 +811,7 @@ Napi::Value ExtractText(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "invalid arguments");
   }
 
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
 
@@ -797,7 +838,7 @@ Napi::Value ToMarkdown(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "invalid arguments");
   }
 
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
 
@@ -820,7 +861,7 @@ Napi::Value ToHtml(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "invalid arguments");
   }
 
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
 
@@ -843,7 +884,7 @@ Napi::Value ToPlainText(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "invalid arguments");
   }
 
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
 
@@ -866,7 +907,7 @@ Napi::Value ToMarkdownAll(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "handle must be an external pointer");
   }
 
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int errorCode = 0;
 
   char* markdown = pdf_document_to_markdown_all(handle, &errorCode);
@@ -893,7 +934,7 @@ Napi::Value SearchPage(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "invalid arguments: (handle, text, pageIndex, caseSensitive)");
   }
 
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   std::string text = info[1].As<Napi::String>().Utf8Value();
   int32_t pageIndex = info[2].As<Napi::Number>().Int32Value();
   bool caseSensitive = info[3].As<Napi::Boolean>().Value();
@@ -915,7 +956,7 @@ Napi::Value SearchAll(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "invalid arguments: (handle, text, caseSensitive)");
   }
 
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   std::string text = info[1].As<Napi::String>().Utf8Value();
   bool caseSensitive = info[2].As<Napi::Boolean>().Value();
   int errorCode = 0;
@@ -966,7 +1007,7 @@ Napi::Value RenderPage(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "invalid arguments: (document, pageIndex, [format])");
   }
 
-  void* document = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, document);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   // format: 0=PNG (default), 1=JPEG
   int32_t format = (info.Length() > 2 && info[2].IsNumber()) ? info[2].As<Napi::Number>().Int32Value() : 0;
@@ -992,7 +1033,7 @@ Napi::Value RenderPageWithOptions(const Napi::CallbackInfo& info) {
       env,
       "invalid arguments: (document, pageIndex, dpi, format, bgR, bgG, bgB, bgA, transparent, renderAnnotations, jpegQuality)");
   }
-  void* document = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, document);
   int32_t pageIndex   = info[1].As<Napi::Number>().Int32Value();
   int32_t dpi         = info[2].As<Napi::Number>().Int32Value();
   int32_t format      = info[3].As<Napi::Number>().Int32Value();
@@ -1024,7 +1065,7 @@ Napi::Value RenderThumbnail(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "invalid arguments: (document, pageIndex, size, [format])");
   }
 
-  void* document = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, document);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int32_t size = info[2].As<Napi::Number>().Int32Value();
   int32_t format = (info.Length() > 3 && info[3].IsNumber()) ? info[3].As<Napi::Number>().Int32Value() : 0;
@@ -1097,7 +1138,7 @@ Napi::Value PageNeedsOCR(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "invalid arguments: (document, pageIndex)");
   }
 
-  void* document = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, document);
   int pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
 
@@ -1117,7 +1158,7 @@ Napi::Value OCRExtractText(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "invalid arguments: (document, pageIndex, engine)");
   }
 
-  void* document = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, document);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   void* engine = info[2].As<Napi::External<void>>().Data();
   int errorCode = 0;
@@ -1145,7 +1186,7 @@ Napi::Value ValidatePdfA(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "invalid arguments: (document, level)");
   }
 
-  void* document = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, document);
   int32_t level = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
 
@@ -1241,7 +1282,7 @@ Napi::Value GetSignatureCount(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "document must be an external pointer");
   }
 
-  void* document = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, document);
   int errorCode = 0;
 
   int count = pdf_document_get_signature_count(document, &errorCode);
@@ -1260,7 +1301,7 @@ Napi::Value GetSignature(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "invalid arguments: (document, index)");
   }
 
-  void* document = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, document);
   int index = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
 
@@ -1430,7 +1471,7 @@ Napi::Value HasXFA(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "document must be an external pointer");
   }
 
-  void* document = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, document);
   int errorCode = 0;
 
   bool hasXFA = pdf_document_has_xfa(document, &errorCode);
@@ -1593,7 +1634,7 @@ Napi::Value EditorFlattenAnnotations(const Napi::CallbackInfo& info) {
 
 Napi::Value GetFormFields(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* docHandle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, docHandle);
   int errorCode = 0;
   void* fields = pdf_document_get_form_fields(docHandle, &errorCode);
   if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
@@ -1626,7 +1667,7 @@ Napi::Value GetFormFields(const Napi::CallbackInfo& info) {
 
 Napi::Value ExtractWords(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   void* words = pdf_document_extract_words(handle, pageIndex, &errorCode);
@@ -1659,7 +1700,7 @@ Napi::Value ExtractWords(const Napi::CallbackInfo& info) {
 
 Napi::Value ExtractTextLines(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   void* lines = pdf_document_extract_text_lines(handle, pageIndex, &errorCode);
@@ -1688,7 +1729,7 @@ Napi::Value ExtractTextLines(const Napi::CallbackInfo& info) {
 
 Napi::Value ExtractTables(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   void* tables = pdf_document_extract_tables(handle, pageIndex, &errorCode);
@@ -1727,7 +1768,7 @@ Napi::Value ExtractTables(const Napi::CallbackInfo& info) {
 
 Napi::Value ExtractAllText(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int errorCode = 0;
   char* text = pdf_document_extract_all_text(handle, &errorCode);
   if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
@@ -1738,7 +1779,7 @@ Napi::Value ExtractAllText(const Napi::CallbackInfo& info) {
 
 Napi::Value ToHtmlAll(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int errorCode = 0;
   char* text = pdf_document_to_html_all(handle, &errorCode);
   if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
@@ -1749,7 +1790,7 @@ Napi::Value ToHtmlAll(const Napi::CallbackInfo& info) {
 
 Napi::Value ToPlainTextAll(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int errorCode = 0;
   char* text = pdf_document_to_plain_text_all(handle, &errorCode);
   if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
@@ -1760,13 +1801,13 @@ Napi::Value ToPlainTextAll(const Napi::CallbackInfo& info) {
 
 Napi::Value IsEncrypted(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   return Napi::Boolean::New(env, pdf_document_is_encrypted(handle));
 }
 
 Napi::Value GetPageLabels(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int errorCode = 0;
   char* text = pdf_document_get_page_labels(handle, &errorCode);
   if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
@@ -1777,7 +1818,7 @@ Napi::Value GetPageLabels(const Napi::CallbackInfo& info) {
 
 Napi::Value GetXmpMetadata(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int errorCode = 0;
   char* text = pdf_document_get_xmp_metadata(handle, &errorCode);
   if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
@@ -1788,7 +1829,7 @@ Napi::Value GetXmpMetadata(const Napi::CallbackInfo& info) {
 
 Napi::Value GetOutline(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int errorCode = 0;
   char* text = pdf_document_get_outline(handle, &errorCode);
   if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
@@ -1805,7 +1846,7 @@ Napi::Value GetOutline(const Napi::CallbackInfo& info) {
 
 Napi::Value GetSignatureInfo(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int index = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   void* sig = pdf_document_get_signature(handle, index, &errorCode);
@@ -1860,7 +1901,7 @@ Napi::Value GetSignatureInfo(const Napi::CallbackInfo& info) {
 
 Napi::Value VerifyAllSignatures(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int errorCode = 0;
   int result = pdf_document_verify_all_signatures(handle, &errorCode);
   if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
@@ -1873,7 +1914,7 @@ Napi::Value VerifyAllSignatures(const Napi::CallbackInfo& info) {
 
 Napi::Value GetAnnotationsDetailed(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   void* annotations = pdf_document_get_page_annotations(handle, pageIndex, &errorCode);
@@ -1919,7 +1960,7 @@ Napi::Value GetAnnotationsDetailed(const Napi::CallbackInfo& info) {
 
 Napi::Value EstimateRenderTime(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   int ms = pdf_estimate_render_time(handle, pageIndex, &errorCode);
@@ -1929,7 +1970,7 @@ Napi::Value EstimateRenderTime(const Napi::CallbackInfo& info) {
 
 Napi::Value RenderPageZoom(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int pageIndex = info[1].As<Napi::Number>().Int32Value();
   float zoom = info[2].As<Napi::Number>().FloatValue();
   int format = info.Length() > 3 ? info[3].As<Napi::Number>().Int32Value() : 0;
@@ -1951,7 +1992,7 @@ Napi::Value RenderPageFit(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env,
         "renderPageFit(handle, pageIndex, width, height [, format]) — wrong arity or types");
   }
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int pageIndex = info[1].As<Napi::Number>().Int32Value();
   int width = info[2].As<Napi::Number>().Int32Value();
   int height = info[3].As<Napi::Number>().Int32Value();
@@ -1961,6 +2002,30 @@ Napi::Value RenderPageFit(const Napi::CallbackInfo& info) {
   if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
   if (!image) throw Napi::Error::New(env, "Rendering failed");
   return Napi::External<void>::New(env, image);
+}
+
+// RenderPageRaw — returns { imgHandle, width, height } for raw RGBA pixel access.
+// Callers must call freeRenderedImage(imgHandle) and pdfGetRenderedImageData(imgHandle)
+// to retrieve and release the pixel buffer (same lifecycle as other render handles).
+Napi::Value RenderPageRaw(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 2 || !info[0].IsExternal() || !info[1].IsNumber()) {
+    throw Napi::TypeError::New(env,
+        "renderPageRaw(handle, pageIndex [, dpi]) — wrong arity or types");
+  }
+  LOCK_DOC(info, handle);
+  int pageIndex = info[1].As<Napi::Number>().Int32Value();
+  int dpi = info.Length() > 2 ? info[2].As<Napi::Number>().Int32Value() : 150;
+  int errorCode = 0;
+  int32_t outWidth = 0, outHeight = 0;
+  void* image = pdf_render_page_raw(handle, pageIndex, dpi, &outWidth, &outHeight, &errorCode);
+  if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
+  if (!image) throw Napi::Error::New(env, "RenderPageRaw failed");
+  Napi::Object result = Napi::Object::New(env);
+  result.Set("imgHandle", Napi::External<void>::New(env, image));
+  result.Set("width", Napi::Number::New(env, outWidth));
+  result.Set("height", Napi::Number::New(env, outHeight));
+  return result;
 }
 
 Napi::Value SaveRenderedImage(const Napi::CallbackInfo& info) {
@@ -2032,7 +2097,9 @@ Napi::Value OpenFromBuffer(const Napi::CallbackInfo& info) {
     throw Napi::Error::New(env, "Failed to open document from buffer: internal error");
   }
 
-  return Napi::External<void>::New(env, handle);
+  auto* wrapper = new DocumentWrapper(handle);
+  return Napi::External<DocumentWrapper>::New(env, wrapper,
+    [](Napi::Env, DocumentWrapper* w) { delete w; });
 }
 
 // ============================================================
@@ -2059,7 +2126,9 @@ Napi::Value OpenWithPassword(const Napi::CallbackInfo& info) {
     throw Napi::Error::New(env, "Failed to open document: internal error");
   }
 
-  return Napi::External<void>::New(env, handle);
+  auto* wrapper = new DocumentWrapper(handle);
+  return Napi::External<DocumentWrapper>::New(env, wrapper,
+    [](Napi::Env, DocumentWrapper* w) { delete w; });
 }
 
 // ============================================================
@@ -2534,7 +2603,7 @@ Napi::Value EditorUnmarkPageForRedaction(const Napi::CallbackInfo& info) {
 
 Napi::Value DocumentEraseArtifacts(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   pdf_document_erase_artifacts(handle, pageIndex, &errorCode);
@@ -2544,7 +2613,7 @@ Napi::Value DocumentEraseArtifacts(const Napi::CallbackInfo& info) {
 
 Napi::Value DocumentEraseFooter(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   pdf_document_erase_footer(handle, pageIndex, &errorCode);
@@ -2554,7 +2623,7 @@ Napi::Value DocumentEraseFooter(const Napi::CallbackInfo& info) {
 
 Napi::Value DocumentEraseHeader(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   pdf_document_erase_header(handle, pageIndex, &errorCode);
@@ -2564,7 +2633,7 @@ Napi::Value DocumentEraseHeader(const Napi::CallbackInfo& info) {
 
 Napi::Value DocumentExportFormData(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t formatType = info.Length() > 1 ? info[1].As<Napi::Number>().Int32Value() : 0;
   size_t outLen = 0;
   int errorCode = 0;
@@ -2578,7 +2647,7 @@ Napi::Value DocumentExportFormData(const Napi::CallbackInfo& info) {
 
 Napi::Value DocumentImportFormData(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   std::string path = info[1].As<Napi::String>().Utf8Value();
   int errorCode = 0;
   pdf_document_import_form_data(handle, path.c_str(), &errorCode);
@@ -2588,7 +2657,7 @@ Napi::Value DocumentImportFormData(const Napi::CallbackInfo& info) {
 
 Napi::Value DocumentRemoveArtifacts(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   float threshold = info.Length() > 1 ? info[1].As<Napi::Number>().FloatValue() : 0.1f;
   int errorCode = 0;
   int count = pdf_document_remove_artifacts(handle, threshold, &errorCode);
@@ -2598,7 +2667,7 @@ Napi::Value DocumentRemoveArtifacts(const Napi::CallbackInfo& info) {
 
 Napi::Value DocumentRemoveFooters(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   float threshold = info.Length() > 1 ? info[1].As<Napi::Number>().FloatValue() : 0.1f;
   int errorCode = 0;
   int count = pdf_document_remove_footers(handle, threshold, &errorCode);
@@ -2608,7 +2677,7 @@ Napi::Value DocumentRemoveFooters(const Napi::CallbackInfo& info) {
 
 Napi::Value DocumentRemoveHeaders(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   float threshold = info.Length() > 1 ? info[1].As<Napi::Number>().FloatValue() : 0.1f;
   int errorCode = 0;
   int count = pdf_document_remove_headers(handle, threshold, &errorCode);
@@ -2619,7 +2688,7 @@ Napi::Value DocumentRemoveHeaders(const Napi::CallbackInfo& info) {
 Napi::Value DocumentSign(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (info.Length() < 2) throw Napi::TypeError::New(env, "Expected (document, certificate, [reason], [location])");
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   void* cert = info[1].As<Napi::External<void>>().Data();
   std::string reason = info.Length() > 2 && info[2].IsString() ? info[2].As<Napi::String>().Utf8Value() : "";
   std::string location = info.Length() > 3 && info[3].IsString() ? info[3].As<Napi::String>().Utf8Value() : "";
@@ -2636,7 +2705,7 @@ Napi::Value DocumentSign(const Napi::CallbackInfo& info) {
 Napi::Value ExtractImagesInRect(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (info.Length() < 6) throw Napi::TypeError::New(env, "Expected (handle, pageIndex, x, y, w, h)");
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   float x = info[2].As<Napi::Number>().FloatValue();
   float y = info[3].As<Napi::Number>().FloatValue();
@@ -2664,7 +2733,7 @@ Napi::Value ExtractImagesInRect(const Napi::CallbackInfo& info) {
 Napi::Value ExtractLinesInRect(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (info.Length() < 6) throw Napi::TypeError::New(env, "Expected (handle, pageIndex, x, y, w, h)");
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   float x = info[2].As<Napi::Number>().FloatValue();
   float y = info[3].As<Napi::Number>().FloatValue();
@@ -2695,7 +2764,7 @@ Napi::Value ExtractLinesInRect(const Napi::CallbackInfo& info) {
 
 Napi::Value ExtractPaths(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   void* paths = pdf_document_extract_paths(handle, pageIndex, &errorCode);
@@ -2724,7 +2793,7 @@ Napi::Value ExtractPaths(const Napi::CallbackInfo& info) {
 Napi::Value ExtractTablesInRect(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (info.Length() < 6) throw Napi::TypeError::New(env, "Expected (handle, pageIndex, x, y, w, h)");
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   float x = info[2].As<Napi::Number>().FloatValue();
   float y = info[3].As<Napi::Number>().FloatValue();
@@ -2763,7 +2832,7 @@ Napi::Value ExtractTablesInRect(const Napi::CallbackInfo& info) {
 Napi::Value ExtractTextInRect(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (info.Length() < 6) throw Napi::TypeError::New(env, "Expected (handle, pageIndex, x, y, w, h)");
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   float x = info[2].As<Napi::Number>().FloatValue();
   float y = info[3].As<Napi::Number>().FloatValue();
@@ -2780,7 +2849,7 @@ Napi::Value ExtractTextInRect(const Napi::CallbackInfo& info) {
 Napi::Value ExtractWordsInRect(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (info.Length() < 6) throw Napi::TypeError::New(env, "Expected (handle, pageIndex, x, y, w, h)");
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   float x = info[2].As<Napi::Number>().FloatValue();
   float y = info[3].As<Napi::Number>().FloatValue();
@@ -2811,7 +2880,7 @@ Napi::Value ExtractWordsInRect(const Napi::CallbackInfo& info) {
 
 Napi::Value GetPageAnnotations(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   void* annotations = pdf_document_get_page_annotations(handle, pageIndex, &errorCode);
@@ -2880,7 +2949,7 @@ Napi::Value EditorImportXfdfBytes(const Napi::CallbackInfo& info) {
 
 Napi::Value FormImportFromFile(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   std::string filename = info[1].As<Napi::String>().Utf8Value();
   int errorCode = 0;
   pdf_form_import_from_file(handle, filename.c_str(), &errorCode);
@@ -3040,7 +3109,7 @@ Napi::Value PdfRendererFree(const Napi::CallbackInfo& info) {
 Napi::Value PdfRenderPageRegion(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (info.Length() < 6) throw Napi::TypeError::New(env, "Expected (handle, pageIndex, x, y, w, h, [format])");
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   float x = info[2].As<Napi::Number>().FloatValue();
   float y = info[3].As<Napi::Number>().FloatValue();
@@ -3349,7 +3418,7 @@ Napi::Value TsaRequestTimestampHash(const Napi::CallbackInfo& info) {
 
 Napi::Value ValidatePdfALevel(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* document = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, document);
   int32_t level = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   void* results = pdf_validate_pdf_a_level(document, level, &errorCode);
@@ -3379,7 +3448,7 @@ Napi::Value ValidatePdfALevel(const Napi::CallbackInfo& info) {
 
 Napi::Value ConvertToPdfA(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* document = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, document);
   int32_t level = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   bool ok = pdf_convert_to_pdf_a(document, level, &errorCode);
@@ -3389,7 +3458,7 @@ Napi::Value ConvertToPdfA(const Napi::CallbackInfo& info) {
 
 Napi::Value DocumentGetSourceBytes(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* document = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, document);
   int errorCode = 0;
   size_t outLen = 0;
   uint8_t* ptr = pdf_document_get_source_bytes(document, &outLen, &errorCode);
@@ -3401,7 +3470,7 @@ Napi::Value DocumentGetSourceBytes(const Napi::CallbackInfo& info) {
 
 Napi::Value ValidatePdfXLevel(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* document = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, document);
   int32_t level = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   void* results = pdf_validate_pdf_x_level(document, level, &errorCode);
@@ -3428,7 +3497,7 @@ Napi::Value ValidatePdfXLevel(const Napi::CallbackInfo& info) {
 
 Napi::Value ValidatePdfUA(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* document = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, document);
   PdfUaLevel level = info.Length() > 1 ? (PdfUaLevel)info[1].As<Napi::Number>().Int32Value() : PDF_UA_LEVEL_1;
   int errorCode = 0;
   void* results = pdf_validate_pdf_ua(document, level, &errorCode);
@@ -3479,7 +3548,7 @@ Napi::Value ValidatePdfUA(const Napi::CallbackInfo& info) {
 
 Napi::Value GetPageElements(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   void* elements = pdf_page_get_elements(handle, pageIndex, &errorCode);
@@ -3509,7 +3578,7 @@ Napi::Value GetPageElements(const Napi::CallbackInfo& info) {
 
 Napi::Value GetPageWidth(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   float width = pdf_page_get_width(handle, pageIndex, &errorCode);
@@ -3519,7 +3588,7 @@ Napi::Value GetPageWidth(const Napi::CallbackInfo& info) {
 
 Napi::Value GetPageHeight(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   float height = pdf_page_get_height(handle, pageIndex, &errorCode);
@@ -3529,7 +3598,7 @@ Napi::Value GetPageHeight(const Napi::CallbackInfo& info) {
 
 Napi::Value GetPageRotation(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   int32_t rotation = pdf_page_get_rotation(handle, pageIndex, &errorCode);
@@ -3539,7 +3608,7 @@ Napi::Value GetPageRotation(const Napi::CallbackInfo& info) {
 
 Napi::Value GetEmbeddedFonts(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   void* fonts = pdf_document_get_embedded_fonts(handle, pageIndex, &errorCode);
@@ -3569,7 +3638,7 @@ Napi::Value GetEmbeddedFonts(const Napi::CallbackInfo& info) {
 
 Napi::Value GetEmbeddedImages(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
   int errorCode = 0;
   void* images = pdf_document_get_embedded_images(handle, pageIndex, &errorCode);
@@ -3660,6 +3729,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("estimateRenderTime", Napi::Function::New(env, EstimateRenderTime));
   exports.Set("renderPageZoom", Napi::Function::New(env, RenderPageZoom));
   exports.Set("renderPageFit", Napi::Function::New(env, RenderPageFit));
+  exports.Set("renderPageRaw", Napi::Function::New(env, RenderPageRaw));
   exports.Set("saveRenderedImage", Napi::Function::New(env, SaveRenderedImage));
   exports.Set("renderedImageWidth", Napi::Function::New(env, RenderedImageWidth));
   exports.Set("renderedImageHeight", Napi::Function::New(env, RenderedImageHeight));

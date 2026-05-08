@@ -34,6 +34,10 @@ pub enum ImageFormat {
     Png,
     /// Joint Photographic Experts Group
     Jpeg,
+    /// Raw premultiplied RGBA8888 pixels, row-major, top-left origin.
+    /// `data.len() == width * height * 4`. No encoding overhead; callers
+    /// that need straight (un-premultiplied) alpha must convert themselves.
+    RawRgba8,
 }
 
 /// Options for page rendering.
@@ -90,6 +94,12 @@ impl RenderOptions {
     pub fn as_jpeg(mut self, quality: u8) -> Self {
         self.format = ImageFormat::Jpeg;
         self.jpeg_quality = quality.clamp(1, 100);
+        self
+    }
+
+    /// Set format to raw premultiplied RGBA8888 (no encoding overhead).
+    pub fn as_raw(mut self) -> Self {
+        self.format = ImageFormat::RawRgba8;
         self
     }
 }
@@ -246,10 +256,9 @@ impl PageRenderer {
 
         // Encode to output format
         let data = match self.options.format {
-            ImageFormat::Png => pixmap
-                .encode_png()
-                .map_err(|e| Error::InvalidPdf(format!("PNG encoding failed: {}", e)))?,
+            ImageFormat::Png => encode_png(&pixmap)?,
             ImageFormat::Jpeg => self.encode_jpeg(&pixmap)?,
+            ImageFormat::RawRgba8 => pixmap.data().to_vec(),
         };
 
         Ok(RenderedImage {
@@ -270,12 +279,11 @@ impl PageRenderer {
                 let font_dict_obj = doc.resolve_object(font_obj)?;
                 if let Some(font_dict) = font_dict_obj.as_dict() {
                     for (name, f_obj) in font_dict {
-                        let resolved_f = doc.resolve_object(f_obj)?;
-                        match FontInfo::from_dict(&resolved_f, doc) {
+                        match doc.get_or_load_font_for_rendering(f_obj) {
                             Ok(info) => {
                                 log::debug!("Resolved font '{}': subtype={}, encoding={:?}, has_to_unicode={}, has_embedded={}",
                                     info.base_font, info.subtype, info.encoding, info.to_unicode.is_some(), info.embedded_font_data.is_some());
-                                self.fonts.insert(name.clone(), Arc::new(info));
+                                self.fonts.insert(name.clone(), info);
                             },
                             Err(e) => {
                                 log::warn!(
@@ -1962,34 +1970,64 @@ impl PageRenderer {
             }
         }
 
-        let width = rgba_image.width();
-        let height = rgba_image.height();
+        let src_w = rgba_image.width();
+        let src_h = rgba_image.height();
 
-        // Create tiny-skia pixmap from RGBA data
-        if let Some(img_pixmap) = Pixmap::from_vec(
-            rgba_image.into_raw(),
-            tiny_skia::IntSize::from_wh(width, height).unwrap(),
-        ) {
-            // PDF images are drawn in a unit square [0,1]x[0,1] in the current user space.
-            // Image data is top-to-bottom, so we flip it to match PDF's bottom-to-top user space.
-            let image_transform = transform
-                .pre_translate(0.0, 1.0)
-                .pre_scale(1.0 / width as f32, -1.0 / height as f32);
+        // PDF images occupy a unit square in user space; image rows are top-to-bottom
+        // (opposite of PDF's bottom-to-top y axis), so the pre_scale flips them.
+        let image_transform = transform
+            .pre_translate(0.0, 1.0)
+            .pre_scale(1.0 / src_w as f32, -1.0 / src_h as f32);
 
-            // Bicubic filtering: tiny-skia defaults to Nearest, which
-            // aliases bilevel/scanned images on downscale to pure
-            // black/white. pdf.js and other production renderers
-            // downsample with filtering regardless of /Interpolate; the
-            // spec only mandates pixel-replication for upsampling when
-            // Interpolate=false. See pdf.js#19978 — without this,
-            // Multiply-blended overlays on CCITT pages collapse every
-            // intermediate shade.
-            let mut paint = PixmapPaint::default();
-            paint.opacity = gs.fill_alpha;
-            paint.blend_mode = crate::rendering::pdf_blend_mode_to_skia(&gs.blend_mode);
-            paint.quality = tiny_skia::FilterQuality::Bicubic;
+        let mut paint = PixmapPaint::default();
+        paint.opacity = gs.fill_alpha;
+        paint.blend_mode = crate::rendering::pdf_blend_mode_to_skia(&gs.blend_mode);
 
-            pixmap.draw_pixmap(0, 0, img_pixmap.as_ref(), &paint, image_transform, clip_mask);
+        // Fast path: SIMD pre-resize when the transform is a pure scale+translate and
+        // the image is being downscaled.  fast_image_resize (AVX2/SSE4.1/NEON) resizes
+        // to exact output dimensions; we then blit the already-correct pixels at the
+        // right position with a translate-only transform and Nearest quality (no second
+        // resampling pass).  For rotated/sheared transforms or upscaling, fall through
+        // to the tiny-skia bilinear/bicubic path.
+        let use_fast = image_transform.kx.abs() <= 1e-4
+            && image_transform.ky.abs() <= 1e-4
+            && image_transform.sx > 0.0
+            && image_transform.sy > 0.0
+            && (image_transform.sx < 0.9 || image_transform.sy < 0.9);
+
+        let (blit_w, blit_h, blit_data, blit_transform) = if use_fast {
+            let dst_w = ((image_transform.sx * src_w as f32).round() as u32).max(1);
+            let dst_h = ((image_transform.sy * src_h as f32).round() as u32).max(1);
+            let resized = resize_rgba(rgba_image.as_raw(), src_w, src_h, dst_w, dst_h);
+            if let Some(pixels) = resized {
+                paint.quality = tiny_skia::FilterQuality::Nearest;
+                let t = Transform::from_translate(image_transform.tx, image_transform.ty);
+                (dst_w, dst_h, pixels, t)
+            } else {
+                // fast_image_resize failed; fall back to bilinear via tiny_skia
+                let (xs, ys) = image_transform.get_scale();
+                paint.quality = if xs >= 1.0 || ys >= 1.0 {
+                    tiny_skia::FilterQuality::Bicubic
+                } else {
+                    tiny_skia::FilterQuality::Bilinear
+                };
+                (src_w, src_h, rgba_image.into_raw(), image_transform)
+            }
+        } else {
+            // Rotated / sheared / upscaling path: let tiny_skia resample.
+            let (xs, ys) = image_transform.get_scale();
+            paint.quality = if xs >= 1.0 || ys >= 1.0 {
+                tiny_skia::FilterQuality::Bicubic
+            } else {
+                tiny_skia::FilterQuality::Bilinear
+            };
+            (src_w, src_h, rgba_image.into_raw(), image_transform)
+        };
+
+        if let Some(img_pixmap) =
+            Pixmap::from_vec(blit_data, tiny_skia::IntSize::from_wh(blit_w, blit_h).unwrap())
+        {
+            pixmap.draw_pixmap(0, 0, img_pixmap.as_ref(), &paint, blit_transform, clip_mask);
         }
 
         Ok(())
@@ -2302,6 +2340,60 @@ impl PageRenderer {
 
         Ok(output.into_inner())
     }
+}
+
+/// Resize an RGBA (straight-alpha) byte buffer using SIMD-accelerated bilinear filtering.
+///
+/// Returns `None` on failure (zero dimensions, SIMD dispatch error) so callers
+/// can fall back to tiny_skia's own resampling path.
+fn resize_rgba(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Option<Vec<u8>> {
+    use fast_image_resize::images::Image;
+    use fast_image_resize::pixels::PixelType;
+    use fast_image_resize::{FilterType, ResizeAlg, ResizeOptions, Resizer};
+
+    // from_slice_u8 needs a mutable slice; copy into a local buffer.
+    let mut buf = src.to_vec();
+    let src_img = Image::from_slice_u8(src_w, src_h, &mut buf, PixelType::U8x4).ok()?;
+    let mut dst_img = Image::new(dst_w, dst_h, PixelType::U8x4);
+    Resizer::new()
+        .resize(
+            &src_img,
+            &mut dst_img,
+            &ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Bilinear)),
+        )
+        .ok()?;
+    Some(dst_img.into_vec())
+}
+
+/// Encode a tiny_skia `Pixmap` to PNG.
+///
+/// Uses fdeflate (ultra-fast) compression via the `image` crate instead of
+/// tiny_skia's built-in `encode_png`, which defaults to flate2 level 6 and is
+/// 3–5× slower on typical page images.
+fn encode_png(pixmap: &Pixmap) -> Result<Vec<u8>> {
+    let w = pixmap.width();
+    let h = pixmap.height();
+
+    // Demultiply: tiny_skia stores premultiplied RGBA; PNG expects straight alpha.
+    let src = pixmap.data();
+    let mut data = src.to_vec();
+    for chunk in data.chunks_exact_mut(4) {
+        let a = chunk[3];
+        if a != 0 && a != 255 {
+            let a32 = a as u32;
+            chunk[0] = ((chunk[0] as u32 * 255 + a32 / 2) / a32).min(255) as u8;
+            chunk[1] = ((chunk[1] as u32 * 255 + a32 / 2) / a32).min(255) as u8;
+            chunk[2] = ((chunk[2] as u32 * 255 + a32 / 2) / a32).min(255) as u8;
+        }
+    }
+
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    use image::ImageEncoder;
+    let mut output = Vec::new();
+    PngEncoder::new_with_quality(&mut output, CompressionType::Fast, FilterType::Sub)
+        .write_image(&data, w, h, image::ExtendedColorType::Rgba8)
+        .map_err(|e| Error::InvalidPdf(format!("PNG encoding failed: {}", e)))?;
+    Ok(output)
 }
 
 /// Combine two transformations.

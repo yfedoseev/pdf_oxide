@@ -195,6 +195,7 @@ extern int32_t pdf_get_rendered_image_height(const void* image_handle, int* erro
 extern void* pdf_get_rendered_image_data(const void* image_handle, int32_t* data_len, int* error_code);
 extern int pdf_save_rendered_image(const void* image_handle, const char* file_path, int* error_code);
 extern void pdf_rendered_image_free(void* handle);
+extern void* pdf_render_page_raw(void* document_handle, int32_t page_index, int32_t dpi, int32_t* out_width, int32_t* out_height, int* error_code);
 extern void pdf_renderer_free(void* handle);
 
 // TSA (Time Stamp Authority) FFI declarations
@@ -382,6 +383,7 @@ extern int32_t pdf_get_rendered_image_height(const void* img, int* error_code);
 extern void* pdf_get_rendered_image_data(const void* img, int32_t* data_len, int* error_code);
 extern int pdf_save_rendered_image(const void* img, const char* file_path, int* error_code);
 extern void pdf_rendered_image_free(void* handle);
+extern void* pdf_render_page_raw(void* doc, int32_t page_index, int32_t dpi, int32_t* out_width, int32_t* out_height, int* error_code);
 
 // Barcodes
 extern void* pdf_generate_qr_code(const char* data, int error_correction, int32_t size_px, int* error_code);
@@ -3194,6 +3196,46 @@ func (doc *PdfDocument) RenderThumbnail(pageIndex int, size int, format int) (*R
 	w := int(C.pdf_get_rendered_image_width(handle, &errorCode))
 	h := int(C.pdf_get_rendered_image_height(handle, &errorCode))
 	return &RenderedImage{handle: handle, Width: w, Height: h}, nil
+}
+
+// RgbaPixmap holds raw premultiplied RGBA8888 pixel data returned by RenderPageRaw.
+// Layout: row-major, top-left origin, 4 bytes (R,G,B,A) per pixel.
+// len(Data) == Width * Height * 4.
+type RgbaPixmap struct {
+	Data          []byte
+	Width, Height int
+}
+
+// RenderPageRaw renders a page as raw premultiplied RGBA8888 pixels without
+// PNG/JPEG encoding overhead. Useful for direct handoff to image-processing
+// pipelines. Premultiplied alpha is the native PDF compositing format
+// (spec §11 transparency model).
+func (doc *PdfDocument) RenderPageRaw(pageIndex, dpi int) (RgbaPixmap, error) {
+	if dpi <= 0 {
+		return RgbaPixmap{}, fmt.Errorf("RenderPageRaw: dpi must be > 0, got %d", dpi)
+	}
+	if err := doc.acquireRead(); err != nil {
+		return RgbaPixmap{}, err
+	}
+	defer doc.mu.Unlock()
+	var errorCode C.int
+	var outW, outH C.int32_t
+	handle := C.pdf_render_page_raw(doc.handle, C.int32_t(pageIndex), C.int32_t(dpi), &outW, &outH, &errorCode)
+	if errorCode != 0 {
+		return RgbaPixmap{}, ffiError(errorCode)
+	}
+	if handle == nil {
+		return RgbaPixmap{}, ErrInternal
+	}
+	defer C.pdf_rendered_image_free(handle)
+	var dataLen C.int32_t
+	dataPtr := C.pdf_get_rendered_image_data(handle, &dataLen, &errorCode)
+	if dataPtr == nil {
+		return RgbaPixmap{}, fmt.Errorf("RenderPageRaw: no pixel data returned")
+	}
+	data := C.GoBytes(unsafe.Pointer(dataPtr), C.int(dataLen))
+	C.free_bytes(unsafe.Pointer(dataPtr))
+	return RgbaPixmap{Data: data, Width: int(outW), Height: int(outH)}, nil
 }
 
 // Data returns the raw image bytes

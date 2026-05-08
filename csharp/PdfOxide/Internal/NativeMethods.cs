@@ -5754,6 +5754,10 @@ namespace PdfOxide.Internal
 
         [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr pdf_render_page_raw(IntPtr doc, int pageIndex, int dpi, out int outWidth, out int outHeight, out int errorCode);
+
+        [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
         public static partial int pdf_get_rendered_image_width(IntPtr img, out int errorCode);
 
         [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]

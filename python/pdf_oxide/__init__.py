@@ -44,6 +44,7 @@ Dual-licensed under MIT OR Apache-2.0.
 """
 
 import os as _os
+from typing import NamedTuple
 
 
 def _setup_ort_dylib_path() -> None:
@@ -91,6 +92,23 @@ def _setup_ort_dylib_path() -> None:
 
 
 _setup_ort_dylib_path()
+
+
+class RenderedPixmap(NamedTuple):
+    """Raw premultiplied RGBA8888 pixel buffer from :meth:`PdfDocument.render_pixmap`.
+
+    Attributes:
+        data (bytes): Row-major, top-left origin, 4 bytes (R,G,B,A) per pixel.
+            ``len(data) == width * height * 4``. Alpha is premultiplied (PDF
+            spec §11 transparency model).
+        width (int): Image width in pixels.
+        height (int): Image height in pixels.
+    """
+
+    data: bytes
+    width: int
+    height: int
+
 
 from ._async import (  # noqa: E402
     AsyncOfficeConverter,
@@ -148,6 +166,7 @@ from .pdf_oxide import (  # noqa: E402
 
 
 __all__ = [
+    "RenderedPixmap",
     "PdfDocument",
     "AsyncPdfDocument",
     "AsyncPdf",

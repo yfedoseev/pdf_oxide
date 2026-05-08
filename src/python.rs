@@ -475,6 +475,48 @@ impl PyPdfDocument {
         }
     }
 
+    /// Render a page as raw premultiplied RGBA8888 pixels.
+    ///
+    /// Returns a ``RenderedPixmap`` namedtuple with fields ``data`` (bytes),
+    /// ``width`` (int), and ``height`` (int).
+    /// ``len(data) == width * height * 4``.
+    ///
+    /// Alpha is premultiplied (PDF spec §11 transparency model).
+    /// Use this instead of :meth:`render_page` when you want to hand pixel
+    /// data directly to PIL (``Image.frombuffer("RGBA", ...)``) or numpy
+    /// without a PNG/JPEG encode/decode roundtrip.
+    ///
+    /// Args:
+    ///     page (int): Zero-based page index.
+    ///     dpi (int, optional): Resolution (default 150).
+    #[pyo3(signature = (page, dpi=None))]
+    fn render_pixmap(
+        &mut self,
+        py: Python<'_>,
+        page: usize,
+        dpi: Option<u32>,
+    ) -> PyResult<Py<pyo3::PyAny>> {
+        #[cfg(feature = "rendering")]
+        {
+            let options = crate::rendering::RenderOptions::with_dpi(dpi.unwrap_or(150))
+                .as_raw();
+            let img = crate::rendering::render_page(&mut self.inner, page, &options)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(
+                    format!("Failed to render page: {e}")
+                ))?;
+            let pixmap_mod = py.import("pdf_oxide")?;
+            let pixmap_cls = pixmap_mod.getattr("RenderedPixmap")?;
+            let data = pyo3::types::PyBytes::new(py, &img.data);
+            let result = pixmap_cls.call1((data, img.width as i64, img.height as i64))?;
+            Ok(result.into())
+        }
+        #[cfg(not(feature = "rendering"))]
+        {
+            let _ = (py, page, dpi);
+            Err(pyo3::exceptions::PyRuntimeError::new_err("Rendering feature not enabled."))
+        }
+    }
+
     /// Extract low-level characters.
     #[pyo3(signature = (page, region=None))]
     fn extract_chars(
@@ -2532,6 +2574,14 @@ impl PyDocPage {
             render_annotations,
             jpeg_quality,
         )
+    }
+
+    /// Render this page as raw premultiplied RGBA8888 pixels.
+    /// Delegates to :meth:`PdfDocument.render_pixmap`. See that method for
+    /// full documentation.
+    #[pyo3(signature = (dpi=None))]
+    fn render_pixmap(&self, py: Python<'_>, dpi: Option<u32>) -> PyResult<Py<pyo3::PyAny>> {
+        self.doc.borrow_mut(py).render_pixmap(py, self.page_index, dpi)
     }
 
     #[pyo3(signature = (pattern, case_insensitive=false, literal=false, whole_word=false, max_results=100))]

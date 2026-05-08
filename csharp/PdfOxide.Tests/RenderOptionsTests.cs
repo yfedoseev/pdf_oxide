@@ -137,5 +137,66 @@ namespace PdfOxide.Tests
                     JpegQuality = 0,
                 }));
         }
+
+        // Helper for RGBA tests — returns false if rendering feature not compiled in.
+        private static bool TryRenderRgba(PdfDocument doc, out RgbaPixmap px)
+        {
+            try
+            {
+                px = doc.RenderToRgba(0, 72);
+                return true;
+            }
+            catch (UnsupportedFeatureException)
+            {
+                px = new RgbaPixmap(ReadOnlyMemory<byte>.Empty, 0, 0);
+                return false;
+            }
+        }
+
+        [Fact]
+        public void RenderToRgba_SizeMatchesWidthTimesHeightTimes4()
+        {
+            using var doc = CreateTestDoc();
+            if (!TryRenderRgba(doc, out var px)) return;
+            Assert.True(px.Width > 0);
+            Assert.True(px.Height > 0);
+            Assert.Equal(px.Width * px.Height * 4, px.Data.Length);
+        }
+
+        [Fact]
+        public void RenderToRgba_NotPngMagicBytes()
+        {
+            using var doc = CreateTestDoc();
+            if (!TryRenderRgba(doc, out var px)) return;
+            var span = px.Data.Span;
+            Assert.True(span.Length >= 4);
+            // PNG magic is 0x89 0x50 0x4E 0x47 — raw RGBA must not start with this
+            Assert.False(span[0] == 0x89 && span[1] == 0x50 && span[2] == 0x4E && span[3] == 0x47,
+                "RenderToRgba returned PNG-encoded data instead of raw RGBA pixels");
+        }
+
+        [Fact]
+        public void RenderToRgba_DimensionsMatchPngRender()
+        {
+            using var doc = CreateTestDoc();
+            if (!TryRender(doc, new RenderOptions { Dpi = 72 }, out _)) return;
+            if (!TryRenderRgba(doc, out var px)) return;
+
+            // Decode PNG dimensions for comparison
+            var pngBytes = doc.RenderPage(0, new RenderOptions { Dpi = 72 });
+            // PNG IHDR starts at byte 16; width at 16-19, height at 20-23 (big-endian)
+            int pngW = (pngBytes[16] << 24) | (pngBytes[17] << 16) | (pngBytes[18] << 8) | pngBytes[19];
+            int pngH = (pngBytes[20] << 24) | (pngBytes[21] << 16) | (pngBytes[22] << 8) | pngBytes[23];
+
+            Assert.Equal(pngW, px.Width);
+            Assert.Equal(pngH, px.Height);
+        }
+
+        [Fact]
+        public void RenderToRgba_InvalidDpi_Throws()
+        {
+            using var doc = CreateTestDoc();
+            Assert.Throws<ArgumentOutOfRangeException>(() => doc.RenderToRgba(0, 0));
+        }
     }
 }
