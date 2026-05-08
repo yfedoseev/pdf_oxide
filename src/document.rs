@@ -2566,8 +2566,19 @@ impl PdfDocument {
             stream_obj_num
         );
 
-        // Ensure encryption is initialized if needed (lazy initialization)
-        self.ensure_encryption_initialized()?;
+        // Per PDF §7.6.3, object streams (/Type /ObjStm) shall NOT be individually
+        // encrypted.  Encryption initialization is therefore not required to read an
+        // ObjStm: the unencrypted parse path below is always attempted first.  If
+        // initialization fails (e.g. unsupported algorithm, no legacy-crypto feature),
+        // log and continue — the handler will be None and we'll use the no-decryption
+        // path, which is exactly what the spec mandates for ObjStm content.
+        if let Err(e) = self.ensure_encryption_initialized() {
+            log::debug!(
+                "Encryption init skipped for ObjStm {} load ({}); will parse without decryption",
+                stream_obj_num,
+                e
+            );
+        }
 
         // Load the object stream
         let stream_ref = ObjectRef::new(stream_obj_num, 0);
@@ -6970,12 +6981,6 @@ impl PdfDocument {
         if let Some(regions) = erase {
             spans.retain(|span| !regions.iter().any(|r| r.intersects(&span.bbox)));
         }
-
-        // Drop spans whose text is entirely newline/CR characters.  Some PDFs
-        // use a font that maps a glyph code to U+000A as a paragraph-separator
-        // token; these produce spans with text "\n" that carry no readable
-        // content and confuse downstream text-extraction pipelines.
-        spans.retain(|span| !span.text.chars().all(|c| c == '\n' || c == '\r'));
 
         // Append text from non-Widget annotations (/Subtype /Text, FreeText,
         // Stamp, Highlight, etc.) that carry a /Contents entry.  These are not

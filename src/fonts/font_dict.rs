@@ -2558,48 +2558,48 @@ impl FontInfo {
         // ==================================================================================
         // PRIORITY 2b: Unicode-based Predefined CMaps (Phase 3.2)
         // ==================================================================================
-        // For Type0 fonts with CIDSystemInfo (Adobe-Japan1, Adobe-GB1, etc.) that don't have
-        // ToUnicode CMaps. Use predefined CID-to-Unicode mappings based on the character
-        // collection ordering.
+        // For Type0 fonts without a ToUnicode CMap: follow PDF §9.10.2 priority order.
         //
-        // Per PDF Spec ISO 32000-1:2008 Section 9.7.5.2:
-        // "Predefined CMaps can be used for CID-keyed fonts without embedded ToUnicode CMaps"
+        // The spec defines two distinct encoding CMap kinds:
         //
-        // The encoding (Identity, CMap stream, etc.) maps byte codes → CIDs, but
-        // CID → Unicode mapping is determined by the CIDSystemInfo ordering alone.
+        //   (a) Byte-encoding CMaps (GBpc-EUC-H, GB-EUC-H, B5pc-H, EUC-H, KSC-EUC-H,
+        //       etc.): the value in the content stream is a raw multi-byte code in a
+        //       legacy encoding (GBK, EUC-CN, Big5, EUC-JP, EUC-KR).  §9.10.2 says to
+        //       map char code → CID first, but those encoding CMap tables are not
+        //       embedded here.  Decoding the raw bytes directly with encoding_rs is
+        //       equivalent (same Unicode output) and is permitted by the spec's fallback
+        //       clause: "there is no way to determine … a conforming reader may choose a
+        //       character code of their choosing."
+        //
+        //   (b) Identity / UCS2 CMaps (Identity-H, UniGB-UCS2-H, etc.): the value in
+        //       the content stream IS (or approximates) a CID.  Use the Adobe-XX CID →
+        //       Unicode table directly (§9.10.2 step b).
+        //
+        // `decode_cjk_raw_charcode` returns None for non-byte-encoding CMaps, so
+        // trying it first is safe: it is a no-op for Identity/UCS2 fonts.
         if self.subtype == "Type0" {
-            // Extract encoding name for the lookup (used for specific CMap matching)
             let enc_name = match &self.encoding {
                 Encoding::Standard(name) => name.clone(),
                 Encoding::Identity => "Identity-H".to_string(),
                 Encoding::Custom(_) => String::new(),
             };
+
+            // Step (a): try direct byte decode for legacy CJK byte-encoding CMaps.
+            // This is the correct primary path for GBpc-EUC-H, GB-EUC-H, B5pc-H,
+            // EUC-H, KSC-EUC-H, etc.  Returns None for Identity/UCS2 CMaps, in
+            // which case we fall through to the CID lookup below.
+            if let Some(result) = decode_cjk_raw_charcode(char_code, &enc_name, &self.cid_system_info) {
+                return Some(result);
+            }
+
+            // Step (b): CID → Unicode lookup for identity / UCS2 CMaps where the
+            // char code in the stream is already a CID (or very close to one).
             if let Some(unicode_codepoint) =
                 lookup_predefined_cmap(&enc_name, &self.cid_system_info, char_code as u16)
             {
                 if let Some(unicode_char) = char::from_u32(unicode_codepoint) {
-                    log::debug!(
-                        "Predefined CMap mapping: CID 0x{:04X} → '{}' (U+{:04X}) in font '{}'",
-                        char_code,
-                        unicode_char,
-                        unicode_codepoint,
-                        self.base_font
-                    );
                     return Some(unicode_char.to_string());
                 }
-            }
-
-            // Predefined CMap lookup treats char_code as a CID.  For standard
-            // CJK encoding CMaps (GBK-EUC-H, GB-EUC-H, EUC-H, B5pc-H, etc.)
-            // the 2-byte value from the content stream is NOT a CID — it is a
-            // raw multi-byte character code (GBK, EUC-CN, Big5, EUC-JP, EUC-KR).
-            // Adobe-GB1 CIDs are in 0–30553 so a raw GBK value like 0xB2E2 =
-            // 45794 will never match and the lookup silently returns None.
-            //
-            // Fallback: decode the raw 2-byte value directly using encoding_rs
-            // for the appropriate legacy CJK encoding, then return the Unicode.
-            if let Some(result) = decode_cjk_raw_charcode(char_code, &enc_name, &self.cid_system_info) {
-                return Some(result);
             }
         }
 
