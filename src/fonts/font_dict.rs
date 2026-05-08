@@ -2588,6 +2588,19 @@ impl FontInfo {
                     return Some(unicode_char.to_string());
                 }
             }
+
+            // Predefined CMap lookup treats char_code as a CID.  For standard
+            // CJK encoding CMaps (GBK-EUC-H, GB-EUC-H, EUC-H, B5pc-H, etc.)
+            // the 2-byte value from the content stream is NOT a CID — it is a
+            // raw multi-byte character code (GBK, EUC-CN, Big5, EUC-JP, EUC-KR).
+            // Adobe-GB1 CIDs are in 0–30553 so a raw GBK value like 0xB2E2 =
+            // 45794 will never match and the lookup silently returns None.
+            //
+            // Fallback: decode the raw 2-byte value directly using encoding_rs
+            // for the appropriate legacy CJK encoding, then return the Unicode.
+            if let Some(result) = decode_cjk_raw_charcode(char_code, &enc_name, &self.cid_system_info) {
+                return Some(result);
+            }
         }
 
         // ==================================================================================
@@ -4131,6 +4144,66 @@ fn standard_encoding_lookup(encoding: &str, code: u8) -> Option<String> {
                 None
             }
         },
+    }
+}
+
+/// Decode a raw CJK multi-byte character code to Unicode using legacy encodings.
+///
+/// For Type0 fonts using named CJK CMaps (e.g., "GBK-EUC-H", "GB-EUC-H",
+/// "ETen-B5-H", "EUC-H", "KSC-EUC-H"), the 2-byte value read from the content
+/// stream is NOT an Adobe CID — it is a raw multi-byte encoding value (GBK,
+/// EUC-CN, Big5, EUC-JP, or EUC-KR).  Adobe-GB1 CIDs cap at ~30 553, so
+/// `lookup_predefined_cmap` always returns None for GBK values ≥ 0xA1A1, and
+/// the caller falls through to a broken `char::from_u32` path that maps them
+/// to Korean Hangul (same code-point range).
+///
+/// This function catches that case and decodes with encoding_rs so the correct
+/// CJK characters come out.
+fn decode_cjk_raw_charcode(
+    char_code: u32,
+    enc_name: &str,
+    cid_system_info: &Option<CIDSystemInfo>,
+) -> Option<String> {
+    let ordering = cid_system_info.as_ref().map(|i| i.ordering.as_str()).unwrap_or("");
+
+    // Determine which legacy encoding applies based on the CMap name and ordering.
+    // CMap names that imply raw legacy encoding (not CID-keyed identity):
+    let enc: Option<&'static encoding_rs::Encoding> = if enc_name.contains("GBK")
+        || enc_name.contains("GB-")
+        || enc_name.contains("GBpc")
+        || (enc_name.contains("EUC") && (ordering == "GB1" || enc_name.starts_with("GB")))
+    {
+        Some(encoding_rs::GBK)
+    } else if enc_name.contains("B5")
+        || enc_name.contains("CNS")
+        || (enc_name.contains("EUC") && ordering == "CNS1")
+    {
+        Some(encoding_rs::BIG5)
+    } else if enc_name.contains("EUC") && ordering == "Japan1" {
+        Some(encoding_rs::EUC_JP)
+    } else if (enc_name.contains("KSC") || enc_name.contains("KSCms"))
+        && ordering == "Korea1"
+    {
+        Some(encoding_rs::EUC_KR)
+    } else {
+        None
+    };
+
+    let enc = enc?;
+
+    // Reconstruct the raw bytes from the 2-byte char_code (big-endian)
+    let bytes: [u8; 2] = [((char_code >> 8) & 0xFF) as u8, (char_code & 0xFF) as u8];
+
+    let (decoded, _, errors) = enc.decode(&bytes);
+    if errors {
+        return None;
+    }
+    // Skip the replacement character U+FFFD (decoding failed)
+    let result = decoded.replace('\u{FFFD}', "");
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
     }
 }
 

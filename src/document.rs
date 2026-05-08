@@ -3044,7 +3044,16 @@ impl PdfDocument {
                 log::debug!("Page count from /Count: {}", count);
                 Ok(count)
             },
+            Err(Error::EncryptedPdf) => Err(Error::EncryptedPdf),
             Err(e) => {
+                // For encrypted PDFs any failure to read the page tree means we
+                // cannot access the content.  Scanning would also return Ok(0),
+                // so skip the fallback and surface the real error immediately.
+                if self.is_encrypted() {
+                    log::warn!("Page count failed for encrypted PDF: {}", e);
+                    return Err(Error::EncryptedPdf);
+                }
+
                 log::warn!("Failed to get page count from /Count: {}", e);
                 log::info!("Falling back to scanning page tree");
 
@@ -3118,6 +3127,12 @@ impl PdfDocument {
         let pages_dict = match pages_obj.as_dict() {
             Some(d) => d,
             None => {
+                // If the page tree root resolved to Null it usually means the
+                // PDF is encrypted and the page tree could not be decrypted.
+                // Surface the real error instead of silently reporting 0 pages.
+                if matches!(pages_obj, crate::object::Object::Null) && self.is_encrypted() {
+                    return Err(Error::EncryptedPdf);
+                }
                 log::warn!(
                     "Page tree root is {} (expected Dictionary), treating as 0 pages",
                     pages_obj.type_name()
