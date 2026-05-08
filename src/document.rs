@@ -5725,13 +5725,13 @@ impl PdfDocument {
         spans
     }
 
-    /// Extract TextSpan objects from non-Widget, non-Popup annotations on a page.
+    /// Build TextSpan objects from the /Contents field of content-bearing annotations.
     ///
     /// Sticky note (/Subtype/Text), FreeText, Stamp, and markup annotations carry
     /// human-readable text in their /Contents field.  Widget annotations are already
     /// handled by `extract_widget_spans`; Popup annotations hold no independent
     /// content (their text belongs to the parent annotation).
-    fn extract_non_widget_annotation_spans(&self, page_index: usize) -> Vec<TextSpan> {
+    fn annotation_content_spans(&self, page_index: usize) -> Vec<TextSpan> {
         use crate::geometry::Rect;
 
         let page_obj = match self.get_page(page_index) {
@@ -6981,7 +6981,7 @@ impl PdfDocument {
         // Stamp, Highlight, etc.) that carry a /Contents entry.  These are not
         // part of the page content stream so they are not picked up by the
         // regular extractor.
-        spans.extend(self.extract_non_widget_annotation_spans(page_index));
+        spans.extend(self.annotation_content_spans(page_index));
 
         // Mark running headers/footers (untagged-PDF heuristic). Spans whose
         // normalized text recurs on >=50% of pages and sits near the top or
