@@ -981,6 +981,24 @@ impl DocumentEditor {
         self.page_order.iter().filter(|&&i| i >= 0).count() + self.merged_pages.len()
     }
 
+    /// Translate a user-visible (output-order) page index to the internal source page index.
+    ///
+    /// Per-page HashMaps (erase_regions, overlay_additions, modified_page_props, …) are keyed
+    /// by source index so that the serialization loop—which iterates `page_order` and already
+    /// uses source indices—can find entries regardless of how `select_pages` / `remove_page`
+    /// has reordered the output.
+    ///
+    /// When no reordering has been applied `page_order = [0, 1, 2, …]` so the mapping is the
+    /// identity and there is no observable difference for callers.
+    fn output_to_source_index(&self, output: usize) -> usize {
+        self.page_order
+            .iter()
+            .filter(|&&i| i >= 0)
+            .map(|&i| i as usize)
+            .nth(output)
+            .unwrap_or(output)
+    }
+
     /// Get the list of page objects in current order.
     fn get_page_refs(&mut self) -> Result<Vec<ObjectRef>> {
         // Get catalog and pages tree
@@ -3787,7 +3805,8 @@ impl DocumentEditor {
             )));
         }
 
-        self.modified_content.insert(page_index, content);
+        let source_index = self.output_to_source_index(page_index);
+        self.modified_content.insert(source_index, content);
         self.structure_modified = true;
         self.is_modified = true;
         Ok(())
@@ -3890,7 +3909,7 @@ impl DocumentEditor {
     ///
     /// This saves both the page content and any modified annotations.
     pub fn save_page(&mut self, page: crate::editor::dom::PdfPage) -> Result<()> {
-        let page_index = page.page_index;
+        let page_index = self.output_to_source_index(page.page_index);
         let annotations_modified = page.has_annotations_modified();
 
         // Extract annotations before moving root
@@ -3994,8 +4013,9 @@ impl DocumentEditor {
     ///
     /// Returns the effective rotation, considering any modifications.
     pub fn get_page_rotation(&mut self, index: usize) -> Result<i32> {
+        let source_index = self.output_to_source_index(index);
         // Check if we have a modified rotation
-        if let Some(props) = self.modified_page_props.get(&index) {
+        if let Some(props) = self.modified_page_props.get(&source_index) {
             if let Some(rotation) = props.rotation {
                 return Ok(rotation);
             }
@@ -4026,8 +4046,9 @@ impl DocumentEditor {
             )));
         }
 
-        // Store the modified rotation
-        let props = self.modified_page_props.entry(index).or_default();
+        // Store the modified rotation keyed by source index so serialization can find it.
+        let source_index = self.output_to_source_index(index);
+        let props = self.modified_page_props.entry(source_index).or_default();
         props.rotation = Some(degrees);
 
         self.is_modified = true;
@@ -4066,8 +4087,9 @@ impl DocumentEditor {
     ///
     /// Returns [llx, lly, urx, ury] (lower-left x, lower-left y, upper-right x, upper-right y).
     pub fn get_page_media_box(&mut self, index: usize) -> Result<[f32; 4]> {
+        let source_index = self.output_to_source_index(index);
         // Check if we have a modified MediaBox
-        if let Some(props) = self.modified_page_props.get(&index) {
+        if let Some(props) = self.modified_page_props.get(&source_index) {
             if let Some(media_box) = props.media_box {
                 return Ok(media_box);
             }
@@ -4075,11 +4097,11 @@ impl DocumentEditor {
 
         // Get from original document
         let page_refs = self.get_page_refs()?;
-        if index >= page_refs.len() {
+        if source_index >= page_refs.len() {
             return Err(Error::InvalidPdf(format!("Page index {} out of range", index)));
         }
 
-        let page_ref = page_refs[index];
+        let page_ref = page_refs[source_index];
         let page_obj = self.source.load_object(page_ref)?;
         let page_dict = page_obj
             .as_dict()
@@ -4117,7 +4139,8 @@ impl DocumentEditor {
             return Err(Error::InvalidPdf(format!("Page index {} out of range", index)));
         }
 
-        let props = self.modified_page_props.entry(index).or_default();
+        let source_index = self.output_to_source_index(index);
+        let props = self.modified_page_props.entry(source_index).or_default();
         props.media_box = Some(box_);
 
         self.is_modified = true;
@@ -4128,8 +4151,9 @@ impl DocumentEditor {
     ///
     /// Returns None if no CropBox is set (defaults to MediaBox).
     pub fn get_page_crop_box(&mut self, index: usize) -> Result<Option<[f32; 4]>> {
+        let source_index = self.output_to_source_index(index);
         // Check if we have a modified CropBox
-        if let Some(props) = self.modified_page_props.get(&index) {
+        if let Some(props) = self.modified_page_props.get(&source_index) {
             if let Some(crop_box) = props.crop_box {
                 return Ok(Some(crop_box));
             }
@@ -4137,11 +4161,11 @@ impl DocumentEditor {
 
         // Get from original document
         let page_refs = self.get_page_refs()?;
-        if index >= page_refs.len() {
+        if source_index >= page_refs.len() {
             return Err(Error::InvalidPdf(format!("Page index {} out of range", index)));
         }
 
-        let page_ref = page_refs[index];
+        let page_ref = page_refs[source_index];
         let page_obj = self.source.load_object(page_ref)?;
         let page_dict = page_obj
             .as_dict()
@@ -4178,7 +4202,8 @@ impl DocumentEditor {
             return Err(Error::InvalidPdf(format!("Page index {} out of range", index)));
         }
 
-        let props = self.modified_page_props.entry(index).or_default();
+        let source_index = self.output_to_source_index(index);
+        let props = self.modified_page_props.entry(source_index).or_default();
         props.crop_box = Some(box_);
 
         self.is_modified = true;
@@ -4229,8 +4254,8 @@ impl DocumentEditor {
             return Err(Error::InvalidPdf(format!("Page index {} out of range", page)));
         }
 
-        // Add to erase regions for this page
-        let regions = self.erase_regions.entry(page).or_default();
+        let source_page = self.output_to_source_index(page);
+        let regions = self.erase_regions.entry(source_page).or_default();
         regions.push(rect);
 
         self.is_modified = true;
@@ -4243,7 +4268,8 @@ impl DocumentEditor {
             return Err(Error::InvalidPdf(format!("Page index {} out of range", page)));
         }
 
-        let regions = self.erase_regions.entry(page).or_default();
+        let source_page = self.output_to_source_index(page);
+        let regions = self.erase_regions.entry(source_page).or_default();
         regions.extend_from_slice(rects);
 
         self.is_modified = true;
@@ -4252,7 +4278,8 @@ impl DocumentEditor {
 
     /// Clear all pending erase operations for a page.
     pub fn clear_erase_regions(&mut self, page: usize) {
-        self.erase_regions.remove(&page);
+        let source_page = self.output_to_source_index(page);
+        self.erase_regions.remove(&source_page);
     }
 
     /// Generate the content stream for erase overlays.
@@ -4315,7 +4342,8 @@ impl DocumentEditor {
             return Err(Error::InvalidPdf(format!("Page index {} out of range", page)));
         }
 
-        self.flatten_annotations_pages.insert(page);
+        let source_page = self.output_to_source_index(page);
+        self.flatten_annotations_pages.insert(source_page);
         self.is_modified = true;
         Ok(())
     }
@@ -4335,12 +4363,14 @@ impl DocumentEditor {
 
     /// Check if a page has annotations marked for flattening.
     pub fn is_page_marked_for_flatten(&self, page: usize) -> bool {
-        self.flatten_annotations_pages.contains(&page)
+        let source_page = self.output_to_source_index(page);
+        self.flatten_annotations_pages.contains(&source_page)
     }
 
     /// Clear the flatten annotation flag for a page.
     pub fn unmark_page_for_flatten(&mut self, page: usize) {
-        self.flatten_annotations_pages.remove(&page);
+        let source_page = self.output_to_source_index(page);
+        self.flatten_annotations_pages.remove(&source_page);
     }
 
     // ========================================================================
@@ -4368,7 +4398,8 @@ impl DocumentEditor {
             return Err(Error::InvalidPdf(format!("Page index {} out of range", page)));
         }
 
-        self.flatten_forms_pages.insert(page);
+        let source_page = self.output_to_source_index(page);
+        self.flatten_forms_pages.insert(source_page);
         self.is_modified = true;
         Ok(())
     }
@@ -4396,7 +4427,8 @@ impl DocumentEditor {
 
     /// Check if a page has form fields marked for flattening.
     pub fn is_page_marked_for_form_flatten(&self, page: usize) -> bool {
-        self.flatten_forms_pages.contains(&page)
+        let source_page = self.output_to_source_index(page);
+        self.flatten_forms_pages.contains(&source_page)
     }
 
     /// Check if AcroForm will be removed on save.
@@ -6027,7 +6059,8 @@ impl DocumentEditor {
             return Err(Error::InvalidPdf(format!("Page index {} out of range", page)));
         }
 
-        self.apply_redactions_pages.insert(page);
+        let source_page = self.output_to_source_index(page);
+        self.apply_redactions_pages.insert(source_page);
         self.is_modified = true;
         Ok(())
     }
@@ -6044,12 +6077,14 @@ impl DocumentEditor {
 
     /// Check if a page is marked for redaction application.
     pub fn is_page_marked_for_redaction(&self, page: usize) -> bool {
-        self.apply_redactions_pages.contains(&page)
+        let source_page = self.output_to_source_index(page);
+        self.apply_redactions_pages.contains(&source_page)
     }
 
     /// Clear the apply redactions flag for a page.
     pub fn unmark_page_for_redaction(&mut self, page: usize) {
-        self.apply_redactions_pages.remove(&page);
+        let source_page = self.output_to_source_index(page);
+        self.apply_redactions_pages.remove(&source_page);
     }
 
     /// Get redaction annotation data for a page.
@@ -6295,7 +6330,8 @@ impl DocumentEditor {
             return Err(Error::InvalidPdf(format!("Page index {} out of range", page)));
         }
 
-        let page_mods = self.image_modifications.entry(page).or_default();
+        let source_page = self.output_to_source_index(page);
+        let page_mods = self.image_modifications.entry(source_page).or_default();
         let modification = page_mods
             .entry(image_name.to_string())
             .or_insert(ImageModification {
@@ -6336,7 +6372,8 @@ impl DocumentEditor {
             return Err(Error::InvalidPdf(format!("Page index {} out of range", page)));
         }
 
-        let page_mods = self.image_modifications.entry(page).or_default();
+        let source_page = self.output_to_source_index(page);
+        let page_mods = self.image_modifications.entry(source_page).or_default();
         let modification = page_mods
             .entry(image_name.to_string())
             .or_insert(ImageModification {
@@ -6374,7 +6411,8 @@ impl DocumentEditor {
             return Err(Error::InvalidPdf(format!("Page index {} out of range", page)));
         }
 
-        let page_mods = self.image_modifications.entry(page).or_default();
+        let source_page = self.output_to_source_index(page);
+        let page_mods = self.image_modifications.entry(source_page).or_default();
         page_mods.insert(
             image_name.to_string(),
             ImageModification {
