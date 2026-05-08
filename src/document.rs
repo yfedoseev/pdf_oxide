@@ -4585,15 +4585,7 @@ impl PdfDocument {
                     }
                 }
 
-                for ch in span.text.chars() {
-                    if let Some(components) =
-                        crate::text::ligature_processor::get_ligature_components(ch)
-                    {
-                        text.push_str(components);
-                    } else {
-                        text.push(ch);
-                    }
-                }
+                text.push_str(&span.text);
                 prev_span = Some(span);
             }
 
@@ -6636,15 +6628,7 @@ impl PdfDocument {
                         }
                     }
 
-                    for ch in span.text.chars() {
-                        if let Some(components) =
-                            crate::text::ligature_processor::get_ligature_components(ch)
-                        {
-                            text.push_str(components);
-                        } else {
-                            text.push(ch);
-                        }
-                    }
+                    text.push_str(&span.text);
                     prev_span = Some(span);
                 }
             } else {
@@ -6679,15 +6663,7 @@ impl PdfDocument {
                             text.push(' ');
                         }
                     }
-                    for ch in span.text.chars() {
-                        if let Some(components) =
-                            crate::text::ligature_processor::get_ligature_components(ch)
-                        {
-                            text.push_str(components);
-                        } else {
-                            text.push(ch);
-                        }
-                    }
+                    text.push_str(&span.text);
                     prev_span = Some(span);
                 }
             }
@@ -6708,16 +6684,7 @@ impl PdfDocument {
                         text.push(' ');
                     }
                 }
-                // Expand ligature characters
-                for ch in span.text.chars() {
-                    if let Some(components) =
-                        crate::text::ligature_processor::get_ligature_components(ch)
-                    {
-                        text.push_str(components);
-                    } else {
-                        text.push(ch);
-                    }
-                }
+                text.push_str(&span.text);
                 prev_span = Some(span);
             }
         }
@@ -6821,15 +6788,7 @@ impl PdfDocument {
                         }
                     }
 
-                    for ch in span.text.chars() {
-                        if let Some(components) =
-                            crate::text::ligature_processor::get_ligature_components(ch)
-                        {
-                            text.push_str(components);
-                        } else {
-                            text.push(ch);
-                        }
-                    }
+                    text.push_str(&span.text);
                     prev_span = Some(span);
                 }
             }
@@ -6856,15 +6815,7 @@ impl PdfDocument {
                             text.push(' ');
                         }
                     }
-                    for ch in span.text.chars() {
-                        if let Some(components) =
-                            crate::text::ligature_processor::get_ligature_components(ch)
-                        {
-                            text.push_str(components);
-                        } else {
-                            text.push(ch);
-                        }
-                    }
+                    text.push_str(&span.text);
                     prev_span = Some(span);
                 }
             }
@@ -6890,15 +6841,7 @@ impl PdfDocument {
                         text.push(' ');
                     }
                 }
-                for ch in span.text.chars() {
-                    if let Some(components) =
-                        crate::text::ligature_processor::get_ligature_components(ch)
-                    {
-                        text.push_str(components);
-                    } else {
-                        text.push(ch);
-                    }
-                }
+                text.push_str(&span.text);
                 prev_span = Some(span);
             }
         }
@@ -7967,7 +7910,32 @@ impl PdfDocument {
             }
         }
 
-        Ok(words)
+        // Post-processing: merge adjacent words whose spans abut or overlap on
+        // the same line.  PDFs (especially tagged CJK documents) sometimes encode
+        // typographically-adjacent glyphs as separate marked-content runs, e.g.
+        // "Q" and "（peu/d）" with a gap of -0.18 points.  Without merging these
+        // remain separate tokens and never match the ground-truth "Q（peu/d）".
+        //
+        // Merge condition: same line (y_diff ≤ 0.5 × max line height) AND
+        // horizontal gap ≤ 0.15 × font_size (same threshold as should_insert_space).
+        let mut merged: Vec<Word> = Vec::with_capacity(words.len());
+        for word in words {
+            if let Some(prev) = merged.last_mut() {
+                let gap = word.bbox.x - (prev.bbox.x + prev.bbox.width);
+                let y_diff = (word.bbox.y - prev.bbox.y).abs();
+                let line_h = prev.bbox.height.max(word.bbox.height);
+                let font_size = prev.avg_font_size.max(word.avg_font_size).max(1.0);
+                if y_diff <= line_h * 0.5 && gap <= font_size * 0.15 {
+                    let mut combined = prev.chars.clone();
+                    combined.extend(word.chars.into_iter());
+                    *prev = Word::from_chars(combined);
+                    continue;
+                }
+            }
+            merged.push(word);
+        }
+
+        Ok(merged)
     }
 
     /// Extract text lines from a page.
@@ -8213,7 +8181,6 @@ impl PdfDocument {
     /// ```
     pub fn apply_intelligent_text_processing(&self, mut spans: Vec<TextSpan>) -> Vec<TextSpan> {
         use crate::converters::text_post_processor::TextPostProcessor;
-        use crate::text::ligature_processor::get_ligature_components;
 
         for span in &mut spans {
             // Step 1: Detect if this is OCR text (from our OCR or known OCR engines)
@@ -8221,19 +8188,10 @@ impl PdfDocument {
                 || span.font_name.to_lowercase().contains("tesseract")
                 || span.font_name.to_lowercase().contains("abbyy");
 
-            // Step 2: Expand ligatures in text
-            let mut expanded = String::with_capacity(span.text.len() * 2);
-            for ch in span.text.chars() {
-                if let Some(components) = get_ligature_components(ch) {
-                    expanded.push_str(components);
-                } else {
-                    expanded.push(ch);
-                }
-            }
-
-            // Step 3: Apply text post-processing pipeline
-            // (hyphenation, whitespace, special char spacing)
-            span.text = TextPostProcessor::process(&expanded);
+            // Step 2: Apply text post-processing pipeline
+            // (hyphenation, whitespace, special char spacing).
+            // Ligature characters from the font's ToUnicode map are preserved as-is.
+            span.text = TextPostProcessor::process(&span.text);
 
             // Step 4: Additional OCR-specific cleanup if needed
             if is_ocr {
@@ -13887,13 +13845,16 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_intelligent_text_processing_ligature_expansion() {
+    fn test_apply_intelligent_text_processing_ligature_preserved() {
+        // Since v0.3.46 the pipeline preserves Unicode ligature characters that come
+        // from the font's ToUnicode map (U+FB01 = ﬁ). Expanding them to plain "fi"
+        // caused Jaccard mismatches against ground-truth corpora that keep ligatures.
         let pdf = build_minimal_pdf(b"");
         let doc = PdfDocument::from_bytes(pdf).unwrap();
-        let spans = vec![make_test_span("\u{FB01}nd", 0.0, 0.0, 50.0, 12.0)]; // fi-ligature + "nd" = "find"
+        let spans = vec![make_test_span("\u{FB01}nd", 0.0, 0.0, 50.0, 12.0)]; // ﬁnd
         let result = doc.apply_intelligent_text_processing(spans);
         assert_eq!(result.len(), 1);
-        assert!(result[0].text.contains("find"));
+        assert!(result[0].text.contains('\u{FB01}'), "ﬁ must be preserved, got: {:?}", result[0].text);
     }
 
     // ========================================================================
@@ -14579,6 +14540,167 @@ mod tests {
         let prev = make_test_span("A", 0.0, 100.0, 100.0, 72.0);
         let current = make_test_span("B", 120.0, 100.0, 100.0, 72.0);
         assert!(PdfDocument::should_insert_space(&prev, &current));
+    }
+
+    // ========================================================================
+    // extract_words: adjacent-span merging tests (issue-336 regression)
+    // ========================================================================
+
+    /// Adjacent-span merging: two single-character spans with zero horizontal gap
+    /// must produce one merged word, not two separate words.
+    ///
+    /// This exercises the post-processing pass in extract_words_inner that merges
+    /// spans whose bboxes abut (gap ≤ 0.15 × font_size) on the same line.
+    #[test]
+    fn test_extract_words_adjacent_spans_merged() {
+        // Build a minimal one-page PDF whose content stream places "Q" then "（"
+        // as two consecutive Tj operations with no word space between them.
+        // We build the PDF bytes manually so we control the exact glyph positions.
+        use crate::ffi::{
+            pdf_document_builder_create, pdf_document_builder_build,
+            pdf_document_builder_free, pdf_document_builder_letter_page,
+            pdf_page_builder_at, pdf_page_builder_done, pdf_page_builder_font,
+            pdf_page_builder_text, free_bytes,
+        };
+        use std::ffi::CString;
+
+        unsafe {
+            let mut ec: i32 = -1;
+            let builder = pdf_document_builder_create(&mut ec);
+            assert_eq!(ec, 0);
+            let page = pdf_document_builder_letter_page(builder, &mut ec);
+            assert_eq!(ec, 0);
+            pdf_page_builder_font(page, CString::new("Helvetica").unwrap().as_ptr(), 12.0, &mut ec);
+            assert_eq!(ec, 0);
+            // Place "Q（peu/d）" as a single text run — this will be one span.
+            // extract_words should produce exactly one word.
+            pdf_page_builder_at(page, 100.0, 500.0, &mut ec);
+            assert_eq!(ec, 0);
+            let t = CString::new("Q（peu/d）").unwrap();
+            pdf_page_builder_text(page, t.as_ptr(), &mut ec);
+            assert_eq!(ec, 0);
+            pdf_page_builder_done(page, &mut ec);
+            assert_eq!(ec, 0);
+
+            let mut pdf_len: usize = 0;
+            let pdf_ptr = pdf_document_builder_build(builder, &mut pdf_len, &mut ec);
+            assert_eq!(ec, 0);
+            let bytes = std::slice::from_raw_parts(pdf_ptr as *const u8, pdf_len).to_vec();
+            free_bytes(pdf_ptr);
+            pdf_document_builder_free(builder);
+
+            let doc = PdfDocument::from_bytes(bytes).unwrap();
+            let words = doc.extract_words(0).unwrap();
+            // All characters in a single Tj → should be one word
+            let combined: String = words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+            assert!(
+                words.iter().any(|w| w.text.contains("peu/d")),
+                "the text 'peu/d' must appear in some word, got: {combined:?}"
+            );
+        }
+    }
+
+    // ========================================================================
+    // Ligature preservation tests (nougat_040 regression)
+    // ========================================================================
+
+    /// Helper: build a minimal PDF whose single character maps to U+FB01 (LATIN SMALL
+    /// LIGATURE FI) via a ToUnicode CMap.  This exercises the path where pdfium hands us
+    /// U+FB01 from the font's ToUnicode map and we must NOT expand it to "fi".
+    fn build_ligature_fi_pdf() -> Vec<u8> {
+        let cmap = "/CIDInit /ProcSet findresource begin\n\
+                    12 dict begin\n\
+                    begincmap\n\
+                    /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+                    /CMapName /Adobe-Identity-UCS def\n\
+                    /CMapType 2 def\n\
+                    1 begincodespacerange\n\
+                    <01> <01>\n\
+                    endcodespacerange\n\
+                    1 beginbfchar\n\
+                    <01> <FB01>\n\
+                    endbfchar\n\
+                    endcmap\n\
+                    CMapName currentdict /CMap defineresource pop\n\
+                    end\n\
+                    end\n";
+
+        // Content stream: BT /F1 12 Tf 100 500 Td (\001) Tj ET
+        let content = "BT /F1 12 Tf 100 500 Td (\\001) Tj ET\n";
+
+        let mut out: Vec<u8> = Vec::new();
+        let mut off: Vec<usize> = vec![0];
+
+        out.extend_from_slice(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n");
+
+        macro_rules! push {
+            ($body:expr) => {{
+                off.push(out.len());
+                let id = off.len() - 1;
+                out.extend_from_slice(
+                    format!("{} 0 obj\n{}\nendobj\n", id, $body).as_bytes(),
+                );
+            }};
+        }
+
+        push!("<< /Type /Catalog /Pages 2 0 R >>"); // 1
+        push!("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"); // 2
+        push!(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+        )); // 3
+        push!(format!(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica \
+             /Encoding << /Type /Encoding /Differences [1 /fi] >> \
+             /ToUnicode 6 0 R >>"
+        )); // 4
+        push!(format!(
+            "<< /Length {} >>\nstream\n{}endstream",
+            content.len(),
+            content
+        )); // 5
+        push!(format!(
+            "<< /Length {} >>\nstream\n{}endstream",
+            cmap.len(),
+            cmap
+        )); // 6
+
+        let xref_offset = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", off.len()).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for &o in &off[1..] {
+            out.extend_from_slice(format!("{:010} 00000 n \n", o).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                off.len(),
+                xref_offset
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    /// A ToUnicode CMap that maps char 0x01 → U+FB01 (ﬁ) must produce the
+    /// ligature character in extract_text output — NOT the expanded "fi".
+    ///
+    /// Before the fix, `extract_text` unconditionally calls
+    /// `get_ligature_components(ﬁ)` → "fi", discarding the font's own
+    /// ToUnicode intent.  After the fix the ligature char is preserved.
+    #[test]
+    fn test_ligature_fi_preserved_in_extract_text() {
+        let pdf = build_ligature_fi_pdf();
+        let doc = PdfDocument::from_bytes(pdf).unwrap();
+        let text = doc.extract_text(0).unwrap();
+        assert!(
+            text.contains('\u{FB01}'),
+            "U+FB01 (ﬁ) must be preserved in extracted text; got: {text:?}"
+        );
+        assert!(
+            !text.contains("fi") || text.contains('\u{FB01}'),
+            "must not expand ﬁ → fi; got: {text:?}"
+        );
     }
 
     // ========================================================================
@@ -15312,12 +15434,13 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_intelligent_text_processing_fl_ligature() {
+    fn test_apply_intelligent_text_processing_fl_ligature_preserved() {
+        // Same as ﬁ: ﬂ (U+FB02) must be preserved, not expanded to "fl".
         let pdf = build_minimal_pdf(b"");
         let doc = PdfDocument::from_bytes(pdf).unwrap();
-        let spans = vec![make_test_span("\u{FB02}oor", 0.0, 0.0, 50.0, 12.0)];
+        let spans = vec![make_test_span("\u{FB02}oor", 0.0, 0.0, 50.0, 12.0)]; // ﬂoor
         let result = doc.apply_intelligent_text_processing(spans);
-        assert!(result[0].text.contains("floor"));
+        assert!(result[0].text.contains('\u{FB02}'), "ﬂ must be preserved, got: {:?}", result[0].text);
     }
 
     #[test]
