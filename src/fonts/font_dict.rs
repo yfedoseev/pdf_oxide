@@ -1761,13 +1761,16 @@ impl FontInfo {
     /// # }
     /// ```
     pub fn get_glyph_width(&self, char_code: u16) -> f32 {
-        // For Type0 (CID) fonts, check cid_widths first
-        // The char_code is the CID for these fonts
-        if let Some(cid_widths) = &self.cid_widths {
-            if let Some(&width) = cid_widths.get(&char_code) {
-                return width;
+        // For Type0 (CID) fonts, use /W array then fall back to /DW (cid_default_width).
+        // This must be checked by subtype, not just by cid_widths presence, because a
+        // CIDFont may have no /W array at all (only /DW), in which case cid_widths=None
+        // and we must NOT fall through to the simple-font default_width.
+        if self.subtype == "Type0" {
+            if let Some(cid_widths) = &self.cid_widths {
+                if let Some(&width) = cid_widths.get(&char_code) {
+                    return width;
+                }
             }
-            // CID not in /W array, use /DW default
             return self.cid_default_width;
         }
 
@@ -3085,7 +3088,10 @@ impl FontInfo {
     /// `extract_text` output even though the PDF itself places them on
     /// distinct positions. See issue #328.
     pub fn has_explicit_widths(&self) -> bool {
-        self.widths.is_some() || self.cid_widths.is_some()
+        // Type0/CIDFont fonts always have an authoritative DW value (from /DW or spec
+        // default of 1000), so their widths are always reliable — never apply the
+        // fallback-width gap correction to them.
+        self.widths.is_some() || self.cid_widths.is_some() || self.subtype == "Type0"
     }
 
     /// Check if this font is likely italic based on the font name.
@@ -3931,7 +3937,14 @@ fn standard_encoding_lookup(encoding: &str, code: u8) -> Option<String> {
             // Using ISO-8859-1 fallback here would produce wrong characters for ligatures,
             // smart quotes, accents, and other typographic characters.
             if (32..=126).contains(&code) {
-                Some((code as char).to_string())
+                // Most codes in 32–126 match ASCII, with one notable exception:
+                // 0x27 = "quoteright" → U+2019 (RIGHT SINGLE QUOTATION MARK)
+                // All other printable ASCII codes are identity-mapped.
+                let ch = match code {
+                    0x27 => '\u{2019}', // quoteright
+                    _ => code as char,
+                };
+                Some(ch.to_string())
             } else {
                 let unicode = match code {
                     // 0xA0-0xAF
