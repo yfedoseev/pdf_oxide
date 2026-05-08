@@ -43,32 +43,58 @@ impl<'a> OutlineBuilder for SkiaOutlineBuilder<'a> {
     }
 }
 
-/// Returns true if the font's only usable cmap subtable is a byte-indexed
-/// (single-byte input) table — typically Macintosh Roman format 0 on
-/// producer-stripped TrueType subsets.
-fn has_byte_indexed_cmap(font_data: &[u8]) -> bool {
-    let face = match ttf_parser::Face::parse(font_data, 0) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-    let cmap = match face.tables().cmap {
-        Some(c) => c,
-        None => return false,
-    };
-    let mut saw_byte_indexed = false;
-    let mut saw_unicode = false;
-    for sub in cmap.subtables {
-        use ttf_parser::PlatformId;
-        match sub.platform_id {
-            PlatformId::Unicode => saw_unicode = true,
-            PlatformId::Windows if sub.encoding_id == 1 || sub.encoding_id == 10 => {
-                saw_unicode = true
-            },
-            PlatformId::Macintosh if sub.encoding_id == 0 => saw_byte_indexed = true,
-            _ => {},
+/// Classify an embedded font's cmap tables in a single parse pass and cache
+/// the result keyed on the Arc pointer (stable for the document lifetime).
+///
+/// Returns `(is_byte_indexed_only, has_unicode_cmap)`:
+/// - `is_byte_indexed_only`: only Macintosh byte-indexed cmap present → use
+///   `render_cid_direct` rather than Unicode shaping.
+/// - `has_unicode_cmap`: a Unicode/Windows cmap is present → Unicode shaping
+///   is likely to produce non-.notdef glyphs; use `render_unicode_text`.
+///
+/// Before this cache existed, every `render_text` call with an embedded font
+/// ran `has_byte_indexed_cmap` (one `ttf_parser::Face::parse`) **plus** a full
+/// `rustybuzz::shape` probe on the current text — so 1000 text segments on one
+/// page paid for 1000 parse + 1000 shape calls on the same font bytes. Now
+/// those are collapsed to one parse per embedded font per process.
+static EMBEDDED_FONT_CLASS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<usize, (bool, bool)>>,
+> = std::sync::OnceLock::new();
+
+fn classify_embedded_font(data: &Arc<Vec<u8>>) -> (bool, bool) {
+    // Use the Arc's inner-pointer value as a stable key (two Arc::clones of the
+    // same allocation share the same raw pointer, so this is always a cache hit
+    // after the first call for any given font binary).
+    let key = Arc::as_ptr(data) as usize;
+    let cache = EMBEDDED_FONT_CLASS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    {
+        let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(&v) = guard.get(&key) {
+            return v;
         }
     }
-    saw_byte_indexed && !saw_unicode
+    let result = (|| {
+        let face = ttf_parser::Face::parse(data, 0).ok()?;
+        let cmap = face.tables().cmap?;
+        let mut saw_byte_indexed = false;
+        let mut saw_unicode = false;
+        for sub in cmap.subtables {
+            use ttf_parser::PlatformId;
+            match sub.platform_id {
+                PlatformId::Unicode => saw_unicode = true,
+                PlatformId::Windows if sub.encoding_id == 1 || sub.encoding_id == 10 => {
+                    saw_unicode = true;
+                },
+                PlatformId::Macintosh if sub.encoding_id == 0 => saw_byte_indexed = true,
+                _ => {},
+            }
+        }
+        Some((saw_byte_indexed && !saw_unicode, saw_unicode))
+    })()
+    .unwrap_or((false, false));
+    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, result);
+    result
 }
 
 /// Resolve a single PDF content byte to a GID by consulting the font's
@@ -120,6 +146,154 @@ fn system_fontdb() -> std::sync::Arc<fontdb::Database> {
             std::sync::Arc::new(db)
         })
         .clone()
+}
+
+/// Process-wide cache mapping fontdb::ID → (font bytes, face index).
+///
+/// Without this cache, `load_font_data` calls `with_face_data(...to_vec())`
+/// which clones the entire font binary (often 300–500 KB for Liberation Serif
+/// or Times New Roman) on every `render_text` call. A two-page text PDF can
+/// trigger hundreds of such clones per render pass. This cache reduces each
+/// subsequent access to a cheap `Arc::clone`.
+static FONT_BYTES_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<fontdb::ID, (Arc<Vec<u8>>, u32)>>,
+> = std::sync::OnceLock::new();
+
+fn cached_font_bytes(
+    id: fontdb::ID,
+    db: &fontdb::Database,
+) -> Option<(Arc<Vec<u8>>, u32)> {
+    let cache = FONT_BYTES_CACHE
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    {
+        let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = guard.get(&id) {
+            return Some(entry.clone());
+        }
+    }
+    let mut result: Option<(Arc<Vec<u8>>, u32)> = None;
+    db.with_face_data(id, |data, index| {
+        result = Some((Arc::new(data.to_vec()), index));
+    });
+    if let Some(ref entry) = result {
+        let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+        guard.insert(id, entry.clone());
+    }
+    result
+}
+
+/// Parsed font faces cached by fontdb ID.
+///
+/// `rustybuzz::Face` and `ttf_parser::Face` both borrow the backing bytes.
+/// We use a self-referential pattern (backed Arc keeps bytes alive) with
+/// unsafe 'static transmute so we can store them in a process-wide cache
+/// and reuse them across hundreds of render_text calls for the same font.
+///
+/// # Safety
+/// Both face fields borrow `_data`'s heap allocation (not the Arc pointer
+/// itself, so no double-free on Arc drop). The fields are only ever
+/// accessed while `_data` is alive — i.e., while this struct exists.
+/// Because the struct is behind `Arc`, it lives at least as long as any
+/// caller that holds a clone of that Arc.
+struct CachedFace {
+    _data: Arc<Vec<u8>>,
+    rb_face: rustybuzz::Face<'static>,
+    ttf_face: ttf_parser::Face<'static>,
+    pub units_per_em: f32,
+}
+
+// SAFETY: rustybuzz::Face and ttf_parser::Face only borrow immutable bytes.
+unsafe impl Send for CachedFace {}
+unsafe impl Sync for CachedFace {}
+
+impl CachedFace {
+    fn new(data: Arc<Vec<u8>>, index: u32) -> Option<Self> {
+        let rb_face: rustybuzz::Face<'_> = rustybuzz::Face::from_slice(&data, index)?;
+        let ttf_face: ttf_parser::Face<'_> = ttf_parser::Face::parse(&data, index).ok()?;
+        let units_per_em = ttf_face.units_per_em() as f32;
+        // SAFETY: both faces borrow the data slice. We store an Arc to that
+        // data in `_data`, ensuring the bytes stay alive for this struct's lifetime.
+        let rb_face: rustybuzz::Face<'static> = unsafe { std::mem::transmute(rb_face) };
+        let ttf_face: ttf_parser::Face<'static> = unsafe { std::mem::transmute(ttf_face) };
+        Some(CachedFace { _data: data, rb_face, ttf_face, units_per_em })
+    }
+}
+
+static FACE_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<(fontdb::ID, u32), Arc<CachedFace>>>,
+> = std::sync::OnceLock::new();
+
+fn cached_face(id: fontdb::ID, data: Arc<Vec<u8>>, index: u32) -> Option<Arc<CachedFace>> {
+    let cache = FACE_CACHE
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    {
+        let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = guard.get(&(id, index)) {
+            return Some(entry.clone());
+        }
+    }
+    let face = CachedFace::new(data, index)?;
+    let arc = Arc::new(face);
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    guard.insert((id, index), arc.clone());
+    Some(arc)
+}
+
+/// Process-wide CJK fallback font — loaded once per process, shared by all
+/// TextRasterizer instances.
+///
+/// Before this cache, every glyph that fell through to the CJK path called
+/// `load_cjk_fallback()`, which iterated 7+ fontdb queries and cloned a
+/// 10–20 MB Noto CJK binary. Now that work is done exactly once.
+static CJK_FALLBACK: std::sync::OnceLock<Option<(fontdb::ID, Arc<Vec<u8>>, u32)>> =
+    std::sync::OnceLock::new();
+
+fn get_cjk_fallback_cached(db: &fontdb::Database) -> Option<(fontdb::ID, Arc<Vec<u8>>, u32)> {
+    CJK_FALLBACK
+        .get_or_init(|| {
+            let prioritized_variants = [
+                "Noto Sans CJK SC",
+                "Noto Serif CJK SC",
+                "Droid Sans Fallback",
+                "SimSun",
+                "WenQuanYi Micro Hei",
+                "Noto Sans CJK JP",
+                "Noto Serif CJK JP",
+            ];
+            for variant in prioritized_variants {
+                let query = fontdb::Query {
+                    families: &[fontdb::Family::Name(variant)],
+                    weight: fontdb::Weight::NORMAL,
+                    stretch: fontdb::Stretch::Normal,
+                    style: fontdb::Style::Normal,
+                };
+                if let Some(id) = db.query(&query) {
+                    if let Some((arc, idx)) = cached_font_bytes(id, db) {
+                        log::debug!(
+                            "CJK fallback: matched '{}', idx={}, size={} bytes",
+                            variant,
+                            idx,
+                            arc.len()
+                        );
+                        return Some((id, arc, idx));
+                    }
+                }
+            }
+            let query = fontdb::Query {
+                families: &[fontdb::Family::SansSerif],
+                weight: fontdb::Weight::NORMAL,
+                stretch: fontdb::Stretch::Normal,
+                style: fontdb::Style::Normal,
+            };
+            if let Some(id) = db.query(&query) {
+                if let Some((arc, idx)) = cached_font_bytes(id, db) {
+                    return Some((id, arc, idx));
+                }
+            }
+            None
+        })
+        .as_ref()
+        .map(|(id, arc, idx)| (*id, Arc::clone(arc), *idx))
 }
 
 /// Rasterizer for PDF text operations.
@@ -183,7 +357,7 @@ impl TextRasterizer {
 
         // Find and load font - prioritize embedded font data
         let pdf_font_name = gs.font_name.as_deref().unwrap_or("Helvetica");
-        let font_data_and_index: Option<(Vec<u8>, u32, bool)> = if let Some(ref info) = font_info {
+        let font_data_and_index: Option<(Option<fontdb::ID>, Arc<Vec<u8>>, u32, bool)> = if let Some(ref info) = font_info {
             if let Some(ref embedded) = info.embedded_font_data {
                 // Simple (non-Type0) TrueType subsets whose sole cmap subtable
                 // is a byte-indexed table must be rendered by feeding the raw
@@ -197,7 +371,10 @@ impl TextRasterizer {
                 // for this subtype so the byte→GID route is taken for every
                 // `Tj` / `TJ` call, not just the ones whose decoded Unicode
                 // happens to miss the cmap.
-                if info.subtype != "Type0" && has_byte_indexed_cmap(embedded) {
+                // Classify the embedded font's cmap tables once per Arc lifetime;
+                // subsequent calls for the same font bytes are a cheap HashMap hit.
+                let (is_byte_indexed, has_unicode_cmap) = classify_embedded_font(embedded);
+                if info.subtype != "Type0" && is_byte_indexed {
                     log::debug!(
                         "Using embedded font '{}' with byte-indexed cmap (simple TrueType subset)",
                         info.base_font
@@ -215,22 +392,9 @@ impl TextRasterizer {
                     );
                 }
 
-                // Validate embedded font: check if rustybuzz can find real glyphs (not .notdef)
-                // CID subset fonts often lack standard Unicode cmap tables, so shaping
-                // produces gid=0 for every character.
-                let usable = if let Some(face) = rustybuzz::Face::from_slice(embedded, 0) {
-                    let mut buf = rustybuzz::UnicodeBuffer::new();
-                    buf.push_str(&unicode_text);
-                    buf.set_direction(rustybuzz::Direction::LeftToRight);
-                    let shaped = rustybuzz::shape(&face, &[], buf);
-                    let infos = shaped.glyph_infos();
-                    infos.iter().any(|g| g.glyph_id != 0)
-                } else {
-                    false
-                };
-                if usable {
+                if has_unicode_cmap {
                     log::debug!("Using embedded font data for '{}'", info.base_font);
-                    Some((embedded.to_vec(), 0, false))
+                    Some((None, Arc::clone(embedded), 0, false))
                 } else if info.subtype == "Type0"
                     && info.cid_to_gid_map.is_some()
                     && info.cid_font_type.as_deref() == Some("CIDFontType2")
@@ -242,39 +406,39 @@ impl TextRasterizer {
                         "Using embedded font '{}' with CIDToGIDMap (CIDFontType2)",
                         info.base_font
                     );
-                    Some((embedded.to_vec(), 0, true))
+                    Some((None, Arc::clone(embedded), 0, true))
                 } else if info.cff_gid_map.is_some() {
                     // CFF font with byte→GID mapping — use direct rendering
                     log::debug!(
                         "Using embedded CFF font '{}' with direct GID mapping",
                         info.base_font
                     );
-                    Some((embedded.to_vec(), 0, true))
+                    Some((None, Arc::clone(embedded), 0, true))
                 } else {
                     log::debug!(
                         "Embedded font '{}' lacks usable cmap, falling back to system font",
                         info.base_font
                     );
                     self.load_font_data(&info.base_font)
-                        .map(|(d, i)| (d, i, false))
+                        .map(|(id, d, i)| (Some(id), d, i, false))
                 }
             } else {
                 self.load_font_data(&info.base_font)
-                    .map(|(d, i)| (d, i, false))
+                    .map(|(id, d, i)| (Some(id), d, i, false))
             }
         } else {
             self.load_font_data(pdf_font_name)
-                .map(|(d, i)| (d, i, false))
+                .map(|(id, d, i)| (Some(id), d, i, false))
         };
 
-        if let Some((font_data, index, use_cid_to_gid)) = font_data_and_index {
+        if let Some((font_id, font_data, index, use_cid_to_gid)) = font_data_and_index {
             if use_cid_to_gid {
                 // Direct CIDToGIDMap/CFF rendering — bypass rustybuzz, use ttf-parser for glyph outlines
                 match self.render_cid_direct(
                     pixmap,
                     text,
                     font_info.as_deref().unwrap(),
-                    &font_data,
+                    &*font_data,
                     index,
                     &paint,
                     base_transform,
@@ -288,7 +452,7 @@ impl TextRasterizer {
                             "Direct CID/CFF rendering failed: {}, falling back to system font",
                             e
                         );
-                        if let Some((fallback_data, fallback_idx)) =
+                        if let Some((fb_id, fallback_data, fallback_idx)) =
                             self.load_font_data(pdf_font_name)
                         {
                             return self.render_unicode_text(
@@ -296,7 +460,8 @@ impl TextRasterizer {
                                 &unicode_text,
                                 text,
                                 font_info.as_deref(),
-                                &fallback_data,
+                                Some(fb_id),
+                                fallback_data,
                                 fallback_idx,
                                 &paint,
                                 base_transform,
@@ -314,7 +479,8 @@ impl TextRasterizer {
                 &unicode_text,
                 text, // raw bytes
                 font_info.as_deref(),
-                &font_data,
+                font_id,
+                font_data,
                 index,
                 &paint,
                 base_transform,
@@ -482,8 +648,9 @@ impl TextRasterizer {
         Err(Error::InvalidPdf(format!("Font {} not found", font_name)))
     }
 
-    /// Find and load font data from system.
-    fn load_font_data(&self, pdf_font_name: &str) -> Option<(Vec<u8>, u32)> {
+    /// Find and load font data from system. Returns a `fontdb::ID` alongside
+    /// the `Arc`-wrapped bytes so callers can look up the parsed-face cache.
+    fn load_font_data(&self, pdf_font_name: &str) -> Option<(fontdb::ID, Arc<Vec<u8>>, u32)> {
         // Strip subset prefix (e.g., "ABCDEF+FontName" -> "FontName")
         let clean_name = if let Some(plus_idx) = pdf_font_name.find('+') {
             &pdf_font_name[plus_idx + 1..]
@@ -615,19 +782,15 @@ impl TextRasterizer {
             };
 
             if let Some(id) = self.font_db().query(&query) {
-                let mut data = None;
-                self.font_db().with_face_data(id, |face_data, index| {
+                if let Some((arc_data, index)) = cached_font_bytes(id, self.font_db()) {
                     log::debug!(
                         "Matched system font for {}: variant={}, index={}, size={} bytes",
                         pdf_font_name,
                         variant,
                         index,
-                        face_data.len()
+                        arc_data.len()
                     );
-                    data = Some((face_data.to_vec(), index));
-                });
-                if data.is_some() {
-                    return data;
+                    return Some((id, arc_data, index));
                 }
             }
         }
@@ -651,7 +814,8 @@ impl TextRasterizer {
         text: &str,
         bytes: &[u8],
         font_info: Option<&crate::fonts::FontInfo>,
-        font_data: &[u8],
+        font_id: Option<fontdb::ID>,
+        font_data: Arc<Vec<u8>>,
         index: u32,
         paint: &Paint,
         base_transform: Transform,
@@ -663,32 +827,63 @@ impl TextRasterizer {
         let font_size = gs.font_size;
         let h_scale = gs.horizontal_scaling / 100.0;
 
-        // 1. Create rustybuzz face and buffer
-        let rb_face_opt = rustybuzz::Face::from_slice(font_data, index);
+        // 1. Resolve faces — prefer process-wide cache to avoid re-parsing font tables
+        //    on every text segment.  Embedded fonts (font_id == None) are not cached
+        //    because they are unique per-PDF and typically only rendered once.
+        let cached_arc: Option<Arc<CachedFace>> = font_id
+            .and_then(|id| cached_face(id, Arc::clone(&font_data), index));
 
-        if rb_face_opt.is_none() {
-            if allow_fallback {
-                log::warn!("Failed to create rustybuzz face from embedded data for '{}', falling back to system font", pdf_font_name);
-                if let Some((fallback_data, fallback_index)) = self.load_font_data(pdf_font_name) {
-                    return self.render_unicode_text(
-                        pixmap,
-                        text,
-                        bytes,
-                        font_info,
-                        &fallback_data,
-                        fallback_index,
-                        paint,
-                        base_transform,
-                        gs,
-                        clip_mask,
-                        pdf_font_name,
-                        false, // don't allow infinite fallback
-                    );
+        // Storage for locally-created faces when there is no cache entry
+        // (embedded fonts, first-ever render of a system font).
+        let _local_rb: Option<rustybuzz::Face<'_>>;
+        let _local_ttf: Option<ttf_parser::Face<'_>>;
+
+        let rb_face_ref: &rustybuzz::Face<'_>;
+        let ttf_face_ref: &ttf_parser::Face<'_>;
+        let units_per_em: f32;
+
+        if let Some(ref c) = cached_arc {
+            _local_rb = None;
+            _local_ttf = None;
+            rb_face_ref = &c.rb_face;
+            ttf_face_ref = &c.ttf_face;
+            units_per_em = c.units_per_em;
+        } else {
+            let rb_opt = rustybuzz::Face::from_slice(&font_data, index);
+            if rb_opt.is_none() {
+                if allow_fallback {
+                    log::warn!("Failed to create rustybuzz face from embedded data for '{}', falling back to system font", pdf_font_name);
+                    if let Some((fb_id, fallback_data, fallback_index)) = self.load_font_data(pdf_font_name) {
+                        return self.render_unicode_text(
+                            pixmap,
+                            text,
+                            bytes,
+                            font_info,
+                            Some(fb_id),
+                            fallback_data,
+                            fallback_index,
+                            paint,
+                            base_transform,
+                            gs,
+                            clip_mask,
+                            pdf_font_name,
+                            false, // don't allow infinite fallback
+                        );
+                    }
                 }
+                return self.render_text_fallback(pixmap, text, paint, base_transform, gs, clip_mask);
             }
-            return self.render_text_fallback(pixmap, text, paint, base_transform, gs, clip_mask);
+            _local_rb = rb_opt;
+            _local_ttf = ttf_parser::Face::parse(&font_data, index).ok();
+            if _local_ttf.is_none() {
+                return Err(Error::InvalidPdf(format!("Failed to parse font: {}", pdf_font_name)));
+            }
+            rb_face_ref = _local_rb.as_ref().unwrap();
+            ttf_face_ref = _local_ttf.as_ref().unwrap();
+            units_per_em = ttf_face_ref.units_per_em() as f32;
         }
-        let rb_face = rb_face_opt.unwrap();
+
+        // 2. Buffer setup
         let mut buffer = rustybuzz::UnicodeBuffer::new();
         buffer.push_str(text);
 
@@ -705,16 +900,11 @@ impl TextRasterizer {
         }
         buffer.set_direction(rustybuzz::Direction::LeftToRight);
 
-        // 2. Shape the text
-        let glyphs = rustybuzz::shape(&rb_face, &[], buffer);
+        // 3. Shape the text
+        let glyphs = rustybuzz::shape(rb_face_ref, &[], buffer);
         let info = glyphs.glyph_infos();
         let pos = glyphs.glyph_positions();
 
-        // 3. Load ttf-parser face for outlines
-        let ttf_face = ttf_parser::Face::parse(font_data, index)
-            .map_err(|e| Error::InvalidPdf(format!("Failed to parse font: {}", e)))?;
-
-        let units_per_em = ttf_face.units_per_em() as f32;
         let scale = font_size / units_per_em;
         log::debug!(
             "render_unicode_text: pdf_font={}, units_per_em={}, font_size={}, scale={}",
@@ -829,7 +1019,7 @@ impl TextRasterizer {
             // Try to get glyph from primary font
             let mut pb = PathBuilder::new();
             let mut builder = SkiaOutlineBuilder(&mut pb);
-            let mut has_outline = ttf_face
+            let mut has_outline = ttf_face_ref
                 .outline_glyph(ttf_parser::GlyphId(glyph_id as u16), &mut builder)
                 .is_some();
 
@@ -868,18 +1058,24 @@ impl TextRasterizer {
                 }
                 last_fallback_cluster = Some(cluster);
 
-                // Try to find character in fallback CJK fonts
-                if let Some((cjk_data, cjk_index)) = self.load_cjk_fallback() {
-                    if let Ok(cjk_face) = ttf_parser::Face::parse(&cjk_data, cjk_index) {
-                        if let Some(cjk_glyph_id) = cjk_face.glyph_index(char_at_pos) {
+                // Try to find character in fallback CJK fonts.
+                // get_cjk_fallback_cached() hits a process-wide OnceLock after the
+                // first call — no fontdb queries or font clones on subsequent glyphs.
+                if let Some((cjk_id, cjk_arc, cjk_index)) =
+                    get_cjk_fallback_cached(self.font_db())
+                {
+                    if let Some(cjk_cached) = cached_face(cjk_id, cjk_arc, cjk_index) {
+                        if let Some(cjk_glyph_id) =
+                            cjk_cached.ttf_face.glyph_index(char_at_pos)
+                        {
                             let mut cjk_pb = PathBuilder::new();
                             let mut cjk_builder = SkiaOutlineBuilder(&mut cjk_pb);
-                            if cjk_face
+                            if cjk_cached.ttf_face
                                 .outline_glyph(cjk_glyph_id, &mut cjk_builder)
                                 .is_some()
                             {
                                 if let Some(cjk_path) = cjk_pb.finish() {
-                                    let cjk_scale = font_size / cjk_face.units_per_em() as f32;
+                                    let cjk_scale = font_size / cjk_cached.units_per_em;
                                     let cjk_transform = combined_base
                                         .pre_translate(
                                             (x_cursor + x_offset) * h_scale,
@@ -895,10 +1091,11 @@ impl TextRasterizer {
                                     );
                                     has_outline = true;
 
-                                    // Set override advance from fallback font
-                                    if let Some(adv) = cjk_face.glyph_hor_advance(cjk_glyph_id) {
+                                    if let Some(adv) =
+                                        cjk_cached.ttf_face.glyph_hor_advance(cjk_glyph_id)
+                                    {
                                         x_advance_override = Some(
-                                            adv as f32 / cjk_face.units_per_em() as f32 * font_size,
+                                            adv as f32 / cjk_cached.units_per_em * font_size,
                                         );
                                     }
                                 }
@@ -1036,64 +1233,6 @@ impl TextRasterizer {
         }
 
         Ok(x_cursor)
-    }
-
-    /// Load a dedicated CJK fallback font.
-    fn load_cjk_fallback(&self) -> Option<(Vec<u8>, u32)> {
-        // Prioritize Simplified Chinese (SC) variants first
-        let prioritized_variants = [
-            "Noto Sans CJK SC",
-            "Noto Serif CJK SC",
-            "Droid Sans Fallback",
-            "SimSun",
-            "WenQuanYi Micro Hei",
-            "Noto Sans CJK JP",
-            "Noto Serif CJK JP",
-        ];
-
-        for variant in prioritized_variants {
-            let families = [fontdb::Family::Name(variant)];
-            let query = fontdb::Query {
-                families: &families,
-                weight: fontdb::Weight::NORMAL,
-                stretch: fontdb::Stretch::Normal,
-                style: fontdb::Style::Normal,
-            };
-
-            if let Some(id) = self.font_db().query(&query) {
-                let mut data = None;
-                self.font_db().with_face_data(id, |face_data, index| {
-                    log::debug!(
-                        "CJK Fallback matched variant '{}': index={}, size={} bytes",
-                        variant,
-                        index,
-                        face_data.len()
-                    );
-                    data = Some((face_data.to_vec(), index));
-                });
-                if data.is_some() {
-                    return data;
-                }
-            }
-        }
-
-        // Generic fallback if no specific CJK font found
-        let query = fontdb::Query {
-            families: &[fontdb::Family::SansSerif],
-            weight: fontdb::Weight::NORMAL,
-            stretch: fontdb::Stretch::Normal,
-            style: fontdb::Style::Normal,
-        };
-
-        if let Some(id) = self.font_db().query(&query) {
-            let mut data = None;
-            self.font_db().with_face_data(id, |face_data, index| {
-                data = Some((face_data.to_vec(), index));
-            });
-            data
-        } else {
-            None
-        }
     }
 
     /// Fallback simple rendering if no font found.

@@ -397,8 +397,8 @@ pub struct PdfDocument {
         Mutex<BoundedEntryCache<ObjectRef, Vec<crate::extractors::PdfImage>>>,
     /// Regions marked for erasure per page. Mutex for `&self` write-path methods (#398).
     pub(crate) erase_regions: Mutex<HashMap<usize, Vec<crate::geometry::Rect>>>,
-    /// Cached decompressed content stream for last accessed page.
-    page_content_cache: Mutex<Option<(usize, std::sync::Arc<Vec<u8>>)>>,
+    /// LRU cache of decompressed page content streams, keyed by page index.
+    page_content_cache: Mutex<BoundedEntryCache<usize, std::sync::Arc<Vec<u8>>>>,
     /// Cached signatures of running headers/footers detected via cross-page
     /// repetition. A span whose normalized text matches a signature and
     /// sits near the top/bottom of the page is treated as an artifact.
@@ -765,7 +765,7 @@ impl PdfDocument {
                 DEFAULT_XOBJECT_CACHE_MAX_ENTRIES,
             )),
             erase_regions: Mutex::new(HashMap::new()),
-            page_content_cache: Mutex::new(None),
+            page_content_cache: Mutex::new(BoundedEntryCache::new(64)),
             running_artifact_signatures: Mutex::new(None),
         };
 
@@ -8077,11 +8077,9 @@ impl PdfDocument {
     /// The content stream contains PDF operators that define the page's appearance.
     pub fn get_page_content_data(&self, page_index: usize) -> Result<Vec<u8>> {
         {
-            let cache = self.page_content_cache.lock_or_recover();
-            if let Some((cached_page, data)) = cache.as_ref() {
-                if *cached_page == page_index {
-                    return Ok(data.as_ref().clone());
-                }
+            let mut cache = self.page_content_cache.lock_or_recover();
+            if let Some(data) = cache.get(&page_index) {
+                return Ok(data.as_ref().clone());
             }
         }
 
@@ -8190,8 +8188,9 @@ impl PdfDocument {
             String::from_utf8_lossy(&content_data)
         );
 
-        *self.page_content_cache.lock_or_recover() =
-            Some((page_index, std::sync::Arc::new(content_data.clone())));
+        self.page_content_cache
+            .lock_or_recover()
+            .insert(page_index, std::sync::Arc::new(content_data.clone()));
 
         Ok(content_data)
     }
@@ -9157,6 +9156,32 @@ impl PdfDocument {
         } else {
             Ok(obj.clone())
         }
+    }
+
+    /// Look up a font from the per-document `font_cache`, parsing and inserting
+    /// on a cache miss.  Used by the page renderer so that `FontInfo::from_dict`
+    /// (which decodes widths, CID maps, ToUnicode CMaps, and extracts embedded
+    /// font bytes) is called at most once per PDF object reference, even when
+    /// multiple pages share the same font resources.
+    pub fn get_or_load_font_for_rendering(
+        &mut self,
+        font_obj: &Object,
+    ) -> Result<Arc<crate::fonts::FontInfo>> {
+        if let Some(font_ref) = font_obj.as_reference() {
+            let cached = self.font_cache.lock_or_recover().get(&font_ref).cloned();
+            if let Some(arc) = cached {
+                return Ok(arc);
+            }
+        }
+        let resolved = self.resolve_object(font_obj)?;
+        let info = crate::fonts::FontInfo::from_dict(&resolved, self)?;
+        let arc = Arc::new(info);
+        if let Some(font_ref) = font_obj.as_reference() {
+            self.font_cache
+                .lock_or_recover()
+                .insert(font_ref, Arc::clone(&arc));
+        }
+        Ok(arc)
     }
 
     /// Compute a cheap content-based font identity hash from a loaded font object.
