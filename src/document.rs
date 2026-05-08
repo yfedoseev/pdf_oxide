@@ -5366,7 +5366,18 @@ impl PdfDocument {
     /// (for example superscripts and subscripts) are not split by a fixed
     /// absolute tolerance.
     fn same_line_threshold(prev: &TextSpan, current: &TextSpan) -> f32 {
-        prev.font_size.max(current.font_size).max(1.0) * 0.5
+        let max_fs = prev.font_size.max(current.font_size).max(1.0);
+        let min_fs = prev.font_size.min(current.font_size).max(1.0);
+        // When one span is much larger than the other (e.g., a 116pt heading
+        // followed by 12pt body), using max_fs * 0.5 makes the threshold too
+        // large and misclassifies cross-size paragraph breaks as same-line.
+        // Fall back to min_fs * 2 (ensuring threshold stays ≥ max_fs * 0.2
+        // so same-line superscripts aren't misclassified).
+        if max_fs > min_fs * 4.0 {
+            (min_fs * 2.0).max(max_fs * 0.2)
+        } else {
+            max_fs * 0.5
+        }
     }
 
     /// Returns `true` if `inner` is contained within `outer`,

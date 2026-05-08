@@ -1787,11 +1787,20 @@ impl FontInfo {
         self.default_width
     }
 
-    /// Look up width from standard 14 font metrics when /Widths array is absent.
+    /// Look up width from standard 14 font metrics when /Widths array is absent
+    /// or the char code falls outside the [FirstChar, LastChar] range.
     fn get_standard_font_width(&self, char_code: u16) -> Option<f32> {
-        // Only apply for standard 14 fonts (no embedded data, no widths array)
-        if self.widths.is_some() || self.embedded_font_data.is_some() {
-            return None;
+        // If a /Widths array covers this specific char code, trust it — don't override
+        // with standard metrics. For chars OUTSIDE the range (including the common case
+        // where space U+0020 = 32 is below a FirstChar like 66) we prefer named-font
+        // metrics over the generic default_width (500), which is often too wide.
+        if let Some(widths) = &self.widths {
+            if let Some(first_char) = self.first_char {
+                let index = char_code as i32 - first_char as i32;
+                if index >= 0 && (index as usize) < widths.len() {
+                    return None; // within explicit widths range – use actual width
+                }
+            }
         }
         let name = &self.base_font;
         let is_times = name.contains("Times");
