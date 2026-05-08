@@ -4585,7 +4585,7 @@ impl PdfDocument {
                     }
                 }
 
-                text.push_str(&span.text);
+                Self::push_span_text(&mut text, span);
                 prev_span = Some(span);
             }
 
@@ -5442,6 +5442,102 @@ impl PdfDocument {
         // Insert space if gap is significant
         // Also check that gap is not too large (might indicate column boundary)
         gap > space_threshold && gap < font_size * 5.0
+    }
+
+    /// Detect a span whose text is `N.M` (all-digit groups around one dot) and whose
+    /// bbox.width is >40% larger than char_widths imply.  This pattern occurs in
+    /// sailing-score / competition-table PDFs where two adjacent columns (e.g. Q8=1,
+    /// F9=10) are stored as a single Tj text run "1.10" spanning both column cells.
+    /// kreuzberg's GT tokenises them as separate words; we must split at the dot.
+    fn is_column_spanning_decimal(span: &TextSpan) -> bool {
+        let text = &span.text;
+        let dot_pos = match text.find('.') {
+            Some(p) if p > 0 && p < text.len() - 1 => p,
+            _ => return false,
+        };
+        if text[dot_pos + 1..].contains('.') {
+            return false;
+        }
+        if !text[..dot_pos].chars().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        if !text[dot_pos + 1..].chars().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        let char_count = text.chars().count();
+        let expected_width = if !span.char_widths.is_empty() {
+            let cw_sum: f32 = span.char_widths.iter().sum();
+            cw_sum * (char_count as f32 / span.char_widths.len() as f32)
+        } else if span.font_size > 0.0 {
+            // Digits are narrower than average; 0.50em per char is a safe
+            // upper bound for all-digit strings (avoids the 0.60 fallback
+            // producing false negatives on column-spanning sailing scores
+            // when char_widths is empty, e.g. word_spans from extract_words).
+            span.font_size * 0.50 * char_count as f32
+        } else {
+            return false;
+        };
+        // Use absolute gap (bbox_w - expected) rather than a ratio so that
+        // 5-char spans like "12.11" (gap ≈ 1.1×fs) are caught along with
+        // 4-char spans like "1.10" (gap ≈ 1.4×fs).  1.0×font_size is a safe
+        // lower bound: normal text rarely has >1em of hidden whitespace.
+        let gap = span.bbox.width - expected_width;
+        span.font_size > 0.0 && gap > span.font_size * 1.0
+    }
+
+    /// When a CID font's glyph iteration produces fewer advance-width entries than
+    /// `decode_text_to_unicode` produces unicode chars, `char_widths.len()` < char count.
+    /// This indicates two concatenated text runs stored in one Tj operator (e.g. "Theorem1.7"
+    /// where "Theorem" widths come from the font's glyph table and "1.7" doesn't have
+    /// matching glyph entries).  Return the byte offset at which to insert a space,
+    /// or None if no split is appropriate.
+    fn char_widths_boundary_split(span: &TextSpan) -> Option<usize> {
+        let cw_len = span.char_widths.len();
+        if cw_len == 0 {
+            return None;
+        }
+        let char_count = span.text.chars().count();
+        if cw_len >= char_count {
+            return None;
+        }
+        // Find the byte offset of the (cw_len)-th character
+        let (boundary_byte, boundary_char) = span.text.char_indices().nth(cw_len)?;
+        let prev_char = span.text[..boundary_byte].chars().next_back()?;
+        // Don't insert if either side is already a space
+        if boundary_char == ' ' || prev_char == ' ' {
+            return None;
+        }
+        // Non-ASCII chars at the boundary are encoding artifacts (e.g. Polish diacritics
+        // in Latin-2 / CP1250 fonts producing one fewer char_width entry).  Only split
+        // when the boundary char is ASCII, indicating a genuine text-run concatenation.
+        if !boundary_char.is_ascii() {
+            return None;
+        }
+        // Only split at meaningful typographic boundaries to avoid false positives:
+        // letter→digit ("Theorem1.7"), lower→upper ("LetC"), upper→lower ("Dbe").
+        let is_boundary = (prev_char.is_alphabetic() && boundary_char.is_ascii_digit())
+            || (prev_char.is_lowercase() && boundary_char.is_uppercase())
+            || (prev_char.is_uppercase() && boundary_char.is_lowercase());
+        if is_boundary { Some(boundary_byte) } else { None }
+    }
+
+    /// Append span text to `out`, splitting merged runs for cleaner word tokenisation.
+    /// Priority 1: column-spanning decimal (nougat_018 sailing tables).
+    /// Priority 2: char_widths boundary split (pdfa_004 CID-font merge artifacts).
+    #[inline]
+    fn push_span_text(out: &mut String, span: &TextSpan) {
+        if Self::is_column_spanning_decimal(span) {
+            let dot = span.text.find('.').unwrap();
+            out.push_str(&span.text[..dot]);
+            out.push(' ');
+            out.push_str(&span.text[dot + 1..]);
+        } else if let Some(split) = Self::char_widths_boundary_split(span) {
+            out.push_str(&span.text[..split]);
+            out.push(' ');
+            out.push_str(&span.text[split..]);
+        } else {
+            out.push_str(&span.text);
+        }
     }
 
     /// Parse font size from a /DA (Default Appearance) string.
@@ -6628,7 +6724,7 @@ impl PdfDocument {
                         }
                     }
 
-                    text.push_str(&span.text);
+                    Self::push_span_text(&mut text, span);
                     prev_span = Some(span);
                 }
             } else {
@@ -6663,7 +6759,7 @@ impl PdfDocument {
                             text.push(' ');
                         }
                     }
-                    text.push_str(&span.text);
+                    Self::push_span_text(&mut text, span);
                     prev_span = Some(span);
                 }
             }
@@ -6684,7 +6780,7 @@ impl PdfDocument {
                         text.push(' ');
                     }
                 }
-                text.push_str(&span.text);
+                Self::push_span_text(&mut text, span);
                 prev_span = Some(span);
             }
         }
@@ -6788,7 +6884,7 @@ impl PdfDocument {
                         }
                     }
 
-                    text.push_str(&span.text);
+                    Self::push_span_text(&mut text, span);
                     prev_span = Some(span);
                 }
             }
@@ -6815,7 +6911,7 @@ impl PdfDocument {
                             text.push(' ');
                         }
                     }
-                    text.push_str(&span.text);
+                    Self::push_span_text(&mut text, span);
                     prev_span = Some(span);
                 }
             }
@@ -6841,7 +6937,7 @@ impl PdfDocument {
                         text.push(' ');
                     }
                 }
-                text.push_str(&span.text);
+                Self::push_span_text(&mut text, span);
                 prev_span = Some(span);
             }
         }
@@ -12754,6 +12850,145 @@ mod tests {
         let current = make_test_span("World", 200.0, 100.0, 50.0, 12.0);
         // Column boundary gap is too large (>5x font), should return false
         assert!(!PdfDocument::should_insert_space(&prev, &current));
+    }
+
+    // ========================================================================
+    // is_column_spanning_decimal / push_span_text tests (nougat_018 fix)
+    // ========================================================================
+
+    fn make_decimal_span(text: &str, char_widths: Vec<f32>, bbox_w: f32, font_size: f32) -> TextSpan {
+        TextSpan {
+            text: text.to_string(),
+            bbox: crate::geometry::Rect { x: 0.0, y: 0.0, width: bbox_w, height: font_size },
+            font_name: "F1".to_string(),
+            font_size,
+            font_weight: crate::layout::FontWeight::Normal,
+            is_italic: false,
+            is_monospace: false,
+            color: crate::layout::Color::new(0.0, 0.0, 0.0),
+            mcid: None,
+            sequence: 0,
+            split_boundary_before: false,
+            offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
+            primary_detected: false,
+            artifact_type: None,
+            char_widths,
+        }
+    }
+
+    #[test]
+    fn test_column_spanning_decimal_wide_bbox() {
+        // "1.10": 4 chars, cw=[3.98], expected=15.92, gap=9.8 > fs(7.0) → split
+        let span = make_decimal_span("1.10", vec![3.9811199], 25.72, 7.0);
+        assert!(PdfDocument::is_column_spanning_decimal(&span));
+    }
+
+    #[test]
+    fn test_column_spanning_decimal_5char_span() {
+        // "12.11": 5 chars, cw=[3.98,3.98], expected=19.91, gap=7.73 > fs(7.0) → split
+        let span = make_decimal_span("12.11", vec![3.9811199, 3.9811199], 27.64, 7.0);
+        assert!(PdfDocument::is_column_spanning_decimal(&span));
+    }
+
+    #[test]
+    fn test_column_spanning_decimal_normal_bbox() {
+        // "1.5" with 3 entries matching 3 chars; bbox_w = expected → gap ≈ 0 → no split
+        let span = make_decimal_span("1.5", vec![3.0, 3.0, 3.0], 9.0, 7.0);
+        assert!(!PdfDocument::is_column_spanning_decimal(&span));
+    }
+
+    #[test]
+    fn test_column_spanning_decimal_non_digit() {
+        // "hello.world" — letters, not digits → no split
+        let span = make_decimal_span("hello.world", vec![], 60.0, 12.0);
+        assert!(!PdfDocument::is_column_spanning_decimal(&span));
+    }
+
+    #[test]
+    fn test_column_spanning_decimal_multiple_dots() {
+        // "1.2.3" — two dots → no split
+        let span = make_decimal_span("1.2.3", vec![3.0], 25.0, 7.0);
+        assert!(!PdfDocument::is_column_spanning_decimal(&span));
+    }
+
+    #[test]
+    fn test_push_span_text_splits_wide_decimal() {
+        let span = make_decimal_span("1.10", vec![3.9811199], 25.72, 7.0);
+        let mut out = String::new();
+        PdfDocument::push_span_text(&mut out, &span);
+        assert_eq!(out, "1 10");
+    }
+
+    #[test]
+    fn test_push_span_text_leaves_normal_decimal() {
+        let span = make_decimal_span("3.14", vec![4.0, 4.0, 4.0, 4.0], 16.0, 12.0);
+        let mut out = String::new();
+        PdfDocument::push_span_text(&mut out, &span);
+        assert_eq!(out, "3.14");
+    }
+
+    // ========================================================================
+    // char_widths_boundary_split tests (pdfa_004 CID-font merge fix)
+    // ========================================================================
+
+    #[test]
+    fn test_cw_boundary_split_theorem_number() {
+        // "Theorem1.7": 10 chars, 7 widths → split before '1'
+        let span = make_decimal_span("Theorem1.7",
+            vec![11.2, 8.9, 7.4, 8.1, 6.6, 7.4, 13.4], 83.8, 14.3);
+        let result = PdfDocument::char_widths_boundary_split(&span);
+        assert_eq!(result, Some(7)); // byte 7 = '1'
+    }
+
+    #[test]
+    fn test_cw_boundary_split_let_capital() {
+        // "LetC": 4 chars, 3 widths → split before 'C'
+        let span = make_decimal_span("LetC", vec![7.3, 5.2, 4.5], 26.7, 12.0);
+        let result = PdfDocument::char_widths_boundary_split(&span);
+        assert_eq!(result, Some(3)); // byte 3 = 'C'
+    }
+
+    #[test]
+    fn test_cw_boundary_no_split_already_space() {
+        // "Theorem 1.1": 7 widths, char at idx 7 is space → no split
+        let span = make_decimal_span("Theorem 1.1",
+            vec![9.3, 7.5, 6.1, 6.7, 5.5, 6.1, 11.2], 80.0, 12.0);
+        assert!(PdfDocument::char_widths_boundary_split(&span).is_none());
+    }
+
+    #[test]
+    fn test_cw_boundary_no_split_matching_count() {
+        // "hello" with 5 widths: no mismatch
+        let span = make_decimal_span("hello", vec![5.0, 5.0, 5.0, 5.0, 5.0], 25.0, 12.0);
+        assert!(PdfDocument::char_widths_boundary_split(&span).is_none());
+    }
+
+    #[test]
+    fn test_cw_boundary_no_split_nonascii_boundary() {
+        // "Marysia Prus-Gł": boundary char is 'ł' (non-ASCII) → no split
+        let span = make_decimal_span("Marysia Prus-Gł",
+            vec![5.0; 14], 80.0, 12.0);
+        assert!(PdfDocument::char_widths_boundary_split(&span).is_none());
+    }
+
+    #[test]
+    fn test_push_span_text_splits_let_capital() {
+        let span = make_decimal_span("LetC", vec![7.3, 5.2, 4.5], 26.7, 12.0);
+        let mut out = String::new();
+        PdfDocument::push_span_text(&mut out, &span);
+        assert_eq!(out, "Let C");
+    }
+
+    #[test]
+    fn test_push_span_text_splits_theorem_number() {
+        let span = make_decimal_span("Theorem1.7",
+            vec![11.2, 8.9, 7.4, 8.1, 6.6, 7.4, 13.4], 83.8, 14.3);
+        let mut out = String::new();
+        PdfDocument::push_span_text(&mut out, &span);
+        assert_eq!(out, "Theorem 1.7");
     }
 
     // ========================================================================

@@ -393,22 +393,64 @@ pub fn extract_table_from_spans(
     table_elem: &StructElem,
     spans: &[crate::layout::TextSpan],
 ) -> Result<Table, Error> {
-    // Convert spans to TextBlocks for MCID matching
+    // Convert spans to TextBlocks for MCID matching, applying column-spanning
+    // decimal split so that "12.11" (sailing score columns) becomes "12 11".
     let text_blocks: Vec<TextBlock> = spans
         .iter()
         .filter(|s| s.mcid.is_some())
-        .map(|s| TextBlock {
-            chars: Vec::new(),
-            bbox: s.bbox,
-            text: s.text.clone(),
-            avg_font_size: s.font_size,
-            dominant_font: s.font_name.clone(),
-            is_bold: s.font_weight.is_bold(),
-            is_italic: s.is_italic,
-            mcid: s.mcid,
+        .map(|s| {
+            let text = span_text_for_cell(s);
+            TextBlock {
+                chars: Vec::new(),
+                bbox: s.bbox,
+                text,
+                avg_font_size: s.font_size,
+                dominant_font: s.font_name.clone(),
+                is_bold: s.font_weight.is_bold(),
+                is_italic: s.is_italic,
+                mcid: s.mcid,
+            }
         })
         .collect();
     extract_table(table_elem, &text_blocks)
+}
+
+/// Return the display text for a span when used as a table cell token.
+/// Mirrors `PdfDocument::push_span_text`: splits column-spanning decimals
+/// (e.g. "12.11" across adjacent score columns) at the decimal point.
+fn span_text_for_cell(span: &crate::layout::TextSpan) -> String {
+    let text = &span.text;
+    // Must be an "N.M" pattern with all-digit parts and a single dot.
+    let dot_pos = match text.find('.') {
+        Some(p) if p > 0 && p < text.len() - 1 => p,
+        _ => return text.clone(),
+    };
+    if text[dot_pos + 1..].contains('.') {
+        return text.clone();
+    }
+    if !text[..dot_pos].chars().all(|c| c.is_ascii_digit()) {
+        return text.clone();
+    }
+    if !text[dot_pos + 1..].chars().all(|c| c.is_ascii_digit()) {
+        return text.clone();
+    }
+    let char_count = text.chars().count();
+    let expected_width = if !span.char_widths.is_empty() {
+        let cw_sum: f32 = span.char_widths.iter().sum();
+        cw_sum * (char_count as f32 / span.char_widths.len() as f32)
+    } else if span.font_size > 0.0 {
+        // 0.50em per char: digits are narrower than average; keeps the
+        // fallback from producing false negatives on word_spans (char_widths=[]).
+        span.font_size * 0.50 * char_count as f32
+    } else {
+        return text.clone();
+    };
+    let gap = span.bbox.width - expected_width;
+    if span.font_size > 0.0 && gap > span.font_size * 1.0 {
+        format!("{} {}", &text[..dot_pos], &text[dot_pos + 1..])
+    } else {
+        text.clone()
+    }
 }
 
 /// Extract a table from a structure element tree.

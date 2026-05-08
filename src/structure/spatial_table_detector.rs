@@ -3074,31 +3074,65 @@ fn grid_to_table(
     }
 }
 
+/// Return the display text for a span inside a spatial table cell.
+/// Splits column-spanning decimals (e.g. "12.11" across adjacent score columns).
+fn span_cell_text(span: &TextSpan) -> String {
+    let text = &span.text;
+    let dot_pos = match text.find('.') {
+        Some(p) if p > 0 && p < text.len() - 1 => p,
+        _ => return text.clone(),
+    };
+    if text[dot_pos + 1..].contains('.') {
+        return text.clone();
+    }
+    if !text[..dot_pos].chars().all(|c| c.is_ascii_digit()) {
+        return text.clone();
+    }
+    if !text[dot_pos + 1..].chars().all(|c| c.is_ascii_digit()) {
+        return text.clone();
+    }
+    let char_count = text.chars().count();
+    let expected_width = if !span.char_widths.is_empty() {
+        let cw_sum: f32 = span.char_widths.iter().sum();
+        cw_sum * (char_count as f32 / span.char_widths.len() as f32)
+    } else if span.font_size > 0.0 {
+        span.font_size * 0.50 * char_count as f32
+    } else {
+        return text.clone();
+    };
+    let gap = span.bbox.width - expected_width;
+    if span.font_size > 0.0 && gap > span.font_size * 1.0 {
+        format!("{} {}", &text[..dot_pos], &text[dot_pos + 1..])
+    } else {
+        text.clone()
+    }
+}
+
 fn extract_cell_text(cell_span_indices: &[usize], spans: &[TextSpan]) -> String {
     if cell_span_indices.is_empty() {
         return String::new();
     }
-    let mut span_entries: Vec<(f32, &str)> = cell_span_indices
+    let mut span_entries: Vec<(f32, String)> = cell_span_indices
         .iter()
-        .filter_map(|&idx| spans.get(idx).map(|s| (s.bbox.center().y, s.text.as_str())))
+        .filter_map(|&idx| spans.get(idx).map(|s| (s.bbox.center().y, span_cell_text(s))))
         .collect();
     if span_entries.is_empty() {
         return String::new();
     }
     if span_entries.len() == 1 {
-        return span_entries[0].1.to_string();
+        return span_entries.remove(0).1;
     }
     span_entries.sort_by(|a, b| crate::utils::safe_float_cmp(b.0, a.0));
-    let mut lines: Vec<Vec<&str>> = Vec::new();
-    let mut current_line: Vec<&str> = vec![span_entries[0].1];
+    let mut lines: Vec<Vec<String>> = Vec::new();
+    let mut current_line: Vec<String> = vec![span_entries[0].1.clone()];
     let mut current_y = span_entries[0].0;
-    for &(y, text) in &span_entries[1..] {
+    for (y, text) in &span_entries[1..] {
         if (current_y - y).abs() <= 2.0 {
-            current_line.push(text);
+            current_line.push(text.clone());
         } else {
             lines.push(current_line);
-            current_line = vec![text];
-            current_y = y;
+            current_line = vec![text.clone()];
+            current_y = *y;
         }
     }
     lines.push(current_line);
