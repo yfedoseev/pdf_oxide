@@ -5,7 +5,7 @@
 use crate::document::PdfDocument;
 use crate::editor::form_fields::FormFieldWrapper;
 use crate::editor::resource_manager::ResourceManager;
-use crate::elements::StructureElement;
+use crate::elements::{ContentElement, StructureElement};
 use crate::error::{Error, Result};
 use crate::extractors::HierarchicalExtractor;
 use crate::geometry::Rect;
@@ -461,8 +461,11 @@ pub struct DocumentEditor {
     original_page_count: usize,
     /// Track if document has been modified
     is_modified: bool,
-    /// Modified page content (page_index → new structure)
+    /// Modified page content (page_index → new structure, full replacement)
     modified_content: HashMap<usize, StructureElement>,
+    /// Overlay additions for source-loaded pages (source_page_index → new elements).
+    /// These are appended to the original content stream rather than replacing it.
+    overlay_additions: HashMap<usize, Vec<ContentElement>>,
     /// Resource manager for fonts/images
     resource_manager: ResourceManager,
     /// Track if structure tree needs rebuilding
@@ -594,6 +597,7 @@ impl DocumentEditor {
             original_page_count: page_count,
             is_modified: false,
             modified_content: HashMap::new(),
+            overlay_additions: HashMap::new(),
             resource_manager: ResourceManager::new(),
             structure_modified: false,
             modified_annotations: HashMap::new(),
@@ -630,6 +634,7 @@ impl DocumentEditor {
             original_page_count: page_count,
             is_modified: false,
             modified_content: HashMap::new(),
+            overlay_additions: HashMap::new(),
             resource_manager: ResourceManager::new(),
             structure_modified: false,
             modified_annotations: HashMap::new(),
@@ -670,6 +675,7 @@ impl DocumentEditor {
             original_page_count: page_count,
             is_modified: false,
             modified_content: HashMap::new(),
+            overlay_additions: HashMap::new(),
             resource_manager: ResourceManager::new(),
             structure_modified: false,
             modified_annotations: HashMap::new(),
@@ -2183,14 +2189,34 @@ impl DocumentEditor {
                 // Write individual pages (use final_pages_obj which includes merged pages)
                 if let Some(pages_dict) = final_pages_obj.as_dict() {
                     if let Some(kids) = pages_dict.get("Kids").and_then(|k| k.as_array()) {
+                        // Build a mapping: output loop position → original source page index.
+                        // After select_pages() the page_order may differ from 0..n, so all
+                        // per-page HashMaps (modified_content, modified_annotations, …) must
+                        // be keyed by the original source index, not the output position.
+                        let source_indices: Vec<usize> = self
+                            .page_order
+                            .iter()
+                            .filter(|&&i| i >= 0)
+                            .map(|&i| i as usize)
+                            .collect();
+                        let source_page_count = source_indices.len();
+
                         let mut page_index = 0;
                         for kid in kids {
                             if let Some(page_ref) = kid.as_reference() {
                                 let page_obj = self.source.load_object(page_ref)?;
 
+                                // Resolve the original source page index for all HashMap lookups.
+                                // Merged pages (appended after source pages) use the loop counter.
+                                let source_page_index = if page_index < source_page_count {
+                                    source_indices[page_index]
+                                } else {
+                                    page_index
+                                };
+
                                 // Check if we have erase overlays for this page
                                 let has_erase_overlay =
-                                    self.erase_regions.contains_key(&page_index);
+                                    self.erase_regions.contains_key(&source_page_index);
                                 let erase_overlay_id = if has_erase_overlay {
                                     Some(self.allocate_object_id())
                                 } else {
@@ -2200,7 +2226,7 @@ impl DocumentEditor {
                                 // Check if we have new annotations to add for this page
                                 let new_annotation_count = self
                                     .modified_annotations
-                                    .get(&page_index)
+                                    .get(&source_page_index)
                                     .map(|anns| anns.iter().filter(|a| a.is_new()).count())
                                     .unwrap_or(0);
                                 let new_annotation_ids: Vec<u32> = (0..new_annotation_count)
@@ -2213,7 +2239,7 @@ impl DocumentEditor {
                                     all_form_field_data
                                         .iter()
                                         .filter(|(pg_idx, _, wrapper, _)| {
-                                            *pg_idx == page_index && !wrapper.is_parent_only()
+                                            *pg_idx == source_page_index && !wrapper.is_parent_only()
                                         })
                                         .map(|(_, id, wrapper, _)| (*id, wrapper.clone()))
                                         .collect();
@@ -2224,7 +2250,7 @@ impl DocumentEditor {
 
                                 // Check if we need to flatten annotations for this page
                                 let should_flatten =
-                                    self.flatten_annotations_pages.contains(&page_index);
+                                    self.flatten_annotations_pages.contains(&source_page_index);
                                 let flatten_data: Option<(
                                     Vec<AnnotationAppearance>,
                                     u32,
@@ -2232,7 +2258,7 @@ impl DocumentEditor {
                                 )> = if should_flatten {
                                     // Get annotation appearances
                                     let appearances =
-                                        self.get_annotation_appearances(page_index)?;
+                                        self.get_annotation_appearances(source_page_index)?;
                                     if !appearances.is_empty() {
                                         // Allocate object IDs for each XObject and one for the overlay
                                         let overlay_id = self.allocate_object_id();
@@ -2255,10 +2281,10 @@ impl DocumentEditor {
 
                                 // Check if we need to apply redactions for this page
                                 let should_apply_redactions =
-                                    self.apply_redactions_pages.contains(&page_index);
+                                    self.apply_redactions_pages.contains(&source_page_index);
                                 let redaction_data: Option<(Vec<RedactionData>, u32)> =
                                     if should_apply_redactions {
-                                        let redactions = self.get_redaction_data(page_index)?;
+                                        let redactions = self.get_redaction_data(source_page_index)?;
                                         if !redactions.is_empty() {
                                             let overlay_id = self.allocate_object_id();
                                             Some((redactions, overlay_id))
@@ -2271,13 +2297,13 @@ impl DocumentEditor {
 
                                 // Check if we need to flatten form fields for this page
                                 let should_flatten_forms =
-                                    self.flatten_forms_pages.contains(&page_index);
+                                    self.flatten_forms_pages.contains(&source_page_index);
                                 let form_flatten_data: Option<(
                                     Vec<AnnotationAppearance>,
                                     u32,
                                     Vec<(u32, String)>,
                                 )> = if should_flatten_forms {
-                                    let appearances = self.get_widget_appearances(page_index)?;
+                                    let appearances = self.get_widget_appearances(source_page_index)?;
                                     if !appearances.is_empty() {
                                         let overlay_id = self.allocate_object_id();
                                         let xobj_ids: Vec<(u32, String)> = appearances
@@ -2299,16 +2325,24 @@ impl DocumentEditor {
 
                                 // Check if we have modified content for this page
                                 let modified_content_id: Option<u32> = if self.structure_modified
-                                    && self.modified_content.contains_key(&page_index)
+                                    && self.modified_content.contains_key(&source_page_index)
                                 {
                                     Some(self.allocate_object_id())
                                 } else {
                                     None
                                 };
 
+                                // Check if we have overlay additions for this page
+                                let overlay_additions_id: Option<u32> =
+                                    if self.overlay_additions.contains_key(&source_page_index) {
+                                        Some(self.allocate_object_id())
+                                    } else {
+                                        None
+                                    };
+
                                 // Apply page property modifications if any
                                 let mut final_page_obj = if let Some(props) =
-                                    self.modified_page_props.get(&page_index)
+                                    self.modified_page_props.get(&source_page_index)
                                 {
                                     self.apply_page_props_to_object(&page_obj, props)?
                                 } else {
@@ -2334,6 +2368,30 @@ impl DocumentEditor {
                                                 Object::Array(arr)
                                             },
                                             _ => Object::Array(vec![contents, overlay_ref]),
+                                        };
+                                        new_dict.insert("Contents".to_string(), contents_array);
+                                    }
+                                    final_page_obj = Object::Dictionary(new_dict);
+                                }
+
+                                // If we have overlay additions (add_text on existing page), append
+                                // a new stream after the original content rather than replacing it.
+                                if let (Some(additions_id), Some(page_dict)) =
+                                    (overlay_additions_id, final_page_obj.as_dict())
+                                {
+                                    let mut new_dict = page_dict.clone();
+                                    if let Some(contents) = new_dict.get("Contents").cloned() {
+                                        let additions_ref =
+                                            Object::Reference(ObjectRef::new(additions_id, 0));
+                                        let contents_array = match contents {
+                                            Object::Reference(_) => {
+                                                Object::Array(vec![contents, additions_ref])
+                                            },
+                                            Object::Array(mut arr) => {
+                                                arr.push(additions_ref);
+                                                Object::Array(arr)
+                                            },
+                                            _ => Object::Array(vec![contents, additions_ref]),
                                         };
                                         new_dict.insert("Contents".to_string(), contents_array);
                                     }
@@ -2641,11 +2699,11 @@ impl DocumentEditor {
                                 if let Some(page_dict) = page_obj.as_dict() {
                                     // Check if this page has modified content (structure rebuild)
                                     if self.structure_modified
-                                        && self.modified_content.contains_key(&page_index)
+                                        && self.modified_content.contains_key(&source_page_index)
                                     {
                                         // Generate new content stream from modified StructureElement
                                         if let Some(structure) =
-                                            self.modified_content.get(&page_index)
+                                            self.modified_content.get(&source_page_index)
                                         {
                                             let (content_bytes, pending_images) =
                                                 self.generate_content_stream(structure)?;
@@ -2702,7 +2760,7 @@ impl DocumentEditor {
                                     } else {
                                         // Check if we have image modifications for this page
                                         let has_image_mods =
-                                            self.image_modifications.contains_key(&page_index);
+                                            self.image_modifications.contains_key(&source_page_index);
 
                                         if has_image_mods {
                                             // Rewrite content stream with image modifications
@@ -2717,7 +2775,7 @@ impl DocumentEditor {
                                                         {
                                                             let mods = self
                                                                 .image_modifications
-                                                                .get(&page_index)
+                                                                .get(&source_page_index)
                                                                 .unwrap();
                                                             match self.rewrite_content_stream_with_image_mods(&content_data, mods) {
                                                                 Ok(modified_content) => {
@@ -2772,7 +2830,7 @@ impl DocumentEditor {
                                                         // Multiple content streams - apply modifications to all
                                                         let mods = self
                                                             .image_modifications
-                                                            .get(&page_index)
+                                                            .get(&source_page_index)
                                                             .unwrap();
                                                         for item in arr {
                                                             if let Object::Reference(ref_obj) = item
@@ -3113,7 +3171,7 @@ impl DocumentEditor {
                                 // Write erase overlay content stream if present
                                 if let Some(overlay_obj_id) = erase_overlay_id {
                                     if let Some(overlay_content) =
-                                        self.generate_erase_overlay(page_index)
+                                        self.generate_erase_overlay(source_page_index)
                                     {
                                         // Create stream object for the overlay
                                         let overlay_stream = Object::Stream {
@@ -3133,13 +3191,47 @@ impl DocumentEditor {
                                     }
                                 }
 
+                                // Write overlay additions stream (add_text on existing page)
+                                if let Some(additions_id) = overlay_additions_id {
+                                    if let Some(added) =
+                                        self.overlay_additions.get(&source_page_index)
+                                    {
+                                        let wrapper = StructureElement {
+                                            structure_type: "Document".to_string(),
+                                            bbox: crate::geometry::Rect::new(0.0, 0.0, 0.0, 0.0),
+                                            children: added.clone(),
+                                            reading_order: None,
+                                            alt_text: None,
+                                            language: None,
+                                        };
+                                        if let Ok((content_bytes, _pending)) =
+                                            self.generate_content_stream(&wrapper)
+                                        {
+                                            let additions_stream = Object::Stream {
+                                                dict: HashMap::new(),
+                                                data: content_bytes.into(),
+                                            };
+                                            let offset = writer.stream_position()?;
+                                            let bytes = serialize_obj(
+                                                &serializer,
+                                                additions_id,
+                                                0,
+                                                &additions_stream,
+                                                &encryption_handler,
+                                            );
+                                            writer.write_all(&bytes)?;
+                                            xref_entries.push((additions_id, offset, 0, true));
+                                        }
+                                    }
+                                }
+
                                 // Write new annotation objects
                                 if !new_annotation_ids.is_empty() {
                                     // Get page refs for building annotations (needed for link destinations)
                                     let page_refs = self.get_page_refs().unwrap_or_default();
 
                                     if let Some(annotations) =
-                                        self.modified_annotations.get(&page_index)
+                                        self.modified_annotations.get(&source_page_index)
                                     {
                                         let new_annotations: Vec<_> =
                                             annotations.iter().filter(|a| a.is_new()).collect();
@@ -3808,8 +3900,23 @@ impl DocumentEditor {
             Vec::new()
         };
 
-        // Save content structure
-        self.set_page_content(page_index, page.root)?;
+        if page.is_loaded_from_source() {
+            // Page was loaded from an existing PDF.  Use overlay approach: preserve the
+            // original content stream and append only the newly added elements as a second
+            // stream.  This avoids losing graphics/form-structure that the text-only
+            // HierarchicalExtractor cannot round-trip.
+            //
+            // Always mark as modified so callers that check `is_modified()` after
+            // `save_page()` continue to see the expected true value.
+            self.is_modified = true;
+            let added: Vec<ContentElement> = page.added_children().to_vec();
+            if !added.is_empty() {
+                self.overlay_additions.insert(page_index, added);
+            }
+        } else {
+            // Freshly created page — replace the entire content stream.
+            self.set_page_content(page_index, page.root)?;
+        }
 
         // Save annotations if they were modified
         if annotations_modified {

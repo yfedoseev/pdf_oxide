@@ -9163,6 +9163,7 @@ impl PdfDocument {
     /// (which decodes widths, CID maps, ToUnicode CMaps, and extracts embedded
     /// font bytes) is called at most once per PDF object reference, even when
     /// multiple pages share the same font resources.
+    #[cfg(feature = "rendering")]
     pub fn get_or_load_font_for_rendering(
         &mut self,
         font_obj: &Object,

@@ -943,6 +943,10 @@ pub struct PdfPage {
     annotations: Vec<AnnotationWrapper>,
     /// Track if annotations have been modified
     annotations_modified: bool,
+    /// Number of root children present when this page was loaded from an existing source PDF.
+    /// `None` means the page was freshly created (full content replacement on save).
+    /// `Some(n)` means children at index >= n were added by the caller (overlay on save).
+    original_child_count: Option<usize>,
 }
 
 impl PdfPage {
@@ -962,6 +966,7 @@ impl PdfPage {
             height,
             annotations: Vec::new(),
             annotations_modified: false,
+            original_child_count: None,
         };
         page.rebuild_element_map();
         page
@@ -975,6 +980,7 @@ impl PdfPage {
         height: f32,
         annotations: Vec<AnnotationWrapper>,
     ) -> Self {
+        let original_child_count = root.children.len();
         let mut page = Self {
             page_index,
             root,
@@ -984,9 +990,29 @@ impl PdfPage {
             height,
             annotations,
             annotations_modified: false,
+            original_child_count: Some(original_child_count),
         };
         page.rebuild_element_map();
         page
+    }
+
+    /// Whether this page was loaded from an existing source document.
+    ///
+    /// When true, `save_page()` uses an overlay approach that preserves the
+    /// original content stream and appends only the newly added elements.
+    pub fn is_loaded_from_source(&self) -> bool {
+        self.original_child_count.is_some()
+    }
+
+    /// Returns only the content elements added since this page was loaded.
+    ///
+    /// For freshly created pages (`is_loaded_from_source() == false`) this is
+    /// equivalent to all children of the root element.
+    pub fn added_children(&self) -> &[crate::elements::ContentElement] {
+        match self.original_child_count {
+            Some(n) => &self.root.children[n..],
+            None => &self.root.children,
+        }
     }
 
     /// Rebuild the element ID-to-path mapping.
