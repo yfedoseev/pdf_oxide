@@ -69,7 +69,7 @@ impl PageFontStats {
         // Bin font sizes into 0.25 pt buckets so 11.97 / 12.00 / 12.03
         // (which all came from the same nominal 12 pt body) collapse to
         // one bucket.
-        let mut size_buckets: std::collections::HashMap<u16, usize> =
+        let mut size_buckets: std::collections::HashMap<u32, usize> =
             std::collections::HashMap::new();
         let mut font_buckets: std::collections::HashMap<&str, usize> =
             std::collections::HashMap::new();
@@ -78,8 +78,9 @@ impl PageFontStats {
             if chars == 0 || !s.font_size.is_finite() || s.font_size <= 0.0 {
                 continue;
             }
-            // Quantize to 0.25 pt buckets.
-            let bucket = (s.font_size * 4.0).round() as u16;
+            // Quantize to 0.25 pt buckets. Use u32 to avoid silent saturation
+            // for large font sizes (e.g. poster / display fonts at 200+ pt).
+            let bucket = (s.font_size * 4.0).round() as u32;
             *size_buckets.entry(bucket).or_insert(0) += chars;
             *font_buckets.entry(s.font_name.as_str()).or_insert(0) += chars;
         }
@@ -144,51 +145,38 @@ impl PageFontStats {
 }
 
 fn compute_line_height(spans: &[TextSpan], body_font: &str, dominant_em: f32) -> Option<f32> {
-    // Filter to dominant-font dominant-size spans with finite y.
-    let mut body_spans: Vec<(f32, f32)> = spans
+    // Collect y-baselines of dominant-font spans only.
+    let mut ys: Vec<f32> = spans
         .iter()
         .filter(|s| {
             s.font_name == body_font
                 && (s.font_size - dominant_em).abs() < 0.5
                 && s.bbox.y.is_finite()
-                && s.bbox.x.is_finite()
         })
-        .map(|s| (s.bbox.x + s.bbox.width * 0.5, s.bbox.y))
+        .map(|s| s.bbox.y)
         .collect();
-    if body_spans.len() < 4 {
+
+    if ys.len() < 4 {
         return None;
     }
 
-    // Group by x-center bucket so vertically adjacent spans in the
-    // same column are compared to each other, not across columns.
-    body_spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    // Sort descending (highest y = top of page first in PDF coords).
+    ys.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
 
-    let bucket_w = (dominant_em * 6.0).max(40.0); // wide enough that one column lands in one bucket
+    // Deduplicate baselines within 0.5 pt: multiple spans on the same
+    // text line (bold run, mixed font) would otherwise inject zero-gaps.
+    ys.dedup_by(|later, earlier| (*earlier - *later).abs() < 0.5);
 
-    let mut gaps: Vec<f32> = Vec::new();
-    let mut i = 0;
-    while i < body_spans.len() {
-        let bucket_start = body_spans[i].0;
-        let mut col_ys: Vec<f32> = Vec::new();
-        while i < body_spans.len() && body_spans[i].0 - bucket_start <= bucket_w {
-            col_ys.push(body_spans[i].1);
-            i += 1;
-        }
-        if col_ys.len() >= 2 {
-            // Sort by y descending (top to bottom in PDF coordinates).
-            col_ys.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-            for w in col_ys.windows(2) {
-                let g = w[0] - w[1];
-                // Only accept gaps in the plausible line-height range
-                // [0.5em, 3em] — wider gaps are paragraph breaks or
-                // section dividers, narrower are subscripts / inline
-                // math.
-                if g >= dominant_em * 0.5 && g <= dominant_em * 3.0 {
-                    gaps.push(g);
-                }
-            }
-        }
-    }
+    // Measure consecutive baseline gaps. Accept only values in the
+    // plausible set-leading range [0.5em, 3em]: narrower gaps are
+    // subscript/inline-math overlaps; wider are paragraph or section
+    // breaks. This filter makes the column-grouping heuristic
+    // unnecessary — cross-column gaps are almost always > 3em.
+    let mut gaps: Vec<f32> = ys
+        .windows(2)
+        .map(|w| w[0] - w[1])
+        .filter(|&g| g >= dominant_em * 0.5 && g <= dominant_em * 3.0)
+        .collect();
 
     if gaps.is_empty() {
         return None;
@@ -312,6 +300,61 @@ mod tests {
             (stats.dominant_char_width - 6.0).abs() < 0.01,
             "expected ~6.0, got {}",
             stats.dominant_char_width
+        );
+    }
+
+    #[test]
+    fn wide_column_line_height_measured_correctly() {
+        // Spans across a 500pt-wide column. The old x-center sweep with
+        // bucket_w = 72pt would split this into ~7 buckets, each with
+        // 2-3 spans, producing unreliable gap measurements. The new
+        // y-only approach handles it correctly regardless of span width.
+        let mut spans = Vec::new();
+        let mut y = 720.0f32;
+        for i in 0..20 {
+            // Varying widths (10-400 pt) all starting at x=72 — same column.
+            let w = 10.0 + (i as f32 * 20.0);
+            spans.push(TextSpan {
+                text: format!("line {i:02}"),
+                bbox: crate::geometry::Rect::new(72.0, y, w, 12.0),
+                font_name: "Helvetica".into(),
+                font_size: 12.0,
+                ..Default::default()
+            });
+            y -= 14.4;
+        }
+        let stats = PageFontStats::from_spans(&spans);
+        assert!(
+            (stats.dominant_line_height - 14.4).abs() < 0.5,
+            "wide-column line height must be ~14.4, got {}",
+            stats.dominant_line_height
+        );
+    }
+
+    #[test]
+    fn two_column_line_height_measured_correctly() {
+        // Two columns at x=72 and x=320, same 14.4 pt leading.
+        // Cross-column gaps would be paragraph-break sized (> 3em) and
+        // must NOT pollute the line-height measurement.
+        let mut spans = Vec::new();
+        for col_x in [72.0_f32, 320.0] {
+            let mut y = 720.0;
+            for i in 0..10 {
+                spans.push(TextSpan {
+                    text: format!("col{col_x:.0} line {i:02}"),
+                    bbox: crate::geometry::Rect::new(col_x, y, 100.0, 12.0),
+                    font_name: "Helvetica".into(),
+                    font_size: 12.0,
+                    ..Default::default()
+                });
+                y -= 14.4;
+            }
+        }
+        let stats = PageFontStats::from_spans(&spans);
+        assert!(
+            (stats.dominant_line_height - 14.4).abs() < 0.5,
+            "two-column line height must be ~14.4, got {}",
+            stats.dominant_line_height
         );
     }
 
