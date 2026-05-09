@@ -463,7 +463,7 @@ fn parse_bare_identifier(input: &[u8]) -> IResult<&[u8], Token<'_>> {
     Ok((rest, Token::Name(name.to_string())))
 }
 
-/// Parse a single PDF token.
+/// Parse a single PDF token (strict mode).
 ///
 /// This is the main entry point for the lexer. It skips whitespace/comments
 /// and then tries to parse any valid PDF token type.
@@ -475,7 +475,6 @@ fn parse_bare_identifier(input: &[u8]) -> IResult<&[u8], Token<'_>> {
 /// 2. Names (/Type) - must check before numbers (/ could start a name)
 /// 3. Numbers (integers and reals)
 /// 4. Strings (literal and hex)
-/// 5. Bare identifiers (lenient fallback for malformed PDFs like `OBJR`)
 ///
 /// # Errors
 ///
@@ -487,11 +486,31 @@ pub fn token(input: &[u8]) -> IResult<&[u8], Token<'_>> {
 
     // Then parse token
     alt((
-        parse_keyword,         // Check keywords first (true, false, null, etc.)
-        parse_name,            // Then names (/Type)
-        parse_number,          // Then numbers (42, 3.14)
-        parse_literal_string,  // Then literal strings
-        parse_hex_string,      // Then hex strings
+        parse_keyword,        // Check keywords first (true, false, null, etc.)
+        parse_name,           // Then names (/Type)
+        parse_number,         // Then numbers (42, 3.14)
+        parse_literal_string, // Then literal strings
+        parse_hex_string,     // Then hex strings
+    ))
+    .parse(input)
+}
+
+/// Parse a single PDF token with lenient bare-identifier fallback.
+///
+/// Like `token()`, but also accepts bare alphanumeric words (e.g. `OBJR`
+/// without the required `/` prefix). Only use this for object-body parsing
+/// where malformed PDFs may omit the `/` — **never** in content-stream
+/// operator scanning, where bare words are operators, not names.
+pub(crate) fn token_lenient(input: &[u8]) -> IResult<&[u8], Token<'_>> {
+    // Skip whitespace first
+    let (input, _) = skip_ws(input)?;
+
+    alt((
+        parse_keyword,
+        parse_name,
+        parse_number,
+        parse_literal_string,
+        parse_hex_string,
         parse_bare_identifier, // Lenient fallback: bare words like OBJR → Name
     ))
     .parse(input)

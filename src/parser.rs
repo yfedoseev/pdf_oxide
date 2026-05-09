@@ -16,7 +16,7 @@
 //! descriptive messages about what went wrong and where.
 
 use crate::error::{Error, Result};
-use crate::lexer::{token, Token};
+use crate::lexer::{token, token_lenient, Token};
 use crate::object::{Object, ObjectRef};
 use nom::IResult;
 use std::collections::HashMap;
@@ -167,7 +167,6 @@ pub fn decode_literal_string_escapes(raw: &[u8]) -> Vec<u8> {
 /// - Nested structures are malformed (unclosed arrays/dicts)
 /// - Hex strings contain invalid hex digits
 pub fn parse_object(input: &[u8]) -> IResult<&[u8], Object> {
-    // Get first token to determine object type
     let (input, tok) = token(input)?;
 
     match tok {
@@ -478,8 +477,21 @@ fn parse_dictionary(input: &[u8]) -> IResult<&[u8], Object> {
                 // Otherwise, expect a name as key
                 match tok {
                     Token::Name(key) => {
-                        // Parse the value
-                        match parse_object(inp) {
+                        // Parse the value; fall back to lenient token for bare words
+                        // (e.g. `OBJR` without a `/` prefix in malformed PDFs)
+                        let value_result = parse_object(inp).or_else(|_| {
+                            token_lenient(inp).and_then(|(inp2, tok)| {
+                                if let Token::Name(name) = tok {
+                                    Ok((inp2, Object::Name(name)))
+                                } else {
+                                    Err(nom::Err::Error(nom::error::Error::new(
+                                        inp,
+                                        nom::error::ErrorKind::Alt,
+                                    )))
+                                }
+                            })
+                        });
+                        match value_result {
                             Ok((inp, value)) => {
                                 dict.insert(key, value);
                                 remaining = inp;
