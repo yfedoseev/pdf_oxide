@@ -82,7 +82,7 @@ fn small_gutter_dead_band_rows_preserved() {
     assert!(newline_between(&out, "BB1", "AA2"), "got {:?}", out);
 }
 
-// E1. 12pt pair at y_diff=5.99 < 6.0 = 0.5*max(fs): stays same-line.
+// E1. 12pt pair at y_diff=5.99 < 14.4 = 1.2*min_fs: stays same-line.
 #[test]
 fn threshold_boundary_inside_stays_same_line() {
     let out = build_and_extract(|w| {
@@ -95,13 +95,13 @@ fn threshold_boundary_inside_stays_same_line() {
     assert!(!newline_between(out, "LLL", "RRR"), "got {:?}", out);
 }
 
-// E2. 12pt pair at y_diff=6.01 > 6.0: splits into two lines.
+// E2. 12pt pair at y_diff=14.51 > 14.4 = 1.2*min_fs: splits into two lines.
 #[test]
 fn threshold_boundary_outside_splits() {
     let out = build_and_extract(|w| {
         let mut page = w.add_letter_page();
         put(&mut page, "LLL", 72.0, 700.0, "Helvetica", 12.0);
-        put(&mut page, "RRR", 95.0, 693.99, "Helvetica", 12.0);
+        put(&mut page, "RRR", 95.0, 685.49, "Helvetica", 12.0);
     });
 
     assert!(newline_between(&out, "LLL", "RRR"), "got {:?}", out);
@@ -136,13 +136,13 @@ fn pair_dead_band_narrow_gap_space_merges() {
     assert!(!newline_between(out, "First", "Second"), "got {:?}", out);
 }
 
-// 12pt pair at y_diff=7.0 (above the 6.0 same-line threshold): splits.
+// 12pt pair at y_diff=15.0 (above the 14.4 = 1.2*fs same-line threshold): splits.
 #[test]
 fn pair_above_new_threshold_splits() {
     let out = build_and_extract(|w| {
         let mut page = w.add_letter_page();
         put(&mut page, "High", 100.0, 700.0, "Helvetica", 12.0);
-        put(&mut page, "Low", 100.0, 693.0, "Helvetica", 12.0);
+        put(&mut page, "Low", 100.0, 685.0, "Helvetica", 12.0);
     });
 
     assert!(newline_between(&out, "High", "Low"), "got {:?}", out);

@@ -411,6 +411,10 @@ pub struct PdfDocument {
     /// happens to echo into the header band on every page (B3: pdfa_010
     /// would otherwise drop "University of Oklahoma 2009").
     running_artifact_signatures: Mutex<Option<std::collections::HashMap<String, usize>>>,
+    /// Accumulated extraction warnings for programmatic inspection.
+    /// Populated when silent fallbacks occur (font not found, CMap absent, etc.).
+    /// Retrieve with [`PdfDocument::warnings`]; drain with [`PdfDocument::take_warnings`].
+    accumulated_warnings: Mutex<Vec<String>>,
 }
 
 // Compile-time verification that PdfDocument is Send + Sync.
@@ -767,6 +771,7 @@ impl PdfDocument {
             erase_regions: Mutex::new(HashMap::new()),
             page_content_cache: Mutex::new(BoundedEntryCache::new(64)),
             running_artifact_signatures: Mutex::new(None),
+            accumulated_warnings: Mutex::new(Vec::new()),
         };
 
         // Initialize encryption immediately
@@ -913,6 +918,9 @@ impl PdfDocument {
             },
             Ok(false) => {
                 log::warn!("PDF is encrypted and requires a password");
+                self.push_warning(
+                    "PDF is encrypted and requires a password; call authenticate() before extracting text".to_string()
+                );
                 // Set handler anyway - user can call authenticate() later
             },
             Err(e) => {
@@ -4171,7 +4179,23 @@ impl PdfDocument {
     ) -> Result<String> {
         self.require_authenticated()?;
 
-        let base_spans = self.extract_spans(page_index)?;
+        let mut base_spans = self.extract_spans(page_index)?;
+
+        // Drop spans that fall inside any caller-specified exclusion region.
+        // This runs before the structure-tree and table pipelines so that
+        // excluded regions are stripped from all downstream processing paths.
+        if !options.exclude_regions.is_empty() {
+            use crate::layout::SpatialCollectionFiltering;
+            base_spans =
+                base_spans.exclude_rects(&options.exclude_regions, options.exclude_regions_mode);
+        }
+
+        // Keep only spans inside the caller-specified include region (if any).
+        // Applied after exclusions so that exclude takes precedence.
+        if let Some((ref region, mode)) = options.include_region {
+            use crate::layout::SpatialCollectionFiltering;
+            base_spans = base_spans.filter_by_rect(region, mode);
+        }
 
         // Structure tree: check MarkInfo first (cheap) to skip non-tagged PDFs.
         let cached_tree = {
@@ -4605,12 +4629,12 @@ impl PdfDocument {
             text
         };
 
-        // Append text from non-widget annotations
-        let mut final_text = text;
-        self.append_non_widget_annotation_text(page_index, &mut final_text);
+        // Annotation text is already included via annotation_content_spans() in
+        // extract_spans() — do NOT call append_non_widget_annotation_text() here,
+        // as that would emit every annotation a second time.
 
         // Filter leaked PDF metadata
-        let final_text = Self::filter_leaked_metadata(&final_text);
+        let final_text = Self::filter_leaked_metadata(&text);
 
         // Normalize Kangxi Radicals
         let final_text = Self::normalize_kangxi_radicals(&final_text);
@@ -4641,6 +4665,20 @@ impl PdfDocument {
         // /Differences / AGL lookup returned the UTF-8 byte sequence
         // re-interpreted as Latin-1. Re-decode those runs in place.
         let cleaned_text = Self::repair_utf8_mojibake(&cleaned_text);
+
+        // Optionally expand Latin ligature characters to their component letters.
+        let cleaned_text = if options.expand_ligatures {
+            cleaned_text
+                .replace('\u{FB00}', "ff")
+                .replace('\u{FB01}', "fi")
+                .replace('\u{FB02}', "fl")
+                .replace('\u{FB03}', "ffi")
+                .replace('\u{FB04}', "ffl")
+                .replace('\u{FB05}', "st")
+                .replace('\u{FB06}', "st")
+        } else {
+            cleaned_text
+        };
 
         Ok(cleaned_text)
     }
@@ -5393,16 +5431,15 @@ impl PdfDocument {
     fn same_line_threshold(prev: &TextSpan, current: &TextSpan) -> f32 {
         let max_fs = prev.font_size.max(current.font_size).max(1.0);
         let min_fs = prev.font_size.min(current.font_size).max(1.0);
-        // When one span is much larger than the other (e.g., a 116pt heading
-        // followed by 12pt body), using max_fs * 0.5 makes the threshold too
-        // large and misclassifies cross-size paragraph breaks as same-line.
-        // Fall back to min_fs * 2 (ensuring threshold stays ≥ max_fs * 0.2
-        // so same-line superscripts aren't misclassified).
-        if max_fs > min_fs * 4.0 {
-            (min_fs * 2.0).max(max_fs * 0.2)
-        } else {
-            max_fs * 0.5
-        }
+        // Continuous formula — avoids the step discontinuity at the 4×
+        // ratio boundary. Examples:
+        //   same-size 12 pt body: max(12×1.2, 12×0.3) = 14.4 pt  ← 1.2× leading
+        //   heading+body 24+10 pt: max(10×1.2, 24×0.3) = 12.0 pt  ← keeps para break
+        //   superscript 12+6 pt:   max(6×1.2, 12×0.3) = 7.2 pt   ← same line
+        // Prior formula was max_fs×0.5 for normal ratios; new formula uses 1.2× of the
+        // smaller font, which is wider and reduces false newlines for normal leading.
+        // Formula: max(min_fs * 1.2, max_fs * 0.3)
+        (min_fs * 1.2).max(max_fs * 0.3)
     }
 
     /// Returns `true` if `inner` is contained within `outer`,
@@ -5433,6 +5470,24 @@ impl PdfDocument {
         let y_diff = (prev.bbox.y - current.bbox.y).abs();
         if y_diff > Self::same_line_threshold(prev, current) {
             return false; // Different lines - no space needed
+        }
+
+        // CJK scripts (Chinese, Japanese, Korean) do not use spaces between
+        // words. If both the tail of prev and the head of current are CJK characters,
+        // inserting a space would produce incorrect tokenisation.
+        let prev_tail = prev.text.chars().next_back();
+        let curr_head = current.text.chars().next();
+        let is_cjk = |c: char| matches!(
+            c as u32,
+            0x3040..=0x309F   // Hiragana
+            | 0x30A0..=0x30FF // Katakana
+            | 0x3400..=0x4DBF // CJK Unified Ideographs Extension A
+            | 0x4E00..=0x9FFF // CJK Unified Ideographs
+            | 0xAC00..=0xD7AF // Hangul Syllables
+            | 0x20000..=0x2A6DF // CJK Unified Ideographs Extension B
+        );
+        if prev_tail.is_some_and(is_cjk) && curr_head.is_some_and(is_cjk) {
+            return false;
         }
 
         // Calculate horizontal gap
@@ -5518,12 +5573,15 @@ impl PdfDocument {
         if !boundary_char.is_ascii() {
             return None;
         }
-        // Only split at meaningful typographic boundaries to avoid false positives:
-        // letter→digit ("Theorem1.7"), lower→upper ("LetC"), upper→lower ("Dbe").
-        let is_boundary = (prev_char.is_alphabetic() && boundary_char.is_ascii_digit())
-            || (prev_char.is_lowercase() && boundary_char.is_uppercase())
-            || (prev_char.is_uppercase() && boundary_char.is_lowercase());
-        if is_boundary { Some(boundary_byte) } else { None }
+        // Only split at letter→digit boundary (e.g. "Theorem1.7").
+        // The letter-case boundary split (lower→upper "LetC", upper→lower "Dbe")
+        // caused false splits on brand names and proper nouns. Letter→digit is the
+        // only reliable signal that two distinct text runs were concatenated.
+        if prev_char.is_alphabetic() && boundary_char.is_ascii_digit() {
+            Some(boundary_byte)
+        } else {
+            None
+        }
     }
 
     /// Merge subscript and superscript spans into their base span.
@@ -5606,12 +5664,13 @@ impl PdfDocument {
                 let x_dist = sub_x - base_right;
                 let y_diff_abs = (base.bbox.y - sub_y).abs();
 
-                // x must be close to the base's right edge.  Real sub/superscript
-                // glyphs land within ~1.5 pt of the base's advance edge; author
-                // affiliation numbers (which should NOT be merged) typically have a
-                // 3–5 pt gap.  Using an absolute bound (not relative to font size)
-                // keeps the criterion tight across varying font sizes.
-                if x_dist < -0.5 || x_dist > 1.5 {
+                // Use em-relative x_dist thresholds.
+                // Real sub/superscript glyphs land within ±[−0.1×base_fs, 0.25×base_fs]
+                // of the base's advance edge; absolute bounds were wrong for non-12pt fonts.
+                let base_fs = base.font_size.max(1.0);
+                let x_lo = -0.1 * base_fs;
+                let x_hi = 0.25 * base_fs;
+                if x_dist < x_lo || x_dist > x_hi {
                     continue;
                 }
                 // Vertical offset must be in the sub/superscript range.
@@ -5689,10 +5748,20 @@ impl PdfDocument {
     }
 
     /// Append span text to `out`, splitting merged runs for cleaner word tokenisation.
+    /// Priority 0: spans whose text is entirely `\n`/`\r` are line-break signals.
     /// Priority 1: column-spanning decimal (nougat_018 sailing tables).
     /// Priority 2: char_widths boundary split (pdfa_004 CID-font merge artifacts).
     #[inline]
     fn push_span_text(out: &mut String, span: &TextSpan) {
+        // A span whose entire text is one or more newline/CR characters is a
+        // ToUnicode line-break signal.  Treat it as a logical newline separator rather
+        // than emitting the raw control characters verbatim as visible content.
+        if !span.text.is_empty() && span.text.chars().all(|c| c == '\n' || c == '\r') {
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            return;
+        }
         if Self::is_column_spanning_decimal(span) {
             let dot = span.text.find('.').unwrap();
             out.push_str(&span.text[..dot]);
@@ -6091,12 +6160,18 @@ impl PdfDocument {
                 }
             }
 
-            // Only subtypes that carry human-readable /Contents text.
+            // Only subtypes whose /Contents is rendered as visible page content.
+            // Per ISO 32000-1 §12.5.6.2 (Table 166), the /Contents key in ALL markup
+            // Per ISO 32000-1 §12.5.6.2 (Table 166), the /Contents of markup
+            // annotations — including Highlight, Underline, StrikeOut, Squiggly,
+            // Ink, Caret, FileAttachment, Redact, and geometric shapes (Line,
+            // Circle, Square, Polygon, PolyLine) — is popup/comment text written
+            // by a reviewer, NOT text displayed on the page. Only FreeText, Text
+            // (note icon), and Stamp annotations have /Contents that represents the
+            // annotation's visible label or overlay.
             let has_contents = matches!(
                 subtype_lc.as_str(),
                 "text" | "freetext" | "stamp"
-                    | "highlight" | "underline" | "strikeout" | "squiggly"
-                    | "ink" | "polygon" | "polyline" | "line" | "circle" | "square"
             );
             if !has_contents {
                 continue;
@@ -6333,33 +6408,26 @@ impl PdfDocument {
                         }
                     }
                 },
-                // Markup annotations (Highlight, Underline, StrikeOut, Squiggly)
-                // Per PDF Spec ISO 32000-1:2008 Section 12.5.6.10, markup annotations
-                // have a /Contents entry containing the text note associated with the markup.
-                "highlight" | "underline" | "strikeout" | "squiggly" => {
-                    if let Some(Object::String(s)) = dict.get("Contents") {
-                        let decoded = Self::decode_pdf_text_string(s);
-                        let trimmed = decoded.trim().to_string();
-                        if !trimmed.is_empty() {
-                            annot_texts.push(trimmed);
-                        }
-                    }
-                    // Also check /RC (Rich Content) for markup annotations
-                    // Per PDF Spec 12.5.6.10, /RC contains XHTML-formatted content
-                    if annot_texts.len() == len_before_annot {
-                        if let Some(Object::String(s)) = dict.get("RC") {
-                            // Strip XHTML tags to extract plain text
-                            let decoded = Self::decode_pdf_text_string(s);
-                            let plain = Self::strip_xhtml_tags(&decoded);
-                            let trimmed = plain.trim().to_string();
-                            if !trimmed.is_empty() {
-                                annot_texts.push(trimmed);
-                            }
-                        }
-                    }
+                // Geometric shape annotations — per §12.5.6.2, their /Contents is
+                // also popup/comment text, same as the markup group below.
+                "line" | "circle" | "square" | "polygon" | "polyline" => {
+                    // Skip — /Contents is popup comment text, not page content.
                 },
-                // Link annotations - Per PDF Spec 12.5.6.5
-                // Links may have /Contents describing the link target or purpose.
+                // Markup/comment annotations — per ISO 32000-1 §12.5.6.2 (Table 166),
+                // the /Contents of all these subtypes is popup/comment text written
+                // by a reviewer, NOT text displayed on the page. Exclude to avoid
+                // injecting user annotation notes into the body text stream.
+                // Per §12.5.6.2, all of these annotations' /Contents is popup/comment
+                // text (displayed in a pop-up window), not rendered page content.
+                // FileAttachment is explicitly in this category per §12.5.6.2 even
+                // though §12.5.6.15 calls it "descriptive text" — the pop-up semantics
+                // take precedence.
+                "highlight" | "underline" | "strikeout" | "squiggly"
+                | "caret" | "fileattachment" | "redact" | "ink" => {
+                    // Skip — /Contents is popup comment text, not page content.
+                },
+                // Link /Contents is an accessibility alternate description (§12.5.6.5).
+                // Treated as supplementary text on pages with no body content.
                 "link" => {
                     if let Some(Object::String(s)) = dict.get("Contents") {
                         let decoded = Self::decode_pdf_text_string(s);
@@ -6369,33 +6437,32 @@ impl PdfDocument {
                         }
                     }
                 },
-                // Popup annotations - Per PDF Spec 12.5.6.14
-                // Popup annotations display the /Contents of their /Parent annotation.
+                // Popup annotations — per §12.5.6.14 Table 183, the parent
+                // annotation's /Contents overrides the popup's own /Contents.
                 "popup" => {
-                    // Try own /Contents first
+                    // Try parent annotation's /Contents first (spec §12.5.6.14).
                     let mut got_text = false;
-                    if let Some(Object::String(s)) = dict.get("Contents") {
-                        let decoded = Self::decode_pdf_text_string(s);
-                        let trimmed = decoded.trim().to_string();
-                        if !trimmed.is_empty() {
-                            annot_texts.push(trimmed);
-                            got_text = true;
-                        }
-                    }
-                    // Fall back to parent annotation's /Contents
-                    if !got_text {
-                        if let Some(parent_ref) = dict.get("Parent").and_then(|o| o.as_reference())
-                        {
-                            if let Ok(parent_obj) = self.load_object(parent_ref) {
-                                if let Some(parent_dict) = parent_obj.as_dict() {
-                                    if let Some(Object::String(s)) = parent_dict.get("Contents") {
-                                        let decoded = Self::decode_pdf_text_string(s);
-                                        let trimmed = decoded.trim().to_string();
-                                        if !trimmed.is_empty() {
-                                            annot_texts.push(trimmed);
-                                        }
+                    if let Some(parent_ref) = dict.get("Parent").and_then(|o| o.as_reference()) {
+                        if let Ok(parent_obj) = self.load_object(parent_ref) {
+                            if let Some(parent_dict) = parent_obj.as_dict() {
+                                if let Some(Object::String(s)) = parent_dict.get("Contents") {
+                                    let decoded = Self::decode_pdf_text_string(s);
+                                    let trimmed = decoded.trim().to_string();
+                                    if !trimmed.is_empty() {
+                                        annot_texts.push(trimmed);
+                                        got_text = true;
                                     }
                                 }
+                            }
+                        }
+                    }
+                    // Fall back to the popup's own /Contents only when parent has none.
+                    if !got_text {
+                        if let Some(Object::String(s)) = dict.get("Contents") {
+                            let decoded = Self::decode_pdf_text_string(s);
+                            let trimmed = decoded.trim().to_string();
+                            if !trimmed.is_empty() {
+                                annot_texts.push(trimmed);
                             }
                         }
                     }
@@ -6899,6 +6966,9 @@ impl PdfDocument {
                     "Structure tree references MCID {} but no spans found with that MCID",
                     mcid
                 );
+                self.push_warning(format!(
+                    "page {page_index}: structure tree references MCID {mcid} but no content spans found — some text may be missing"
+                ));
             }
         }
 
@@ -6952,8 +7022,9 @@ impl PdfDocument {
             }
         }
 
-        // Append text from form fields and annotations
-        self.append_non_widget_annotation_text(page_index, &mut text);
+        // Annotation text is already included via annotation_content_spans() in
+        // extract_spans() — do NOT call append_non_widget_annotation_text() here
+        // (would cause double-emission of all annotation text).
 
         Ok(text)
     }
@@ -7109,8 +7180,9 @@ impl PdfDocument {
             }
         }
 
-        // Append text from form fields and annotations
-        self.append_non_widget_annotation_text(page_index, &mut text);
+        // Annotation text is already included via annotation_content_spans() in
+        // extract_spans() — do NOT call append_non_widget_annotation_text() here
+        // (would cause double-emission of all annotation text).
 
         Ok(text)
     }
@@ -7255,6 +7327,62 @@ impl PdfDocument {
         }
 
         Ok(spans)
+    }
+
+    /// Return per-page font statistics for use in heading detection and layout analysis.
+    ///
+    /// [`PageFontStats`] contains:
+    /// - `dominant_em`: the mode font size weighted by character count — the body text "1 em"
+    /// - `dominant_line_height`: median baseline-to-baseline distance
+    /// - `dominant_char_width`: average character advance width
+    /// - `body_font_name`: name of the most-used font
+    ///
+    /// The primary use-case is heading detection in downstream tools: compare
+    /// `span.font_size / stats.dominant_em` against a threshold (e.g. 1.4×
+    /// for H2, 1.8× for H1) to classify large-font spans as headings without
+    /// depending on any hardcoded point sizes.
+    ///
+    /// ```ignore
+    /// let stats = doc.page_font_stats(0)?;
+    /// let spans = doc.extract_spans(0)?;
+    /// for span in &spans {
+    ///     let ratio = span.font_size / stats.dominant_em;
+    ///     if ratio >= 1.8 { println!("H1: {}", span.text); }
+    ///     else if ratio >= 1.4 { println!("H2: {}", span.text); }
+    /// }
+    /// ```
+    pub fn page_font_stats(
+        &self,
+        page_index: usize,
+    ) -> Result<crate::layout::PageFontStats> {
+        let spans = self.extract_spans(page_index)?;
+        Ok(crate::layout::PageFontStats::from_spans(&spans))
+    }
+
+    /// Return all extraction warnings accumulated since this document was opened.
+    ///
+    /// Warnings are recorded when silent fallbacks occur during text extraction
+    /// (e.g., missing ToUnicode CMap, font not found, malformed structure tree).
+    /// They do NOT consume the warning list — use [`Self::take_warnings`] to drain it.
+    ///
+    /// This API makes previously invisible extraction degradations programmatically
+    /// observable without requiring callers to hook into the `log` crate.
+    pub fn warnings(&self) -> Vec<String> {
+        self.accumulated_warnings.lock_or_recover().clone()
+    }
+
+    /// Drain and return all accumulated extraction warnings, clearing the list.
+    ///
+    /// After this call, [`Self::warnings`] returns an empty `Vec` until new warnings
+    /// are generated. Useful for incremental processing pipelines that want to
+    /// inspect warnings on a per-page or per-operation basis.
+    pub fn take_warnings(&self) -> Vec<String> {
+        std::mem::take(&mut *self.accumulated_warnings.lock_or_recover())
+    }
+
+    /// Record an extraction warning. Called internally when a silent fallback occurs.
+    pub(crate) fn push_warning(&self, msg: impl Into<String>) {
+        self.accumulated_warnings.lock_or_recover().push(msg.into());
     }
 
     /// Heuristic: does this page have two or more vertical text columns?
@@ -8138,6 +8266,11 @@ impl PdfDocument {
         // Walk spans in canonical reading order, clustering chars within each span
         // into words. Since spans come pre-ordered, a flat iteration suffices —
         // no block-by-block partition is needed.
+        //
+        // Track word indices where the source span had split_boundary_before = true.
+        // The post-processing merge must not cross these boundaries (table cells, columns).
+        let mut split_boundary_word_indices: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
         let mut words = Vec::new();
         for span in &spans {
             let span_chars = span.to_chars();
@@ -8149,6 +8282,11 @@ impl PdfDocument {
             // this is much safer than global character clustering.
             let clusters =
                 clustering::cluster_chars_into_words(&span_chars, params.word_gap_threshold);
+
+            // Record split boundary: the first word created from this span is a hard
+            // boundary when split_boundary_before = true (e.g. table cell boundary).
+            let first_word_idx = words.len();
+            let is_split_boundary = span.split_boundary_before;
 
             for cluster_indices in clusters {
                 let cluster_chars: Vec<_> = cluster_indices
@@ -8171,6 +8309,11 @@ impl PdfDocument {
                     words.push(Word::from_chars(current_word_chars));
                 }
             }
+
+            // Only mark the boundary if at least one word was created for this span.
+            if is_split_boundary && words.len() > first_word_idx {
+                split_boundary_word_indices.insert(first_word_idx);
+            }
         }
 
         // Post-processing: merge adjacent words whose spans abut or overlap on
@@ -8181,18 +8324,21 @@ impl PdfDocument {
         //
         // Merge condition: same line (y_diff ≤ 0.5 × max line height) AND
         // horizontal gap ≤ 0.15 × font_size (same threshold as should_insert_space).
+        // Skip merge when the current word index is a split boundary.
         let mut merged: Vec<Word> = Vec::with_capacity(words.len());
-        for word in words {
-            if let Some(prev) = merged.last_mut() {
-                let gap = word.bbox.x - (prev.bbox.x + prev.bbox.width);
-                let y_diff = (word.bbox.y - prev.bbox.y).abs();
-                let line_h = prev.bbox.height.max(word.bbox.height);
-                let font_size = prev.avg_font_size.max(word.avg_font_size).max(1.0);
-                if y_diff <= line_h * 0.5 && gap <= font_size * 0.15 {
-                    let mut combined = prev.chars.clone();
-                    combined.extend(word.chars.into_iter());
-                    *prev = Word::from_chars(combined);
-                    continue;
+        for (idx, word) in words.into_iter().enumerate() {
+            if !split_boundary_word_indices.contains(&idx) {
+                if let Some(prev) = merged.last_mut() {
+                    let gap = word.bbox.x - (prev.bbox.x + prev.bbox.width);
+                    let y_diff = (word.bbox.y - prev.bbox.y).abs();
+                    let line_h = prev.bbox.height.max(word.bbox.height);
+                    let font_size = prev.avg_font_size.max(word.avg_font_size).max(1.0);
+                    if y_diff <= line_h * 0.5 && gap <= font_size * 0.15 {
+                        let mut combined = prev.chars.clone();
+                        combined.extend(word.chars.into_iter());
+                        *prev = Word::from_chars(combined);
+                        continue;
+                    }
                 }
             }
             merged.push(word);
@@ -9358,20 +9504,24 @@ impl PdfDocument {
     }
 
     /// Extract text from a specific rectangular region of a page (v0.3.14).
+    ///
+    /// Only spans whose bounding boxes match `region` under `mode` are kept;
+    /// the retained spans are assembled through the full text pipeline
+    /// (reading order, tables, line breaks) so the output matches the
+    /// quality of [`extract_text`]. Calling this with a region that covers
+    /// the whole page is equivalent to [`extract_text`].
     pub fn extract_text_in_rect(
         &self,
         page_index: usize,
         region: crate::geometry::Rect,
         mode: crate::layout::RectFilterMode,
     ) -> Result<String> {
-        use crate::layout::SpatialCollectionFiltering;
-        let words = self.extract_words(page_index)?;
-        let filtered = words.filter_by_rect(&region, mode);
-        Ok(filtered
-            .iter()
-            .map(|w| w.text.as_str())
-            .collect::<Vec<_>>()
-            .join(" "))
+        let options = crate::converters::ConversionOptions {
+            extract_tables: true,
+            include_region: Some((region, mode)),
+            ..Default::default()
+        };
+        self.extract_text_with_options(page_index, &options)
     }
 
     /// Extract words from a specific rectangular region of a page (v0.3.14).
@@ -9408,6 +9558,71 @@ impl PdfDocument {
         use crate::layout::SpatialCollectionFiltering;
         let spans = self.extract_spans(page_index)?;
         Ok(spans.filter_by_rect(&region, mode))
+    }
+
+    /// Extract text from a page excluding specific rectangular regions.
+    ///
+    /// The excluded spans are removed before the full text-assembly pipeline
+    /// runs, so the output has the same structure — line breaks, tables,
+    /// reading order — as [`extract_text`]. Calling this with an empty
+    /// `exclude` slice is equivalent to [`extract_text`].
+    ///
+    /// `mode` controls the overlap rule:
+    /// - [`RectFilterMode::Intersects`] (default): drop any span with *any* overlap
+    /// - [`RectFilterMode::FullyContained`]: drop only spans lying entirely inside
+    /// - [`RectFilterMode::MinOverlap(t)`]: drop spans where at least fraction `t`
+    ///   of the *span's* area overlaps an excluded region
+    ///
+    /// For Tagged PDFs the extractor already honours `/Artifact` marked-content
+    /// (PDF spec §14.8.2.2). This method provides the same capability for
+    /// untagged PDFs where spatial coordinates are the only available signal.
+    /// Exclusion is unconditional: spans inside a region are dropped regardless
+    /// of their structure-tree role.
+    pub fn extract_text_excluding_rects(
+        &self,
+        page_index: usize,
+        exclude: &[crate::geometry::Rect],
+        mode: crate::layout::RectFilterMode,
+    ) -> Result<String> {
+        let options = crate::converters::ConversionOptions {
+            extract_tables: true,
+            exclude_regions: exclude.to_vec(),
+            exclude_regions_mode: mode,
+            ..Default::default()
+        };
+        self.extract_text_with_options(page_index, &options)
+    }
+
+    /// Extract words from a page excluding specific rectangular regions.
+    ///
+    /// See [`extract_text_excluding_rects`] for a description of `exclude` and `mode`.
+    /// Returns the low-level [`Word`] stream; use [`extract_text_excluding_rects`]
+    /// for fully-assembled text with line breaks and tables.
+    pub fn extract_words_excluding_rects(
+        &self,
+        page_index: usize,
+        exclude: &[crate::geometry::Rect],
+        mode: crate::layout::RectFilterMode,
+    ) -> Result<Vec<crate::layout::Word>> {
+        use crate::layout::SpatialCollectionFiltering;
+        let words = self.extract_words(page_index)?;
+        Ok(words.exclude_rects(exclude, mode))
+    }
+
+    /// Extract text spans from a page excluding specific rectangular regions.
+    ///
+    /// See [`extract_text_excluding_rects`] for a description of `exclude` and `mode`.
+    /// Returns raw [`TextSpan`] objects with bounding boxes and font metadata;
+    /// use [`extract_text_excluding_rects`] for fully-assembled text output.
+    pub fn extract_spans_excluding_rects(
+        &self,
+        page_index: usize,
+        exclude: &[crate::geometry::Rect],
+        mode: crate::layout::RectFilterMode,
+    ) -> Result<Vec<crate::layout::TextSpan>> {
+        use crate::layout::SpatialCollectionFiltering;
+        let spans = self.extract_spans(page_index)?;
+        Ok(spans.exclude_rects(exclude, mode))
     }
 
     /// Extract rectangles from a specific rectangular region of a page (v0.3.14).
@@ -13112,10 +13327,11 @@ mod tests {
 
     #[test]
     fn test_cw_boundary_split_let_capital() {
-        // "LetC": 4 chars, 3 widths → split before 'C'
+        // "LetC": 4 chars, 3 widths. Lower→upper case splits removed;
+        // only letter→digit boundaries trigger a split.
         let span = make_decimal_span("LetC", vec![7.3, 5.2, 4.5], 26.7, 12.0);
         let result = PdfDocument::char_widths_boundary_split(&span);
-        assert_eq!(result, Some(3)); // byte 3 = 'C'
+        assert_eq!(result, None); // no split: 'C' is not a digit
     }
 
     #[test]
@@ -13143,10 +13359,11 @@ mod tests {
 
     #[test]
     fn test_push_span_text_splits_let_capital() {
+        // Lower→upper case splits are no longer performed.
         let span = make_decimal_span("LetC", vec![7.3, 5.2, 4.5], 26.7, 12.0);
         let mut out = String::new();
         PdfDocument::push_span_text(&mut out, &span);
-        assert_eq!(out, "Let C");
+        assert_eq!(out, "LetC"); // no split: boundary char 'C' is not a digit
     }
 
     #[test]
@@ -15279,12 +15496,14 @@ mod tests {
 
     #[test]
     fn test_annotation_highlight() {
+        // Highlight annotation /Contents is a user comment on the highlighted
+        // text — it is NOT page content and must NOT appear in extract_text output.
         let annot =
             b"4 0 obj\n<< /Type /Annot /Subtype /Highlight /Contents (Highlighted) >>\nendobj\n"
                 .to_vec();
         let pdf = build_pdf_with_annotations(vec![(4, annot)]);
         let doc = PdfDocument::from_bytes(pdf).unwrap();
-        assert!(doc.extract_text(0).unwrap().contains("Highlighted"));
+        assert!(!doc.extract_text(0).unwrap().contains("Highlighted"));
     }
 
     #[test]
