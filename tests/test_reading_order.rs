@@ -1,15 +1,12 @@
-//! Issue #211 regression suite: reading-order parity on three pdfplumber
-//! fixtures that drove the #457 rewire.
+//! Reading-order parity tests on external PDF fixtures.
 //!
-//! Every test in this file is a standing regression guard — the bugs they
-//! describe were fixed in 0.3.42. If one of them starts failing in the
-//! future, the canonical reading-order pipeline (struct tree on tagged
-//! PDFs, geometric fallback otherwise) has drifted again.
+//! Every test is a standing regression guard for the canonical
+//! reading-order pipeline (struct tree on tagged PDFs, geometric fallback
+//! otherwise). A failure means the pipeline has drifted.
 //!
 //! Fixtures live in the external pdf_oxide_tests corpus under
 //! `pdfs_issue_regression/`. Tests skip gracefully when the corpus is
-//! not present, matching the existing convention in
-//! `tests/test_multiline_obj_and_xref.rs`.
+//! not present.
 
 use pdf_oxide::document::PdfDocument;
 use std::path::PathBuf;

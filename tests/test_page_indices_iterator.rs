@@ -1,8 +1,8 @@
-//! Regression test for issue #447 — `PdfDocument::page_indices()`.
+//! Tests for `PdfDocument::page_indices()`.
 //!
-//! Provides idiomatic Rust iteration over page indices without callers
-//! having to write `for i in 0..doc.page_count()?`. Mirrors the
-//! existing C# `doc.Pages` / Go `doc.Pages()` surface.
+//! Verifies idiomatic Rust iteration over page indices — a convenience
+//! over `0..doc.page_count()?` that mirrors the C# `doc.Pages` /
+//! Go `doc.Pages()` surface.
 
 use pdf_oxide::document::PdfDocument;
 

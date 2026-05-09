@@ -1,21 +1,9 @@
-//! Regression test for issue #395 — `doc.RenderPage(0, 0)` from C# threw
-//! `SignatureException [8500]` on a real-world PDF. Reported by
-//! @gevorgter on 2026-04-21.
+//! Rendering a real-world external PDF fixture must complete without error.
 //!
-//! Two distinct bugs combined to produce that error:
-//!
-//! 1. The C# `ExceptionMapper` was off-by-one — FFI code 8 (Unsupported)
-//!    was labelled `SignatureException`. Fixed in commit 327251c
-//!    (shipped in v0.3.38). Tests for the mapping live at
-//!    `csharp/PdfOxide.Tests/ExceptionMapperTests.cs`.
-//!
-//! 2. The underlying render call on the user's PDF *also* needed to
-//!    succeed — no point fixing the error mapping if the render still
-//!    failed. This test pins that part: rendering the user's exact
-//!    fixture must complete without error.
-//!
-//! Fixture lives in the external `pdf_oxide_tests` corpus. Skip when
-//! not present, matching `tests/test_multiline_obj_and_xref.rs`.
+//! Guards the render pipeline against regressions on documents that
+//! exercise uncommon but valid PDF constructs. The fixture lives in the
+//! external `pdf_oxide_tests` corpus; the test skips gracefully when it
+//! is not present.
 
 #[cfg(feature = "rendering")]
 #[test]

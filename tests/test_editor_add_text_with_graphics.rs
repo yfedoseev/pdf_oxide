@@ -1,5 +1,8 @@
-//! End-to-end regression test for issue #483:
-//! `add_text` on existing PDF fails (blank page / select_pages ignores edits)
+//! `add_text` on an existing PDF must preserve existing graphics content.
+//!
+//! Verifies that editing a page with both text and graphics operators
+//! (filled rectangles, etc.) correctly survives a round-trip through the
+//! `DocumentEditor`, and that `select_pages` does not silently discard edits.
 
 use pdf_oxide::document::PdfDocument;
 use pdf_oxide::editor::DocumentEditor;

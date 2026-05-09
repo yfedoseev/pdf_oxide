@@ -1,13 +1,8 @@
-//! Regression test for issue #456 — `PdfDocument::open(path)` left
-//! `source_bytes` as an empty `Vec`, which broke any API that re-reads
-//! the bytes (most visibly `compliance::convert_to_pdf_a`, which built a
-//! `DocumentEditor` from `source_bytes` and got `"Invalid PDF header:
-//! File is empty (0 bytes read)"`).
+//! `PdfDocument::open(path)` must populate `source_bytes`.
 //!
-//! Reported by @potatochipcoconut on PR #445; tracked in #456.
-//!
-//! The fix routes `open(path)` through `from_bytes(fs::read(path)?)` so
-//! the in-memory copy is populated.
+//! Any API that re-reads the raw bytes (e.g. `compliance::convert_to_pdf_a`)
+//! depends on `source_bytes` being non-empty after `open(path)`.
+//! Guards against regressions where the in-memory copy was left empty.
 
 use pdf_oxide::document::PdfDocument;
 
