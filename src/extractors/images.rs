@@ -790,37 +790,17 @@ pub fn extract_image_from_xobject(
     let is_jpeg_only = has_dct && filter_names.len() == 1;
     let is_jpeg_chain = has_dct && filter_names.len() > 1;
 
-    let mut ccitt_params_override: Option<crate::decoders::CcittParams> = None;
-    if (filter_names.contains(&"JBIG2Decode".to_string())
-        || filter_names.contains(&"Jbig2Decode".to_string()))
-        && bits_per_component == 1
-    {
-        let mut ccitt_params =
-            crate::object::extract_ccitt_params_with_width(dict.get("DecodeParms"), Some(width));
+    let is_jbig2 = filter_names.iter().any(|n| n.eq_ignore_ascii_case("JBIG2Decode"));
 
-        if let Some(ref mut params) = ccitt_params {
-            if params.rows.is_none() {
-                params.rows = Some(height);
-            }
-            ccitt_params_override = ccitt_params;
-        }
-    }
-
-    let data = if is_jpeg_only || is_jpeg_chain {
+    let data = if is_jbig2 {
+        decode_jbig2_image(xobject, obj_ref, dict, doc, width, height)?
+    } else if is_jpeg_only || is_jpeg_chain {
         let decoded = if let (Some(d), Some(ref_id)) = (doc.as_ref(), obj_ref) {
             d.decode_stream_with_encryption(xobject, ref_id)?
         } else {
             xobject.decode_stream_data()?
         };
         ImageData::Jpeg(decoded)
-    } else if ccitt_params_override.is_some() {
-        match xobject {
-            Object::Stream { data, .. } => ImageData::Raw {
-                pixels: data.to_vec(),
-                format: PixelFormat::Grayscale,
-            },
-            _ => return Err(Error::Image("XObject is not a stream".to_string())),
-        }
     } else {
         let decoded_data = if let (Some(d), Some(ref_id)) = (doc.as_ref(), obj_ref) {
             d.decode_stream_with_encryption(xobject, ref_id)?
@@ -856,7 +836,11 @@ pub fn extract_image_from_xobject(
         }
     };
 
-    let mut image = PdfImage::new(width, height, color_space, bits_per_component, data);
+    // JBIG2 decode produces 8-bit-per-channel pixels regardless of the
+    // XObject's BitsPerComponent (which is 1).  Override to 8 so that
+    // to_dynamic_image() does not try to CCITT-decompress the output.
+    let effective_bpc = if is_jbig2 { 8 } else { bits_per_component };
+    let mut image = PdfImage::new(width, height, color_space, effective_bpc, data);
 
     // Attach the ICC profile if we found one — prefer the direct ICCBased
     // profile, then fall back to an Indexed base's profile so the CMM has
@@ -870,9 +854,7 @@ pub fn extract_image_from_xobject(
     }
     image.set_rendering_intent(rendering_intent);
 
-    if let Some(ccitt_params) = ccitt_params_override {
-        image.set_ccitt_params(ccitt_params);
-    } else if bits_per_component == 1 && image.color_space == ColorSpace::DeviceGray {
+    if bits_per_component == 1 && image.color_space == ColorSpace::DeviceGray {
         if let Some(mut ccitt_params) =
             crate::object::extract_ccitt_params_with_width(dict.get("DecodeParms"), Some(width))
         {
@@ -1690,6 +1672,87 @@ fn save_raw_as_jpeg(
                 .map_err(|e| Error::Image(format!("Failed to save JPEG: {}", e)))
         },
     }
+}
+
+/// Decode a JBIG2-compressed PDF image stream into raw grayscale pixels.
+#[cfg(feature = "rendering")]
+fn decode_jbig2_image(
+    xobject: &crate::object::Object,
+    obj_ref: Option<ObjectRef>,
+    dict: &std::collections::HashMap<String, crate::object::Object>,
+    doc: Option<&crate::document::PdfDocument>,
+    width: u32,
+    height: u32,
+) -> Result<ImageData> {
+    // The Jbig2Decoder in src/decoders/jbig2.rs is a pass-through: it returns
+    // the raw compressed bitstream unchanged, which is exactly what hayro-jbig2
+    // needs as input.
+    let jbig2_bytes: Vec<u8> = if let (Some(d), Some(ref_id)) = (doc.as_ref(), obj_ref) {
+        d.decode_stream_with_encryption(xobject, ref_id)?
+    } else {
+        xobject.decode_stream_data()?
+    };
+
+    // Load optional JBIG2Globals (shared symbol dictionaries referenced by multiple
+    // embedded JBIG2 streams in the same PDF).
+    let globals: Option<Vec<u8>> = (|| -> Option<Vec<u8>> {
+        let dp = dict.get("DecodeParms")?.as_dict()?;
+        let globals_ref = dp.get("JBIG2Globals")?.as_reference()?;
+        let d = doc.as_ref()?;
+        let globals_obj = d.load_object(globals_ref).ok()?;
+        d.decode_stream_with_encryption(&globals_obj, globals_ref).ok()
+    })();
+
+    let image = hayro_jbig2::Image::new_embedded(&jbig2_bytes, globals.as_deref())
+        .map_err(|e| Error::Image(format!("JBIG2 decode error: {e}")))?;
+
+    struct PixelCollector {
+        pixels: Vec<u8>,
+        row_buf: Vec<u8>,
+    }
+
+    impl hayro_jbig2::Decoder for PixelCollector {
+        fn push_pixel(&mut self, black: bool) {
+            self.row_buf.push(if black { 0 } else { 255 });
+        }
+
+        // chunk_count is the number of 8-pixel groups, not individual pixels.
+        fn push_pixel_chunk(&mut self, black: bool, chunk_count: u32) {
+            let v = if black { 0u8 } else { 255u8 };
+            let n = chunk_count as usize * 8;
+            self.row_buf.extend(std::iter::repeat_n(v, n));
+        }
+
+        fn next_line(&mut self) {
+            self.pixels.append(&mut self.row_buf);
+        }
+    }
+
+    let mut collector = PixelCollector {
+        pixels: Vec::with_capacity((width * height) as usize),
+        row_buf: Vec::with_capacity(width as usize),
+    };
+
+    image
+        .decode(&mut collector)
+        .map_err(|e| Error::Image(format!("JBIG2 pixel decode error: {e}")))?;
+
+    Ok(ImageData::Raw {
+        pixels: collector.pixels,
+        format: PixelFormat::Grayscale,
+    })
+}
+
+#[cfg(not(feature = "rendering"))]
+fn decode_jbig2_image(
+    _xobject: &crate::object::Object,
+    _obj_ref: Option<ObjectRef>,
+    _dict: &std::collections::HashMap<String, crate::object::Object>,
+    _doc: Option<&crate::document::PdfDocument>,
+    _width: u32,
+    _height: u32,
+) -> Result<ImageData> {
+    Err(Error::UnsupportedFilter("JBIG2Decode".to_string()))
 }
 
 /// Expand abbreviated inline image dictionary keys to full names.

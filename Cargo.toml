@@ -264,6 +264,7 @@ pdfium-render = { version = "0.9", optional = true }
 # Rendering (optional - for page to image conversion)
 tiny-skia = { version = "0.12", optional = true }
 fast_image_resize = { version = "6", optional = true }          # SIMD-accelerated image downscaling
+hayro-jbig2 = { version = "0.3", optional = true, default-features = false }  # Pure-Rust JBIG2 decoder (Apache-2.0 OR MIT)
 fontdb = { version = "0.23", optional = true }
 rustybuzz = { version = "0.20", optional = true }
 
@@ -362,7 +363,7 @@ wasm-ml = ["wasm", "ml"]
 debug-span-merging = []
 
 # Page rendering to images (pure Rust via tiny-skia)
-rendering = ["dep:tiny-skia", "dep:fast_image_resize", "system-fonts"]
+rendering = ["dep:tiny-skia", "dep:fast_image_resize", "system-fonts", "dep:hayro-jbig2"]
 
 # System font discovery (fontdb) + shaping (rustybuzz). v0.3.35 splits
 # this out of `rendering` so HTML+CSS→PDF can pick it up without pulling
