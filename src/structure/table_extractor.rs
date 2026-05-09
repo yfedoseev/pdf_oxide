@@ -106,6 +106,26 @@ impl Table {
             .filter(|r| r.cells.iter().filter(|c| !c.text.trim().is_empty()).count() >= 2)
             .count();
         let ratio = rows_with_two_or_more_filled_cells as f32 / self.rows.len() as f32;
+
+        // Wide tables (≥ 8 columns) are high-risk false positives: prose sentences
+        // can be split into many single-phrase cells by decorative rule lines.
+        // Real wide data tables have most rows densely filled (≥ 60% of columns);
+        // prose-split false tables have highly variable row fill counts (some rows
+        // have 1-2 filled cells, others have 10+), so the fraction of "dense" rows
+        // is well below 70%.
+        if self.col_count >= 8 {
+            let min_dense = ((self.col_count as f32 * 0.6) as usize).max(2);
+            let dense_rows = self
+                .rows
+                .iter()
+                .filter(|r| {
+                    r.cells.iter().filter(|c| !c.text.trim().is_empty()).count() >= min_dense
+                })
+                .count();
+            let dense_row_ratio = dense_rows as f32 / self.rows.len() as f32;
+            return self.rows.len() >= 3 && ratio >= 0.7 && dense_row_ratio >= 0.70;
+        }
+
         ratio >= 0.5
     }
 
