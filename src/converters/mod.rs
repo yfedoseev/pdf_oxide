@@ -279,6 +279,57 @@ pub struct ConversionOptions {
     /// Set to `u64::MAX` to disable the limit entirely.
     /// Set to `0` to skip all images.
     pub max_image_pixels: Option<u64>,
+
+    /// Rectangular regions to exclude from text extraction.
+    ///
+    /// Spans whose bounding boxes match any region under `exclude_regions_mode`
+    /// are dropped before the text-assembly pipeline runs. Use this to strip
+    /// figure captions, sidebars, or any other spatially-identified region from
+    /// the extracted text stream.
+    ///
+    /// For Tagged PDFs the extractor already honours `/Artifact` marked-content
+    /// sequences (PDF spec ISO 32000-1 §14.8.2.2). This field provides the same
+    /// capability for untagged PDFs where spatial coordinates are the only way
+    /// to identify non-body regions.
+    ///
+    /// Note: exclusion is unconditional — a span inside a region is dropped
+    /// regardless of its structure-tree role. For `MinOverlap(t)`, `t` is the
+    /// fraction of the *span's* area that must overlap the excluded region.
+    ///
+    /// Default: empty (no regions excluded).
+    pub exclude_regions: Vec<crate::geometry::Rect>,
+
+    /// Overlap rule used when matching spans against `exclude_regions`.
+    ///
+    /// Default: [`RectFilterMode::Intersects`] — drops any span with any overlap.
+    pub exclude_regions_mode: crate::layout::RectFilterMode,
+
+    /// Restrict text extraction to a single rectangular region.
+    ///
+    /// When `Some((rect, mode))`, only spans that match `rect` under `mode`
+    /// are kept before the text-assembly pipeline runs. This powers
+    /// [`PdfDocument::extract_text_in_rect`] so it produces fully-assembled
+    /// output (line breaks, tables, reading order) rather than a flat word
+    /// stream.
+    ///
+    /// Applied after `exclude_regions` so exclusions take precedence.
+    ///
+    /// Default: `None` (all spans kept).
+    pub include_region:
+        Option<(crate::geometry::Rect, crate::layout::RectFilterMode)>,
+
+    /// Expand Unicode ligature characters to their component letters.
+    ///
+    /// When `true`, ligature characters from the Latin Alphabetic Presentation
+    /// Forms block (U+FB00–U+FB06) are expanded to their ASCII equivalents:
+    /// `ﬁ`→`fi`, `ﬂ`→`fl`, `ﬀ`→`ff`, `ﬃ`→`ffi`, `ﬄ`→`ffl`, `ﬅ`→`st`, `ﬆ`→`st`.
+    ///
+    /// When `false` (default), these characters are preserved exactly as the
+    /// font's ToUnicode map produced them. Ground-truth corpora for PDF quality
+    /// testing usually preserve ligatures, so the default avoids Jaccard penalty.
+    ///
+    /// Default: `false`.
+    pub expand_ligatures: bool,
 }
 
 impl Default for ConversionOptions {
@@ -315,6 +366,10 @@ impl Default for ConversionOptions {
             page_dimensions: None,
             include_form_fields: true,
             max_image_pixels: None,
+            exclude_regions: Vec::new(),
+            exclude_regions_mode: crate::layout::RectFilterMode::Intersects,
+            include_region: None,
+            expand_ligatures: false,
         }
     }
 }

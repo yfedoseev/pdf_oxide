@@ -43,7 +43,10 @@ pub trait LayoutObjectSpatial {
 
     /// Calculate the overlap fraction (0.0-1.0) with the given rectangle.
     ///
-    /// Returns the ratio of the intersection area to this object's area.
+    /// Returns the ratio of the intersection area to **this object's** area —
+    /// i.e. "what fraction of me lies inside the rect?". This is asymmetric:
+    /// a small element mostly inside a large rect scores high; a large element
+    /// with only a corner inside scores low. Used by `MinOverlap(t)` filtering.
     fn overlap_with_rect(&self, rect: &Rect) -> f32 {
         let bbox = self.bbox();
         let intersection = bbox.intersection(rect);
@@ -106,6 +109,13 @@ impl LayoutObjectSpatial for PathContent {
 pub trait SpatialCollectionFiltering<T: LayoutObjectSpatial> {
     /// Filter objects by their spatial relationship with a rectangle.
     fn filter_by_rect(&self, rect: &Rect, mode: RectFilterMode) -> Vec<T>;
+
+    /// Exclude objects that match any of the given rectangles under `mode`.
+    ///
+    /// The inverse of [`filter_by_rect`]: keeps every element that does NOT
+    /// match ANY of the excluded regions. Useful for stripping figure-internal
+    /// or header/footer text from a page extraction result.
+    fn exclude_rects(&self, rects: &[Rect], mode: RectFilterMode) -> Vec<T>;
 }
 
 impl<T: LayoutObjectSpatial + Clone> SpatialCollectionFiltering<T> for [T] {
@@ -115,10 +125,21 @@ impl<T: LayoutObjectSpatial + Clone> SpatialCollectionFiltering<T> for [T] {
             .cloned()
             .collect()
     }
+
+    fn exclude_rects(&self, rects: &[Rect], mode: RectFilterMode) -> Vec<T> {
+        self.iter()
+            .filter(|obj| !rects.iter().any(|r| obj.matches_filter(r, mode)))
+            .cloned()
+            .collect()
+    }
 }
 
 impl<T: LayoutObjectSpatial + Clone> SpatialCollectionFiltering<T> for Vec<T> {
     fn filter_by_rect(&self, rect: &Rect, mode: RectFilterMode) -> Vec<T> {
         self.as_slice().filter_by_rect(rect, mode)
+    }
+
+    fn exclude_rects(&self, rects: &[Rect], mode: RectFilterMode) -> Vec<T> {
+        self.as_slice().exclude_rects(rects, mode)
     }
 }
