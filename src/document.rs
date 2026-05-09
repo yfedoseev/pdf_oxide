@@ -8443,9 +8443,25 @@ impl PdfDocument {
                     let line_h = prev.bbox.height.max(word.bbox.height);
                     let font_size = prev.avg_font_size.max(word.avg_font_size).max(1.0);
                     if y_diff <= line_h * 0.5 && gap <= font_size * 0.15 {
-                        let mut combined = prev.chars.clone();
-                        combined.extend(word.chars.into_iter());
-                        *prev = Word::from_chars(combined);
+                        // Incremental merge — O(k) per merge, O(total_chars) overall.
+                        // Avoids the O(n²) clone+from_chars pattern that caused
+                        // catastrophic slowdown on TOC dot-leader pages.
+                        let prev_n = prev.chars.len() as f32;
+                        let word_n = word.chars.len() as f32;
+                        prev.bbox = prev.bbox.union(&word.bbox);
+                        prev.avg_font_size = (prev.avg_font_size * prev_n
+                            + word.avg_font_size * word_n)
+                            / (prev_n + word_n);
+                        if word_n > prev_n {
+                            prev.dominant_font = word.dominant_font;
+                        }
+                        prev.is_bold |= word.is_bold;
+                        prev.is_italic |= word.is_italic;
+                        if prev.mcid != word.mcid {
+                            prev.mcid = None;
+                        }
+                        prev.text.push_str(&word.text);
+                        prev.chars.extend(word.chars);
                         continue;
                     }
                 }
@@ -17068,7 +17084,6 @@ mod tests {
         assert!(PdfDocument::contains_rect_with_tolerance(&table, &inside, 0.1));
     }
 
-<<<<<<< HEAD
     /// Regression test for #484 (pdfa_036): span filtering must use per-cell
     /// bboxes, not the coarser outer table bbox.
     ///
@@ -17151,8 +17166,8 @@ mod tests {
             !in_any_cell_gap,
             "gap span must NOT be inside any cell bbox — cell-bbox filter must preserve it"
         );
-||||||| parent of ae3d25f (fix(layout): guard same-line reorder with x-gap validation)
-=======
+    }
+
     #[test]
     fn reorder_same_line_runs_preserves_disjoint_x_rows() {
         use crate::geometry::Rect;
@@ -17225,6 +17240,5 @@ mod tests {
 
         let texts: Vec<&str> = spans.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(texts, vec!["September", "11", "th"]);
->>>>>>> ae3d25f (fix(layout): guard same-line reorder with x-gap validation)
     }
 }
