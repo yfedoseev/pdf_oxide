@@ -2,6 +2,94 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.46] - 2026-05-08
+
+### Fixed
+
+- **Text extraction corpus quality improvements across 166 PDFs
+  ([#484](https://github.com/yfedoseev/pdf_oxide/issues/484))** —
+  Systematic audit of a 166-document corpus identified and fixed
+  multiple extraction failures:
+
+  - **Newline/CR-only spans treated as line breaks** — Spans whose
+    text consists entirely of `\n` or `\r` bytes are now emitted as a
+    single newline rather than verbatim byte sequences, eliminating
+    spurious blank lines injected by some PDF generators.
+  - **Annotation text double-emitted** — `append_non_widget_annotation_text`
+    was called after the main span assembly pass even though
+    `annotation_content_spans()` already inlined annotation /Contents
+    into the span list. The redundant call is removed; each annotation's
+    text is now emitted exactly once.
+  - **Markup annotation /Contents correctly filtered** — Per ISO
+    32000-1 §12.5.6.2, /Contents on Highlight, Underline, StrikeOut,
+    Squiggly, Caret, Ink, FileAttachment, and Redact annotations is
+    popup/tooltip text, not page content. These subtypes are now
+    excluded from `annotation_content_spans` and
+    `append_non_widget_annotation_text`.
+  - **No space inserted between adjacent CJK characters** —
+    `should_insert_space` now returns `false` when both the trailing
+    character of the previous span and the leading character of the
+    current span are CJK (Hiragana, Katakana, CJK Unified Ideographs,
+    Hangul, CJK Extension B).
+  - **Boundary split on letter→digit only** — `char_widths_boundary_split`
+    now only splits at a letter-to-digit transition (e.g. "Theorem1"),
+    removing false splits on case changes (UpperCamelCase terms) that
+    previously broke word-shape heuristics.
+  - **Em-relative x_dist thresholds for sub/superscript merging** —
+    `merge_sub_superscript_spans` now uses font-size-relative
+    thresholds `[-0.1×em, +0.25×em]` instead of hardcoded absolute
+    values, so sub/superscript detection scales correctly with the
+    body font size.
+  - **Same-line threshold formula fixed** — The
+    `same_line_threshold` now uses `(min_fs × 1.2).max(max_fs × 0.3)`,
+    giving a continuous threshold that handles mixed-size lines
+    (heading + caption) without abrupt cliff effects.
+  - **Standard-14 font matching strips SUBSET+ prefix; accepts
+    canonical PostScript aliases** — Per ISO 32000-1 §9.6.2.2 Annex D,
+    the exact 14 standard font names are matched after stripping any
+    `SUBSET+` prefix, preventing `ABCDEF+Helvetica` from falling through
+    to a missing-glyph-width path. The canonical PostScript name
+    `HelveticaOblique` (no hyphen) is now accepted alongside the
+    widely-used alias `Helvetica-Oblique`.
+  - **Explicit /DW tracked in FontInfo** — Added
+    `has_explicit_dw: bool` to `FontInfo`. `has_explicit_widths()` now
+    returns `true` when /DW is explicitly present in the PDF dictionary,
+    enabling correct glyph-width lookup for CIDFonts that declare only
+    /DW (no /W array).
+  - **CIDFont fallback uses default_width when /DW absent** —
+    When `has_explicit_dw` is false and a CID is not found in the /W
+    array, `get_glyph_width` falls through to `default_width` (the
+    per-font default set from the Widths array) rather than
+    `cid_default_width`. This deviates from ISO 32000-1 §9.7.4 Table
+    117 by design: it produces better results on real-world PDFs that
+    omit /DW.
+  - **Word extractor respects split_boundary_before** —
+    `extract_words_inner` now honours the `split_boundary_before` flag
+    on spans (set by table-cell and column-boundary detection), ensuring
+    words that straddle a cell boundary are not merged.
+  - **Ligature expansion option** — `ConversionOptions` gains
+    `expand_ligatures: bool` (default `false`). When enabled, Unicode
+    Latin ligatures (U+FB00–U+FB06: ff, fi, fl, ffi, ffl, ſt, st) are
+    expanded to their component letters in the output.
+  - **Extraction warnings API** — `PdfDocument` now accumulates
+    non-fatal extraction warnings (missing MCIDs, encrypted-PDF
+    fallback) in an internal `Mutex<Vec<String>>`. Callers can retrieve
+    them via `warnings()` (clones) or `take_warnings()` (drains).
+
+### Added
+
+- **`ConversionOptions::exclude_regions` / `include_region`** — New
+  spatial filtering fields on `ConversionOptions` allow callers to
+  exclude rectangular regions from extraction output or restrict
+  extraction to a single region. Backed by `SpatialCollectionFiltering`
+  trait methods `filter_by_rect` / `exclude_rects`.
+- **`PageFontStats`** — New `layout::PageFontStats` struct computed in
+  O(n) over spans; exposes `dominant_em`, `dominant_line_height`,
+  `dominant_char_width`, and `body_font_name`. Layout heuristics now
+  derive all absolute thresholds from these measurements rather than
+  hardcoded constants, improving correctness across a wider range of
+  font sizes.
+
 ## [0.3.45] - 2026-05-07
 
 ### Fixed
