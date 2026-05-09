@@ -5682,11 +5682,14 @@ impl PdfDocument {
         if !boundary_char.is_ascii() {
             return None;
         }
-        // Only split at letter→digit boundary (e.g. "Theorem1.7").
-        // The letter-case boundary split (lower→upper "LetC", upper→lower "Dbe")
-        // caused false splits on brand names and proper nouns. Letter→digit is the
-        // only reliable signal that two distinct text runs were concatenated.
+        // Split at letter→digit boundary (e.g. "Theorem1.7") or lower→upper ASCII
+        // case boundary (e.g. "BigText" from concatenated CID runs "Big"+"Text").
+        // Upper→lower transitions are excluded: a ligature spanning an upper→lower
+        // boundary within a compound word (e.g. "officeMax" with "fl" ligature)
+        // would otherwise produce a false split.
         if prev_char.is_alphabetic() && boundary_char.is_ascii_digit() {
+            Some(boundary_byte)
+        } else if prev_char.is_ascii_lowercase() && boundary_char.is_ascii_uppercase() {
             Some(boundary_byte)
         } else {
             None
@@ -7432,6 +7435,21 @@ impl PdfDocument {
                 span.text = crate::converters::text_post_processor::TextPostProcessor
                     ::normalize_unicode_spaces(&span.text)
                     .into_owned();
+            }
+        }
+
+        // Apply char_widths boundary splits directly to span.text so that every
+        // downstream consumer (to_markdown, to_html, extract_text) sees the same
+        // word boundaries.  extract_text applies the same logic through push_span_text;
+        // after this normalization push_span_text sees a space at the boundary and
+        // becomes a no-op, so there is no double-application risk.
+        for span in &mut spans {
+            if let Some(split) = Self::char_widths_boundary_split(span) {
+                let mut t = String::with_capacity(span.text.len() + 1);
+                t.push_str(&span.text[..split]);
+                t.push(' ');
+                t.push_str(&span.text[split..]);
+                span.text = t;
             }
         }
 
@@ -13452,11 +13470,11 @@ mod tests {
 
     #[test]
     fn test_cw_boundary_split_let_capital() {
-        // "LetC": 4 chars, 3 widths. Lower→upper case splits removed;
-        // only letter→digit boundaries trigger a split.
+        // "LetC": 4 chars, 3 widths — lower→upper boundary → split at 'C'
+        // (represents two CID text runs "Let" + "C" concatenated)
         let span = make_decimal_span("LetC", vec![7.3, 5.2, 4.5], 26.7, 12.0);
         let result = PdfDocument::char_widths_boundary_split(&span);
-        assert_eq!(result, None); // no split: 'C' is not a digit
+        assert_eq!(result, Some(3)); // byte 3 = 'C'
     }
 
     #[test]
@@ -13484,11 +13502,11 @@ mod tests {
 
     #[test]
     fn test_push_span_text_splits_let_capital() {
-        // Lower→upper case splits are no longer performed.
+        // Lower→upper boundary: "LetC" splits to "Let C" (space inserted at 'C')
         let span = make_decimal_span("LetC", vec![7.3, 5.2, 4.5], 26.7, 12.0);
         let mut out = String::new();
         PdfDocument::push_span_text(&mut out, &span);
-        assert_eq!(out, "LetC"); // no split: boundary char 'C' is not a digit
+        assert_eq!(out, "Let C");
     }
 
     #[test]
