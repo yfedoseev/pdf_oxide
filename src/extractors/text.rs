@@ -6750,6 +6750,7 @@ mod tests {
             cid_font_type: None,
             cid_widths: None,
             cid_default_width: 1000.0,
+            has_explicit_dw: false,
             cff_gid_map: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
