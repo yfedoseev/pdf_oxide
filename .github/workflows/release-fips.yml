@@ -2,9 +2,14 @@ name: Release (FIPS variant)
 
 # FIPS-validated build & publish path (issue #236).
 #
-# Manually triggered. Builds `pdf_oxide` with --features fips
-# (AWS-LC FIPS 140-3 module) and publishes the resulting artifacts as
-# parallel `_fips` distributions on every ecosystem's package index:
+# Triggers:
+#   pull_request → main  : full build across all platforms and bindings,
+#                          no publish. Validates everything before a tag.
+#   push tag v*.*.*      : full build + publish to all package indexes.
+#   workflow_dispatch    : manual dry-run (publish=false) or forced publish.
+#
+# Builds `pdf_oxide` with --features fips (AWS-LC FIPS 140-3 module) and
+# publishes the resulting artifacts as parallel `_fips` distributions:
 #
 #   PyPI:  pdf_oxide_fips
 #   npm:   pdf-oxide-fips
@@ -31,6 +36,17 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'pyproject.toml'
+      - 'js/**'
+      - 'csharp/**'
+      - 'go/**'
+      - '.github/workflows/release-fips.yml'
   workflow_dispatch:
     inputs:
       version:
@@ -60,6 +76,7 @@ jobs:
           ref: ${{ inputs.version || github.ref_name }}
 
       - name: Validate tag format
+        if: github.event_name != 'pull_request'
         run: |
           TAG="${{ inputs.version || github.ref_name }}"
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -68,6 +85,7 @@ jobs:
           fi
 
       - name: Validate tag matches Cargo.toml version
+        if: github.event_name != 'pull_request'
         run: |
           TAG="${{ inputs.version || github.ref_name }}"
           CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
@@ -125,7 +143,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             artifact: pdf_oxide_fips-python-linux-aarch64
           - label: macOS x86_64
-            runs-on: macos-13-xlarge
+            runs-on: macos-latest
             target: x86_64-apple-darwin
             artifact: pdf_oxide_fips-python-macos-x86_64
           - label: macOS arm64
@@ -167,6 +185,16 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-
 
       - name: Patch package name to pdf_oxide_fips (Linux/macOS)
         if: runner.os != 'Windows'
@@ -310,7 +338,7 @@ jobs:
             prebuild_dir: linux-arm64
             lib_name: libpdf_oxide.so
           - label: macOS x64
-            runs-on: macos-13-xlarge
+            runs-on: macos-latest
             target: x86_64-apple-darwin
             prebuild_dir: darwin-x64
             lib_name: libpdf_oxide.dylib
@@ -345,6 +373,16 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-
 
       - name: Build cdylib with FIPS feature
         run: cargo build --release --target ${{ matrix.target }} --features fips
@@ -486,7 +524,7 @@ jobs:
             rid: linux-arm64
             lib_name: libpdf_oxide.so
           - label: osx-x64
-            runs-on: macos-13-xlarge
+            runs-on: macos-latest
             target: x86_64-apple-darwin
             rid: osx-x64
             lib_name: libpdf_oxide.dylib
@@ -521,6 +559,16 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-
 
       - name: Build cdylib with FIPS feature
         run: cargo build --release --target ${{ matrix.target }} --features fips
@@ -640,7 +688,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             go_dir: linux_arm64
           - label: darwin amd64
-            runs-on: macos-13-xlarge
+            runs-on: macos-latest
             target: x86_64-apple-darwin
             go_dir: darwin_amd64
           - label: darwin arm64
@@ -672,6 +720,16 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-
 
       - name: Build static lib with FIPS feature
         run: cargo build --release --target ${{ matrix.target }} --features fips
