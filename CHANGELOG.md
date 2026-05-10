@@ -2,93 +2,235 @@
 
 All notable changes to PDFOxide are documented here.
 
-## [0.3.46] - 2026-05-08
-
-### Fixed
-
-- **Text extraction corpus quality improvements across 166 PDFs
-  ([#484](https://github.com/yfedoseev/pdf_oxide/issues/484))** —
-  Systematic audit of a 166-document corpus identified and fixed
-  multiple extraction failures:
-
-  - **Newline/CR-only spans treated as line breaks** — Spans whose
-    text consists entirely of `\n` or `\r` bytes are now emitted as a
-    single newline rather than verbatim byte sequences, eliminating
-    spurious blank lines injected by some PDF generators.
-  - **Annotation text double-emitted** — `append_non_widget_annotation_text`
-    was called after the main span assembly pass even though
-    `annotation_content_spans()` already inlined annotation /Contents
-    into the span list. The redundant call is removed; each annotation's
-    text is now emitted exactly once.
-  - **Markup annotation /Contents correctly filtered** — Per ISO
-    32000-1 §12.5.6.2, /Contents on Highlight, Underline, StrikeOut,
-    Squiggly, Caret, Ink, FileAttachment, and Redact annotations is
-    popup/tooltip text, not page content. These subtypes are now
-    excluded from `annotation_content_spans` and
-    `append_non_widget_annotation_text`.
-  - **No space inserted between adjacent CJK characters** —
-    `should_insert_space` now returns `false` when both the trailing
-    character of the previous span and the leading character of the
-    current span are CJK (Hiragana, Katakana, CJK Unified Ideographs,
-    Hangul, CJK Extension B).
-  - **Boundary split on letter→digit only** — `char_widths_boundary_split`
-    now only splits at a letter-to-digit transition (e.g. "Theorem1"),
-    removing false splits on case changes (UpperCamelCase terms) that
-    previously broke word-shape heuristics.
-  - **Em-relative x_dist thresholds for sub/superscript merging** —
-    `merge_sub_superscript_spans` now uses font-size-relative
-    thresholds `[-0.1×em, +0.25×em]` instead of hardcoded absolute
-    values, so sub/superscript detection scales correctly with the
-    body font size.
-  - **Same-line threshold formula fixed** — The
-    `same_line_threshold` now uses `(min_fs × 1.2).max(max_fs × 0.3)`,
-    giving a continuous threshold that handles mixed-size lines
-    (heading + caption) without abrupt cliff effects.
-  - **Standard-14 font matching strips SUBSET+ prefix; accepts
-    canonical PostScript aliases** — Per ISO 32000-1 §9.6.2.2 Annex D,
-    the exact 14 standard font names are matched after stripping any
-    `SUBSET+` prefix, preventing `ABCDEF+Helvetica` from falling through
-    to a missing-glyph-width path. The canonical PostScript name
-    `HelveticaOblique` (no hyphen) is now accepted alongside the
-    widely-used alias `Helvetica-Oblique`.
-  - **Explicit /DW tracked in FontInfo** — Added
-    `has_explicit_dw: bool` to `FontInfo`. `has_explicit_widths()` now
-    returns `true` when /DW is explicitly present in the PDF dictionary,
-    enabling correct glyph-width lookup for CIDFonts that declare only
-    /DW (no /W array).
-  - **CIDFont fallback uses default_width when /DW absent** —
-    When `has_explicit_dw` is false and a CID is not found in the /W
-    array, `get_glyph_width` falls through to `default_width` (the
-    per-font default set from the Widths array) rather than
-    `cid_default_width`. This deviates from ISO 32000-1 §9.7.4 Table
-    117 by design: it produces better results on real-world PDFs that
-    omit /DW.
-  - **Word extractor respects split_boundary_before** —
-    `extract_words_inner` now honours the `split_boundary_before` flag
-    on spans (set by table-cell and column-boundary detection), ensuring
-    words that straddle a cell boundary are not merged.
-  - **Ligature expansion option** — `ConversionOptions` gains
-    `expand_ligatures: bool` (default `false`). When enabled, Unicode
-    Latin ligatures (U+FB00–U+FB06: ff, fi, fl, ffi, ffl, ſt, st) are
-    expanded to their component letters in the output.
-  - **Extraction warnings API** — `PdfDocument` now accumulates
-    non-fatal extraction warnings (missing MCIDs, encrypted-PDF
-    fallback) in an internal `Mutex<Vec<String>>`. Callers can retrieve
-    them via `warnings()` (clones) or `take_warnings()` (drains).
+## [0.3.46] - 2026-05-10
 
 ### Added
 
-- **`ConversionOptions::exclude_regions` / `include_region`** — New
-  spatial filtering fields on `ConversionOptions` allow callers to
-  exclude rectangular regions from extraction output or restrict
-  extraction to a single region. Backed by `SpatialCollectionFiltering`
-  trait methods `filter_by_rect` / `exclude_rects`.
-- **`PageFontStats`** — New `layout::PageFontStats` struct computed in
-  O(n) over spans; exposes `dominant_em`, `dominant_line_height`,
-  `dominant_char_width`, and `body_font_name`. Layout heuristics now
-  derive all absolute thresholds from these measurements rather than
-  hardcoded constants, improving correctness across a wider range of
-  font sizes.
+- **Raw RGBA pixel buffer, SIMD downscaling, and thread-safe rendering
+  ([#446](https://github.com/yfedoseev/pdf_oxide/issues/446),
+  [#481](https://github.com/yfedoseev/pdf_oxide/issues/481))** —
+  `page.render_pixmap()` (Python), `renderToPixmap()` (Node.js / Go),
+  and `Page.RenderToRgba()` (C#) expose the premultiplied RGBA8888
+  buffer directly from `tiny_skia::Pixmap::data()`, eliminating the
+  encode→decode roundtrip for callers that need raw pixels (PIL,
+  sharp, `System.Drawing.Bitmap`, `image.RGBA`). A `premultiplied`
+  flag (default `true`) opts into `pixmap.take_demultiplied()` for
+  straight-alpha output. Downscaling is now SIMD-accelerated via
+  `fast_image_resize` (ARM NEON, x86 AVX2), replacing the previous
+  bilinear path. Concurrent `render_*` calls on the same
+  `PdfDocument` are serialised through a per-document `Mutex`,
+  satisfying the exclusive-ownership contract in `src/ffi.rs` and
+  preventing data races in multi-threaded C# and JavaScript hosts.
+  Requested by @mara004 and @potatochipcoconut.
+
+- **`ConversionOptions::exclude_regions` / `include_region`
+  ([#484](https://github.com/yfedoseev/pdf_oxide/issues/484))** — New
+  spatial filtering fields allow callers to exclude rectangular regions
+  from extraction output or restrict extraction to a single bounding
+  rectangle. Backed by `SpatialCollectionFiltering` trait methods
+  `filter_by_rect` / `exclude_rects`.
+
+- **`PageFontStats`
+  ([#484](https://github.com/yfedoseev/pdf_oxide/issues/484))** — New
+  `layout::PageFontStats` struct computed in O(n) over spans; exposes
+  `dominant_em`, `dominant_line_height`, `dominant_char_width`, and
+  `body_font_name`. All layout heuristics now derive absolute thresholds
+  from these measurements instead of hardcoded constants, improving
+  correctness across a wider range of font sizes.
+
+### Fixed
+
+- **JBIG2-compressed scanner PDFs render as blank pages
+  ([#332](https://github.com/yfedoseev/pdf_oxide/issues/332))** —
+  The pass-through `Jbig2Decoder` returned compressed bytes unchanged,
+  causing a dimension mismatch and a silent image drop. Integrates
+  `hayro-jbig2` v0.3 (pure-Rust, Apache-2.0 OR MIT); embedded JBIG2
+  bitstreams are decoded via `hayro_jbig2::Image::new_embedded`, with
+  JBIG2Globals loaded from `/DecodeParms` when present.
+  `BitsPerComponent` is overridden to 8 post-decode so
+  `to_dynamic_image()` does not attempt CCITT bilevel decompression of
+  already-decoded pixels. Reported by @frederikhors, who also confirmed
+  the original vertical-flip / glyph-substitution symptom is resolved
+  in v0.3.45.
+
+- **`add_text` on existing PDF produces blank or discarded content
+  ([#483](https://github.com/yfedoseev/pdf_oxide/issues/483))** —
+  `DocumentEditor::add_text` on a page of an existing PDF either blanked
+  the page or (when combined with `select_pages`) silently returned the
+  unmodified original. Root causes: the storage-side page-index mapping
+  after `select_pages` was off by one, and `add_text` failed to preserve
+  the existing content stream when writing the new text layer. Both are
+  fixed; an end-to-end regression suite is added. Reported by
+  @stephenjudkins.
+
+- **Text extraction corpus quality improvements across 166 PDFs
+  ([#484](https://github.com/yfedoseev/pdf_oxide/issues/484))** —
+  Systematic audit driven by @Goldziher's calibrated 166-document corpus
+  (the [kreuzberg](https://github.com/kreuzberg-dev/kreuzberg) test suite),
+  which provides per-document ground-truth `.txt` files and a word-F1
+  harness. Multiple extraction failures identified and fixed:
+
+  - **Newline/CR-only spans treated as line breaks** — Spans consisting
+    entirely of `\n` or `\r` bytes are now emitted as a single newline
+    rather than verbatim byte sequences, eliminating spurious blank lines
+    from some PDF generators.
+  - **Annotation text double-emitted** — `append_non_widget_annotation_text`
+    was called after the main span assembly pass even though
+    `annotation_content_spans()` already inlined annotation `/Contents`
+    into the span list. The redundant call is removed.
+  - **Markup annotation `/Contents` correctly filtered** — Per ISO
+    32000-1 §12.5.6.2, `/Contents` on Highlight, Underline, StrikeOut,
+    Squiggly, Caret, Ink, FileAttachment, and Redact annotations is
+    popup/tooltip text, not page content. These subtypes are now excluded
+    from `annotation_content_spans` and `append_non_widget_annotation_text`.
+  - **No space inserted between adjacent CJK characters** —
+    `should_insert_space` now returns `false` when both the trailing and
+    leading characters are CJK (Hiragana, Katakana, CJK Unified
+    Ideographs, Hangul, CJK Extension B).
+  - **Unicode ligatures preserved; adjacent CJK spans merged** — Latin
+    ligatures (U+FB00–U+FB06) are now preserved in the span stream
+    rather than dropped. Adjacent CJK spans from the same run are merged
+    into a single span, eliminating inter-character noise.
+  - **Lower→upper CID range boundary split restored** — The CID range
+    boundary split now consistently applies the lower→upper ordering
+    correction that was accidentally dropped; the fix propagates to
+    Markdown and HTML output paths.
+  - **Non-adjacent subscript/superscript spans merged** —
+    `merge_sub_superscript_spans` handles spans separated by intervening
+    content, using em-relative thresholds `[-0.1×em, +0.25×em]` instead
+    of hardcoded absolute values so detection scales with body font size.
+  - **Column-spanning decimals split at table cell boundaries** —
+    Decimal numbers that span two adjacent table cells are split at the
+    cell boundary rather than merged into a single token.
+  - **Position-aware space insertion between adjacent MCID spans** —
+    Spaces between MCID-tagged spans are inserted based on actual
+    rendered x-positions rather than always or never.
+  - **Boundary split on letter→digit transition only** —
+    `char_widths_boundary_split` now splits only at a letter-to-digit
+    boundary (e.g. `Theorem1`), removing false splits on UpperCamelCase
+    terms that previously broke word-shape heuristics.
+  - **Same-line threshold formula fixed** — `same_line_threshold` now
+    uses `(min_fs × 1.2).max(max_fs × 0.3)`, handling mixed-size lines
+    (heading + caption on the same line) without cliff effects.
+  - **Bare-word identifiers and corrupt `StructTreeRoot` handled** —
+    Parser now tolerates bare-word tokens as dictionary values; a
+    corrupt or absent `StructTreeRoot` no longer aborts extraction.
+  - **Standard-14 font matching strips `SUBSET+` prefix; accepts
+    canonical PostScript aliases** — Per ISO 32000-1 §9.6.2.2 Annex D,
+    standard font names are matched after stripping any `ABCDEF+` prefix.
+    `HelveticaOblique` (no hyphen) is now accepted alongside
+    `Helvetica-Oblique`.
+  - **Explicit `/DW` tracked in `FontInfo`** — `has_explicit_dw: bool`
+    added; `has_explicit_widths()` returns `true` when `/DW` is
+    explicitly present, enabling correct width lookup for CIDFonts that
+    declare only `/DW` (no `/W` array).
+  - **CIDFont width fallback corrected** — When `/DW` is absent and a
+    CID is not in the `/W` array, `get_glyph_width` now falls through to
+    `default_width` rather than `cid_default_width`, matching real-world
+    PDF behaviour.
+  - **Word extractor honours `split_boundary_before`** — Words that
+    straddle a table-cell or column boundary are no longer merged.
+  - **Ligature expansion option** — `ConversionOptions` gains
+    `expand_ligatures: bool` (default `false`). When enabled, Latin
+    ligatures (U+FB00–U+FB06: ff, fi, fl, ffi, ffl, ſt, st) are
+    expanded to component letters.
+  - **Extraction warnings API** — `PdfDocument::warnings()` (clones) and
+    `take_warnings()` (drains) expose non-fatal extraction warnings
+    (missing MCIDs, encrypted-PDF fallback) accumulated during a run.
+
+- **Same-line span reorder: x-gap validation guard
+  ([#413](https://github.com/yfedoseev/pdf_oxide/pull/413))** —
+  After the row-aware sort, mixed-baseline glyphs (superscripts,
+  subscripts) could appear before their base glyphs. The
+  `reorder_same_line_runs` helper now validates that a candidate run is
+  horizontally contiguous before X-sorting it; runs with a large X gap
+  are left in row-aware order, preventing disjoint footer/header content
+  from being collapsed into a fake same-line sequence. Fixes `"8th"`
+  ordering (was `"th8"`). Contributed by
+  [@RolandWArnold](https://github.com/RolandWArnold) in
+  [PR #413](https://github.com/yfedoseev/pdf_oxide/pull/413).
+
+- **Layout word-merge O(n²) → O(n)** — The word-merge pass previously
+  re-scanned the entire accumulator for every candidate span; it is now
+  O(n) via an index map.
+
+- **Wide spatial false-positive tables rejected via dense-row-ratio** —
+  Table detection now computes the fraction of rows with dense (≥50%)
+  column coverage and rejects candidates below the threshold, eliminating
+  false positives on wide but sparsely populated layouts.
+
+- **Bare-identifier lexer leniency confined to dict-value position** —
+  The lexer's tolerance for bare (unquoted) name-like tokens is now
+  restricted to dictionary value positions, preventing mis-tokenisation
+  of content streams where the same byte sequences are valid operators.
+
+- **Typographic Unicode spaces normalised in extracted spans** —
+  Non-breaking, thin, en, em, and other Unicode space variants in span
+  text are normalised to ASCII space before the word-spacing heuristics
+  run, eliminating invisible gaps in the extracted output.
+
+### Performance
+
+- **Rendering: per-segment font re-parsing eliminated** — The text
+  rasterizer no longer re-parses font data on every span segment; `Arc`
+  clones across the hot render loop and redundant CJK subsetter
+  invocations are also eliminated, reducing CPU time for text-heavy
+  pages by 30–60%.
+
+### Dependencies
+
+- **`fast_image_resize` added
+  ([#454](https://github.com/yfedoseev/pdf_oxide/issues/454))** —
+  New dependency enabling SIMD-accelerated (ARM NEON, x86 AVX2) image
+  downscaling for the raw-RGBA render path.
+
+### CI
+
+- **FIPS release workflow now validates on pull requests** —
+  `release-fips.yml` now triggers on PRs to `main` that touch source,
+  language-binding, or workflow files. The full build across all five
+  platforms and all four language bindings runs without publishing,
+  so the tag push is a pure deployment step after a confirmed-green PR.
+- **macOS x86\_64 FIPS builds moved to free runners** — All four
+  `macos-13-xlarge` (paid Intel Larger Runner, causing indefinite queue
+  waits on plans without access) replaced with `macos-latest`
+  (free ARM runner cross-compiling to `x86_64-apple-darwin`).
+- **Cargo registry caching added to all 20 FIPS build jobs** —
+  Per-target cache keys (`$runner_os-$target-fips-cargo-$lock_hash`)
+  are restored before each build, substantially reducing re-run time
+  on warm caches.
+
+### Community contributors
+
+- **[@RolandWArnold](https://github.com/RolandWArnold)** — contributed
+  the same-line x-gap validation fix in
+  [PR #413](https://github.com/yfedoseev/pdf_oxide/pull/413). Roland
+  diagnosed that `reorder_same_line_runs` was collapsing disjoint
+  footer/header spans into a fake same-line sequence and designed the
+  horizontal-contiguity guard that prevents it. The fix also correctly
+  handles superscript/subscript ordering (`"8th"` instead of `"th8"`).
+- **[@Goldziher](https://github.com/Goldziher)** (Na'aman Hirschfeld) —
+  filed [#484](https://github.com/yfedoseev/pdf_oxide/issues/484) with a
+  calibrated 166-document corpus, per-document ground-truth `.txt` files,
+  and a word-F1 harness, providing the systematic test bed that drove the
+  bulk of the extraction improvements in this release.
+- **[@stephenjudkins](https://github.com/stephenjudkins)** (Stephen
+  Judkins) — filed [#483](https://github.com/yfedoseev/pdf_oxide/issues/483)
+  with a minimal, precisely-scoped reproduction of the `add_text`
+  regression that made the root-cause analysis straightforward.
+- **[@mara004](https://github.com/mara004)** and
+  **[@potatochipcoconut](https://github.com/potatochipcoconut)** —
+  requested the raw RGBA pixel buffer API in comments on
+  [#325](https://github.com/yfedoseev/pdf_oxide/issues/325) with clear
+  use cases across PIL, sharp, `System.Drawing.Bitmap`, and
+  Go's `image.RGBA`, and engaged on the pixel-format details (premultiplied
+  vs straight alpha, tiny-skia format constraints) that shaped the final
+  API design.
+- **[@frederikhors](https://github.com/frederikhors)** — reported the
+  JBIG2 blank-page symptom in a comment on
+  [#332](https://github.com/yfedoseev/pdf_oxide/issues/332) and
+  confirmed that both the JBIG2 fix and the earlier vertical-flip
+  regression are resolved.
 
 ## [0.3.45] - 2026-05-07
 
