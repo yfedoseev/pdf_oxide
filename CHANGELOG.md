@@ -13,14 +13,14 @@ All notable changes to PDFOxide are documented here.
   and `Page.RenderToRgba()` (C#) expose the premultiplied RGBA8888
   buffer directly from `tiny_skia::Pixmap::data()`, eliminating the
   encode→decode roundtrip for callers that need raw pixels (PIL,
-  sharp, `System.Drawing.Bitmap`, `image.RGBA`). A `premultiplied`
-  flag (default `true`) opts into `pixmap.take_demultiplied()` for
-  straight-alpha output. Downscaling is now SIMD-accelerated via
+  sharp, `System.Drawing.Bitmap`, `image.RGBA`). Downscaling is now SIMD-accelerated via
   `fast_image_resize` (ARM NEON, x86 AVX2), replacing the previous
   bilinear path. Concurrent `render_*` calls on the same
-  `PdfDocument` are serialised through a per-document `Mutex`,
-  satisfying the exclusive-ownership contract in `src/ffi.rs` and
-  preventing data races in multi-threaded C# and JavaScript hosts.
+  `PdfDocument` are now safe: all rendering functions take `&PdfDocument`
+  (shared reference) and all interior-mutable state is already guarded by
+  per-field `Mutex`, so the FFI layer no longer produces aliased `&mut`
+  references and concurrent renders run without a global serialisation
+  bottleneck.
   Requested by @mara004 and @potatochipcoconut.
 
 - **`ConversionOptions::exclude_regions` / `include_region`

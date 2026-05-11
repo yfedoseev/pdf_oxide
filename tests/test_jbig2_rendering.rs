@@ -8,22 +8,22 @@ mod tests {
     use pdf_oxide::document::PdfDocument;
     use pdf_oxide::rendering::{render_page, RenderOptions};
 
-    const LINN_PDF: &str =
-        "/home/yfedoseev/projects/pdf_oxide_tests/fixtures_ocr/linn.pdf";
+    const LINN_PDF: &str = "/home/yfedoseev/projects/pdf_oxide_tests/fixtures_ocr/linn.pdf";
 
     #[test]
+    #[ignore = "requires local fixture at LINN_PDF; run with -- --ignored"]
     fn jbig2_scanner_pdf_renders_non_blank() {
         if !std::path::Path::new(LINN_PDF).exists() {
             eprintln!("skipping: fixture not found at {LINN_PDF}");
             return;
         }
 
-        let mut doc = PdfDocument::open(LINN_PDF).expect("open linn.pdf");
+        let doc = PdfDocument::open(LINN_PDF).expect("open linn.pdf");
 
         // as_raw() returns premultiplied RGBA8888 — the only reliable way to
         // check for blank (PNG bytes cannot be scanned for blank detection).
         let opts = RenderOptions::with_dpi(72).as_raw();
-        let rendered = render_page(&mut doc, 0, &opts).expect("render page 0");
+        let rendered = render_page(&doc, 0, &opts).expect("render page 0");
 
         // White background is (255, 255, 255, 255) in premultiplied RGBA.
         let non_bg = rendered

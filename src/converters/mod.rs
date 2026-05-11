@@ -301,22 +301,21 @@ pub struct ConversionOptions {
 
     /// Overlap rule used when matching spans against `exclude_regions`.
     ///
-    /// Default: [`RectFilterMode::Intersects`] — drops any span with any overlap.
+    /// Default: [`crate::layout::RectFilterMode::Intersects`] — drops any span with any overlap.
     pub exclude_regions_mode: crate::layout::RectFilterMode,
 
     /// Restrict text extraction to a single rectangular region.
     ///
     /// When `Some((rect, mode))`, only spans that match `rect` under `mode`
     /// are kept before the text-assembly pipeline runs. This powers
-    /// [`PdfDocument::extract_text_in_rect`] so it produces fully-assembled
+    /// [`crate::document::PdfDocument::extract_text_in_rect`] so it produces fully-assembled
     /// output (line breaks, tables, reading order) rather than a flat word
     /// stream.
     ///
     /// Applied after `exclude_regions` so exclusions take precedence.
     ///
     /// Default: `None` (all spans kept).
-    pub include_region:
-        Option<(crate::geometry::Rect, crate::layout::RectFilterMode)>,
+    pub include_region: Option<(crate::geometry::Rect, crate::layout::RectFilterMode)>,
 
     /// Expand Unicode ligature characters to their component letters.
     ///

@@ -60,6 +60,7 @@ fn write_temp_pdf(data: &[u8], name: &str) -> std::path::PathBuf {
 // Tests: EncryptionConfig combinations
 // ===========================================================================
 
+#[cfg(feature = "legacy-crypto")]
 #[test]
 fn test_encryption_config_all_algorithms() {
     let algorithms = [
@@ -82,6 +83,7 @@ fn test_encryption_config_debug() {
     assert!(debug.contains("EncryptionConfig"));
 }
 
+#[cfg(feature = "legacy-crypto")]
 #[test]
 fn test_encryption_config_clone() {
     let config = EncryptionConfig::new("user", "owner")
@@ -255,6 +257,7 @@ fn test_authenticate_empty_password() {
 // Tests: Algorithm equality and defaults
 // ===========================================================================
 
+#[cfg(feature = "legacy-crypto")]
 #[test]
 fn test_encryption_algorithm_equality() {
     assert_eq!(EncryptionAlgorithm::Aes256, EncryptionAlgorithm::Aes256);
@@ -262,6 +265,7 @@ fn test_encryption_algorithm_equality() {
     assert_ne!(EncryptionAlgorithm::Rc4_40, EncryptionAlgorithm::Rc4_128);
 }
 
+#[cfg(feature = "legacy-crypto")]
 #[test]
 fn test_encryption_algorithm_copy() {
     let alg = EncryptionAlgorithm::Aes128;
@@ -269,6 +273,7 @@ fn test_encryption_algorithm_copy() {
     assert_eq!(alg, copied);
 }
 
+#[cfg(feature = "legacy-crypto")]
 #[test]
 fn test_encryption_algorithm_debug() {
     let debug = format!("{:?}", EncryptionAlgorithm::Rc4_40);

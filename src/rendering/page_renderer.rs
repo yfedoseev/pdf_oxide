@@ -153,7 +153,7 @@ impl PageRenderer {
     }
 
     /// Render a page to a raster image.
-    pub fn render_page(&mut self, doc: &mut PdfDocument, page_num: usize) -> Result<RenderedImage> {
+    pub fn render_page(&mut self, doc: &PdfDocument, page_num: usize) -> Result<RenderedImage> {
         self.render_page_with_options(page_num, doc)
     }
 
@@ -161,7 +161,7 @@ impl PageRenderer {
     pub fn render_page_with_options(
         &mut self,
         page_num: usize,
-        doc: &mut PdfDocument,
+        doc: &PdfDocument,
     ) -> Result<RenderedImage> {
         // Clear caches for new page
         self.fonts.clear();
@@ -270,7 +270,7 @@ impl PageRenderer {
     }
 
     /// Load resources (fonts, color spaces) into local cache.
-    fn load_resources(&mut self, doc: &mut PdfDocument, resources: &Object) -> Result<()> {
+    fn load_resources(&mut self, doc: &PdfDocument, resources: &Object) -> Result<()> {
         if let Object::Dictionary(res_dict) = resources {
             log::debug!("Loading resources, keys: {:?}", res_dict.keys());
             // Fonts
@@ -362,7 +362,7 @@ impl PageRenderer {
         pixmap: &mut Pixmap,
         base_transform: Transform,
         operators: &[Operator],
-        doc: &mut PdfDocument,
+        doc: &PdfDocument,
         page_num: usize,
         resources: &Object,
     ) -> Result<()> {
@@ -1352,7 +1352,7 @@ impl PageRenderer {
         transform: Transform,
         gs: &GraphicsState,
         resources: &Object,
-        doc: &mut PdfDocument,
+        doc: &PdfDocument,
         clip_mask: Option<&tiny_skia::Mask>,
     ) -> Result<()> {
         // Look up shading resource
@@ -1406,7 +1406,7 @@ impl PageRenderer {
         shading: &std::collections::HashMap<String, Object>,
         transform: Transform,
         gs: &GraphicsState,
-        doc: &mut PdfDocument,
+        doc: &PdfDocument,
         clip_mask: Option<&tiny_skia::Mask>,
     ) -> Result<()> {
         // Parse Coords [x0 y0 x1 y1]
@@ -1512,7 +1512,7 @@ impl PageRenderer {
         shading: &std::collections::HashMap<String, Object>,
         transform: Transform,
         gs: &GraphicsState,
-        doc: &mut PdfDocument,
+        doc: &PdfDocument,
         clip_mask: Option<&tiny_skia::Mask>,
     ) -> Result<()> {
         // Parse Coords [x0 y0 r0 x1 y1 r1]
@@ -1596,7 +1596,7 @@ impl PageRenderer {
     fn evaluate_shading_function(
         &self,
         shading: &std::collections::HashMap<String, Object>,
-        doc: &mut PdfDocument,
+        doc: &PdfDocument,
     ) -> Result<((f32, f32, f32), (f32, f32, f32))> {
         // Try to parse a simple Type 2 (exponential interpolation) or Type 0 (sampled) function
         let func_obj = shading.get("Function");
@@ -1686,7 +1686,7 @@ impl PageRenderer {
         transform: Transform,
         gs: &GraphicsState,
         resources: &Object,
-        doc: &mut PdfDocument,
+        doc: &PdfDocument,
         page_num: usize,
         clip_mask: Option<&tiny_skia::Mask>,
     ) -> Result<()> {
@@ -1785,7 +1785,7 @@ impl PageRenderer {
         xobject: &Object,
         obj_ref: Option<ObjectRef>,
         transform: Transform,
-        doc: &mut PdfDocument,
+        doc: &PdfDocument,
         clip_mask: Option<&tiny_skia::Mask>,
         smask_obj: Option<Object>,
         mask_obj: Option<Object>,
@@ -2043,7 +2043,7 @@ impl PageRenderer {
         dict: &std::collections::HashMap<String, Object>,
         data: &[u8],
         parent_transform: Transform,
-        doc: &mut PdfDocument,
+        doc: &PdfDocument,
         page_num: usize,
         parent_resources: &Object,
     ) -> Result<()> {
@@ -2172,7 +2172,7 @@ impl PageRenderer {
         gs: &mut GraphicsState,
         dict_name: &str,
         resources: &Object,
-        doc: &mut PdfDocument,
+        doc: &PdfDocument,
     ) -> Result<()> {
         if let Object::Dictionary(res_dict) = resources {
             if let Some(ext_gs_obj) = res_dict.get("ExtGState") {
@@ -2253,7 +2253,7 @@ impl PageRenderer {
         &mut self,
         pixmap: &mut Pixmap,
         base_transform: Transform,
-        doc: &mut PdfDocument,
+        doc: &PdfDocument,
         page_num: usize,
     ) -> Result<()> {
         let annotations = doc.get_annotations(page_num)?;

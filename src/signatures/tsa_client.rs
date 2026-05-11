@@ -205,7 +205,14 @@ fn random_nonce() -> der::asn1::Int {
     });
     // Make sure the high bit is 0 so we're always a positive INTEGER.
     bytes[0] &= 0x7F;
-    der::asn1::Int::new(&bytes).expect("8 positive bytes always fit in Int")
+    // Strip leading zero bytes: DER canonical encoding forbids unnecessary
+    // leading zeros on a positive INTEGER. The FIPS-mode der crate enforces
+    // this strictly on decode; non-FIPS parsers are more lenient.
+    let start = bytes
+        .iter()
+        .position(|&b| b != 0)
+        .unwrap_or(bytes.len() - 1);
+    der::asn1::Int::new(&bytes[start..]).expect("positive nonce bytes always fit in Int")
 }
 
 #[cfg(test)]

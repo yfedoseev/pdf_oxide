@@ -58,7 +58,7 @@ manual_checked_ops = "allow"
 
 [package]
 name = "pdf_oxide"
-version = "0.3.45"
+version = "0.3.46"
 # MSRV — driven up from 1.82 for v0.3.38. Transitive deps pulled in
 # this release push the floor to 1.88:
 #   - hybrid-array 0.4.10 (via RustCrypto) → edition 2024 → 1.85
@@ -263,8 +263,8 @@ pdfium-render = { version = "0.9", optional = true }
 
 # Rendering (optional - for page to image conversion)
 tiny-skia = { version = "0.12", optional = true }
-fast_image_resize = { version = "6", optional = true }          # SIMD-accelerated image downscaling
-hayro-jbig2 = { version = "0.3", optional = true, default-features = false }  # Pure-Rust JBIG2 decoder (Apache-2.0 OR MIT)
+fast_image_resize = { version = "6", optional = true }                       # SIMD-accelerated image downscaling
+hayro-jbig2 = { version = "0.3", optional = true, default-features = false } # Pure-Rust JBIG2 decoder (Apache-2.0 OR MIT)
 fontdb = { version = "0.23", optional = true }
 rustybuzz = { version = "0.20", optional = true }
 
@@ -310,6 +310,11 @@ logging = []
 # via `pdf_oxide::crypto::set_provider(...)` in your application's
 # main(); compiling with this feature alone does not change the
 # default behaviour.
+#
+# IMPORTANT: `fips` is mutually exclusive with `legacy-crypto` (which
+# is on by default). Always build FIPS without default features:
+#   cargo build --no-default-features --features fips,icc
+# Combining `fips` with `legacy-crypto` is a compile-time error.
 fips = ["dep:aws-lc-rs", "aws-lc-rs/fips"]
 
 # Real ICC colour management via qcms (Firefox's colour engine).

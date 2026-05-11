@@ -106,7 +106,7 @@ pub(crate) fn pdf_blend_mode_to_skia(mode: &str) -> tiny_skia::BlendMode {
 ///
 /// The rendered image as bytes in the specified format.
 pub fn render_page(
-    doc: &mut crate::document::PdfDocument,
+    doc: &crate::document::PdfDocument,
     page_num: usize,
     options: &RenderOptions,
 ) -> Result<RenderedImage> {
@@ -118,7 +118,7 @@ pub fn render_page(
 /// user-space points (origin bottom-left of the page). The crop is
 /// applied to the fully-rendered image at the requested DPI.
 pub fn render_page_region(
-    doc: &mut crate::document::PdfDocument,
+    doc: &crate::document::PdfDocument,
     page_num: usize,
     crop_rect_pt: (f32, f32, f32, f32),
     options: &RenderOptions,
@@ -187,7 +187,7 @@ pub fn render_page_region(
 /// preserving aspect ratio. Picks the DPI that makes the larger of
 /// the two page dimensions match the smaller bounding-box side.
 pub fn render_page_fit(
-    doc: &mut crate::document::PdfDocument,
+    doc: &crate::document::PdfDocument,
     page_num: usize,
     fit_w_px: u32,
     fit_h_px: u32,
@@ -218,7 +218,7 @@ pub fn render_page_fit(
 /// ensuring consistent visual output across viewers.
 ///
 /// Returns the flattened PDF as bytes.
-pub fn flatten_to_images(doc: &mut crate::document::PdfDocument, dpi: u32) -> Result<Vec<u8>> {
+pub fn flatten_to_images(doc: &crate::document::PdfDocument, dpi: u32) -> Result<Vec<u8>> {
     let page_count = doc.page_count()?;
     let options = RenderOptions::with_dpi(dpi);
 

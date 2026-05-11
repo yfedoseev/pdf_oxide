@@ -102,9 +102,7 @@ fn concurrent_renders_no_panic() {
             let o = Arc::clone(&opts);
             std::thread::spawn(move || {
                 let mut pdf = Pdf::from_bytes((*b).clone()).expect("open PDF in thread");
-                let img = pdf
-                    .render_page(0, Some(&o))
-                    .expect("render must not fail");
+                let img = pdf.render_page(0, Some(&o)).expect("render must not fail");
                 assert!(!img.data.is_empty(), "rendered image data must not be empty");
                 assert!(img.width > 0 && img.height > 0, "rendered dimensions must be positive");
             })

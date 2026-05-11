@@ -9,10 +9,17 @@
 //! 2. `CIDToGIDMap` stream was decoded but never decrypted, producing garbage
 //!    GID mappings even when decryption is otherwise correct.
 
+#[cfg(feature = "legacy-crypto")]
 use pdf_oxide::document::PdfDocument;
 
 /// Verify text extraction works for an encrypted PDF with V=4/CFM=V2 (RC4-128)
 /// and CID TrueType Identity-H fonts (OpenPDF 1.3.26).
+///
+/// This test requires the `legacy-crypto` feature because the fixture uses RC4-128
+/// (PDF Standard Security R=4), which relies on MD5 key derivation. Under the FIPS
+/// build (`--no-default-features --features fips,icc`) that algorithm is deliberately
+/// disabled, so the test is excluded from compilation in that configuration.
+#[cfg(feature = "legacy-crypto")]
 #[test]
 fn test_encrypted_cid_truetype_extract_text_non_empty() {
     let pdf_path = "tests/fixtures/encrypted_cid_truetype.pdf";

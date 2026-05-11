@@ -17,10 +17,10 @@ fn is_png(b: &[u8]) -> bool {
 
 #[test]
 fn render_page_region_returns_clipped_png() {
-    let mut doc = setup();
-    let full = render_page(&mut doc, 0, &RenderOptions::with_dpi(72)).unwrap();
+    let doc = setup();
+    let full = render_page(&doc, 0, &RenderOptions::with_dpi(72)).unwrap();
     let region = render_page_region(
-        &mut doc,
+        &doc,
         0,
         (36.0, 36.0, 144.0, 144.0), // 2"×2" crop at (0.5", 0.5")
         &RenderOptions::with_dpi(72),
@@ -35,15 +35,15 @@ fn render_page_region_returns_clipped_png() {
 
 #[test]
 fn render_page_region_rejects_zero_rect() {
-    let mut doc = setup();
-    let err = render_page_region(&mut doc, 0, (0.0, 0.0, 0.0, 0.0), &RenderOptions::with_dpi(72));
+    let doc = setup();
+    let err = render_page_region(&doc, 0, (0.0, 0.0, 0.0, 0.0), &RenderOptions::with_dpi(72));
     assert!(err.is_err(), "zero-area rect should fail");
 }
 
 #[test]
 fn render_page_fit_respects_box() {
-    let mut doc = setup();
-    let img = render_page_fit(&mut doc, 0, 200, 100, &RenderOptions::with_dpi(72)).unwrap();
+    let doc = setup();
+    let img = render_page_fit(&doc, 0, 200, 100, &RenderOptions::with_dpi(72)).unwrap();
     assert!(is_png(&img.data));
     // Output must fit inside the box (plus rounding slack).
     assert!(img.width <= 200 + 5, "fit width {} > 200", img.width);
@@ -52,9 +52,9 @@ fn render_page_fit_respects_box() {
 
 #[test]
 fn render_page_fit_rejects_zero_box() {
-    let mut doc = setup();
-    assert!(render_page_fit(&mut doc, 0, 0, 100, &RenderOptions::with_dpi(72)).is_err());
-    assert!(render_page_fit(&mut doc, 0, 100, 0, &RenderOptions::with_dpi(72)).is_err());
+    let doc = setup();
+    assert!(render_page_fit(&doc, 0, 0, 100, &RenderOptions::with_dpi(72)).is_err());
+    assert!(render_page_fit(&doc, 0, 100, 0, &RenderOptions::with_dpi(72)).is_err());
 }
 
 // ── Issue #480 regressions ──────────────────────────────────────────────────
@@ -71,8 +71,8 @@ fn render_page_fit_constrained_width_is_exact() {
     // Letter (612×792 pt), fit to 1040×2048 — width-constrained.
     // Old code: dpi = floor(1040×72/612) = 122 → width = ceil(612×122/72) = 1037 (3 px short).
     // New code: scale = 1040/612 → width = round(612 × scale) = 1040 exactly.
-    let mut doc = setup();
-    let img = render_page_fit(&mut doc, 0, 1040, 2048, &RenderOptions::default()).unwrap();
+    let doc = setup();
+    let img = render_page_fit(&doc, 0, 1040, 2048, &RenderOptions::default()).unwrap();
     assert!(is_png(&img.data));
     assert_eq!(img.width, 1040, "width must equal fit_w (old floor-DPI gave {})", img.width);
     assert!(img.height <= 2048, "height {} must not exceed fit_h 2048", img.height);
@@ -82,8 +82,8 @@ fn render_page_fit_constrained_width_is_exact() {
 fn render_page_fit_constrained_height_is_exact() {
     // Letter (612×792 pt), fit to 2048×1040 — height-constrained.
     // scale = 1040/792 → height = round(792 × scale) = 1040 exactly.
-    let mut doc = setup();
-    let img = render_page_fit(&mut doc, 0, 2048, 1040, &RenderOptions::default()).unwrap();
+    let doc = setup();
+    let img = render_page_fit(&doc, 0, 2048, 1040, &RenderOptions::default()).unwrap();
     assert!(is_png(&img.data));
     assert_eq!(img.height, 1040, "height must equal fit_h (old floor-DPI gave {})", img.height);
     assert!(img.width <= 2048, "width {} must not exceed fit_w 2048", img.width);
@@ -92,7 +92,7 @@ fn render_page_fit_constrained_height_is_exact() {
 #[test]
 fn render_page_fit_never_exceeds_box() {
     // The output must never overflow the requested fit box by even 1 pixel.
-    let mut doc = setup();
+    let doc = setup();
     for (fw, fh) in [
         (100u32, 200u32),
         (200, 100),
@@ -100,7 +100,7 @@ fn render_page_fit_never_exceeds_box() {
         (1040, 2048),
         (99, 99),
     ] {
-        let img = render_page_fit(&mut doc, 0, fw, fh, &RenderOptions::default()).unwrap();
+        let img = render_page_fit(&doc, 0, fw, fh, &RenderOptions::default()).unwrap();
         assert!(img.width <= fw, "fit ({fw}×{fh}): width {} exceeds {fw}", img.width);
         assert!(img.height <= fh, "fit ({fw}×{fh}): height {} exceeds {fh}", img.height);
     }

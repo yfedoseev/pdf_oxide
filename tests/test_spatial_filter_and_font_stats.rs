@@ -32,9 +32,7 @@ fn one_page_pdf(content: &[u8]) -> Vec<u8> {
     );
 
     let off4 = pdf.len();
-    pdf.extend_from_slice(
-        format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes(),
-    );
+    pdf.extend_from_slice(format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes());
     pdf.extend_from_slice(content);
     pdf.extend_from_slice(b"\nendstream\nendobj\n");
 
@@ -84,9 +82,15 @@ fn extract_text_excluding_rects_removes_figure_text() {
     let doc = PdfDocument::from_bytes(pdf).expect("open PDF");
 
     // Exclude the figure region: x=40..200, y=380..420 in PDF coords
-    let figure_bbox = Rect { x: 40.0, y: 380.0, width: 160.0, height: 40.0 };
-    let text =
-        doc.extract_text_excluding_rects(0, &[figure_bbox], RectFilterMode::Intersects).unwrap();
+    let figure_bbox = Rect {
+        x: 40.0,
+        y: 380.0,
+        width: 160.0,
+        height: 40.0,
+    };
+    let text = doc
+        .extract_text_excluding_rects(0, &[figure_bbox], RectFilterMode::Intersects)
+        .unwrap();
 
     assert!(
         text.contains("Body text"),
@@ -108,9 +112,15 @@ fn extract_spans_excluding_rects_filters_correctly() {
     let pdf = one_page_pdf(content);
     let doc = PdfDocument::from_bytes(pdf).expect("open PDF");
 
-    let drop_zone = Rect { x: 0.0, y: 180.0, width: 612.0, height: 60.0 };
-    let spans =
-        doc.extract_spans_excluding_rects(0, &[drop_zone], RectFilterMode::Intersects).unwrap();
+    let drop_zone = Rect {
+        x: 0.0,
+        y: 180.0,
+        width: 612.0,
+        height: 60.0,
+    };
+    let spans = doc
+        .extract_spans_excluding_rects(0, &[drop_zone], RectFilterMode::Intersects)
+        .unwrap();
 
     let texts: Vec<&str> = spans.iter().map(|s| s.text.as_str()).collect();
     assert!(
@@ -133,8 +143,9 @@ fn extract_text_excluding_rects_empty_exclusion_is_noop() {
     let doc = PdfDocument::from_bytes(pdf).expect("open PDF");
 
     let text_full = doc.extract_text(0).unwrap();
-    let text_excl =
-        doc.extract_text_excluding_rects(0, &[], RectFilterMode::Intersects).unwrap();
+    let text_excl = doc
+        .extract_text_excluding_rects(0, &[], RectFilterMode::Intersects)
+        .unwrap();
 
     assert_eq!(
         text_full, text_excl,
@@ -150,9 +161,15 @@ fn extract_words_excluding_rects_filters_correctly() {
     let pdf = one_page_pdf(content);
     let doc = PdfDocument::from_bytes(pdf).expect("open PDF");
 
-    let drop_zone = Rect { x: 0.0, y: 180.0, width: 612.0, height: 60.0 };
-    let words =
-        doc.extract_words_excluding_rects(0, &[drop_zone], RectFilterMode::Intersects).unwrap();
+    let drop_zone = Rect {
+        x: 0.0,
+        y: 180.0,
+        width: 612.0,
+        height: 60.0,
+    };
+    let words = doc
+        .extract_words_excluding_rects(0, &[drop_zone], RectFilterMode::Intersects)
+        .unwrap();
 
     let texts: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();
     assert!(
@@ -175,14 +192,15 @@ fn extract_words_excluding_rects_filters_correctly() {
 #[test]
 fn page_font_stats_dominant_em_matches_body_size() {
     // Body text: 12pt (majority). Heading: 24pt (one span).
-    let content =
-        b"BT /F1 12 Tf 50 700 Td (Body line one) Tj ET\n\
+    let content = b"BT /F1 12 Tf 50 700 Td (Body line one) Tj ET\n\
           BT /F1 12 Tf 50 680 Td (Body line two) Tj ET\n\
           BT /F2 24 Tf 50 740 Td (Heading) Tj ET";
     let pdf = one_page_pdf(content);
     let doc = PdfDocument::from_bytes(pdf).expect("open PDF");
 
-    let stats = doc.page_font_stats(0).expect("page_font_stats must not error");
+    let stats = doc
+        .page_font_stats(0)
+        .expect("page_font_stats must not error");
 
     // dominant_em should be ~12pt (body), not 24pt (heading)
     assert!(
@@ -196,8 +214,7 @@ fn page_font_stats_dominant_em_matches_body_size() {
 #[test]
 fn heading_detection_via_page_font_stats_ratio() {
     // Body text 12pt, heading 24pt → ratio 2.0 → should classify as H1 (>=1.8)
-    let content =
-        b"BT /F1 12 Tf 50 700 Td (Body text here) Tj ET\n\
+    let content = b"BT /F1 12 Tf 50 700 Td (Body text here) Tj ET\n\
           BT /F2 24 Tf 50 750 Td (Big Heading) Tj ET";
     let pdf = one_page_pdf(content);
     let doc = PdfDocument::from_bytes(pdf).expect("open PDF");
@@ -215,7 +232,10 @@ fn heading_detection_via_page_font_stats_ratio() {
         "at least one span should meet H1 ratio (font_size/dominant_em >= 1.8); \
          dominant_em={:.1}, spans: {:?}",
         stats.dominant_em,
-        spans.iter().map(|s| (&s.text, s.font_size)).collect::<Vec<_>>()
+        spans
+            .iter()
+            .map(|s| (&s.text, s.font_size))
+            .collect::<Vec<_>>()
     );
     assert!(
         heading_spans.iter().any(|s| s.text.contains("Big Heading")),
@@ -231,7 +251,9 @@ fn page_font_stats_empty_page_returns_default() {
     let pdf = one_page_pdf(content);
     let doc = PdfDocument::from_bytes(pdf).expect("open PDF");
 
-    let stats = doc.page_font_stats(0).expect("page_font_stats on empty page");
+    let stats = doc
+        .page_font_stats(0)
+        .expect("page_font_stats on empty page");
     assert_eq!(
         stats.dominant_em,
         PageFontStats::default().dominant_em,
@@ -267,11 +289,18 @@ fn docling_figure_exclusion_reduces_span_count() {
         eprintln!("SKIP: docling.pdf has 0 pages");
         return;
     }
-    let (llx, lly, urx, ury) = doc.get_page_media_box(0).unwrap_or((0.0, 0.0, 595.0, 842.0));
+    let (llx, lly, urx, ury) = doc
+        .get_page_media_box(0)
+        .unwrap_or((0.0, 0.0, 595.0, 842.0));
     let width = urx - llx;
     let height = ury - lly;
 
-    let figure_zone = Rect { x: llx, y: lly, width, height: height * 0.4 };
+    let figure_zone = Rect {
+        x: llx,
+        y: lly,
+        width,
+        height: height * 0.4,
+    };
 
     let all_spans = doc.extract_spans(0).expect("extract_spans");
     let filtered_spans = doc

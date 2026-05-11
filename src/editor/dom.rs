@@ -1010,7 +1010,7 @@ impl PdfPage {
     /// equivalent to all children of the root element.
     pub fn added_children(&self) -> &[crate::elements::ContentElement] {
         match self.original_child_count {
-            Some(n) => &self.root.children[n..],
+            Some(n) => &self.root.children[n.min(self.root.children.len())..],
             None => &self.root.children,
         }
     }

@@ -3805,7 +3805,7 @@ pub extern "C" fn pdf_render_page(
             set_error(error_code, ERR_INVALID_ARG);
             return ptr::null_mut();
         }
-        let d = handle_mut(doc);
+        let d = handle_ref(doc as *const _);
         let fmt = if format == 1 {
             RenderImageFormat::Jpeg
         } else {
@@ -3869,7 +3869,7 @@ pub extern "C" fn pdf_render_page_with_options(
             set_error(error_code, ERR_INVALID_ARG);
             return ptr::null_mut();
         }
-        let d = handle_mut(doc);
+        let d = handle_ref(doc as *const _);
         let fmt = if format == 1 {
             RenderImageFormat::Jpeg
         } else {
@@ -3938,7 +3938,7 @@ pub extern "C" fn pdf_render_page_region(
             set_error(error_code, ERR_INVALID_ARG);
             return ptr::null_mut();
         }
-        let d = handle_mut(doc);
+        let d = handle_ref(doc as *const _);
         let fmt = if format == 1 {
             RenderImageFormat::Jpeg
         } else {
@@ -3987,7 +3987,7 @@ pub extern "C" fn pdf_render_page_zoom(
             set_error(error_code, ERR_INVALID_ARG);
             return ptr::null_mut();
         }
-        let d = handle_mut(doc);
+        let d = handle_ref(doc as *const _);
         let dpi = (72.0 * zoom) as u32;
         let fmt = if format == 1 {
             RenderImageFormat::Jpeg
@@ -4034,7 +4034,7 @@ pub extern "C" fn pdf_render_page_fit(
             set_error(error_code, ERR_INVALID_ARG);
             return ptr::null_mut();
         }
-        let d = handle_mut(doc);
+        let d = handle_ref(doc as *const _);
         let fmt = if format == 1 {
             RenderImageFormat::Jpeg
         } else {
@@ -4078,7 +4078,7 @@ pub extern "C" fn pdf_render_page_thumbnail(
             set_error(error_code, ERR_INVALID_ARG);
             return ptr::null_mut();
         }
-        let d = handle_mut(doc);
+        let d = handle_ref(doc as *const _);
         let fmt = if format == 1 {
             RenderImageFormat::Jpeg
         } else {
@@ -4133,7 +4133,7 @@ pub extern "C" fn pdf_render_page_raw(
             return ptr::null_mut();
         }
         let effective_dpi = if dpi <= 0 { 150 } else { dpi as u32 };
-        let d = handle_mut(doc);
+        let d = handle_ref(doc as *const _);
         let opts = RustRenderOptions {
             dpi: effective_dpi,
             format: RenderImageFormat::RawRgba8,

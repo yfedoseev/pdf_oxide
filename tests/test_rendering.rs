@@ -305,8 +305,12 @@ mod raw_rgba {
         std::fs::write(&temp, &bytes).unwrap();
         let mut pdf = Pdf::open(&temp).unwrap();
 
-        let png_img = pdf.render_page_with_options(0, &RenderOptions::with_dpi(72)).unwrap();
-        let raw_img = pdf.render_page_with_options(0, &RenderOptions::with_dpi(72).as_raw()).unwrap();
+        let png_img = pdf
+            .render_page_with_options(0, &RenderOptions::with_dpi(72))
+            .unwrap();
+        let raw_img = pdf
+            .render_page_with_options(0, &RenderOptions::with_dpi(72).as_raw())
+            .unwrap();
 
         assert_eq!(png_img.width, raw_img.width);
         assert_eq!(png_img.height, raw_img.height);

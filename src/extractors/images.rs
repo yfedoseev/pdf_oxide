@@ -790,7 +790,9 @@ pub fn extract_image_from_xobject(
     let is_jpeg_only = has_dct && filter_names.len() == 1;
     let is_jpeg_chain = has_dct && filter_names.len() > 1;
 
-    let is_jbig2 = filter_names.iter().any(|n| n.eq_ignore_ascii_case("JBIG2Decode"));
+    let is_jbig2 = filter_names
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case("JBIG2Decode"));
 
     let data = if is_jbig2 {
         decode_jbig2_image(xobject, obj_ref, dict, doc, width, height)?
@@ -1700,7 +1702,8 @@ fn decode_jbig2_image(
         let globals_ref = dp.get("JBIG2Globals")?.as_reference()?;
         let d = doc.as_ref()?;
         let globals_obj = d.load_object(globals_ref).ok()?;
-        d.decode_stream_with_encryption(&globals_obj, globals_ref).ok()
+        d.decode_stream_with_encryption(&globals_obj, globals_ref)
+            .ok()
     })();
 
     let image = hayro_jbig2::Image::new_embedded(&jbig2_bytes, globals.as_deref())

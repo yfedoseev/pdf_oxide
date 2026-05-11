@@ -4349,7 +4349,11 @@ impl PdfDocument {
                         t.rows.iter().any(|r| {
                             r.cells.iter().any(|c| {
                                 c.bbox.is_some_and(|b| {
-                                    Self::contains_rect_with_tolerance(&b, &s.bbox, RETAIN_TOLERANCE)
+                                    Self::contains_rect_with_tolerance(
+                                        &b,
+                                        &s.bbox,
+                                        RETAIN_TOLERANCE,
+                                    )
                                 })
                             })
                         })
@@ -4685,8 +4689,7 @@ impl PdfDocument {
                 .replace('\u{FB02}', "fl")
                 .replace('\u{FB03}', "ffi")
                 .replace('\u{FB04}', "ffl")
-                .replace('\u{FB05}', "st")
-                .replace('\u{FB06}', "st")
+                .replace(['\u{FB05}', '\u{FB06}'], "st")
         } else {
             cleaned_text
         };
@@ -5586,15 +5589,17 @@ impl PdfDocument {
         // inserting a space would produce incorrect tokenisation.
         let prev_tail = prev.text.chars().next_back();
         let curr_head = current.text.chars().next();
-        let is_cjk = |c: char| matches!(
-            c as u32,
-            0x3040..=0x309F   // Hiragana
-            | 0x30A0..=0x30FF // Katakana
-            | 0x3400..=0x4DBF // CJK Unified Ideographs Extension A
-            | 0x4E00..=0x9FFF // CJK Unified Ideographs
-            | 0xAC00..=0xD7AF // Hangul Syllables
-            | 0x20000..=0x2A6DF // CJK Unified Ideographs Extension B
-        );
+        let is_cjk = |c: char| {
+            matches!(
+                c as u32,
+                0x3040..=0x309F   // Hiragana
+                | 0x30A0..=0x30FF // Katakana
+                | 0x3400..=0x4DBF // CJK Unified Ideographs Extension A
+                | 0x4E00..=0x9FFF // CJK Unified Ideographs
+                | 0xAC00..=0xD7AF // Hangul Syllables
+                | 0x20000..=0x2A6DF // CJK Unified Ideographs Extension B
+            )
+        };
         if prev_tail.is_some_and(is_cjk) && curr_head.is_some_and(is_cjk) {
             return false;
         }
@@ -5687,9 +5692,9 @@ impl PdfDocument {
         // Upper→lower transitions are excluded: a ligature spanning an upper→lower
         // boundary within a compound word (e.g. "officeMax" with "fl" ligature)
         // would otherwise produce a false split.
-        if prev_char.is_alphabetic() && boundary_char.is_ascii_digit() {
-            Some(boundary_byte)
-        } else if prev_char.is_ascii_lowercase() && boundary_char.is_ascii_uppercase() {
+        if (prev_char.is_alphabetic() && boundary_char.is_ascii_digit())
+            || (prev_char.is_ascii_lowercase() && boundary_char.is_ascii_uppercase())
+        {
             Some(boundary_byte)
         } else {
             None
@@ -5815,8 +5820,14 @@ impl PdfDocument {
             .map(|pair| {
                 let (bi, si) = *pair;
                 let sub = &spans[si];
-                (bi, si, sub.text.clone(), sub.bbox.x + sub.bbox.width,
-                 sub.char_widths.clone(), sub.font_size)
+                (
+                    bi,
+                    si,
+                    sub.text.clone(),
+                    sub.bbox.x + sub.bbox.width,
+                    sub.char_widths.clone(),
+                    sub.font_size,
+                )
             })
             .collect();
 
@@ -6281,10 +6292,7 @@ impl PdfDocument {
             // by a reviewer, NOT text displayed on the page. Only FreeText, Text
             // (note icon), and Stamp annotations have /Contents that represents the
             // annotation's visible label or overlay.
-            let has_contents = matches!(
-                subtype_lc.as_str(),
-                "text" | "freetext" | "stamp"
-            );
+            let has_contents = matches!(subtype_lc.as_str(), "text" | "freetext" | "stamp");
             if !has_contents {
                 continue;
             }
@@ -6292,7 +6300,9 @@ impl PdfDocument {
             let text = match dict.get("Contents") {
                 Some(Object::String(s)) => {
                     let decoded = Self::decode_pdf_text_string(s).trim().to_string();
-                    if decoded.is_empty() { continue; }
+                    if decoded.is_empty() {
+                        continue;
+                    }
                     decoded
                 },
                 _ => continue,
@@ -6316,15 +6326,25 @@ impl PdfDocument {
                         match item {
                             Object::Integer(n) => coords[i] = *n as f32,
                             Object::Real(f) => coords[i] = *f as f32,
-                            _ => { ok = false; break; },
+                            _ => {
+                                ok = false;
+                                break;
+                            },
                         }
                     }
-                    if !ok { continue; }
+                    if !ok {
+                        continue;
+                    }
                     let x = coords[0].min(coords[2]);
                     let y = coords[1].min(coords[3]);
                     let w = (coords[2] - coords[0]).abs();
                     let h = (coords[3] - coords[1]).abs();
-                    Rect { x, y, width: w.max(1.0), height: h.max(1.0) }
+                    Rect {
+                        x,
+                        y,
+                        width: w.max(1.0),
+                        height: h.max(1.0),
+                    }
                 },
                 _ => continue,
             };
@@ -6338,7 +6358,11 @@ impl PdfDocument {
                 font_weight: crate::layout::text_block::FontWeight::Normal,
                 is_italic: false,
                 is_monospace: false,
-                color: crate::layout::text_block::Color { r: 0.0, g: 0.0, b: 0.0 },
+                color: crate::layout::text_block::Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                },
                 mcid: None,
                 sequence: base_sequence + idx,
                 split_boundary_before: false,
@@ -6534,8 +6558,8 @@ impl PdfDocument {
                 // FileAttachment is explicitly in this category per §12.5.6.2 even
                 // though §12.5.6.15 calls it "descriptive text" — the pop-up semantics
                 // take precedence.
-                "highlight" | "underline" | "strikeout" | "squiggly"
-                | "caret" | "fileattachment" | "redact" | "ink" => {
+                "highlight" | "underline" | "strikeout" | "squiggly" | "caret"
+                | "fileattachment" | "redact" | "ink" => {
                     // Skip — /Contents is popup comment text, not page content.
                 },
                 // Link /Contents is an accessibility alternate description (§12.5.6.5).
@@ -6805,6 +6829,7 @@ impl PdfDocument {
     ///
     /// Per PDF Spec ISO 32000-1:2008 Section 12.7.3.4, /RC entries contain
     /// XHTML-formatted rich text. This method strips tags to produce plain text.
+    #[cfg(test)]
     fn strip_xhtml_tags(xhtml: &str) -> String {
         let mut result = String::with_capacity(xhtml.len());
         let mut inside_tag = false;
@@ -7429,9 +7454,11 @@ impl PdfDocument {
         // normalising here gives consistent word boundaries to every downstream
         // consumer (extract_text, kreuzberg word-F1, etc.).
         for span in &mut spans {
-            if span.text.chars().any(|c| {
-                matches!(c, '\u{2000}'..='\u{200B}' | '\u{202F}' | '\u{205F}')
-            }) {
+            if span
+                .text
+                .chars()
+                .any(|c| matches!(c, '\u{2000}'..='\u{200B}' | '\u{202F}' | '\u{205F}'))
+            {
                 span.text = crate::converters::text_post_processor::TextPostProcessor
                     ::normalize_unicode_spaces(&span.text)
                     .into_owned();
@@ -7458,7 +7485,7 @@ impl PdfDocument {
 
     /// Return per-page font statistics for use in heading detection and layout analysis.
     ///
-    /// [`PageFontStats`] contains:
+    /// [`crate::layout::PageFontStats`] contains:
     /// - `dominant_em`: the mode font size weighted by character count — the body text "1 em"
     /// - `dominant_line_height`: median baseline-to-baseline distance
     /// - `dominant_char_width`: average character advance width
@@ -7478,10 +7505,7 @@ impl PdfDocument {
     ///     else if ratio >= 1.4 { println!("H2: {}", span.text); }
     /// }
     /// ```
-    pub fn page_font_stats(
-        &self,
-        page_index: usize,
-    ) -> Result<crate::layout::PageFontStats> {
+    pub fn page_font_stats(&self, page_index: usize) -> Result<crate::layout::PageFontStats> {
         let spans = self.extract_spans(page_index)?;
         Ok(crate::layout::PageFontStats::from_spans(&spans))
     }
@@ -9651,8 +9675,8 @@ impl PdfDocument {
     /// Only spans whose bounding boxes match `region` under `mode` are kept;
     /// the retained spans are assembled through the full text pipeline
     /// (reading order, tables, line breaks) so the output matches the
-    /// quality of [`extract_text`]. Calling this with a region that covers
-    /// the whole page is equivalent to [`extract_text`].
+    /// quality of [`Self::extract_text`]. Calling this with a region that covers
+    /// the whole page is equivalent to [`Self::extract_text`].
     pub fn extract_text_in_rect(
         &self,
         page_index: usize,
@@ -9707,13 +9731,13 @@ impl PdfDocument {
     ///
     /// The excluded spans are removed before the full text-assembly pipeline
     /// runs, so the output has the same structure — line breaks, tables,
-    /// reading order — as [`extract_text`]. Calling this with an empty
-    /// `exclude` slice is equivalent to [`extract_text`].
+    /// reading order — as [`Self::extract_text`]. Calling this with an empty
+    /// `exclude` slice is equivalent to [`Self::extract_text`].
     ///
     /// `mode` controls the overlap rule:
-    /// - [`RectFilterMode::Intersects`] (default): drop any span with *any* overlap
-    /// - [`RectFilterMode::FullyContained`]: drop only spans lying entirely inside
-    /// - [`RectFilterMode::MinOverlap(t)`]: drop spans where at least fraction `t`
+    /// - [`crate::layout::RectFilterMode::Intersects`] (default): drop any span with *any* overlap
+    /// - [`crate::layout::RectFilterMode::FullyContained`]: drop only spans lying entirely inside
+    /// - `RectFilterMode::MinOverlap(t)`: drop spans where at least fraction `t`
     ///   of the *span's* area overlaps an excluded region
     ///
     /// For Tagged PDFs the extractor already honours `/Artifact` marked-content
@@ -9738,8 +9762,8 @@ impl PdfDocument {
 
     /// Extract words from a page excluding specific rectangular regions.
     ///
-    /// See [`extract_text_excluding_rects`] for a description of `exclude` and `mode`.
-    /// Returns the low-level [`Word`] stream; use [`extract_text_excluding_rects`]
+    /// See [`Self::extract_text_excluding_rects`] for a description of `exclude` and `mode`.
+    /// Returns the low-level [`crate::layout::Word`] stream; use [`Self::extract_text_excluding_rects`]
     /// for fully-assembled text with line breaks and tables.
     pub fn extract_words_excluding_rects(
         &self,
@@ -9754,9 +9778,9 @@ impl PdfDocument {
 
     /// Extract text spans from a page excluding specific rectangular regions.
     ///
-    /// See [`extract_text_excluding_rects`] for a description of `exclude` and `mode`.
-    /// Returns raw [`TextSpan`] objects with bounding boxes and font metadata;
-    /// use [`extract_text_excluding_rects`] for fully-assembled text output.
+    /// See [`Self::extract_text_excluding_rects`] for a description of `exclude` and `mode`.
+    /// Returns raw [`crate::layout::TextSpan`] objects with bounding boxes and font metadata;
+    /// use [`Self::extract_text_excluding_rects`] for fully-assembled text output.
     pub fn extract_spans_excluding_rects(
         &self,
         page_index: usize,
@@ -9967,7 +9991,7 @@ impl PdfDocument {
     /// multiple pages share the same font resources.
     #[cfg(feature = "rendering")]
     pub fn get_or_load_font_for_rendering(
-        &mut self,
+        &self,
         font_obj: &Object,
     ) -> Result<Arc<crate::fonts::FontInfo>> {
         if let Some(font_ref) = font_obj.as_reference() {
@@ -13381,10 +13405,20 @@ mod tests {
     // is_column_spanning_decimal / push_span_text tests (nougat_018 fix)
     // ========================================================================
 
-    fn make_decimal_span(text: &str, char_widths: Vec<f32>, bbox_w: f32, font_size: f32) -> TextSpan {
+    fn make_decimal_span(
+        text: &str,
+        char_widths: Vec<f32>,
+        bbox_w: f32,
+        font_size: f32,
+    ) -> TextSpan {
         TextSpan {
             text: text.to_string(),
-            bbox: crate::geometry::Rect { x: 0.0, y: 0.0, width: bbox_w, height: font_size },
+            bbox: crate::geometry::Rect {
+                x: 0.0,
+                y: 0.0,
+                width: bbox_w,
+                height: font_size,
+            },
             font_name: "F1".to_string(),
             font_size,
             font_weight: crate::layout::FontWeight::Normal,
@@ -13462,8 +13496,8 @@ mod tests {
     #[test]
     fn test_cw_boundary_split_theorem_number() {
         // "Theorem1.7": 10 chars, 7 widths → split before '1'
-        let span = make_decimal_span("Theorem1.7",
-            vec![11.2, 8.9, 7.4, 8.1, 6.6, 7.4, 13.4], 83.8, 14.3);
+        let span =
+            make_decimal_span("Theorem1.7", vec![11.2, 8.9, 7.4, 8.1, 6.6, 7.4, 13.4], 83.8, 14.3);
         let result = PdfDocument::char_widths_boundary_split(&span);
         assert_eq!(result, Some(7)); // byte 7 = '1'
     }
@@ -13480,8 +13514,8 @@ mod tests {
     #[test]
     fn test_cw_boundary_no_split_already_space() {
         // "Theorem 1.1": 7 widths, char at idx 7 is space → no split
-        let span = make_decimal_span("Theorem 1.1",
-            vec![9.3, 7.5, 6.1, 6.7, 5.5, 6.1, 11.2], 80.0, 12.0);
+        let span =
+            make_decimal_span("Theorem 1.1", vec![9.3, 7.5, 6.1, 6.7, 5.5, 6.1, 11.2], 80.0, 12.0);
         assert!(PdfDocument::char_widths_boundary_split(&span).is_none());
     }
 
@@ -13495,8 +13529,7 @@ mod tests {
     #[test]
     fn test_cw_boundary_no_split_nonascii_boundary() {
         // "Marysia Prus-Gł": boundary char is 'ł' (non-ASCII) → no split
-        let span = make_decimal_span("Marysia Prus-Gł",
-            vec![5.0; 14], 80.0, 12.0);
+        let span = make_decimal_span("Marysia Prus-Gł", vec![5.0; 14], 80.0, 12.0);
         assert!(PdfDocument::char_widths_boundary_split(&span).is_none());
     }
 
@@ -13511,8 +13544,8 @@ mod tests {
 
     #[test]
     fn test_push_span_text_splits_theorem_number() {
-        let span = make_decimal_span("Theorem1.7",
-            vec![11.2, 8.9, 7.4, 8.1, 6.6, 7.4, 13.4], 83.8, 14.3);
+        let span =
+            make_decimal_span("Theorem1.7", vec![11.2, 8.9, 7.4, 8.1, 6.6, 7.4, 13.4], 83.8, 14.3);
         let mut out = String::new();
         PdfDocument::push_span_text(&mut out, &span);
         assert_eq!(out, "Theorem 1.7");
@@ -14616,7 +14649,11 @@ mod tests {
         let spans = vec![make_test_span("\u{FB01}nd", 0.0, 0.0, 50.0, 12.0)]; // ﬁnd
         let result = doc.apply_intelligent_text_processing(spans);
         assert_eq!(result.len(), 1);
-        assert!(result[0].text.contains('\u{FB01}'), "ﬁ must be preserved, got: {:?}", result[0].text);
+        assert!(
+            result[0].text.contains('\u{FB01}'),
+            "ﬁ must be preserved, got: {:?}",
+            result[0].text
+        );
     }
 
     // ========================================================================
@@ -15319,10 +15356,9 @@ mod tests {
         // as two consecutive Tj operations with no word space between them.
         // We build the PDF bytes manually so we control the exact glyph positions.
         use crate::ffi::{
-            pdf_document_builder_create, pdf_document_builder_build,
-            pdf_document_builder_free, pdf_document_builder_letter_page,
-            pdf_page_builder_at, pdf_page_builder_done, pdf_page_builder_font,
-            pdf_page_builder_text, free_bytes,
+            free_bytes, pdf_document_builder_build, pdf_document_builder_create,
+            pdf_document_builder_free, pdf_document_builder_letter_page, pdf_page_builder_at,
+            pdf_page_builder_done, pdf_page_builder_font, pdf_page_builder_text,
         };
         use std::ffi::CString;
 
@@ -15354,7 +15390,11 @@ mod tests {
             let doc = PdfDocument::from_bytes(bytes).unwrap();
             let words = doc.extract_words(0).unwrap();
             // All characters in a single Tj → should be one word
-            let combined: String = words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+            let combined: String = words
+                .iter()
+                .map(|w| w.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
             assert!(
                 words.iter().any(|w| w.text.contains("peu/d")),
                 "the text 'peu/d' must appear in some word, got: {combined:?}"
@@ -15399,9 +15439,7 @@ mod tests {
             ($body:expr) => {{
                 off.push(out.len());
                 let id = off.len() - 1;
-                out.extend_from_slice(
-                    format!("{} 0 obj\n{}\nendobj\n", id, $body).as_bytes(),
-                );
+                out.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", id, $body).as_bytes());
             }};
         }
 
@@ -15416,16 +15454,8 @@ mod tests {
              /Encoding << /Type /Encoding /Differences [1 /fi] >> \
              /ToUnicode 6 0 R >>"
         )); // 4
-        push!(format!(
-            "<< /Length {} >>\nstream\n{}endstream",
-            content.len(),
-            content
-        )); // 5
-        push!(format!(
-            "<< /Length {} >>\nstream\n{}endstream",
-            cmap.len(),
-            cmap
-        )); // 6
+        push!(format!("<< /Length {} >>\nstream\n{}endstream", content.len(), content)); // 5
+        push!(format!("<< /Length {} >>\nstream\n{}endstream", cmap.len(), cmap)); // 6
 
         let xref_offset = out.len();
         out.extend_from_slice(format!("xref\n0 {}\n", off.len()).as_bytes());
@@ -16204,7 +16234,11 @@ mod tests {
         let doc = PdfDocument::from_bytes(pdf).unwrap();
         let spans = vec![make_test_span("\u{FB02}oor", 0.0, 0.0, 50.0, 12.0)]; // ﬂoor
         let result = doc.apply_intelligent_text_processing(spans);
-        assert!(result[0].text.contains('\u{FB02}'), "ﬂ must be preserved, got: {:?}", result[0].text);
+        assert!(
+            result[0].text.contains('\u{FB02}'),
+            "ﬂ must be preserved, got: {:?}",
+            result[0].text
+        );
     }
 
     #[test]
@@ -17151,9 +17185,8 @@ mod tests {
         let span_cell = Rect::new(10.0, 10.0, 50.0, 20.0);
         let in_any_cell = table.rows.iter().any(|r| {
             r.cells.iter().any(|c| {
-                c.bbox.is_some_and(|b| {
-                    PdfDocument::contains_rect_with_tolerance(&b, &span_cell, TOL)
-                })
+                c.bbox
+                    .is_some_and(|b| PdfDocument::contains_rect_with_tolerance(&b, &span_cell, TOL))
             })
         });
         assert!(in_any_cell, "span inside a cell bbox must be identified as in-table");
@@ -17162,11 +17195,8 @@ mod tests {
         let span_gap = Rect::new(95.0, 10.0, 10.0, 20.0);
 
         // 1. Outer-bbox filter (the OLD, incorrect approach) would classify it as in-table.
-        let in_outer_bbox = PdfDocument::contains_rect_with_tolerance(
-            &table.bbox.unwrap(),
-            &span_gap,
-            TOL,
-        );
+        let in_outer_bbox =
+            PdfDocument::contains_rect_with_tolerance(&table.bbox.unwrap(), &span_gap, TOL);
         assert!(
             in_outer_bbox,
             "gap span must be inside the outer table bbox (precondition for the bug to trigger)"
@@ -17175,9 +17205,8 @@ mod tests {
         // 2. Cell-bbox filter (the NEW, correct approach) must NOT classify it as in-table.
         let in_any_cell_gap = table.rows.iter().any(|r| {
             r.cells.iter().any(|c| {
-                c.bbox.is_some_and(|b| {
-                    PdfDocument::contains_rect_with_tolerance(&b, &span_gap, TOL)
-                })
+                c.bbox
+                    .is_some_and(|b| PdfDocument::contains_rect_with_tolerance(&b, &span_gap, TOL))
             })
         });
         assert!(

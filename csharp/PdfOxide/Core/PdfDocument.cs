@@ -385,7 +385,9 @@ namespace PdfOxide.Core
         /// <exception cref="PdfException">Thrown if conversion fails.</exception>
         public string ToMarkdown(int pageIndex)
         {
-            _lock.EnterReadLock();
+            // WriteLock because the Rust to_markdown lazily initialises structure-tree caches
+            // via a double-checked pattern that is not safe under concurrent &self calls.
+            _lock.EnterWriteLock();
             try
             {
                 ThrowIfDisposed();
@@ -395,7 +397,7 @@ namespace PdfOxide.Core
                 ExceptionMapper.ThrowIfError(errorCode);
                 return StringMarshaler.PtrToStringAndFree(ptr);
             }
-            finally { _lock.ExitReadLock(); }
+            finally { _lock.ExitWriteLock(); }
         }
 
         /// <summary>
@@ -406,7 +408,8 @@ namespace PdfOxide.Core
         /// <exception cref="PdfException">Thrown if conversion fails.</exception>
         public string ToMarkdownAll()
         {
-            _lock.EnterReadLock();
+            // WriteLock: same reason as ToMarkdown — lazy structure-tree cache is not concurrent-read-safe.
+            _lock.EnterWriteLock();
             try
             {
                 ThrowIfDisposed();
@@ -414,7 +417,7 @@ namespace PdfOxide.Core
                 ExceptionMapper.ThrowIfError(errorCode);
                 return StringMarshaler.PtrToStringAndFree(ptr);
             }
-            finally { _lock.ExitReadLock(); }
+            finally { _lock.ExitWriteLock(); }
         }
 
         /// <summary>

@@ -74,11 +74,11 @@ jobs:
           key: ${{ runner.os }}-fips-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-fips-cargo-
 
-      - name: Build --features fips
-        run: cargo build --features fips
+      - name: Build --no-default-features --features fips,icc
+        run: cargo build --no-default-features --features fips,icc
 
-      - name: Test --features fips
-        run: cargo test --features fips
+      - name: Test --no-default-features --features fips,icc
+        run: cargo test --no-default-features --features fips,icc
 
   # ─── Python wheel: build + smoke-test on all four release platforms
   # (linux x86_64, linux aarch64, macOS arm64, Windows x86_64) using the
@@ -149,7 +149,7 @@ jobs:
               yum install -y nasm golang clang || (yum install -y epel-release && yum install -y nasm golang clang)
             fi
             export CC=clang CXX=clang++
-          args: --release --target ${{ matrix.target }} --features python,fips --out dist
+          args: --release --target ${{ matrix.target }} --no-default-features --features python,fips,icc --out dist
 
       - name: Build FIPS wheel (macOS / Windows)
         if: runner.os != 'Linux'
@@ -163,7 +163,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then pip install delvewheel; fi
           maturin build --release \
             --target ${{ matrix.target }} \
-            --features python,fips \
+            --no-default-features --features python,fips,icc \
             --out dist
           if [ "$RUNNER_OS" = "macOS" ]; then
             # DYLD_LIBRARY_PATH lets delocate resolve the @rpath reference to

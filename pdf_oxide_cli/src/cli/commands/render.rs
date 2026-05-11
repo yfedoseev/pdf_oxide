@@ -10,7 +10,7 @@ pub fn run(
     output: Option<&Path>,
     password: Option<&str>,
 ) -> pdf_oxide::Result<()> {
-    let mut doc = super::open_doc(file, password)?;
+    let doc = super::open_doc(file, password)?;
     let page_count = doc.page_count()?;
     let page_indices = super::resolve_pages(pages, page_count)?;
 
@@ -21,7 +21,13 @@ pub fn run(
 
     let img_format = match format.to_lowercase().as_str() {
         "jpeg" | "jpg" => ImageFormat::Jpeg,
-        _ => ImageFormat::Png,
+        "png" => ImageFormat::Png,
+        other => {
+            return Err(pdf_oxide::Error::Unsupported(format!(
+                "unsupported format {:?}; use png or jpeg",
+                other
+            )))
+        },
     };
 
     let mut options = RenderOptions::with_dpi(dpi);
@@ -32,10 +38,15 @@ pub fn run(
     let ext = match img_format {
         ImageFormat::Png => "png",
         ImageFormat::Jpeg => "jpg",
+        ImageFormat::RawRgba8 => {
+            return Err(pdf_oxide::Error::Unsupported(
+                "RawRgba8 is not supported by the CLI renderer; use Png or Jpeg.".into(),
+            ));
+        },
     };
 
     for &page_idx in &page_indices {
-        let img = pdf_oxide::rendering::render_page(&mut doc, page_idx, &options)?;
+        let img = pdf_oxide::rendering::render_page(&doc, page_idx, &options)?;
 
         let out_path = match output {
             Some(out) if page_indices.len() == 1 && !out.is_dir() => out.to_path_buf(),

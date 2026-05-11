@@ -19,6 +19,18 @@ export function getVersion(): string;
  */
 export function getPdfOxideVersion(): string;
 
+/** Returns the active crypto provider name: "rust-crypto" (default) or "aws-lc-rs" (FIPS). */
+export function getActiveCryptoProvider(): string;
+
+/** Returns true if the FIPS-validated aws-lc-rs provider was compiled into this build. */
+export function isFipsCryptoAvailable(): boolean;
+
+/**
+ * Installs the FIPS-validated aws-lc-rs provider as the process-wide active backend.
+ * Throws if the FIPS provider was not compiled in (build without --features fips).
+ */
+export function useFipsCryptoProvider(): void;
+
 // ============================================================================
 // Error Classes
 // ============================================================================

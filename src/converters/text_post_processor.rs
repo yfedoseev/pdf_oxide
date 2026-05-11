@@ -450,9 +450,9 @@ impl TextPostProcessor {
     /// Zero-width space (U+200B) carries no width and is removed entirely.
     pub(crate) fn normalize_unicode_spaces(text: &str) -> std::borrow::Cow<'_, str> {
         // Fast path: skip allocation when no typographic spaces are present.
-        let needs_work = text.chars().any(|c| matches!(c,
-            '\u{2000}'..='\u{200B}' | '\u{202F}' | '\u{205F}'
-        ));
+        let needs_work = text
+            .chars()
+            .any(|c| matches!(c, '\u{2000}'..='\u{200B}' | '\u{202F}' | '\u{205F}'));
         if !needs_work {
             return std::borrow::Cow::Borrowed(text);
         }
@@ -462,7 +462,7 @@ impl TextPostProcessor {
                 // EN QUAD … HAIR SPACE, NARROW NO-BREAK SPACE, MEDIUM MATH SPACE
                 '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' => result.push(' '),
                 // Zero-width space: not a visible character, omit
-                '\u{200B}' => {}
+                '\u{200B}' => {},
                 _ => result.push(ch),
             }
         }
@@ -889,7 +889,8 @@ mod tests {
     #[test]
     fn test_normalize_unicode_spaces_hair_space() {
         // U+200A (HAIR SPACE) used as word separator in justified PDFs — must become U+0020
-        let input = "The\u{200A}\u{200A}\u{200A}\u{200A}K2\u{200A}\u{200A}\u{200A}\u{200A}Australian";
+        let input =
+            "The\u{200A}\u{200A}\u{200A}\u{200A}K2\u{200A}\u{200A}\u{200A}\u{200A}Australian";
         let output = TextPostProcessor::process(input);
         assert_eq!(output, "The K2 Australian");
     }

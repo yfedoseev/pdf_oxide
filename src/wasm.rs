@@ -473,11 +473,11 @@ impl WasmPdfDocument {
     #[wasm_bindgen(js_name = "renderPage")]
     pub fn render_page(&mut self, page_index: usize, dpi: Option<u32>) -> Result<Vec<u8>, JsValue> {
         let opts = crate::rendering::RenderOptions::with_dpi(dpi.unwrap_or(150));
-        let mut inner = self
+        let inner = self
             .inner
             .lock()
             .map_err(|_| JsValue::from_str("Mutex lock failed"))?;
-        let img = crate::rendering::render_page(&mut inner, page_index, &opts)
+        let img = crate::rendering::render_page(&inner, page_index, &opts)
             .map_err(|e| JsValue::from_str(&format!("Failed to render page: {}", e)))?;
         Ok(img.as_bytes().to_vec())
     }
@@ -3194,11 +3194,11 @@ impl WasmPdfDocument {
     #[wasm_bindgen(js_name = "flattenToImages")]
     pub fn flatten_to_images(&mut self, dpi: Option<u32>) -> Result<Vec<u8>, JsValue> {
         let dpi = dpi.unwrap_or(150);
-        let mut inner = self
+        let inner = self
             .inner
             .lock()
             .map_err(|_| JsValue::from_str("Lock failed"))?;
-        crate::rendering::flatten_to_images(&mut inner, dpi)
+        crate::rendering::flatten_to_images(&inner, dpi)
             .map_err(|e| JsValue::from_str(&format!("Failed to flatten: {}", e)))
     }
 }

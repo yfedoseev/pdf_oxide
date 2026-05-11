@@ -15,6 +15,7 @@
 
 use pdf_oxide::editor::{EncryptionAlgorithm, EncryptionConfig, Permissions};
 use pdf_oxide::writer::{DocumentBuilder, DocumentMetadata, PageSize};
+#[cfg(feature = "legacy-crypto")]
 use pdf_oxide::PdfDocument;
 use std::fs;
 use tempfile::tempdir;
@@ -70,6 +71,7 @@ fn to_bytes_encrypted_includes_encrypt_dict() {
 }
 
 /// `save_with_encryption` honours a custom algorithm choice.
+#[cfg(feature = "legacy-crypto")]
 #[test]
 fn save_with_encryption_respects_aes128_config() {
     let dir = tempdir().unwrap();
@@ -190,6 +192,7 @@ fn save_encrypted_works_with_embedded_font_subsetting() {
 
 /// Helper: open an encrypted PDF with the given password and extract text
 /// from page 0. Returns the extracted string.
+#[cfg(feature = "legacy-crypto")]
 fn open_encrypted_and_extract(path: &std::path::Path, password: &str) -> String {
     let doc = PdfDocument::open(path).expect("encrypted PDF should open");
     let authenticated = doc
@@ -201,6 +204,7 @@ fn open_encrypted_and_extract(path: &std::path::Path, password: &str) -> String 
 }
 
 /// Helper: write encrypted bytes to a temp file and open+extract.
+#[cfg(feature = "legacy-crypto")]
 fn bytes_open_encrypted_and_extract(bytes: &[u8], password: &str) -> String {
     let dir = tempdir().unwrap();
     let path = dir.path().join("from_bytes.pdf");
@@ -212,6 +216,7 @@ fn bytes_open_encrypted_and_extract(bytes: &[u8], password: &str) -> String {
 /// Content must survive the encryption round-trip.
 /// Note: AES-256 (V=5, R=6) round-trips require /UE//OE unwrap support
 /// on the read side; use AES-128 (V=4, R=4) which fully round-trips today.
+#[cfg(feature = "legacy-crypto")]
 #[test]
 fn save_encrypted_content_preserved_ascii() {
     let dir = tempdir().unwrap();
@@ -229,6 +234,7 @@ fn save_encrypted_content_preserved_ascii() {
 }
 
 /// to_bytes_with_encryption (AES-128) must also preserve content end-to-end.
+#[cfg(feature = "legacy-crypto")]
 #[test]
 fn to_bytes_encrypted_content_preserved() {
     let expected = "bytes round-trip content";
@@ -242,6 +248,7 @@ fn to_bytes_encrypted_content_preserved() {
 }
 
 /// AES-128 round-trip preserves content.
+#[cfg(feature = "legacy-crypto")]
 #[test]
 fn save_with_encryption_aes128_content_preserved() {
     let dir = tempdir().unwrap();
@@ -262,6 +269,7 @@ fn save_with_encryption_aes128_content_preserved() {
 
 /// Read-only permissions should not prevent content from being readable.
 /// Uses AES-128 which fully round-trips today.
+#[cfg(feature = "legacy-crypto")]
 #[test]
 fn save_encrypted_read_only_permissions_content_preserved() {
     let dir = tempdir().unwrap();
@@ -286,6 +294,7 @@ fn save_encrypted_read_only_permissions_content_preserved() {
 /// FontFile2 / ToUnicode / FontDescriptor) must survive the encryption
 /// pipeline.  This is the core regression for issue #401.
 /// Uses AES-128 which fully round-trips today.
+#[cfg(feature = "legacy-crypto")]
 #[test]
 fn save_encrypted_embedded_ttf_content_preserved() {
     use pdf_oxide::writer::EmbeddedFont;
@@ -330,6 +339,7 @@ fn save_encrypted_embedded_ttf_content_preserved() {
 ///
 /// The user reported that `save_with_encryption` with AES-128 produced
 /// a blank PDF when the builder used embedded TrueType fonts.
+#[cfg(feature = "legacy-crypto")]
 #[test]
 fn two_embedded_fonts_aes128_content_preserved() {
     use pdf_oxide::writer::EmbeddedFont;

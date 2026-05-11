@@ -438,7 +438,7 @@ pub fn extract_table_from_spans(
 /// Return the display text for a span when used as a table cell token.
 /// Mirrors `PdfDocument::push_span_text`: splits column-spanning decimals
 /// (e.g. "12.11" across adjacent score columns) at the decimal point.
-fn span_text_for_cell(span: &crate::layout::TextSpan) -> String {
+pub(super) fn span_text_for_cell(span: &crate::layout::TextSpan) -> String {
     let text = &span.text;
     // Must be an "N.M" pattern with all-digit parts and a single dot.
     let dot_pos = match text.find('.') {
@@ -1060,25 +1060,49 @@ mod tests {
         //   "（"    x=353.83 w=10.56 end=364.39   gap=-0.18 (overlap → no space)
         //   "peu/d" x=364.39 w=25.24             gap=0.00  (touching → no space)
         let base = crate::layout::TextSpan {
-            artifact_type: None, text: String::new(),
+            artifact_type: None,
+            text: String::new(),
             bbox: Rect::new(0.0, 678.0, 0.0, 10.56),
-            font_name: "Test".to_string(), font_size: 10.56,
-            font_weight: FontWeight::Normal, is_italic: false,
-            is_monospace: false, color: Color::black(), mcid: None,
-            sequence: 0, split_boundary_before: false, offset_semantic: false,
-            char_spacing: 0.0, word_spacing: 0.0, horizontal_scaling: 1.0,
-            primary_detected: false, char_widths: vec![],
+            font_name: "Test".to_string(),
+            font_size: 10.56,
+            font_weight: FontWeight::Normal,
+            is_italic: false,
+            is_monospace: false,
+            color: Color::black(),
+            mcid: None,
+            sequence: 0,
+            split_boundary_before: false,
+            offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 1.0,
+            primary_detected: false,
+            char_widths: vec![],
         };
         let spans = vec![
-            crate::layout::TextSpan { text: "Q".into(),     bbox: Rect::new(345.79, 678.0, 8.22,  10.56), mcid: Some(1), ..base.clone() },
-            crate::layout::TextSpan { text: "（".into(),    bbox: Rect::new(353.83, 678.0, 10.56, 10.56), mcid: Some(2), ..base.clone() },
-            crate::layout::TextSpan { text: "peu/d".into(), bbox: Rect::new(364.39, 678.0, 25.24, 10.56), mcid: Some(3), ..base.clone() },
+            crate::layout::TextSpan {
+                text: "Q".into(),
+                bbox: Rect::new(345.79, 678.0, 8.22, 10.56),
+                mcid: Some(1),
+                ..base.clone()
+            },
+            crate::layout::TextSpan {
+                text: "（".into(),
+                bbox: Rect::new(353.83, 678.0, 10.56, 10.56),
+                mcid: Some(2),
+                ..base.clone()
+            },
+            crate::layout::TextSpan {
+                text: "peu/d".into(),
+                bbox: Rect::new(364.39, 678.0, 25.24, 10.56),
+                mcid: Some(3),
+                ..base.clone()
+            },
         ];
 
         let result = extract_table_from_spans(&table_elem, &spans).unwrap();
         assert_eq!(
-            result.rows[0].cells[0].text,
-            "Q（peu/d",
+            result.rows[0].cells[0].text, "Q（peu/d",
             "adjacent MCID spans must not get a space inserted between them"
         );
     }
@@ -1095,21 +1119,40 @@ mod tests {
         table_elem.add_child(StructChild::StructElem(Box::new(tr)));
 
         let base = crate::layout::TextSpan {
-            artifact_type: None, text: String::new(),
+            artifact_type: None,
+            text: String::new(),
             bbox: Rect::new(0.0, 0.0, 0.0, 12.0),
-            font_name: "Test".to_string(), font_size: 12.0,
+            font_name: "Test".to_string(),
+            font_size: 12.0,
             font_weight: crate::layout::text_block::FontWeight::Normal,
-            is_italic: false, is_monospace: false,
-            color: crate::layout::text_block::Color::black(), mcid: None,
-            sequence: 0, split_boundary_before: false, offset_semantic: false,
-            char_spacing: 0.0, word_spacing: 0.0, horizontal_scaling: 1.0,
-            primary_detected: false, char_widths: vec![],
+            is_italic: false,
+            is_monospace: false,
+            color: crate::layout::text_block::Color::black(),
+            mcid: None,
+            sequence: 0,
+            split_boundary_before: false,
+            offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 1.0,
+            primary_detected: false,
+            char_widths: vec![],
         };
         // Line 1: "Hello" ends at x=100, y=200.  Line 2: "World" starts at x=10, y=188.
         // y_diff = 12 > line_h * 0.5 = 6 → different lines → space inserted.
         let spans = vec![
-            crate::layout::TextSpan { text: "Hello".into(), bbox: Rect::new(10.0, 200.0, 90.0, 12.0), mcid: Some(1), ..base.clone() },
-            crate::layout::TextSpan { text: "World".into(), bbox: Rect::new(10.0, 188.0, 90.0, 12.0), mcid: Some(2), ..base.clone() },
+            crate::layout::TextSpan {
+                text: "Hello".into(),
+                bbox: Rect::new(10.0, 200.0, 90.0, 12.0),
+                mcid: Some(1),
+                ..base.clone()
+            },
+            crate::layout::TextSpan {
+                text: "World".into(),
+                bbox: Rect::new(10.0, 188.0, 90.0, 12.0),
+                mcid: Some(2),
+                ..base.clone()
+            },
         ];
 
         let result = extract_table_from_spans(&table_elem, &spans).unwrap();

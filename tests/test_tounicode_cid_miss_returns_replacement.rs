@@ -46,7 +46,7 @@ fn subset_type0_font() -> FontInfo {
         cid_font_type: None,
         cid_widths: None,
         cid_default_width: 1000.0,
-            has_explicit_dw: false,
+        has_explicit_dw: false,
         font_weight: None,
         flags: None,
         stem_v: None,

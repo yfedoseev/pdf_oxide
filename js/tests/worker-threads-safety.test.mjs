@@ -1,19 +1,19 @@
-// Tests that concurrent worker_threads access to a shared PdfDocument handle
-// is serialised by the native C++ mutex and does not cause crashes or corruption.
+// Tests that concurrent worker_threads each opening their own PdfDocument handle
+// (from the same serialised bytes) do not crash or corrupt each other's state.
 //
-// Without the DocumentWrapper mutex, passing the same handle to multiple workers
-// would race on the Rust FFI layer (violating the exclusive-ownership contract in
-// src/ffi.rs) and cause UB / memory corruption within seconds.
+// Each worker re-opens its own document instance; this exercises the per-document
+// Mutex path (src/ffi.rs exclusive-ownership contract) under parallel load without
+// requiring cross-thread handle sharing, which Node worker_threads do not support.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Worker, isMainThread, workerData, parentPort } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
+import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 
 const __filename = fileURLToPath(import.meta.url);
 
 // ── Worker body ───────────────────────────────────────────────────────────────
-// When loaded as a worker, run N extract-text calls on the shared handle.
+// When loaded as a worker, run N extract-text calls on its own handle.
 if (!isMainThread) {
   const { handle, iterations } = workerData;
   let mod;
@@ -77,7 +77,9 @@ function spawnWorker(handle, iterations) {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-test('concurrent workers each open and query the same PDF bytes without errors', { skip }, async () => {
+test('concurrent workers each open and query the same PDF bytes without errors', {
+  skip,
+}, async () => {
   const docBytes = makeDocBytes();
   const WORKERS = 8;
   const ITERATIONS = 20;

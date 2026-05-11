@@ -26,9 +26,9 @@ const FIXTURE: &str = "tests/fixtures/issue_regressions/alpha_channel/538250-1.p
 
 #[test]
 fn renders_without_error() {
-    let mut doc = PdfDocument::open(FIXTURE).expect("open fixture");
+    let doc = PdfDocument::open(FIXTURE).expect("open fixture");
     let opts = RenderOptions::with_dpi(96);
-    let img = render_page(&mut doc, 0, &opts).expect("render page 0");
+    let img = render_page(&doc, 0, &opts).expect("render page 0");
     assert!(img.width > 0);
     assert!(img.height > 0);
     // At least some pixels must have been written — a blank-page
@@ -47,9 +47,9 @@ fn renders_without_error() {
 /// every pixel to pure black or pure white and leave only two colours.
 #[test]
 fn multiply_overlay_preserves_intermediate_shades() {
-    let mut doc = PdfDocument::open(FIXTURE).expect("open fixture");
+    let doc = PdfDocument::open(FIXTURE).expect("open fixture");
     let opts = RenderOptions::with_dpi(96);
-    let img = render_page(&mut doc, 0, &opts).expect("render page 0");
+    let img = render_page(&doc, 0, &opts).expect("render page 0");
 
     let cursor = std::io::Cursor::new(&img.data);
     let decoded = image::load(cursor, image::ImageFormat::Png).expect("decode rendered PNG");

@@ -137,6 +137,16 @@
 
 // Glibc 2.34 compatibility (#416): LLVM may emit calls to __memcmpeq@GLIBC_2.35,
 // which does not exist in glibc 2.34 (Amazon Linux 2023, some Ubuntu 22.04 builds).
+// `fips` and `legacy-crypto` are mutually exclusive: FIPS 140-3 forbids MD5
+// and RC4, which `legacy-crypto` pulls in. Build FIPS without legacy crypto:
+//   cargo build --no-default-features --features fips,icc
+#[cfg(all(feature = "fips", feature = "legacy-crypto"))]
+compile_error!(
+    "Features `fips` and `legacy-crypto` are mutually exclusive. \
+     FIPS 140-3 forbids MD5 (pulled in by `legacy-crypto`). \
+     Build with: --no-default-features --features fips,icc"
+);
+
 // A weak stub redirecting to plain memcmp satisfies the reference on older glibc;
 // glibc 2.35's own definition wins when available. global_asm! works with both
 // GNU ld and lld, unlike --defsym which lld rejects for PLT-resolved symbols.

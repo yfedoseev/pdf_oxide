@@ -2257,7 +2257,8 @@ impl DocumentEditor {
                                     all_form_field_data
                                         .iter()
                                         .filter(|(pg_idx, _, wrapper, _)| {
-                                            *pg_idx == source_page_index && !wrapper.is_parent_only()
+                                            *pg_idx == source_page_index
+                                                && !wrapper.is_parent_only()
                                         })
                                         .map(|(_, id, wrapper, _)| (*id, wrapper.clone()))
                                         .collect();
@@ -2302,7 +2303,8 @@ impl DocumentEditor {
                                     self.apply_redactions_pages.contains(&source_page_index);
                                 let redaction_data: Option<(Vec<RedactionData>, u32)> =
                                     if should_apply_redactions {
-                                        let redactions = self.get_redaction_data(source_page_index)?;
+                                        let redactions =
+                                            self.get_redaction_data(source_page_index)?;
                                         if !redactions.is_empty() {
                                             let overlay_id = self.allocate_object_id();
                                             Some((redactions, overlay_id))
@@ -2321,7 +2323,8 @@ impl DocumentEditor {
                                     u32,
                                     Vec<(u32, String)>,
                                 )> = if should_flatten_forms {
-                                    let appearances = self.get_widget_appearances(source_page_index)?;
+                                    let appearances =
+                                        self.get_widget_appearances(source_page_index)?;
                                     if !appearances.is_empty() {
                                         let overlay_id = self.allocate_object_id();
                                         let xobj_ids: Vec<(u32, String)> = appearances
@@ -2777,8 +2780,9 @@ impl DocumentEditor {
                                         }
                                     } else {
                                         // Check if we have image modifications for this page
-                                        let has_image_mods =
-                                            self.image_modifications.contains_key(&source_page_index);
+                                        let has_image_mods = self
+                                            .image_modifications
+                                            .contains_key(&source_page_index);
 
                                         if has_image_mods {
                                             // Rewrite content stream with image modifications

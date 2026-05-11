@@ -1435,7 +1435,7 @@ impl Pdf {
     ) -> Result<crate::rendering::RenderedImage> {
         self.ensure_editor()?;
         if let Some(ref mut editor) = self.editor {
-            crate::rendering::render_page(editor.source_mut(), page_index, options)
+            crate::rendering::render_page(editor.source(), page_index, options)
         } else {
             Err(Error::InvalidOperation(
                 "No document loaded. Use Pdf::open() or create one from content.".to_string(),

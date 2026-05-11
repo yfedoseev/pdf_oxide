@@ -337,6 +337,7 @@ fn test_encryption_config_default() {
     assert!(config.permissions.print); // Permissions::all() by default
 }
 
+#[cfg(feature = "legacy-crypto")]
 #[test]
 fn test_encryption_config_with_algorithm() {
     let config = EncryptionConfig::new("u", "o").with_algorithm(EncryptionAlgorithm::Aes128);
@@ -350,6 +351,7 @@ fn test_encryption_config_with_permissions() {
     assert!(config.permissions.accessibility);
 }
 
+#[cfg(feature = "legacy-crypto")]
 #[test]
 fn test_encryption_algorithm_variants() {
     assert_ne!(EncryptionAlgorithm::Rc4_40, EncryptionAlgorithm::Rc4_128);

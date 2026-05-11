@@ -39,9 +39,7 @@ fn build_minimal_pdf_raw(content: &[u8], page_extra: &[u8]) -> Vec<u8> {
     pdf.extend_from_slice(b" /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n");
 
     let off4 = pdf.len();
-    pdf.extend_from_slice(
-        format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes(),
-    );
+    pdf.extend_from_slice(format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes());
     pdf.extend_from_slice(content);
     pdf.extend_from_slice(b"\nendstream\nendobj\n");
 
@@ -72,23 +70,44 @@ fn build_minimal_pdf_raw(content: &[u8], page_extra: &[u8]) -> Vec<u8> {
 // Section 1 — bare-word identifier in PDF stream must not crash
 // ---------------------------------------------------------------------------
 
-/// Before the fix, `OBJR` (without a leading `/`) in a PDF stream would cause
-/// the lexer to fail and fall back to Object::Null, corrupting the parse of the
-/// containing object.  The document would open but subsequent extraction could
-/// crash or produce nothing.
+/// Crash-safety guard: a PDF whose content stream contains an unknown bare
+/// keyword (`OBJR`, no leading `/`) must not panic or produce empty output.
 ///
-/// After the fix, bare identifiers are accepted as Name tokens (lenient
-/// fallback matching poppler/pdfjs behaviour).
+/// Content-stream parsers skip unknown operators by design; this test guards
+/// against regressions in that error-recovery path.  The `token_lenient`
+/// dictionary-value leniency is tested separately in
+/// `bare_word_in_dict_value_does_not_crash`.
 #[test]
 fn bare_word_identifier_does_not_crash() {
-    // Content stream with a bare OBJR keyword (no leading /)
+    // Content stream with an unknown bare keyword (no leading /)
     let content = b"BT /F1 12 Tf 50 700 Td (Hello bare-word) Tj ET\nOBJR 0 0 100 100";
     let pdf = one_page_pdf_with_content(content);
     let doc = PdfDocument::from_bytes(pdf).expect("PDF with bare OBJR must open without error");
-    let text = doc.extract_text(0).expect("extract_text must not panic on bare-word PDF");
+    let text = doc
+        .extract_text(0)
+        .expect("extract_text must not panic on bare-word PDF");
     assert!(
         text.contains("Hello bare-word"),
         "text must be extracted from bare-word PDF; got: {:?}",
+        text
+    );
+}
+
+/// Exercises the `token_lenient` dictionary-value fallback in `parser.rs`.
+/// The page dict contains `/Orientation Landscape` where `Landscape` is a bare
+/// identifier (no leading `/`).  `parse_object` fails on it; `token_lenient`
+/// recovers it as a Name token so the document opens and text extracts cleanly.
+#[test]
+fn bare_word_in_dict_value_does_not_crash() {
+    let pdf = build_minimal_pdf_raw(
+        b"BT /F1 12 Tf 50 700 Td (Dict bare-word) Tj ET",
+        b"/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Orientation Landscape",
+    );
+    let doc = PdfDocument::from_bytes(pdf).expect("PDF with bare dict value must open");
+    let text = doc.extract_text(0).expect("extract must not panic");
+    assert!(
+        text.contains("Dict bare-word"),
+        "text must be extracted from bare-dict-value PDF; got: {:?}",
         text
     );
 }
@@ -132,9 +151,7 @@ fn corrupt_struct_tree_root_falls_back_gracefully() {
 
     let content = b"BT /F1 12 Tf 50 700 Td (Fallback text) Tj ET";
     let off4 = pdf.len();
-    pdf.extend_from_slice(
-        format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes(),
-    );
+    pdf.extend_from_slice(format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes());
     pdf.extend_from_slice(content);
     pdf.extend_from_slice(b"\nendstream\nendobj\n");
 
@@ -192,9 +209,7 @@ fn encrypted_pdf_page_count_returns_encrypted_error() {
     let mut pdf = b"%PDF-1.4\n".to_vec();
 
     let off1 = pdf.len();
-    pdf.extend_from_slice(
-        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Encrypt 6 0 R >>\nendobj\n",
-    );
+    pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Encrypt 6 0 R >>\nendobj\n");
 
     let off2 = pdf.len();
     // The pages object is an ObjStm (compressed) — but we point to obj 99 which
@@ -248,7 +263,9 @@ fn encrypted_pdf_page_count_returns_encrypted_error() {
     //   b) return the actual page count if authentication somehow succeeded.
     // What it must NOT do is return Ok(0) — that's the regression.
     match doc.page_count() {
-        Ok(0) => panic!("page_count() returned Ok(0) for encrypted PDF — this is the pre-fix regression"),
+        Ok(0) => {
+            panic!("page_count() returned Ok(0) for encrypted PDF — this is the pre-fix regression")
+        },
         Ok(n) => {
             // Authentication succeeded (unlikely with dummy creds but acceptable)
             assert!(n > 0, "page count must be positive when Ok() is returned");
@@ -319,9 +336,7 @@ fn annotation_heavy_page_extracts_body_text() {
     );
 
     let off4 = pdf.len();
-    pdf.extend_from_slice(
-        format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes(),
-    );
+    pdf.extend_from_slice(format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes());
     pdf.extend_from_slice(content);
     pdf.extend_from_slice(b"\nendstream\nendobj\n");
 
@@ -366,7 +381,9 @@ fn annotation_heavy_page_extracts_body_text() {
     );
 
     let doc = PdfDocument::from_bytes(pdf).expect("annotation-heavy PDF must open");
-    let text = doc.extract_text(0).expect("extract_text must not crash on annotation-heavy page");
+    let text = doc
+        .extract_text(0)
+        .expect("extract_text must not crash on annotation-heavy page");
     assert!(
         text.contains("Body text here"),
         "body text must not be lost due to annotation processing; got: {:?}",

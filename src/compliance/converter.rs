@@ -834,7 +834,7 @@ impl PdfAConverter {
         editor: &mut DocumentEditor,
         result: &mut ConversionResult,
     ) -> Result<()> {
-        let flat_bytes = crate::rendering::flatten_to_images(editor.source_mut(), 144)?;
+        let flat_bytes = crate::rendering::flatten_to_images(editor.source(), 144)?;
         editor.replace_source_bytes(flat_bytes)?;
         result.add_action(
             ConversionAction::new(
@@ -1053,7 +1053,7 @@ impl PdfAConverter {
                 // Render the annotation region.
                 let opts = RenderOptions::with_dpi(144);
                 let rendered =
-                    match render_page_region(editor.source_mut(), page_idx, (x, y, w, h), &opts) {
+                    match render_page_region(editor.source(), page_idx, (x, y, w, h), &opts) {
                         Ok(r) => r,
                         Err(_) => continue,
                     };

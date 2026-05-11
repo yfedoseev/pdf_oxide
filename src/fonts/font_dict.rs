@@ -823,8 +823,8 @@ impl FontInfo {
         Option<CIDSystemInfo>,
         Option<String>,
         Option<HashMap<u16, f32>>,
-        f32,    // cid_default_width
-        bool,   // has_explicit_dw (F14/F15 fix)
+        f32,                  // cid_default_width
+        bool,                 // has_explicit_dw (F14/F15 fix)
         Option<TrueTypeCMap>, // TrueType cmap from descendant's embedded font
         Option<Arc<Vec<u8>>>, // Embedded font data from CIDFont's FontDescriptor
     )> {
@@ -1017,21 +1017,19 @@ impl FontInfo {
 
         // Parse /DW (default width for CIDs) - PDF Spec Section 9.7.4.3
         // Default is 1000 if not specified
-        let dw_value = cidfont_dict
-            .get("DW")
-            .and_then(|obj| {
-                // Resolve indirect reference if needed
-                let resolved = if let Some(r) = obj.as_reference() {
-                    doc.load_object(r).ok()
-                } else {
-                    Some(obj.clone())
-                };
-                resolved.and_then(|o| match &o {
-                    Object::Integer(i) => Some(*i as f32),
-                    Object::Real(r) => Some(*r as f32),
-                    _ => None,
-                })
-            });
+        let dw_value = cidfont_dict.get("DW").and_then(|obj| {
+            // Resolve indirect reference if needed
+            let resolved = if let Some(r) = obj.as_reference() {
+                doc.load_object(r).ok()
+            } else {
+                Some(obj.clone())
+            };
+            resolved.and_then(|o| match &o {
+                Object::Integer(i) => Some(*i as f32),
+                Object::Real(r) => Some(*r as f32),
+                _ => None,
+            })
+        });
         // F14/F15 fix: track whether /DW was explicitly present in the PDF.
         let has_explicit_dw = dw_value.is_some();
         let cid_default_width = dw_value.unwrap_or(1000.0);
@@ -1832,7 +1830,11 @@ impl FontInfo {
         let name: &str = if let Some(idx) = raw_name.find('+') {
             // Strip subset prefix: the part after '+' is the actual font name
             let suffix = &raw_name[idx + 1..];
-            if suffix.is_empty() { raw_name } else { suffix }
+            if suffix.is_empty() {
+                raw_name
+            } else {
+                suffix
+            }
         } else {
             raw_name
         };
@@ -1841,11 +1843,21 @@ impl FontInfo {
         // the spec's canonical PostScript name is "HelveticaOblique" (no hyphen).
         // Both are accepted.
         const STANDARD_14: &[&str] = &[
-            "Courier", "Courier-Bold", "Courier-BoldOblique", "Courier-Oblique",
-            "Helvetica", "Helvetica-Bold", "Helvetica-BoldOblique",
-            "Helvetica-Oblique", "HelveticaOblique",
-            "Times-Roman", "Times-Bold", "Times-BoldItalic", "Times-Italic",
-            "Symbol", "ZapfDingbats",
+            "Courier",
+            "Courier-Bold",
+            "Courier-BoldOblique",
+            "Courier-Oblique",
+            "Helvetica",
+            "Helvetica-Bold",
+            "Helvetica-BoldOblique",
+            "Helvetica-Oblique",
+            "HelveticaOblique",
+            "Times-Roman",
+            "Times-Bold",
+            "Times-BoldItalic",
+            "Times-Italic",
+            "Symbol",
+            "ZapfDingbats",
         ];
         if !STANDARD_14.contains(&name) {
             return None;
@@ -2644,7 +2656,9 @@ impl FontInfo {
             // This is the correct primary path for GBpc-EUC-H, GB-EUC-H, B5pc-H,
             // EUC-H, KSC-EUC-H, etc.  Returns None for Identity/UCS2 CMaps, in
             // which case we fall through to the CID lookup below.
-            if let Some(result) = decode_cjk_raw_charcode(char_code, &enc_name, &self.cid_system_info) {
+            if let Some(result) =
+                decode_cjk_raw_charcode(char_code, &enc_name, &self.cid_system_info)
+            {
                 return Some(result);
             }
 
@@ -3137,9 +3151,7 @@ impl FontInfo {
         // for Type0 fonts with no /W or /DW — exactly the fonts that need correction.
         // Now: true when /Widths is present (simple fonts), or when /W has entries
         // (CID fonts), or when /DW was explicitly set in the CIDFont dictionary.
-        self.widths.is_some()
-            || self.cid_widths.is_some()
-            || self.has_explicit_dw
+        self.widths.is_some() || self.cid_widths.is_some() || self.has_explicit_dw
     }
 
     /// Check if this font is likely italic based on the font name.
@@ -4234,7 +4246,10 @@ fn decode_cjk_raw_charcode(
     enc_name: &str,
     cid_system_info: &Option<CIDSystemInfo>,
 ) -> Option<String> {
-    let ordering = cid_system_info.as_ref().map(|i| i.ordering.as_str()).unwrap_or("");
+    let ordering = cid_system_info
+        .as_ref()
+        .map(|i| i.ordering.as_str())
+        .unwrap_or("");
 
     // Determine which legacy encoding applies based on the CMap name and ordering.
     // CMap names that imply raw legacy encoding (not CID-keyed identity):
@@ -4251,9 +4266,7 @@ fn decode_cjk_raw_charcode(
         Some(encoding_rs::BIG5)
     } else if enc_name.contains("EUC") && ordering == "Japan1" {
         Some(encoding_rs::EUC_JP)
-    } else if (enc_name.contains("KSC") || enc_name.contains("KSCms"))
-        && ordering == "Korea1"
-    {
+    } else if (enc_name.contains("KSC") || enc_name.contains("KSCms")) && ordering == "Korea1" {
         Some(encoding_rs::EUC_KR)
     } else {
         None
@@ -5724,7 +5737,7 @@ mod tests {
             cid_font_type: None,
             cid_widths: Some(cid_widths),
             cid_default_width: 800.0, // CID default width
-            has_explicit_dw: true, // F15: /DW was explicitly set
+            has_explicit_dw: true,    // F15: /DW was explicitly set
             cff_gid_map: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),

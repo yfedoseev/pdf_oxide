@@ -450,14 +450,17 @@ fn parse_r_token(input: &[u8]) -> IResult<&[u8], Token<'_>> {
 /// `OBJR` instead of the spec-correct `/OBJR`. The PDF spec does not define
 /// such bare words, but real-world parsers (poppler, pdfjs) treat them as
 /// Name tokens to avoid failing on otherwise-recoverable documents. We do
-/// the same as a last resort, consuming alphanumeric chars and `_/-+*@`.
+/// the same as a last resort, consuming alphanumeric chars and `_-+*@.!^~`.
 fn parse_bare_identifier(input: &[u8]) -> IResult<&[u8], Token<'_>> {
     let (rest, word) = take_while(|c: u8| {
         c.is_ascii_alphanumeric()
             || matches!(c, b'_' | b'-' | b'+' | b'*' | b'@' | b'.' | b'!' | b'^' | b'~')
     })(input)?;
     if word.is_empty() {
-        return Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::TakeWhile1)));
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::TakeWhile1,
+        )));
     }
     let name = std::str::from_utf8(word).unwrap_or("");
     Ok((rest, Token::Name(name.to_string())))

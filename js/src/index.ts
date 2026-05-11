@@ -298,8 +298,8 @@ export interface RgbaPixmap {
 class PdfDocumentImpl {
   private _handle: any;
   private _closed = false;
-  /** Serialises async render calls from worker_threads / Promise.all consumers. */
-  private _mu: import('async-mutex').Mutex | null = null;
+  /** Promise-cached mutex; single Promise ensures no race on concurrent first calls. */
+  private _muPromise: Promise<import('async-mutex').Mutex> | null = null;
 
   constructor(handle: any) {
     if (!handle) throw new Error('Failed to open document');
@@ -535,12 +535,11 @@ class PdfDocumentImpl {
   }
 
   /** Lazy-initialises the per-instance Mutex (avoids a hard dep at load time). */
-  private async _getMutex(): Promise<import('async-mutex').Mutex> {
-    if (!this._mu) {
-      const { Mutex } = await import('async-mutex');
-      this._mu = new Mutex();
+  private _getMutex(): Promise<import('async-mutex').Mutex> {
+    if (!this._muPromise) {
+      this._muPromise = import('async-mutex').then(({ Mutex }) => new Mutex());
     }
-    return this._mu;
+    return this._muPromise;
   }
 
   /**
@@ -880,6 +879,9 @@ function generateQrCodeSvg(
 // Export as ES module
 const getVersion = native.getVersion;
 const getPdfOxideVersion = native.getPdfOxideVersion;
+const getActiveCryptoProvider = native.getActiveCryptoProvider;
+const isFipsCryptoAvailable = native.isFipsCryptoAvailable;
+const useFipsCryptoProvider = native.useFipsCryptoProvider;
 const PdfDocument = PdfDocumentImpl as any;
 const Pdf = PdfImpl as any;
 const PdfError = PdfException;
@@ -956,6 +958,7 @@ export {
   FormFieldType,
   generateBarcodeSvg,
   generateQrCodeSvg,
+  getActiveCryptoProvider,
   getPdfOxideVersion,
   // Version info
   getVersion,
@@ -965,6 +968,7 @@ export {
   InvalidStateException,
   IoException,
   IssueSeverity,
+  isFipsCryptoAvailable,
   LayerManager,
   MetadataBuilder,
   MetadataManager,
@@ -1024,6 +1028,7 @@ export {
   ThumbnailSize,
   UnknownError,
   UnsupportedFeatureException,
+  useFipsCryptoProvider,
   ValidationException,
   // Worker Threads API
   WorkerPool,

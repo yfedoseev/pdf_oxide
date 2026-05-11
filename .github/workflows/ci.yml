@@ -30,7 +30,7 @@ jobs:
     name: Format Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -51,7 +51,7 @@ jobs:
     # fixture corpus is gitignored and fetched separately. If no
     # fixtures are checked out in CI, the script exits 0 trivially.
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Validate fixtures
         run: ./tools/benchmark-harness/validate_fixtures.sh --strict
@@ -61,7 +61,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -99,7 +99,7 @@ jobs:
           large-packages: true
           swap-storage: true
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -135,7 +135,7 @@ jobs:
           - ""
           - "python"
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -175,23 +175,23 @@ jobs:
           key: fips
 
       - name: Build with fips feature
-        run: cargo build --features python,fips
+        run: cargo build --no-default-features --features python,fips,icc
 
       - name: Run AwsLcProvider tests + cross-provider AES compat
-        run: cargo test --features python,fips --lib crypto::aws_lc_provider
+        run: cargo test --no-default-features --features python,fips,icc --lib crypto::aws_lc_provider
 
       - name: Run full lib test suite under FIPS feature
-        run: cargo test --features python,fips --lib
+        run: cargo test --no-default-features --features python,fips,icc --lib
 
       - name: Clippy under FIPS feature
-        run: cargo clippy --features python,fips --lib --tests -- -D warnings
+        run: cargo clippy --no-default-features --features python,fips,icc --lib --tests -- -D warnings
 
   # Rust examples smoke-test
   rust-examples:
     name: Rust Examples
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -236,7 +236,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -258,7 +258,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -288,7 +288,7 @@ jobs:
           large-packages: true
           swap-storage: true
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -367,7 +367,7 @@ jobs:
           large-packages: true
           swap-storage: true
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -393,7 +393,7 @@ jobs:
 
       # Validate the produced module using wasm-tools.
       - name: Install wasm-tools
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@e3134ec54b36203e18f2d1e80652058bd078dd91 # v2
         with:
           tool: wasm-tools
 
@@ -419,22 +419,24 @@ jobs:
           out="target/wasm32-unknown-unknown/release/pdf_oxide.opt.wasm"
           # Rustc emits several post-MVP features for wasm32 — enable each
           # explicitly or wasm-opt's validator rejects the input module.
+          # --enable-simd added: image/rendering code uses v128 SIMD intrinsics.
           wasm-opt -Oz --converge \
             --enable-nontrapping-float-to-int \
             --enable-bulk-memory \
             --enable-sign-ext \
             --enable-mutable-globals \
             --enable-reference-types \
+            --enable-simd \
             "$in" -o "$out"
           before_kb=$(( $(stat -c%s "$in") / 1024 ))
           after_kb=$(( $(stat -c%s "$out") / 1024 ))
           echo "Before wasm-opt: ${before_kb} KB"
           echo "After  wasm-opt: ${after_kb} KB"
-          # Size regression gate: v0.3.40 baseline after -Oz is ~10.4 MB
-          # (grew from 7.8 MB with new image embedding, encryption, compliance,
-          # and SVG features). Ceiling leaves ~10% headroom; tighten after a
-          # dedicated size-reduction pass.
-          max_kb=11264
+          # Size regression gate: v0.3.46 baseline after -Oz is ~11.25 MB
+          # (grew from 10.4 MB with fast_image_resize SIMD downscaling and
+          # hayro-jbig2 JBIG2 decoder added to the rendering feature).
+          # Ceiling leaves ~6% headroom above the 11520 KB measured baseline.
+          max_kb=12288
           if [ "$after_kb" -gt "$max_kb" ]; then
             echo "::error::wasm bundle ${after_kb} KB exceeds ceiling ${max_kb} KB"
             exit 1
@@ -489,7 +491,7 @@ jobs:
             features: "barcodes,rendering,signatures,tsa-client,system-fonts"
             extra-target: "x86_64-pc-windows-gnu"
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -543,7 +545,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
@@ -592,7 +594,7 @@ jobs:
       # v2.0.2 was built with go1.24 and can't typecheck go1.26 stdlib.
       - name: golangci-lint
         if: matrix.os == 'ubuntu-latest'
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
         with:
           version: v2.11.4
           working-directory: go
@@ -645,7 +647,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -791,10 +793,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5
         with:
           dotnet-version: '8.0.x'
 
@@ -915,10 +917,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-lib]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5
         with:
           dotnet-version: '8.0.x'
 
@@ -948,7 +950,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       # Free ~15 GB of disk before cargo-llvm-cov runs. The instrumented
       # build writes a second full target tree (target/llvm-cov-target/)
@@ -998,7 +1000,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: always()
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6
         with:
           files: ./lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -1009,7 +1011,7 @@ jobs:
     name: Benchmark Smoke Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -1025,19 +1027,19 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Run security audit
-        uses: actions-rust-lang/audit@v1
+        uses: actions-rust-lang/audit@72c09e02f132669d52284a3323acdb503cfc1a24 # v1
 
   # cargo-deny: licenses / advisories / bans / sources (single consolidated gate)
   deny:
     name: Dependency Check (cargo-deny)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
       - name: Check dependencies
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check
           arguments: --all-features
@@ -1047,7 +1049,7 @@ jobs:
     name: Unsafe code audit (cargo-geiger)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -1055,20 +1057,22 @@ jobs:
       - name: Install cargo-geiger
         run: cargo install --locked cargo-geiger
       - name: Run cargo-geiger
-        run: cargo geiger --all-features 2>/dev/null || true
+        # --all-features would activate fips+legacy-crypto simultaneously (compile_error!).
+        # Default features give representative unsafe coverage for this informational step.
+        run: cargo geiger 2>/dev/null || true
 
   # TOML formatting check (taplo)
   taplo:
     name: TOML format (taplo)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: taplo
       - name: Install taplo
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@e3134ec54b36203e18f2d1e80652058bd078dd91 # v2
         with:
           tool: taplo-cli
       - name: Check TOML formatting
@@ -1079,13 +1083,13 @@ jobs:
     name: Unused deps (cargo-shear)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: shear
       - name: Install cargo-shear
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@e3134ec54b36203e18f2d1e80652058bd078dd91 # v2
         with:
           tool: cargo-shear
       - name: Check for unused dependencies
@@ -1103,17 +1107,19 @@ jobs:
     name: Feature powerset (cargo-hack)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: hack
       - name: Install cargo-hack
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@e3134ec54b36203e18f2d1e80652058bd078dd91 # v2
         with:
           tool: cargo-hack
       - name: Build each feature (singletons + default + all-features)
-        run: cargo hack check --each-feature --no-dev-deps --lib
+        # Exclude `fips` from the powerset: fips+legacy-crypto is a compile_error by design
+        # (FIPS 140-3 forbids MD5). The dedicated `fips` job covers --no-default-features --features fips,icc.
+        run: cargo hack check --each-feature --no-dev-deps --lib --exclude-features fips
 
   # Public-API semver check (PR only — compares against base branch).
   #
@@ -1141,8 +1147,8 @@ jobs:
     if: false
     continue-on-error: true
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
-      - uses: obi1kenobi/cargo-semver-checks-action@v2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2
         with:
           feature-group: default-features
 
@@ -1151,7 +1157,7 @@ jobs:
     name: MSRV build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
       - name: Read MSRV from Cargo.toml
         id: msrv
         run: |
@@ -1164,14 +1170,14 @@ jobs:
         with:
           key: msrv
       - name: Build with MSRV toolchain
-        run: cargo build --lib --all-features
+        run: cargo build --lib
 
   dco:
     name: DCO check
     runs-on: ubuntu-latest
     if: false # temporarily disabled — re-enable before public contributor onboarding
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           fetch-depth: 0
       - name: Check DCO sign-off

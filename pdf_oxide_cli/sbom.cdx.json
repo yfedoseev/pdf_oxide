@@ -14,9 +14,9 @@
     ],
     "component": {
       "type": "application",
-      "bom-ref": "path+file:///home/yfedoseev/projects/pdf_oxide_fixes/pdf_oxide_cli#0.3.45",
+      "bom-ref": "path+file:///home/yfedoseev/projects/pdf_oxide_fixes/pdf_oxide_cli#0.3.46",
       "name": "pdf_oxide_cli",
-      "version": "0.3.45",
+      "version": "0.3.46",
       "description": "CLI for pdf-oxide — the fastest PDF toolkit. 22 commands: text extraction, PDF to markdown, search, merge, split, images, compress, encrypt, watermark, forms, and more.",
       "scope": "required",
       "licenses": [
@@ -24,7 +24,7 @@
           "expression": "MIT OR Apache-2.0"
         }
       ],
-      "purl": "pkg:cargo/pdf_oxide_cli@0.3.45?download_url=file://.",
+      "purl": "pkg:cargo/pdf_oxide_cli@0.3.46?download_url=file://.",
       "externalReferences": [
         {
           "type": "documentation",
@@ -42,17 +42,17 @@
       "components": [
         {
           "type": "library",
-          "bom-ref": "path+file:///home/yfedoseev/projects/pdf_oxide_fixes/pdf_oxide_cli#0.3.45 bin-target-0",
+          "bom-ref": "path+file:///home/yfedoseev/projects/pdf_oxide_fixes/pdf_oxide_cli#0.3.46 bin-target-0",
           "name": "pdf_oxide_cli",
-          "version": "0.3.45",
-          "purl": "pkg:cargo/pdf_oxide_cli@0.3.45?download_url=file://.#src/lib.rs"
+          "version": "0.3.46",
+          "purl": "pkg:cargo/pdf_oxide_cli@0.3.46?download_url=file://.#src/lib.rs"
         },
         {
           "type": "application",
-          "bom-ref": "path+file:///home/yfedoseev/projects/pdf_oxide_fixes/pdf_oxide_cli#0.3.45 bin-target-1",
+          "bom-ref": "path+file:///home/yfedoseev/projects/pdf_oxide_fixes/pdf_oxide_cli#0.3.46 bin-target-1",
           "name": "pdf-oxide",
-          "version": "0.3.45",
-          "purl": "pkg:cargo/pdf_oxide_cli@0.3.45?download_url=file://.#src/main.rs"
+          "version": "0.3.46",
+          "purl": "pkg:cargo/pdf_oxide_cli@0.3.46?download_url=file://.#src/main.rs"
         }
       ]
     },
@@ -66,10 +66,10 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "path+file:///home/yfedoseev/projects/pdf_oxide_fixes#pdf_oxide@0.3.45",
+      "bom-ref": "path+file:///home/yfedoseev/projects/pdf_oxide_fixes#pdf_oxide@0.3.46",
       "author": "Yury Fedoseev <yfedoseev@gmail.com>",
       "name": "pdf_oxide",
-      "version": "0.3.45",
+      "version": "0.3.46",
       "description": "The fastest Rust PDF library with text extraction: 0.8ms mean, 100% pass rate on 3,830 PDFs. 5× faster than pdf_extract, 17× faster than oxidize_pdf. Extract, create, and edit PDFs.",
       "scope": "required",
       "licenses": [
@@ -77,7 +77,7 @@
           "expression": "MIT OR Apache-2.0"
         }
       ],
-      "purl": "pkg:cargo/pdf_oxide@0.3.45?download_url=file://..",
+      "purl": "pkg:cargo/pdf_oxide@0.3.46?download_url=file://..",
       "externalReferences": [
         {
           "type": "documentation",
@@ -4485,7 +4485,7 @@
   ],
   "dependencies": [
     {
-      "ref": "path+file:///home/yfedoseev/projects/pdf_oxide_fixes#pdf_oxide@0.3.45",
+      "ref": "path+file:///home/yfedoseev/projects/pdf_oxide_fixes#pdf_oxide@0.3.46",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#aes@0.9.0",
         "registry+https://github.com/rust-lang/crates.io-index#base64@0.22.1",
@@ -4530,11 +4530,11 @@
       ]
     },
     {
-      "ref": "path+file:///home/yfedoseev/projects/pdf_oxide_fixes/pdf_oxide_cli#0.3.45",
+      "ref": "path+file:///home/yfedoseev/projects/pdf_oxide_fixes/pdf_oxide_cli#0.3.46",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#clap@4.6.1",
         "registry+https://github.com/rust-lang/crates.io-index#is-terminal@0.4.17",
-        "path+file:///home/yfedoseev/projects/pdf_oxide_fixes#pdf_oxide@0.3.45",
+        "path+file:///home/yfedoseev/projects/pdf_oxide_fixes#pdf_oxide@0.3.46",
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.149"
       ]
     },

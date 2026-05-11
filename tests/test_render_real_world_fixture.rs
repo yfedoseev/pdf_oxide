@@ -21,12 +21,12 @@ fn issue_395_user_pdf_renders_without_error() {
         return;
     }
 
-    let mut doc = PdfDocument::open(&path).expect("open #395 fixture");
+    let doc = PdfDocument::open(&path).expect("open #395 fixture");
     let n_pages = doc.page_count().expect("page count");
     assert!(n_pages > 0, "fixture should have at least one page");
 
     let opts = RenderOptions::with_dpi(150);
-    let img = render_page(&mut doc, 0, &opts).expect(
+    let img = render_page(&doc, 0, &opts).expect(
         "rendering page 0 of #395 fixture must succeed — was emitting an FFI error code that \
          the C# binding mismapped to SignatureException [8500]",
     );

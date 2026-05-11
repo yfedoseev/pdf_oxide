@@ -369,7 +369,7 @@ impl PyPdfDocument {
                 options.render_annotations = flag;
             }
 
-            crate::rendering::render_page(&mut self.inner, page, &options)
+            crate::rendering::render_page(&self.inner, page, &options)
                 .map(|img| img.data)
                 .map_err(|e| PyRuntimeError::new_err(format!("Failed to render page: {e}")))
         }
@@ -455,7 +455,7 @@ impl PyPdfDocument {
                 options.render_annotations = flag;
             }
 
-            crate::rendering::render_page_fit(&mut self.inner, page, width, height, &options)
+            crate::rendering::render_page_fit(&self.inner, page, width, height, &options)
                 .map(|img| img.data)
                 .map_err(|e| PyRuntimeError::new_err(format!("Failed to render page: {e}")))
         }
@@ -483,8 +483,10 @@ impl PyPdfDocument {
     ///
     /// Alpha is premultiplied (PDF spec §11 transparency model).
     /// Use this instead of :meth:`render_page` when you want to hand pixel
-    /// data directly to PIL (``Image.frombuffer("RGBA", ...)``) or numpy
+    /// data directly to PIL (``Image.frombuffer("RGBa", ...)``) or numpy
     /// without a PNG/JPEG encode/decode roundtrip.
+    /// Note: PIL mode ``"RGBa"`` (lower-case a) is for premultiplied RGBA;
+    /// use ``"RGBA"`` only after un-premultiplying the data.
     ///
     /// Args:
     ///     page (int): Zero-based page index.
@@ -498,12 +500,10 @@ impl PyPdfDocument {
     ) -> PyResult<Py<pyo3::PyAny>> {
         #[cfg(feature = "rendering")]
         {
-            let options = crate::rendering::RenderOptions::with_dpi(dpi.unwrap_or(150))
-                .as_raw();
-            let img = crate::rendering::render_page(&mut self.inner, page, &options)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(
-                    format!("Failed to render page: {e}")
-                ))?;
+            let options = crate::rendering::RenderOptions::with_dpi(dpi.unwrap_or(150)).as_raw();
+            let img = crate::rendering::render_page(&self.inner, page, &options).map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to render page: {e}"))
+            })?;
             let pixmap_mod = py.import("pdf_oxide")?;
             let pixmap_cls = pixmap_mod.getattr("RenderedPixmap")?;
             let data = pyo3::types::PyBytes::new(py, &img.data);
@@ -2298,7 +2298,7 @@ impl PyPdfDocument {
     fn flatten_to_images(&mut self, py: Python<'_>, dpi: u32) -> PyResult<Py<PyBytes>> {
         #[cfg(feature = "rendering")]
         {
-            let bytes = crate::rendering::flatten_to_images(&mut self.inner, dpi)
+            let bytes = crate::rendering::flatten_to_images(&self.inner, dpi)
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             Ok(PyBytes::new(py, &bytes).unbind())
         }
@@ -2581,7 +2581,9 @@ impl PyDocPage {
     /// full documentation.
     #[pyo3(signature = (dpi=None))]
     fn render_pixmap(&self, py: Python<'_>, dpi: Option<u32>) -> PyResult<Py<pyo3::PyAny>> {
-        self.doc.borrow_mut(py).render_pixmap(py, self.page_index, dpi)
+        self.doc
+            .borrow_mut(py)
+            .render_pixmap(py, self.page_index, dpi)
     }
 
     #[pyo3(signature = (pattern, case_insensitive=false, literal=false, whole_word=false, max_results=100))]

@@ -26,7 +26,11 @@ fn jaccard(a: &str, b: &str) -> f32 {
     let sb: HashSet<&str> = b.split_whitespace().collect();
     let i = sa.intersection(&sb).count();
     let u = sa.union(&sb).count();
-    if u == 0 { 1.0 } else { i as f32 / u as f32 }
+    if u == 0 {
+        1.0
+    } else {
+        i as f32 / u as f32
+    }
 }
 
 /// Extract text from all pages of a PDF at the given path.
@@ -98,12 +102,7 @@ fn quality_gate_hello_structure() {
 #[test]
 #[ignore = "requires /tmp/pdfa_036.pdf and /tmp/gt_pdfa_036_kreuzberg.txt"]
 fn quality_gate_pdfa_036() {
-    check(
-        "pdfa_036",
-        "/tmp/pdfa_036.pdf",
-        "/tmp/gt_pdfa_036_kreuzberg.txt",
-        0.78,
-    );
+    check("pdfa_036", "/tmp/pdfa_036.pdf", "/tmp/gt_pdfa_036_kreuzberg.txt", 0.78);
 }
 
 // ---------------------------------------------------------------------------
@@ -114,12 +113,7 @@ fn quality_gate_pdfa_036() {
 #[test]
 #[ignore = "requires /tmp/pdfa_044.pdf and /tmp/gt_pdfa_044.txt"]
 fn quality_gate_pdfa_044() {
-    check(
-        "pdfa_044",
-        "/tmp/pdfa_044.pdf",
-        "/tmp/gt_pdfa_044.txt",
-        0.80,
-    );
+    check("pdfa_044", "/tmp/pdfa_044.pdf", "/tmp/gt_pdfa_044.txt", 0.80);
 }
 
 // ---------------------------------------------------------------------------
@@ -130,12 +124,7 @@ fn quality_gate_pdfa_044() {
 #[test]
 #[ignore = "requires /tmp/nougat_039.pdf and /tmp/gt_nougat_039.txt"]
 fn quality_gate_nougat_039() {
-    check(
-        "nougat_039",
-        "/tmp/nougat_039.pdf",
-        "/tmp/gt_nougat_039.txt",
-        0.78,
-    );
+    check("nougat_039", "/tmp/nougat_039.pdf", "/tmp/gt_nougat_039.txt", 0.78);
 }
 
 // ---------------------------------------------------------------------------
@@ -146,12 +135,7 @@ fn quality_gate_nougat_039() {
 #[test]
 #[ignore = "requires /tmp/nougat_026.pdf and /tmp/gt_nougat_026.txt"]
 fn quality_gate_nougat_026() {
-    check(
-        "nougat_026",
-        "/tmp/nougat_026.pdf",
-        "/tmp/gt_nougat_026.txt",
-        0.87,
-    );
+    check("nougat_026", "/tmp/nougat_026.pdf", "/tmp/gt_nougat_026.txt", 0.87);
 }
 
 // ---------------------------------------------------------------------------
@@ -162,12 +146,7 @@ fn quality_gate_nougat_026() {
 #[test]
 #[ignore = "requires /tmp/pr-136-example.pdf and /tmp/gt_pr-136-example.txt"]
 fn quality_gate_pr_136() {
-    check(
-        "pr-136-example",
-        "/tmp/pr-136-example.pdf",
-        "/tmp/gt_pr-136-example.txt",
-        0.05,
-    );
+    check("pr-136-example", "/tmp/pr-136-example.pdf", "/tmp/gt_pr-136-example.txt", 0.05);
 }
 
 // ---------------------------------------------------------------------------
@@ -179,12 +158,7 @@ fn quality_gate_pr_136() {
 #[test]
 #[ignore = "requires /tmp/pr-138-example.pdf and /tmp/gt_pr-138-example.txt"]
 fn quality_gate_pr_138() {
-    check(
-        "pr-138-example",
-        "/tmp/pr-138-example.pdf",
-        "/tmp/gt_pr-138-example.txt",
-        0.45,
-    );
+    check("pr-138-example", "/tmp/pr-138-example.pdf", "/tmp/gt_pr-138-example.txt", 0.45);
 }
 
 // ---------------------------------------------------------------------------
@@ -195,12 +169,7 @@ fn quality_gate_pr_138() {
 #[test]
 #[ignore = "requires /tmp/issue-987-test.pdf and /tmp/gt_issue-987-test.txt"]
 fn quality_gate_issue_987() {
-    check(
-        "issue-987-test",
-        "/tmp/issue-987-test.pdf",
-        "/tmp/gt_issue-987-test.txt",
-        0.65,
-    );
+    check("issue-987-test", "/tmp/issue-987-test.pdf", "/tmp/gt_issue-987-test.txt", 0.65);
 }
 
 // ---------------------------------------------------------------------------
@@ -234,12 +203,7 @@ fn quality_gate_issue_336() {
 #[test]
 #[ignore = "requires /tmp/nougat_040.pdf and /tmp/gt_nougat_040.txt"]
 fn quality_gate_nougat_040() {
-    check(
-        "nougat_040",
-        "/tmp/nougat_040.pdf",
-        "/tmp/gt_nougat_040.txt",
-        0.35,
-    );
+    check("nougat_040", "/tmp/nougat_040.pdf", "/tmp/gt_nougat_040.txt", 0.35);
 }
 
 // ---------------------------------------------------------------------------
@@ -255,12 +219,7 @@ fn quality_gate_nougat_040() {
 #[test]
 #[ignore = "requires /tmp/pdfa_004.pdf and /tmp/gt_pdfa_004.txt"]
 fn quality_gate_pdfa_004() {
-    check(
-        "pdfa_004",
-        "/tmp/pdfa_004.pdf",
-        "/tmp/gt_pdfa_004.txt",
-        0.49,
-    );
+    check("pdfa_004", "/tmp/pdfa_004.pdf", "/tmp/gt_pdfa_004.txt", 0.49);
 }
 
 // ---------------------------------------------------------------------------
@@ -273,10 +232,5 @@ fn quality_gate_pdfa_004() {
 #[test]
 #[ignore = "requires /tmp/nougat_018.pdf and /tmp/gt_nougat_018.txt"]
 fn quality_gate_nougat_018() {
-    check(
-        "nougat_018",
-        "/tmp/nougat_018.pdf",
-        "/tmp/gt_nougat_018.txt",
-        0.90,
-    );
+    check("nougat_018", "/tmp/nougat_018.pdf", "/tmp/gt_nougat_018.txt", 0.90);
 }

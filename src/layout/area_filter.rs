@@ -112,7 +112,7 @@ pub trait SpatialCollectionFiltering<T: LayoutObjectSpatial> {
 
     /// Exclude objects that match any of the given rectangles under `mode`.
     ///
-    /// The inverse of [`filter_by_rect`]: keeps every element that does NOT
+    /// The inverse of [`Self::filter_by_rect`]: keeps every element that does NOT
     /// match ANY of the excluded regions. Useful for stripping figure-internal
     /// or header/footer text from a page extraction result.
     fn exclude_rects(&self, rects: &[Rect], mode: RectFilterMode) -> Vec<T>;

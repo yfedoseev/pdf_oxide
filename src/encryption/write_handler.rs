@@ -333,6 +333,7 @@ mod tests {
         assert_eq!(&decrypted, plaintext);
     }
 
+    #[cfg(feature = "legacy-crypto")]
     #[test]
     fn test_aes_encryption() {
         let key = vec![0u8; 16];

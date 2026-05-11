@@ -236,7 +236,7 @@ pub fn parse_structure_tree(document: &PdfDocument) -> Result<Option<StructTreeR
                 struct_tree_root_obj.type_name()
             );
             return Ok(None);
-        }
+        },
     };
 
     let mut struct_tree = StructTreeRoot::new();

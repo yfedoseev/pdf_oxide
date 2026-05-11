@@ -20,10 +20,10 @@ fn main() -> pdf_oxide::Result<()> {
         .nth(2)
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    let mut doc = PdfDocument::open(&pdf)?;
+    let doc = PdfDocument::open(&pdf)?;
     let opts = RenderOptions::with_dpi(96).as_jpeg(100);
     let start = std::time::Instant::now();
-    let img = render_page(&mut doc, page, &opts)?;
+    let img = render_page(&doc, page, &opts)?;
     let elapsed = start.elapsed();
     println!(
         "page {}: {} ms, {}x{}, {} bytes",

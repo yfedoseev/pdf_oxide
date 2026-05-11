@@ -57,6 +57,10 @@ on:
         type: boolean
         default: false
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   id-token: write
@@ -73,7 +77,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
-          ref: ${{ inputs.version || github.ref_name }}
+          ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
       - name: Validate tag format
         if: github.event_name != 'pull_request'
@@ -157,7 +161,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
-          ref: ${{ inputs.version || github.ref_name }}
+          ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
@@ -233,7 +237,7 @@ jobs:
               yum install -y nasm golang clang || (yum install -y epel-release && yum install -y nasm golang clang)
             fi
             export CC=clang CXX=clang++
-          args: --release --target ${{ matrix.target }} --features python,fips --out dist
+          args: --release --target ${{ matrix.target }} --no-default-features --features python,fips,icc --out dist
 
       - name: Verify manylinux_2_28 tag
         if: runner.os == 'Linux'
@@ -260,7 +264,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then pip install delvewheel; fi
           maturin build --release \
             --target ${{ matrix.target }} \
-            --features python,fips \
+            --no-default-features --features python,fips,icc \
             --out dist
           if [ "$RUNNER_OS" = "macOS" ]; then
             # DYLD_LIBRARY_PATH lets delocate resolve the @rpath reference to
@@ -331,31 +335,31 @@ jobs:
             runs-on: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             prebuild_dir: linux-x64
-            lib_name: libpdf_oxide.so
+            node_arch: x64
           - label: linux arm64
             runs-on: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             prebuild_dir: linux-arm64
-            lib_name: libpdf_oxide.so
+            node_arch: arm64
           - label: macOS x64
             runs-on: macos-latest
             target: x86_64-apple-darwin
             prebuild_dir: darwin-x64
-            lib_name: libpdf_oxide.dylib
+            node_arch: x64
           - label: macOS arm64
             runs-on: macos-latest
             target: aarch64-apple-darwin
             prebuild_dir: darwin-arm64
-            lib_name: libpdf_oxide.dylib
+            node_arch: arm64
           - label: windows x64
             runs-on: windows-latest
             target: x86_64-pc-windows-msvc
             prebuild_dir: win32-x64
-            lib_name: pdf_oxide.dll
+            node_arch: x64
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
-          ref: ${{ inputs.version || github.ref_name }}
+          ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
@@ -384,17 +388,69 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-
 
-      - name: Build cdylib with FIPS feature
-        run: cargo build --release --target ${{ matrix.target }} --features fips
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '20'
+
+      - name: Build FIPS Rust libs
+        run: cargo build --release --target ${{ matrix.target }} --no-default-features --features fips,icc
+
+      - name: Stage staticlib for node-gyp
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p lib
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/${{ matrix.target }}/release/pdf_oxide.lib lib/
+          else
+            cp target/${{ matrix.target }}/release/libpdf_oxide.a lib/
+          fi
+
+      - name: Merge aws-lc-fips crypto lib into pdf_oxide.lib (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # aws-lc-fips-sys on Windows compiles a separate crypto static lib.
+          # The Rust staticlib references its symbols but does not bundle them.
+          # Use lib.exe to merge so node-gyp/MSBuild can resolve them.
+          $target = "${{ matrix.target }}"
+          $fipsLib = Get-ChildItem -Recurse `
+              -Path "target\$target\release\build" `
+              -Filter "aws_lc_fips_*_crypto.lib" `
+              -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $fipsLib) {
+            Write-Host "aws_lc_fips_*_crypto.lib not found under target\$target\release\build; skipping merge"
+            exit 0
+          }
+          Write-Host "Merging FIPS lib: $fipsLib"
+          $libExe = Get-ChildItem -Recurse `
+              -Path "C:\Program Files\Microsoft Visual Studio" `
+              -Filter "lib.exe" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "HostX64\\x64\\lib\.exe" } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $libExe) { Write-Error "lib.exe not found in VS installation"; exit 1 }
+          & $libExe /nologo /OUT:lib\pdf_oxide_merged.lib lib\pdf_oxide.lib $fipsLib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Move-Item -Force lib\pdf_oxide_merged.lib lib\pdf_oxide.lib
+          Write-Host "Merged lib size: $((Get-Item lib\pdf_oxide.lib).Length) bytes"
+
+      - name: Install npm dependencies
+        working-directory: js
+        run: npm install --ignore-scripts
+
+      - name: Build native NAPI addon with node-gyp
+        working-directory: js
+        shell: bash
+        run: npx node-gyp rebuild --arch=${{ matrix.node_arch }}
 
       - name: Stage prebuild
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p js/prebuilds/${{ matrix.prebuild_dir }}
-          # On macOS / Linux the artifact name matches lib_name; on
-          # Windows the .dll is at target/<triple>/release/pdf_oxide.dll.
-          cp target/${{ matrix.target }}/release/${{ matrix.lib_name }} \
+          cp js/build/Release/pdf_oxide.node \
              js/prebuilds/${{ matrix.prebuild_dir }}/pdf_oxide.node
 
       - name: Upload artifact
@@ -408,10 +464,11 @@ jobs:
     name: Pack pdf-oxide-fips tarball
     needs: [build-fips-npm-prebuilds]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
-          ref: ${{ inputs.version || github.ref_name }}
+          ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -436,23 +493,30 @@ jobs:
           done
           ls -la js/prebuilds/
 
+      - name: Determine release version
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+            echo "VERSION=v${CARGO_VERSION}" >> $GITHUB_ENV
+          else
+            echo "VERSION=${{ inputs.version || github.ref_name }}" >> $GITHUB_ENV
+          fi
+
       - name: Patch package name + version
         run: |
           cd js
-          npm version --no-git-tag-version "${VERSION#v}"
+          npm version --no-git-tag-version --allow-same-version "${VERSION#v}"
           node -e "
           const pkg = require('./package.json');
           pkg.name = 'pdf-oxide-fips';
           pkg.description = '[FIPS 140-3 validated build] ' + pkg.description;
           require('fs').writeFileSync('./package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
-        env:
-          VERSION: ${{ inputs.version || github.ref_name }}
 
       - name: Build TypeScript
         working-directory: js
         run: |
-          npm ci
+          npm install --ignore-scripts
           npm run build:ts
 
       - name: Smoke-test on this runner
@@ -465,11 +529,16 @@ jobs:
           oxide.useFipsCryptoProvider();
           if (oxide.getActiveCryptoProvider() !== 'aws-lc-rs') throw new Error('FIPS provider not active');
           console.log('FIPS npm smoke test passed');
+          // The module-level WorkerPool singleton keeps the event loop alive;
+          // force-exit so the step completes instead of hanging indefinitely.
+          process.exit(0);
           "
 
       - name: Pack tarball
         working-directory: js
-        run: npm pack --pack-destination ../dist-npm
+        run: |
+          mkdir -p ../dist-npm
+          npm pack --pack-destination ../dist-npm
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -541,7 +610,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
-          ref: ${{ inputs.version || github.ref_name }}
+          ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
@@ -571,7 +640,7 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-
 
       - name: Build cdylib with FIPS feature
-        run: cargo build --release --target ${{ matrix.target }} --features fips
+        run: cargo build --release --target ${{ matrix.target }} --no-default-features --features fips,icc
 
       - name: Stage RID-specific lib
         shell: bash
@@ -594,10 +663,10 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
-          ref: ${{ inputs.version || github.ref_name }}
+          ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5
         with:
           dotnet-version: '8.0'
 
@@ -624,6 +693,15 @@ jobs:
           sed -i 's|<PackageId>PdfOxide</PackageId>|<PackageId>PdfOxide.Fips</PackageId>|' PdfOxide.csproj
           sed -i 's|<Description>|<Description>[FIPS 140-3 validated build] |' PdfOxide.csproj || true
 
+      - name: Determine release version
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+            echo "VERSION=v${CARGO_VERSION}" >> $GITHUB_ENV
+          else
+            echo "VERSION=${{ inputs.version || github.ref_name }}" >> $GITHUB_ENV
+          fi
+
       - name: Pack
         working-directory: csharp/PdfOxide
         run: |
@@ -631,8 +709,6 @@ jobs:
             -p:Version=${VERSION#v} \
             -p:PackageVersion=${VERSION#v} \
             -o ../../dist-nuget
-        env:
-          VERSION: ${{ inputs.version || github.ref_name }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -656,7 +732,7 @@ jobs:
           path: dist-nuget
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5
         with:
           dotnet-version: '8.0'
 
@@ -702,7 +778,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
-          ref: ${{ inputs.version || github.ref_name }}
+          ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
@@ -732,7 +808,7 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-
 
       - name: Build static lib with FIPS feature
-        run: cargo build --release --target ${{ matrix.target }} --features fips
+        run: cargo build --release --target ${{ matrix.target }} --no-default-features --features fips,icc
 
       - name: Stage go-fips lib
         shell: bash
@@ -760,7 +836,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
-          ref: ${{ inputs.version || github.ref_name }}
+          ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
@@ -780,6 +856,11 @@ jobs:
           cp -r go go-fips
           cd go-fips
           sed -i 's|module github.com/yfedoseev/pdf_oxide/go$|module github.com/yfedoseev/pdf_oxide/go-fips|' go.mod
+          # Update all import paths in .go source files to match the renamed module.
+          # Anchor the match with a trailing quote so sub-paths (e.g. .../go-fips/...)
+          # are not affected.
+          find . -name "*.go" -exec sed -i \
+            's|"github.com/yfedoseev/pdf_oxide/go"|"github.com/yfedoseev/pdf_oxide/go-fips"|g' {} +
           mkdir -p lib
           for dir in ../go-staging/*/; do
             arch=$(basename "$dir" | sed 's/^pdf_oxide_fips-go-//')
@@ -787,6 +868,25 @@ jobs:
             cp "$dir"/* "lib/$arch/"
           done
           ls -laR lib/
+          # Generate cgo_flags.go so `go vet` (and downstream consumers of the
+          # tarball) can find the prebuilt FIPS static libs via SRCDIR-relative
+          # paths.  The dev path (cgo_dev.go, gated on pdf_oxide_dev tag) is
+          # skipped here via the !pdf_oxide_dev build constraint.
+          cat > cgo_flags.go <<'GOFLAG'
+          // Code generated by CI (bundle-fips-go). DO NOT EDIT.
+          //go:build !pdf_oxide_dev
+
+          package pdfoxide
+
+          /*
+          #cgo linux,amd64 LDFLAGS: ${SRCDIR}/lib/linux_amd64/libpdf_oxide.a -lm -lpthread -ldl -lrt -lgcc_s -lutil -lc
+          #cgo linux,arm64 LDFLAGS: ${SRCDIR}/lib/linux_arm64/libpdf_oxide.a -lm -lpthread -ldl -lrt -lgcc_s -lutil -lc
+          #cgo darwin,amd64 LDFLAGS: ${SRCDIR}/lib/darwin_amd64/libpdf_oxide.a -framework CoreFoundation -framework Security -framework SystemConfiguration -liconv -lresolv
+          #cgo darwin,arm64 LDFLAGS: ${SRCDIR}/lib/darwin_arm64/libpdf_oxide.a -framework CoreFoundation -framework Security -framework SystemConfiguration -liconv -lresolv
+          #cgo windows,amd64 LDFLAGS: ${SRCDIR}/lib/windows_amd64/pdf_oxide.lib -lws2_32 -luserenv -lbcrypt -ladvapi32 -lcrypt32 -lsynchronization -lntdll -lkernel32 -lntoskrnl -lole32 -lshell32
+          */
+          import "C"
+          GOFLAG
           go vet ./...
 
       - name: Smoke-test go-fips on this runner

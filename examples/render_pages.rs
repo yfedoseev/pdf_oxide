@@ -29,7 +29,7 @@ fn run() -> i32 {
         return 1;
     }
 
-    let mut doc = match PdfDocument::open(input) {
+    let doc = match PdfDocument::open(input) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("SKIP {}: {}", input, e);
@@ -52,7 +52,7 @@ fn run() -> i32 {
 
     for page_idx in 0..to_render {
         let out_path = out_dir.join(format!("page_{:03}.png", page_idx + 1));
-        match render_page(&mut doc, page_idx, &opts) {
+        match render_page(&doc, page_idx, &opts) {
             Ok(img) => {
                 if let Err(e) = img.save(&out_path) {
                     eprintln!("WARN: save failed page {} of {}: {}", page_idx + 1, input, e);

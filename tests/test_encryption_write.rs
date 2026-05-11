@@ -209,6 +209,7 @@ mod aes256_encryption_tests {
     // For now, we test that encrypted PDFs are created with correct structure.
 }
 
+#[cfg(feature = "legacy-crypto")]
 mod aes128_encryption_tests {
     use super::*;
 
@@ -239,6 +240,7 @@ mod aes128_encryption_tests {
     // full password verification implementation on the read side.
 }
 
+#[cfg(feature = "legacy-crypto")]
 mod rc4_encryption_tests {
     use super::*;
 
@@ -402,6 +404,7 @@ mod api_encryption_tests {
         assert!(output_str.contains("/Encrypt"));
     }
 
+    #[cfg(feature = "legacy-crypto")]
     #[test]
     fn test_pdf_api_save_with_encryption_config() {
         let dir = tempdir().unwrap();

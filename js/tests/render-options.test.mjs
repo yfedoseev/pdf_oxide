@@ -98,8 +98,10 @@ test('renderToPixmap returns premultiplied RGBA buffer', { skip }, () => {
 test('renderToPixmap data is not PNG-encoded', { skip }, () => {
   const doc = makeDoc();
   const px = doc.renderToPixmap(0, 72);
-  // PNG magic: 0x89 0x50 0x4E 0x47
-  assert.notEqual(px.data[0], 0x89, 'raw RGBA must not start with PNG magic byte');
+  // Full 8-byte PNG signature: avoids false positives from pixel data that
+  // happen to share the first byte (0x89) with the PNG magic.
+  const pngSig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  assert.ok(!px.data.slice(0, 8).equals(pngSig), 'raw RGBA must not start with PNG magic bytes');
 });
 
 test('renderToPixmap dimensions match renderPageWithOptions at same DPI', { skip }, () => {
@@ -132,7 +134,9 @@ test('renderPageFitAsync returns PNG bytes', { skip }, async () => {
   assert.ok(isPng(bytes), 'renderPageFitAsync should produce PNG');
 });
 
-test('renderToPixmapAsync — same doc concurrent renders produce valid results', { skip }, async () => {
+test('renderToPixmapAsync — same doc concurrent renders produce valid results', {
+  skip,
+}, async () => {
   const doc = makeDoc();
   const results = await Promise.all(
     Array.from({ length: 4 }, () => doc.renderToPixmapAsync(0, 72))
