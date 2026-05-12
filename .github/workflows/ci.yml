@@ -393,7 +393,7 @@ jobs:
 
       # Validate the produced module using wasm-tools.
       - name: Install wasm-tools
-        uses: taiki-e/install-action@e3134ec54b36203e18f2d1e80652058bd078dd91 # v2
+        uses: taiki-e/install-action@c070f87102a1c75b3183910f391c1cb887fe13c8 # v2
         with:
           tool: wasm-tools
 
@@ -1072,7 +1072,7 @@ jobs:
         with:
           key: taplo
       - name: Install taplo
-        uses: taiki-e/install-action@e3134ec54b36203e18f2d1e80652058bd078dd91 # v2
+        uses: taiki-e/install-action@c070f87102a1c75b3183910f391c1cb887fe13c8 # v2
         with:
           tool: taplo-cli
       - name: Check TOML formatting
@@ -1089,7 +1089,7 @@ jobs:
         with:
           key: shear
       - name: Install cargo-shear
-        uses: taiki-e/install-action@e3134ec54b36203e18f2d1e80652058bd078dd91 # v2
+        uses: taiki-e/install-action@c070f87102a1c75b3183910f391c1cb887fe13c8 # v2
         with:
           tool: cargo-shear
       - name: Check for unused dependencies
@@ -1113,7 +1113,7 @@ jobs:
         with:
           key: hack
       - name: Install cargo-hack
-        uses: taiki-e/install-action@e3134ec54b36203e18f2d1e80652058bd078dd91 # v2
+        uses: taiki-e/install-action@c070f87102a1c75b3183910f391c1cb887fe13c8 # v2
         with:
           tool: cargo-hack
       - name: Build each feature (singletons + default + all-features)
