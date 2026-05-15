@@ -1874,6 +1874,10 @@ Napi::Value OpenFromDocxBytes(const Napi::CallbackInfo& info) {
     data = buf.Data();
     length = buf.Length();
   } else if (info[0].IsTypedArray()) {
+    auto typed_arr = info[0].As<Napi::TypedArray>();
+    if (typed_arr.TypedArrayType() != napi_uint8_array) {
+      throw Napi::TypeError::New(env, "Argument must be a Buffer or Uint8Array");
+    }
     auto arr = info[0].As<Napi::Uint8Array>();
     data = arr.Data();
     length = arr.ByteLength();
@@ -1904,6 +1908,10 @@ Napi::Value OpenFromPptxBytes(const Napi::CallbackInfo& info) {
     data = buf.Data();
     length = buf.Length();
   } else if (info[0].IsTypedArray()) {
+    auto typed_arr = info[0].As<Napi::TypedArray>();
+    if (typed_arr.TypedArrayType() != napi_uint8_array) {
+      throw Napi::TypeError::New(env, "Argument must be a Buffer or Uint8Array");
+    }
     auto arr = info[0].As<Napi::Uint8Array>();
     data = arr.Data();
     length = arr.ByteLength();
@@ -1934,6 +1942,10 @@ Napi::Value OpenFromXlsxBytes(const Napi::CallbackInfo& info) {
     data = buf.Data();
     length = buf.Length();
   } else if (info[0].IsTypedArray()) {
+    auto typed_arr = info[0].As<Napi::TypedArray>();
+    if (typed_arr.TypedArrayType() != napi_uint8_array) {
+      throw Napi::TypeError::New(env, "Argument must be a Buffer or Uint8Array");
+    }
     auto arr = info[0].As<Napi::Uint8Array>();
     data = arr.Data();
     length = arr.ByteLength();
