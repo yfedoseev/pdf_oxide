@@ -976,24 +976,10 @@ impl EmbeddedFont {
     /// (.notdef) — visible as missing-glyph squares, or invisible
     /// when the font program has no .notdef outline at all.
     ///
-    /// ASCII probes remain a preferred positive signal for Latin body
-    /// text, but are not required; non-Latin fonts qualify as long as
-    /// they expose at least one non-zero Unicode→GID mapping.
+    /// Non-Latin fonts qualify as long as they expose at least one
+    /// non-zero Unicode→GID mapping; ASCII coverage is not required.
     pub fn has_usable_unicode_cmap(&self) -> bool {
-        let has_non_zero_mapping = self.glyph_lookup.values().any(|&gid| gid != 0);
-        if !has_non_zero_mapping {
-            return false;
-        }
-        // Prefer ASCII/body-text probes when present, but do not make
-        // them mandatory (fonts for non-Latin scripts may omit ASCII).
-        let probes = [0x20u32, 0x30, 0x61, 0x65, 0x69, 0x6F, 0x75];
-        let has_ascii_probe = probes.iter().any(|cp| {
-            self.glyph_lookup
-                .get(cp)
-                .map(|gid| *gid != 0)
-                .unwrap_or(false)
-        });
-        has_ascii_probe || has_non_zero_mapping
+        self.glyph_lookup.values().any(|&gid| gid != 0)
     }
 
     /// Get the glyph ID for a Unicode codepoint, with cascading fallbacks:
