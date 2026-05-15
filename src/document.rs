@@ -14396,6 +14396,7 @@ mod tests {
             horizontal_scaling: 100.0,
             primary_detected: false,
             char_widths: vec![],
+            heading_level: None,
         }
     }
 
@@ -14470,6 +14471,7 @@ mod tests {
             primary_detected: false,
             artifact_type: None,
             char_widths,
+            heading_level: None,
         }
     }
 
@@ -17523,6 +17525,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             }
         }
 
@@ -17792,6 +17795,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             }
         }
 
@@ -17859,6 +17863,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             }
         }
 

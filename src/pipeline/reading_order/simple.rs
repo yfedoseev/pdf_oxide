@@ -71,6 +71,7 @@ mod tests {
             horizontal_scaling: 100.0,
             primary_detected: false,
             char_widths: vec![],
+            heading_level: None,
         }
     }
 

@@ -7280,6 +7280,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -7305,6 +7306,7 @@ mod tests {
                 word_spacing: 0.0,
                 horizontal_scaling: 100.0,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -8919,6 +8921,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -8939,6 +8942,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -8984,6 +8988,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             };
 
         // (glyph, Helvetica per-em advance width)
@@ -9037,6 +9042,7 @@ mod tests {
             horizontal_scaling: 100.0,
             primary_detected: false,
             char_widths: vec![],
+            heading_level: None,
         };
 
         // Stroke pass + fill pass at ~2 % of advance apart.
@@ -9086,6 +9092,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             });
         }
 
@@ -9259,6 +9266,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -9279,6 +9287,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -9313,6 +9322,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -9333,6 +9343,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -9372,6 +9383,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -9392,6 +9404,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -9424,6 +9437,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -9444,6 +9458,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -9464,6 +9479,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -11757,6 +11773,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -11777,6 +11794,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -11807,6 +11825,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -11827,6 +11846,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -11917,6 +11937,7 @@ mod tests {
             horizontal_scaling: 100.0,
             primary_detected: false,
             char_widths: vec![],
+            heading_level: None,
         }];
 
         extractor.split_fused_words();
@@ -11948,6 +11969,7 @@ mod tests {
             horizontal_scaling: 100.0,
             primary_detected: false,
             char_widths: vec![],
+            heading_level: None,
         }];
 
         extractor.split_fused_words();
@@ -12126,6 +12148,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -12146,6 +12169,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -12222,6 +12246,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -12242,6 +12267,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -12534,6 +12560,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -12554,6 +12581,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -12727,6 +12755,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -12747,6 +12776,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -13256,6 +13286,7 @@ mod profile_based_space_tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -13276,6 +13307,7 @@ mod profile_based_space_tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -13315,6 +13347,7 @@ mod profile_based_space_tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -13335,6 +13368,7 @@ mod profile_based_space_tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -13374,6 +13408,7 @@ mod profile_based_space_tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -13394,6 +13429,7 @@ mod profile_based_space_tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -13439,6 +13475,7 @@ mod profile_based_space_tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -13459,6 +13496,7 @@ mod profile_based_space_tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -13496,6 +13534,7 @@ mod profile_based_space_tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -13516,6 +13555,7 @@ mod profile_based_space_tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -13550,6 +13590,7 @@ mod profile_based_space_tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -13570,6 +13611,7 @@ mod profile_based_space_tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 
@@ -13608,6 +13650,7 @@ mod profile_based_space_tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
             TextSpan {
                 artifact_type: None,
@@ -13628,6 +13671,7 @@ mod profile_based_space_tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             },
         ];
 

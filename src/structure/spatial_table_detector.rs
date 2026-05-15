@@ -3537,6 +3537,7 @@ mod tests {
             horizontal_scaling: 1.0,
             primary_detected: false,
             char_widths: vec![],
+            heading_level: None,
         }
     }
     fn make_h_line(x: f32, y: f32, width: f32) -> crate::elements::PathContent {
@@ -5831,6 +5832,7 @@ mod tests {
             horizontal_scaling: 100.0,
             primary_detected: false,
             char_widths: vec![],
+            heading_level: None,
         }
     }
 
