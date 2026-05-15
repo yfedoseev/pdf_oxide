@@ -5,6 +5,13 @@
 //! * `concurrent_renders_no_panic` — regression for #481: 8 threads render the
 //!   same page simultaneously via the high-level Rust API.  The Rust API
 //!   serialises render state via an internal Mutex, so this must never crash.
+//! * `concurrent_render_page_fit_one_shared_handle_no_spurious_parse` —
+//!   regression for #507: many threads call `pdf_render_page_fit` on a *single
+//!   shared* FFI handle, exactly as the C# binding does.  Reproduces the #398
+//!   Race A split-lock bug (seek and read on the shared reader split across two
+//!   lock acquisitions) that surfaced as a spurious `[1000] invalid PDF
+//!   structure or content stream` parse error.  Runs on every CI run, so the
+//!   guard does not depend on the sometimes-flaky extended-features C# job.
 #![allow(clippy::missing_safety_doc)]
 #![allow(unused_unsafe)]
 
@@ -112,4 +119,93 @@ fn concurrent_renders_no_panic() {
     for h in handles {
         h.join().expect("render thread panicked");
     }
+}
+
+/// Regression test for #507: concurrent `pdf_render_page_fit` on ONE shared
+/// FFI document handle must never return a spurious parse error.
+///
+/// The C# binding (and the extended-features C# CI job: barcodes, rendering,
+/// signatures, tsa-client, system-fonts) keeps a single native
+/// `*mut PdfDocument` and calls render from multiple managed threads.  Before
+/// the #398 Race A fix in `PdfDocument`, the object-header probe on the render
+/// path acquired the shared reader lock twice — once to `seek`, once to
+/// `read` — so a second thread could re-seek the shared file between the two,
+/// making the first thread read a different object's bytes.  That produced an
+/// intermittent `[1000] invalid PDF structure or content stream`
+/// (`ERR_PARSE`), seen only under concurrency.
+///
+/// Unlike `concurrent_renders_no_panic` (each thread has its *own* handle, so
+/// no shared reader), this test deliberately shares ONE handle to exercise the
+/// internal `lock_or_recover()` serialisation.  Every render of a valid page
+/// must succeed (`ERR_SUCCESS`); any `ERR_PARSE` is the regression.
+#[cfg(feature = "rendering")]
+#[test]
+fn concurrent_render_page_fit_one_shared_handle_no_spurious_parse() {
+    use pdf_oxide::api::Pdf;
+    use std::sync::Arc;
+
+    // ERR_SUCCESS / ERR_PARSE are private to the ffi module; mirror the
+    // documented C ABI values (see src/ffi.rs).
+    const ERR_SUCCESS: i32 = 0;
+    const ERR_PARSE: i32 = 3;
+
+    let bytes: Vec<u8> = Pdf::from_text("Shared-handle render race regression #507")
+        .expect("build PDF")
+        .into_bytes();
+
+    // One shared native handle, opened once — this is the C# binding shape.
+    let mut ec: i32 = -1;
+    let doc = unsafe { pdf_document_open_from_bytes(bytes.as_ptr(), bytes.len(), &mut ec) };
+    assert_eq!(ec, ERR_SUCCESS, "open_from_bytes failed");
+    assert!(!doc.is_null(), "open_from_bytes returned null");
+
+    // Raw pointers are !Send; pass the address as usize and cast back. This is
+    // sound precisely because the #398/#507 contract makes shared `&`-access to
+    // `PdfDocument` safe (the reader is Mutex-guarded via `lock_or_recover`).
+    let doc_addr = doc as usize;
+
+    const THREADS: usize = 8;
+    const ITERS: usize = 16;
+
+    let barrier = Arc::new(std::sync::Barrier::new(THREADS));
+    let handles: Vec<_> = (0..THREADS)
+        .map(|_| {
+            let b = Arc::clone(&barrier);
+            std::thread::spawn(move || -> Result<(), String> {
+                let doc = doc_addr as *mut _;
+                b.wait(); // maximise overlap on the shared reader
+                for i in 0..ITERS {
+                    let mut ec: i32 = -1;
+                    let img = unsafe { pdf_render_page_fit(doc, 0, 200, 200, 0, &mut ec) };
+                    if ec == ERR_PARSE {
+                        return Err(format!(
+                            "iter {i}: spurious ERR_PARSE ([1000] invalid PDF \
+                             structure) — #507 shared-handle race regressed"
+                        ));
+                    }
+                    if ec != ERR_SUCCESS || img.is_null() {
+                        return Err(format!(
+                            "iter {i}: render failed ec={ec}, null={}",
+                            img.is_null()
+                        ));
+                    }
+                    unsafe { pdf_rendered_image_free(img) };
+                }
+                Ok(())
+            })
+        })
+        .collect();
+
+    let mut failures = Vec::new();
+    for h in handles {
+        match h.join() {
+            Ok(Ok(())) => {},
+            Ok(Err(e)) => failures.push(e),
+            Err(_) => failures.push("render thread panicked".to_string()),
+        }
+    }
+
+    unsafe { pdf_document_free(doc) };
+
+    assert!(failures.is_empty(), "shared-handle render race (#507): {failures:?}");
 }

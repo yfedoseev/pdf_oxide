@@ -659,6 +659,7 @@ impl WasmPdfDocument {
         Ok(WasmPdfDocument {
             inner: std::sync::Arc::new(std::sync::Mutex::new(inner)),
             raw_bytes: std::sync::Arc::new(pdf_bytes),
+            editor: None,
         })
     }
 
@@ -673,6 +674,7 @@ impl WasmPdfDocument {
         Ok(WasmPdfDocument {
             inner: std::sync::Arc::new(std::sync::Mutex::new(inner)),
             raw_bytes: std::sync::Arc::new(pdf_bytes),
+            editor: None,
         })
     }
 
@@ -687,6 +689,7 @@ impl WasmPdfDocument {
         Ok(WasmPdfDocument {
             inner: std::sync::Arc::new(std::sync::Mutex::new(inner)),
             raw_bytes: std::sync::Arc::new(pdf_bytes),
+            editor: None,
         })
     }
 

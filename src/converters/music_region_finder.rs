@@ -128,9 +128,7 @@ pub(crate) fn find_music_regions(doc: &PdfDocument, page_idx: usize) -> Vec<Rect
     }
     let mut clusters: Vec<Cluster> = Vec::new();
     for hl in &hlines {
-        let extend = clusters
-            .last_mut()
-            .map_or(false, |c| (hl.y - c.y_max) <= 6.0);
+        let extend = clusters.last_mut().is_some_and(|c| (hl.y - c.y_max) <= 6.0);
         if extend {
             let c = clusters.last_mut().unwrap();
             c.y_max = hl.y;
@@ -227,7 +225,7 @@ pub(crate) fn rasterize_music_regions(
     if bytes.is_empty() {
         return Vec::new();
     }
-    let mut doc_mut = match crate::document::PdfDocument::from_bytes(bytes) {
+    let doc_mut = match crate::document::PdfDocument::from_bytes(bytes) {
         Ok(d) => d,
         Err(_) => return Vec::new(),
     };
@@ -237,7 +235,7 @@ pub(crate) fn rasterize_music_regions(
         format: RFmt::Png,
         ..Default::default()
     };
-    let full = match render_page(&mut doc_mut, page_idx, &opts) {
+    let full = match render_page(&doc_mut, page_idx, &opts) {
         Ok(i) => i,
         Err(_) => return Vec::new(),
     };

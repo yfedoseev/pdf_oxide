@@ -78,6 +78,10 @@ jobs:
   test:
     name: Test
     runs-on: ${{ matrix.os }}
+    # Nightly uses the bundled rust-lld linker, which intermittently crashes
+    # with SIGBUS on resource-constrained runners. Don't let a flaky nightly
+    # linker crash block a release; nightly only exists as an early warning.
+    continue-on-error: ${{ matrix.rust == 'nightly' }}
     strategy:
       fail-fast: false
       matrix:
@@ -97,7 +101,9 @@ jobs:
           dotnet: true
           haskell: true
           large-packages: true
-          swap-storage: true
+          # Keep swap: removing it causes OOM-induced SIGBUS in the linker
+          # during parallel link steps (notably nightly's rust-lld).
+          swap-storage: false
 
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
@@ -109,7 +115,15 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          key: ${{ matrix.rust }}
+          # `cache-bin: false`: rust-cache caches ~/.cargo/bin by default.
+          # On the macos-latest beta runner that cache captured a poisoned
+          # cargo (a rustup-init copy), so a later restore made
+          # `cargo build` run `rustup-init build` → "unexpected argument
+          # 'build'". Not caching the toolchain bin dir removes this class
+          # of failure. The `-v2` key bump abandons the already-poisoned
+          # entries so the next run starts from a clean toolchain.
+          key: ${{ matrix.rust }}-v2
+          cache-bin: "false"
 
       - name: Build
         run: cargo build --verbose
@@ -119,11 +133,26 @@ jobs:
         run: cargo test --verbose
         env:
           CARGO_INCREMENTAL: "0"
+          # Cap parallel link-worker spawns: nightly's bundled rust-lld
+          # SIGBUSes when many test/example binaries link at once on
+          # resource-constrained runners. Same mitigation as the coverage
+          # job. #399.
+          CARGO_BUILD_JOBS: "2"
 
       - name: Build documentation (warnings as errors)
         run: cargo doc --no-deps --workspace
         env:
           RUSTDOCFLAGS: "-D warnings"
+
+      # Reclaim disk before the implicit rust-cache save step. The beta
+      # ubuntu job has hit "No space left on device" during cache save
+      # once target/ + target/doc filled the ~48 GB left after
+      # free-disk-space. doc/ and incremental/ are throwaway and not
+      # cached, so dropping them here is free headroom. Reuses the
+      # `rm -rf target/` cleanup pattern from the coverage job.
+      - name: Reclaim disk before cache save
+        if: runner.os == 'Linux'
+        run: rm -rf target/doc target/debug/incremental
 
   # Test Python bindings feature (only production-ready feature in v0.1.0)
   features:
@@ -287,7 +316,9 @@ jobs:
           dotnet: true
           haskell: true
           large-packages: true
-          swap-storage: true
+          # Keep swap: removing it causes OOM-induced SIGBUS in the linker
+          # during parallel link steps (notably nightly's rust-lld).
+          swap-storage: false
 
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
@@ -367,7 +398,9 @@ jobs:
           dotnet: true
           haskell: true
           large-packages: true
-          swap-storage: true
+          # Keep swap: removing it causes OOM-induced SIGBUS in the linker
+          # during parallel link steps (notably nightly's rust-lld).
+          swap-storage: false
 
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
@@ -434,11 +467,18 @@ jobs:
           after_kb=$(( $(stat -c%s "$out") / 1024 ))
           echo "Before wasm-opt: ${before_kb} KB"
           echo "After  wasm-opt: ${after_kb} KB"
-          # Size regression gate: v0.3.47 baseline after -Oz is ~11.25 MB
-          # (grew from 10.4 MB with fast_image_resize SIMD downscaling and
-          # hayro-jbig2 JBIG2 decoder added to the rendering feature).
-          # Ceiling leaves ~6% headroom above the 11520 KB measured baseline.
-          max_kb=12288
+          # Size regression gate. History after -Oz:
+          #   v0.3.47 ~11.25 MB (fast_image_resize SIMD + hayro-jbig2).
+          #   v0.3.48 ~13.23 MB: the office-converter integration (#159)
+          #     adds the docx/pptx/xlsx writers + the bundled DejaVu
+          #     Sans/Bold Unicode-fallback faces (~1.5 MB of
+          #     `include_bytes!`). WASM exposes `to_*_bytes` /
+          #     `open_from_*_bytes` so the fallback fonts are a required
+          #     part of that feature, not dead weight — the growth is
+          #     legitimate, so the ceiling is raised rather than the
+          #     fonts gated off wasm32.
+          # Ceiling leaves ~6% headroom above the 13546 KB v0.3.48 baseline.
+          max_kb=14336
           if [ "$after_kb" -gt "$max_kb" ]; then
             echo "::error::wasm bundle ${after_kb} KB exceeds ceiling ${max_kb} KB"
             exit 1

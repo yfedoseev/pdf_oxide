@@ -377,7 +377,7 @@ fn build_format4_cmap(unicode_to_gid: &HashMap<u32, u16>) -> Option<Vec<u8>> {
 
     // Final sentinel segment per format-4 spec: 0xFFFF→0xFFFF mapping
     // to glyph 0 (delta = 1 makes glyph index = 0xFFFF + 1 = 0).
-    if segs.last().map_or(true, |s| s.end != 0xFFFF) {
+    if segs.last().is_none_or(|s| s.end != 0xFFFF) {
         segs.push(Segment {
             start: 0xFFFF,
             end: 0xFFFF,
@@ -438,7 +438,7 @@ fn build_format4_cmap(unicode_to_gid: &HashMap<u32, u16>) -> Option<Vec<u8>> {
 
     // idDelta array (i16, encoded as u16 two's complement)
     for s in &segs {
-        let d16 = (s.delta as i32).rem_euclid(0x1_0000) as u16;
+        let d16 = s.delta.rem_euclid(0x1_0000) as u16;
         write_be_u16(&mut buf, d16);
     }
 

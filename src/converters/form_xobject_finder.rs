@@ -330,7 +330,7 @@ pub fn rasterize_form_and_inline_regions(
     if bytes.is_empty() {
         return Vec::new();
     }
-    let mut doc_mut = match crate::document::PdfDocument::from_bytes(bytes) {
+    let doc_mut = match crate::document::PdfDocument::from_bytes(bytes) {
         Ok(d) => d,
         Err(_) => return Vec::new(),
     };
@@ -340,7 +340,7 @@ pub fn rasterize_form_and_inline_regions(
         format: RFmt::Png,
         ..Default::default()
     };
-    let full = match render_page(&mut doc_mut, page_idx, &opts) {
+    let full = match render_page(&doc_mut, page_idx, &opts) {
         Ok(i) => i,
         Err(_) => return Vec::new(),
     };

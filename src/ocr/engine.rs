@@ -75,6 +75,7 @@ impl OcrSpan {
             horizontal_scaling: 100.0,
             primary_detected: false,
             char_widths: Vec::new(),
+            heading_level: None,
         }
     }
 

@@ -9,8 +9,6 @@ use pyo3::exceptions::{PyIOError, PyNotImplementedError, PyRuntimeError, PyValue
 use pyo3::prelude::*;
 #[cfg(feature = "python")]
 use pyo3::types::PyBytes;
-#[cfg(feature = "python")]
-use pyo3::types::{PyDict, PyTuple};
 
 // Register module-level variable for .pyi (pyo3-stub-gen); matches m.add("VERSION", ...) below.
 use crate::api::PdfBuilder as RustPdfBuilder;
@@ -3754,7 +3752,10 @@ pub struct PyOcrEngine {}
 impl PyOcrEngine {
     #[new]
     #[pyo3(signature = (*_args, **_kwargs))]
-    fn new(_args: &Bound<'_, PyTuple>, _kwargs: Option<Bound<'_, PyDict>>) -> PyResult<Self> {
+    fn new(
+        _args: &Bound<'_, pyo3::types::PyTuple>,
+        _kwargs: Option<Bound<'_, pyo3::types::PyDict>>,
+    ) -> PyResult<Self> {
         Err(PyRuntimeError::new_err("OCR not enabled."))
     }
 }
@@ -3799,7 +3800,7 @@ pub struct PyOcrConfig {}
 impl PyOcrConfig {
     #[new]
     #[pyo3(signature = (**_kwargs))]
-    fn new(_kwargs: Option<Bound<'_, PyDict>>) -> PyResult<Self> {
+    fn new(_kwargs: Option<Bound<'_, pyo3::types::PyDict>>) -> PyResult<Self> {
         Err(PyRuntimeError::new_err("OCR not enabled."))
     }
 }

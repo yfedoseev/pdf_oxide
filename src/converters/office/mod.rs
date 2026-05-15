@@ -1114,7 +1114,7 @@ fn render_heading<'a>(page: FluentPageBuilder<'a>, h: &Heading) -> FluentPageBui
             }
         });
     let size_pt =
-        office_oxide::ir::first_inline_font_size_pt(&h.content).unwrap_or_else(|| match h.level {
+        office_oxide::ir::first_inline_font_size_pt(&h.content).unwrap_or(match h.level {
             1 => 24.0,
             2 => 20.0,
             3 => 16.0,
@@ -1136,7 +1136,7 @@ fn render_heading<'a>(page: FluentPageBuilder<'a>, h: &Heading) -> FluentPageBui
         let usable_w = (page_w - cursor_x - right_margin).max(1.0);
         let line_h = size_pt * page.text_config_line_height();
         let est_chars_per_line = (usable_w / (size_pt * 0.5)).max(1.0) as usize;
-        let lines = (text.chars().count().max(1) + est_chars_per_line - 1) / est_chars_per_line;
+        let lines = text.chars().count().max(1).div_ceil(est_chars_per_line);
         let block_h = line_h * lines.max(1) as f32;
         let rect = Rect::new(cursor_x, cursor_y - block_h, usable_w, block_h);
         let align = match h.alignment {
@@ -1247,8 +1247,11 @@ fn map_to_base14(name: &str) -> Option<&'static str> {
         || lower.contains("typewriter")
         || lower.contains("monospace")
         || lower.contains("mono ");
-    let serif = mono.then_some(false).unwrap_or_else(|| {
-        lower.contains("times")
+    let serif = if mono {
+        false
+    } else {
+        {
+            lower.contains("times")
             || lower.contains("nimbusrom")
             || lower.contains("texgyretermes") || lower.contains("texgyrepagella")
             || lower.contains("texgyrebonum") || lower.contains("texgyreschola")
@@ -1268,7 +1271,8 @@ fn map_to_base14(name: &str) -> Option<&'static str> {
             || lower.contains("bookman") || lower.contains("georgia")
             || lower.contains("serif")
             || lower.starts_with("rm") // generic LaTeX serif default
-    });
+        }
+    };
     let sans = !mono
         && !serif
         && (
@@ -1643,7 +1647,7 @@ fn render_paragraph<'a>(page: FluentPageBuilder<'a>, p: &Paragraph) -> FluentPag
             let line_h = font_size * page.text_config_line_height();
             // Estimate line count for height; text_in_rect wraps inside.
             let est_chars_per_line = (usable_w / (font_size * 0.5)).max(1.0) as usize;
-            let lines = (text.chars().count().max(1) + est_chars_per_line - 1) / est_chars_per_line;
+            let lines = text.chars().count().max(1).div_ceil(est_chars_per_line);
             let block_h = line_h * lines.max(1) as f32;
             let rect = Rect::new(cursor_x, cursor_y - block_h, usable_w, block_h);
             let align = match p.alignment {
@@ -1729,7 +1733,7 @@ fn render_table<'a>(
     }
 
     // Wide-table case: split into column groups.
-    let has_header = t.rows.first().map_or(false, |r| r.is_header);
+    let has_header = t.rows.first().is_some_and(|r| r.is_header);
     // Reserve one slot for the repeated row-key column.
     let chunk_size = max_cols.saturating_sub(1).max(1);
     // First chunk includes col 0..chunk_size (no repetition since it owns col 0).
@@ -1776,7 +1780,7 @@ fn render_table_chunk<'a>(
         return page;
     }
     let chunk_n = col_end - col_start + if repeat_first_col { 1 } else { 0 };
-    let has_header = t.rows.first().map_or(false, |r| r.is_header);
+    let has_header = t.rows.first().is_some_and(|r| r.is_header);
 
     const MIN_COL_PT: f32 = 20.0;
     // Wider cell padding (default is 4pt) so adjacent cell text doesn't run
@@ -2309,7 +2313,7 @@ fn render_pptx_element<'a>(
                     // synthesised headings from the convert layer).
                     let body_size = config.default_font_size;
                     let size_pt = office_oxide::ir::first_inline_font_size_pt(&h.content)
-                        .unwrap_or_else(|| match h.level {
+                        .unwrap_or(match h.level {
                             1 => body_size * 1.6,
                             2 => body_size * 1.4,
                             3 => body_size * 1.2,
@@ -2325,8 +2329,7 @@ fn render_pptx_element<'a>(
                     let usable_w = (page_w_pt - cursor_x - right_margin).max(1.0);
                     let line_h = size_pt * page.text_config_line_height();
                     let est_chars_per_line = (usable_w / (size_pt * 0.5)).max(1.0) as usize;
-                    let lines =
-                        (text.chars().count().max(1) + est_chars_per_line - 1) / est_chars_per_line;
+                    let lines = text.chars().count().max(1).div_ceil(est_chars_per_line);
                     let block_h = line_h * lines.max(1) as f32;
                     let rect = Rect::new(cursor_x, cursor_y - block_h, usable_w, block_h);
                     let align = match h.alignment {
@@ -2343,7 +2346,7 @@ fn render_pptx_element<'a>(
                     // size over the level-based default.
                     let body_size = config.default_font_size;
                     let size_pt = office_oxide::ir::first_inline_font_size_pt(&h.content)
-                        .unwrap_or_else(|| match h.level {
+                        .unwrap_or(match h.level {
                             1 => body_size * 1.6,
                             2 => body_size * 1.4,
                             3 => body_size * 1.2,
@@ -2431,8 +2434,7 @@ fn render_pptx_element<'a>(
                     let usable_w = (page_w_pt - cursor_x - right_margin).max(1.0);
                     let line_h = size_pt * page.text_config_line_height();
                     let est_chars_per_line = (usable_w / (size_pt * 0.5)).max(1.0) as usize;
-                    let lines =
-                        (text.chars().count().max(1) + est_chars_per_line - 1) / est_chars_per_line;
+                    let lines = text.chars().count().max(1).div_ceil(est_chars_per_line);
                     let block_h = line_h * lines.max(1) as f32;
                     let rect = Rect::new(cursor_x, cursor_y - block_h, usable_w, block_h);
                     let align = match p.alignment {
@@ -2808,7 +2810,7 @@ fn wrap_estimate(text: &str, w_pt: f32, size_pt: f32) -> usize {
             lines += 1;
             continue;
         }
-        let n = (raw.chars().count() + chars_per_line - 1) / chars_per_line;
+        let n = raw.chars().count().div_ceil(chars_per_line);
         lines += n.max(1);
     }
     lines.max(1)

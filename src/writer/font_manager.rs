@@ -1013,8 +1013,8 @@ impl EmbeddedFont {
     fn glyph_id_fallback(&self, codepoint: u32) -> Option<u16> {
         let fallback = match codepoint {
             // Smart quotes → straight
-            0x2018 | 0x2019 | 0x201A | 0x201B => Some(0x27u32), // '
-            0x201C | 0x201D | 0x201E | 0x201F => Some(0x22),    // "
+            0x2018..=0x201B => Some(0x27u32), // '
+            0x201C..=0x201F => Some(0x22),    // "
             // Dashes
             0x2013 | 0x2014 | 0x2212 => Some(0x2D), // -
             // Non-breaking spaces

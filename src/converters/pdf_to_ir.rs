@@ -613,7 +613,7 @@ fn page_to_section(
         // (after the previous paragraph). PDF y-up: rule_y between
         // prev_bottom and this_top.
         while let Some(&rule_y) = rules_iter.peek() {
-            let after_prev = prev_para_min_y.map_or(true, |prev| rule_y < prev);
+            let after_prev = prev_para_min_y.is_none_or(|prev| rule_y < prev);
             let before_this = rule_y > this_top_y;
             if after_prev && before_this {
                 elements.push(Element::ThematicBreak);
@@ -727,7 +727,7 @@ fn page_to_section(
                 // Emit any horizontal rules that fall above THIS
                 // inner line and below the previous inner line.
                 while let Some(&rule_y) = rules_iter.peek() {
-                    let after_prev = prev_inner_min_y.map_or(true, |prev| rule_y < prev);
+                    let after_prev = prev_inner_min_y.is_none_or(|prev| rule_y < prev);
                     let before_this = rule_y > inner_top_y;
                     if after_prev && before_this {
                         elements.push(Element::ThematicBreak);
@@ -809,21 +809,21 @@ fn merge_lines_into_spans(lines: &[Vec<TextSpan>]) -> Vec<TextSpan> {
             // Look at the seam between out's last span and the first
             // span of the new line.
             if let (Some(prev), Some(next)) = (out.last_mut(), line.first()) {
-                let prev_text = prev.text.trim_end_matches(|c: char| c == ' ' || c == '\t');
-                let prev_ends_ws = prev.text.chars().last().map_or(true, |c| c.is_whitespace());
-                let next_starts_ws = next.text.chars().next().map_or(true, |c| c.is_whitespace());
+                let prev_text = prev.text.trim_end_matches([' ', '\t']);
+                let prev_ends_ws = prev.text.chars().last().is_none_or(|c| c.is_whitespace());
+                let next_starts_ws = next.text.chars().next().is_none_or(|c| c.is_whitespace());
                 let ends_hyphen = prev_text.ends_with('-')
                     && prev_text
                         .chars()
                         .rev()
                         .nth(1)
-                        .map_or(false, |c| c.is_alphabetic());
+                        .is_some_and(|c| c.is_alphabetic());
                 let starts_lower = next
                     .text
                     .trim_start()
                     .chars()
                     .next()
-                    .map_or(false, |c| c.is_lowercase());
+                    .is_some_and(|c| c.is_lowercase());
                 if ends_hyphen && starts_lower {
                     // Drop the trailing '-' from the previous span; the
                     // word continues on the next line. Mirrors the
@@ -1046,10 +1046,8 @@ fn group_into_paragraphs_with_lines(
         let cur_avg = cur.iter().map(|s| s.font_size).sum::<f32>() / cur.len() as f32;
         let size_jump = (cur_avg - prev_avg).abs() > 2.0;
 
-        if gap > lh * gap_factor || size_jump {
-            if !cur_para.is_empty() {
-                paragraphs.push(std::mem::take(&mut cur_para));
-            }
+        if (gap > lh * gap_factor || size_jump) && !cur_para.is_empty() {
+            paragraphs.push(std::mem::take(&mut cur_para));
         }
         cur_para.push(line_owned);
     }
@@ -1280,8 +1278,7 @@ fn real_font_name(raw: &str) -> Option<String> {
             .iter()
             .take_while(|b| b.is_ascii_digit())
             .count();
-        if alpha_prefix >= 1
-            && alpha_prefix <= 2
+        if (1..=2).contains(&alpha_prefix)
             && digit_suffix >= 1
             && alpha_prefix + digit_suffix == bytes.len()
         {
@@ -1353,7 +1350,7 @@ fn median_font_size(spans: &[TextSpan]) -> f32 {
     if n == 0 {
         return 12.0;
     }
-    if n % 2 == 0 {
+    if n.is_multiple_of(2) {
         (sizes[n / 2 - 1] + sizes[n / 2]) / 2.0
     } else {
         sizes[n / 2]

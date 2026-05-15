@@ -515,7 +515,7 @@ fn build_document_body(pages: &[PageSpans], page_w_pt: f32, page_h_pt: f32) -> S
                         .map(|(_, rest)| rest)
                         .unwrap_or(raw_font);
                     let looks_synthetic = stripped.len() < 12
-                        && stripped.bytes().next().map_or(false, |b| b == b'F')
+                        && (stripped.bytes().next() == Some(b'F'))
                         && stripped.bytes().skip(1).all(|b| b.is_ascii_digit());
                     if looks_synthetic {
                         if span.is_monospace {
@@ -792,6 +792,7 @@ fn looks_like_heading_text(text: &str) -> bool {
 ///   - next span starts with a lowercase letter
 ///   - next span sits on a different baseline (lower y in PDF coords)
 ///   - next span begins horizontally near where prev would have
+///
 /// and merge: drop the trailing `-`, splice the next span's text onto
 /// the prev span's text, drop the next span. Keeps the original bbox /
 /// font of the prev span so downstream positioning is unchanged.
@@ -812,13 +813,13 @@ fn merge_hyphenated_spans(spans: &mut Vec<crate::layout::text_block::TextSpan>) 
                     .chars()
                     .rev()
                     .nth(1)
-                    .map_or(false, |c| c.is_alphabetic());
+                    .is_some_and(|c| c.is_alphabetic());
             let starts_lower = next
                 .text
                 .trim_start()
                 .chars()
                 .next()
-                .map_or(false, |c| c.is_lowercase());
+                .is_some_and(|c| c.is_lowercase());
             // Different baseline (PDF y decreases downward in line stacking;
             // a hyphenation continuation lives on a lower line).
             let cur_cy = cur.bbox.y + cur.bbox.height * 0.5;

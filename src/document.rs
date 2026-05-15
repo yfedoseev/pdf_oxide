@@ -304,6 +304,18 @@ pub struct PdfDocument {
     /// `PdfDocument` both `Send` and `Sync`.
     /// Wrapped in RefCell for interior mutability (seek/read require &mut).
     reader: Mutex<PdfReader>,
+    /// Serializes concurrent *cold* (uncached) object loads on a shared
+    /// handle. A single logical load makes many separate `reader` lock
+    /// scopes (header, /Length resolution, stream bytes, nested refs);
+    /// without this, two threads cold-loading on one shared `PdfDocument`
+    /// (e.g. the C# binding's single native handle calling `render_page_fit`
+    /// from multiple threads) interleave those scopes on the shared
+    /// `BufReader` and read each other's bytes, surfacing as a spurious
+    /// `[1000] invalid PDF structure or content stream`. Acquired only at
+    /// the top-level entry of `load_object` (recursion depth 0) with a
+    /// double-checked cache, so warm cache hits stay fully parallel and
+    /// same-thread recursion never re-acquires (no self-deadlock). #507.
+    load_lock: Mutex<()>,
     /// Raw bytes of the document (kept for duplication/editing)
     pub source_bytes: Vec<u8>,
     /// PDF version (major, minor)
@@ -747,6 +759,7 @@ impl PdfDocument {
         // We now initialize eagerly to ensure the handler is ready when needed.
         let document = Self {
             reader: Mutex::new(reader),
+            load_lock: Mutex::new(()),
             source_bytes: Vec::new(),
             version,
             xref,
@@ -1534,11 +1547,30 @@ impl PdfDocument {
             return Err(Error::CircularReference(obj_ref));
         }
 
-        // Check cache first
+        // Check cache first (warm path: fully parallel, no serialization).
         let cached_opt = self.object_cache.lock_or_recover().get(&obj_ref).cloned();
         if let Some(cached) = cached_opt {
             return Ok(cached);
         }
+
+        // Cold path (#507): serialize uncached loads across threads so a
+        // single logical load's many `reader` lock scopes are not
+        // interleaved by another thread's load on the shared `BufReader`.
+        // Acquire ONLY at the top-level entry (recursion depth 0); a
+        // recursive call from this same thread (nested-ref resolution)
+        // already holds the guard, so re-acquiring would self-deadlock —
+        // skip it. Held for the remainder of this top-level resolution.
+        let _load_guard = if RECURSION_DEPTH.with(|d| *d.borrow()) == 0 {
+            let guard = self.load_lock.lock_or_recover();
+            // Double-checked: another thread may have loaded and cached
+            // this object while we were blocked on the guard.
+            if let Some(cached) = self.object_cache.lock_or_recover().get(&obj_ref).cloned() {
+                return Ok(cached);
+            }
+            Some(guard)
+        } else {
+            None
+        };
 
         // Look up in xref table
         let entry = match self.xref.get(obj_ref.id) {
@@ -1845,22 +1877,26 @@ impl PdfDocument {
             return true; // conservative fallback
         }
 
-        // Seek to object offset and read a small buffer
+        // Seek + read under a SINGLE lock guard. Splitting the seek and
+        // the read across two `self.reader.lock_or_recover()` acquisitions
+        // is the #398 Race A split-lock bug (same one already fixed in
+        // `load_uncompressed_object_impl`): a concurrent thread can
+        // re-seek the shared reader between our seek() and read(), so we
+        // read a garbage buffer for a different object. That surfaced as
+        // a spurious `[1000] invalid PDF structure or content stream`
+        // ParseError under concurrent `render_page_fit` (issue #507).
         let offset = entry.offset;
-        if self
-            .reader
-            .lock_or_recover()
-            .seek(SeekFrom::Start(offset))
-            .is_err()
-        {
-            return true;
-        }
-
-        // Read enough bytes for the object header + dictionary (typically <1KB)
         let mut buf = [0u8; 1024];
-        let n = match self.reader.lock_or_recover().read(&mut buf) {
-            Ok(n) => n,
-            Err(_) => return true,
+        let n = {
+            let mut reader = self.reader.lock_or_recover();
+            if reader.seek(SeekFrom::Start(offset)).is_err() {
+                return true;
+            }
+            // Read enough bytes for the object header + dictionary (<1KB)
+            match reader.read(&mut buf) {
+                Ok(n) => n,
+                Err(_) => return true,
+            }
         };
         let data = &buf[..n];
 
@@ -11896,6 +11932,7 @@ impl PdfDocument {
     /// default `to_docx_bytes` layout-preserving path:
     /// - Better for editing (real paragraph structure, not floating frames).
     /// - Worse for visual fidelity (text reflows; positions drift).
+    ///
     /// Use this when downstream callers will edit the DOCX in Word /
     /// LibreOffice; use the default for pixel-faithful round trips.
     pub fn to_docx_bytes_flow(&self) -> Result<Vec<u8>> {
@@ -12944,7 +12981,7 @@ impl PdfDocument {
         Ok(out)
     }
 
-    /// Like [`extract_embedded_fonts`] but additionally returns a
+    /// Like [`Self::extract_embedded_fonts`] but additionally returns a
     /// per-font Unicode → GID map reconstructed from the source PDF's
     /// `/ToUnicode` CMap and the font's CID/byte→GID table.
     ///
@@ -13128,7 +13165,7 @@ impl PdfDocument {
                         (font_arc.widths.as_ref(), font_arc.first_char)
                     {
                         for (i, w) in widths.iter().enumerate() {
-                            let byte = first as u32 + i as u32;
+                            let byte = first + i as u32;
                             if byte > 0xFF {
                                 break;
                             }

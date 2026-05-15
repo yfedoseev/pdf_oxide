@@ -13,7 +13,7 @@
 //! Sans — loads its raw bytes, and exposes them to the office
 //! writer so they can be registered alongside the source's embedded
 //! fonts. The caller decides per-span whether to route to the
-//! fallback via [`needs_unicode_fallback`].
+//! fallback via `needs_unicode_fallback`.
 //!
 //! The font is loaded at most once per process (cached via
 //! `OnceLock`). The bytes are cloned on each retrieval — a few

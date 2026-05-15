@@ -39,7 +39,10 @@ jobs:
           dotnet: true
           haskell: true
           large-packages: true
-          swap-storage: true
+          # Keep swap: removing it causes OOM-induced SIGBUS in the
+          # linker during parallel build/link steps. ~48 GB free after
+          # the reclaims above is enough headroom. See ci.yml.
+          swap-storage: false
 
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
