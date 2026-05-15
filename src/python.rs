@@ -10,7 +10,6 @@ use pyo3::prelude::*;
 #[cfg(feature = "python")]
 use pyo3::types::PyBytes;
 #[cfg(feature = "python")]
-#[cfg(any(not(feature = "office"), not(feature = "ocr")))]
 use pyo3::types::{PyDict, PyTuple};
 
 // Register module-level variable for .pyi (pyo3-stub-gen); matches m.add("VERSION", ...) below.
@@ -881,6 +880,54 @@ impl PyPdfDocument {
         self.inner.to_html_all(&options).map_err(|e| {
             PyRuntimeError::new_err(format!("Failed to convert all pages to HTML: {}", e))
         })
+    }
+
+    /// Convert the entire PDF to a DOCX file on disk.
+    fn to_docx(&self, path: &str) -> PyResult<()> {
+        self.inner
+            .to_docx(path)
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to convert to DOCX: {}", e)))
+    }
+
+    /// Convert the entire PDF to DOCX bytes in memory.
+    fn to_docx_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = self
+            .inner
+            .to_docx_bytes()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to convert to DOCX: {}", e)))?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Convert the entire PDF to a PPTX file on disk.
+    fn to_pptx(&self, path: &str) -> PyResult<()> {
+        self.inner
+            .to_pptx(path)
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to convert to PPTX: {}", e)))
+    }
+
+    /// Convert the entire PDF to PPTX bytes in memory.
+    fn to_pptx_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = self
+            .inner
+            .to_pptx_bytes()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to convert to PPTX: {}", e)))?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Convert the entire PDF to an XLSX file on disk.
+    fn to_xlsx(&self, path: &str) -> PyResult<()> {
+        self.inner
+            .to_xlsx(path)
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to convert to XLSX: {}", e)))
+    }
+
+    /// Convert the entire PDF to XLSX bytes in memory.
+    fn to_xlsx_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = self
+            .inner
+            .to_xlsx_bytes()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to convert to XLSX: {}", e)))?;
+        Ok(PyBytes::new(py, &bytes))
     }
 
     /// Get page object for DOM access.
@@ -2942,67 +2989,9 @@ impl PyPdf {
     }
 }
 
-#[cfg(feature = "office")]
-use crate::converters::office::OfficeConverter as RustOfficeConverter;
-
-#[cfg(feature = "office")]
-#[pyclass(
-    module = "pdf_oxide.pdf_oxide",
-    name = "OfficeConverter",
-    skip_from_py_object
-)]
+#[pyclass(module = "pdf_oxide.pdf_oxide", name = "OfficeConverter", skip_from_py_object)]
 pub struct PyOfficeConverter;
 
-#[cfg(not(feature = "office"))]
-#[pyclass(
-    module = "pdf_oxide.pdf_oxide",
-    name = "OfficeConverter",
-    skip_from_py_object
-)]
-pub struct PyOfficeConverter;
-
-#[cfg(not(feature = "office"))]
-#[pymethods]
-impl PyOfficeConverter {
-    #[new]
-    fn new() -> PyResult<Self> {
-        Err(PyRuntimeError::new_err("Office feature not enabled."))
-    }
-    #[staticmethod]
-    #[pyo3(signature = (*_args, **_kwargs))]
-    fn convert(
-        _args: &Bound<'_, PyTuple>,
-        _kwargs: Option<Bound<'_, PyDict>>,
-    ) -> PyResult<Py<PyAny>> {
-        Err(PyRuntimeError::new_err("Office feature not enabled."))
-    }
-    #[staticmethod]
-    #[pyo3(signature = (*_args, **_kwargs))]
-    fn from_docx(
-        _args: &Bound<'_, PyTuple>,
-        _kwargs: Option<Bound<'_, PyDict>>,
-    ) -> PyResult<Py<PyAny>> {
-        Err(PyRuntimeError::new_err("Office feature not enabled."))
-    }
-    #[staticmethod]
-    #[pyo3(signature = (*_args, **_kwargs))]
-    fn from_xlsx(
-        _args: &Bound<'_, PyTuple>,
-        _kwargs: Option<Bound<'_, PyDict>>,
-    ) -> PyResult<Py<PyAny>> {
-        Err(PyRuntimeError::new_err("Office feature not enabled."))
-    }
-    #[staticmethod]
-    #[pyo3(signature = (*_args, **_kwargs))]
-    fn from_pptx(
-        _args: &Bound<'_, PyTuple>,
-        _kwargs: Option<Bound<'_, PyDict>>,
-    ) -> PyResult<Py<PyAny>> {
-        Err(PyRuntimeError::new_err("Office feature not enabled."))
-    }
-}
-
-#[cfg(feature = "office")]
 #[pymethods]
 impl PyOfficeConverter {
     #[new]
@@ -3011,52 +3000,52 @@ impl PyOfficeConverter {
     }
     #[staticmethod]
     fn from_docx(path: &str) -> PyResult<PyPdf> {
-        let res = RustOfficeConverter::new()
+        crate::converters::office::OfficeConverter::new()
             .convert_docx(path)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        Ok(PyPdf { bytes: res })
+            .map(|b| PyPdf { bytes: b })
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
     #[staticmethod]
     fn from_docx_bytes(data: &Bound<'_, PyBytes>) -> PyResult<PyPdf> {
-        let res = RustOfficeConverter::new()
+        crate::converters::office::OfficeConverter::new()
             .convert_docx_bytes(data.as_bytes())
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        Ok(PyPdf { bytes: res })
+            .map(|b| PyPdf { bytes: b })
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
     #[staticmethod]
     fn from_xlsx(path: &str) -> PyResult<PyPdf> {
-        let res = RustOfficeConverter::new()
+        crate::converters::office::OfficeConverter::new()
             .convert_xlsx(path)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        Ok(PyPdf { bytes: res })
+            .map(|b| PyPdf { bytes: b })
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
     #[staticmethod]
     fn from_xlsx_bytes(data: &Bound<'_, PyBytes>) -> PyResult<PyPdf> {
-        let res = RustOfficeConverter::new()
+        crate::converters::office::OfficeConverter::new()
             .convert_xlsx_bytes(data.as_bytes())
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        Ok(PyPdf { bytes: res })
+            .map(|b| PyPdf { bytes: b })
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
     #[staticmethod]
     fn from_pptx(path: &str) -> PyResult<PyPdf> {
-        let res = RustOfficeConverter::new()
+        crate::converters::office::OfficeConverter::new()
             .convert_pptx(path)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        Ok(PyPdf { bytes: res })
+            .map(|b| PyPdf { bytes: b })
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
     #[staticmethod]
     fn from_pptx_bytes(data: &Bound<'_, PyBytes>) -> PyResult<PyPdf> {
-        let res = RustOfficeConverter::new()
+        crate::converters::office::OfficeConverter::new()
             .convert_pptx_bytes(data.as_bytes())
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        Ok(PyPdf { bytes: res })
+            .map(|b| PyPdf { bytes: b })
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
     #[staticmethod]
     fn convert(path: &str) -> PyResult<PyPdf> {
-        let res = RustOfficeConverter::new()
+        crate::converters::office::OfficeConverter::new()
             .convert(path)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        Ok(PyPdf { bytes: res })
+            .map(|b| PyPdf { bytes: b })
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 }
 

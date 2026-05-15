@@ -540,6 +540,15 @@ impl<'a> FluentPageBuilder<'a> {
         // carry over automatically.
     }
 
+    /// Width and height of the current page in points. Useful when the
+    /// caller needs to size content to the actual page (e.g. table column
+    /// caps that must reflect a landscape orientation chosen at section
+    /// time, not the document's default size).
+    pub fn page_dimensions(&self) -> (f32, f32) {
+        let p = &self.builder.pages[self.page_index];
+        (p.width, p.height)
+    }
+
     /// Current cursor X (points from left edge). Used by
     /// `StreamingTable` to anchor column offsets.
     pub(crate) fn cursor_x(&self) -> f32 {
@@ -553,6 +562,11 @@ impl<'a> FluentPageBuilder<'a> {
     /// use `at()` which takes (x, y).
     pub(crate) fn set_cursor_y(&mut self, y: f32) {
         self.cursor_y = y;
+    }
+    /// Width of the current page in points. Useful for callers
+    /// computing alignment rectangles relative to the page edge.
+    pub(crate) fn page_width(&self) -> f32 {
+        self.builder.pages[self.page_index].width
     }
     /// Font name from the builder's current text_config.
     pub(crate) fn text_config_font_name(&self) -> &str {
@@ -906,7 +920,14 @@ impl<'a> FluentPageBuilder<'a> {
             max_width,
         );
 
+        let line_height = self.text_config.size * self.text_config.line_height;
+        const BOTTOM_MARGIN: f32 = 72.0;
         for (line_text, line_width) in lines {
+            // Break to a new page when the next line would land below the bottom
+            // margin; otherwise content silently writes off the page (invisible).
+            if self.cursor_y - line_height < BOTTOM_MARGIN {
+                self.new_page_same_size_inplace();
+            }
             let page = &mut self.builder.pages[self.page_index];
             page.elements.push(ContentElement::Text(TextContent {
                 text: line_text,
@@ -922,7 +943,7 @@ impl<'a> FluentPageBuilder<'a> {
                 rotation_degrees: None,
                 matrix: None,
             }));
-            self.cursor_y -= self.text_config.size * self.text_config.line_height;
+            self.cursor_y -= line_height;
         }
         // Add extra space after paragraph
         self.cursor_y -= self.text_config.size * 0.5;
@@ -1211,6 +1232,11 @@ impl<'a> FluentPageBuilder<'a> {
                     self.text_config.size,
                 );
                 if self.cursor_x + cw > max_right && !buf.is_empty() {
+                    // Auto-paginate when next line would land below bottom margin.
+                    let line_height = self.text_config.size * self.text_config.line_height;
+                    if self.cursor_y - line_height < 72.0 {
+                        self.new_page_same_size_inplace();
+                    }
                     // Emit buf as a line
                     let bw = self.text_layout.font_manager().text_width(
                         &buf,
@@ -1246,7 +1272,7 @@ impl<'a> FluentPageBuilder<'a> {
                             rotation_degrees: None,
                             matrix: self.current_matrix,
                         }));
-                    self.cursor_y -= self.text_config.size * self.text_config.line_height;
+                    self.cursor_y -= line_height;
                     self.cursor_x = left_margin;
                     buf = word.to_string();
                 } else {
@@ -2645,6 +2671,9 @@ pub struct DocumentBuilder {
     page_labels: Option<super::page_labels::PageLabelsBuilder>,
     /// JavaScript to run when the document is opened (`/OpenAction`).
     open_action_script: Option<String>,
+    /// FlateDecode-compress emitted page content streams. Default: false.
+    /// Enable for size-sensitive output (long documents → 5-10× smaller PDFs).
+    compress_streams: bool,
 }
 
 impl DocumentBuilder {
@@ -2658,7 +2687,17 @@ impl DocumentBuilder {
             outline: super::outline_builder::OutlineBuilder::new(),
             page_labels: None,
             open_action_script: None,
+            compress_streams: false,
         }
+    }
+
+    /// Enable FlateDecode compression of emitted page content streams.
+    /// Off by default (so existing tests / golden files compare byte-for-byte
+    /// against uncompressed output); turn on for size-sensitive paths
+    /// (long documents — 800-page PDFs shrink ~5×).
+    pub fn compress_streams(mut self, on: bool) -> Self {
+        self.compress_streams = on;
+        self
     }
 
     /// Insert a table-of-contents page at position `insert_at` (0-based
@@ -3010,6 +3049,7 @@ impl DocumentBuilder {
         if let Some(script) = self.open_action_script {
             config.open_action_script = Some(script);
         }
+        config.compress = self.compress_streams;
         let tagged = config.tagged;
 
         let mut writer = PdfWriter::with_config(config);

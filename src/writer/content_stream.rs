@@ -850,10 +850,12 @@ impl ContentStreamBuilder {
 
         self.begin_text();
 
-        // Set color if not black
-        if text.style.color.r != 0.0 || text.style.color.g != 0.0 || text.style.color.b != 0.0 {
-            self.fill_color(text.style.color);
-        }
+        // Always set the fill colour explicitly. Without this, a previous
+        // `rg` operation in the content stream (e.g. a table cell's gray
+        // background fill before the text is drawn) bleeds into the text
+        // and renders body content in pale gray instead of black —
+        // exactly the "no text at all" symptom we hit on XLSX→PDF tables.
+        self.fill_color(text.style.color);
 
         // Set font
         let font_name = self.map_font_name(&text.font.name, text.style.weight.is_bold());
@@ -1585,11 +1587,24 @@ impl ContentStreamBuilder {
     fn write_escaped_string<W: Write>(&self, w: &mut W, text: &str) -> std::io::Result<()> {
         for ch in text.chars() {
             let cp = ch as u32;
-            if cp > 0xFF {
-                w.write_all(b"?")?;
-                continue;
-            }
-            let b = cp as u8;
+            // First, collapse Mathematical Alphanumeric Symbols (U+1D400-1D7FF)
+            // — italic/bold/script/etc. styled letters used in formulae — to
+            // their plain Latin/Greek base. None of these have glyphs in the
+            // standard 14 fonts, but `𝑥`→`x`, `𝛽`→`β`, `𝟗`→`9` is lossless
+            // for word-level text recovery and only loses the styling.
+            let cp = crate::fonts::encoding::math_alphanumeric_base(cp).unwrap_or(cp);
+            // Then map to WinAnsi. Most chars below 0xFF map directly; chars
+            // in 0x80-0x9F (smart quotes, em-dash, ellipsis, bullet, …) and
+            // a handful above 0xFF (Euro, OE-ligature, …) go through
+            // `unicode_to_winansi`. Genuine non-WinAnsi (Greek, CJK, …)
+            // degrades to `?` — those need an embedded Unicode font.
+            let b = match crate::fonts::encoding::unicode_to_winansi(cp) {
+                Some(b) => b,
+                None => {
+                    w.write_all(b"?")?;
+                    continue;
+                }
+            };
             match b {
                 b'(' => write!(w, "\\(")?,
                 b')' => write!(w, "\\)")?,

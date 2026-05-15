@@ -2592,7 +2592,7 @@ impl<'doc> TextExtractor<'doc> {
     }
 
     /// Return the current font set for caching purposes.
-    pub(crate) fn get_font_set(&self) -> Vec<(String, Arc<FontInfo>)> {
+    pub fn get_font_set(&self) -> Vec<(String, Arc<FontInfo>)> {
         self.fonts
             .iter()
             .map(|(k, v)| (k.clone(), Arc::clone(v)))
@@ -5429,6 +5429,7 @@ impl<'doc> TextExtractor<'doc> {
                 }
                 cw
             },
+            heading_level: None,
         };
         self.span_sequence_counter += 1;
 
@@ -5876,6 +5877,7 @@ impl<'doc> TextExtractor<'doc> {
             primary_detected: true,
             artifact_type: None,
             char_widths: vec![],
+            heading_level: None,
         };
 
         // Step 6: Increment sequence counter and add to spans
@@ -6476,6 +6478,7 @@ impl<'doc> TextExtractor<'doc> {
             primary_detected: false,
             artifact_type: self.current_artifact_type(),
             char_widths: vec![],
+            heading_level: None,
         };
         self.span_sequence_counter += 1;
 
@@ -6567,6 +6570,7 @@ impl<'doc> TextExtractor<'doc> {
                         }
                         cw
                     },
+                    heading_level: None,
                 };
                 self.span_sequence_counter += 1;
 

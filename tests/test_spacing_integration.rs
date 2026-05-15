@@ -51,6 +51,7 @@ fn create_test_span(
         horizontal_scaling: 100.0, // Tz parameter (Section 9.3.1)
         primary_detected: false,
         char_widths: vec![],
+        heading_level: None,
     }
 }
 

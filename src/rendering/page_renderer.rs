@@ -382,6 +382,29 @@ impl PageRenderer {
         let mut pending_clip: Option<(tiny_skia::Path, tiny_skia::FillRule)> = None;
         let mut clip_stack: Vec<Option<tiny_skia::Mask>> = vec![None]; // Start with no clip at depth 0
 
+        // Per-`execute_operators` resolved ExtGState resource dictionary. PDF
+        // content streams often invoke `gs<N>` thousands of times per page
+        // (vector scatter / contour plots emit one `gs` per marker — a
+        // dense plot page can have ~10 000 such calls per Form XObject with
+        // ~10 000 unique names because each marker carries its own alpha).
+        // Without this hoist, every `gs` op called `doc.resolve_object(...)`
+        // which deep-clones the *entire* per-form ExtGState dict (10 000+
+        // entries) — that single clone dominated render time. Resolving the
+        // resource dict once at the top of the operator loop and keeping a
+        // borrow into it collapses the per-`gs` work to a small `get` +
+        // resolve of just the inner state dict.
+        let ext_g_state_resolved: Option<Object> = match resources {
+            Object::Dictionary(rd) => rd
+                .get("ExtGState")
+                .and_then(|o| doc.resolve_object(o).ok()),
+            _ => None,
+        };
+        let ext_g_states: Option<&std::collections::HashMap<String, Object>> =
+            ext_g_state_resolved.as_ref().and_then(|o| o.as_dict());
+        // Cache parsed state per `dict_name` so the inner-dict resolve happens
+        // at most once per unique name in scope.
+        let mut ext_g_state_cache: std::collections::HashMap<String, ParsedExtGState> =
+            std::collections::HashMap::new();
         for op in operators {
             match op {
                 // Graphics state operators
@@ -1312,7 +1335,19 @@ impl PageRenderer {
 
                 // Extended graphics state
                 Operator::SetExtGState { dict_name } => {
-                    self.apply_ext_g_state(gs_stack.current_mut(), dict_name, resources, doc)?;
+                    // Fast path: resource dict is already resolved (see top of
+                    // this function), so the per-`gs` cost is one HashMap
+                    // lookup + one resolve of the small inner state dict.
+                    let entry = ext_g_state_cache.entry(dict_name.clone()).or_insert_with(|| {
+                        if let Some(states) = ext_g_states {
+                            if let Some(state_obj) = states.get(dict_name) {
+                                return parse_ext_g_state_inner(state_obj, doc)
+                                    .unwrap_or_default();
+                            }
+                        }
+                        ParsedExtGState::default()
+                    });
+                    entry.apply(gs_stack.current_mut());
                 },
 
                 // EndPath (n operator): discard current path without painting,
@@ -2167,6 +2202,7 @@ impl PageRenderer {
     }
 
     /// Apply extended graphics state parameters.
+    #[allow(dead_code)]
     fn apply_ext_g_state(
         &self,
         gs: &mut GraphicsState,
@@ -2174,77 +2210,11 @@ impl PageRenderer {
         resources: &Object,
         doc: &PdfDocument,
     ) -> Result<()> {
-        if let Object::Dictionary(res_dict) = resources {
-            if let Some(ext_gs_obj) = res_dict.get("ExtGState") {
-                // Resolve ExtGState dictionary if it's a reference
-                let ext_gs_resolved = doc.resolve_object(ext_gs_obj)?;
-                if let Some(ext_g_states) = ext_gs_resolved.as_dict() {
-                    if let Some(state_obj) = ext_g_states.get(dict_name) {
-                        // Resolve individual state object (often a reference)
-                        let state_resolved = doc.resolve_object(state_obj)?;
-                        if let Some(state_dict) = state_resolved.as_dict() {
-                            log::debug!(
-                                "Applying ExtGState '{}': {:?}",
-                                dict_name,
-                                state_dict.keys()
-                            );
-                            // Apply transparency parameters
-                            // PDF Spec Table 58: ca = non-stroking (fill) alpha
-                            if let Some(ca) = state_dict.get("ca") {
-                                let val = ca
-                                    .as_real()
-                                    .map(|v| v as f32)
-                                    .or_else(|| ca.as_integer().map(|v| v as f32));
-                                if let Some(v) = val {
-                                    gs.fill_alpha = v;
-                                    log::debug!("ExtGState: fill_alpha (ca) set to {}", v);
-                                }
-                            }
-
-                            // PDF Spec Table 58: CA = stroking alpha
-                            if let Some(ca_upper) = state_dict.get("CA") {
-                                let val = ca_upper
-                                    .as_real()
-                                    .map(|v| v as f32)
-                                    .or_else(|| ca_upper.as_integer().map(|v| v as f32));
-                                if let Some(v) = val {
-                                    gs.stroke_alpha = v;
-                                    log::debug!("ExtGState: stroke_alpha (CA) set to {}", v);
-                                }
-                            }
-
-                            if let Some(tk) = state_dict.get("TK") {
-                                log::debug!("ExtGState: TK (Text Knockout) found: {:?}", tk);
-                            }
-
-                            if let Some(smask) = state_dict.get("SMask") {
-                                log::debug!("ExtGState: SMask (Soft Mask) found: {:?}", smask);
-                            }
-
-                            if let Some(ais) = state_dict.get("AIS") {
-                                log::debug!("ExtGState: AIS (Alpha Is Shape) found: {:?}", ais);
-                            }
-
-                            if let Some(bm) = state_dict.get("BM") {
-                                let mode = match bm {
-                                    Object::Name(n) => n.clone(),
-                                    Object::Array(arr) => {
-                                        // Sometimes BM is an array, use the first one
-                                        arr.first()
-                                            .and_then(|o| o.as_name())
-                                            .unwrap_or("Normal")
-                                            .to_string()
-                                    },
-                                    _ => "Normal".to_string(),
-                                };
-                                gs.blend_mode = mode;
-                                log::debug!("ExtGState: blend_mode set to {}", gs.blend_mode);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Retained as a thin wrapper for any external caller; the operator
+        // loop in `execute_operators` uses the cached fast path via
+        // `parse_ext_g_state` instead.
+        let parsed = parse_ext_g_state(dict_name, resources, doc).unwrap_or_default();
+        parsed.apply(gs);
         Ok(())
     }
 
@@ -2340,6 +2310,101 @@ impl PageRenderer {
 
         Ok(output.into_inner())
     }
+}
+
+/// Parsed effects of a PDF ExtGState dictionary. Only the fields actually
+/// applied during rendering are captured (alpha + blend mode). Anything else
+/// (TK / SMask / AIS) is logged as debug only and not used yet, so it doesn't
+/// need to be cached.
+#[derive(Clone, Debug, Default)]
+struct ParsedExtGState {
+    fill_alpha: Option<f32>,
+    stroke_alpha: Option<f32>,
+    blend_mode: Option<String>,
+}
+
+impl ParsedExtGState {
+    fn apply(&self, gs: &mut GraphicsState) {
+        if let Some(a) = self.fill_alpha {
+            gs.fill_alpha = a;
+        }
+        if let Some(a) = self.stroke_alpha {
+            gs.stroke_alpha = a;
+        }
+        if let Some(ref m) = self.blend_mode {
+            gs.blend_mode = m.clone();
+        }
+    }
+}
+
+/// Resolve the named ExtGState entry from `resources` and parse the fields we
+/// need. Kept as a thin wrapper that re-resolves the resource dict per call —
+/// the hot path in `execute_operators` uses `parse_ext_g_state_inner` against
+/// a pre-resolved resource dict (the per-form ExtGState dict has 10 000+
+/// entries on heavy vector figures and deep-cloning it on every `gs` op was
+/// the previous bottleneck).
+fn parse_ext_g_state(
+    dict_name: &str,
+    resources: &Object,
+    doc: &PdfDocument,
+) -> Result<ParsedExtGState> {
+    let out = ParsedExtGState::default();
+    let res_dict = match resources {
+        Object::Dictionary(d) => d,
+        _ => return Ok(out),
+    };
+    let ext_gs_obj = match res_dict.get("ExtGState") {
+        Some(o) => o,
+        None => return Ok(out),
+    };
+    let ext_gs_resolved = doc.resolve_object(ext_gs_obj)?;
+    let ext_g_states = match ext_gs_resolved.as_dict() {
+        Some(d) => d,
+        None => return Ok(out),
+    };
+    let state_obj = match ext_g_states.get(dict_name) {
+        Some(o) => o,
+        None => return Ok(out),
+    };
+    parse_ext_g_state_inner(state_obj, doc)
+}
+
+/// Parse the fields we need from an ExtGState **entry** (the inner dict, not
+/// the resource dict that holds it). Resolves once if `state_obj` is a
+/// reference. This is the hot helper called per `gs` op in the operator loop.
+fn parse_ext_g_state_inner(state_obj: &Object, doc: &PdfDocument) -> Result<ParsedExtGState> {
+    let mut out = ParsedExtGState::default();
+    let state_resolved = doc.resolve_object(state_obj)?;
+    let state_dict = match state_resolved.as_dict() {
+        Some(d) => d,
+        None => return Ok(out),
+    };
+
+    if let Some(ca) = state_dict.get("ca") {
+        out.fill_alpha = ca
+            .as_real()
+            .map(|v| v as f32)
+            .or_else(|| ca.as_integer().map(|v| v as f32));
+    }
+    if let Some(ca_upper) = state_dict.get("CA") {
+        out.stroke_alpha = ca_upper
+            .as_real()
+            .map(|v| v as f32)
+            .or_else(|| ca_upper.as_integer().map(|v| v as f32));
+    }
+    if let Some(bm) = state_dict.get("BM") {
+        let mode = match bm {
+            Object::Name(n) => n.clone(),
+            Object::Array(arr) => arr
+                .first()
+                .and_then(|o| o.as_name())
+                .unwrap_or("Normal")
+                .to_string(),
+            _ => "Normal".to_string(),
+        };
+        out.blend_mode = Some(mode);
+    }
+    Ok(out)
 }
 
 /// Resize an RGBA (straight-alpha) byte buffer using SIMD-accelerated bilinear filtering.

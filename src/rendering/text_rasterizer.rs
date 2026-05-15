@@ -404,16 +404,26 @@ impl TextRasterizer {
                         && info.cid_to_gid_map.is_some()
                         && info.cid_font_type.as_deref() == Some("CIDFontType2")
                     {
-                        // CIDFontType2 (TrueType) with CIDToGIDMap — use direct GID rendering
-                        // Note: CIDFontType0 (CFF) requires a CFF parser which ttf-parser doesn't handle
-                        // for raw CFF data (FontFile3), so those fall back to system fonts.
+                        // CIDFontType2 (TrueType) with CIDToGIDMap — use direct GID rendering.
                         log::debug!(
                             "Using embedded font '{}' with CIDToGIDMap (CIDFontType2)",
                             info.base_font
                         );
                         Some((None, Arc::clone(embedded), 0, true))
-                    } else if info.cff_gid_map.is_some() {
-                        // CFF font with byte→GID mapping — use direct rendering
+                    } else if info.cff_gid_map.is_some()
+                        || (info.subtype == "Type0"
+                            && info.cid_font_type.as_deref() == Some("CIDFontType0"))
+                    {
+                        // CFF font — use direct GID rendering.
+                        // Type0 + CIDFontType0 (CFF / OpenType-CFF): Identity-H
+                        // emission means the content-stream's 2-byte codes ARE the
+                        // GIDs in the CFF charset; bypass rustybuzz Unicode shaping
+                        // (which round-trips CID→Unicode→GID through the patched
+                        // cmap and can drift on CFF charset positions) and feed
+                        // the raw codes to render_cid_direct (G3-h). ttf-parser
+                        // handles CFF outlines for sfnt-wrapped OpenType-CFF (OTTO);
+                        // raw CFF streams were already wrapped by
+                        // `font_dict::wrap_cff_in_opentype` at load time.
                         log::debug!(
                             "Using embedded CFF font '{}' with direct GID mapping",
                             info.base_font
@@ -1178,15 +1188,30 @@ impl TextRasterizer {
         // Iterate over character codes from the raw bytes
         for (char_code, _bytes_consumed) in TextCharIter::new(bytes, Some(font_info)) {
             // Map character code to GID based on font type:
-            // - CIDFontType2: CIDToGIDMap maps CID → GID
-            // - CFF simple font: cff_gid_map maps byte → GID
-            // - Simple TrueType: consult the embedded font's cmap directly
-            //   (the PDF content byte is the cmap input under the font's
-            //   declared encoding; ISO 32000-1 §9.6.6.4).
-            // - Default: identity mapping
-            let gid = if let Some(cff_map) = &font_info.cff_gid_map {
+            // - Type0 (CID-keyed) without CIDToGIDMap → CID is GID
+            //   (Identity-H/Identity-V emission, the case our writer
+            //   uses for CFF subsets re-embedded with a synthesised
+            //   cmap). The cff_gid_map only applies when the font is
+            //   a SIMPLE Type1/CFF font — i.e. `subtype != "Type0"`.
+            // - CIDFontType2: CIDToGIDMap maps CID → GID.
+            // - CFF simple font (Type1, non-Type0): cff_gid_map maps
+            //   byte → GID.
+            // - Simple TrueType: consult the embedded font's cmap
+            //   directly (the PDF content byte is the cmap input
+            //   under the font's declared encoding; ISO 32000-1
+            //   §9.6.6.4).
+            // - Default: identity mapping.
+            let gid = if font_info.subtype == "Type0" {
+                match &font_info.cid_to_gid_map {
+                    Some(crate::fonts::CIDToGIDMap::Identity) => char_code,
+                    Some(crate::fonts::CIDToGIDMap::Explicit(map)) => {
+                        *map.get(char_code as usize).unwrap_or(&0)
+                    },
+                    None => char_code, // CIDFontType0 + Identity-H: CID == GID
+                }
+            } else if let Some(cff_map) = &font_info.cff_gid_map {
                 *cff_map.get(&(char_code as u8)).unwrap_or(&0)
-            } else if font_info.subtype != "Type0" && font_info.cid_to_gid_map.is_none() {
+            } else if font_info.cid_to_gid_map.is_none() {
                 cmap_byte_to_gid(&ttf_face, char_code as u8).unwrap_or(0)
             } else {
                 match &font_info.cid_to_gid_map {

@@ -618,6 +618,78 @@ impl WasmPdfDocument {
             .map_err(|e| JsValue::from_str(&format!("Failed to convert to plain text: {}", e)))
     }
 
+    /// Convert the entire PDF to DOCX bytes (Uint8Array).
+    #[wasm_bindgen(js_name = "toDocxBytes")]
+    pub fn to_docx_bytes(&mut self) -> Result<Vec<u8>, JsValue> {
+        self.inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?
+            .to_docx_bytes()
+            .map_err(|e| JsValue::from_str(&format!("Failed to convert to DOCX: {}", e)))
+    }
+
+    /// Convert the entire PDF to PPTX bytes (Uint8Array).
+    #[wasm_bindgen(js_name = "toPptxBytes")]
+    pub fn to_pptx_bytes(&mut self) -> Result<Vec<u8>, JsValue> {
+        self.inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?
+            .to_pptx_bytes()
+            .map_err(|e| JsValue::from_str(&format!("Failed to convert to PPTX: {}", e)))
+    }
+
+    /// Convert the entire PDF to XLSX bytes (Uint8Array).
+    #[wasm_bindgen(js_name = "toXlsxBytes")]
+    pub fn to_xlsx_bytes(&mut self) -> Result<Vec<u8>, JsValue> {
+        self.inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?
+            .to_xlsx_bytes()
+            .map_err(|e| JsValue::from_str(&format!("Failed to convert to XLSX: {}", e)))
+    }
+
+    /// Open a PDF from DOCX bytes.
+    #[wasm_bindgen(js_name = "openFromDocxBytes")]
+    pub fn open_from_docx_bytes(data: &[u8]) -> Result<WasmPdfDocument, JsValue> {
+        let pdf_bytes = crate::converters::office::OfficeConverter::new()
+            .convert_docx_bytes(data)
+            .map_err(|e| JsValue::from_str(&format!("Failed to convert DOCX: {}", e)))?;
+        let inner = PdfDocument::from_bytes(pdf_bytes.clone())
+            .map_err(|e| JsValue::from_str(&format!("Failed to open converted PDF: {}", e)))?;
+        Ok(WasmPdfDocument {
+            inner: std::sync::Arc::new(std::sync::Mutex::new(inner)),
+            raw_bytes: std::sync::Arc::new(pdf_bytes),
+        })
+    }
+
+    /// Open a PDF from PPTX bytes.
+    #[wasm_bindgen(js_name = "openFromPptxBytes")]
+    pub fn open_from_pptx_bytes(data: &[u8]) -> Result<WasmPdfDocument, JsValue> {
+        let pdf_bytes = crate::converters::office::OfficeConverter::new()
+            .convert_pptx_bytes(data)
+            .map_err(|e| JsValue::from_str(&format!("Failed to convert PPTX: {}", e)))?;
+        let inner = PdfDocument::from_bytes(pdf_bytes.clone())
+            .map_err(|e| JsValue::from_str(&format!("Failed to open converted PDF: {}", e)))?;
+        Ok(WasmPdfDocument {
+            inner: std::sync::Arc::new(std::sync::Mutex::new(inner)),
+            raw_bytes: std::sync::Arc::new(pdf_bytes),
+        })
+    }
+
+    /// Open a PDF from XLSX bytes.
+    #[wasm_bindgen(js_name = "openFromXlsxBytes")]
+    pub fn open_from_xlsx_bytes(data: &[u8]) -> Result<WasmPdfDocument, JsValue> {
+        let pdf_bytes = crate::converters::office::OfficeConverter::new()
+            .convert_xlsx_bytes(data)
+            .map_err(|e| JsValue::from_str(&format!("Failed to convert XLSX: {}", e)))?;
+        let inner = PdfDocument::from_bytes(pdf_bytes.clone())
+            .map_err(|e| JsValue::from_str(&format!("Failed to open converted PDF: {}", e)))?;
+        Ok(WasmPdfDocument {
+            inner: std::sync::Arc::new(std::sync::Mutex::new(inner)),
+            raw_bytes: std::sync::Arc::new(pdf_bytes),
+        })
+    }
+
     // ========================================================================
     // Group 4: Structured Extraction (returns JS objects via serde-wasm-bindgen)
     // ========================================================================

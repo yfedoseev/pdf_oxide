@@ -170,6 +170,123 @@ impl Default for UnicodeEncoder {
     }
 }
 
+/// Map a Mathematical Alphanumeric Symbol (U+1D400-U+1D7FF) to its plain
+/// Latin or Greek base codepoint.
+///
+/// This block holds 1024 styled letter/digit forms (italic, bold, script,
+/// fraktur, double-struck, sans-serif, monospace) used in mathematical
+/// notation. None of them have glyphs in the standard 14 PDF fonts, but
+/// they collapse cleanly to plain letters: `𝑥` (U+1D465) → `x`, `𝛽`
+/// (U+1D6FD) → `β`, etc. The block is structured as fixed-stride 26-letter
+/// or 10-digit ranges, so the mapping is purely arithmetic.
+///
+/// Returns None for codepoints outside the block (and for the 6 reserved
+/// holes within it where the canonical letter lives elsewhere).
+pub fn math_alphanumeric_base(codepoint: u32) -> Option<u32> {
+    // Outside the block — nothing to do.
+    if !(0x1D400..=0x1D7FF).contains(&codepoint) {
+        return None;
+    }
+    // Reserved holes: codepoints already encoded elsewhere in Unicode.
+    // (BMP italic h, planar holes for h-related letters, etc.)
+    let canonical = match codepoint {
+        0x1D455 => 0x0068, // h (BMP italic h hole)
+        0x1D49D => 0x0042, // B
+        0x1D4A0 => 0x0045, // E
+        0x1D4A1 => 0x0046, // F
+        0x1D4A3 => 0x0048, // H
+        0x1D4A4 => 0x0049, // I
+        0x1D4A7 => 0x004C, // L
+        0x1D4A8 => 0x004D, // M
+        0x1D4AD => 0x0052, // R
+        0x1D4BA => 0x0065, // e
+        0x1D4BC => 0x0067, // g
+        0x1D4C4 => 0x006F, // o
+        0x1D506 => 0x0043, // C
+        0x1D50B => 0x0048, // H
+        0x1D50C => 0x0049, // I
+        0x1D515 => 0x0052, // R
+        0x1D51D => 0x005A, // Z
+        0x1D53A => 0x0043, // C
+        0x1D53F => 0x0048, // H
+        0x1D545 => 0x004E, // N
+        0x1D547 => 0x0050, // P
+        0x1D548 => 0x0051, // Q
+        0x1D549 => 0x0052, // R
+        0x1D551 => 0x005A, // Z
+        _ => 0,
+    };
+    if canonical != 0 {
+        return Some(canonical);
+    }
+
+    // Bold / Italic / Bold-Italic / Script / Bold-Script / Fraktur /
+    // Double-Struck / Bold-Fraktur / Sans / Sans-Bold / Sans-Italic /
+    // Sans-Bold-Italic / Mono Latin (each 52 chars: A-Z then a-z).
+    const LATIN_RANGES: &[(u32, u32)] = &[
+        (0x1D400, 0x41), // A-Z bold
+        (0x1D41A, 0x61), // a-z bold
+        (0x1D434, 0x41), // A-Z italic
+        (0x1D44E, 0x61), // a-z italic
+        (0x1D468, 0x41), // bold italic
+        (0x1D482, 0x61),
+        (0x1D49C, 0x41), // script
+        (0x1D4B6, 0x61),
+        (0x1D4D0, 0x41), // bold script
+        (0x1D4EA, 0x61),
+        (0x1D504, 0x41), // fraktur
+        (0x1D51E, 0x61),
+        (0x1D538, 0x41), // double-struck
+        (0x1D552, 0x61),
+        (0x1D56C, 0x41), // bold fraktur
+        (0x1D586, 0x61),
+        (0x1D5A0, 0x41), // sans-serif
+        (0x1D5BA, 0x61),
+        (0x1D5D4, 0x41), // sans-serif bold
+        (0x1D5EE, 0x61),
+        (0x1D608, 0x41), // sans-serif italic
+        (0x1D622, 0x61),
+        (0x1D63C, 0x41), // sans-serif bold italic
+        (0x1D656, 0x61),
+        (0x1D670, 0x41), // monospace
+        (0x1D68A, 0x61),
+    ];
+    for &(start, base) in LATIN_RANGES {
+        if codepoint >= start && codepoint < start + 26 {
+            return Some(base + (codepoint - start));
+        }
+    }
+
+    // Greek bold / italic / bold-italic / sans-bold / sans-bold-italic.
+    // Each block is 58 chars: 25 capitals (Α-Ω inc. capital Theta variant
+    // at offset 17), nabla at +25, then 25 lowercase α-ω at +26, partial-
+    // differential at +51, then 6 alt forms (epsilon/theta/kappa/phi/rho/pi).
+    // We map the 25 capitals (best-effort — the Theta-variant slot lands on
+    // unassigned U+03A2 but is rare) and the 25 lowercases.
+    const GREEK_RANGES: &[u32] = &[0x1D6A8, 0x1D6E2, 0x1D71C, 0x1D756, 0x1D790];
+    for &start in GREEK_RANGES {
+        // Capital Greek letters at offset 0..25.
+        if codepoint >= start && codepoint < start + 25 {
+            return Some(0x0391 + (codepoint - start));
+        }
+        // Lowercase Greek letters at offset 26..51.
+        let lower_start = start + 26;
+        if codepoint >= lower_start && codepoint < lower_start + 25 {
+            return Some(0x03B1 + (codepoint - lower_start));
+        }
+    }
+
+    // Math digits 0-9 in five styles.
+    const DIGIT_STARTS: &[u32] = &[0x1D7CE, 0x1D7D8, 0x1D7E2, 0x1D7EC, 0x1D7F6];
+    for &start in DIGIT_STARTS {
+        if codepoint >= start && codepoint < start + 10 {
+            return Some(0x30 + (codepoint - start));
+        }
+    }
+
+    None
+}
+
 /// WinAnsi (Windows-1252) encoding table.
 ///
 /// Maps Unicode codepoints to WinAnsi byte values for the range 0x80-0x9F
@@ -334,6 +451,39 @@ mod tests {
         assert_eq!(unicode_to_winansi(0x20AC), Some(0x80)); // Euro
         assert_eq!(unicode_to_winansi(0x2019), Some(0x92)); // Right single quote
         assert_eq!(unicode_to_winansi(0x10000), None); // Outside range
+    }
+
+    #[test]
+    fn test_math_alphanumeric_basic() {
+        // Italic small x (U+1D465) → 'x'
+        assert_eq!(math_alphanumeric_base(0x1D465), Some(0x78));
+        // Italic capital A (U+1D434) → 'A'
+        assert_eq!(math_alphanumeric_base(0x1D434), Some(0x41));
+        // Bold small a (U+1D41A) → 'a'
+        assert_eq!(math_alphanumeric_base(0x1D41A), Some(0x61));
+        // Math italic h hole (U+1D455) → 'h'
+        assert_eq!(math_alphanumeric_base(0x1D455), Some(0x68));
+        // Outside the block
+        assert_eq!(math_alphanumeric_base(0x41), None);
+        assert_eq!(math_alphanumeric_base(0x1D800), None);
+    }
+
+    #[test]
+    fn test_math_alphanumeric_greek() {
+        // Mathematical italic small beta (U+1D6FD) → β (U+03B2)
+        assert_eq!(math_alphanumeric_base(0x1D6FD), Some(0x03B2));
+        // Mathematical italic small sigma (U+1D70E) → σ (U+03C3)
+        assert_eq!(math_alphanumeric_base(0x1D70E), Some(0x03C3));
+        // Mathematical italic capital Alpha (U+1D6E2) → Α (U+0391)
+        assert_eq!(math_alphanumeric_base(0x1D6E2), Some(0x0391));
+    }
+
+    #[test]
+    fn test_math_alphanumeric_digits() {
+        // Bold zero (U+1D7CE) → '0'
+        assert_eq!(math_alphanumeric_base(0x1D7CE), Some(0x30));
+        // Mono nine (U+1D7FF) → '9'
+        assert_eq!(math_alphanumeric_base(0x1D7FF), Some(0x39));
     }
 
     #[test]

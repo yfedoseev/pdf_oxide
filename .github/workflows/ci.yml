@@ -225,6 +225,7 @@ jobs:
           cargo run --example showcase_pdf_ua_image
           cargo run --example showcase_in_memory_roundtrip
           cargo run --example showcase_pdfa_conversion
+          cargo run --example showcase_office_conversion
           cargo run --example showcase_pkcs12_signing --features signatures
           cargo run --example showcase_rfc3161_timestamp --features signatures
 
@@ -350,6 +351,7 @@ jobs:
           cd "$GITHUB_WORKSPACE/examples/python/09-new-features/encrypted_bytes" && uv run python main.py
           cd "$GITHUB_WORKSPACE/examples/python/09-new-features/compliance_validation" && uv run python main.py
           cd "$GITHUB_WORKSPACE/examples/python/09-new-features/image_embedding"    && uv run python main.py
+          cd "$GITHUB_WORKSPACE/examples/python/09-new-features/office_conversion"  && uv run python main.py
           cd "$GITHUB_WORKSPACE/examples/python/09-new-features/ocr_scanned_pdf"  && uv run python main.py
 
   # WASM build check
@@ -379,10 +381,10 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Build WASM
-        run: cargo build --lib --target wasm32-unknown-unknown --features wasm,rendering
+        run: cargo build --lib --target wasm32-unknown-unknown --features wasm,rendering,barcodes
 
       - name: Clippy WASM
-        run: cargo clippy --target wasm32-unknown-unknown --no-default-features --features wasm,rendering --lib -- -D warnings
+        run: cargo clippy --target wasm32-unknown-unknown --no-default-features --features wasm,rendering,barcodes --lib -- -D warnings
 
       # WASI build target (issue #214). Used by sandboxed agent /
       # serverless deployments via wasmtime / wasmer / Deno. We only
@@ -410,7 +412,7 @@ jobs:
           echo "$PWD/binaryen-version_${ver}/bin" >> "$GITHUB_PATH"
 
       - name: Release WASM build
-        run: cargo build --release --lib --target wasm32-unknown-unknown --no-default-features --features wasm,rendering
+        run: cargo build --release --lib --target wasm32-unknown-unknown --no-default-features --features wasm,rendering,barcodes
 
       - name: wasm-opt -Oz --converge (size gate)
         shell: bash
@@ -629,7 +631,7 @@ jobs:
           go run -tags pdf_oxide_dev main.go
           cd "$GITHUB_WORKSPACE/examples/go/06-edit-document"
           go run -tags pdf_oxide_dev main.go "$PDF" /tmp/go_edited.pdf
-          for feat in barcode_svg streaming_table pdf_ua_image in_memory_roundtrip pkcs12_signing rfc3161_timestamp dashed_stroke encrypted_bytes page_extraction pdfa_conversion compliance_validation image_embedding; do
+          for feat in barcode_svg streaming_table pdf_ua_image in_memory_roundtrip pkcs12_signing rfc3161_timestamp dashed_stroke encrypted_bytes page_extraction pdfa_conversion compliance_validation image_embedding office_conversion; do
             cd "$GITHUB_WORKSPACE/examples/go/09-new-features/$feat"
             go run -tags pdf_oxide_dev main.go
           done
@@ -777,6 +779,7 @@ jobs:
           echo "--- compliance_validation ---"  && timeout 120 node 09-new-features/compliance_validation/index.js
           echo "--- pdfa_conversion ---"        && timeout 120 node 09-new-features/pdfa_conversion/index.js
           echo "--- image_embedding ---"        && timeout 120 node 09-new-features/image_embedding/index.js
+          echo "--- office_conversion ---"      && timeout 120 node 09-new-features/office_conversion/index.js
 
       - name: Compile TypeScript examples
         if: matrix.os == 'ubuntu-latest'
@@ -902,7 +905,8 @@ jobs:
             examples/csharp/09-new-features/PageExtraction/PageExtraction.csproj \
             examples/csharp/09-new-features/PdfaConversion/PdfaConversion.csproj \
             examples/csharp/09-new-features/ComplianceValidation/ComplianceValidation.csproj \
-            examples/csharp/09-new-features/ImageEmbedding/ImageEmbedding.csproj; do
+            examples/csharp/09-new-features/ImageEmbedding/ImageEmbedding.csproj \
+            examples/csharp/09-new-features/OfficeConversion/OfficeConversion.csproj; do
             dotnet run --project "$proj"
           done
 

@@ -321,6 +321,21 @@ class PdfDocumentImpl {
     return new PdfDocumentImpl(handle);
   }
 
+  static openFromDocxBytes(buffer: Buffer | Uint8Array): PdfDocumentImpl {
+    const handle = native.openFromDocxBytes(buffer);
+    return new PdfDocumentImpl(handle);
+  }
+
+  static openFromPptxBytes(buffer: Buffer | Uint8Array): PdfDocumentImpl {
+    const handle = native.openFromPptxBytes(buffer);
+    return new PdfDocumentImpl(handle);
+  }
+
+  static openFromXlsxBytes(buffer: Buffer | Uint8Array): PdfDocumentImpl {
+    const handle = native.openFromXlsxBytes(buffer);
+    return new PdfDocumentImpl(handle);
+  }
+
   private ensureOpen(): void {
     if (this._closed) throw new Error('Document is closed');
   }
@@ -371,6 +386,18 @@ class PdfDocumentImpl {
   toPlainTextAll(): string {
     this.ensureOpen();
     return native.toPlainTextAll(this._handle);
+  }
+  toDocxBytes(): Buffer {
+    this.ensureOpen();
+    return native.toDocxBytes(this._handle);
+  }
+  toPptxBytes(): Buffer {
+    this.ensureOpen();
+    return native.toPptxBytes(this._handle);
+  }
+  toXlsxBytes(): Buffer {
+    this.ensureOpen();
+    return native.toXlsxBytes(this._handle);
   }
 
   getVersion(): { major: number; minor: number } {

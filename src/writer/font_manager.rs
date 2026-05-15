@@ -781,6 +781,14 @@ impl TextLayout {
 
         // Don't forget the last line
         if !current_line.is_empty() {
+            // Preserve a trailing space if the source ended with one. Callers
+            // (e.g. StreamingTable cell text) rely on a trailing space so
+            // adjacent cells don't merge in the extracted text. `split_whitespace`
+            // discards that information, so we restore it here.
+            if text.ends_with(char::is_whitespace) && !current_line.ends_with(' ') {
+                current_line.push(' ');
+                current_width += space_width;
+            }
             lines.push((current_line, current_width));
         }
 
@@ -925,9 +933,127 @@ impl EmbeddedFont {
         Self::from_data(None, data)
     }
 
-    /// Get the glyph ID for a Unicode codepoint.
+    /// Override the Unicode→GID lookup with externally-supplied
+    /// mappings.
+    ///
+    /// PDF→office round-trips often re-embed CFF font subsets that
+    /// have no Unicode cmap (CID-only encoding). `from_data`
+    /// successfully parses the OTF wrapper but `glyph_lookup`
+    /// remains empty, so `has_usable_unicode_cmap()` returns false
+    /// and the font is skipped — falling back to base-14 Helvetica
+    /// across the whole document.
+    ///
+    /// Caller can recover the missing mapping by inverting the
+    /// source PDF's `/ToUnicode` CMap (byte-code → Unicode) against
+    /// the font's CFF byte→GID table (`cff_gid_map` in pdf_oxide's
+    /// FontInfo) to produce Unicode → GID, then pass it here. The
+    /// font then registers and renders correctly with the source
+    /// typeface program rather than Helvetica fallback.
+    ///
+    /// Existing entries in `glyph_lookup` are kept; the override
+    /// extends them. Glyph widths are filled in for newly-mapped
+    /// GIDs from the underlying font's hmtx table on the fly.
+    pub fn extend_glyph_lookup(&mut self, mapping: HashMap<u32, u16>) {
+        // Re-parse the font once so we can pull glyph widths for
+        // the GIDs the override surfaces.
+        let face_widths = TrueTypeFont::parse(self.font_data.as_ref())
+            .ok()
+            .map(|font| {
+                let mut by_gid = HashMap::new();
+                for codepoint in 0..=0xFFFFu32 {
+                    if let Some(gid) = font.glyph_id(codepoint) {
+                        by_gid.entry(gid).or_insert_with(|| font.glyph_width(gid));
+                    }
+                }
+                by_gid
+            })
+            .unwrap_or_default();
+        for (codepoint, gid) in mapping {
+            self.glyph_lookup.insert(codepoint, gid);
+            self.glyph_widths
+                .entry(gid)
+                .or_insert_with(|| {
+                    face_widths
+                        .get(&gid)
+                        .copied()
+                        .unwrap_or(500) // sensible default for missing widths (1000ths em)
+                });
+        }
+    }
+
+    /// True when the font carries enough Unicode→GID coverage to be
+    /// useful for plain Latin / Latin-1 text rendering. PDF→office
+    /// round-trips that re-embed source-PDF font subsets often hit a
+    /// pathological case: the source font is a CID-encoded subset
+    /// without a Unicode cmap, so `glyph_lookup` is empty even though
+    /// the font program parsed successfully. Registering such a font
+    /// makes downstream text emission route every glyph through GID 0
+    /// (.notdef) — visible as missing-glyph squares, or invisible
+    /// when the font program has no .notdef outline at all.
+    ///
+    /// The threshold (`>= 4` mapped codepoints, including any of
+    /// space / digit / lowercase letter) is intentionally permissive:
+    /// non-Latin fonts still pass when they map their own scripts.
+    pub fn has_usable_unicode_cmap(&self) -> bool {
+        if self.glyph_lookup.len() < 4 {
+            return false;
+        }
+        // Require at least one glyph for ASCII space, digit, or
+        // lowercase Latin — any Unicode-aware font produces at least
+        // one of these for typical body text. CID-only subsets
+        // typically map the .notdef plus a handful of CIDs, none of
+        // which are Unicode codepoints.
+        let probes = [0x20u32, 0x30, 0x61, 0x65, 0x69, 0x6F, 0x75];
+        probes.iter().any(|cp| {
+            self.glyph_lookup
+                .get(cp)
+                .map(|gid| *gid != 0)
+                .unwrap_or(false)
+        })
+    }
+
+    /// Get the glyph ID for a Unicode codepoint, with cascading fallbacks:
+    ///
+    /// 1. Direct lookup in the font's cmap.
+    /// 2. Mathematical Alphanumeric Symbols (U+1D400-1D7FF) — italic / bold
+    ///    / script / fraktur / etc. styled letters used in formulae —
+    ///    collapse to their plain Latin/Greek base via
+    ///    `math_alphanumeric_base`. Lossless for word-level text recovery.
+    /// 3. Common typographic chars (smart quotes, dashes, bullets, NBSP)
+    ///    fall back to ASCII equivalents the standard fonts always have.
+    ///
+    /// Without these fallbacks, missing chars get GID 0 (.notdef) which
+    /// renders as a missing-glyph box and disappears from extracted text.
     pub fn glyph_id(&self, codepoint: u32) -> Option<u16> {
-        self.glyph_lookup.get(&codepoint).copied()
+        if let Some(gid) = self.glyph_lookup.get(&codepoint).copied() {
+            return Some(gid);
+        }
+        // Math-alphanumeric → plain Latin/Greek.
+        if let Some(base) = crate::fonts::encoding::math_alphanumeric_base(codepoint) {
+            if let Some(gid) = self.glyph_lookup.get(&base).copied() {
+                return Some(gid);
+            }
+            // Fall through with base for the typographic-fallback table below
+            // (e.g. bold dash maps to base then through the dash fallback).
+            return self.glyph_id_fallback(base);
+        }
+        self.glyph_id_fallback(codepoint)
+    }
+
+    fn glyph_id_fallback(&self, codepoint: u32) -> Option<u16> {
+        let fallback = match codepoint {
+            // Smart quotes → straight
+            0x2018 | 0x2019 | 0x201A | 0x201B => Some(0x27u32), // '
+            0x201C | 0x201D | 0x201E | 0x201F => Some(0x22),    // "
+            // Dashes
+            0x2013 | 0x2014 | 0x2212 => Some(0x2D),             // -
+            // Non-breaking spaces
+            0x00A0 | 0x2007 | 0x202F | 0x2009 | 0x200A => Some(0x20), // space
+            // Bullets
+            0x2022 | 0x2023 | 0x25E6 => Some(0x2A),             // *
+            _ => None,
+        };
+        fallback.and_then(|cp| self.glyph_lookup.get(&cp).copied())
     }
 
     /// Get the width of a glyph in 1/1000 em units.
@@ -1062,13 +1188,17 @@ impl EmbeddedFont {
     /// by subset GID before run-length grouping.
     pub fn generate_widths_array(&self, remapper: &crate::fonts::GlyphRemapper) -> String {
         // Collect (subset_gid, width) pairs, then group by consecutive
-        // subset_gid for compact `/W` emission.
+        // subset_gid for compact `/W` emission. When the remapper has
+        // no mapping for a GID, the writer is emitting the original
+        // GID unchanged (full-font fallback path) — so the /W key
+        // must also use the original GID to keep the widths aligned
+        // with what the content stream actually uses.
         let mut pairs: Vec<(u16, u16)> = self
             .subsetter
             .used_glyphs()
             .iter()
             .map(|&orig| {
-                let subset_gid = remapper.get(orig).unwrap_or(0);
+                let subset_gid = remapper.get(orig).unwrap_or(orig);
                 (subset_gid, self.glyph_width(orig))
             })
             .collect();
@@ -1130,12 +1260,21 @@ impl EmbeddedFont {
         cmap.push_str("<0000> <FFFF>\n");
         cmap.push_str("endcodespacerange\n");
 
-        // Build subset-GID -> Unicode mappings. A codepoint's original
-        // GID is always in `used_glyphs`, so `remapper.get(orig)`
-        // always succeeds; `.unwrap_or(0)` is defensive.
+        // Build subset-GID -> Unicode mappings. When the remapper
+        // produces a mapping we use it (subset emission). When it
+        // doesn't — the case our patched-CFF fallback hits with an
+        // empty `GlyphRemapper::new()` so the content stream emits
+        // ORIGINAL GIDs unchanged via `.unwrap_or(orig)` — fall back
+        // to the original GID here too so the CMap key matches the
+        // emitted CID. Without this, every CMap entry collapses to
+        // CID 0 (.notdef) and `extract_text` returns 0 chars on the
+        // round-trip PDF.
         let mut mappings: Vec<(u16, u32)> = used_chars
             .iter()
-            .map(|(&unicode, &orig_gid)| (remapper.get(orig_gid).unwrap_or(0), unicode))
+            .map(|(&unicode, &orig_gid)| {
+                let key = remapper.get(orig_gid).unwrap_or(orig_gid);
+                (key, unicode)
+            })
             .collect();
         mappings.sort_by_key(|&(gid, _)| gid);
 

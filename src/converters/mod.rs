@@ -34,28 +34,32 @@
 //! # }
 //! ```
 
+pub mod docx_layout;
+pub mod form_xobject_finder;
 pub mod formula_renderer;
 pub mod html;
+pub(crate) mod layout_lines;
 pub mod markdown;
+pub mod music_region_finder;
 pub mod office;
+pub mod pdf_to_ir;
+pub mod pptx_layout;
+pub mod xlsx_layout;
 pub mod table_formatter;
 pub mod text_post_processor;
 pub mod whitespace;
 
 // Re-export main types
 pub use formula_renderer::{FormulaRenderer, RenderedFormula};
+pub use pdf_to_ir::PdfToIrOptions;
 #[allow(deprecated)]
 pub use html::HtmlConverter;
 #[allow(deprecated)]
 pub use markdown::MarkdownConverter;
+pub use office::{Margins, OfficeConfig, OfficeConverter};
 pub use table_formatter::MarkdownTableFormatter;
 pub use text_post_processor::TextPostProcessor;
 pub use whitespace::{cleanup_markdown, normalize_whitespace, remove_page_artifacts};
-
-// Re-export Office conversion types (always available, but stubs without feature)
-#[cfg(feature = "office")]
-pub use office::{DocxConverter, PptxConverter, XlsxConverter};
-pub use office::{Margins, OfficeConfig, OfficeConverter};
 
 // Re-export BoldMarkerBehavior from pipeline config (single source of truth)
 pub use crate::pipeline::config::BoldMarkerBehavior;

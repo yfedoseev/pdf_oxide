@@ -168,6 +168,54 @@ namespace PdfOxide.Internal
             int pageIndex,
             out int errorCode);
 
+        /// <summary>Converts the entire PDF to DOCX bytes. Free with FreeBytes.</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_document_to_docx")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr PdfDocumentToDocx(
+            NativeHandle handle,
+            out int outLen,
+            out int errorCode);
+
+        /// <summary>Converts the entire PDF to PPTX bytes. Free with FreeBytes.</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_document_to_pptx")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr PdfDocumentToPptx(
+            NativeHandle handle,
+            out int outLen,
+            out int errorCode);
+
+        /// <summary>Converts the entire PDF to XLSX bytes. Free with FreeBytes.</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_document_to_xlsx")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr PdfDocumentToXlsx(
+            NativeHandle handle,
+            out int outLen,
+            out int errorCode);
+
+        /// <summary>Opens a PDF from DOCX bytes.</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_document_open_from_docx_bytes")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial NativeHandle PdfDocumentOpenFromDocxBytes(
+            [In] byte[] data,
+            int length,
+            out int errorCode);
+
+        /// <summary>Opens a PDF from PPTX bytes.</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_document_open_from_pptx_bytes")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial NativeHandle PdfDocumentOpenFromPptxBytes(
+            [In] byte[] data,
+            int length,
+            out int errorCode);
+
+        /// <summary>Opens a PDF from XLSX bytes.</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_document_open_from_xlsx_bytes")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial NativeHandle PdfDocumentOpenFromXlsxBytes(
+            [In] byte[] data,
+            int length,
+            out int errorCode);
+
         #endregion
 
         #region Memory Management

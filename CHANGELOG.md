@@ -2,6 +2,160 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.48] - 2026-05-14
+
+This release lands the **office converter integration**
+([#159](https://github.com/yfedoseev/pdf_oxide/issues/159)):
+bidirectional PDF ↔ DOCX/PPTX/XLSX round-trip with layout-preserving
+fidelity, exposed through all seven bindings (Rust, Python, Node,
+WASM, C FFI, C#, Go). Typical text-heavy PDFs round-trip through an
+Office file and back at near-pixel parity to the source. The corpus
+harness used to validate the integration covers 26 PDFs spanning
+academic papers, hymnals, multi-column newspapers, slide decks,
+government forms, and policy documents.
+
+Closes the v0.3.14-milestone feature request "PDF to Word/DOCX export":
+text styling (fonts / sizes / colours) preserved via layout-mode
+writers + Unicode/CJK system-font fallback; paragraphs / headings /
+lists preserved via positional frame anchors; image placement preserved
+via raster Image XObject + Form XObject rasterization. Tables flow
+through positional shapes (grid-aware reconstruction is still
+follow-up work).
+
+### Added
+
+- **Bidirectional PDF ↔ DOCX/PPTX/XLSX conversion
+  ([#159](https://github.com/yfedoseev/pdf_oxide/issues/159))** — new
+  `OfficeConverter` API converts in both directions across DOCX, PPTX,
+  and XLSX. Layout-preserving writers
+  (`src/converters/{docx,pptx,xlsx}_layout.rs`) emit one positionally-
+  anchored shape / frame per PDF text span; the back-direction render
+  path (`render_positional_ir` / `render_pptx_positional`) reproduces
+  the source page near-identically. Available on every binding via the
+  `09-new-features/office_conversion/` examples.
+
+- **Unicode + CJK system-font fallback for office round-trip**
+  (`src/fonts/unicode_fallback.rs`) — when the source PDF embeds a CID-
+  only font subset the writer can't re-embed, a system Unicode face
+  (DejaVu Sans → FreeSans → Noto Sans → Tinos / Arimo) and a CJK face
+  (DroidSansFallbackFull → IPAGothic → NanumGothic → Unifont) are
+  registered automatically. `needs_unicode_fallback` is WinAnsi-aware
+  (curly quotes / em-en dashes / bullet / ellipsis / trademark stay on
+  the source font); CJK ranges (Han / Hiragana / Katakana / Hangul /
+  Compatibility Forms / Halfwidth–Fullwidth) route to the CJK face
+  first. Restores Hebrew, Arabic, Latin Extended, Chinese, Japanese,
+  and Korean characters that previously rendered as `?` glyphs across
+  all three formats.
+
+- **Music-notation region detection + rasterization**
+  (`src/converters/music_region_finder.rs`) — hymnals and sheet-music
+  PDFs (Finale Maestro, SMuFL Bravura, Sibelius Petrucci / Opus, Adobe
+  Sonata, LilyPond Emmentaler, …) are detected by combining a music-
+  font allowlist with a 5-line staff-clustering pass on
+  `extract_paths`. Detected music systems are rasterized once at
+  150 DPI and embedded as positioned PNGs; the source spans / shapes
+  inside each music region are suppressed so glyph substitutions don't
+  overlay the bitmap. Hymnal-style PDFs now round-trip with their
+  staves and noteheads preserved instead of emitting random Latin
+  characters from the missing music face.
+
+- **Form XObject + inline-image rasterizer shared helper**
+  (`src/converters/form_xobject_finder.rs::rasterize_form_and_inline_regions`)
+  — the layout-mode writers and the flow-mode `pdf_to_ir` path share
+  one helper that renders each page once at 150 DPI and crops per
+  region. Vector figures (academic-paper charts, agency logos drawn
+  as Form XObjects) survive the office round-trip; the prior per-
+  region full-page render was replaced.
+
+- **Per-run text colour preservation** — PDF→DOCX/PPTX/XLSX now
+  emits `<w:color>` / `<a:solidFill>` for spans carrying explicit
+  colour; the back-render path drops to `rich_paragraph` instead of
+  `text_in_rect` when any inline run has a colour so the colour
+  survives the PDF render. Sibling `office_oxide` parser changes
+  expose the colour on `TextSpan` for the docx, pptx slide, and
+  pptx shape paths.
+
+### Fixed
+
+- **Rotated-text watermark filter
+  (`src/converters/pdf_to_ir.rs::span_overlaps_rotated_chars`)** —
+  page-edge `arXiv:NNNN.NNNNN [cat] DATE` watermarks were leaking
+  into the office round-trip as horizontal text strips mid-page.
+  The new origin-based filter matches each span to its nearest
+  `extract_chars` glyph by `(origin_x, origin_y)` distance and uses
+  that glyph's `rotation_degrees` to decide drop. Gated by a page-
+  level `chars_horizontal_dominant` heuristic (≥75 % chars at ~0°)
+  so PDFs whose text-matrix decomposition spuriously reports
+  rotation = 90° for every glyph (Finale slide-mode decks) are left
+  alone. Catches the watermark family across multiple arxiv papers.
+
+- **Multi-column page handling in layout-mode line grouping
+  (`src/converters/layout_lines.rs::group_spans_into_lines`)** —
+  refuses to merge a candidate span into the active line when its
+  `bbox.x` sits more than `max_font_size * 4` past the line's right
+  edge. Threshold (~36-48 pt for body text) is wider than any
+  justified inter-word gap but narrower than typical column gutters
+  (60+ pt). Fixes German multi-column newspapers and 2-column
+  arxiv papers where columns previously merged into one frame.
+
+- **Drop-cap guard for layout-mode line grouping** — `group_spans_
+  into_lines` rejects merges when the candidate span's font size
+  differs from the line's existing spans by > 2×. Anchors Nature-
+  Methods-style drop-cap "A" wraps at the correct visual position
+  instead of fusing them into a single heading-class frame with
+  the body text below.
+
+- **OpenType / CFF cmap rebuild and injection
+  (`src/fonts/cmap_injector.rs`, `src/document.rs`)** — two real
+  bugs in the cmap-injection path that produced corrupted lowercase
+  glyphs on strict OS renderers:
+  - `build_format4_cmap` over-reported subtable length by 2 bytes
+    (double-counted the `reservedPad` field). Strict ttf-parser /
+    CoreText paths silently rejected the cmap; some Win/macOS
+    renderers then mapped the affected codepoints to the wrong
+    glyph.
+  - `extract_embedded_fonts_with_unicode_maps_and_widths` was driving
+    its Unicode→GID table off `char_to_unicode`, whose CID-as-
+    Unicode fallback overwrote authoritative ToUnicode entries with
+    identity mappings on Identity-H fonts. Now reads the ToUnicode
+    CMap directly and filters U+FFFD plus C0 controls.
+
+- **Shape-artefact filter for layout-mode DOCX
+  (`src/converters/docx_layout.rs`)** — drop solid-black rects > 25%
+  page area (slide-background artefacts), solid-white rects > 50%
+  page area (page-background rects emitted before text — would
+  occlude the rendered text in the back-PDF), and rects > 1.2× page
+  extent (extractor noise that wiped the entire frame).
+
+- **XLSX layout-mode page count gate raised
+  (`src/document.rs::to_xlsx_bytes`)** — `LAYOUT_MAX_PAGES` raised
+  30 → 200. The 134-page arxiv dissertation was being routed to
+  flow-mode `ir_to_xlsx`, whose column-A row-N layout collapses the
+  centered cover page into the top of column A. Layout-mode handles
+  100+ page documents fine; the gate now triggers only for very
+  large reports.
+
+### Performance
+
+- **ExtGState resolve cache: 75× speedup on vector-heavy PDFs
+  (`src/rendering/page_renderer.rs`)** — `apply_ext_g_state` was
+  deep-cloning the per-Form ExtGState HashMap on every `gs`
+  operator. Vector figures (scatter / contour plots emitted as Form
+  XObjects) trigger this thousands of times per page — a typical
+  academic paper with a dense plot can hit ~10 000 `gs` ops with
+  10 000+ unique ExtGState names. The clone dominated render time.
+  The resource dict is now resolved once at the top of
+  `execute_operators` and parsed-effect (`ParsedExtGState`) results
+  are cached per `dict_name`. Measured on a ~10-page vector-heavy
+  arXiv paper: PDF→DOCX dropped from 263 s to 3 s.
+
+- **Debug-only path-rasterizer clones gated by log level
+  (`src/rendering/path_rasterizer.rs`)** — `path.clone().transform`
+  was unconditional, used only to populate `pixel_bounds` in a
+  `log::debug!` line. Same vector figures hit this path tens of
+  thousands of times per page. Gated behind
+  `log::log_enabled!(Level::Debug)`.
+
 ## [0.3.47] - 2026-05-11
 
 This release closes the remaining bugs surfaced by the kreuzberg

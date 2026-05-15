@@ -302,11 +302,12 @@ dependencies = [
 
 [[package]]
 name = "atoi_simd"
-version = "0.17.0"
+version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ad17c7c205c2c28b527b9845eeb91cf1b4d008b438f98ce0e628227a822758e"
+checksum = "f3cdb3708a128e559a30fb830e8a77a5022ee6902806925c216658652b452a44"
 dependencies = [
  "debug_unsafe",
+ "rustversion",
 ]
 
 [[package]]
@@ -593,23 +594,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
-name = "calamine"
-version = "0.34.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20ae05a4e39297eecf9a994210d27501318c37a9318201f8e11050add82bb6f0"
-dependencies = [
- "atoi_simd",
- "byteorder",
- "codepage",
- "encoding_rs",
- "fast-float2",
- "log",
- "quick-xml",
- "serde",
- "zip 7.2.0",
-]
-
-[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -822,15 +806,6 @@ dependencies = [
  "der",
  "spki",
  "x509-cert",
-]
-
-[[package]]
-name = "codepage"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48f68d061bc2828ae826206326e61251aca94c1e4a5305cf52d9138639c918b4"
-dependencies = [
- "encoding_rs",
 ]
 
 [[package]]
@@ -2790,6 +2765,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "office_oxide"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "866a8fa5e1a756f8cc9f9f614031ad7e33adc7f6972eab74a35b0c799fe08da5"
+dependencies = [
+ "atoi_simd",
+ "encoding_rs",
+ "fast-float2",
+ "libc",
+ "log",
+ "quick-xml 0.40.0",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "zip",
+]
+
+[[package]]
 name = "oid-registry"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2976,7 +2969,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_oxide"
-version = "0.3.47"
+version = "0.3.48"
 dependencies = [
  "aes 0.9.0",
  "aws-lc-rs",
@@ -2986,7 +2979,6 @@ dependencies = [
  "brotli",
  "byteorder",
  "bytes",
- "calamine",
  "cbc 0.2.0",
  "chrono",
  "cmpv2",
@@ -3018,6 +3010,7 @@ dependencies = [
  "memchr",
  "ndarray 0.17.2",
  "nom 8.0.0",
+ "office_oxide",
  "ort",
  "p12-keystore",
  "p256",
@@ -3030,7 +3023,7 @@ dependencies = [
  "pyo3-log",
  "qcms",
  "qrcode",
- "quick-xml",
+ "quick-xml 0.39.3",
  "rayon",
  "regex",
  "rsa",
@@ -3063,12 +3056,11 @@ dependencies = [
  "weezl",
  "x509-parser",
  "x509-tsp",
- "zip 8.6.0",
 ]
 
 [[package]]
 name = "pdf_oxide_cli"
-version = "0.3.47"
+version = "0.3.48"
 dependencies = [
  "clap",
  "is-terminal",
@@ -3078,7 +3070,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_oxide_mcp"
-version = "0.3.47"
+version = "0.3.48"
 dependencies = [
  "pdf_oxide",
  "serde_json",
@@ -3567,8 +3559,17 @@ version = "0.39.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "721da970c312655cde9b4ffe0547f20a8494866a4af5ff51f18b7c633d0c870b"
 dependencies = [
- "encoding_rs",
  "memchr",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b7315c86b26aaef0321fba33c9dcc160da659c6a9d278f0f6a5656d6561c03b"
+dependencies = [
+ "memchr",
+ "serde",
 ]
 
 [[package]]
@@ -5580,20 +5581,6 @@ name = "zeroize"
 version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
-
-[[package]]
-name = "zip"
-version = "7.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c42e33efc22a0650c311c2ef19115ce232583abbe80850bc8b66509ebef02de0"
-dependencies = [
- "crc32fast",
- "flate2",
- "indexmap",
- "memchr",
- "typed-path",
- "zopfli",
-]
 
 [[package]]
 name = "zip"

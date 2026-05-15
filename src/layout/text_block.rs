@@ -60,6 +60,15 @@ pub struct TextSpan {
     /// for accurate per-glyph bounding boxes instead of uniform division.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub char_widths: Vec<f32>,
+    /// Heading level (1-6) when this span belongs to a document heading.
+    /// Populated either from the source PDF's structure tree
+    /// (`StructRole::Heading(n)`) or from a font-size-ratio heuristic when
+    /// the PDF is untagged. Layout-preserving DOCX export uses this to
+    /// emit `<w:pStyle w:val="HeadingN"/>` so the output document
+    /// preserves heading semantics for accessibility, navigation, and
+    /// outline panes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heading_level: Option<u8>,
 }
 
 impl Default for TextSpan {
@@ -83,6 +92,7 @@ impl Default for TextSpan {
             primary_detected: false,
             artifact_type: None,
             char_widths: Vec::new(),
+            heading_level: None,
         }
     }
 }

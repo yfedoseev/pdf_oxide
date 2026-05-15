@@ -432,6 +432,14 @@ extern char* pdf_ocr_extract_text(void* document, int32_t page_index, const void
 
 extern void free_string(char* ptr);
 extern void free_bytes(void* ptr);
+
+// Office format import (v0.3.41)
+extern uint8_t* pdf_document_to_docx(void* handle, size_t* out_len, int* error_code);
+extern uint8_t* pdf_document_to_pptx(void* handle, size_t* out_len, int* error_code);
+extern uint8_t* pdf_document_to_xlsx(void* handle, size_t* out_len, int* error_code);
+extern void* pdf_document_open_from_docx_bytes(const uint8_t* data, size_t len, int* error_code);
+extern void* pdf_document_open_from_pptx_bytes(const uint8_t* data, size_t len, int* error_code);
+extern void* pdf_document_open_from_xlsx_bytes(const uint8_t* data, size_t len, int* error_code);
 */
 import "C"
 
@@ -660,6 +668,108 @@ func (doc *PdfDocument) ToMarkdownAll() (string, error) {
 	C.free_string(cMarkdown)
 
 	return markdown, nil
+}
+
+// ToDocxBytes converts the entire PDF to DOCX bytes.
+func (doc *PdfDocument) ToDocxBytes() ([]byte, error) {
+	if err := doc.acquireRead(); err != nil {
+		return nil, err
+	}
+	defer doc.mu.Unlock()
+
+	var outLen C.size_t
+	var errorCode C.int
+	ptr := C.pdf_document_to_docx(doc.handle, &outLen, &errorCode)
+	if errorCode != 0 {
+		return nil, ffiError(errorCode)
+	}
+	if ptr == nil {
+		return nil, fmt.Errorf("pdf_oxide: failed to convert to DOCX: %w", ErrInternal)
+	}
+	result := C.GoBytes(unsafe.Pointer(ptr), C.int(outLen))
+	C.free_bytes(unsafe.Pointer(ptr))
+	return result, nil
+}
+
+// ToPptxBytes converts the entire PDF to PPTX bytes.
+func (doc *PdfDocument) ToPptxBytes() ([]byte, error) {
+	if err := doc.acquireRead(); err != nil {
+		return nil, err
+	}
+	defer doc.mu.Unlock()
+
+	var outLen C.size_t
+	var errorCode C.int
+	ptr := C.pdf_document_to_pptx(doc.handle, &outLen, &errorCode)
+	if errorCode != 0 {
+		return nil, ffiError(errorCode)
+	}
+	if ptr == nil {
+		return nil, fmt.Errorf("pdf_oxide: failed to convert to PPTX: %w", ErrInternal)
+	}
+	result := C.GoBytes(unsafe.Pointer(ptr), C.int(outLen))
+	C.free_bytes(unsafe.Pointer(ptr))
+	return result, nil
+}
+
+// ToXlsxBytes converts the entire PDF to XLSX bytes.
+func (doc *PdfDocument) ToXlsxBytes() ([]byte, error) {
+	if err := doc.acquireRead(); err != nil {
+		return nil, err
+	}
+	defer doc.mu.Unlock()
+
+	var outLen C.size_t
+	var errorCode C.int
+	ptr := C.pdf_document_to_xlsx(doc.handle, &outLen, &errorCode)
+	if errorCode != 0 {
+		return nil, ffiError(errorCode)
+	}
+	if ptr == nil {
+		return nil, fmt.Errorf("pdf_oxide: failed to convert to XLSX: %w", ErrInternal)
+	}
+	result := C.GoBytes(unsafe.Pointer(ptr), C.int(outLen))
+	C.free_bytes(unsafe.Pointer(ptr))
+	return result, nil
+}
+
+// OpenFromDocxBytes opens a PDF document converted from DOCX bytes.
+func OpenFromDocxBytes(data []byte) (*PdfDocument, error) {
+	if len(data) == 0 {
+		return nil, ErrEmptyContent
+	}
+	var errorCode C.int
+	handle := C.pdf_document_open_from_docx_bytes((*C.uint8_t)(unsafe.Pointer(&data[0])), C.size_t(len(data)), &errorCode)
+	if errorCode != 0 {
+		return nil, ffiError(errorCode)
+	}
+	return &PdfDocument{handle: handle, closed: false}, nil
+}
+
+// OpenFromPptxBytes opens a PDF document converted from PPTX bytes.
+func OpenFromPptxBytes(data []byte) (*PdfDocument, error) {
+	if len(data) == 0 {
+		return nil, ErrEmptyContent
+	}
+	var errorCode C.int
+	handle := C.pdf_document_open_from_pptx_bytes((*C.uint8_t)(unsafe.Pointer(&data[0])), C.size_t(len(data)), &errorCode)
+	if errorCode != 0 {
+		return nil, ffiError(errorCode)
+	}
+	return &PdfDocument{handle: handle, closed: false}, nil
+}
+
+// OpenFromXlsxBytes opens a PDF document converted from XLSX bytes.
+func OpenFromXlsxBytes(data []byte) (*PdfDocument, error) {
+	if len(data) == 0 {
+		return nil, ErrEmptyContent
+	}
+	var errorCode C.int
+	handle := C.pdf_document_open_from_xlsx_bytes((*C.uint8_t)(unsafe.Pointer(&data[0])), C.size_t(len(data)), &errorCode)
+	if errorCode != 0 {
+		return nil, ffiError(errorCode)
+	}
+	return &PdfDocument{handle: handle, closed: false}, nil
 }
 
 // IsClosed returns whether the document is closed

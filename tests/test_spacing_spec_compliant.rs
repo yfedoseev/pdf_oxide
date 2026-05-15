@@ -40,6 +40,7 @@ fn create_test_span(text: &str, x: f32, y: f32, width: f32, height: f32) -> Text
         horizontal_scaling: 100.0,
         primary_detected: false,
         char_widths: vec![],
+        heading_level: None,
     }
 }
 

@@ -512,6 +512,72 @@ namespace PdfOxide.Core
             finally { _lock.ExitReadLock(); }
         }
 
+        /// <summary>Converts the entire PDF to DOCX bytes.</summary>
+        public byte[] ToDocxBytes()
+        {
+            ThrowIfDisposed();
+            var data = NativeMethods.PdfDocumentToDocx(_handle, out var dataLen, out var errorCode);
+            ExceptionMapper.ThrowIfError(errorCode);
+            if (data == IntPtr.Zero) return Array.Empty<byte>();
+            var bytes = new byte[dataLen];
+            System.Runtime.InteropServices.Marshal.Copy(data, bytes, 0, dataLen);
+            NativeMethods.FreeBytes(data);
+            return bytes;
+        }
+
+        /// <summary>Converts the entire PDF to PPTX bytes.</summary>
+        public byte[] ToPptxBytes()
+        {
+            ThrowIfDisposed();
+            var data = NativeMethods.PdfDocumentToPptx(_handle, out var dataLen, out var errorCode);
+            ExceptionMapper.ThrowIfError(errorCode);
+            if (data == IntPtr.Zero) return Array.Empty<byte>();
+            var bytes = new byte[dataLen];
+            System.Runtime.InteropServices.Marshal.Copy(data, bytes, 0, dataLen);
+            NativeMethods.FreeBytes(data);
+            return bytes;
+        }
+
+        /// <summary>Converts the entire PDF to XLSX bytes.</summary>
+        public byte[] ToXlsxBytes()
+        {
+            ThrowIfDisposed();
+            var data = NativeMethods.PdfDocumentToXlsx(_handle, out var dataLen, out var errorCode);
+            ExceptionMapper.ThrowIfError(errorCode);
+            if (data == IntPtr.Zero) return Array.Empty<byte>();
+            var bytes = new byte[dataLen];
+            System.Runtime.InteropServices.Marshal.Copy(data, bytes, 0, dataLen);
+            NativeMethods.FreeBytes(data);
+            return bytes;
+        }
+
+        /// <summary>Opens a PDF document converted from DOCX bytes.</summary>
+        public static PdfDocument OpenFromDocxBytes(byte[] data)
+        {
+            ArgumentNullException.ThrowIfNull(data);
+            var handle = NativeMethods.PdfDocumentOpenFromDocxBytes(data, data.Length, out var errorCode);
+            ExceptionMapper.ThrowIfError(errorCode);
+            return new PdfDocument(handle);
+        }
+
+        /// <summary>Opens a PDF document converted from PPTX bytes.</summary>
+        public static PdfDocument OpenFromPptxBytes(byte[] data)
+        {
+            ArgumentNullException.ThrowIfNull(data);
+            var handle = NativeMethods.PdfDocumentOpenFromPptxBytes(data, data.Length, out var errorCode);
+            ExceptionMapper.ThrowIfError(errorCode);
+            return new PdfDocument(handle);
+        }
+
+        /// <summary>Opens a PDF document converted from XLSX bytes.</summary>
+        public static PdfDocument OpenFromXlsxBytes(byte[] data)
+        {
+            ArgumentNullException.ThrowIfNull(data);
+            var handle = NativeMethods.PdfDocumentOpenFromXlsxBytes(data, data.Length, out var errorCode);
+            ExceptionMapper.ThrowIfError(errorCode);
+            return new PdfDocument(handle);
+        }
+
         /// <summary>Checks if the document is encrypted.</summary>
         public bool IsEncrypted
         {

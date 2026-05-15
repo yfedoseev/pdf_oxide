@@ -568,6 +568,153 @@ pub extern "C" fn pdf_document_to_markdown_all(
     }
 }
 
+/// Convert the entire PDF to DOCX bytes.
+///
+/// On success `out_len` is set to the number of bytes and a heap-allocated
+/// buffer is returned — the caller must free it with [`free_bytes`].
+#[no_mangle]
+pub extern "C" fn pdf_document_to_docx(
+    handle: *mut PdfDocument,
+    out_len: *mut usize,
+    error_code: *mut i32,
+) -> *mut u8 {
+    if handle.is_null() || out_len.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let doc = handle_ref(handle);
+    match doc.to_docx_bytes() {
+        Ok(bytes) => {
+            set_error(error_code, ERR_SUCCESS);
+            write_out(out_len, bytes.len());
+            vec_to_ffi_bytes(bytes)
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
+    }
+}
+
+/// Convert the entire PDF to PPTX bytes.
+///
+/// On success `out_len` is set to the number of bytes and a heap-allocated
+/// buffer is returned — the caller must free it with [`free_bytes`].
+#[no_mangle]
+pub extern "C" fn pdf_document_to_pptx(
+    handle: *mut PdfDocument,
+    out_len: *mut usize,
+    error_code: *mut i32,
+) -> *mut u8 {
+    if handle.is_null() || out_len.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let doc = handle_ref(handle);
+    match doc.to_pptx_bytes() {
+        Ok(bytes) => {
+            set_error(error_code, ERR_SUCCESS);
+            write_out(out_len, bytes.len());
+            vec_to_ffi_bytes(bytes)
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
+    }
+}
+
+/// Convert the entire PDF to XLSX bytes.
+///
+/// On success `out_len` is set to the number of bytes and a heap-allocated
+/// buffer is returned — the caller must free it with [`free_bytes`].
+#[no_mangle]
+pub extern "C" fn pdf_document_to_xlsx(
+    handle: *mut PdfDocument,
+    out_len: *mut usize,
+    error_code: *mut i32,
+) -> *mut u8 {
+    if handle.is_null() || out_len.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let doc = handle_ref(handle);
+    match doc.to_xlsx_bytes() {
+        Ok(bytes) => {
+            set_error(error_code, ERR_SUCCESS);
+            write_out(out_len, bytes.len());
+            vec_to_ffi_bytes(bytes)
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
+    }
+}
+
+/// Open a PDF document from DOCX bytes.  Returns an opaque PdfDocument handle.
+#[no_mangle]
+pub extern "C" fn pdf_document_open_from_docx_bytes(
+    data: *const u8,
+    len: usize,
+    error_code: *mut i32,
+) -> *mut PdfDocument {
+    if data.is_null() || len == 0 {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let bytes = raw_slice(data, len);
+    match crate::converters::office::OfficeConverter::new().convert_docx_bytes(bytes) {
+        Ok(pdf_bytes) => match PdfDocument::from_bytes(pdf_bytes) {
+            Ok(doc) => { set_error(error_code, ERR_SUCCESS); Box::into_raw(Box::new(doc)) },
+            Err(e) => { set_error(error_code, classify_error(&e)); ptr::null_mut() },
+        },
+        Err(e) => { set_error(error_code, classify_error(&e)); ptr::null_mut() },
+    }
+}
+
+/// Open a PDF document from PPTX bytes.  Returns an opaque PdfDocument handle.
+#[no_mangle]
+pub extern "C" fn pdf_document_open_from_pptx_bytes(
+    data: *const u8,
+    len: usize,
+    error_code: *mut i32,
+) -> *mut PdfDocument {
+    if data.is_null() || len == 0 {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let bytes = raw_slice(data, len);
+    match crate::converters::office::OfficeConverter::new().convert_pptx_bytes(bytes) {
+        Ok(pdf_bytes) => match PdfDocument::from_bytes(pdf_bytes) {
+            Ok(doc) => { set_error(error_code, ERR_SUCCESS); Box::into_raw(Box::new(doc)) },
+            Err(e) => { set_error(error_code, classify_error(&e)); ptr::null_mut() },
+        },
+        Err(e) => { set_error(error_code, classify_error(&e)); ptr::null_mut() },
+    }
+}
+
+/// Open a PDF document from XLSX bytes.  Returns an opaque PdfDocument handle.
+#[no_mangle]
+pub extern "C" fn pdf_document_open_from_xlsx_bytes(
+    data: *const u8,
+    len: usize,
+    error_code: *mut i32,
+) -> *mut PdfDocument {
+    if data.is_null() || len == 0 {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let bytes = raw_slice(data, len);
+    match crate::converters::office::OfficeConverter::new().convert_xlsx_bytes(bytes) {
+        Ok(pdf_bytes) => match PdfDocument::from_bytes(pdf_bytes) {
+            Ok(doc) => { set_error(error_code, ERR_SUCCESS); Box::into_raw(Box::new(doc)) },
+            Err(e) => { set_error(error_code, classify_error(&e)); ptr::null_mut() },
+        },
+        Err(e) => { set_error(error_code, classify_error(&e)); ptr::null_mut() },
+    }
+}
+
 // ─── DocumentEditor ─────────────────────────────────────────────────────────
 
 /// Open a PDF for editing. Returns an opaque DocumentEditor handle.

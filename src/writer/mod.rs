@@ -99,8 +99,8 @@ pub use content_stream::{
     TextArrayItem,
 };
 pub use document_builder::{
-    DocumentBuilder, DocumentMetadata, FluentPageBuilder, LineStyle, PageSize, TextAlign,
-    TextConfig, TextRun, TextRunStyle,
+    DocumentBuilder, DocumentMetadata, FluentPageBuilder, LineStyle, ListStyle, PageSize,
+    TextAlign, TextConfig, TextRun, TextRunStyle,
 };
 pub use embedded_files::{AFRelationship, EmbeddedFile, EmbeddedFilesBuilder};
 pub use font_manager::{

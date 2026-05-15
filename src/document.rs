@@ -3373,7 +3373,7 @@ impl PdfDocument {
     ///
     /// Returns an error if the page index is out of bounds or if the page
     /// tree structure is invalid.
-    fn get_page(&self, page_index: usize) -> Result<Object> {
+    pub fn get_page(&self, page_index: usize) -> Result<Object> {
         // Check page cache first — page tree is static per §7.7.3.2
         if let Some(cached) = self.page_cache.lock_or_recover().get(&page_index).cloned() {
             return Ok(cached);
@@ -6352,6 +6352,7 @@ impl PdfDocument {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             });
         }
 
@@ -6515,6 +6516,7 @@ impl PdfDocument {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             });
         }
 
@@ -9461,6 +9463,7 @@ impl PdfDocument {
                 horizontal_scaling: 1.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             })
             .collect();
 
@@ -10724,6 +10727,7 @@ impl PdfDocument {
                 horizontal_scaling: 1.0,
                 primary_detected: false,
                 char_widths: vec![],
+                heading_level: None,
             })
             .collect();
 
@@ -11839,6 +11843,255 @@ impl PdfDocument {
         Ok(result)
     }
 
+    /// Convert the entire document to a DOCX file written to `path`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use pdf_oxide::PdfDocument;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let doc = PdfDocument::open("paper.pdf")?;
+    /// doc.to_docx("paper.docx")?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn to_docx(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        let bytes = self.to_docx_bytes()?;
+        std::fs::write(path, bytes)?;
+        Ok(())
+    }
+
+    /// Convert the entire document to DOCX bytes in memory.
+    ///
+    /// Pipeline: PDF → DocumentIR (via `pdf_to_ir`) → DOCX.
+    /// Each PDF page becomes one IR `Section` carrying its source
+    /// MediaBox under `page_setup` and a `NextPage` break from the
+    /// second section onward. `ir_to_docx` writes one `<w:sectPr>` per
+    /// section (each non-final sectPr lives inside a synthetic empty
+    /// paragraph's `<w:pPr>`, the final one at body level), so a
+    /// PDF→DOCX→PDF round-trip preserves the source page count and
+    /// dimensions instead of overflowing onto Letter-sized pages at
+    /// the OfficeConfig default. Source-PDF fonts are embedded under
+    /// `word/fonts/` for typeface preservation across the round-trip.
+    pub fn to_docx_bytes(&self) -> Result<Vec<u8>> {
+        // Layout-preserving emission gives near-pixel-identical text
+        // for small docs but produces one positioned frame per source
+        // span — Word handles ~5k frames cleanly, ~70k frames (660-page
+        // CFR) takes minutes to open or refuses entirely. Pick the
+        // path based on source page count: ≤ `LAYOUT_MAX_PAGES`
+        // chooses fidelity, anything larger falls back to flow mode
+        // + column-aware reflow which Word opens instantly.
+        const LAYOUT_MAX_PAGES: usize = 30;
+        let n = self.page_count().unwrap_or(0);
+        if n <= LAYOUT_MAX_PAGES {
+            self.to_docx_bytes_layout()
+        } else {
+            self.to_docx_bytes_flow()
+        }
+    }
+
+    /// Legacy flow-mode DOCX export: PDF text spans are grouped into
+    /// flowing paragraphs with column-aware layout. Trade-off vs. the
+    /// default `to_docx_bytes` layout-preserving path:
+    /// - Better for editing (real paragraph structure, not floating frames).
+    /// - Worse for visual fidelity (text reflows; positions drift).
+    /// Use this when downstream callers will edit the DOCX in Word /
+    /// LibreOffice; use the default for pixel-faithful round trips.
+    pub fn to_docx_bytes_flow(&self) -> Result<Vec<u8>> {
+        let ir = self.pdf_to_office_ir(office_oxide::format::DocumentFormat::Docx)?;
+        let mut writer = office_oxide::create::ir_to_docx(&ir);
+        self.embed_pdf_fonts_into(|name, data| {
+            writer.embed_font(name, data);
+        });
+        let mut buf = std::io::Cursor::new(Vec::new());
+        writer
+            .write_to(&mut buf)
+            .map_err(|e| crate::error::Error::InvalidOperation(format!("DOCX export: {e}")))?;
+        Ok(buf.into_inner())
+    }
+
+    /// Forward every embedded font program from the source PDF (if
+    /// extractable) into the supplied per-font sink. Each
+    /// office-format writer exposes its own `embed_font(name, data)`
+    /// method but they take different `&mut self` types, so this
+    /// helper centralises the iteration without trying to abstract
+    /// over the writer types.
+    fn embed_pdf_fonts_into<F: FnMut(String, Vec<u8>)>(&self, mut sink: F) {
+        // CFF font subsets in source PDFs typically ship without a
+        // Unicode cmap (CID-only encoding) and without an `hmtx`
+        // table (widths live in the document's `/W` array, not the
+        // font program). `cmap_injector` patches both: it synthesises
+        // a format-4 Unicode cmap from `/ToUnicode` so the font
+        // registers via `EmbeddedFont::has_usable_unicode_cmap`, and
+        // it stamps a real `hmtx` populated from the source PDF's
+        // `/W` widths so ttf-parser's `glyph_hor_advance` returns
+        // non-zero values when the round-trip writer rebuilds its
+        // own `/W` array. Without the hmtx patch, every glyph
+        // emitted in the round-trip PDF advances 0 and body text
+        // collapses into a single x-position column.
+        //
+        // The renderer's CFF path (text_rasterizer.rs) routes
+        // Type0+CIDFontType0 fonts through `render_cid_direct` so the
+        // content-stream's Identity-H CIDs map straight to CFF charset
+        // positions — i.e. CID==GID — which is the correct
+        // interpretation for `Identity-H` Type0/CIDFontType0 emission.
+        //
+        // For TrueType subsets (sfnt 0x00010000) the cmap is already
+        // present and `unicode_map` is empty; we still inject hmtx
+        // when widths are known so the writer's width table reflects
+        // the source PDF's authoritative `/W` rather than whatever
+        // hmtx happens to be in the embedded subset.
+        if let Ok(fonts) = self.extract_embedded_fonts_with_unicode_maps_and_widths() {
+            for (name, data, unicode_map, widths_by_gid) in fonts {
+                let mut bytes = data;
+                if !unicode_map.is_empty() {
+                    bytes = crate::fonts::cmap_injector::inject_unicode_cmap(&bytes, &unicode_map)
+                        .unwrap_or(bytes);
+                }
+                if !widths_by_gid.is_empty() {
+                    bytes = crate::fonts::cmap_injector::inject_hmtx(&bytes, &widths_by_gid)
+                        .unwrap_or(bytes);
+                }
+                sink(name, bytes);
+            }
+            return;
+        }
+        if let Ok(fonts) = self.extract_embedded_fonts() {
+            for (name, data) in fonts {
+                sink(name, data);
+            }
+        }
+    }
+
+    /// Build a `DocumentIR` from the entire PDF, tagged for the target
+    /// office format. Shared by `to_docx_bytes`, `to_pptx_bytes`, and
+    /// `to_xlsx_bytes`. Thin wrapper around `pdf_to_ir::pdf_to_ir`
+    /// that applies default options.
+    fn pdf_to_office_ir(
+        &self,
+        format: office_oxide::format::DocumentFormat,
+    ) -> Result<office_oxide::ir::DocumentIR> {
+        let opts = crate::converters::pdf_to_ir::PdfToIrOptions::default();
+        crate::converters::pdf_to_ir::pdf_to_ir(self, format, &opts)
+    }
+
+    /// Convert the document to DOCX bytes with **layout-preserving** text
+    /// frames: every PDF text span is emitted as a `<w:framePr>`-anchored
+    /// paragraph at its exact source position.
+    ///
+    /// Trade-off vs. [`Self::to_docx_bytes`]:
+    /// - This output renders visually similar to the source PDF when opened
+    ///   in Word/LibreOffice — same fonts, sizes, colors, positions.
+    /// - Text remains real selectable/editable text (unlike rasterization).
+    /// - Doesn't reconstruct table grids, vector graphics, or images
+    ///   (text-only).
+    /// - The output isn't ideal for *editing* (every word is its own
+    ///   floating frame); use the markdown path when ergonomics matter
+    ///   more than visual fidelity.
+    pub fn to_docx_bytes_layout(&self) -> Result<Vec<u8>> {
+        crate::converters::docx_layout::to_docx_bytes_layout(self)
+    }
+
+    /// Convert the entire document to a PPTX file on disk.
+    pub fn to_pptx(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        let bytes = self.to_pptx_bytes()?;
+        std::fs::write(path, bytes)?;
+        Ok(())
+    }
+
+    /// Convert the entire document to PPTX bytes in memory.
+    ///
+    /// Pipeline: PDF → DocumentIR → PPTX. Each PDF page becomes one
+    /// slide, sized to the source `MediaBox` (the presentation-level
+    /// `<p:sldSz>` is set from the first page) so a PDF→PPTX→PDF
+    /// round-trip preserves the original page dimensions instead of
+    /// overflowing dense pages onto multiple Letter-sized slides.
+    /// Source-PDF fonts are embedded under `ppt/fonts/` so the
+    /// round-trip reuses the original typeface.
+    pub fn to_pptx_bytes(&self) -> Result<Vec<u8>> {
+        // Page-count gated like `to_docx_bytes`. PowerPoint's "fix the
+        // content" dialog fires above ~250 slides; pixel-faithful
+        // layout mode emits one slide per PDF page so anything larger
+        // than `LAYOUT_MAX_PAGES` falls back to the flow path that
+        // collapses pages via heading-bounded compaction.
+        const LAYOUT_MAX_PAGES: usize = 30;
+        let n = self.page_count().unwrap_or(0);
+        if n <= LAYOUT_MAX_PAGES {
+            crate::converters::pptx_layout::to_pptx_bytes_layout(self)
+        } else {
+            self.to_pptx_bytes_flow()
+        }
+    }
+
+    /// Legacy flow-mode PPTX export: PDF text is grouped into flow
+    /// paragraphs and laid out by PowerPoint's auto-layout engine.
+    /// Trade-off vs. the default `to_pptx_bytes` layout-preserving path:
+    /// - Better for editing (real paragraph structure, fewer shapes).
+    /// - Worse for visual fidelity (text reflows; positions drift).
+    pub fn to_pptx_bytes_flow(&self) -> Result<Vec<u8>> {
+        let ir = self.pdf_to_office_ir(office_oxide::format::DocumentFormat::Pptx)?;
+        let mut writer = office_oxide::create::ir_to_pptx(&ir);
+        self.embed_pdf_fonts_into(|name, data| {
+            writer.embed_font(name, data);
+        });
+        let mut buf = std::io::Cursor::new(Vec::new());
+        writer
+            .write_to(&mut buf)
+            .map_err(|e| crate::error::Error::InvalidOperation(format!("PPTX export: {e}")))?;
+        Ok(buf.into_inner())
+    }
+
+    /// Convert the entire document to an XLSX file on disk.
+    pub fn to_xlsx(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        let bytes = self.to_xlsx_bytes()?;
+        std::fs::write(path, bytes)?;
+        Ok(())
+    }
+
+    /// Convert the entire document to XLSX bytes in memory.
+    ///
+    /// Pipeline: PDF → DocumentIR → XLSX. Each PDF page becomes one
+    /// worksheet; per-paragraph font sizes are written to cell styles so
+    /// the round-trip back through `xlsx → IR` recovers the original 9–10
+    /// pt body size instead of falling back to the writer's 12 pt default
+    /// (which inflated round-trip page counts by 2–3×). Source-PDF fonts
+    /// are embedded under `xl/fonts/` mirroring the DOCX/PPTX paths.
+    pub fn to_xlsx_bytes(&self) -> Result<Vec<u8>> {
+        // Page-count gated like `to_docx_bytes`. Excel chokes on tens
+        // of thousands of `<xdr:sp>` shapes (one per span × hundreds of
+        // pages); fall back to the flow path that emits content into
+        // the cell grid for large sources. Raised from 30 so multi-
+        // hundred-page documents (e.g. typical dissertations) still
+        // take the positional path — `ir_to_xlsx` flow mode drops
+        // paragraph alignment into column A, collapsing centered
+        // title blocks.
+        const LAYOUT_MAX_PAGES: usize = 200;
+        let n = self.page_count().unwrap_or(0);
+        if n <= LAYOUT_MAX_PAGES {
+            crate::converters::xlsx_layout::to_xlsx_bytes_layout(self)
+        } else {
+            self.to_xlsx_bytes_flow()
+        }
+    }
+
+    /// Legacy flow-mode XLSX export: PDF content is laid out into
+    /// the cell grid. Use this when downstream callers will treat the
+    /// XLSX as a real spreadsheet (filters, formulas, sorts); use the
+    /// default `to_xlsx_bytes` for pixel-faithful round trips.
+    pub fn to_xlsx_bytes_flow(&self) -> Result<Vec<u8>> {
+        let ir = self.pdf_to_office_ir(office_oxide::format::DocumentFormat::Xlsx)?;
+        let mut writer = office_oxide::create::ir_to_xlsx(&ir);
+        self.embed_pdf_fonts_into(|name, data| {
+            writer.embed_font(name, data);
+        });
+        let mut buf = std::io::Cursor::new(Vec::new());
+        writer
+            .write_to(&mut buf)
+            .map_err(|e| crate::error::Error::InvalidOperation(format!("XLSX export: {e}")))?;
+        Ok(buf.into_inner())
+    }
+
     /// Extract images from a page.
     ///
     /// Extracts all images from the specified page by processing the content stream.
@@ -12568,6 +12821,344 @@ impl PdfDocument {
         extractor: &mut crate::extractors::TextExtractor<'_>,
     ) -> Result<()> {
         self.load_fonts(resources, extractor)
+    }
+
+    /// Per-page mapping of PDF font-resource names (e.g. `"F75"`) to their
+    /// canonical face name (e.g. `"TeXGyreTermesX-Regular"`, with any
+    /// subset-prefix `ABCDEF+` stripped).
+    ///
+    /// Used by the layout-preserving DOCX writer so each text span can be
+    /// emitted with the actual face name in `<w:rFonts>` instead of a
+    /// PDF-internal resource id. The vector is `pages × map`; `map[i]`
+    /// covers all fonts referenced by page `i`'s Resources.
+    pub fn page_font_face_lookups(&self) -> Result<Vec<std::collections::HashMap<String, String>>> {
+        use std::collections::HashMap;
+        let n = self.page_count()?;
+        let mut out: Vec<HashMap<String, String>> = Vec::with_capacity(n);
+        for page_idx in 0..n {
+            let mut lookup: HashMap<String, String> = HashMap::new();
+            // Inline get_page → Resources so this works without `rendering`.
+            let resources = match self.get_page(page_idx) {
+                Ok(page) => match page.as_dict() {
+                    Some(d) => {
+                        let r = d
+                            .get("Resources")
+                            .cloned()
+                            .unwrap_or(Object::Dictionary(std::collections::HashMap::new()));
+                        if let Some(rref) = r.as_reference() {
+                            self.load_object(rref).unwrap_or(Object::Dictionary(std::collections::HashMap::new()))
+                        } else {
+                            r
+                        }
+                    }
+                    None => { out.push(lookup); continue; }
+                },
+                Err(_) => { out.push(lookup); continue; }
+            };
+            let mut extractor = crate::extractors::TextExtractor::new();
+            if self.load_fonts_public(&resources, &mut extractor).is_ok() {
+                for (resource_name, info) in extractor.get_font_set() {
+                    let canonical = info
+                        .base_font
+                        .split_once('+')
+                        .map(|(_, rest)| rest)
+                        .unwrap_or(info.base_font.as_str())
+                        .to_string();
+                    lookup.insert(resource_name, canonical);
+                }
+            }
+            out.push(lookup);
+        }
+        Ok(out)
+    }
+
+    /// Extract every embedded font program (TrueType / OpenType bytes) used
+    /// anywhere in the document, deduplicated by `BaseFont` name.
+    ///
+    /// Walks every page's font dictionary, loads each font via the same path
+    /// `extract_text` uses, and returns the unique set of fonts that have
+    /// embedded `FontFile2`/`FontFile3` streams. The `String` is the base
+    /// font name (with any subset prefix like `ABCDEF+` stripped) and the
+    /// `Vec<u8>` is the raw font program — directly suitable for re-embedding
+    /// into another container (DOCX `word/fonts/`, another PDF, etc.).
+    ///
+    /// Fonts without embedded data (standard 14, missing FontFile streams)
+    /// are skipped — there's nothing to extract.
+    pub fn extract_embedded_fonts(&self) -> Result<Vec<(String, Vec<u8>)>> {
+        use std::collections::HashMap;
+        let mut by_name: HashMap<String, Vec<u8>> = HashMap::new();
+
+        let n = self.page_count()?;
+        for page_idx in 0..n {
+            // Inline get_page_resources so this works without `rendering`.
+            let resources = match self.get_page(page_idx) {
+                Ok(page) => match page.as_dict() {
+                    Some(d) => {
+                        let r = d
+                            .get("Resources")
+                            .cloned()
+                            .unwrap_or(Object::Dictionary(std::collections::HashMap::new()));
+                        if let Some(rref) = r.as_reference() {
+                            self.load_object(rref).unwrap_or_else(|_| {
+                                Object::Dictionary(std::collections::HashMap::new())
+                            })
+                        } else {
+                            r
+                        }
+                    }
+                    None => continue,
+                },
+                Err(_) => continue,
+            };
+            let mut extractor = crate::extractors::TextExtractor::new();
+            if self.load_fonts_public(&resources, &mut extractor).is_err() {
+                continue;
+            }
+            for (_resource_name, font_arc) in extractor.get_font_set() {
+                let Some(data) = font_arc.embedded_font_data.as_ref() else {
+                    continue;
+                };
+                if data.is_empty() {
+                    continue;
+                }
+                // Subset-prefix stripping: PDF font subsets carry a 6-letter
+                // prefix followed by `+`, e.g. `ABCDEF+Calibri-Bold`. The
+                // prefix is meaningless to consumers — strip it for dedup.
+                let base = font_arc.base_font.as_str();
+                let canonical = base.split_once('+').map(|(_, rest)| rest).unwrap_or(base);
+                by_name
+                    .entry(canonical.to_string())
+                    .or_insert_with(|| data.as_ref().clone());
+            }
+        }
+
+        let mut out: Vec<(String, Vec<u8>)> = by_name.into_iter().collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
+    }
+
+    /// Like [`extract_embedded_fonts`] but additionally returns a
+    /// per-font Unicode → GID map reconstructed from the source PDF's
+    /// `/ToUnicode` CMap and the font's CID/byte→GID table.
+    ///
+    /// CFF font subsets in PDFs (the typical Word/LibreOffice output)
+    /// often ship without a Unicode cmap because CIDs encode the
+    /// glyph stream directly. The font program parses fine but
+    /// `EmbeddedFont::glyph_lookup` is empty; downstream font
+    /// registration treats the font as unusable and falls back to
+    /// Helvetica.
+    ///
+    /// The map returned here lets office_oxide / pdf_oxide write
+    /// pipelines call [`crate::writer::EmbeddedFont::extend_glyph_lookup`]
+    /// to re-populate the missing Unicode→GID entries from the
+    /// source-PDF's own `/ToUnicode`. Result: CFF subset fonts
+    /// register and render with the source typeface program instead
+    /// of base-14 Helvetica.
+    pub fn extract_embedded_fonts_with_unicode_maps(
+        &self,
+    ) -> Result<Vec<(String, Vec<u8>, std::collections::HashMap<u32, u16>)>> {
+        let with_widths = self.extract_embedded_fonts_with_unicode_maps_and_widths()?;
+        Ok(with_widths
+            .into_iter()
+            .map(|(name, data, uni, _widths)| (name, data, uni))
+            .collect())
+    }
+
+    /// Like [`Self::extract_embedded_fonts_with_unicode_maps`] but also
+    /// returns the per-glyph widths from the source PDF's `/W` array
+    /// (in 1/1000 em units, keyed by GID). Required for re-embedding
+    /// CFF font subsets whose synthetic OpenType wrapper carries no
+    /// `hmtx` table — without this, ttf-parser returns 0 for every
+    /// glyph advance and the round-trip writer emits a `/W` of zeros.
+    pub fn extract_embedded_fonts_with_unicode_maps_and_widths(
+        &self,
+    ) -> Result<
+        Vec<(
+            String,
+            Vec<u8>,
+            std::collections::HashMap<u32, u16>,
+            std::collections::HashMap<u16, u16>,
+        )>,
+    > {
+        use std::collections::HashMap;
+        let mut by_name: HashMap<
+            String,
+            (Vec<u8>, HashMap<u32, u16>, HashMap<u16, u16>),
+        > = HashMap::new();
+
+        let n = self.page_count()?;
+        for page_idx in 0..n {
+            let resources = match self.get_page(page_idx) {
+                Ok(page) => match page.as_dict() {
+                    Some(d) => {
+                        let r = d
+                            .get("Resources")
+                            .cloned()
+                            .unwrap_or(Object::Dictionary(std::collections::HashMap::new()));
+                        if let Some(rref) = r.as_reference() {
+                            self.load_object(rref).unwrap_or_else(|_| {
+                                Object::Dictionary(std::collections::HashMap::new())
+                            })
+                        } else {
+                            r
+                        }
+                    }
+                    None => continue,
+                },
+                Err(_) => continue,
+            };
+            let mut extractor = crate::extractors::TextExtractor::new();
+            if self.load_fonts_public(&resources, &mut extractor).is_err() {
+                continue;
+            }
+            for (_resource_name, font_arc) in extractor.get_font_set() {
+                let Some(data) = font_arc.embedded_font_data.as_ref() else {
+                    continue;
+                };
+                if data.is_empty() {
+                    continue;
+                }
+                let base = font_arc.base_font.as_str();
+                let canonical = base.split_once('+').map(|(_, rest)| rest).unwrap_or(base);
+
+                // Build Unicode → GID via ToUnicode CMap + GID resolver.
+                //
+                // We must consult the ToUnicode CMap *directly* rather than
+                // going through `char_to_unicode`. `char_to_unicode` falls
+                // through to a CID-as-Unicode fallback when the ToUnicode
+                // CMap has no entry for a given code (Identity-H + Adobe-
+                // Identity ordering, source font without a Unicode cmap).
+                // That fallback returns spurious mappings like
+                // U+0069 'i' → GID 105 (because CID 105 has no real
+                // ToUnicode entry; the CID-as-Unicode path yields 'i'
+                // for code=105 and the embedded TTF has no cmap to set us
+                // straight). The spurious entries overwrite the real ones
+                // we collected from CIDs that *do* have ToUnicode
+                // entries (e.g. CID 0x4C → 'i', GID 76 for a
+                // MicrosoftSansSerif subset) — which then makes the
+                // injected cmap point Unicode codepoints at the wrong
+                // glyph slots and the DOCX round-trip renders broken
+                // lowercase letters.
+                let mut uni_to_gid: HashMap<u32, u16> = HashMap::new();
+                let to_unicode_cmap = font_arc
+                    .to_unicode
+                    .as_ref()
+                    .and_then(|lazy| lazy.get());
+                for code in 0u32..=0xFFFF {
+                    // Require an authoritative ToUnicode entry. If the
+                    // font has no ToUnicode CMap at all we conservatively
+                    // skip injection — the fallback chain would only
+                    // produce the misleading identity mapping.
+                    let unicode_str = match to_unicode_cmap.as_ref().and_then(|cmap| cmap.get(&code)) {
+                        Some(s) if !s.is_empty() && s != "\u{FFFD}" => s.clone(),
+                        _ => continue,
+                    };
+                    let cp = match unicode_str.chars().next() {
+                        Some(c) => c as u32,
+                        None => continue,
+                    };
+                    // Bare C0 controls (other than the legitimate
+                    // whitespace handled in char_to_unicode) never name
+                    // a real glyph — drop them so we don't inject a
+                    // cmap entry that points U+0000..U+001F at random
+                    // GIDs.
+                    if matches!(cp, 0x00..=0x08 | 0x0B..=0x0C | 0x0E..=0x1F) {
+                        continue;
+                    }
+                    // Only emit a Unicode→GID mapping when we have a
+                    // real byte/CID → GID resolver from the source PDF.
+                    // Falling back to identity for simple fonts whose
+                    // CFF encoding parser couldn't extract a mapping
+                    // produces a synthetic cmap that points Unicode at
+                    // the wrong CFF charset positions: the round-trip
+                    // emits Type0+Identity-H+CIDFontType0 and the
+                    // viewer reads `glyph_at_charset[byte_code]`,
+                    // which only equals the source glyph when CFF
+                    // charset == StandardEncoding byte order — rarely
+                    // true for subsetted CFF. Without a real mapping
+                    // we leave the font un-patched, and office_oxide
+                    // falls back to base-14 Helvetica via
+                    // `EmbeddedFont::has_usable_unicode_cmap`.
+                    let gid_opt = if let Some(ref map) = font_arc.cff_gid_map {
+                        if code <= 0xFF {
+                            map.get(&(code as u8)).copied()
+                        } else {
+                            None
+                        }
+                    } else if let Some(ref cid_map) = font_arc.cid_to_gid_map {
+                        if code <= 0xFFFF {
+                            Some(cid_map.get_gid(code as u16))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(gid) = gid_opt {
+                        uni_to_gid.insert(cp, gid);
+                    }
+                }
+
+                // Build GID → width from the source PDF's /W array.
+                // For CIDFontType0+Identity-H: CID == GID directly.
+                // For CIDFontType2: CID → GID via CIDToGIDMap.
+                // For simple CFF (cff_gid_map): byte-code → GID.
+                let mut gid_to_width: HashMap<u16, u16> = HashMap::new();
+                if let Some(ref cid_widths) = font_arc.cid_widths {
+                    if font_arc.cid_font_type.as_deref() == Some("CIDFontType0") {
+                        for (&cid, &w) in cid_widths {
+                            gid_to_width.insert(cid, w.round() as u16);
+                        }
+                    } else if let Some(ref cid_map) = font_arc.cid_to_gid_map {
+                        for (&cid, &w) in cid_widths {
+                            let gid = cid_map.get_gid(cid);
+                            gid_to_width.insert(gid, w.round() as u16);
+                        }
+                    } else {
+                        for (&cid, &w) in cid_widths {
+                            gid_to_width.insert(cid, w.round() as u16);
+                        }
+                    }
+                } else if let Some(ref cff_map) = font_arc.cff_gid_map {
+                    // Simple CFF font: width-by-byte-code in font_arc.widths.
+                    if let (Some(widths), Some(first)) =
+                        (font_arc.widths.as_ref(), font_arc.first_char)
+                    {
+                        for (i, w) in widths.iter().enumerate() {
+                            let byte = first as u32 + i as u32;
+                            if byte > 0xFF {
+                                break;
+                            }
+                            if let Some(&gid) = cff_map.get(&(byte as u8)) {
+                                gid_to_width.insert(gid, w.round() as u16);
+                            }
+                        }
+                    }
+                }
+
+                let entry = by_name.entry(canonical.to_string()).or_insert_with(|| {
+                    (data.as_ref().clone(), HashMap::new(), HashMap::new())
+                });
+                for (cp, gid) in uni_to_gid {
+                    entry.1.entry(cp).or_insert(gid);
+                }
+                for (gid, w) in gid_to_width {
+                    entry.2.entry(gid).or_insert(w);
+                }
+            }
+        }
+
+        let mut out: Vec<(
+            String,
+            Vec<u8>,
+            HashMap<u32, u16>,
+            HashMap<u16, u16>,
+        )> = by_name
+            .into_iter()
+            .map(|(name, (data, cmap, widths))| (name, data, cmap, widths))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
     }
 }
 

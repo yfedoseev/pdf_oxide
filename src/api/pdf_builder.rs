@@ -315,6 +315,18 @@ impl Pdf {
         PdfBuilder::new().from_markdown(content)
     }
 
+    /// Like [`Self::from_markdown`] but registers extra TrueType / OpenType
+    /// fonts in the resulting PDF before rendering. Each `(name, bytes)`
+    /// pair becomes a CIDFontType2 with its Unicode coverage usable by the
+    /// markdown renderer when content contains chars outside WinAnsi that
+    /// the bundled DejaVu fallback can't handle (CJK, exotic ligatures, …).
+    pub fn from_markdown_with_fonts(
+        content: &str,
+        fonts: &[(String, Vec<u8>)],
+    ) -> Result<Self> {
+        PdfBuilder::new().from_markdown_with_fonts(content, fonts)
+    }
+
     /// Create a PDF from HTML content.
     ///
     /// Supports basic HTML elements:
@@ -2887,7 +2899,23 @@ impl PdfBuilder {
 
     /// Build a PDF from Markdown content.
     pub fn from_markdown(self, content: &str) -> Result<Pdf> {
-        let bytes = self.render_markdown(content)?;
+        let bytes = self.render_markdown_with_fonts(content, &[])?;
+        Ok(Pdf {
+            bytes,
+            config: self.config,
+            editor: None,
+            source_path: None,
+        })
+    }
+
+    /// Like [`Self::from_markdown`] but with extra embedded fonts. See
+    /// [`Pdf::from_markdown_with_fonts`].
+    pub fn from_markdown_with_fonts(
+        self,
+        content: &str,
+        fonts: &[(String, Vec<u8>)],
+    ) -> Result<Pdf> {
+        let bytes = self.render_markdown_with_fonts(content, fonts)?;
         Ok(Pdf {
             bytes,
             config: self.config,
@@ -3131,10 +3159,19 @@ impl PdfBuilder {
         (page_width, page_height, x, y, fit_w, fit_h)
     }
 
-    /// Render Markdown content to PDF bytes.
-    #[allow(clippy::manual_strip)]
+    /// Render Markdown content to PDF bytes (compat wrapper).
     fn render_markdown(&self, content: &str) -> Result<Vec<u8>> {
-        let mut builder = DocumentBuilder::new();
+        self.render_markdown_with_fonts(content, &[])
+    }
+
+    /// Render Markdown content to PDF bytes, with optional extra fonts.
+    #[allow(clippy::manual_strip)]
+    fn render_markdown_with_fonts(
+        &self,
+        content: &str,
+        extra_fonts: &[(String, Vec<u8>)],
+    ) -> Result<Vec<u8>> {
+        let mut builder = DocumentBuilder::new().compress_streams(true);
 
         // Set metadata
         let mut metadata = DocumentMetadata::new();
@@ -3151,6 +3188,32 @@ impl PdfBuilder {
 
         if let Some(ref template) = self.config.template {
             builder = builder.template(template.clone());
+        }
+
+        // If the markdown contains chars outside WinAnsiEncoding (Greek,
+        // Cyrillic, …), register a bundled Unicode-capable font so those
+        // chars render through the Type-0/CIDFontType2 path. The standard
+        // 14 PDF fonts only support WinAnsi (~256 chars) and would drop
+        // anything else.
+        let needs_unicode = crate::fonts::bundled::needs_unicode_font(content);
+        if needs_unicode {
+            if let Ok(font) = crate::writer::EmbeddedFont::from_data(
+                Some("DejaVuSans".to_string()),
+                crate::fonts::bundled::DEJAVU_SANS.to_vec(),
+            ) {
+                builder = builder.register_embedded_font("DejaVuSans", font);
+            }
+        }
+        // Caller-provided fonts (typically extracted from a source PDF in a
+        // round-trip pipeline). Registered after DejaVu so they take
+        // precedence when the renderer needs to pick a font by name.
+        for (name, data) in extra_fonts {
+            if let Ok(font) = crate::writer::EmbeddedFont::from_data(
+                Some(name.clone()),
+                data.clone(),
+            ) {
+                builder = builder.register_embedded_font(name.clone(), font);
+            }
         }
 
         // Parse and render Markdown
@@ -3256,14 +3319,17 @@ impl PdfBuilder {
 
         // Render all items
         {
-            let mut page = builder.page(self.config.page_size);
+            let font_name: &str = if needs_unicode { "DejaVuSans" } else { "Helvetica" };
+            let mut page = builder.page(self.config.page_size).font(font_name, self.config.font_size);
             let mut last_y = f32::MAX;
 
             for (x, y, text) in text_items {
                 // If y increased, we hit a page break in the collection loop
                 if y > last_y {
                     page.done();
-                    page = builder.page(self.config.page_size);
+                    page = builder
+                        .page(self.config.page_size)
+                        .font(font_name, self.config.font_size);
                 }
                 page = page.at(x, y).text(&text);
                 last_y = y;

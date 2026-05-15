@@ -58,7 +58,7 @@ manual_checked_ops = "allow"
 
 [package]
 name = "pdf_oxide"
-version = "0.3.47"
+version = "0.3.48"
 # MSRV — driven up from 1.82 for v0.3.38. Transitive deps pulled in
 # this release push the floor to 1.88:
 #   - hybrid-array 0.4.10 (via RustCrypto) → edition 2024 → 1.85
@@ -232,7 +232,7 @@ ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, fea
     "ndarray",
     "load-dynamic",
 ] }
-imageproc = { version = "0.26", optional = true }
+imageproc = { version = "0.26.2", optional = true }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -274,9 +274,8 @@ uuid = { version = "1.23", features = ["v4", "js"] }
 qrcode = { version = "0.14", optional = true }
 barcoders = { version = "2.0", optional = true, features = ["image"] }
 
-# Office document conversion (optional)
-calamine = { version = "0.34", optional = true }
-zip = { version = "8.5", optional = true, default-features = false, features = ["deflate"] }
+# Office document creation and export via office_oxide (always required)
+office_oxide = { version = "0.1.2", default-features = false }
 x509-tsp = { version = "0.1", optional = true }
 ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
 cmpv2 = { version = "0.2", optional = true }
@@ -340,7 +339,6 @@ python = [
     "signatures",
     "tsa-client",
     "barcodes",
-    "office",
 ]
 
 # The following features are planned for v1.0 and are not yet production-ready.
@@ -360,7 +358,6 @@ wasm = [
     "logging",
     "signatures",
     "barcodes",
-    "office",
 ]
 wasm-ml = ["wasm", "ml"]
 
@@ -402,9 +399,6 @@ tsa-client = ["signatures", "dep:ureq", "dep:cmpv2"]
 
 # Barcode/QR code generation
 barcodes = ["dep:qrcode", "dep:barcoders"]
-
-# Office document conversion (DOCX, XLSX, PPTX)
-office = ["dep:calamine", "dep:zip"]
 
 # Parallel page extraction via rayon
 parallel = ["dep:rayon"]
@@ -499,6 +493,10 @@ path = "examples/rust/09-new-features/in_memory_roundtrip/main.rs"
 [[example]]
 name = "showcase_pdfa_conversion"
 path = "examples/rust/09-new-features/pdfa_conversion/main.rs"
+
+[[example]]
+name = "showcase_office_conversion"
+path = "examples/rust/09-new-features/office_conversion/main.rs"
 
 [[example]]
 name = "showcase_pkcs12_signing"

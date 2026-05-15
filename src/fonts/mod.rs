@@ -12,11 +12,13 @@
 
 mod adobe_glyph_list;
 /// CFF font encoding parser for extracting built-in encoding from CFF FontFile data.
+pub mod bundled;
 pub mod cff_encoding;
 pub mod character_mapper;
 /// CID to Unicode mappings for predefined Adobe CJK character collections.
 pub mod cid_mappings;
 pub mod cmap;
+pub mod cmap_injector;
 pub mod encoding;
 pub mod encoding_normalizer;
 pub mod font_dict; // Private module - only used internally by font_dict
@@ -30,6 +32,8 @@ pub mod truetype_cmap;
 pub mod truetype_parser;
 /// Type 1 font encoding parser for extracting built-in encoding from FontFile data.
 pub mod type1_encoding;
+/// System Unicode font fallback for office round-trip.
+pub mod unicode_fallback;
 
 pub use character_mapper::{CharacterMapper, PredefinedCMapConfig};
 pub use cmap::{parse_tounicode_cmap, CMap, LazyCMap};

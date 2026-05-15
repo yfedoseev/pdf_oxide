@@ -165,6 +165,7 @@ impl From<TextContent> for TextSpan {
             primary_detected: false,
             artifact_type: content.artifact_type,
             char_widths: vec![],
+            heading_level: None,
         }
     }
 }
