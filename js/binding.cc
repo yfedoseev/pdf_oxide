@@ -1807,12 +1807,18 @@ Napi::Value ToPlainTextAll(const Napi::CallbackInfo& info) {
 
 Napi::Value ToDocxBytes(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   size_t outLen = 0;
   int errorCode = 0;
   uint8_t* data = pdf_document_to_docx(handle, &outLen, &errorCode);
-  if (errorCode != 0) throw Napi::Error::New(env, "Failed to convert to DOCX: " + getErrorMessage(errorCode));
-  if (!data || outLen == 0) return Napi::Buffer<uint8_t>::New(env, 0);
+  if (errorCode != 0) {
+    if (data) free_bytes(data);
+    throw Napi::Error::New(env, "Failed to convert to DOCX: " + getErrorMessage(errorCode));
+  }
+  if (!data || outLen == 0) {
+    if (data) free_bytes(data);
+    return Napi::Buffer<uint8_t>::New(env, 0);
+  }
   auto buf = Napi::Buffer<uint8_t>::Copy(env, data, outLen);
   free_bytes(data);
   return buf;
@@ -1820,12 +1826,18 @@ Napi::Value ToDocxBytes(const Napi::CallbackInfo& info) {
 
 Napi::Value ToPptxBytes(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   size_t outLen = 0;
   int errorCode = 0;
   uint8_t* data = pdf_document_to_pptx(handle, &outLen, &errorCode);
-  if (errorCode != 0) throw Napi::Error::New(env, "Failed to convert to PPTX: " + getErrorMessage(errorCode));
-  if (!data || outLen == 0) return Napi::Buffer<uint8_t>::New(env, 0);
+  if (errorCode != 0) {
+    if (data) free_bytes(data);
+    throw Napi::Error::New(env, "Failed to convert to PPTX: " + getErrorMessage(errorCode));
+  }
+  if (!data || outLen == 0) {
+    if (data) free_bytes(data);
+    return Napi::Buffer<uint8_t>::New(env, 0);
+  }
   auto buf = Napi::Buffer<uint8_t>::Copy(env, data, outLen);
   free_bytes(data);
   return buf;
@@ -1833,12 +1845,18 @@ Napi::Value ToPptxBytes(const Napi::CallbackInfo& info) {
 
 Napi::Value ToXlsxBytes(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* handle = info[0].As<Napi::External<void>>().Data();
+  LOCK_DOC(info, handle);
   size_t outLen = 0;
   int errorCode = 0;
   uint8_t* data = pdf_document_to_xlsx(handle, &outLen, &errorCode);
-  if (errorCode != 0) throw Napi::Error::New(env, "Failed to convert to XLSX: " + getErrorMessage(errorCode));
-  if (!data || outLen == 0) return Napi::Buffer<uint8_t>::New(env, 0);
+  if (errorCode != 0) {
+    if (data) free_bytes(data);
+    throw Napi::Error::New(env, "Failed to convert to XLSX: " + getErrorMessage(errorCode));
+  }
+  if (!data || outLen == 0) {
+    if (data) free_bytes(data);
+    return Napi::Buffer<uint8_t>::New(env, 0);
+  }
   auto buf = Napi::Buffer<uint8_t>::Copy(env, data, outLen);
   free_bytes(data);
   return buf;
@@ -1846,32 +1864,92 @@ Napi::Value ToXlsxBytes(const Napi::CallbackInfo& info) {
 
 Napi::Value OpenFromDocxBytes(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  auto buf = info[0].As<Napi::Buffer<uint8_t>>();
+  if (info.Length() < 1) {
+    throw Napi::TypeError::New(env, "Expected a Buffer or Uint8Array argument");
+  }
+  const uint8_t* data;
+  size_t length;
+  if (info[0].IsBuffer()) {
+    auto buf = info[0].As<Napi::Buffer<uint8_t>>();
+    data = buf.Data();
+    length = buf.Length();
+  } else if (info[0].IsTypedArray()) {
+    auto arr = info[0].As<Napi::Uint8Array>();
+    data = arr.Data();
+    length = arr.ByteLength();
+  } else {
+    throw Napi::TypeError::New(env, "Argument must be a Buffer or Uint8Array");
+  }
+  if (length == 0) {
+    throw Napi::Error::New(env, "Buffer must not be empty");
+  }
   int errorCode = 0;
-  void* handle = pdf_document_open_from_docx_bytes(buf.Data(), buf.Length(), &errorCode);
+  void* handle = pdf_document_open_from_docx_bytes(data, length, &errorCode);
   if (errorCode != 0) throw Napi::Error::New(env, "Failed to open from DOCX: " + getErrorMessage(errorCode));
   if (!handle) throw Napi::Error::New(env, "Failed to open from DOCX: null handle");
-  return Napi::External<void>::New(env, handle);
+  auto* wrapper = new DocumentWrapper(handle);
+  return Napi::External<DocumentWrapper>::New(env, wrapper,
+    [](Napi::Env, DocumentWrapper* w) { delete w; });
 }
 
 Napi::Value OpenFromPptxBytes(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  auto buf = info[0].As<Napi::Buffer<uint8_t>>();
+  if (info.Length() < 1) {
+    throw Napi::TypeError::New(env, "Expected a Buffer or Uint8Array argument");
+  }
+  const uint8_t* data;
+  size_t length;
+  if (info[0].IsBuffer()) {
+    auto buf = info[0].As<Napi::Buffer<uint8_t>>();
+    data = buf.Data();
+    length = buf.Length();
+  } else if (info[0].IsTypedArray()) {
+    auto arr = info[0].As<Napi::Uint8Array>();
+    data = arr.Data();
+    length = arr.ByteLength();
+  } else {
+    throw Napi::TypeError::New(env, "Argument must be a Buffer or Uint8Array");
+  }
+  if (length == 0) {
+    throw Napi::Error::New(env, "Buffer must not be empty");
+  }
   int errorCode = 0;
-  void* handle = pdf_document_open_from_pptx_bytes(buf.Data(), buf.Length(), &errorCode);
+  void* handle = pdf_document_open_from_pptx_bytes(data, length, &errorCode);
   if (errorCode != 0) throw Napi::Error::New(env, "Failed to open from PPTX: " + getErrorMessage(errorCode));
   if (!handle) throw Napi::Error::New(env, "Failed to open from PPTX: null handle");
-  return Napi::External<void>::New(env, handle);
+  auto* wrapper = new DocumentWrapper(handle);
+  return Napi::External<DocumentWrapper>::New(env, wrapper,
+    [](Napi::Env, DocumentWrapper* w) { delete w; });
 }
 
 Napi::Value OpenFromXlsxBytes(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  auto buf = info[0].As<Napi::Buffer<uint8_t>>();
+  if (info.Length() < 1) {
+    throw Napi::TypeError::New(env, "Expected a Buffer or Uint8Array argument");
+  }
+  const uint8_t* data;
+  size_t length;
+  if (info[0].IsBuffer()) {
+    auto buf = info[0].As<Napi::Buffer<uint8_t>>();
+    data = buf.Data();
+    length = buf.Length();
+  } else if (info[0].IsTypedArray()) {
+    auto arr = info[0].As<Napi::Uint8Array>();
+    data = arr.Data();
+    length = arr.ByteLength();
+  } else {
+    throw Napi::TypeError::New(env, "Argument must be a Buffer or Uint8Array");
+  }
+  if (length == 0) {
+    throw Napi::Error::New(env, "Buffer must not be empty");
+  }
   int errorCode = 0;
-  void* handle = pdf_document_open_from_xlsx_bytes(buf.Data(), buf.Length(), &errorCode);
+  void* handle = pdf_document_open_from_xlsx_bytes(data, length, &errorCode);
   if (errorCode != 0) throw Napi::Error::New(env, "Failed to open from XLSX: " + getErrorMessage(errorCode));
   if (!handle) throw Napi::Error::New(env, "Failed to open from XLSX: null handle");
-  return Napi::External<void>::New(env, handle);
+  auto* wrapper = new DocumentWrapper(handle);
+  return Napi::External<DocumentWrapper>::New(env, wrapper,
+    [](Napi::Env, DocumentWrapper* w) { delete w; });
 }
 
 Napi::Value IsEncrypted(const Napi::CallbackInfo& info) {

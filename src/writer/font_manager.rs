@@ -954,24 +954,14 @@ impl EmbeddedFont {
     /// extends them. Glyph widths are filled in for newly-mapped
     /// GIDs from the underlying font's hmtx table on the fly.
     pub fn extend_glyph_lookup(&mut self, mapping: HashMap<u32, u16>) {
-        // Re-parse the font once so we can pull glyph widths for
-        // the GIDs the override surfaces.
-        let face_widths = TrueTypeFont::parse(self.font_data.as_ref())
-            .ok()
-            .map(|font| {
-                let mut by_gid = HashMap::new();
-                for codepoint in 0..=0xFFFFu32 {
-                    if let Some(gid) = font.glyph_id(codepoint) {
-                        by_gid.entry(gid).or_insert_with(|| font.glyph_width(gid));
-                    }
-                }
-                by_gid
-            })
-            .unwrap_or_default();
+        // Re-parse once so we can pull widths only for newly-introduced GIDs.
+        let face = TrueTypeFont::parse(self.font_data.as_ref()).ok();
         for (codepoint, gid) in mapping {
             self.glyph_lookup.insert(codepoint, gid);
             self.glyph_widths.entry(gid).or_insert_with(|| {
-                face_widths.get(&gid).copied().unwrap_or(500) // sensible default for missing widths (1000ths em)
+                face.as_ref()
+                    .map(|font| font.glyph_width(gid))
+                    .unwrap_or(500) // sensible default for missing widths (1000ths em)
             });
         }
     }
@@ -986,25 +976,24 @@ impl EmbeddedFont {
     /// (.notdef) — visible as missing-glyph squares, or invisible
     /// when the font program has no .notdef outline at all.
     ///
-    /// The threshold (`>= 4` mapped codepoints, including any of
-    /// space / digit / lowercase letter) is intentionally permissive:
-    /// non-Latin fonts still pass when they map their own scripts.
+    /// ASCII probes remain a preferred positive signal for Latin body
+    /// text, but are not required; non-Latin fonts qualify as long as
+    /// they expose at least one non-zero Unicode→GID mapping.
     pub fn has_usable_unicode_cmap(&self) -> bool {
-        if self.glyph_lookup.len() < 4 {
+        let has_non_zero_mapping = self.glyph_lookup.values().any(|&gid| gid != 0);
+        if !has_non_zero_mapping {
             return false;
         }
-        // Require at least one glyph for ASCII space, digit, or
-        // lowercase Latin — any Unicode-aware font produces at least
-        // one of these for typical body text. CID-only subsets
-        // typically map the .notdef plus a handful of CIDs, none of
-        // which are Unicode codepoints.
+        // Prefer ASCII/body-text probes when present, but do not make
+        // them mandatory (fonts for non-Latin scripts may omit ASCII).
         let probes = [0x20u32, 0x30, 0x61, 0x65, 0x69, 0x6F, 0x75];
-        probes.iter().any(|cp| {
+        let has_ascii_probe = probes.iter().any(|cp| {
             self.glyph_lookup
                 .get(cp)
                 .map(|gid| *gid != 0)
                 .unwrap_or(false)
-        })
+        });
+        has_ascii_probe || has_non_zero_mapping
     }
 
     /// Get the glyph ID for a Unicode codepoint, with cascading fallbacks:
