@@ -1603,7 +1603,7 @@ impl ContentStreamBuilder {
                 None => {
                     w.write_all(b"?")?;
                     continue;
-                }
+                },
             };
             match b {
                 b'(' => write!(w, "\\(")?,

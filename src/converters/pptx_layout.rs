@@ -73,11 +73,18 @@ pub fn to_pptx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8
             let chars_horizontal_dominant = if chars.is_empty() {
                 true
             } else {
-                let horiz = chars.iter().filter(|c| c.rotation_degrees.abs() < 5.0).count();
+                let horiz = chars
+                    .iter()
+                    .filter(|c| c.rotation_degrees.abs() < 5.0)
+                    .count();
                 horiz * 4 >= chars.len() * 3
             };
             spans.retain(|s| {
-                !crate::converters::pdf_to_ir::span_overlaps_rotated_chars(s, &chars, chars_horizontal_dominant)
+                !crate::converters::pdf_to_ir::span_overlaps_rotated_chars(
+                    s,
+                    &chars,
+                    chars_horizontal_dominant,
+                )
             });
         }
         // Detect music-notation regions; suppress spans whose centre
@@ -105,11 +112,19 @@ pub fn to_pptx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8
         for line in &lines {
             // Convert PDF y-up to PPTX y-down.
             let x_pt = line.x_pt.max(0.0).min(page_w_pt);
-            let y_top_pt = (page_h_pt - line.y_pt - line.height_pt).max(0.0).min(page_h_pt);
+            let y_top_pt = (page_h_pt - line.y_pt - line.height_pt)
+                .max(0.0)
+                .min(page_h_pt);
             // Width: leave headroom past the source bbox so the
             // wider fallback font doesn't clip the trailing run.
             let w_pt = (line.width_pt * 1.5).max(line.width_pt + 16.0).max(8.0);
-            let h_pt = line.height_pt.max(line.spans.iter().map(|s| s.font_size).fold(0.0_f32, f32::max) * 1.4);
+            let h_pt = line.height_pt.max(
+                line.spans
+                    .iter()
+                    .map(|s| s.font_size)
+                    .fold(0.0_f32, f32::max)
+                    * 1.4,
+            );
 
             let x_emu = (x_pt * EMU_PER_PT) as i64;
             let y_emu = (y_top_pt * EMU_PER_PT) as i64;
@@ -227,7 +242,10 @@ pub fn to_pptx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8
         #[cfg(feature = "rendering")]
         {
             let regions = crate::converters::form_xobject_finder::rasterize_form_and_inline_regions(
-                doc, page_idx, page_h_pt, &existing_rects_pdf,
+                doc,
+                page_idx,
+                page_h_pt,
+                &existing_rects_pdf,
             );
             for ((x_pdf, y_pdf, w, h), png) in regions {
                 let x_pt = x_pdf.max(0.0).min(page_w_pt);
@@ -298,11 +316,8 @@ fn merge_hyphenated_spans(spans: &mut Vec<crate::layout::text_block::TextSpan>) 
             .unwrap_or(false);
         if curr_ends_hyphen && same_size && next_starts_lower {
             // Merge: drop trailing '-', concatenate, expand bbox.
-            let merged_text = format!(
-                "{}{}",
-                &spans[i].text[..spans[i].text.len() - 1],
-                &spans[i + 1].text
-            );
+            let merged_text =
+                format!("{}{}", &spans[i].text[..spans[i].text.len() - 1], &spans[i + 1].text);
             spans[i].text = merged_text;
             spans[i].bbox.width += spans[i + 1].bbox.width;
             spans.remove(i + 1);

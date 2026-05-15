@@ -207,7 +207,7 @@ pub fn needs_unicode_fallback(text: &str) -> bool {
             | 0x2030           // per mille
             | 0x2039 | 0x203A  // single guillemets
             | 0x20AC           // euro
-            | 0x2122           // trademark
+            | 0x2122 // trademark
         )
     })
 }

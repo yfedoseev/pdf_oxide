@@ -970,14 +970,9 @@ impl EmbeddedFont {
             .unwrap_or_default();
         for (codepoint, gid) in mapping {
             self.glyph_lookup.insert(codepoint, gid);
-            self.glyph_widths
-                .entry(gid)
-                .or_insert_with(|| {
-                    face_widths
-                        .get(&gid)
-                        .copied()
-                        .unwrap_or(500) // sensible default for missing widths (1000ths em)
-                });
+            self.glyph_widths.entry(gid).or_insert_with(|| {
+                face_widths.get(&gid).copied().unwrap_or(500) // sensible default for missing widths (1000ths em)
+            });
         }
     }
 
@@ -1046,11 +1041,11 @@ impl EmbeddedFont {
             0x2018 | 0x2019 | 0x201A | 0x201B => Some(0x27u32), // '
             0x201C | 0x201D | 0x201E | 0x201F => Some(0x22),    // "
             // Dashes
-            0x2013 | 0x2014 | 0x2212 => Some(0x2D),             // -
+            0x2013 | 0x2014 | 0x2212 => Some(0x2D), // -
             // Non-breaking spaces
             0x00A0 | 0x2007 | 0x202F | 0x2009 | 0x200A => Some(0x20), // space
             // Bullets
-            0x2022 | 0x2023 | 0x25E6 => Some(0x2A),             // *
+            0x2022 | 0x2023 | 0x25E6 => Some(0x2A), // *
             _ => None,
         };
         fallback.and_then(|cp| self.glyph_lookup.get(&cp).copied())

@@ -12846,14 +12846,21 @@ impl PdfDocument {
                             .cloned()
                             .unwrap_or(Object::Dictionary(std::collections::HashMap::new()));
                         if let Some(rref) = r.as_reference() {
-                            self.load_object(rref).unwrap_or(Object::Dictionary(std::collections::HashMap::new()))
+                            self.load_object(rref)
+                                .unwrap_or(Object::Dictionary(std::collections::HashMap::new()))
                         } else {
                             r
                         }
-                    }
-                    None => { out.push(lookup); continue; }
+                    },
+                    None => {
+                        out.push(lookup);
+                        continue;
+                    },
                 },
-                Err(_) => { out.push(lookup); continue; }
+                Err(_) => {
+                    out.push(lookup);
+                    continue;
+                },
             };
             let mut extractor = crate::extractors::TextExtractor::new();
             if self.load_fonts_public(&resources, &mut extractor).is_ok() {
@@ -12905,7 +12912,7 @@ impl PdfDocument {
                         } else {
                             r
                         }
-                    }
+                    },
                     None => continue,
                 },
                 Err(_) => continue,
@@ -12981,10 +12988,8 @@ impl PdfDocument {
         )>,
     > {
         use std::collections::HashMap;
-        let mut by_name: HashMap<
-            String,
-            (Vec<u8>, HashMap<u32, u16>, HashMap<u16, u16>),
-        > = HashMap::new();
+        let mut by_name: HashMap<String, (Vec<u8>, HashMap<u32, u16>, HashMap<u16, u16>)> =
+            HashMap::new();
 
         let n = self.page_count()?;
         for page_idx in 0..n {
@@ -13002,7 +13007,7 @@ impl PdfDocument {
                         } else {
                             r
                         }
-                    }
+                    },
                     None => continue,
                 },
                 Err(_) => continue,
@@ -13040,19 +13045,17 @@ impl PdfDocument {
                 // glyph slots and the DOCX round-trip renders broken
                 // lowercase letters.
                 let mut uni_to_gid: HashMap<u32, u16> = HashMap::new();
-                let to_unicode_cmap = font_arc
-                    .to_unicode
-                    .as_ref()
-                    .and_then(|lazy| lazy.get());
+                let to_unicode_cmap = font_arc.to_unicode.as_ref().and_then(|lazy| lazy.get());
                 for code in 0u32..=0xFFFF {
                     // Require an authoritative ToUnicode entry. If the
                     // font has no ToUnicode CMap at all we conservatively
                     // skip injection — the fallback chain would only
                     // produce the misleading identity mapping.
-                    let unicode_str = match to_unicode_cmap.as_ref().and_then(|cmap| cmap.get(&code)) {
-                        Some(s) if !s.is_empty() && s != "\u{FFFD}" => s.clone(),
-                        _ => continue,
-                    };
+                    let unicode_str =
+                        match to_unicode_cmap.as_ref().and_then(|cmap| cmap.get(&code)) {
+                            Some(s) if !s.is_empty() && s != "\u{FFFD}" => s.clone(),
+                            _ => continue,
+                        };
                     let cp = match unicode_str.chars().next() {
                         Some(c) => c as u32,
                         None => continue,
@@ -13136,9 +13139,9 @@ impl PdfDocument {
                     }
                 }
 
-                let entry = by_name.entry(canonical.to_string()).or_insert_with(|| {
-                    (data.as_ref().clone(), HashMap::new(), HashMap::new())
-                });
+                let entry = by_name
+                    .entry(canonical.to_string())
+                    .or_insert_with(|| (data.as_ref().clone(), HashMap::new(), HashMap::new()));
                 for (cp, gid) in uni_to_gid {
                     entry.1.entry(cp).or_insert(gid);
                 }
@@ -13148,12 +13151,7 @@ impl PdfDocument {
             }
         }
 
-        let mut out: Vec<(
-            String,
-            Vec<u8>,
-            HashMap<u32, u16>,
-            HashMap<u16, u16>,
-        )> = by_name
+        let mut out: Vec<(String, Vec<u8>, HashMap<u32, u16>, HashMap<u16, u16>)> = by_name
             .into_iter()
             .map(|(name, (data, cmap, widths))| (name, data, cmap, widths))
             .collect();

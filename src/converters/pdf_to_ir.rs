@@ -106,7 +106,10 @@ pub fn pdf_to_ir(
             let chars_horizontal_dominant = if chars.is_empty() {
                 true
             } else {
-                let horiz = chars.iter().filter(|c| c.rotation_degrees.abs() < 5.0).count();
+                let horiz = chars
+                    .iter()
+                    .filter(|c| c.rotation_degrees.abs() < 5.0)
+                    .count();
                 horiz * 4 >= chars.len() * 3
             };
             spans.retain(|s| !span_overlaps_rotated_chars(s, &chars, chars_horizontal_dominant));
@@ -182,10 +185,7 @@ pub fn pdf_to_ir(
     };
     populate_metadata_from_pdf_info(doc, &mut metadata);
 
-    Ok(DocumentIR {
-        metadata,
-        sections,
-    })
+    Ok(DocumentIR { metadata, sections })
 }
 
 /// Pull `/Title`, `/Author`, `/Subject`, `/Keywords`, `/Creator`,
@@ -272,10 +272,7 @@ fn is_page_artifact(span: &TextSpan) -> bool {
         Some(ArtifactType::Pagination(_))
             | Some(ArtifactType::Page)
             | Some(ArtifactType::Background)
-    ) || matches!(
-        span.artifact_type,
-        Some(ArtifactType::Pagination(PaginationSubtype::Watermark))
-    )
+    ) || matches!(span.artifact_type, Some(ArtifactType::Pagination(PaginationSubtype::Watermark)))
 }
 
 /// True if `span` matches a rotated char (>= 5° off horizontal) by
@@ -322,12 +319,13 @@ pub(crate) fn span_overlaps_rotated_chars(
     }
 }
 
-fn populate_metadata_from_pdf_info(
-    doc: &crate::document::PdfDocument,
-    metadata: &mut Metadata,
-) {
+fn populate_metadata_from_pdf_info(doc: &crate::document::PdfDocument, metadata: &mut Metadata) {
     let trailer = doc.trailer();
-    let info_ref = match trailer.as_dict().and_then(|d| d.get("Info")).and_then(|o| o.as_reference()) {
+    let info_ref = match trailer
+        .as_dict()
+        .and_then(|d| d.get("Info"))
+        .and_then(|o| o.as_reference())
+    {
         Some(r) => r,
         None => return,
     };
@@ -347,7 +345,11 @@ fn populate_metadata_from_pdf_info(
     }
     if metadata.keywords.is_empty() {
         if let Some(kw) = &info.keywords {
-            metadata.keywords = kw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            metadata.keywords = kw
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
         }
     }
     // PDF Info /CreationDate uses the format `D:YYYYMMDDHHmmSSOHH'mm'`
@@ -553,7 +555,8 @@ fn page_to_section(
     // text fix-ups (drop end-of-line soft hyphens, insert missing
     // inter-line spaces) before the spans collapse into a single flat
     // run sequence.
-    let (para_lines, all_lines) = group_into_paragraphs_with_lines(spans, options.paragraph_gap_factor);
+    let (para_lines, all_lines) =
+        group_into_paragraphs_with_lines(spans, options.paragraph_gap_factor);
 
     let columns = detect_columns(&all_lines, page_w_pt);
 
@@ -633,7 +636,11 @@ fn page_to_section(
                     n += 1;
                 }
             }
-            if n > 0 { sum / n as f32 } else { median_pt }
+            if n > 0 {
+                sum / n as f32
+            } else {
+                median_pt
+            }
         };
 
         // Compute extra-gap and translate it into a single empty
@@ -679,24 +686,20 @@ fn page_to_section(
         // on one line, losing the source's deliberate two-line title
         // break.
         let alignment = detect_paragraph_alignment(lines, page_w_pt);
-        let is_centered_block = matches!(
-            alignment,
-            Some(office_oxide::ir::ParagraphAlignment::Center)
-        );
-        let lines_short = lines
-            .iter()
-            .all(|line| {
-                if line.is_empty() {
-                    return true;
-                }
-                let left = line.iter().map(|s| s.bbox.x).fold(f32::MAX, f32::min);
-                let right = line
-                    .iter()
-                    .map(|s| s.bbox.x + s.bbox.width)
-                    .fold(f32::MIN, f32::max);
-                let line_w = (right - left).max(0.0);
-                line_w < page_w_pt * 0.75
-            });
+        let is_centered_block =
+            matches!(alignment, Some(office_oxide::ir::ParagraphAlignment::Center));
+        let lines_short = lines.iter().all(|line| {
+            if line.is_empty() {
+                return true;
+            }
+            let left = line.iter().map(|s| s.bbox.x).fold(f32::MAX, f32::min);
+            let right = line
+                .iter()
+                .map(|s| s.bbox.x + s.bbox.width)
+                .fold(f32::MIN, f32::max);
+            let line_w = (right - left).max(0.0);
+            line_w < page_w_pt * 0.75
+        });
 
         if is_centered_block && lines.len() > 1 && lines_short {
             // Emit one element per source line. Re-detect heading
@@ -754,8 +757,14 @@ fn page_to_section(
                         ..Default::default()
                     }));
                 }
-                let inner_element =
-                    lines_to_element(single, median_pt, options, color_counts, page_w_pt, face_lookup);
+                let inner_element = lines_to_element(
+                    single,
+                    median_pt,
+                    options,
+                    color_counts,
+                    page_w_pt,
+                    face_lookup,
+                );
                 elements.push(inner_element);
                 prev_inner_min_y = Some(inner_bottom_y);
                 prev_inner_avg_pt = Some(inner_avg_pt);
@@ -804,7 +813,11 @@ fn merge_lines_into_spans(lines: &[Vec<TextSpan>]) -> Vec<TextSpan> {
                 let prev_ends_ws = prev.text.chars().last().map_or(true, |c| c.is_whitespace());
                 let next_starts_ws = next.text.chars().next().map_or(true, |c| c.is_whitespace());
                 let ends_hyphen = prev_text.ends_with('-')
-                    && prev_text.chars().rev().nth(1).map_or(false, |c| c.is_alphabetic());
+                    && prev_text
+                        .chars()
+                        .rev()
+                        .nth(1)
+                        .map_or(false, |c| c.is_alphabetic());
                 let starts_lower = next
                     .text
                     .trim_start()
@@ -852,13 +865,32 @@ fn lines_to_element(
     let inline = spans_to_inline(&group, color_counts, face_lookup);
 
     if ratio >= opts.heading_ratios[0] {
-        Element::Heading(Heading { level: 1, content: inline, alignment, ..Default::default() })
+        Element::Heading(Heading {
+            level: 1,
+            content: inline,
+            alignment,
+            ..Default::default()
+        })
     } else if ratio >= opts.heading_ratios[1] {
-        Element::Heading(Heading { level: 2, content: inline, alignment, ..Default::default() })
+        Element::Heading(Heading {
+            level: 2,
+            content: inline,
+            alignment,
+            ..Default::default()
+        })
     } else if ratio >= opts.heading_ratios[2] {
-        Element::Heading(Heading { level: 3, content: inline, alignment, ..Default::default() })
+        Element::Heading(Heading {
+            level: 3,
+            content: inline,
+            alignment,
+            ..Default::default()
+        })
     } else {
-        Element::Paragraph(Paragraph { content: inline, alignment, ..Default::default() })
+        Element::Paragraph(Paragraph {
+            content: inline,
+            alignment,
+            ..Default::default()
+        })
     }
 }
 
@@ -901,10 +933,7 @@ fn detect_paragraph_alignment(
         // both edges, not flush against either). The right-margin
         // check distinguishes centred title text from regular body
         // text that happens to span the full width.
-        if (centre - mid).abs() > centre_tol
-            || left_margin < min_left
-            || right_margin < min_left
-        {
+        if (centre - mid).abs() > centre_tol || left_margin < min_left || right_margin < min_left {
             all_centered = false;
         }
         // Right-aligned when the right margin is very small and the
@@ -971,7 +1000,12 @@ fn group_into_paragraphs_with_lines(
 
     // 3. Sort each line left-to-right by X.
     for line in &mut lines {
-        line.sort_by(|a, b| a.bbox.x.partial_cmp(&b.bbox.x).unwrap_or(std::cmp::Ordering::Equal));
+        line.sort_by(|a, b| {
+            a.bbox
+                .x
+                .partial_cmp(&b.bbox.x)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
     // Materialise lines as owned `Vec<TextSpan>` for downstream use.
@@ -999,7 +1033,10 @@ fn group_into_paragraphs_with_lines(
         // Bottom of previous line (lowest Y of all spans in it, i.e. min bbox.y).
         let prev_bottom = prev.iter().map(|s| s.bbox.y).fold(f32::MAX, f32::min);
         // Top of current line.
-        let cur_top = cur.iter().map(|s| s.bbox.y + s.bbox.height).fold(f32::MIN, f32::max);
+        let cur_top = cur
+            .iter()
+            .map(|s| s.bbox.y + s.bbox.height)
+            .fold(f32::MIN, f32::max);
         let lh = cur.iter().map(|s| s.font_size).fold(0.0_f32, f32::max);
 
         // Positive gap = white space between lines.
@@ -1147,10 +1184,7 @@ fn detect_columns(all_lines: &[Vec<TextSpan>], page_w_pt: f32) -> Option<ColumnL
         count: 2,
         space_twips: Some((gutter * PT_TO_TWIPS) as u32),
         separator: false,
-        column_widths_twips: vec![
-            (col_w * PT_TO_TWIPS) as u32,
-            (col_w * PT_TO_TWIPS) as u32,
-        ],
+        column_widths_twips: vec![(col_w * PT_TO_TWIPS) as u32, (col_w * PT_TO_TWIPS) as u32],
     })
 }
 
@@ -1289,10 +1323,8 @@ fn color_opt(c: &Color, counts: &HashMap<[u8; 3], u32>) -> Option<[u8; 3]> {
         return None;
     }
     // Drop other canonical annotation colors only when rare in the doc.
-    let suspicious_canonical = matches!(
-        rgb,
-        [0x80, 0x80, 0x80] | [0xC0, 0xC0, 0xC0] | [0xFF, 0, 0] | [0, 0xFF, 0]
-    );
+    let suspicious_canonical =
+        matches!(rgb, [0x80, 0x80, 0x80] | [0xC0, 0xC0, 0xC0] | [0xFF, 0, 0] | [0, 0xFF, 0]);
     if suspicious_canonical {
         let cnt = counts.get(&rgb).copied().unwrap_or(0);
         if cnt < 3 {

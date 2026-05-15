@@ -40,9 +40,7 @@ const EMU_PER_PT: f64 = 12_700.0;
 pub fn to_docx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8>> {
     let n_pages = doc.page_count()?;
     if n_pages == 0 {
-        return Err(Error::InvalidOperation(
-            "PDF has zero pages".into(),
-        ));
+        return Err(Error::InvalidOperation("PDF has zero pages".into()));
     }
 
     // Build a per-page resource-name → real-face-name lookup so spans
@@ -55,8 +53,8 @@ pub fn to_docx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8
     // Initialize OPC writer up-front so we can reserve image rIds in order
     // and use them in the body XML below.
     let cursor = Cursor::new(Vec::new());
-    let mut opc = OpcWriter::new(cursor)
-        .map_err(|e| Error::InvalidOperation(format!("opc init: {e}")))?;
+    let mut opc =
+        OpcWriter::new(cursor).map_err(|e| Error::InvalidOperation(format!("opc init: {e}")))?;
     let doc_part = PartName::new("/word/document.xml")
         .map_err(|e| Error::InvalidOperation(format!("part name: {e}")))?;
     opc.add_package_rel(rel_types::OFFICE_DOCUMENT, "word/document.xml");
@@ -79,11 +77,18 @@ pub fn to_docx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8
             let chars_horizontal_dominant = if chars.is_empty() {
                 true
             } else {
-                let horiz = chars.iter().filter(|c| c.rotation_degrees.abs() < 5.0).count();
+                let horiz = chars
+                    .iter()
+                    .filter(|c| c.rotation_degrees.abs() < 5.0)
+                    .count();
                 horiz * 4 >= chars.len() * 3
             };
             spans.retain(|s| {
-                !crate::converters::pdf_to_ir::span_overlaps_rotated_chars(s, &chars, chars_horizontal_dominant)
+                !crate::converters::pdf_to_ir::span_overlaps_rotated_chars(
+                    s,
+                    &chars,
+                    chars_horizontal_dominant,
+                )
             });
         }
         // Detect music-notation regions (hymnals, sheet music). When
@@ -217,7 +222,7 @@ pub fn to_docx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8
                     return false;
                 }
                 true
-            }
+            },
             _ => true,
         });
 
@@ -228,18 +233,20 @@ pub fn to_docx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8
         if !music_regions.is_empty() {
             shapes.retain(|s| {
                 let (cx, cy) = match s {
-                    SimpleShape::Line { x1_pt, y1_pt, x2_pt, y2_pt, .. } => (
-                        (x1_pt + x2_pt) * 0.5,
-                        (y1_pt + y2_pt) * 0.5,
-                    ),
-                    SimpleShape::Rect { bbox, .. } => (
-                        bbox.x + bbox.width * 0.5,
-                        bbox.y + bbox.height * 0.5,
-                    ),
+                    SimpleShape::Line {
+                        x1_pt,
+                        y1_pt,
+                        x2_pt,
+                        y2_pt,
+                        ..
+                    } => ((x1_pt + x2_pt) * 0.5, (y1_pt + y2_pt) * 0.5),
+                    SimpleShape::Rect { bbox, .. } => {
+                        (bbox.x + bbox.width * 0.5, bbox.y + bbox.height * 0.5)
+                    },
                 };
-                !music_regions.iter().any(|r| {
-                    crate::converters::music_region_finder::rect_contains_point(r, cx, cy)
-                })
+                !music_regions
+                    .iter()
+                    .any(|r| crate::converters::music_region_finder::rect_contains_point(r, cx, cy))
             });
         }
 
@@ -250,9 +257,8 @@ pub fn to_docx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8
         // overlapping the bitmap.
         #[cfg(feature = "rendering")]
         if !music_regions.is_empty() {
-            let regions = crate::converters::music_region_finder::rasterize_music_regions(
-                doc, i, h_pt,
-            );
+            let regions =
+                crate::converters::music_region_finder::rasterize_music_regions(doc, i, h_pt);
             for ((x_pdf, y_pdf, w, h), png) in regions {
                 media_idx += 1;
                 let target = format!("/word/media/image{}.png", media_idx);
@@ -272,7 +278,14 @@ pub fn to_docx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8
             }
         }
 
-        pages.push(PageSpans { w_pt, h_pt, spans, font_lookup, images: page_images, shapes });
+        pages.push(PageSpans {
+            w_pt,
+            h_pt,
+            spans,
+            font_lookup,
+            images: page_images,
+            shapes,
+        });
     }
 
     let (page_w_pt, page_h_pt) = (pages[0].w_pt, pages[0].h_pt);
@@ -293,11 +306,7 @@ pub fn to_docx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8
     // affected paragraphs render as plain text.
     let styles_part = PartName::new("/word/styles.xml")
         .map_err(|e| Error::InvalidOperation(format!("part name styles.xml: {e}")))?;
-    opc.add_part_rel(
-        &doc_part,
-        rel_types::STYLES,
-        "styles.xml",
-    );
+    opc.add_part_rel(&doc_part, rel_types::STYLES, "styles.xml");
     opc.add_part(
         &styles_part,
         "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml",
@@ -313,11 +322,7 @@ pub fn to_docx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8
     if !embedded_fonts.is_empty() {
         let font_table_part = PartName::new("/word/fontTable.xml")
             .map_err(|e| Error::InvalidOperation(format!("part name fontTable.xml: {e}")))?;
-        opc.add_part_rel(
-            &doc_part,
-            rel_types::FONT_TABLE,
-            "fontTable.xml",
-        );
+        opc.add_part_rel(&doc_part, rel_types::FONT_TABLE, "fontTable.xml");
 
         let mut font_entries: Vec<(String, String)> = Vec::with_capacity(embedded_fonts.len());
         for (idx, (name, data)) in embedded_fonts.iter().enumerate() {
@@ -329,11 +334,7 @@ pub fn to_docx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8
                 .map_err(|e| Error::InvalidOperation(format!("part name {target_abs}: {e}")))?;
             opc.add_part(&part, "application/x-font-ttf", data)
                 .map_err(|e| Error::InvalidOperation(format!("opc add_part {target_abs}: {e}")))?;
-            let rid = opc.add_part_rel(
-                &font_table_part,
-                rel_types::FONT,
-                &target_rel,
-            );
+            let rid = opc.add_part_rel(&font_table_part, rel_types::FONT, &target_rel);
             font_entries.push((name.clone(), rid));
         }
 
@@ -360,8 +361,12 @@ pub fn to_docx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8
 fn layout_styles_xml() -> String {
     let mut out = String::new();
     out.push_str(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#);
-    out.push_str(r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#);
-    out.push_str(r#"<w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style>"#);
+    out.push_str(
+        r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+    );
+    out.push_str(
+        r#"<w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style>"#,
+    );
     for level in 1..=6 {
         let outline = level - 1;
         out.push_str(&format!(
@@ -399,17 +404,15 @@ fn layout_font_table_xml(entries: &[(String, String)]) -> String {
 }
 
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
-
 
 /// Build the inner contents of `<w:body>` — one positioned paragraph per
 /// span, plus a final `<w:sectPr>` for page geometry.
-fn build_document_body(
-    pages: &[PageSpans],
-    page_w_pt: f32,
-    page_h_pt: f32,
-) -> String {
+fn build_document_body(pages: &[PageSpans], page_w_pt: f32, page_h_pt: f32) -> String {
     let mut out = String::with_capacity(64 * 1024);
     for (pi, page) in pages.iter().enumerate() {
         // Page break before every page except the first. Word treats a
@@ -430,7 +433,9 @@ fn build_document_body(
             // PDF coords: origin bottom-left, y increases upward.
             // DOCX framePr coords: origin top-left, y increases downward.
             let x_pt = line.x_pt.max(0.0).min(page.w_pt);
-            let y_pt = (page.h_pt - line.y_pt - line.height_pt).max(0.0).min(page.h_pt);
+            let y_pt = (page.h_pt - line.y_pt - line.height_pt)
+                .max(0.0)
+                .min(page.h_pt);
 
             let x_twip = (x_pt * TWIPS_PER_PT) as i32;
             let y_twip = (y_pt * TWIPS_PER_PT) as i32;
@@ -457,7 +462,7 @@ fn build_document_body(
             let pstyle_xml = match line.spans.first().and_then(|s| s.heading_level) {
                 Some(n) if (1..=6).contains(&n) => {
                     format!("<w:pStyle w:val=\"Heading{}\"/>", n)
-                }
+                },
                 _ => String::new(),
             };
 
@@ -478,16 +483,12 @@ fn build_document_body(
                         && !runs_xml.ends_with("&#160;")
                         && !text.starts_with(|c: char| c.is_whitespace());
                     if needs_space {
-                        runs_xml.push_str(
-                            r#"<w:r><w:t xml:space="preserve"> </w:t></w:r>"#,
-                        );
+                        runs_xml.push_str(r#"<w:r><w:t xml:space="preserve"> </w:t></w:r>"#);
                     }
                 }
 
                 let sz_half_pt = (span.font_size * 2.0).round() as i32;
-                let color_hex = if span.color.r == 0.0
-                    && span.color.g == 0.0
-                    && span.color.b == 0.0
+                let color_hex = if span.color.r == 0.0 && span.color.g == 0.0 && span.color.b == 0.0
                 {
                     String::new()
                 } else {
@@ -517,8 +518,12 @@ fn build_document_body(
                         && stripped.bytes().next().map_or(false, |b| b == b'F')
                         && stripped.bytes().skip(1).all(|b| b.is_ascii_digit());
                     if looks_synthetic {
-                        if span.is_monospace { "Courier New" } else { "Times New Roman" }
-                            .to_string()
+                        if span.is_monospace {
+                            "Courier New"
+                        } else {
+                            "Times New Roman"
+                        }
+                        .to_string()
                     } else {
                         stripped.to_string()
                     }
@@ -553,7 +558,14 @@ fn build_document_body(
         for (sh_idx, shape) in page.shapes.iter().enumerate() {
             let id = pi * 10_000 + 5_000 + sh_idx + 1;
             match shape {
-                SimpleShape::Line { x1_pt, y1_pt, x2_pt, y2_pt, stroke_rgb, stroke_w_pt } => {
+                SimpleShape::Line {
+                    x1_pt,
+                    y1_pt,
+                    x2_pt,
+                    y2_pt,
+                    stroke_rgb,
+                    stroke_w_pt,
+                } => {
                     let xa = (*x1_pt as f64).min(*x2_pt as f64);
                     let xb = (*x1_pt as f64).max(*x2_pt as f64);
                     let ya = (*y1_pt as f64).min(*y2_pt as f64);
@@ -571,8 +583,13 @@ fn build_document_body(
                         ox = off_x, oy = off_y, cx = cx, cy = cy,
                         id = id, sw = stroke_w_emu, r = r, g = g, b = b,
                     ));
-                }
-                SimpleShape::Rect { bbox, stroke_rgb, fill_rgb, stroke_w_pt } => {
+                },
+                SimpleShape::Rect {
+                    bbox,
+                    stroke_rgb,
+                    fill_rgb,
+                    stroke_w_pt,
+                } => {
                     let x_pt = (bbox.x as f64).max(0.0);
                     let y_pt = (page.h_pt as f64 - bbox.y as f64 - bbox.height as f64).max(0.0);
                     let off_x = (x_pt * EMU_PER_PT) as i64;
@@ -588,12 +605,13 @@ fn build_document_body(
                     };
                     let stroke_xml = match stroke_rgb {
                         Some((r, g, b)) => {
-                            let stroke_w_emu = ((*stroke_w_pt as f64).max(0.25) * EMU_PER_PT) as i64;
+                            let stroke_w_emu =
+                                ((*stroke_w_pt as f64).max(0.25) * EMU_PER_PT) as i64;
                             format!(
                                 "<a:ln w=\"{}\"><a:solidFill><a:srgbClr val=\"{:02X}{:02X}{:02X}\"/></a:solidFill></a:ln>",
                                 stroke_w_emu, r, g, b
                             )
-                        }
+                        },
                         None => "<a:ln><a:noFill/></a:ln>".to_string(),
                     };
                     out.push_str(&format!(
@@ -601,7 +619,7 @@ fn build_document_body(
                         ox = off_x, oy = off_y, cx = cx, cy = cy,
                         id = id, fill = fill_xml, stroke = stroke_xml,
                     ));
-                }
+                },
             }
         }
 
@@ -674,7 +692,6 @@ enum SimpleShape {
     },
 }
 
-
 fn wrap_document(body_xml: &str) -> String {
     // Note: w:document MUST include the namespace declarations Word checks
     // for. Missing one → "Word found unreadable content" dialog.
@@ -694,10 +711,15 @@ fn wrap_document(body_xml: &str) -> String {
     )
 }
 
-
 fn sanitize_font_filename(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(40)
         .collect()
 }
@@ -728,10 +750,15 @@ fn annotate_heading_levels(spans: &mut [crate::layout::text_block::TextSpan]) {
             continue;
         }
         let ratio = s.font_size / body.max(1.0);
-        let level = if ratio >= 1.75 { Some(1) }
-                    else if ratio >= 1.35 { Some(2) }
-                    else if ratio >= 1.15 { Some(3) }
-                    else { None };
+        let level = if ratio >= 1.75 {
+            Some(1)
+        } else if ratio >= 1.35 {
+            Some(2)
+        } else if ratio >= 1.15 {
+            Some(3)
+        } else {
+            None
+        };
         if level.is_some() {
             s.heading_level = level;
         }
@@ -781,7 +808,11 @@ fn merge_hyphenated_spans(spans: &mut Vec<crate::layout::text_block::TextSpan>) 
             // Hyphen at end of current span, lowercase letter starting the next.
             let ends_hyphen = cur_text.ends_with('-')
                 && cur_text.len() >= 2
-                && cur_text.chars().rev().nth(1).map_or(false, |c| c.is_alphabetic());
+                && cur_text
+                    .chars()
+                    .rev()
+                    .nth(1)
+                    .map_or(false, |c| c.is_alphabetic());
             let starts_lower = next
                 .text
                 .trim_start()
@@ -848,7 +879,10 @@ fn simplify_path(path: &crate::elements::PathContent) -> Vec<SimpleShape> {
     if let [MoveTo(x1, y1), LineTo(x2, y2)] = path.operations.as_slice() {
         if let Some(stroke) = stroke_rgb {
             return vec![SimpleShape::Line {
-                x1_pt: *x1, y1_pt: *y1, x2_pt: *x2, y2_pt: *y2,
+                x1_pt: *x1,
+                y1_pt: *y1,
+                x2_pt: *x2,
+                y2_pt: *y2,
                 stroke_rgb: stroke,
                 stroke_w_pt: path.stroke_width.max(0.25),
             }];
@@ -895,7 +929,7 @@ fn escape_xml(s: &str) -> String {
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
             // Strip control chars (XML 1.0 forbids most of them).
-            c if (c as u32) < 0x20 && c != '\t' && c != '\n' && c != '\r' => {}
+            c if (c as u32) < 0x20 && c != '\t' && c != '\n' && c != '\r' => {},
             c => out.push(c),
         }
     }

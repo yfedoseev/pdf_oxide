@@ -159,9 +159,12 @@ pub(crate) fn group_spans_into_lines(spans: Vec<TextSpan>) -> Vec<Line> {
     // in sorted-input order, but later lines could pick up an
     // earlier-x span if Y tolerance bridged two lines).
     for line in &mut lines {
-        line
-            .spans
-            .sort_by(|a, b| a.bbox.x.partial_cmp(&b.bbox.x).unwrap_or(std::cmp::Ordering::Equal));
+        line.spans.sort_by(|a, b| {
+            a.bbox
+                .x
+                .partial_cmp(&b.bbox.x)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
     lines

@@ -320,10 +320,7 @@ impl Pdf {
     /// pair becomes a CIDFontType2 with its Unicode coverage usable by the
     /// markdown renderer when content contains chars outside WinAnsi that
     /// the bundled DejaVu fallback can't handle (CJK, exotic ligatures, …).
-    pub fn from_markdown_with_fonts(
-        content: &str,
-        fonts: &[(String, Vec<u8>)],
-    ) -> Result<Self> {
+    pub fn from_markdown_with_fonts(content: &str, fonts: &[(String, Vec<u8>)]) -> Result<Self> {
         PdfBuilder::new().from_markdown_with_fonts(content, fonts)
     }
 
@@ -3208,10 +3205,9 @@ impl PdfBuilder {
         // round-trip pipeline). Registered after DejaVu so they take
         // precedence when the renderer needs to pick a font by name.
         for (name, data) in extra_fonts {
-            if let Ok(font) = crate::writer::EmbeddedFont::from_data(
-                Some(name.clone()),
-                data.clone(),
-            ) {
+            if let Ok(font) =
+                crate::writer::EmbeddedFont::from_data(Some(name.clone()), data.clone())
+            {
                 builder = builder.register_embedded_font(name.clone(), font);
             }
         }
@@ -3319,8 +3315,14 @@ impl PdfBuilder {
 
         // Render all items
         {
-            let font_name: &str = if needs_unicode { "DejaVuSans" } else { "Helvetica" };
-            let mut page = builder.page(self.config.page_size).font(font_name, self.config.font_size);
+            let font_name: &str = if needs_unicode {
+                "DejaVuSans"
+            } else {
+                "Helvetica"
+            };
+            let mut page = builder
+                .page(self.config.page_size)
+                .font(font_name, self.config.font_size);
             let mut last_y = f32::MAX;
 
             for (x, y, text) in text_items {

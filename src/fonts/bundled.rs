@@ -7,7 +7,7 @@
 //! emit, so the cost in the output PDF is just the glyphs actually used.
 //!
 //! License: DejaVu Sans is distributed under a BSD-style license that
-//! permits redistribution; see `tests/fixtures/fonts/LICENSE`.
+//! permits redistribution; see `src/fonts/assets/LICENSE-DejaVu`.
 //!
 //! Binary size impact when this module is included:
 //!   DejaVu Sans Regular  → 760 KB
@@ -16,12 +16,10 @@
 /// DejaVu Sans Regular — covers Latin (incl. Extended-A/B), Greek, Cyrillic,
 /// Vietnamese, IPA, common math symbols, and many punctuation/typographic
 /// characters that the standard 14 PDF fonts (WinAnsiEncoding) lack.
-pub const DEJAVU_SANS: &[u8] =
-    include_bytes!("../../tests/fixtures/fonts/DejaVuSans.ttf");
+pub const DEJAVU_SANS: &[u8] = include_bytes!("assets/DejaVuSans.ttf");
 
 /// DejaVu Sans Bold — same Unicode coverage as `DEJAVU_SANS`, bold weight.
-pub const DEJAVU_SANS_BOLD: &[u8] =
-    include_bytes!("../../tests/fixtures/fonts/DejaVuSans-Bold.ttf");
+pub const DEJAVU_SANS_BOLD: &[u8] = include_bytes!("assets/DejaVuSans-Bold.ttf");
 
 /// Quick check: does the string contain any character that the standard
 /// 14 PDF fonts (WinAnsiEncoding) cannot render? If yes, the rendering
@@ -62,8 +60,8 @@ mod tests {
 
     #[test]
     fn greek_needs_unicode() {
-        assert!(needs_unicode_font("β"));      // U+03B2
-        assert!(needs_unicode_font("σ"));      // U+03C3
+        assert!(needs_unicode_font("β")); // U+03B2
+        assert!(needs_unicode_font("σ")); // U+03C3
     }
 
     #[test]
@@ -71,6 +69,6 @@ mod tests {
         // Math italic chars get normalized to plain Latin/Greek; the Latin
         // ones land in WinAnsi, the Greek ones DO need the Unicode font.
         assert!(!needs_unicode_font("\u{1D465}")); // 𝑥 → x (Latin → WinAnsi)
-        assert!(needs_unicode_font("\u{1D6FD}"));  // 𝛽 → β (Greek → needs font)
+        assert!(needs_unicode_font("\u{1D6FD}")); // 𝛽 → β (Greek → needs font)
     }
 }

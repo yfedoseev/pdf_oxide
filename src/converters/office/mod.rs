@@ -5,14 +5,14 @@
 
 use crate::error::{Error, Result};
 use crate::geometry::Rect;
+use crate::writer::PageSize;
 use crate::writer::{
     DocumentBuilder, FluentPageBuilder, ListStyle, StreamingColumn, StreamingTableConfig, TextRun,
     TextRunStyle,
 };
-use crate::writer::PageSize;
 use office_oxide::ir::{
     CodeBlock, DocumentIR, Element, Heading, Image, ImagePositioning, InlineContent, List,
-    ListStyle as IrListStyle, ParagraphAlignment, Paragraph, Section, SectionBreakType, Shape,
+    ListStyle as IrListStyle, Paragraph, ParagraphAlignment, Section, SectionBreakType, Shape,
     ShapeGeom, Table as IrTable, TextBox, TextSpan,
 };
 use office_oxide::{Document, DocumentFormat};
@@ -44,14 +44,24 @@ pub struct Margins {
 
 impl Default for Margins {
     fn default() -> Self {
-        Self { top: 72.0, bottom: 72.0, left: 72.0, right: 72.0 }
+        Self {
+            top: 72.0,
+            bottom: 72.0,
+            left: 72.0,
+            right: 72.0,
+        }
     }
 }
 
 impl Margins {
     /// Create margins with equal values on all sides.
     pub fn uniform(margin: f32) -> Self {
-        Self { top: margin, bottom: margin, left: margin, right: margin }
+        Self {
+            top: margin,
+            bottom: margin,
+            left: margin,
+            right: margin,
+        }
     }
 
     /// Create margins with no spacing.
@@ -96,7 +106,10 @@ impl Default for OfficeConfig {
 impl OfficeConfig {
     /// Create config with A4 page size.
     pub fn a4() -> Self {
-        Self { page_size: PageSize::A4, ..Default::default() }
+        Self {
+            page_size: PageSize::A4,
+            ..Default::default()
+        }
     }
 
     /// Create config with Letter page size.
@@ -248,7 +261,7 @@ impl OfficeConverter {
                 let doc = Document::from_reader(cursor, DocumentFormat::Doc)
                     .map_err(|e| Error::InvalidOperation(format!("DOC parse: {e}")))?;
                 ir_to_pdf_bytes(&doc.to_ir(), &self.config, &[])
-            }
+            },
             "xlsx" | "xls" => self.convert_xlsx(path),
             "pptx" | "ppt" => self.convert_pptx(path),
             _ => Err(Error::InvalidPdf(format!("Unsupported file format: {ext}"))),
@@ -330,35 +343,31 @@ fn render_positional_ir(
             Ok(font) if font.has_usable_unicode_cmap() => {
                 builder = builder.register_embedded_font(name.clone(), font);
                 registered.insert(name.clone());
-            }
+            },
             Ok(_) => {
                 eprintln!(
                     "  [font] skipped {} ({} bytes): no Unicode cmap (CID-only subset)",
-                    name, data.len()
+                    name,
+                    data.len()
                 );
-            }
+            },
             Err(e) => {
-                eprintln!(
-                    "  [font] register failed: {} ({} bytes): {}",
-                    name, data.len(), e
-                );
-            }
+                eprintln!("  [font] register failed: {} ({} bytes): {}", name, data.len(), e);
+            },
         }
     }
-    let unicode_fallback = if registered
-        .contains(crate::fonts::unicode_fallback::UNICODE_FALLBACK_NAME)
-    {
-        Some(crate::fonts::unicode_fallback::UNICODE_FALLBACK_NAME.to_string())
-    } else {
-        None
-    };
-    let cjk_fallback = if registered
-        .contains(crate::fonts::unicode_fallback::UNICODE_FALLBACK_CJK_NAME)
-    {
-        Some(crate::fonts::unicode_fallback::UNICODE_FALLBACK_CJK_NAME.to_string())
-    } else {
-        None
-    };
+    let unicode_fallback =
+        if registered.contains(crate::fonts::unicode_fallback::UNICODE_FALLBACK_NAME) {
+            Some(crate::fonts::unicode_fallback::UNICODE_FALLBACK_NAME.to_string())
+        } else {
+            None
+        };
+    let cjk_fallback =
+        if registered.contains(crate::fonts::unicode_fallback::UNICODE_FALLBACK_CJK_NAME) {
+            Some(crate::fonts::unicode_fallback::UNICODE_FALLBACK_CJK_NAME.to_string())
+        } else {
+            None
+        };
 
     // Page geometry is derived per-section so a multi-section DOCX
     // with mixed page sizes round-trips with each section's pages at
@@ -385,86 +394,88 @@ fn render_positional_ir(
     // mapping in the writer and silently falls back to Helvetica
     // (no Han / Hebrew / Arabic glyphs).
     with_registered_fonts_full(registered, unicode_fallback, cjk_fallback, || -> Result<()> {
-    for section in &ir.sections {
-        let (page_w_pt, page_h_pt) = section
-            .page_setup
-            .as_ref()
-            .map(|ps| (ps.width_twips as f32 / TWIPS_PER_PT, ps.height_twips as f32 / TWIPS_PER_PT))
-            .unwrap_or(default_page);
-        let page_size = PageSize::Custom(page_w_pt, page_h_pt);
-        let mut page = builder.page(page_size);
-        for el in &section.elements {
-            match el {
-                Element::ThematicBreak => {
-                    page = page.new_page_same_size();
-                }
-                Element::Paragraph(p) => {
-                    if let Some(fp) = p.frame_position.as_ref() {
-                        // DOCX origin top-left, PDF origin bottom-left.
-                        let x_pt = fp.x_twips as f32 / TWIPS_PER_PT;
-                        let y_top_pt = fp.y_twips as f32 / TWIPS_PER_PT;
-                        let h_pt = fp.height_twips as f32 / TWIPS_PER_PT;
-                        // Convert to PDF y (baseline). Approximate: bottom of
-                        // the frame = page_h - (y_top + h); add ~0.8×h for
-                        // baseline within the frame.
-                        let y_baseline_pt = page_h_pt - y_top_pt - h_pt * 0.8;
+        for section in &ir.sections {
+            let (page_w_pt, page_h_pt) = section
+                .page_setup
+                .as_ref()
+                .map(|ps| {
+                    (ps.width_twips as f32 / TWIPS_PER_PT, ps.height_twips as f32 / TWIPS_PER_PT)
+                })
+                .unwrap_or(default_page);
+            let page_size = PageSize::Custom(page_w_pt, page_h_pt);
+            let mut page = builder.page(page_size);
+            for el in &section.elements {
+                match el {
+                    Element::ThematicBreak => {
+                        page = page.new_page_same_size();
+                    },
+                    Element::Paragraph(p) => {
+                        if let Some(fp) = p.frame_position.as_ref() {
+                            // DOCX origin top-left, PDF origin bottom-left.
+                            let x_pt = fp.x_twips as f32 / TWIPS_PER_PT;
+                            let y_top_pt = fp.y_twips as f32 / TWIPS_PER_PT;
+                            let h_pt = fp.height_twips as f32 / TWIPS_PER_PT;
+                            // Convert to PDF y (baseline). Approximate: bottom of
+                            // the frame = page_h - (y_top + h); add ~0.8×h for
+                            // baseline within the frame.
+                            let y_baseline_pt = page_h_pt - y_top_pt - h_pt * 0.8;
 
-                        let (text, font_name, size_pt, _bold, _italic) =
-                            flatten_paragraph_run(&p.content);
-                        if text.is_empty() {
-                            continue;
-                        }
-                        let resolved = resolve_font_for_text(&font_name, &text);
-                        page = page
-                            .font(&resolved, size_pt)
-                            .at(x_pt, y_baseline_pt)
-                            .text(&text);
-                    }
-                }
-                Element::Heading(h) => {
-                    if let Some(fp) = h.frame_position.as_ref() {
-                        let x_pt = fp.x_twips as f32 / TWIPS_PER_PT;
-                        let y_top_pt = fp.y_twips as f32 / TWIPS_PER_PT;
-                        let h_pt = fp.height_twips as f32 / TWIPS_PER_PT;
-                        let y_baseline_pt = page_h_pt - y_top_pt - h_pt * 0.8;
-                        let (text, font_name, size_pt, _bold, _italic) =
-                            flatten_paragraph_run(&h.content);
-                        if text.is_empty() {
-                            continue;
-                        }
-                        let resolved = resolve_font_for_text(&font_name, &text);
-                        page = page
-                            .font(&resolved, size_pt)
-                            .at(x_pt, y_baseline_pt)
-                            .text(&text);
-                    }
-                }
-                Element::Image(img) => {
-                    if let ImagePositioning::Floating(f) = &img.positioning {
-                        if let Some(data) = img.data.as_ref() {
-                                            let x_pt = f.x_emu as f32 / EMU_PER_PT;
-                            let w_pt = f.width_emu as f32 / EMU_PER_PT;
-                            let h_im = f.height_emu as f32 / EMU_PER_PT;
-                            // DOCX top-left → PDF bottom-left baseline.
-                            let y_top_pt = f.y_emu as f32 / EMU_PER_PT;
-                            let y_pt = page_h_pt - y_top_pt - h_im;
+                            let (text, font_name, size_pt, _bold, _italic) =
+                                flatten_paragraph_run(&p.content);
+                            if text.is_empty() {
+                                continue;
+                            }
+                            let resolved = resolve_font_for_text(&font_name, &text);
                             page = page
-                                .image_from_bytes(data, Rect::new(x_pt, y_pt, w_pt, h_im))
-                                .map_err(|e| {
-                                    Error::InvalidOperation(format!("image float: {e}"))
-                                })?;
+                                .font(&resolved, size_pt)
+                                .at(x_pt, y_baseline_pt)
+                                .text(&text);
                         }
-                    }
+                    },
+                    Element::Heading(h) => {
+                        if let Some(fp) = h.frame_position.as_ref() {
+                            let x_pt = fp.x_twips as f32 / TWIPS_PER_PT;
+                            let y_top_pt = fp.y_twips as f32 / TWIPS_PER_PT;
+                            let h_pt = fp.height_twips as f32 / TWIPS_PER_PT;
+                            let y_baseline_pt = page_h_pt - y_top_pt - h_pt * 0.8;
+                            let (text, font_name, size_pt, _bold, _italic) =
+                                flatten_paragraph_run(&h.content);
+                            if text.is_empty() {
+                                continue;
+                            }
+                            let resolved = resolve_font_for_text(&font_name, &text);
+                            page = page
+                                .font(&resolved, size_pt)
+                                .at(x_pt, y_baseline_pt)
+                                .text(&text);
+                        }
+                    },
+                    Element::Image(img) => {
+                        if let ImagePositioning::Floating(f) = &img.positioning {
+                            if let Some(data) = img.data.as_ref() {
+                                let x_pt = f.x_emu as f32 / EMU_PER_PT;
+                                let w_pt = f.width_emu as f32 / EMU_PER_PT;
+                                let h_im = f.height_emu as f32 / EMU_PER_PT;
+                                // DOCX top-left → PDF bottom-left baseline.
+                                let y_top_pt = f.y_emu as f32 / EMU_PER_PT;
+                                let y_pt = page_h_pt - y_top_pt - h_im;
+                                page = page
+                                    .image_from_bytes(data, Rect::new(x_pt, y_pt, w_pt, h_im))
+                                    .map_err(|e| {
+                                        Error::InvalidOperation(format!("image float: {e}"))
+                                    })?;
+                            }
+                        }
+                    },
+                    Element::Shape(shape) => {
+                        page = render_shape(page, shape, page_h_pt);
+                    },
+                    _ => {},
                 }
-                Element::Shape(shape) => {
-                    page = render_shape(page, shape, page_h_pt);
-                }
-                _ => {}
             }
+            page.done();
         }
-        page.done();
-    }
-    Ok(())
+        Ok(())
     })?;
 
     builder
@@ -537,16 +548,14 @@ fn render_shape<'a>(
                 );
             }
             p
-        }
+        },
     }
 }
 
 /// Reduce a paragraph's inline content to a single (text, font, size,
 /// bold, italic) tuple — used by the positional renderer where each
 /// paragraph is a single positioned text run.
-fn flatten_paragraph_run(
-    content: &[InlineContent],
-) -> (String, String, f32, bool, bool) {
+fn flatten_paragraph_run(content: &[InlineContent]) -> (String, String, f32, bool, bool) {
     let mut text = String::new();
     let mut font_name = "Helvetica".to_string();
     let mut size_pt = 12.0_f32;
@@ -632,19 +641,17 @@ fn ir_to_pdf_bytes(
             Ok(font) if font.has_usable_unicode_cmap() => {
                 doc = doc.register_embedded_font(name.clone(), font);
                 registered.insert(name.clone());
-            }
+            },
             Ok(_) => {
                 eprintln!(
                     "  [font] skipped {} ({} bytes): no Unicode cmap (CID-only subset)",
-                    name, data.len()
+                    name,
+                    data.len()
                 );
-            }
+            },
             Err(e) => {
-                eprintln!(
-                    "  [font] register failed: {} ({} bytes): {}",
-                    name, data.len(), e
-                );
-            }
+                eprintln!("  [font] register failed: {} ({} bytes): {}", name, data.len(), e);
+            },
         }
     }
 
@@ -658,133 +665,131 @@ fn ir_to_pdf_bytes(
         doc = doc.subject(s);
     }
 
-    let unicode_fallback = if registered
-        .contains(crate::fonts::unicode_fallback::UNICODE_FALLBACK_NAME)
-    {
-        Some(crate::fonts::unicode_fallback::UNICODE_FALLBACK_NAME.to_string())
-    } else {
-        None
-    };
-    let cjk_fallback = if registered
-        .contains(crate::fonts::unicode_fallback::UNICODE_FALLBACK_CJK_NAME)
-    {
-        Some(crate::fonts::unicode_fallback::UNICODE_FALLBACK_CJK_NAME.to_string())
-    } else {
-        None
-    };
-    let result = with_registered_fonts_full(registered, unicode_fallback, cjk_fallback, || -> Result<Vec<u8>> {
-        // Per-section page geometry: a section that carries its own
-        // `page_setup` (e.g. PDF→PPTX→PDF where every slide knows its
-        // source MediaBox) overrides the OfficeConfig default. This
-        // keeps a 660-page Letter PDF round-tripping back to 660
-        // Letter pages instead of overflowing onto the default size.
-        let section_page_size = |section: &Section| -> PageSize {
-            if let Some(ps) = section.page_setup.as_ref() {
-                let w_pt = ps.width_twips as f32 / TWIPS_PER_PT;
-                let h_pt = ps.height_twips as f32 / TWIPS_PER_PT;
-                if w_pt > 0.0 && h_pt > 0.0 {
-                    return PageSize::Custom(w_pt, h_pt);
-                }
-            }
-            if section_needs_landscape(section, config) {
-                landscape(config.page_size)
-            } else {
-                config.page_size
-            }
+    let unicode_fallback =
+        if registered.contains(crate::fonts::unicode_fallback::UNICODE_FALLBACK_NAME) {
+            Some(crate::fonts::unicode_fallback::UNICODE_FALLBACK_NAME.to_string())
+        } else {
+            None
         };
-
-        let first_size = ir
-            .sections
-            .first()
-            .map(section_page_size)
-            .unwrap_or(config.page_size);
-        let mut page = doc.page(first_size);
-        let mut cur_size = first_size;
-
-        for (si, section) in ir.sections.iter().enumerate() {
-            let want_size = section_page_size(section);
-
-            if si > 0 {
-                let force_break = !matches!(section.break_type, SectionBreakType::Continuous);
-                let size_changed = want_size.dimensions() != cur_size.dimensions();
-                if force_break || size_changed {
-                    page = page.done().page(want_size);
-                    cur_size = want_size;
-                }
-            }
-            // Multi-column sections (DOCX `<w:cols num="2">`,
-            // pdf_to_ir's `detect_columns`) reflow paragraphs into N
-            // bounded column rectangles and advance to the next
-            // column when one fills. Without this guard a 2-column
-            // arxiv-style paper rendered as a single narrow strip on
-            // the left half of every page. Falls back to the flat
-            // flow path for single-column sections.
-            let col_count = section
-                .columns
-                .as_ref()
-                .map(|c| c.count)
-                .unwrap_or(1);
-            if col_count >= 2 {
-                let (page_w_pt, page_h_pt) = match cur_size {
-                    PageSize::Custom(w, h) => (w, h),
-                    other => other.dimensions(),
-                };
-                page = render_section_columned(
-                    page,
-                    section,
-                    col_count,
-                    page_w_pt,
-                    page_h_pt,
-                    config,
-                )?;
-            } else {
-                let (_, page_h_pt) = match cur_size {
-                    PageSize::Custom(w, h) => (w, h),
-                    other => other.dimensions(),
-                };
-                // Walk floating images first to find the lowest
-                // bottom edge among any that anchor in the top half
-                // of the page. Once we know that, we'll snap the
-                // text cursor below it before emitting paragraphs.
-                // Without this, flow-mode body text starts at the
-                // page's top margin and lands on top of source
-                // top-of-page logos (UNIVERSITY OF ICELAND header,
-                // CFR shield, journal mastheads).
-                let top_image_floor = top_floating_image_floor(&section.elements, page_h_pt);
-                let mut text_cursor_pinned = false;
-                for element in &section.elements {
-                    if let Some(floor_y) = top_image_floor {
-                        let is_text_like = matches!(
-                            element,
-                            Element::Paragraph(_) | Element::Heading(_) | Element::List(_)
-                                | Element::Table(_) | Element::CodeBlock(_)
-                        );
-                        if is_text_like && !text_cursor_pinned {
-                            // Push the cursor down to the bottom of
-                            // the lowest top-of-page floating image
-                            // (with a small visual gap) before flow
-                            // text begins. PDF y-coords increase
-                            // upward, so "lower on page" means
-                            // smaller y. Only adjust when the image
-                            // floor is actually below the current
-                            // cursor.
-                            let cur_y = page.cursor_y();
-                            let new_y = floor_y - 6.0;
-                            if new_y < cur_y && new_y > 0.0 {
-                                let cur_x = page.cursor_x();
-                                page = page.at(cur_x, new_y);
-                            }
-                            text_cursor_pinned = true;
-                        }
+    let cjk_fallback =
+        if registered.contains(crate::fonts::unicode_fallback::UNICODE_FALLBACK_CJK_NAME) {
+            Some(crate::fonts::unicode_fallback::UNICODE_FALLBACK_CJK_NAME.to_string())
+        } else {
+            None
+        };
+    let result = with_registered_fonts_full(
+        registered,
+        unicode_fallback,
+        cjk_fallback,
+        || -> Result<Vec<u8>> {
+            // Per-section page geometry: a section that carries its own
+            // `page_setup` (e.g. PDF→PPTX→PDF where every slide knows its
+            // source MediaBox) overrides the OfficeConfig default. This
+            // keeps a 660-page Letter PDF round-tripping back to 660
+            // Letter pages instead of overflowing onto the default size.
+            let section_page_size = |section: &Section| -> PageSize {
+                if let Some(ps) = section.page_setup.as_ref() {
+                    let w_pt = ps.width_twips as f32 / TWIPS_PER_PT;
+                    let h_pt = ps.height_twips as f32 / TWIPS_PER_PT;
+                    if w_pt > 0.0 && h_pt > 0.0 {
+                        return PageSize::Custom(w_pt, h_pt);
                     }
-                    page = render_ir_element(page, element, config)?;
+                }
+                if section_needs_landscape(section, config) {
+                    landscape(config.page_size)
+                } else {
+                    config.page_size
+                }
+            };
+
+            let first_size = ir
+                .sections
+                .first()
+                .map(section_page_size)
+                .unwrap_or(config.page_size);
+            let mut page = doc.page(first_size);
+            let mut cur_size = first_size;
+
+            for (si, section) in ir.sections.iter().enumerate() {
+                let want_size = section_page_size(section);
+
+                if si > 0 {
+                    let force_break = !matches!(section.break_type, SectionBreakType::Continuous);
+                    let size_changed = want_size.dimensions() != cur_size.dimensions();
+                    if force_break || size_changed {
+                        page = page.done().page(want_size);
+                        cur_size = want_size;
+                    }
+                }
+                // Multi-column sections (DOCX `<w:cols num="2">`,
+                // pdf_to_ir's `detect_columns`) reflow paragraphs into N
+                // bounded column rectangles and advance to the next
+                // column when one fills. Without this guard a 2-column
+                // arxiv-style paper rendered as a single narrow strip on
+                // the left half of every page. Falls back to the flat
+                // flow path for single-column sections.
+                let col_count = section.columns.as_ref().map(|c| c.count).unwrap_or(1);
+                if col_count >= 2 {
+                    let (page_w_pt, page_h_pt) = match cur_size {
+                        PageSize::Custom(w, h) => (w, h),
+                        other => other.dimensions(),
+                    };
+                    page = render_section_columned(
+                        page, section, col_count, page_w_pt, page_h_pt, config,
+                    )?;
+                } else {
+                    let (_, page_h_pt) = match cur_size {
+                        PageSize::Custom(w, h) => (w, h),
+                        other => other.dimensions(),
+                    };
+                    // Walk floating images first to find the lowest
+                    // bottom edge among any that anchor in the top half
+                    // of the page. Once we know that, we'll snap the
+                    // text cursor below it before emitting paragraphs.
+                    // Without this, flow-mode body text starts at the
+                    // page's top margin and lands on top of source
+                    // top-of-page logos (UNIVERSITY OF ICELAND header,
+                    // CFR shield, journal mastheads).
+                    let top_image_floor = top_floating_image_floor(&section.elements, page_h_pt);
+                    let mut text_cursor_pinned = false;
+                    for element in &section.elements {
+                        if let Some(floor_y) = top_image_floor {
+                            let is_text_like = matches!(
+                                element,
+                                Element::Paragraph(_)
+                                    | Element::Heading(_)
+                                    | Element::List(_)
+                                    | Element::Table(_)
+                                    | Element::CodeBlock(_)
+                            );
+                            if is_text_like && !text_cursor_pinned {
+                                // Push the cursor down to the bottom of
+                                // the lowest top-of-page floating image
+                                // (with a small visual gap) before flow
+                                // text begins. PDF y-coords increase
+                                // upward, so "lower on page" means
+                                // smaller y. Only adjust when the image
+                                // floor is actually below the current
+                                // cursor.
+                                let cur_y = page.cursor_y();
+                                let new_y = floor_y - 6.0;
+                                if new_y < cur_y && new_y > 0.0 {
+                                    let cur_x = page.cursor_x();
+                                    page = page.at(cur_x, new_y);
+                                }
+                                text_cursor_pinned = true;
+                            }
+                        }
+                        page = render_ir_element(page, element, config)?;
+                    }
                 }
             }
-        }
 
-        page.done();
-        doc.build().map_err(|e| Error::InvalidOperation(format!("PDF build: {e}")))
-    });
+            page.done();
+            doc.build()
+                .map_err(|e| Error::InvalidOperation(format!("PDF build: {e}")))
+        },
+    );
     result
 }
 
@@ -859,12 +864,14 @@ fn render_section_columned<'a>(
     let (margin_l, margin_r, margin_t, margin_b) = section
         .page_setup
         .as_ref()
-        .map(|ps| (
-            ps.margin_left_twips as f32 / TWIPS_PER_PT,
-            ps.margin_right_twips as f32 / TWIPS_PER_PT,
-            ps.margin_top_twips as f32 / TWIPS_PER_PT,
-            ps.margin_bottom_twips as f32 / TWIPS_PER_PT,
-        ))
+        .map(|ps| {
+            (
+                ps.margin_left_twips as f32 / TWIPS_PER_PT,
+                ps.margin_right_twips as f32 / TWIPS_PER_PT,
+                ps.margin_top_twips as f32 / TWIPS_PER_PT,
+                ps.margin_bottom_twips as f32 / TWIPS_PER_PT,
+            )
+        })
         .unwrap_or((
             config.margins.left,
             config.margins.right,
@@ -901,7 +908,7 @@ fn render_section_columned<'a>(
                 cur_col = 0;
                 cursor_y = usable_top;
                 continue;
-            }
+            },
             Element::ColumnBreak => {
                 cur_col += 1;
                 if cur_col >= n {
@@ -910,8 +917,8 @@ fn render_section_columned<'a>(
                 }
                 cursor_y = usable_top;
                 continue;
-            }
-            _ => {}
+            },
+            _ => {},
         }
 
         // Plain (text, font, size, alignment) tuple. None means we
@@ -936,12 +943,10 @@ fn render_section_columned<'a>(
                     };
                     let font_owned = first_inline_font_name(&h.content)
                         .map(|n| resolve_font_for_text(&n, &t))
-                        .unwrap_or_else(|| {
-                            resolve_font_for_text("Helvetica-Bold", &t)
-                        });
+                        .unwrap_or_else(|| resolve_font_for_text("Helvetica-Bold", &t));
                     Some((t, sz, font_owned, align))
                 }
-            }
+            },
             Element::Paragraph(p) => {
                 let t = inline_content_to_text(&p.content);
                 if t.trim().is_empty() {
@@ -974,7 +979,7 @@ fn render_section_columned<'a>(
                     };
                     Some((t, sz, font_owned, align))
                 }
-            }
+            },
             Element::Image(img) => {
                 if let Some(ref data) = img.data {
                     if !data.is_empty() {
@@ -1001,24 +1006,15 @@ fn render_section_columned<'a>(
                             }
                             cursor_y = usable_top;
                         }
-                        let rect = Rect::new(
-                            column_x(cur_col),
-                            cursor_y - draw_h,
-                            draw_w,
-                            draw_h,
-                        );
-                        page = page
-                            .image_from_bytes(data, rect)
-                            .map_err(|e| {
-                                Error::InvalidOperation(format!(
-                                    "image_from_bytes (column flow): {e}"
-                                ))
-                            })?;
+                        let rect = Rect::new(column_x(cur_col), cursor_y - draw_h, draw_w, draw_h);
+                        page = page.image_from_bytes(data, rect).map_err(|e| {
+                            Error::InvalidOperation(format!("image_from_bytes (column flow): {e}"))
+                        })?;
                         cursor_y -= draw_h + 4.0;
                     }
                 }
                 continue;
-            }
+            },
             _ => None,
         };
 
@@ -1077,7 +1073,7 @@ fn render_ir_element<'a>(
             let text = note_to_text(&n.content);
             let marker = n.marker.clone().unwrap_or_else(|| n.id.to_string());
             Ok(page.footnote(&marker, &text))
-        }
+        },
         _ => Ok(page),
     }
 }
@@ -1117,8 +1113,8 @@ fn render_heading<'a>(page: FluentPageBuilder<'a>, h: &Heading) -> FluentPageBui
                 other => other.to_string(),
             }
         });
-    let size_pt = office_oxide::ir::first_inline_font_size_pt(&h.content)
-        .unwrap_or_else(|| match h.level {
+    let size_pt =
+        office_oxide::ir::first_inline_font_size_pt(&h.content).unwrap_or_else(|| match h.level {
             1 => 24.0,
             2 => 20.0,
             3 => 16.0,
@@ -1130,8 +1126,8 @@ fn render_heading<'a>(page: FluentPageBuilder<'a>, h: &Heading) -> FluentPageBui
     // heading survives the round-trip. `paragraph()` only does
     // left-alignment; non-Left alignments need to drop down to
     // `text_in_rect` (same approach as `render_paragraph`).
-    use office_oxide::ir::ParagraphAlignment;
     use crate::writer::TextAlign;
+    use office_oxide::ir::ParagraphAlignment;
     if matches!(h.alignment, Some(ParagraphAlignment::Center) | Some(ParagraphAlignment::Right)) {
         let cursor_x = page.cursor_x();
         let cursor_y = page.cursor_y();
@@ -1197,9 +1193,12 @@ fn map_to_base14(name: &str) -> Option<&'static str> {
     // `B` in `BMI`, not a "bold" substring. Detect explicitly.
     let newtx_bold_mi = (lower.starts_with("newtxbmi") || lower.starts_with("newtxb"))
         || lower.contains("-newtxbmi");
-    let bold = lower.contains("bold") || lower.contains("-bd")
-        || lower.contains("medium") || lower.contains("black")
-        || lower.contains("heavy") || lower.contains("demi")
+    let bold = lower.contains("bold")
+        || lower.contains("-bd")
+        || lower.contains("medium")
+        || lower.contains("black")
+        || lower.contains("heavy")
+        || lower.contains("demi")
         || newtx_bold_mi;
     // newtx math italic implies italic regardless of substring; same
     // for `*MI` / `*-MI` shapes used by LaTeX math italic packages.
@@ -1207,22 +1206,31 @@ fn map_to_base14(name: &str) -> Option<&'static str> {
         || lower.starts_with("newtxbmi")
         || lower.contains("-newtxmi")
         || lower.contains("-newtxbmi");
-    let math_italic_shape = lower.contains("txmia") || lower.contains("-mi")
-        || lower.ends_with("mi") || lower.contains("mathitalic")
+    let math_italic_shape = lower.contains("txmia")
+        || lower.contains("-mi")
+        || lower.ends_with("mi")
+        || lower.contains("mathitalic")
         || lower.contains("math-italic");
-    let italic = lower.contains("italic") || lower.contains("oblique")
-        || lower.contains("-it") || lower.ends_with("-i")
-        || newtx_mi || math_italic_shape;
+    let italic = lower.contains("italic")
+        || lower.contains("oblique")
+        || lower.contains("-it")
+        || lower.ends_with("-i")
+        || newtx_mi
+        || math_italic_shape;
     // Math symbol fonts (LaTeX `txsy`, `txex`, `cmsy`, `cmex`,
     // `msam`/`msbm`, `mathsymb`*) carry mathematical operator and
     // delimiter glyphs that overlap PDF's Symbol font. Map them
     // there so the round-trip at least uses the correct glyph set
     // instead of Helvetica's missing-glyph squares.
     if lower.contains("symbol")
-        || lower.starts_with("txsy") || lower.starts_with("txex")
-        || lower.starts_with("cmsy") || lower.starts_with("cmex")
-        || lower.starts_with("msam") || lower.starts_with("msbm")
-        || lower.contains("mathsymbols") || lower.contains("mathoperator")
+        || lower.starts_with("txsy")
+        || lower.starts_with("txex")
+        || lower.starts_with("cmsy")
+        || lower.starts_with("cmex")
+        || lower.starts_with("msam")
+        || lower.starts_with("msbm")
+        || lower.contains("mathsymbols")
+        || lower.contains("mathoperator")
     {
         return Some("Symbol");
     }
@@ -1232,10 +1240,13 @@ fn map_to_base14(name: &str) -> Option<&'static str> {
     let mono = lower.contains("courier")
         || lower.contains("nimbusmon")
         || lower.contains("texgyrecursor")
-        || lower.contains("cmtt") || lower.contains("cmtex")
-        || lower.contains("lmmono") || lower.contains("latinmodernmono")
+        || lower.contains("cmtt")
+        || lower.contains("cmtex")
+        || lower.contains("lmmono")
+        || lower.contains("latinmodernmono")
         || lower.contains("typewriter")
-        || lower.contains("monospace") || lower.contains("mono ");
+        || lower.contains("monospace")
+        || lower.contains("mono ");
     let serif = mono.then_some(false).unwrap_or_else(|| {
         lower.contains("times")
             || lower.contains("nimbusrom")
@@ -1258,16 +1269,24 @@ fn map_to_base14(name: &str) -> Option<&'static str> {
             || lower.contains("serif")
             || lower.starts_with("rm") // generic LaTeX serif default
     });
-    let sans = !mono && !serif && (
-        lower.contains("helvetica") || lower.contains("arial")
-            || lower.contains("nimbussan") || lower.contains("texgyreheros")
-            || lower.contains("avantgarde") || lower.contains("avant garde")
-            || lower.contains("cmss")
-            || lower.contains("lmsans") || lower.contains("latinmodernsans")
-            || lower.contains("verdana") || lower.contains("tahoma")
-            || lower.contains("sans")
-            || lower.starts_with("sf") // generic LaTeX sans default
-    );
+    let sans = !mono
+        && !serif
+        && (
+            lower.contains("helvetica")
+                || lower.contains("arial")
+                || lower.contains("nimbussan")
+                || lower.contains("texgyreheros")
+                || lower.contains("avantgarde")
+                || lower.contains("avant garde")
+                || lower.contains("cmss")
+                || lower.contains("lmsans")
+                || lower.contains("latinmodernsans")
+                || lower.contains("verdana")
+                || lower.contains("tahoma")
+                || lower.contains("sans")
+                || lower.starts_with("sf")
+            // generic LaTeX sans default
+        );
     let family = if mono {
         "Courier"
     } else if serif {
@@ -1314,7 +1333,9 @@ fn resolve_font_name(source_name: &str) -> String {
         return source_name.to_string();
     }
     let registered_match = REGISTERED_FONTS.with(|cell| {
-        cell.borrow().as_ref().is_some_and(|set| set.contains(source_name))
+        cell.borrow()
+            .as_ref()
+            .is_some_and(|set| set.contains(source_name))
     });
     if registered_match {
         return source_name.to_string();
@@ -1353,27 +1374,10 @@ thread_local! {
         = const { std::cell::RefCell::new(None) };
 }
 
-/// Run `body` with the supplied registered-fonts set installed and
-/// (optionally) a Unicode fallback name advertised. Used to scope
-/// `resolve_font_name` / `resolve_font_for_text` answers to one
-/// PDF render pass.
-fn with_registered_fonts<R>(
-    set: std::collections::HashSet<String>,
-    body: impl FnOnce() -> R,
-) -> R {
-    with_registered_fonts_and_unicode(set, None, body)
-}
-
-fn with_registered_fonts_and_unicode<R>(
-    set: std::collections::HashSet<String>,
-    unicode_fallback: Option<String>,
-    body: impl FnOnce() -> R,
-) -> R {
-    with_registered_fonts_full(set, unicode_fallback, None, body)
-}
-
 /// Run `body` with the full font-resolution context: registered
-/// embedded faces, plus optional Unicode + CJK fallback names.
+/// embedded faces, plus optional Unicode + CJK fallback names. Used
+/// to scope `resolve_font_name` / `resolve_font_for_text` answers to
+/// one PDF render pass.
 fn with_registered_fonts_full<R>(
     set: std::collections::HashSet<String>,
     unicode_fallback: Option<String>,
@@ -1488,10 +1492,7 @@ fn element_has_non_latin(el: &Element) -> bool {
     match el {
         Element::Paragraph(p) => inline_has_non_latin(&p.content),
         Element::Heading(h) => inline_has_non_latin(&h.content),
-        Element::List(l) => l
-            .items
-            .iter()
-            .any(|it| section_has_non_latin(&it.content)),
+        Element::List(l) => l.items.iter().any(|it| section_has_non_latin(&it.content)),
         Element::Table(t) => t.rows.iter().any(|row| {
             row.cells
                 .iter()
@@ -1504,9 +1505,7 @@ fn element_has_non_latin(el: &Element) -> bool {
 
 fn inline_has_non_latin(content: &[InlineContent]) -> bool {
     content.iter().any(|ic| match ic {
-        InlineContent::Text(s) => {
-            crate::fonts::unicode_fallback::needs_unicode_fallback(&s.text)
-        }
+        InlineContent::Text(s) => crate::fonts::unicode_fallback::needs_unicode_fallback(&s.text),
         _ => false,
     })
 }
@@ -1534,9 +1533,7 @@ fn ir_has_cjk_text(ir: &DocumentIR) -> bool {
     }
     fn inline(content: &[InlineContent]) -> bool {
         content.iter().any(|ic| match ic {
-            InlineContent::Text(s) => {
-                crate::fonts::unicode_fallback::needs_cjk_fallback(&s.text)
-            }
+            InlineContent::Text(s) => crate::fonts::unicode_fallback::needs_cjk_fallback(&s.text),
             _ => false,
         })
     }
@@ -1553,8 +1550,9 @@ fn render_paragraph<'a>(page: FluentPageBuilder<'a>, p: &Paragraph) -> FluentPag
     {
         let only_thematic_chars = !p.content.is_empty()
             && p.content.iter().all(|ic| match ic {
-                InlineContent::Text(s) => !s.text.is_empty()
-                    && s.text.chars().all(|c| c == '\u{2500}'),
+                InlineContent::Text(s) => {
+                    !s.text.is_empty() && s.text.chars().all(|c| c == '\u{2500}')
+                },
                 _ => false,
             });
         if only_thematic_chars {
@@ -1631,8 +1629,8 @@ fn render_paragraph<'a>(page: FluentPageBuilder<'a>, p: &Paragraph) -> FluentPag
     // Drop down to `text_in_rect` with the page's full width minus
     // current margins so the source's centered title pages survive
     // the round-trip.
-    use office_oxide::ir::ParagraphAlignment;
     use crate::writer::TextAlign;
+    use office_oxide::ir::ParagraphAlignment;
     if matches!(p.alignment, Some(ParagraphAlignment::Center) | Some(ParagraphAlignment::Right)) {
         let text = runs.iter().map(|r| r.text.as_str()).collect::<String>();
         if !text.is_empty() {
@@ -1676,7 +1674,11 @@ fn render_paragraph<'a>(page: FluentPageBuilder<'a>, p: &Paragraph) -> FluentPag
 }
 
 fn render_list<'a>(page: FluentPageBuilder<'a>, list: &List) -> FluentPageBuilder<'a> {
-    let items: Vec<String> = list.items.iter().map(|item| elements_to_text(&item.content)).collect();
+    let items: Vec<String> = list
+        .items
+        .iter()
+        .map(|item| elements_to_text(&item.content))
+        .collect();
     if items.is_empty() {
         return page;
     }
@@ -1692,7 +1694,11 @@ fn render_list<'a>(page: FluentPageBuilder<'a>, list: &List) -> FluentPageBuilde
     }
 }
 
-fn render_table<'a>(page: FluentPageBuilder<'a>, t: &IrTable, config: &OfficeConfig) -> FluentPageBuilder<'a> {
+fn render_table<'a>(
+    page: FluentPageBuilder<'a>,
+    t: &IrTable,
+    config: &OfficeConfig,
+) -> FluentPageBuilder<'a> {
     if t.rows.is_empty() {
         return page;
     }
@@ -1787,7 +1793,11 @@ fn render_table_chunk<'a>(
     let header_row = if has_header { Some(&t.rows[0]) } else { None };
     let resolve_col_idx = |i: usize| -> usize {
         if repeat_first_col {
-            if i == 0 { 0 } else { col_start + (i - 1) }
+            if i == 0 {
+                0
+            } else {
+                col_start + (i - 1)
+            }
         } else {
             col_start + i
         }
@@ -1809,7 +1819,11 @@ fn render_table_chunk<'a>(
     let mut st = page.streaming_table(cfg);
 
     const MAX_CELL_CHARS: usize = 500;
-    let body_rows = if has_header { &t.rows[1..] } else { &t.rows[..] };
+    let body_rows = if has_header {
+        &t.rows[1..]
+    } else {
+        &t.rows[..]
+    };
     for row in body_rows {
         let cells: Vec<String> = (0..chunk_n)
             .map(|i| {
@@ -2141,8 +2155,8 @@ fn render_pptx_positional(
             Ok(font) if font.has_usable_unicode_cmap() => {
                 builder = builder.register_embedded_font(name.clone(), font);
                 registered.insert(name.clone());
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -2151,98 +2165,107 @@ fn render_pptx_positional(
         (w, h)
     };
 
-    let unicode_fallback = if registered
-        .contains(crate::fonts::unicode_fallback::UNICODE_FALLBACK_NAME)
-    {
-        Some(crate::fonts::unicode_fallback::UNICODE_FALLBACK_NAME.to_string())
-    } else {
-        None
-    };
-    let cjk_fallback = if registered
-        .contains(crate::fonts::unicode_fallback::UNICODE_FALLBACK_CJK_NAME)
-    {
-        Some(crate::fonts::unicode_fallback::UNICODE_FALLBACK_CJK_NAME.to_string())
-    } else {
-        None
-    };
-    let result = with_registered_fonts_full(registered, unicode_fallback, cjk_fallback, || -> Result<Vec<u8>> {
-    for section in &ir.sections {
-        let (page_w_pt, page_h_pt) = section
-            .page_setup
-            .as_ref()
-            .map(|ps| (ps.width_twips as f32 / TWIPS_PER_PT, ps.height_twips as f32 / TWIPS_PER_PT))
-            .unwrap_or(default_page);
-        let page_size = PageSize::Custom(page_w_pt.max(1.0), page_h_pt.max(1.0));
-        let mut page = builder.page(page_size);
+    let unicode_fallback =
+        if registered.contains(crate::fonts::unicode_fallback::UNICODE_FALLBACK_NAME) {
+            Some(crate::fonts::unicode_fallback::UNICODE_FALLBACK_NAME.to_string())
+        } else {
+            None
+        };
+    let cjk_fallback =
+        if registered.contains(crate::fonts::unicode_fallback::UNICODE_FALLBACK_CJK_NAME) {
+            Some(crate::fonts::unicode_fallback::UNICODE_FALLBACK_CJK_NAME.to_string())
+        } else {
+            None
+        };
+    let result = with_registered_fonts_full(
+        registered,
+        unicode_fallback,
+        cjk_fallback,
+        || -> Result<Vec<u8>> {
+            for section in &ir.sections {
+                let (page_w_pt, page_h_pt) = section
+                    .page_setup
+                    .as_ref()
+                    .map(|ps| {
+                        (
+                            ps.width_twips as f32 / TWIPS_PER_PT,
+                            ps.height_twips as f32 / TWIPS_PER_PT,
+                        )
+                    })
+                    .unwrap_or(default_page);
+                let page_size = PageSize::Custom(page_w_pt.max(1.0), page_h_pt.max(1.0));
+                let mut page = builder.page(page_size);
 
-        // Slide background (solid fill only). Painted before any shape
-        // so positioned content sits on top of the chrome.
-        if let Some([r, g, b]) = section.background_rgb {
-            page = page.filled_rect(
-                0.0,
-                0.0,
-                page_w_pt,
-                page_h_pt,
-                r as f32 / 255.0,
-                g as f32 / 255.0,
-                b as f32 / 255.0,
-            );
-        }
+                // Slide background (solid fill only). Painted before any shape
+                // so positioned content sits on top of the chrome.
+                if let Some([r, g, b]) = section.background_rgb {
+                    page = page.filled_rect(
+                        0.0,
+                        0.0,
+                        page_w_pt,
+                        page_h_pt,
+                        r as f32 / 255.0,
+                        g as f32 / 255.0,
+                        b as f32 / 255.0,
+                    );
+                }
 
-        // Optional title heading rendered at the top — keeps section
-        // titles visible when the title placeholder had no `<a:xfrm>`
-        // (in which case it's still in `section.title` but not present
-        // as a positioned shape).
-        // Two-pass z-order: positioned shapes (TextBox at EMU coords)
-        // paint first as the slide-chrome layer (banners, logos,
-        // background imagery), then flow content (Heading, Paragraph)
-        // paints on top. Without this, the Heading rendered at the
-        // top-of-page cursor gets covered by a top-of-page banner
-        // TextBox that's iterated AFTER it in section.elements.
-        // We also advance the cursor past the lowest banner so the
-        // first flow Heading lands under the banner instead of
-        // overlapping it.
-        let mut top_banner_floor_pt: Option<f32> = None;
-        for el in &section.elements {
-            if let Element::TextBox(tb) = el {
-                page = render_pptx_element(page, el, page_w_pt, page_h_pt, config)?;
-                if let (Some(y_emu), Some(h_emu)) = (tb.y_emu, tb.height_emu) {
-                    let y_top_pt = y_emu as f32 / EMU_PER_PT;
-                    let h_pt = h_emu as f32 / EMU_PER_PT;
-                    // Treat any TextBox anchored in the top half of the
-                    // page as a banner whose bottom edge gates the
-                    // first flow line. PDF y-up: cursor is the
-                    // distance from the page bottom; banner bottom
-                    // (in PDF coords) is `page_h_pt - y_top_pt - h_pt`.
-                    if y_top_pt < page_h_pt * 0.5 {
-                        let banner_bottom_pdf_y = (page_h_pt - y_top_pt - h_pt).max(0.0);
-                        top_banner_floor_pt = Some(
-                            top_banner_floor_pt.map_or(banner_bottom_pdf_y, |c| c.min(banner_bottom_pdf_y)),
-                        );
+                // Optional title heading rendered at the top — keeps section
+                // titles visible when the title placeholder had no `<a:xfrm>`
+                // (in which case it's still in `section.title` but not present
+                // as a positioned shape).
+                // Two-pass z-order: positioned shapes (TextBox at EMU coords)
+                // paint first as the slide-chrome layer (banners, logos,
+                // background imagery), then flow content (Heading, Paragraph)
+                // paints on top. Without this, the Heading rendered at the
+                // top-of-page cursor gets covered by a top-of-page banner
+                // TextBox that's iterated AFTER it in section.elements.
+                // We also advance the cursor past the lowest banner so the
+                // first flow Heading lands under the banner instead of
+                // overlapping it.
+                let mut top_banner_floor_pt: Option<f32> = None;
+                for el in &section.elements {
+                    if let Element::TextBox(tb) = el {
+                        page = render_pptx_element(page, el, page_w_pt, page_h_pt, config)?;
+                        if let (Some(y_emu), Some(h_emu)) = (tb.y_emu, tb.height_emu) {
+                            let y_top_pt = y_emu as f32 / EMU_PER_PT;
+                            let h_pt = h_emu as f32 / EMU_PER_PT;
+                            // Treat any TextBox anchored in the top half of the
+                            // page as a banner whose bottom edge gates the
+                            // first flow line. PDF y-up: cursor is the
+                            // distance from the page bottom; banner bottom
+                            // (in PDF coords) is `page_h_pt - y_top_pt - h_pt`.
+                            if y_top_pt < page_h_pt * 0.5 {
+                                let banner_bottom_pdf_y = (page_h_pt - y_top_pt - h_pt).max(0.0);
+                                top_banner_floor_pt =
+                                    Some(top_banner_floor_pt.map_or(banner_bottom_pdf_y, |c| {
+                                        c.min(banner_bottom_pdf_y)
+                                    }));
+                            }
+                        }
                     }
                 }
-            }
-        }
-        if let Some(floor_y) = top_banner_floor_pt {
-            // Advance the cursor below the banner with a small gap.
-            let target = (floor_y - 12.0).max(36.0);
-            if page.cursor_y() > target {
-                page.set_cursor_y(target);
-            }
-        }
-        for el in &section.elements {
-            if !matches!(el, Element::TextBox(_)) {
-                page = render_pptx_element(page, el, page_w_pt, page_h_pt, config)?;
-            }
-        }
+                if let Some(floor_y) = top_banner_floor_pt {
+                    // Advance the cursor below the banner with a small gap.
+                    let target = (floor_y - 12.0).max(36.0);
+                    if page.cursor_y() > target {
+                        page.set_cursor_y(target);
+                    }
+                }
+                for el in &section.elements {
+                    if !matches!(el, Element::TextBox(_)) {
+                        page = render_pptx_element(page, el, page_w_pt, page_h_pt, config)?;
+                    }
+                }
 
-        page.done();
-    }
+                page.done();
+            }
 
-    builder
-        .build()
-        .map_err(|e| Error::InvalidOperation(format!("PPTX positional PDF build: {e}")))
-    });
+            builder
+                .build()
+                .map_err(|e| Error::InvalidOperation(format!("PPTX positional PDF build: {e}")))
+        },
+    );
     result
 }
 
@@ -2266,13 +2289,16 @@ fn render_pptx_element<'a>(
             if text.is_empty() {
                 Ok(page)
             } else {
-                use office_oxide::ir::ParagraphAlignment;
                 use crate::writer::TextAlign;
+                use office_oxide::ir::ParagraphAlignment;
                 // Honour explicit center/right alignment from the
                 // title placeholder. PPTX slide titles are commonly
                 // centered; without this they render left-aligned
                 // even when the source PPTX carried algn="ctr".
-                if matches!(h.alignment, Some(ParagraphAlignment::Center) | Some(ParagraphAlignment::Right)) {
+                if matches!(
+                    h.alignment,
+                    Some(ParagraphAlignment::Center) | Some(ParagraphAlignment::Right)
+                ) {
                     // Prefer the source span's actual font size
                     // (preserved via the inline content's first
                     // span) over the heading-level default. CFR
@@ -2292,14 +2318,15 @@ fn render_pptx_element<'a>(
                     let face = first_inline_font_name(&h.content)
                         .map(|n| resolve_font_for_text(&n, &text))
                         .unwrap_or_else(|| resolve_font_for_text("Helvetica-Bold", &text));
-                    let mut page = page.font(&face, size_pt);
+                    let page = page.font(&face, size_pt);
                     let cursor_x = page.cursor_x();
                     let cursor_y = page.cursor_y();
                     let right_margin = 36.0_f32;
                     let usable_w = (page_w_pt - cursor_x - right_margin).max(1.0);
                     let line_h = size_pt * page.text_config_line_height();
                     let est_chars_per_line = (usable_w / (size_pt * 0.5)).max(1.0) as usize;
-                    let lines = (text.chars().count().max(1) + est_chars_per_line - 1) / est_chars_per_line;
+                    let lines =
+                        (text.chars().count().max(1) + est_chars_per_line - 1) / est_chars_per_line;
                     let block_h = line_h * lines.max(1) as f32;
                     let rect = Rect::new(cursor_x, cursor_y - block_h, usable_w, block_h);
                     let align = match h.alignment {
@@ -2329,7 +2356,7 @@ fn render_pptx_element<'a>(
                     Ok(page.text(&text))
                 }
             }
-        }
+        },
         Element::Paragraph(p) => {
             let text = inline_content_to_text(&p.content);
             // PPTX-encoded ThematicBreak: paragraph of U+2500 only.
@@ -2387,21 +2414,25 @@ fn render_pptx_element<'a>(
                 let face = first_inline_font_name(&p.content)
                     .map(|n| resolve_font_for_text(&n, &text))
                     .unwrap_or_else(|| resolve_font_for_text("Helvetica", &text));
-                let mut page = page.font(&face, size_pt);
+                let page = page.font(&face, size_pt);
                 // Honour explicit center/right alignment from the
                 // source PPTX. `paragraph()` is left-only, so when
                 // the IR says Center/Right we drop down to
                 // `text_in_rect` with the page width less margins.
-                use office_oxide::ir::ParagraphAlignment;
                 use crate::writer::TextAlign;
-                if matches!(p.alignment, Some(ParagraphAlignment::Center) | Some(ParagraphAlignment::Right)) {
+                use office_oxide::ir::ParagraphAlignment;
+                if matches!(
+                    p.alignment,
+                    Some(ParagraphAlignment::Center) | Some(ParagraphAlignment::Right)
+                ) {
                     let cursor_x = page.cursor_x();
                     let cursor_y = page.cursor_y();
                     let right_margin = 36.0_f32;
                     let usable_w = (page_w_pt - cursor_x - right_margin).max(1.0);
                     let line_h = size_pt * page.text_config_line_height();
                     let est_chars_per_line = (usable_w / (size_pt * 0.5)).max(1.0) as usize;
-                    let lines = (text.chars().count().max(1) + est_chars_per_line - 1) / est_chars_per_line;
+                    let lines =
+                        (text.chars().count().max(1) + est_chars_per_line - 1) / est_chars_per_line;
                     let block_h = line_h * lines.max(1) as f32;
                     let rect = Rect::new(cursor_x, cursor_y - block_h, usable_w, block_h);
                     let align = match p.alignment {
@@ -2431,7 +2462,7 @@ fn render_pptx_element<'a>(
                     Ok(page.paragraph(&text))
                 }
             }
-        }
+        },
         _ => Ok(page),
     }
 }
@@ -2464,8 +2495,6 @@ fn render_pptx_textbox<'a>(
 
     render_pptx_textbox_content(page, &tb.content, x_pt, pdf_y_bottom, w_pt, h_pt, config)
 }
-
-
 
 /// Render the inner content of a positioned shape rectangle.
 ///
@@ -2521,7 +2550,7 @@ fn render_pptx_textbox_content<'a>(
                 let line_h = size_pt * 1.2;
                 let lines = wrap_estimate(&text, inner_w, size_pt);
                 cursor_top -= line_h * lines.max(1) as f32;
-            }
+            },
             Element::Paragraph(p) => {
                 let text = inline_content_to_text(&p.content);
                 if text.is_empty() {
@@ -2587,7 +2616,7 @@ fn render_pptx_textbox_content<'a>(
                     page = page.text_in_rect(rect, &text, TextAlign::Left);
                 }
                 cursor_top -= block_h;
-            }
+            },
             Element::List(l) => {
                 // Flatten list to bullet text and render line by line.
                 for item in &l.items {
@@ -2607,12 +2636,12 @@ fn render_pptx_textbox_content<'a>(
                         break;
                     }
                 }
-            }
+            },
             Element::Table(t) => {
                 page = render_pptx_positioned_table(page, t, x_pt, y_pt, w_pt, h_pt, config);
                 // Tables consume the whole shape; stop further content.
                 break;
-            }
+            },
             Element::Image(img) => {
                 // The PPTX picture frame currently propagates only
                 // alt-text; image bytes aren't carried through the IR
@@ -2626,13 +2655,13 @@ fn render_pptx_textbox_content<'a>(
                         // builder, so unwrap_or_else falls back to a
                         // fresh page-positioned no-op via re-entering
                         // the loop with content fully consumed.
-                        page = page.image_from_bytes(data, rect).map_err(|e| {
-                            Error::InvalidOperation(format!("pptx picture: {e}"))
-                        })?;
+                        page = page
+                            .image_from_bytes(data, rect)
+                            .map_err(|e| Error::InvalidOperation(format!("pptx picture: {e}")))?;
                     }
                 }
                 break;
-            }
+            },
             Element::TextBox(inner) => {
                 // Nested shape (rare for PPTX). Recurse with absolute
                 // coordinates inside the parent.
@@ -2645,8 +2674,8 @@ fn render_pptx_textbox_content<'a>(
                     h_pt,
                     config,
                 )?;
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -2703,8 +2732,8 @@ fn render_pptx_positioned_table<'a>(
             if text.is_empty() {
                 continue;
             }
-            let size_pt = elements_first_font_size(&cell.content)
-                .unwrap_or(config.default_font_size);
+            let size_pt =
+                elements_first_font_size(&cell.content).unwrap_or(config.default_font_size);
             let inset = 2.0_f32;
             let inner_rect = Rect::new(
                 cell_x + inset,

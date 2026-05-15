@@ -394,9 +394,7 @@ impl PageRenderer {
         // borrow into it collapses the per-`gs` work to a small `get` +
         // resolve of just the inner state dict.
         let ext_g_state_resolved: Option<Object> = match resources {
-            Object::Dictionary(rd) => rd
-                .get("ExtGState")
-                .and_then(|o| doc.resolve_object(o).ok()),
+            Object::Dictionary(rd) => rd.get("ExtGState").and_then(|o| doc.resolve_object(o).ok()),
             _ => None,
         };
         let ext_g_states: Option<&std::collections::HashMap<String, Object>> =
@@ -1338,15 +1336,17 @@ impl PageRenderer {
                     // Fast path: resource dict is already resolved (see top of
                     // this function), so the per-`gs` cost is one HashMap
                     // lookup + one resolve of the small inner state dict.
-                    let entry = ext_g_state_cache.entry(dict_name.clone()).or_insert_with(|| {
-                        if let Some(states) = ext_g_states {
-                            if let Some(state_obj) = states.get(dict_name) {
-                                return parse_ext_g_state_inner(state_obj, doc)
-                                    .unwrap_or_default();
+                    let entry = ext_g_state_cache
+                        .entry(dict_name.clone())
+                        .or_insert_with(|| {
+                            if let Some(states) = ext_g_states {
+                                if let Some(state_obj) = states.get(dict_name) {
+                                    return parse_ext_g_state_inner(state_obj, doc)
+                                        .unwrap_or_default();
+                                }
                             }
-                        }
-                        ParsedExtGState::default()
-                    });
+                            ParsedExtGState::default()
+                        });
                     entry.apply(gs_stack.current_mut());
                 },
 

@@ -41,7 +41,10 @@ const TAG_MAXP: u32 = 0x6D61_7870; // 'maxp'
 /// input is not a recognisable SFNT or the patch fails. On success,
 /// returns a fresh byte stream identical in every other respect (all
 /// other tables byte-preserved with new offsets).
-pub fn inject_unicode_cmap(font_bytes: &[u8], unicode_to_gid: &HashMap<u32, u16>) -> Option<Vec<u8>> {
+pub fn inject_unicode_cmap(
+    font_bytes: &[u8],
+    unicode_to_gid: &HashMap<u32, u16>,
+) -> Option<Vec<u8>> {
     if font_bytes.len() < 12 || unicode_to_gid.is_empty() {
         return None;
     }
@@ -179,10 +182,7 @@ pub fn inject_unicode_cmap(font_bytes: &[u8], unicode_to_gid: &HashMap<u32, u16>
 /// → glyphs render with no advance. This function rebuilds the
 /// `hmtx` from the source PDF's `/W` so the round-trip writer's
 /// own width-extraction sees correct values.
-pub fn inject_hmtx(
-    font_bytes: &[u8],
-    widths_by_gid: &HashMap<u16, u16>,
-) -> Option<Vec<u8>> {
+pub fn inject_hmtx(font_bytes: &[u8], widths_by_gid: &HashMap<u16, u16>) -> Option<Vec<u8>> {
     if font_bytes.len() < 12 {
         return None;
     }
@@ -217,7 +217,13 @@ pub fn inject_hmtx(
             return None;
         }
         let data = font_bytes[offset as usize..end].to_vec();
-        tables.push(TableEntry { tag, checksum, offset, length, data });
+        tables.push(TableEntry {
+            tag,
+            checksum,
+            offset,
+            length,
+            data,
+        });
     }
 
     // Required tables for an hmtx rebuild.
@@ -330,7 +336,11 @@ fn build_format4_cmap(unicode_to_gid: &HashMap<u32, u16>) -> Option<Vec<u8>> {
     let mut pairs: Vec<(u16, u16)> = unicode_to_gid
         .iter()
         .filter_map(|(&cp, &gid)| {
-            if cp <= 0xFFFF { Some((cp as u16, gid)) } else { None }
+            if cp <= 0xFFFF {
+                Some((cp as u16, gid))
+            } else {
+                None
+            }
         })
         .collect();
     if pairs.is_empty() {
@@ -492,12 +502,8 @@ fn sum_u32_padded(data: &[u8]) -> u32 {
     let mut sum = 0u32;
     let mut i = 0;
     while i + 4 <= data.len() {
-        sum = sum.wrapping_add(u32::from_be_bytes([
-            data[i],
-            data[i + 1],
-            data[i + 2],
-            data[i + 3],
-        ]));
+        sum =
+            sum.wrapping_add(u32::from_be_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]));
         i += 4;
     }
     if i < data.len() {

@@ -115,30 +115,27 @@ pub fn build_embedded_font_objects(
     // subset because the CFF charset wasn't refreshed to match the new
     // cmap. Fall back to emitting the unsubset font bytes — slightly
     // larger PDFs but the source typeface program reaches the viewer.
-    let (font_bytes, remapper) = match crate::fonts::subset_font_bytes(
-        font.font_data(),
-        0,
-        font.used_glyphs(),
-    ) {
-        Ok(pair) => pair,
-        Err(e) => {
-            eprintln!(
-                "  [font] subsetting failed for {} ({} bytes); embedding full font: {e}",
-                font.name,
-                font.font_data().len()
-            );
-            let bytes = font.font_data().to_vec();
-            // Empty GlyphRemapper: `remapper.get(orig)` returns None
-            // for every GID, so the content-stream emitter's
-            // `.unwrap_or(orig)` path emits the original GID
-            // unchanged — exactly what we need when the font bytes
-            // are the full unsubset face. NEW_FROM_GLYPHS sequence
-            // would compact to 0,1,2... which would mismatch the
-            // CFF charset positions.
-            let remapper = subsetter::GlyphRemapper::new();
-            (bytes, remapper)
-        }
-    };
+    let (font_bytes, remapper) =
+        match crate::fonts::subset_font_bytes(font.font_data(), 0, font.used_glyphs()) {
+            Ok(pair) => pair,
+            Err(e) => {
+                eprintln!(
+                    "  [font] subsetting failed for {} ({} bytes); embedding full font: {e}",
+                    font.name,
+                    font.font_data().len()
+                );
+                let bytes = font.font_data().to_vec();
+                // Empty GlyphRemapper: `remapper.get(orig)` returns None
+                // for every GID, so the content-stream emitter's
+                // `.unwrap_or(orig)` path emits the original GID
+                // unchanged — exactly what we need when the font bytes
+                // are the full unsubset face. NEW_FROM_GLYPHS sequence
+                // would compact to 0,1,2... which would mismatch the
+                // CFF charset positions.
+                let remapper = subsetter::GlyphRemapper::new();
+                (bytes, remapper)
+            },
+        };
     let is_cff = font_bytes.starts_with(b"OTTO");
     let byte_len = font_bytes.len() as i64;
     let mut ff_dict: HashMap<String, Object> = HashMap::new();

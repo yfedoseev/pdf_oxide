@@ -41,26 +41,17 @@ fn main() {
 
     // 1. PDF → DOCX
     let docx_bytes = doc.to_docx_bytes().expect("to_docx_bytes");
-    assert!(
-        docx_bytes.starts_with(b"PK"),
-        "DOCX output is not a valid ZIP/DOCX"
-    );
+    assert!(docx_bytes.starts_with(b"PK"), "DOCX output is not a valid ZIP/DOCX");
     println!("PDF → DOCX: {} bytes — PASS", docx_bytes.len());
 
     // 2. PDF → PPTX
     let pptx_bytes = doc.to_pptx_bytes().expect("to_pptx_bytes");
-    assert!(
-        pptx_bytes.starts_with(b"PK"),
-        "PPTX output is not a valid ZIP/PPTX"
-    );
+    assert!(pptx_bytes.starts_with(b"PK"), "PPTX output is not a valid ZIP/PPTX");
     println!("PDF → PPTX: {} bytes — PASS", pptx_bytes.len());
 
     // 3. PDF → XLSX
     let xlsx_bytes = doc.to_xlsx_bytes().expect("to_xlsx_bytes");
-    assert!(
-        xlsx_bytes.starts_with(b"PK"),
-        "XLSX output is not a valid ZIP/XLSX"
-    );
+    assert!(xlsx_bytes.starts_with(b"PK"), "XLSX output is not a valid ZIP/XLSX");
     println!("PDF → XLSX: {} bytes — PASS", xlsx_bytes.len());
 
     // Round-trips: office → PDF → office

@@ -66,15 +66,15 @@ pub fn find_inline_image_invocations(
         match op {
             Operator::SaveState => {
                 stack.push(ctm);
-            }
+            },
             Operator::RestoreState => {
                 if let Some(prev) = stack.pop() {
                     ctm = prev;
                 }
-            }
+            },
             Operator::Cm { a, b, c, d, e, f } => {
                 ctm = matrix_multiply(&[a, b, c, d, e, f], &ctm);
-            }
+            },
             Operator::InlineImage { .. } => {
                 // Inline image source space is the unit square.
                 let bbox_pt = transform_bbox(&(0.0, 0.0, 1.0, 1.0), &ctm);
@@ -83,8 +83,8 @@ pub fn find_inline_image_invocations(
                     bbox_pt,
                 });
                 inline_idx += 1;
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
     out
@@ -146,15 +146,15 @@ pub fn find_form_xobject_invocations(
         match op {
             Operator::SaveState => {
                 stack.push(ctm);
-            }
+            },
             Operator::RestoreState => {
                 if let Some(prev) = stack.pop() {
                     ctm = prev;
                 }
-            }
+            },
             Operator::Cm { a, b, c, d, e, f } => {
                 ctm = matrix_multiply(&[a, b, c, d, e, f], &ctm);
-            }
+            },
             Operator::Do { name } => {
                 if let Some(geom) = form_info.get(&name) {
                     let mut effective = ctm;
@@ -164,8 +164,8 @@ pub fn find_form_xobject_invocations(
                     let bbox_pt = transform_bbox(&geom.bbox, &effective);
                     out.push(FormInvocation { name, bbox_pt });
                 }
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
     out
@@ -403,10 +403,18 @@ fn transform_bbox(bbox: &(f32, f32, f32, f32), m: &[f32; 6]) -> (f32, f32, f32, 
     for (x, y) in corners {
         let tx = m[0] * x + m[2] * y + m[4];
         let ty = m[1] * x + m[3] * y + m[5];
-        if tx < min_x { min_x = tx; }
-        if tx > max_x { max_x = tx; }
-        if ty < min_y { min_y = ty; }
-        if ty > max_y { max_y = ty; }
+        if tx < min_x {
+            min_x = tx;
+        }
+        if tx > max_x {
+            max_x = tx;
+        }
+        if ty < min_y {
+            min_y = ty;
+        }
+        if ty > max_y {
+            max_y = ty;
+        }
     }
     (min_x, min_y, (max_x - min_x).max(0.0), (max_y - min_y).max(0.0))
 }

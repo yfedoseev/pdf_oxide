@@ -666,10 +666,19 @@ pub extern "C" fn pdf_document_open_from_docx_bytes(
     let bytes = raw_slice(data, len);
     match crate::converters::office::OfficeConverter::new().convert_docx_bytes(bytes) {
         Ok(pdf_bytes) => match PdfDocument::from_bytes(pdf_bytes) {
-            Ok(doc) => { set_error(error_code, ERR_SUCCESS); Box::into_raw(Box::new(doc)) },
-            Err(e) => { set_error(error_code, classify_error(&e)); ptr::null_mut() },
+            Ok(doc) => {
+                set_error(error_code, ERR_SUCCESS);
+                Box::into_raw(Box::new(doc))
+            },
+            Err(e) => {
+                set_error(error_code, classify_error(&e));
+                ptr::null_mut()
+            },
         },
-        Err(e) => { set_error(error_code, classify_error(&e)); ptr::null_mut() },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
     }
 }
 
@@ -687,10 +696,19 @@ pub extern "C" fn pdf_document_open_from_pptx_bytes(
     let bytes = raw_slice(data, len);
     match crate::converters::office::OfficeConverter::new().convert_pptx_bytes(bytes) {
         Ok(pdf_bytes) => match PdfDocument::from_bytes(pdf_bytes) {
-            Ok(doc) => { set_error(error_code, ERR_SUCCESS); Box::into_raw(Box::new(doc)) },
-            Err(e) => { set_error(error_code, classify_error(&e)); ptr::null_mut() },
+            Ok(doc) => {
+                set_error(error_code, ERR_SUCCESS);
+                Box::into_raw(Box::new(doc))
+            },
+            Err(e) => {
+                set_error(error_code, classify_error(&e));
+                ptr::null_mut()
+            },
         },
-        Err(e) => { set_error(error_code, classify_error(&e)); ptr::null_mut() },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
     }
 }
 
@@ -708,10 +726,19 @@ pub extern "C" fn pdf_document_open_from_xlsx_bytes(
     let bytes = raw_slice(data, len);
     match crate::converters::office::OfficeConverter::new().convert_xlsx_bytes(bytes) {
         Ok(pdf_bytes) => match PdfDocument::from_bytes(pdf_bytes) {
-            Ok(doc) => { set_error(error_code, ERR_SUCCESS); Box::into_raw(Box::new(doc)) },
-            Err(e) => { set_error(error_code, classify_error(&e)); ptr::null_mut() },
+            Ok(doc) => {
+                set_error(error_code, ERR_SUCCESS);
+                Box::into_raw(Box::new(doc))
+            },
+            Err(e) => {
+                set_error(error_code, classify_error(&e));
+                ptr::null_mut()
+            },
         },
-        Err(e) => { set_error(error_code, classify_error(&e)); ptr::null_mut() },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
     }
 }
 

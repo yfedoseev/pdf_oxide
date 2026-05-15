@@ -44,19 +44,19 @@ pub mod music_region_finder;
 pub mod office;
 pub mod pdf_to_ir;
 pub mod pptx_layout;
-pub mod xlsx_layout;
 pub mod table_formatter;
 pub mod text_post_processor;
 pub mod whitespace;
+pub mod xlsx_layout;
 
 // Re-export main types
 pub use formula_renderer::{FormulaRenderer, RenderedFormula};
-pub use pdf_to_ir::PdfToIrOptions;
 #[allow(deprecated)]
 pub use html::HtmlConverter;
 #[allow(deprecated)]
 pub use markdown::MarkdownConverter;
 pub use office::{Margins, OfficeConfig, OfficeConverter};
+pub use pdf_to_ir::PdfToIrOptions;
 pub use table_formatter::MarkdownTableFormatter;
 pub use text_post_processor::TextPostProcessor;
 pub use whitespace::{cleanup_markdown, normalize_whitespace, remove_page_artifacts};

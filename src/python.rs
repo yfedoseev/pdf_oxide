@@ -2989,7 +2989,11 @@ impl PyPdf {
     }
 }
 
-#[pyclass(module = "pdf_oxide.pdf_oxide", name = "OfficeConverter", skip_from_py_object)]
+#[pyclass(
+    module = "pdf_oxide.pdf_oxide",
+    name = "OfficeConverter",
+    skip_from_py_object
+)]
 pub struct PyOfficeConverter;
 
 #[pymethods]

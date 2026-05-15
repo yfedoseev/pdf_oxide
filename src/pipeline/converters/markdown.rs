@@ -995,9 +995,10 @@ impl MarkdownOutputConverter {
                         .chars()
                         .last()
                         .map_or(false, |c| matches!(c, '.' | ',' | ';' | ':' | '?' | '!'))
-                        && linkified.chars().next().map_or(false, |c| {
-                            c.is_ascii_uppercase() || c.is_ascii_digit()
-                        });
+                        && linkified
+                            .chars()
+                            .next()
+                            .map_or(false, |c| c.is_ascii_uppercase() || c.is_ascii_digit());
                     if no_existing_ws && (visual_gap || punct_boundary) {
                         current_line.push(' ');
                     }

@@ -28,15 +28,15 @@ use crate::geometry::Rect;
 /// that are unambiguously music notation — listing general-purpose
 /// fonts here would suppress legitimate text.
 pub(crate) const MUSIC_FONT_NEEDLES: &[&str] = &[
-    "maestro",         // Finale's default music font
-    "bravura",         // SMuFL reference font
-    "petrucci",        // Sibelius (historical)
-    "opus",            // Sibelius
-    "sonata",          // Adobe music font
-    "emmentaler",      // LilyPond's default
-    "musicalsymbols",  // Unicode-block fallback
-    "engravertext",    // Finale text-on-staff (often paired with Maestro)
-    "noteheadgroup",   // SMuFL noteheads-only fonts
+    "maestro",        // Finale's default music font
+    "bravura",        // SMuFL reference font
+    "petrucci",       // Sibelius (historical)
+    "opus",           // Sibelius
+    "sonata",         // Adobe music font
+    "emmentaler",     // LilyPond's default
+    "musicalsymbols", // Unicode-block fallback
+    "engravertext",   // Finale text-on-staff (often paired with Maestro)
+    "noteheadgroup",  // SMuFL noteheads-only fonts
 ];
 
 /// Returns `true` when `font_name` looks like a music-notation font.
@@ -128,7 +128,9 @@ pub(crate) fn find_music_regions(doc: &PdfDocument, page_idx: usize) -> Vec<Rect
     }
     let mut clusters: Vec<Cluster> = Vec::new();
     for hl in &hlines {
-        let extend = clusters.last_mut().map_or(false, |c| (hl.y - c.y_max) <= 6.0);
+        let extend = clusters
+            .last_mut()
+            .map_or(false, |c| (hl.y - c.y_max) <= 6.0);
         if extend {
             let c = clusters.last_mut().unwrap();
             c.y_max = hl.y;
