@@ -4,19 +4,68 @@ All notable changes to PDFOxide are documented here.
 
 ## [0.3.50] - 2026-05-16
 
-> Cryptographic algorithm-governance policy engine, true destructive
-> redaction, PAdES-B-T/B-LT long-term-validation signatures, and
-> split-by-bookmarks — across all bindings.
+> Runtime cryptographic algorithm-governance policy and split-PDF-by-
+> bookmarks across all seven bindings, plus a signature-date
+> correctness fix and a redaction-safety fix.
 
 ### Added
 
+- **Runtime crypto-governance policy
+  ([#230](https://github.com/yfedoseev/pdf_oxide/issues/230))** — a
+  process-wide `crypto::SecurityPolicy` (modes `compat` / `strict` /
+  `fips-strict`, plus an `allow:`/`deny:<alg>@<read|write>` override
+  grammar) layered as an orthogonal, set-once decorator over the
+  existing `CryptoProvider`. Read/write asymmetry lets a deployment
+  *read* legacy RC4/MD5 PDFs while *forbidding* weak crypto on write or
+  new signatures; fail-closed throughout (unknown algorithm /
+  unparseable spec ⇒ deny). Includes a content-keyed `inventory()`
+  governance report and a pluggable `AuditSink`. Exposed across all
+  seven surfaces (Rust, Python, C ABI, Go, C#, WASM, Node) as
+  `set_crypto_policy` / `crypto_policy` / `crypto_inventory`. Default
+  (`compat`) behaviour is byte-for-byte unchanged. This is the v0.3.50
+  slice of #230; the residual-MD5-KDF routing remains roadmap.
+- **Split a PDF by bookmarks
+  ([#482](https://github.com/yfedoseev/pdf_oxide/issues/482))** — new
+  `pdf-oxide split --by-bookmarks [--bookmark-prefix P]
+  [--bookmark-level N] [--ignore-case] [--no-front-matter]` CLI, plus
+  `plan_split_by_bookmarks` / `split_by_bookmarks*` in core and every
+  binding (Python, WASM, C ABI, Go, C#, Node). Splits at outline
+  boundaries into one PDF per (optionally prefix-filtered) bookmark,
+  with collision-free, filesystem-safe filenames. Outline parsing now
+  resolves **named destinations** (catalog `/Dests` dictionary and the
+  `/Names` → `/Dests` name tree, ISO 32000-1 §12.3.2.3 / §7.9.6),
+  bounded against malformed/cyclic name trees. Plain per-page `split`
+  is unchanged (backward compatible).
+
 ### Fixed
+
+- **Wrong dates in digital-signature timestamps** — `format_pdf_date`
+  hard-coded the month/day to `0101` and approximated the year as
+  `1970 + days/365`, so every signature `/M` value (and document
+  timestamps) was an incorrect ≈Jan-1-of-leap-drifted-year
+  (ISO 32000-1 §7.9.4). Replaced with one leap-year-correct,
+  de-duplicated implementation (the two divergent copies are gone).
 
 ### Security
 
-### CI / Infrastructure
+- **Redaction API no longer silently fakes success
+  ([#231](https://github.com/yfedoseev/pdf_oxide/issues/231))** — the
+  Node `editing-manager` redaction methods (`addRedaction`,
+  `applyRedactions`, `scrubMetadata`, `getRedactionCount`) referenced
+  native `pdf_redaction_*` symbols that do not exist; when absent they
+  silently no-op'd / returned `0` / emitted a success event — a
+  security-critical operation pretending to succeed while removing
+  nothing. They now fail loudly with a clear error until destructive
+  redaction lands (#231 remains open). True destructive redaction
+  (#231) and PAdES-B-T/B-LT long-term-validation signatures (#235) are
+  **not** in this release; they are tracked for a follow-up.
 
 ### Thanks
+
+- [@Suleman-Elahi](https://github.com/Suleman-Elahi) for requesting
+  split-by-bookmarks (#482).
+- [@jedzill4](https://github.com/jedzill4) for volunteering on
+  destructive redaction (#231).
 
 ## [0.3.49] - 2026-05-15
 
