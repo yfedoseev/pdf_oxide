@@ -15,6 +15,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod classify;
 pub mod region;
 
+pub use classify::Classification;
 pub use region::{RedactionRegion, RegionSet, DEFAULT_EDGE_PADDING};
