@@ -343,6 +343,7 @@ extern "C" {
   extern char* pdf_document_get_page_labels(void* handle, int* error_code);
   extern char* pdf_document_get_xmp_metadata(void* handle, int* error_code);
   extern char* pdf_document_get_outline(void* handle, int* error_code);
+  extern char* pdf_document_plan_split_by_bookmarks(void* handle, const char* options_json, int* error_code);
 
   // Search Result Accessors
   extern int pdf_oxide_search_result_count(const void* results);
@@ -1997,6 +1998,25 @@ Napi::Value GetOutline(const Napi::CallbackInfo& info) {
   LOCK_DOC(info, handle);
   int errorCode = 0;
   char* text = pdf_document_get_outline(handle, &errorCode);
+  if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
+  std::string result = text ? text : "";
+  if (text) free_string(text);
+  return Napi::String::New(env, result);
+}
+
+// #482 — plan a bookmark split. arg[1] = options JSON string
+// ({}-tolerant); returns the segment-array JSON string. Mirrors
+// GetOutline; errors are surfaced (the C ABI sets error_code).
+Napi::Value PlanSplitByBookmarks(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  LOCK_DOC(info, handle);
+  std::string optsJson =
+      (info.Length() > 1 && info[1].IsString())
+          ? info[1].As<Napi::String>().Utf8Value()
+          : std::string("{}");
+  int errorCode = 0;
+  char* text =
+      pdf_document_plan_split_by_bookmarks(handle, optsJson.c_str(), &errorCode);
   if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
   std::string result = text ? text : "";
   if (text) free_string(text);
@@ -4077,6 +4097,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("getPageLabels", Napi::Function::New(env, GetPageLabels));
   exports.Set("getXmpMetadata", Napi::Function::New(env, GetXmpMetadata));
   exports.Set("getOutline", Napi::Function::New(env, GetOutline));
+  exports.Set("planSplitByBookmarks", Napi::Function::New(env, PlanSplitByBookmarks));
 
   // XFA Operations
   exports.Set("hasXFA", Napi::Function::New(env, HasXFA));
