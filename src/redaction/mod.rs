@@ -18,6 +18,7 @@
 pub mod classify;
 pub mod image_prune;
 pub mod options;
+pub mod overlay;
 pub mod path_prune;
 pub mod region;
 pub mod text_prune;
