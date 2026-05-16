@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 pub mod classify;
+pub mod image_prune;
 pub mod options;
 pub mod path_prune;
 pub mod region;
