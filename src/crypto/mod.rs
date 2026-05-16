@@ -26,7 +26,10 @@ mod provider;
 mod rust_provider;
 mod types;
 
-pub use active::{active, is_set, set_provider, SetProviderError};
+pub use active::{
+    active, active_policy, is_policy_set, is_set, set_policy, set_provider, SetPolicyError,
+    SetProviderError,
+};
 #[cfg(feature = "fips")]
 pub use aws_lc_provider::AwsLcProvider;
 pub use error::{not_permitted, AlgorithmKind, Error, Result};

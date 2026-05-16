@@ -19,6 +19,7 @@
 
 use std::sync::{Arc, OnceLock};
 
+use super::policy::SecurityPolicy;
 use super::provider::CryptoProvider;
 use super::rust_provider::RustCryptoProvider;
 
@@ -77,6 +78,60 @@ pub fn active() -> &'static Arc<dyn CryptoProvider> {
 /// via [`set_provider`] or lazily by a previous [`active`] call).
 pub fn is_set() -> bool {
     ACTIVE.get().is_some()
+}
+
+/// Errors from [`set_policy`].
+#[derive(Debug)]
+pub enum SetPolicyError {
+    /// A policy has already been installed (by a prior [`set_policy`]
+    /// call or lazily by a previous [`active_policy`] call). Like the
+    /// provider, a mid-flight policy downgrade is a soundness/attack
+    /// hazard, so the policy is set at most once.
+    AlreadySet,
+}
+
+impl std::fmt::Display for SetPolicyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SetPolicyError::AlreadySet => f.write_str(
+                "crypto policy already set — set_policy() must be called once at \
+                 process startup, before any PDF crypto operation",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SetPolicyError {}
+
+static ACTIVE_POLICY: OnceLock<SecurityPolicy> = OnceLock::new();
+
+/// Install `policy` as the process-wide active [`SecurityPolicy`].
+///
+/// Set-once, exactly like [`set_provider`] (a runtime policy downgrade
+/// would be an attack vector). Returns [`SetPolicyError::AlreadySet`]
+/// if a policy is already installed — treat that as fatal. The policy
+/// is orthogonal to the provider: it never widens behaviour, only
+/// narrows it.
+///
+/// The same test-isolation rule as [`set_provider`] applies — registry
+/// tests must run in their own integration-test binary.
+pub fn set_policy(policy: SecurityPolicy) -> Result<(), SetPolicyError> {
+    ACTIVE_POLICY
+        .set(policy)
+        .map_err(|_| SetPolicyError::AlreadySet)
+}
+
+/// Returns the active [`SecurityPolicy`], lazily initialising
+/// [`SecurityPolicy::compat`] (behaviour-preserving) on first call if
+/// none was registered.
+pub fn active_policy() -> &'static SecurityPolicy {
+    ACTIVE_POLICY.get_or_init(SecurityPolicy::compat)
+}
+
+/// Reports whether a policy has been installed (explicitly via
+/// [`set_policy`] or lazily by a previous [`active_policy`] call).
+pub fn is_policy_set() -> bool {
+    ACTIVE_POLICY.get().is_some()
 }
 
 #[cfg(test)]

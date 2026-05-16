@@ -76,6 +76,25 @@ impl EncryptionHandler {
             )));
         }
 
+        // Runtime crypto-governance policy (#230). Orthogonal to the
+        // provider: under the default `compat` policy this is a no-op
+        // (byte-stable); a `strict`/`fips-strict` policy can forbid
+        // reading legacy R≤4 (which fundamentally needs the MD5 KDF,
+        // ISO 32000-1 §7.6.3 Algorithm 2).
+        if dict.revision <= 4
+            && !crate::crypto::active_policy()
+                .allows(crate::crypto::AlgorithmId::HashMd5, crate::crypto::AlgorithmUse::Read)
+        {
+            return Err(Error::InvalidPdf(format!(
+                "active crypto SecurityPolicy (mode={}) forbids opening PDF \
+                 Standard Security R={} (R≤4 requires MD5 key derivation, \
+                 denied for read). Set a 'compat' crypto policy to read \
+                 legacy-encrypted documents.",
+                crate::crypto::active_policy().mode().token(),
+                dict.revision
+            )));
+        }
+
         Ok(Self {
             dict,
             encryption_key: None,

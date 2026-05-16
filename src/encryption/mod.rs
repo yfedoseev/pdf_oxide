@@ -471,6 +471,24 @@ impl EncryptDictBuilder {
             )));
         }
 
+        // Runtime crypto-governance policy (#230). No-op under the
+        // default `compat` policy (byte-stable); `strict`/`fips-strict`
+        // forbid *writing* legacy R≤4 (it fundamentally needs the MD5
+        // KDF, ISO 32000-1 §7.6.3) while still allowing legacy reads.
+        if revision > 0
+            && revision <= 4
+            && !crate::crypto::active_policy()
+                .allows(crate::crypto::AlgorithmId::HashMd5, crate::crypto::AlgorithmUse::Write)
+        {
+            return Err(crate::Error::InvalidPdf(format!(
+                "active crypto SecurityPolicy (mode={}) forbids writing PDF \
+                 Standard Security R={} (R≤4 requires MD5; denied for write). \
+                 Use Algorithm::Aes256 (R=6) or set a 'compat' crypto policy.",
+                crate::crypto::active_policy().mode().token(),
+                revision
+            )));
+        }
+
         let key_length = self.algorithm.key_length();
 
         // Use owner password if provided, otherwise use user password
