@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 pub mod classify;
+pub mod font_scrub;
 pub mod image_prune;
 pub mod options;
 pub mod overlay;
