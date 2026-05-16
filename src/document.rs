@@ -729,11 +729,18 @@ impl PdfDocument {
         // The xref offsets are relative to the original PDF start, but file positions are
         // shifted by header_offset bytes.
         if header_offset > 0 {
-            if let Some(root_ref) = get_root_ref_from_trailer(&trailer) {
-                if !validate_object_at_offset(&mut reader, &xref, root_ref) {
+            // Probe an object to decide whether xref offsets are off by
+            // header_offset. Prefer /Root (common case, unchanged), but a
+            // Linearized file's sparse final trailer omits it (issue #509) —
+            // fall back to the first in-use uncompressed object so the shift
+            // decision no longer depends on /Root being present.
+            let probe =
+                get_root_ref_from_trailer(&trailer).or_else(|| first_in_use_uncompressed(&xref));
+            if let Some(probe_ref) = probe {
+                if !validate_object_at_offset(&mut reader, &xref, probe_ref) {
                     log::info!(
-                        "Root object not loadable at xref offset, adjusting all offsets by header_offset={}",
-                        header_offset
+                        "Probe object {} not loadable at xref offset, adjusting all offsets by header_offset={}",
+                        probe_ref.id, header_offset
                     );
                     xref.shift_offsets(header_offset);
                 }
@@ -2918,13 +2925,52 @@ impl PdfDocument {
             .as_dict()
             .ok_or_else(|| Error::InvalidPdf("Trailer is not a dictionary".to_string()))?;
 
-        let root_ref = trailer_dict
-            .get("Root")
-            .ok_or_else(|| Error::InvalidPdf("Trailer missing /Root entry".to_string()))?
-            .as_reference()
-            .ok_or_else(|| Error::InvalidPdf("/Root is not a reference".to_string()))?;
+        if let Some(root_obj) = trailer_dict.get("Root") {
+            let root_ref = root_obj
+                .as_reference()
+                .ok_or_else(|| Error::InvalidPdf("/Root is not a reference".to_string()))?;
+            return self.load_object(root_ref);
+        }
 
-        self.load_object(root_ref)
+        // The trailer omits /Root. A Linearized file's sparse end-of-file
+        // trailer legitimately does this (issue #509); discover the Catalog
+        // by scanning indirect objects for /Type /Catalog, as Poppler /
+        // PDFium do.
+        self.find_catalog_by_scan()
+            .ok_or_else(|| Error::InvalidPdf("Trailer missing /Root entry".to_string()))
+    }
+
+    /// Scan indirect objects for the document Catalog (`/Type /Catalog`).
+    ///
+    /// Used only as a fallback when the trailer omits `/Root` (issue #509).
+    /// Bounded so a pathological xref can't turn this into an unbounded
+    /// scan; the Catalog is virtually always one of the first objects.
+    fn find_catalog_by_scan(&self) -> Option<Object> {
+        const MAX_SCAN: usize = 4096;
+        let nums: Vec<u32> = self.xref.all_object_numbers().collect();
+        let mut checked = 0usize;
+        for num in nums {
+            if checked >= MAX_SCAN {
+                break;
+            }
+            let generation = match self.xref.get(num) {
+                Some(e) if e.in_use => e.generation,
+                _ => continue,
+            };
+            checked += 1;
+            if let Ok(obj) = self.load_object(ObjectRef::new(num, generation)) {
+                if obj
+                    .as_dict()
+                    .and_then(|d| d.get("Type"))
+                    .and_then(|t| t.as_name())
+                    == Some("Catalog")
+                {
+                    log::info!("Catalog discovered by object scan: {} {} obj", num, generation);
+                    return Some(obj);
+                }
+            }
+        }
+        None
     }
 
     /// Get the structure tree (logical structure) of the document.
@@ -13231,6 +13277,16 @@ pub enum ImageFormat {
 /// Extract the /Root reference from a trailer dictionary.
 fn get_root_ref_from_trailer(trailer: &Object) -> Option<ObjectRef> {
     trailer.as_dict()?.get("Root")?.as_reference()
+}
+
+/// First in-use *uncompressed* object in the xref, used as a /Root-independent
+/// probe for the garbage-prefix offset-shift decision (issue #509). Compressed
+/// entries can't be seek-validated, so they're skipped.
+fn first_in_use_uncompressed(xref: &crate::xref::CrossRefTable) -> Option<ObjectRef> {
+    xref.all_object_numbers()
+        .filter_map(|n| xref.get(n).map(|e| (n, e)))
+        .find(|(_, e)| e.in_use && e.entry_type == crate::xref::XRefEntryType::Uncompressed)
+        .map(|(n, e)| ObjectRef::new(n, e.generation))
 }
 
 /// Heuristic: does this candidate table actually look like wrapped prose

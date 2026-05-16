@@ -207,7 +207,22 @@ fn find_trailer<R: Read + Seek>(
         let input = &contents[trailer_keyword_end..];
         match parse_object(input) {
             Ok((_, obj)) => {
-                best_trailer = Some(obj);
+                // Only accept a parsed trailer that actually carries /Root.
+                // A Linearized file's sparse end-of-file trailer legitimately
+                // omits /Root — the Catalog is reachable via the linearization
+                // parameters / first xref chain, not the trailing trailer
+                // (issue #509). Accepting a /Root-less trailer here would
+                // short-circuit Catalog discovery and fail downstream with
+                // "Trailer missing /Root entry". The *last* /Root-bearing
+                // trailer still wins, so a later revision's /Encrypt is kept.
+                if obj.as_dict().is_some_and(|d| d.get("Root").is_some()) {
+                    best_trailer = Some(obj);
+                } else {
+                    log::debug!(
+                        "Parsed trailer at offset {} has no /Root — skipping (Catalog will be located by object scan)",
+                        trailer_start
+                    );
+                }
             },
             Err(e) => {
                 log::warn!("Failed to parse trailer dictionary at offset {}: {}", trailer_start, e);
@@ -215,12 +230,16 @@ fn find_trailer<R: Read + Seek>(
         }
     }
     if let Some(trailer) = best_trailer {
-        log::info!("Successfully parsed trailer dictionary (using last valid occurrence)");
+        log::info!("Successfully parsed trailer dictionary (last /Root-bearing occurrence)");
         return Ok(trailer);
     }
 
-    // No trailer found or parsing failed - reconstruct minimal trailer
-    log::info!("Reconstructing minimal trailer dictionary...");
+    // No /Root-bearing trailer found — synthesize one by scanning objects
+    // for /Type /Catalog (handles Linearized files whose only trailer is the
+    // sparse, /Root-less end-of-file trailer).
+    log::info!(
+        "No /Root-bearing trailer found; reconstructing minimal trailer via Catalog scan..."
+    );
     reconstruct_minimal_trailer(reader, xref)
 }
 
