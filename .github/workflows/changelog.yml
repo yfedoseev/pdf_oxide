@@ -1,0 +1,48 @@
+name: Changelog Gate
+
+# Refuses to merge to main / advance a release branch if the CHANGELOG
+# section for the version in Cargo.toml is missing or malformed (issue #506).
+# This makes it impossible for the release-publish workflow to ever be
+# triggered against a CHANGELOG that would yield a stale or bare release
+# title.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches:
+      - 'release/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate-changelog:
+    name: Validate CHANGELOG for Cargo.toml version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Extract version from Cargo.toml
+        id: ver
+        run: |
+          VERSION=$(awk -F'"' '/^\[package\]/{p=1} p&&/^version[[:space:]]*=/{print $2; exit}' Cargo.toml)
+          if [ -z "$VERSION" ]; then
+            echo "::error file=Cargo.toml::Could not parse [package] version from Cargo.toml" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Cargo.toml version: $VERSION"
+
+      - name: Validate CHANGELOG section (strict)
+        run: |
+          chmod +x .github/scripts/extract-release-notes.sh
+          .github/scripts/extract-release-notes.sh --check "${{ steps.ver.outputs.version }}"
+
+      - name: Run extract-release-notes regression tests
+        run: |
+          chmod +x .github/scripts/test-extract-release-notes.sh
+          .github/scripts/test-extract-release-notes.sh

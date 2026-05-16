@@ -1067,7 +1067,22 @@ jobs:
 
       - name: Read release title
         id: title
-        run: echo "title=$(cat release-title.txt)" >> $GITHUB_OUTPUT
+        # Defense-in-depth (issue #506): the extract script already fails
+        # loudly on a missing/stale subtitle, but re-validate the title shape
+        # here so a script regression can never publish a bare or wrong title.
+        run: |
+          TITLE="$(cat release-title.txt)"
+          VERSION="${{ needs.validate.outputs.version }}"
+          PREFIX="v${VERSION} | "
+          if [ "${TITLE#"$PREFIX"}" = "$TITLE" ]; then
+            echo "::error::Release title '$TITLE' does not start with expected prefix '${PREFIX}'. Check the '> subtitle' under '## [$VERSION]' in CHANGELOG.md." >&2
+            exit 1
+          fi
+          if [ "${#TITLE}" -lt 20 ]; then
+            echo "::error::Release title '$TITLE' is suspiciously short (<20 chars) — likely a missing or stub subtitle." >&2
+            exit 1
+          fi
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
 
       - name: Create release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
