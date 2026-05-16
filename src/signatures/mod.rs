@@ -46,6 +46,8 @@ mod byterange;
 mod cms;
 #[cfg(feature = "signatures")]
 mod cms_verify;
+#[cfg(feature = "signatures")]
+pub(crate) mod der_util;
 // `pub(crate)` so `RustCryptoProvider::verify_rsa_pkcs1v15` in
 // `src/crypto/rust_provider.rs` can re-use `digest_info_prefix` (the
 // OID → PKCS#1 DigestInfo prefix table) — same source of truth used

@@ -320,47 +320,11 @@ impl PdfSigner {
     }
 }
 
-// ─── Minimal DER / ASN.1 encoding helpers ───────────────────────────────────
-//
-// These are used only by create_pkcs7_signature. They cover the small subset
-// of DER needed for RFC 5652 SignedData: SEQUENCE, SET, OCTET STRING, OID,
-// single-byte INTEGER, and arbitrary context-specific constructed tags.
-
-fn der_length(len: usize) -> Vec<u8> {
-    if len < 0x80 {
-        vec![len as u8]
-    } else if len <= 0xFF {
-        vec![0x81, len as u8]
-    } else if len <= 0xFFFF {
-        vec![0x82, (len >> 8) as u8, len as u8]
-    } else {
-        vec![0x83, (len >> 16) as u8, (len >> 8) as u8, len as u8]
-    }
-}
-
-fn der_tag(tag: u8, content: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + 4 + content.len());
-    out.push(tag);
-    out.extend(der_length(content.len()));
-    out.extend_from_slice(content);
-    out
-}
-
-fn der_sequence(content: &[u8]) -> Vec<u8> {
-    der_tag(0x30, content)
-}
-fn der_set(content: &[u8]) -> Vec<u8> {
-    der_tag(0x31, content)
-}
-fn der_oid(oid_bytes: &[u8]) -> Vec<u8> {
-    der_tag(0x06, oid_bytes)
-}
-fn der_octet_string(data: &[u8]) -> Vec<u8> {
-    der_tag(0x04, data)
-}
-fn der_integer(n: u8) -> Vec<u8> {
-    vec![0x02, 0x01, n]
-}
+// Minimal DER/ASN.1 encoders for RFC 5652 SignedData construction now
+// live in `super::der_util` (#235 TODO #2 — single source of truth,
+// shared with the PAdES ESS/ts-attr/DSS writers).
+#[cfg(feature = "signatures")]
+use super::der_util::{der_integer, der_octet_string, der_oid, der_sequence, der_set, der_tag};
 
 // ────────────────────────────────────────────────────────────────────────────
 
