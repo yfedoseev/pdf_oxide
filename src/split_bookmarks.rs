@@ -7,8 +7,8 @@
 //! **no** low-level PDF writing — byte production delegates to the
 //! existing editor page-range extraction (wired in a later increment).
 //!
-//! The three pure stages — [`flatten_outline`], [`collect_split_points`],
-//! [`build_segments`] — are independently unit-tested without any PDF
+//! The three pure stages — `flatten_outline`, `collect_split_points`,
+//! `build_segments` — are independently unit-tested without any PDF
 //! fixture (SRP / testability).
 
 use std::collections::HashMap;
