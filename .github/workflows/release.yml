@@ -1113,6 +1113,9 @@ jobs:
     needs: [validate, create-release]
     runs-on: ubuntu-latest
     if: ${{ !contains(needs.validate.outputs.version, '-') }}
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/pdf_oxide
     permissions:
       contents: read
     steps:
@@ -1143,6 +1146,9 @@ jobs:
     needs: [validate, build-python-wheels, create-release]
     runs-on: ubuntu-latest
     if: ${{ !contains(needs.validate.outputs.version, '-') }}
+    environment:
+      name: pypi
+      url: https://pypi.org/p/pdf_oxide
     permissions:
       contents: read
     steps:
@@ -1171,6 +1177,9 @@ jobs:
     needs: [validate, build-wasm, create-release]
     runs-on: ubuntu-latest
     if: ${{ !contains(needs.validate.outputs.version, '-') }}
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/pdf-oxide-wasm
     permissions:
       contents: read
     steps:
@@ -1210,6 +1219,9 @@ jobs:
     needs: [validate, create-release]
     runs-on: ubuntu-latest
     if: ${{ !contains(needs.validate.outputs.version, '-') }}
+    environment:
+      name: packaging
+      url: https://github.com/yfedoseev/homebrew-tap
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
@@ -1304,6 +1316,9 @@ jobs:
     needs: [validate, build-nodejs, create-release]
     runs-on: ubuntu-latest
     if: ${{ !contains(needs.validate.outputs.version, '-') }}
+    environment:
+      name: npm-native
+      url: https://www.npmjs.com/package/pdf-oxide
     permissions:
       contents: read
     steps:
@@ -1369,6 +1384,9 @@ jobs:
     needs: [validate, build-csharp, create-release]
     runs-on: ubuntu-latest
     if: ${{ !contains(needs.validate.outputs.version, '-') }}
+    environment:
+      name: nuget
+      url: https://www.nuget.org/packages/PdfOxide
     steps:
       - name: Setup .NET
         uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5
