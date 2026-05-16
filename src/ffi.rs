@@ -7220,6 +7220,95 @@ pub extern "C" fn pdf_document_get_outline(
     }
 }
 
+// ─── Split by bookmarks (#482) — JSON in, JSON out ─────────────────────────
+
+#[derive(serde::Deserialize)]
+struct FfiSplitOpts {
+    #[serde(default)]
+    title_prefix: Option<String>,
+    #[serde(default)]
+    ignore_case: bool,
+    #[serde(default = "ffi_split_level_default")]
+    level: u32,
+    #[serde(default = "ffi_split_true")]
+    include_front_matter: bool,
+}
+fn ffi_split_level_default() -> u32 {
+    1
+}
+fn ffi_split_true() -> bool {
+    true
+}
+impl Default for FfiSplitOpts {
+    fn default() -> Self {
+        Self {
+            title_prefix: None,
+            ignore_case: false,
+            level: 1,
+            include_front_matter: true,
+        }
+    }
+}
+
+/// Plan a bookmark split. `options_json` is `{}`-tolerant
+/// (`title_prefix`, `ignore_case`, `level` [0=all,1=top],
+/// `include_front_matter`). Returns a malloc'd JSON array of segment
+/// objects (free via the existing string-free). On any failure sets
+/// `error_code` (non-zero) and returns null — errors are surfaced, not
+/// swallowed (foundation §3.3; this is not pure read-extraction).
+#[no_mangle]
+pub extern "C" fn pdf_document_plan_split_by_bookmarks(
+    handle: *mut PdfDocument,
+    options_json: *const c_char,
+    error_code: *mut i32,
+) -> *mut c_char {
+    if handle.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let opts_in: FfiSplitOpts = match c_str(options_json) {
+        Ok(s) if !s.trim().is_empty() => match serde_json::from_str(s) {
+            Ok(o) => o,
+            Err(_) => {
+                set_error(error_code, ERR_INVALID_ARG);
+                return ptr::null_mut();
+            },
+        },
+        Ok(_) => FfiSplitOpts::default(),
+        Err(_) => {
+            set_error(error_code, ERR_INVALID_ARG);
+            return ptr::null_mut();
+        },
+    };
+    let opts = crate::split_bookmarks::SplitByBookmarksOptions {
+        title_prefix: opts_in.title_prefix,
+        ignore_case: opts_in.ignore_case,
+        level: crate::split_bookmarks::BookmarkLevel::from_u32(opts_in.level),
+        include_front_matter: opts_in.include_front_matter,
+        ..Default::default()
+    };
+    let doc = handle_ref(handle);
+    match crate::split_bookmarks::plan_split_by_bookmarks(doc, &opts) {
+        Ok(segs) => match serde_json::to_string(&segs) {
+            Ok(j) => {
+                set_error(error_code, ERR_SUCCESS);
+                to_c_string(&j)
+            },
+            Err(e) => {
+                set_error(
+                    error_code,
+                    classify_error(&crate::error::Error::InvalidOperation(e.to_string())),
+                );
+                ptr::null_mut()
+            },
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
+    }
+}
+
 // ─── Form field mutation (via DocumentEditor) ──────────────────────────────
 
 /// Set a form field value on a DocumentEditor. Value is a UTF-8 string.
