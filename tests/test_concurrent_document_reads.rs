@@ -209,3 +209,105 @@ fn concurrent_render_page_fit_one_shared_handle_no_spurious_parse() {
 
     assert!(failures.is_empty(), "shared-handle render race (#507): {failures:?}");
 }
+
+/// Regression for #505: concurrent renders of an **embedded-font** PDF must
+/// never raise a spurious `[1000]` parse error.
+///
+/// The C# `ThreadSafetyTests.RenderPageFit_ParallelForEach_DoesNotThrow` /
+/// `RenderPage_ParallelForEach_DoesNotThrow` flaked on `main` CI because the
+/// embedded-font cmap classifier memoised its result in a process-wide map
+/// keyed on `Arc::as_ptr(font_bytes)`. When a font `Arc<Vec<u8>>` was dropped
+/// (font-cache eviction / per-page renderer reset) and the allocator recycled
+/// its address for an unrelated font, a stale `(is_byte_indexed,
+/// has_unicode_cmap)` flipped the render branch and surfaced as
+/// `ParseException [1000]`.
+///
+/// The existing #507 guard above uses `Pdf::from_text` (Helvetica, no
+/// embedded font) so it never reached the classifier. This test mirrors the
+/// C# fixture exactly — `Pdf::from_markdown(...)`, which embeds a font — and
+/// hammers a single shared FFI handle so the classifier runs on every render
+/// across all threads. Any `ERR_PARSE` is the #505 regression.
+#[cfg(feature = "rendering")]
+#[test]
+fn concurrent_render_embedded_font_no_spurious_parse_505() {
+    use pdf_oxide::api::Pdf;
+    use std::sync::Arc;
+
+    const ERR_SUCCESS: i32 = 0;
+    const ERR_PARSE: i32 = 3;
+
+    // Identical to the C# CreateTestDoc(): a 3-page markdown PDF. Markdown
+    // rendering embeds a font, so every render exercises the embedded-font
+    // cmap classifier that #505 is about.
+    let bytes: Vec<u8> =
+        Pdf::from_markdown("# Thread Safety\n\nPage 1.\n\n---\n\nPage 2.\n\n---\n\nPage 3.")
+            .expect("build markdown PDF")
+            .into_bytes();
+
+    let mut ec: i32 = -1;
+    let doc = unsafe { pdf_document_open_from_bytes(bytes.as_ptr(), bytes.len(), &mut ec) };
+    assert_eq!(ec, ERR_SUCCESS, "open_from_bytes failed");
+    assert!(!doc.is_null(), "open_from_bytes returned null");
+    let doc_addr = doc as usize;
+
+    // Use the real page count (the C# test reads doc.PageCount the same way);
+    // markdown pagination isn't guaranteed to be 3 pages.
+    let mut ec: i32 = -1;
+    let pages = unsafe { pdf_document_get_page_count(doc, &mut ec) };
+    assert_eq!(ec, ERR_SUCCESS, "page_count failed");
+    assert!(pages >= 1, "expected at least one page, got {pages}");
+    let pages = pages as usize;
+
+    // Enough concurrent font alloc/drop churn to exercise the classifier
+    // across threads, but small render targets keep CI time bounded.
+    const THREADS: usize = 8;
+    const ITERS: usize = 40;
+
+    let barrier = Arc::new(std::sync::Barrier::new(THREADS));
+    let handles: Vec<_> = (0..THREADS)
+        .map(|t| {
+            let b = Arc::clone(&barrier);
+            std::thread::spawn(move || -> Result<(), String> {
+                let doc = doc_addr as *mut _;
+                b.wait();
+                for i in 0..ITERS {
+                    let page = (i % pages) as i32;
+                    let mut ec: i32 = -1;
+                    // Alternate the two render entry points the C# tests use.
+                    let img = if (t + i) % 2 == 0 {
+                        unsafe { pdf_render_page_fit(doc, page, 200, 260, 0, &mut ec) }
+                    } else {
+                        unsafe { pdf_render_page(doc, page, 0, &mut ec) }
+                    };
+                    if ec == ERR_PARSE {
+                        return Err(format!(
+                            "thread {t} iter {i} page {page}: spurious ERR_PARSE \
+                             ([1000]) — embedded-font classifier race (#505) regressed"
+                        ));
+                    }
+                    if ec != ERR_SUCCESS || img.is_null() {
+                        return Err(format!(
+                            "thread {t} iter {i} page {page}: render failed ec={ec}, null={}",
+                            img.is_null()
+                        ));
+                    }
+                    unsafe { pdf_rendered_image_free(img) };
+                }
+                Ok(())
+            })
+        })
+        .collect();
+
+    let mut failures = Vec::new();
+    for h in handles {
+        match h.join() {
+            Ok(Ok(())) => {},
+            Ok(Err(e)) => failures.push(e),
+            Err(_) => failures.push("render thread panicked".to_string()),
+        }
+    }
+
+    unsafe { pdf_document_free(doc) };
+
+    assert!(failures.is_empty(), "embedded-font render race (#505): {failures:?}");
+}

@@ -43,38 +43,25 @@ impl<'a> OutlineBuilder for SkiaOutlineBuilder<'a> {
     }
 }
 
-/// Classify an embedded font's cmap tables in a single parse pass and cache
-/// the result keyed on the Arc pointer (stable for the document lifetime).
+/// Classify an embedded font's cmap tables in a single parse pass.
 ///
 /// Returns `(is_byte_indexed_only, has_unicode_cmap)`:
-/// - `is_byte_indexed_only`: only Macintosh byte-indexed cmap present → use
-///   `render_cid_direct` rather than Unicode shaping.
+/// - `is_byte_indexed_only`: only a Macintosh byte-indexed cmap present →
+///   use `render_cid_direct` rather than Unicode shaping.
 /// - `has_unicode_cmap`: a Unicode/Windows cmap is present → Unicode shaping
 ///   is likely to produce non-.notdef glyphs; use `render_unicode_text`.
 ///
-/// Before this cache existed, every `render_text` call with an embedded font
-/// ran `has_byte_indexed_cmap` (one `ttf_parser::Face::parse`) **plus** a full
-/// `rustybuzz::shape` probe on the current text — so 1000 text segments on one
-/// page paid for 1000 parse + 1000 shape calls on the same font bytes. Now
-/// those are collapsed to one parse per embedded font per process.
-static EMBEDDED_FONT_CLASS: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<usize, (bool, bool)>>,
-> = std::sync::OnceLock::new();
-
+/// This is a zero-copy `ttf_parser` table probe (no glyph parsing, no
+/// shaping), cheap enough to run per call. It was previously memoised in a
+/// process-wide `HashMap` keyed on `Arc::as_ptr(data)`, but that key is
+/// unsound under concurrency: when an `Arc<Vec<u8>>` font buffer is dropped
+/// (font-cache eviction / per-page renderer reset) and the allocator
+/// recycles its address for an unrelated font, the stale entry was returned,
+/// flipping the render branch and surfacing as an intermittent
+/// `ParseException [1000]` under concurrent rendering (issue #505).
+/// Computing it locally removes the shared mutable state entirely.
 fn classify_embedded_font(data: &Arc<Vec<u8>>) -> (bool, bool) {
-    // Use the Arc's inner-pointer value as a stable key (two Arc::clones of the
-    // same allocation share the same raw pointer, so this is always a cache hit
-    // after the first call for any given font binary).
-    let key = Arc::as_ptr(data) as usize;
-    let cache =
-        EMBEDDED_FONT_CLASS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-    {
-        let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(&v) = guard.get(&key) {
-            return v;
-        }
-    }
-    let result = (|| {
+    (|| {
         let face = ttf_parser::Face::parse(data, 0).ok()?;
         let cmap = face.tables().cmap?;
         let mut saw_byte_indexed = false;
@@ -92,12 +79,7 @@ fn classify_embedded_font(data: &Arc<Vec<u8>>) -> (bool, bool) {
         }
         Some((saw_byte_indexed && !saw_unicode, saw_unicode))
     })()
-    .unwrap_or((false, false));
-    cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(key, result);
-    result
+    .unwrap_or((false, false))
 }
 
 /// Resolve a single PDF content byte to a GID by consulting the font's
