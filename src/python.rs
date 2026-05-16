@@ -7268,7 +7268,98 @@ fn pdf_oxide(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(crypto_set_policy, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(crypto_policy, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(crypto_inventory, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(plan_split_by_bookmarks, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(split_by_bookmarks, m)?)?;
     Ok(())
+}
+
+fn split_opts(
+    title_prefix: Option<String>,
+    ignore_case: bool,
+    level: u32,
+    include_front_matter: bool,
+) -> crate::split_bookmarks::SplitByBookmarksOptions {
+    crate::split_bookmarks::SplitByBookmarksOptions {
+        title_prefix,
+        ignore_case,
+        level: crate::split_bookmarks::BookmarkLevel::from_u32(level),
+        include_front_matter,
+        ..Default::default()
+    }
+}
+
+fn seg_to_pydict<'py>(
+    py: pyo3::Python<'py>,
+    seg: &crate::split_bookmarks::BookmarkSegment,
+) -> pyo3::PyResult<pyo3::Bound<'py, pyo3::types::PyDict>> {
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("index", seg.index)?;
+    d.set_item("start_page", seg.start_page)?;
+    d.set_item("end_page", seg.end_page)?;
+    d.set_item("title", seg.title.clone())?;
+    d.set_item("file_stem", &seg.file_stem)?;
+    d.set_item("page_label", seg.page_label.clone())?;
+    Ok(d)
+}
+
+/// Plan a bookmark split for `src_bytes` without producing PDFs.
+///
+/// Returns ``list[dict]`` (keys: index, start_page, end_page, title,
+/// file_stem, page_label). ``level``: 0 = all depths, 1 = top-level
+/// (default), n = up to depth n. Raises ``RuntimeError`` if the
+/// document has no outline or nothing resolves.
+#[pyfunction]
+#[pyo3(signature = (src_bytes, title_prefix=None, ignore_case=false, level=1, include_front_matter=true))]
+fn plan_split_by_bookmarks(
+    py: pyo3::Python<'_>,
+    src_bytes: &[u8],
+    title_prefix: Option<String>,
+    ignore_case: bool,
+    level: u32,
+    include_front_matter: bool,
+) -> pyo3::PyResult<pyo3::Py<pyo3::types::PyList>> {
+    let doc = crate::document::PdfDocument::from_bytes(src_bytes.to_vec())
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    let opts = split_opts(title_prefix, ignore_case, level, include_front_matter);
+    let segs = crate::split_bookmarks::plan_split_by_bookmarks(&doc, &opts)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    let list = pyo3::types::PyList::empty(py);
+    for s in &segs {
+        list.append(seg_to_pydict(py, s)?)?;
+    }
+    Ok(list.unbind())
+}
+
+/// Split `src_bytes` at bookmark boundaries.
+///
+/// Returns ``list[tuple[dict, bytes]]`` — each segment's metadata
+/// (see :func:`plan_split_by_bookmarks`) paired with its PDF bytes.
+/// The source is not modified. Raises ``RuntimeError`` on failure.
+#[pyfunction]
+#[pyo3(signature = (src_bytes, title_prefix=None, ignore_case=false, level=1, include_front_matter=true))]
+fn split_by_bookmarks(
+    py: pyo3::Python<'_>,
+    src_bytes: &[u8],
+    title_prefix: Option<String>,
+    ignore_case: bool,
+    level: u32,
+    include_front_matter: bool,
+) -> pyo3::PyResult<pyo3::Py<pyo3::types::PyList>> {
+    let opts = split_opts(title_prefix, ignore_case, level, include_front_matter);
+    let parts = crate::split_bookmarks::split_by_bookmarks_to_bytes(src_bytes, &opts)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    let list = pyo3::types::PyList::empty(py);
+    for (seg, blob) in &parts {
+        let tup = pyo3::types::PyTuple::new(
+            py,
+            [
+                seg_to_pydict(py, seg)?.into_any(),
+                pyo3::types::PyBytes::new(py, blob).into_any(),
+            ],
+        )?;
+        list.append(tup)?;
+    }
+    Ok(list.unbind())
 }
 
 /// Return the name of the currently active cryptographic provider

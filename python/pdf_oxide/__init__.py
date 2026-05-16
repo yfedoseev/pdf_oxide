@@ -159,6 +159,8 @@ from .pdf_oxide import (  # noqa: E402
     crypto_policy,
     crypto_set_policy,
     crypto_use_fips,
+    plan_split_by_bookmarks,
+    split_by_bookmarks,
     disable_logging,
     generate_barcode_svg,
     generate_qr_svg,
@@ -226,5 +228,8 @@ __all__ = [
     "crypto_inventory",
     "crypto_policy",
     "crypto_set_policy",
+    # Split-by-bookmarks surface (issue #482)
+    "plan_split_by_bookmarks",
+    "split_by_bookmarks",
 ]
 __version__ = VERSION
