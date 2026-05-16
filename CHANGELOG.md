@@ -2,7 +2,85 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.49] - 2026-05-15
+
+> Off-byte-0 PDF header recovery, sparse-trailer Catalog discovery,
+> a render-path thread-safety fix, and release-automation hardening.
+
+### Fixed
+
+- **Linearized PDFs with a non-zero `%PDF-` header offset
+  ([#509](https://github.com/yfedoseev/pdf_oxide/issues/509))** — files
+  whose `%PDF-` header is preceded by leading bytes (e.g. a captive-
+  portal HTML redirect injected ahead of a Linearized PDF) are now read
+  instead of rejected with `Trailer missing /Root entry`. The xref-
+  offset shift for header-offset PDFs no longer requires the final
+  trailer to carry `/Root`; xref reconstruction now rejects a parsed-
+  but-`/Root`-less trailer and falls through to Catalog discovery; and
+  `catalog()` scans for `/Type /Catalog` when the trailer omits `/Root`
+  (matching Poppler / PDFium behaviour, ISO 32000-2 §7.5.2 / 1.7
+  Implementation Note G.6).
+
+- **Render-path data race under concurrent rendering
+  ([#505](https://github.com/yfedoseev/pdf_oxide/issues/505))** — the
+  process-wide embedded-font classification cache keyed on
+  `Arc::as_ptr` could return a stale `(is_byte_indexed,
+  has_unicode_cmap)` for an unrelated font when an allocation address
+  was recycled across threads, intermittently surfacing as
+  `ParseException [1000]` from `RenderPage` / `RenderPageFit` under
+  `Parallel.ForEach`. The unsound global cache is removed; the cmap
+  classification is now computed locally per call (a cheap `ttf_parser`
+  table probe), so concurrent renders can no longer collide.
+
+- **Test helper `make_type0_font` used a non-production `Encoding`
+  variant ([#504](https://github.com/yfedoseev/pdf_oxide/issues/504))**
+  — the helper now maps `Identity-H` / `Identity-V` to
+  `Encoding::Identity` exactly as the real font parser does, so the
+  affected Type0 tests exercise the production code path instead of a
+  variant production never produces. Purely test-correctness; no user-
+  facing behaviour change.
+
+### CI / Infrastructure
+
+- **Release-notes title extraction hardened
+  ([#506](https://github.com/yfedoseev/pdf_oxide/issues/506))** —
+  `extract-release-notes.sh` now bounds the subtitle scan to the
+  requested version's section (no longer silently inheriting an older
+  version's `>` blockquote), concatenates multi-line blockquotes
+  instead of truncating at the first line, and fails loudly when the
+  version section or its subtitle is missing. A `validate-changelog`
+  PR/release-branch gate plus a release-title sanity check stop a
+  malformed CHANGELOG from ever reaching the publish step, and a self-
+  contained regression test covers the missing-section, missing-
+  subtitle, multi-line, and cross-version false-scrape cases.
+
+- **GitHub Deployments visibility for regular publishes
+  ([#493](https://github.com/yfedoseev/pdf_oxide/issues/493))** — each
+  publish job in `release.yml` (crates.io, PyPI, npm, npm-native,
+  NuGet, Homebrew/Scoop) now declares an `environment:`, so standard-
+  pipeline publishes appear under the Deployments view with their
+  artifact URL, matching what the FIPS pipeline already did.
+
+### Thanks
+
+- [@Goldziher](https://github.com/Goldziher) (kreuzberg-dev) — opened
+  [#509](https://github.com/yfedoseev/pdf_oxide/issues/509) with a clean
+  standalone reproducer (no app code), a pinned test file, a full
+  multi-engine cross-check against Poppler, and a 156-PDF corpus survey
+  that isolated this as the single legitimate file the parser rejected.
+  That report turned a vague "Linearized PDF fails" into a precise
+  header-offset + sparse-trailer root cause.
+
+The remaining fixes ([#506](https://github.com/yfedoseev/pdf_oxide/issues/506),
+[#505](https://github.com/yfedoseev/pdf_oxide/issues/505),
+[#504](https://github.com/yfedoseev/pdf_oxide/issues/504),
+[#493](https://github.com/yfedoseev/pdf_oxide/issues/493)) were surfaced
+internally while reviewing the v0.3.45–v0.3.47 release automation, the
+post-merge `main` CI runs, and the v0.3.47 PR review.
+
 ## [0.3.48] - 2026-05-14
+
+> Bidirectional PDF ↔ DOCX/PPTX/XLSX office converter integration across all seven bindings.
 
 This release lands the **office converter integration**
 ([#159](https://github.com/yfedoseev/pdf_oxide/issues/159)):
@@ -157,6 +235,8 @@ follow-up work).
   `log::log_enabled!(Level::Debug)`.
 
 ## [0.3.47] - 2026-05-11
+
+> Text-extraction quality, CJK + RTL fixes, table-detection hardening, and a WASM SystemTime fix.
 
 This release closes the remaining bugs surfaced by the kreuzberg
 integration (issue [#484](https://github.com/yfedoseev/pdf_oxide/issues/484))
@@ -380,6 +460,8 @@ kreuzberg integration test feedback loop:
 - @eersis-byte — opened #492 with the WASM `SystemTime` panic backtrace
 
 ## [0.3.46] - 2026-05-10
+
+> Extraction quality, raw RGBA output, JBIG2 decode, editor fixes, and FIPS CI hardening.
 
 ### Added
 
@@ -610,6 +692,8 @@ kreuzberg integration test feedback loop:
   regression are resolved.
 
 ## [0.3.45] - 2026-05-07
+
+> legacy-crypto gate, FIPS RSA-PKCS#1 v1.5, CJK font subsetter fix, and render_page_fit precision.
 
 ### Fixed
 
