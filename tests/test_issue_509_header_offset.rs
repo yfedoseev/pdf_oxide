@@ -115,3 +115,77 @@ fn test_issue_509_garbage_prefix_with_root_still_works() {
     let doc = PdfDocument::from_bytes(bytes).expect("garbage-prefixed /Root PDF must still load");
     assert_eq!(doc.page_count().expect("page_count"), 1);
 }
+
+/// Build a PDF with the **real Linearized shape**: an earlier `trailer`
+/// that carries `/Root` (the first-page xref chain) followed by a later,
+/// sparse end-of-file `trailer` that omits `/Root` (only `/Size` + `/ID`,
+/// exactly like the issue #509 `medium.pdf`: `<</Size 114/ID[...]>>`).
+fn build_two_trailer_linearized() -> Vec<u8> {
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+
+    let off1 = pdf.len();
+    pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    let off2 = pdf.len();
+    pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+    let off3 = pdf.len();
+    pdf.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>\nendobj\n",
+    );
+
+    let xref_off = pdf.len();
+    pdf.extend_from_slice(b"xref\n0 4\n");
+    pdf.extend_from_slice(b"0000000000 65535 f \n");
+    pdf.extend_from_slice(format!("{off1:010} 00000 n \n").as_bytes());
+    pdf.extend_from_slice(format!("{off2:010} 00000 n \n").as_bytes());
+    pdf.extend_from_slice(format!("{off3:010} 00000 n \n").as_bytes());
+
+    // FIRST trailer — carries /Root (Linearized first-chain trailer).
+    pdf.extend_from_slice(
+        format!("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{xref_off}\n%%EOF\n").as_bytes(),
+    );
+
+    // LATER, sparse end-of-file trailer — NO /Root, only /Size + /ID,
+    // appearing *after* the /Root-bearing one in byte order. Pre-fix,
+    // `find_trailer` kept the last parsed trailer regardless of /Root, so
+    // this one clobbered the good one and the load failed with
+    // "Trailer missing /Root entry".
+    let xref2_off = pdf.len();
+    pdf.extend_from_slice(b"xref\n0 1\n0000000000 65535 f \n");
+    pdf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size 4 /ID[<AAAAAAAA><BBBBBBBB>] >>\nstartxref\n{xref2_off}\n%%EOF\n"
+        )
+        .as_bytes(),
+    );
+    pdf
+}
+
+/// The discriminating #509 case: two trailers, the *later* one sparse and
+/// `/Root`-less. `find_trailer` must keep the earlier `/Root`-bearing
+/// trailer, not the last-parsed one. This is the exact real-file shape;
+/// the single-trailer tests above do NOT exercise the "skip a later
+/// `/Root`-less trailer, keep the earlier `/Root`-bearing one" logic, so a
+/// future revert of that logic would pass them while silently re-breaking
+/// the real `medium.pdf`. Garbage prefix forces the reconstruction path
+/// where `find_trailer` runs.
+#[test]
+fn test_issue_509_linearized_two_trailers_keeps_root_bearing() {
+    let mut bytes = html_redirect_garbage();
+    bytes.extend_from_slice(&build_two_trailer_linearized());
+
+    let doc = PdfDocument::from_bytes(bytes)
+        .unwrap_or_else(|e| panic!("two-trailer Linearized PDF must load (#509): {e}"));
+    assert_eq!(
+        doc.page_count().unwrap_or_else(|e| panic!(
+            "page_count failed — later /Root-less trailer wrongly won: {e}"
+        )),
+        1
+    );
+
+    // Same shape without the garbage prefix: regular xref parse fails on the
+    // duplicated/competing xref so reconstruction still runs; the /Root-bearing
+    // trailer must still win.
+    let doc2 = PdfDocument::from_bytes(build_two_trailer_linearized())
+        .expect("two-trailer Linearized PDF (no prefix) must load");
+    assert_eq!(doc2.page_count().expect("page_count"), 1);
+}
