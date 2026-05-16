@@ -21,10 +21,16 @@
 #   * no `> ...` subtitle blockquote appears in that section, or
 #   * the section has no `### ` heading (i.e. it's an empty stub).
 #
-# The subtitle scan is BOUNDED to the requested version's own section, so it
-# can never scrape an older version's blockquote (the root cause of v0.3.45–
-# v0.3.47 all inheriting v0.3.44's "FIPS 140-3 compliance" title), and a
+# The subtitle scan is BOUNDED to the requested version's own section AND
+# ANCHORED to the blockquote that immediately follows the version header
+# (only blank lines may sit between). So it can never scrape an older
+# version's blockquote (the root cause of v0.3.45–v0.3.47 all inheriting
+# v0.3.44's "FIPS 140-3 compliance" title), and a section that forgets its
+# top subtitle but has a body blockquote later (e.g. a "> Scope note.")
+# fails loudly instead of silently using that body note as the title. A
 # multi-line blockquote is concatenated rather than truncated at line 1.
+# Body blockquotes are preserved in the release notes — only the leading
+# subtitle block is stripped.
 
 set -euo pipefail
 
@@ -52,24 +58,30 @@ if ! awk -v ver="$VERSION" '
   exit 1
 fi
 
-# 2. Extract the subtitle: the FIRST contiguous run of '>' lines inside this
-#    version's section only. Bounded by the next '## [' header (or EOF), so a
-#    missing subtitle can never fall through to an older version's blockquote.
-#    Multi-line blockquotes are concatenated into one subtitle.
+# 2. Extract the subtitle: the contiguous run of '>' lines that IMMEDIATELY
+#    follows the version header (only blank lines may precede it). Bounded by
+#    the next '## [' header (or EOF). If the first non-blank line in the
+#    section is not a '>' blockquote, the subtitle is treated as MISSING — a
+#    body blockquote appearing later in the section (e.g. a "> Scope note.")
+#    is never mistaken for the title. Multi-line blockquotes are concatenated.
 SUBTITLE=$(awk -v ver="$VERSION" '
   function hdrver(line,   s) { s=line; sub(/^## \[/,"",s); sub(/\].*/,"",s); return s }
   /^## \[/ {
-    if (hdrver($0) == ver) { in_section=1; next }
+    if (hdrver($0) == ver) { in_section=1; pre=1; next }
     if (in_section) exit            # reached the next version → stop
     next
   }
   in_section {
+    if (pre && $0 ~ /^[ \t]*$/) next   # blank lines between header and subtitle
+    if (pre) {                         # first non-blank line in the section
+      if ($0 !~ /^>/) exit             # not a blockquote → no anchored subtitle
+      pre=0
+    }
     if ($0 ~ /^>/) {
       l=$0; sub(/^>[ \t]?/,"",l)
       st = (st=="" ? l : st " " l)
-      seen=1
-    } else if (seen) {
-      exit                          # end of the first blockquote block
+    } else {
+      exit                             # end of the subtitle blockquote
     }
   }
   END { if (st != "") print st }
@@ -102,13 +114,25 @@ fi
 echo "$TITLE" > release-title.txt
 
 # Extract body: everything between this version's header and the next '## [',
-# minus the subtitle blockquote lines and any leading blank line.
+# minus ONLY the leading subtitle block (the blank lines + the contiguous '>'
+# run immediately under the header). Body blockquotes that appear later in the
+# section (scope notes, callouts) are preserved verbatim.
 awk -v ver="$VERSION" '
   function hdrver(line,   s) { s=line; sub(/^## \[/,"",s); sub(/\].*/,"",s); return s }
-  /^## \[/ { if (hdrver($0)==ver){in_section=1;next} if(in_section) exit; next }
-  in_section { print }
+  /^## \[/ { if (hdrver($0)==ver){in_section=1;phase="lead";next} if(in_section) exit; next }
+  in_section {
+    if (phase=="lead") {
+      if ($0 ~ /^[ \t]*$/) next        # blank lines above the subtitle
+      if ($0 ~ /^>/) { phase="sub"; next }
+      phase="body"                     # defensive: no anchored subtitle
+    }
+    if (phase=="sub") {
+      if ($0 ~ /^>/) next              # subtitle blockquote line — strip
+      phase="body"                     # subtitle ended; print this line onward
+    }
+    print
+  }
 ' "$CHANGELOG" \
-  | sed '/^>/d' \
   | sed '1{/^$/d}' > changelog-section.md
 
 if [ ! -s changelog-section.md ]; then

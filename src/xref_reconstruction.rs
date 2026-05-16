@@ -199,6 +199,12 @@ fn find_trailer<R: Read + Seek>(
     // latest incremental update) takes precedence. Using the first trailer can
     // miss /Encrypt entries added in later revisions.
     let mut best_trailer: Option<Object> = None;
+    // Entries salvaged from /Root-less parsed trailers. If no /Root-bearing
+    // trailer exists and we have to synthesize a minimal one, an encrypted
+    // file's /Encrypt (and /ID, used for the encryption key) would otherwise
+    // be lost, making the document undecryptable. Last occurrence wins, for
+    // the same "latest incremental update" reason as /Root above.
+    let mut salvaged: HashMap<String, Object> = HashMap::new();
     for mat in RE_TRAILER.find_iter(contents) {
         let trailer_start = mat.start();
         log::debug!("Found trailer keyword at offset {}", trailer_start);
@@ -218,8 +224,15 @@ fn find_trailer<R: Read + Seek>(
                 if obj.as_dict().is_some_and(|d| d.get("Root").is_some()) {
                     best_trailer = Some(obj);
                 } else {
+                    if let Some(d) = obj.as_dict() {
+                        for key in ["Encrypt", "ID", "Info"] {
+                            if let Some(v) = d.get(key) {
+                                salvaged.insert(key.to_string(), v.clone());
+                            }
+                        }
+                    }
                     log::debug!(
-                        "Parsed trailer at offset {} has no /Root — skipping (Catalog will be located by object scan)",
+                        "Parsed trailer at offset {} has no /Root — skipping (Catalog located by object scan; /Encrypt /ID /Info preserved)",
                         trailer_start
                     );
                 }
@@ -240,16 +253,19 @@ fn find_trailer<R: Read + Seek>(
     log::info!(
         "No /Root-bearing trailer found; reconstructing minimal trailer via Catalog scan..."
     );
-    reconstruct_minimal_trailer(reader, xref)
+    reconstruct_minimal_trailer(reader, xref, &salvaged)
 }
 
 /// Reconstruct a minimal trailer dictionary.
 ///
 /// Scans objects to find the catalog (object with /Type /Catalog) and
-/// creates a minimal trailer with just the required entries.
+/// creates a minimal trailer with the required entries, plus any
+/// `salvaged` entries (/Encrypt, /ID, /Info) carried over from a
+/// /Root-less parsed trailer so encrypted documents remain decryptable.
 fn reconstruct_minimal_trailer<R: Read + Seek>(
     reader: &mut R,
     xref: &CrossRefTable,
+    salvaged: &HashMap<String, Object>,
 ) -> Result<Object> {
     log::debug!("Scanning objects to find catalog...");
 
@@ -257,10 +273,19 @@ fn reconstruct_minimal_trailer<R: Read + Seek>(
     // The catalog is an object with /Type /Catalog
     let mut catalog_ref = None;
 
-    // Scan through objects looking for the catalog
-    // We'll check a reasonable number of objects (up to 100)
-    for (idx, obj_num) in xref.all_object_numbers().enumerate() {
-        if idx >= 100 {
+    // Scan objects looking for the catalog. `all_object_numbers()` is
+    // `HashMap`-backed, so iterating it directly is a nondeterministic order:
+    // a bounded scan over an arbitrary subset can miss the Catalog on
+    // different runs (even for a ~114-object Linearized file). Sort ascending
+    // so the scan is deterministic and visits low-numbered objects first,
+    // where the Catalog conventionally lives. The bound only guards against a
+    // pathologically large xref.
+    const MAX_SCAN: usize = 4096;
+    let mut obj_nums: Vec<u32> = xref.all_object_numbers().collect();
+    obj_nums.sort_unstable();
+    let mut checked = 0usize;
+    for obj_num in obj_nums {
+        if checked >= MAX_SCAN {
             break;
         }
 
@@ -268,6 +293,7 @@ fn reconstruct_minimal_trailer<R: Read + Seek>(
             if !entry.in_use {
                 continue;
             }
+            checked += 1;
 
             // Try to load and check this object
             match load_object_at_offset(reader, entry.offset) {
@@ -305,6 +331,14 @@ fn reconstruct_minimal_trailer<R: Read + Seek>(
         Object::Reference(crate::object::ObjectRef::new(cat_num, cat_gen)),
     );
     trailer_dict.insert("Size".to_string(), Object::Integer(xref.len() as i64));
+
+    // Carry over /Encrypt, /ID, /Info salvaged from a skipped /Root-less
+    // trailer. Never clobber the Root/Size we just computed.
+    for (key, value) in salvaged {
+        if key != "Root" && key != "Size" {
+            trailer_dict.insert(key.clone(), value.clone());
+        }
+    }
 
     Ok(Object::Dictionary(trailer_dict))
 }

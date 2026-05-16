@@ -182,9 +182,11 @@ fn test_issue_509_linearized_two_trailers_keeps_root_bearing() {
         1
     );
 
-    // Same shape without the garbage prefix: regular xref parse fails on the
-    // duplicated/competing xref so reconstruction still runs; the /Root-bearing
-    // trailer must still win.
+    // Same shape without the garbage prefix: the final `startxref` points at
+    // the second (sparse, valid) xref, so the regular xref parse *succeeds*,
+    // but that final trailer has no /Root, so root validation fails and
+    // reconstruction runs anyway. The earlier /Root-bearing trailer must
+    // still win.
     let doc2 = PdfDocument::from_bytes(build_two_trailer_linearized())
         .expect("two-trailer Linearized PDF (no prefix) must load");
     assert_eq!(doc2.page_count().expect("page_count"), 1);

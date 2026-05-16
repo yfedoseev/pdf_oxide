@@ -2945,9 +2945,17 @@ impl PdfDocument {
     /// Used only as a fallback when the trailer omits `/Root` (issue #509).
     /// Bounded so a pathological xref can't turn this into an unbounded
     /// scan; the Catalog is virtually always one of the first objects.
+    ///
+    /// Object numbers are scanned in ascending order. `all_object_numbers()`
+    /// is `HashMap`-backed, so iterating it directly would be a
+    /// nondeterministic order — a bounded scan over an arbitrary subset can
+    /// miss the Catalog on different runs. Sorting makes discovery
+    /// deterministic and scans low-numbered objects first, where the Catalog
+    /// conventionally lives.
     fn find_catalog_by_scan(&self) -> Option<Object> {
         const MAX_SCAN: usize = 4096;
-        let nums: Vec<u32> = self.xref.all_object_numbers().collect();
+        let mut nums: Vec<u32> = self.xref.all_object_numbers().collect();
+        nums.sort_unstable();
         let mut checked = 0usize;
         for num in nums {
             if checked >= MAX_SCAN {
