@@ -311,7 +311,9 @@ pub use document::{ExtractedImageRef, ImageFormat, PdfDocument, ReadingOrder};
 pub use error::{Error, Result};
 pub use layout::PageText;
 pub use outline::{Destination, OutlineItem};
-pub use redaction::{RedactionRegion, RegionSet};
+pub use redaction::{
+    Classification, OcgPolicy, RedactionOptions, RedactionRegion, RedactionReport, RegionSet,
+};
 
 // Global font cache for batch processing
 pub use fonts::global_cache::{

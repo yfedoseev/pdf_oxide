@@ -16,7 +16,9 @@
 #![forbid(unsafe_code)]
 
 pub mod classify;
+pub mod options;
 pub mod region;
 
 pub use classify::Classification;
+pub use options::{OcgPolicy, RedactionOptions, RedactionReport};
 pub use region::{RedactionRegion, RegionSet, DEFAULT_EDGE_PADDING};
