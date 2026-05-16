@@ -234,6 +234,52 @@ pub fn build_segments(
     Ok(segs)
 }
 
+/// Plan the split for `doc` without producing any bytes — cheap;
+/// ideal for `--dry-run` and for binding callers that drive their own
+/// writes.
+///
+/// # Errors
+/// [`Error::InvalidOperation`] if the document has no outline, or no
+/// selected bookmark resolves to a usable split point.
+pub fn plan_split_by_bookmarks(
+    doc: &crate::document::PdfDocument,
+    opts: &SplitByBookmarksOptions,
+) -> Result<Vec<BookmarkSegment>> {
+    let outline = doc.get_outline()?.ok_or_else(|| {
+        Error::InvalidOperation(
+            "document has no bookmarks/outline; use a plain per-page split instead".to_string(),
+        )
+    })?;
+    let flat = flatten_outline(&outline, opts.level);
+    let points = collect_split_points(flat, opts);
+    let page_count = doc.page_count()?;
+    build_segments(&points, page_count, opts)
+}
+
+/// Execute the split: returns each segment paired with its PDF bytes
+/// (parallel to [`plan_split_by_bookmarks`]). The source is not
+/// modified. Segment ranges are `[start_page, end_page)` and are fed
+/// directly to the editor's half-open page-range extraction.
+///
+/// # Errors
+/// Propagates planning errors and any extraction failure.
+pub fn split_by_bookmarks_to_bytes(
+    src_bytes: &[u8],
+    opts: &SplitByBookmarksOptions,
+) -> Result<Vec<(BookmarkSegment, Vec<u8>)>> {
+    let doc = crate::document::PdfDocument::from_bytes(src_bytes.to_vec())?;
+    let segments = plan_split_by_bookmarks(&doc, opts)?;
+
+    let mut editor = crate::editor::DocumentEditor::open_from_bytes(src_bytes.to_vec())?;
+    let ranges: Vec<(usize, usize)> = segments
+        .iter()
+        .map(|s| (s.start_page, s.end_page))
+        .collect();
+    let blobs = editor.extract_page_ranges_to_bytes(&ranges)?;
+
+    Ok(segments.into_iter().zip(blobs).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
