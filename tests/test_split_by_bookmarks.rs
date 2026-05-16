@@ -12,7 +12,9 @@
 //! (well-formed segments, or the specific no-resolvable-points error).
 
 use pdf_oxide::error::Error;
-use pdf_oxide::split_bookmarks::{split_by_bookmarks_to_bytes, SplitByBookmarksOptions};
+use pdf_oxide::split_bookmarks::{
+    split_by_bookmarks_to_bytes, split_by_bookmarks_to_dir, SplitByBookmarksOptions,
+};
 use pdf_oxide::PdfDocument;
 
 const OUTLINE_PDF: &str = "tests/fixtures/outline.pdf";
@@ -72,6 +74,34 @@ fn split_by_bookmarks_glue_is_well_formed_on_real_pdf() {
     // Non-mutation: the source still opens with its original page count.
     let src_again = PdfDocument::from_bytes(bytes).expect("reopen source");
     assert_eq!(src_again.page_count().expect("page_count"), src_pages);
+}
+
+#[test]
+fn split_to_dir_writes_files_or_specific_error() {
+    let dir = std::env::temp_dir().join(format!("pdfox_split_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let res = split_by_bookmarks_to_dir(
+        std::path::Path::new(OUTLINE_PDF),
+        &dir,
+        &SplitByBookmarksOptions::default(),
+    );
+    match res {
+        Ok(paths) => {
+            assert!(!paths.is_empty());
+            for p in &paths {
+                assert!(p.exists(), "written file must exist: {}", p.display());
+                assert_eq!(p.extension().and_then(|e| e.to_str()), Some("pdf"));
+                let blob = std::fs::read(p).expect("read written segment");
+                assert!(blob.starts_with(b"%PDF-"), "written file is a PDF");
+                PdfDocument::from_bytes(blob).expect("written segment opens");
+            }
+        },
+        Err(Error::InvalidOperation(msg)) => {
+            assert!(msg.contains("outline") || msg.contains("split point"), "{msg}");
+        },
+        Err(e) => panic!("unexpected error: {e}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

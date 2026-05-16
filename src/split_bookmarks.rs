@@ -280,6 +280,36 @@ pub fn split_by_bookmarks_to_bytes(
     Ok(segments.into_iter().zip(blobs).collect())
 }
 
+/// Split `src_path` and write each segment to `dir` as `{file_stem}.pdf`,
+/// returning the written paths in document order. Creates `dir` if
+/// missing. The CLI uses this.
+///
+/// NOTE (deviation from #482 plan §4): the planned `password` parameter
+/// is omitted in v0.3.50 — encrypted-input splitting is CLI-mediated
+/// (the CLI authenticates via its existing open path) and full
+/// encrypted-output handling is explicitly out of scope per plan §9.
+/// This keeps the core helper a pure, testable byte→files step.
+///
+/// # Errors
+/// Propagates planning errors and any filesystem error
+/// ([`Error::Io`]).
+pub fn split_by_bookmarks_to_dir(
+    src_path: &std::path::Path,
+    dir: &std::path::Path,
+    opts: &SplitByBookmarksOptions,
+) -> Result<Vec<std::path::PathBuf>> {
+    let bytes = std::fs::read(src_path)?;
+    let parts = split_by_bookmarks_to_bytes(&bytes, opts)?;
+    std::fs::create_dir_all(dir)?;
+    let mut written = Vec::with_capacity(parts.len());
+    for (seg, blob) in parts {
+        let path = dir.join(format!("{}.pdf", seg.file_stem));
+        std::fs::write(&path, blob)?;
+        written.push(path);
+    }
+    Ok(written)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
