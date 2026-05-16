@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 pub mod classify;
+pub mod engine;
 pub mod font_scrub;
 pub mod image_prune;
 pub mod options;
@@ -27,5 +28,6 @@ pub mod text_engine;
 pub mod text_prune;
 
 pub use classify::Classification;
+pub use engine::{redact_content_stream, FontInfoMetrics};
 pub use options::{OcgPolicy, RedactionOptions, RedactionReport};
 pub use region::{RedactionRegion, RegionSet, DEFAULT_EDGE_PADDING};

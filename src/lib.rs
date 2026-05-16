@@ -312,7 +312,8 @@ pub use error::{Error, Result};
 pub use layout::PageText;
 pub use outline::{Destination, OutlineItem};
 pub use redaction::{
-    Classification, OcgPolicy, RedactionOptions, RedactionRegion, RedactionReport, RegionSet,
+    redact_content_stream, Classification, FontInfoMetrics, OcgPolicy, RedactionOptions,
+    RedactionRegion, RedactionReport, RegionSet,
 };
 
 // Global font cache for batch processing

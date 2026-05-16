@@ -61,6 +61,16 @@ pub trait FontMetrics {
     fn ascent_descent(&self, _font: &str) -> (f32, f32) {
         (1.0, -0.30)
     }
+
+    /// Whether per-glyph boxes for `font` can be reconstructed reliably
+    /// (single-byte simple fonts). Composite/Type0/CID or unknown fonts
+    /// return `false`: the engine then **refuses** the redaction rather
+    /// than risk a silent under-redaction from a mis-decoded multi-byte
+    /// string (feature plan §9 risk 6 — fail closed, never under-redact).
+    /// Default `true` (the stub/simple case).
+    fn is_simple(&self, _font: &str) -> bool {
+        true
+    }
 }
 
 /// One font's removed glyph codes, for `font_scrub` (G2).
@@ -77,8 +87,19 @@ pub struct TextEngineResult {
     pub operators: Vec<Operator>,
     /// Total glyphs physically removed.
     pub glyphs_removed: usize,
+    /// Show-string payload bytes physically removed (sum over redacted
+    /// glyphs of their encoded source-byte length) — the meaningful
+    /// "data removed" metric (re-serialization float-formatting makes a
+    /// raw stream-length diff useless).
+    pub bytes_removed: u64,
     /// Distinct `(font_hash, code)` removed, for font scrubbing.
     pub removed_codes: Vec<(u32, u32)>,
+    /// Set when a text show used a font whose per-glyph boxes cannot be
+    /// reconstructed reliably (composite/Type0/unknown) *and* regions
+    /// exist. The caller must treat this as a hard refusal — emitting the
+    /// original stream would risk a silent under-redaction
+    /// (feature plan §9 risk 6, fail closed).
+    pub unsupported_font: bool,
 }
 
 /// Stable non-cryptographic hash of a font resource name → the `u32`
@@ -330,12 +351,18 @@ pub fn redact_text_stream(
                 out.push(op.clone());
             },
             Operator::Tj { text } => {
+                if refuse_unsupported(fonts, &ts.font, regions, &mut result, &mut out, op) {
+                    continue;
+                }
                 let ctm = stack.current().ctm;
                 let res = show_string(text, &mut ts, &ctm, fonts, regions, min_padding);
-                account(&mut result, &res);
+                account(&mut result, text.len(), &res);
                 emit_runs(&mut out, &res);
             },
             Operator::Quote { text } => {
+                if refuse_unsupported(fonts, &ts.font, regions, &mut result, &mut out, op) {
+                    continue;
+                }
                 // `'` = T* then show.
                 ts.tlm = Matrix {
                     a: 1.0,
@@ -349,7 +376,7 @@ pub fn redact_text_stream(
                 ts.tm = ts.tlm;
                 let ctm = stack.current().ctm;
                 let res = show_string(text, &mut ts, &ctm, fonts, regions, min_padding);
-                account(&mut result, &res);
+                account(&mut result, text.len(), &res);
                 emit_runs(&mut out, &res);
             },
             Operator::DoubleQuote {
@@ -357,6 +384,9 @@ pub fn redact_text_stream(
                 char_space,
                 text,
             } => {
+                if refuse_unsupported(fonts, &ts.font, regions, &mut result, &mut out, op) {
+                    continue;
+                }
                 ts.tw = *word_space;
                 ts.tc = *char_space;
                 ts.tlm = Matrix {
@@ -371,19 +401,24 @@ pub fn redact_text_stream(
                 ts.tm = ts.tlm;
                 let ctm = stack.current().ctm;
                 let res = show_string(text, &mut ts, &ctm, fonts, regions, min_padding);
-                account(&mut result, &res);
+                account(&mut result, text.len(), &res);
                 emit_runs(&mut out, &res);
             },
             Operator::TJ { array } => {
+                if refuse_unsupported(fonts, &ts.font, regions, &mut result, &mut out, op) {
+                    continue;
+                }
                 // Concatenate the string elements (offsets are positional
                 // hints we deliberately discard on rewrite — G2). Per
                 // §9.4.4 a positive TJ number moves left by n/1000·Tfs·Th.
                 let ctm = stack.current().ctm;
                 let mut any_removed = false;
+                let mut tj_orig = 0usize;
                 let mut survived_runs = TextPruneResult::default();
                 for el in array {
                     match el {
                         TextElement::String(s) => {
+                            tj_orig += s.len();
                             let r = show_string(s, &mut ts, &ctm, fonts, regions, min_padding);
                             if r.glyphs_removed > 0 {
                                 any_removed = true;
@@ -410,7 +445,7 @@ pub fn redact_text_stream(
                         },
                     }
                 }
-                account(&mut result, &survived_runs);
+                account(&mut result, tj_orig, &survived_runs);
                 if any_removed {
                     emit_runs(&mut out, &survived_runs);
                 } else {
@@ -428,8 +463,37 @@ pub fn redact_text_stream(
     result
 }
 
-fn account(result: &mut TextEngineResult, res: &TextPruneResult) {
+/// Fail-closed guard: a show with a non-simple (composite/Type0/unknown)
+/// font while regions exist cannot be pruned reliably. Flag the result
+/// as unsupported and emit the show **unchanged** (the caller treats
+/// `unsupported_font` as a hard refusal and discards the output, so the
+/// unredacted bytes are never persisted — feature plan §9 risk 6).
+/// Returns `true` when refused (caller should skip normal handling).
+fn refuse_unsupported(
+    fonts: &dyn FontMetrics,
+    font: &str,
+    regions: &RegionSet,
+    result: &mut TextEngineResult,
+    out: &mut Vec<Operator>,
+    op: &Operator,
+) -> bool {
+    if !regions.is_empty() && !fonts.is_simple(font) {
+        result.unsupported_font = true;
+        out.push(op.clone());
+        true
+    } else {
+        false
+    }
+}
+
+/// Accumulate one show's prune result. `orig_len` is the original
+/// show-string payload byte count; removed bytes = `orig_len` minus the
+/// surviving runs' bytes (re-serialization float bloat makes a raw
+/// stream-length diff meaningless, so the byte metric is computed here).
+fn account(result: &mut TextEngineResult, orig_len: usize, res: &TextPruneResult) {
     result.glyphs_removed += res.glyphs_removed;
+    let kept: usize = res.runs.iter().map(|r| r.bytes.len()).sum();
+    result.bytes_removed += orig_len.saturating_sub(kept) as u64;
     for c in &res.removed_codes {
         if !result.removed_codes.contains(c) {
             result.removed_codes.push(*c);
@@ -447,6 +511,17 @@ mod tests {
     impl FontMetrics for Stub {
         fn width(&self, _f: &str, _c: u32) -> f32 {
             500.0
+        }
+    }
+
+    /// Composite-font stub: reports every font as non-simple.
+    struct CompositeStub;
+    impl FontMetrics for CompositeStub {
+        fn width(&self, _f: &str, _c: u32) -> f32 {
+            500.0
+        }
+        fn is_simple(&self, _f: &str) -> bool {
+            false
         }
     }
 
@@ -639,6 +714,29 @@ mod tests {
             .filter(|o| matches!(o, Operator::TJ { .. }))
             .count();
         assert_eq!(tj, 1);
+    }
+
+    #[test]
+    fn composite_font_with_regions_refuses_and_keeps_original() {
+        // Fail-closed (§9 risk 6): a Type0/composite font we cannot
+        // reliably decode must NOT be silently passed through as redacted.
+        let ops = doc([1.0, 0.0, 0.0, 1.0, 100.0, 100.0], b"SECRET");
+        let r = regions(0.0, 0.0, 1000.0, 1000.0);
+        let out = redact_text_stream(&ops, &r, DEFAULT_EDGE_PADDING, &CompositeStub);
+        assert!(out.unsupported_font, "must flag refusal");
+        assert_eq!(out.glyphs_removed, 0);
+        // Original show emitted unchanged (caller discards on refusal).
+        assert_eq!(tj_text(&out.operators), vec![b"SECRET".to_vec()]);
+    }
+
+    #[test]
+    fn composite_font_without_regions_is_not_a_refusal() {
+        // No regions ⇒ nothing to redact ⇒ no refusal even for Type0.
+        let ops = doc([1.0, 0.0, 0.0, 1.0, 100.0, 100.0], b"hello");
+        let out =
+            redact_text_stream(&ops, &RegionSet::new(0), DEFAULT_EDGE_PADDING, &CompositeStub);
+        assert!(!out.unsupported_font);
+        assert_eq!(tj_text(&out.operators), vec![b"hello".to_vec()]);
     }
 
     #[test]
