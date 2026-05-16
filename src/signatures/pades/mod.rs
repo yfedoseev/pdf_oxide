@@ -23,11 +23,13 @@
 //! mapping is stable from v0.3.50 onward (OCP — adding behaviour later
 //! is non-breaking).
 
+mod dss;
 mod dss_read;
 mod ess;
 mod level;
 mod ts_attr;
 
+pub use dss::append_dss;
 pub use dss_read::{parse_dss, read_dss};
 pub use ess::build_signing_certificate_v2;
 pub use level::{classify_pades_level, vri_key};
