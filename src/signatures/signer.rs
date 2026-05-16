@@ -112,7 +112,27 @@ impl PdfSigner {
     /// `/Contents` placeholder using [`PdfSigner::insert_signature`].
     #[cfg(feature = "signatures")]
     pub fn sign(&self, signed_bytes: &[u8]) -> Result<Vec<u8>> {
-        self.create_pkcs7_signature(signed_bytes)
+        // Legacy / adbe.pkcs7.detached path — no ESS attr, byte-identical
+        // to prior releases (#235 plan Q3: ESS is PAdES-only in v0.3.50).
+        self.create_pkcs7_signature_inner(signed_bytes, None)
+    }
+
+    /// Sign producing a CAdES/PAdES-B-B-conformant CMS: adds the RFC 5035
+    /// ESS `signing-certificate-v2` signed attribute (#235 TODO #4).
+    ///
+    /// The ESS attribute is *signed* (it changes the hashed
+    /// `signedAttrs`), so it is built and inserted **before** the RSA
+    /// sign step, in canonical SET-OF order. End-to-end CMS conformance
+    /// is gated by the EU-DSS validator (feature plan §5.5); this path
+    /// is self-checked by sign→`verify_signer_detached` round-trip and
+    /// the attribute's presence in the parsed CMS.
+    #[cfg(feature = "signatures")]
+    pub fn sign_pades(&self, signed_bytes: &[u8]) -> Result<Vec<u8>> {
+        let ess = crate::signatures::pades::build_signing_certificate_v2(
+            &self.credentials.certificate,
+            self.options.digest_algorithm,
+        )?;
+        self.create_pkcs7_signature_inner(signed_bytes, Some(&ess))
     }
 
     /// Build a detached CMS SignedData (RFC 5652) over `signed_bytes`.
@@ -125,7 +145,11 @@ impl PdfSigner {
     ///
     /// The blob is compatible with [`crate::signatures::verify_signer_detached`].
     #[cfg(feature = "signatures")]
-    fn create_pkcs7_signature(&self, signed_bytes: &[u8]) -> Result<Vec<u8>> {
+    fn create_pkcs7_signature_inner(
+        &self,
+        signed_bytes: &[u8],
+        ess_attr: Option<&[u8]>,
+    ) -> Result<Vec<u8>> {
         use super::crypto::digest_info_prefix;
         use cms::cert::x509::Certificate as X509Certificate;
         use der::oid::db::rfc5912::{ID_SHA_1, ID_SHA_256, ID_SHA_384, ID_SHA_512};
@@ -200,10 +224,20 @@ impl PdfSigner {
             c.extend(der_set(&der_octet_string(&message_digest)));
             der_sequence(&c)
         };
-        // SET OF order: attr_ct < attr_md (shorter encodes first in canonical SET)
+        // Canonical SET-OF order (X.690 §11.6 / RFC 5652 §5.4): compare
+        // element encodings as octet strings. All three are `30 LL 06
+        // <oidlen> …`; content-type/message-digest OIDs are 9 bytes
+        // (`06 09 … 09 03` / `… 09 04`) so ct < md; the ESS
+        // signing-certificate-v2 OID is 11 bytes (`06 0B …`) and `0B`
+        // > `09`, so ESS sorts strictly LAST. Appending it (only on the
+        // PAdES path) therefore keeps the legacy ct‖md bytes
+        // byte-identical (#235 plan Q3) while being canonically correct.
         let mut attrs_content = Vec::new();
         attrs_content.extend(&attr_ct);
         attrs_content.extend(&attr_md);
+        if let Some(ess) = ess_attr {
+            attrs_content.extend_from_slice(ess);
+        }
 
         // For hashing: SET tag (RFC 5652 §5.4)
         let attrs_for_hashing = der_set(&attrs_content);
@@ -464,6 +498,54 @@ mod tests {
             result,
             SignerVerify::Valid,
             "signature must verify as Valid with the same content"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "signatures")]
+    fn test_sign_pades_adds_ess_and_still_verifies() {
+        use super::super::cms_verify::SignerVerify;
+        use super::super::types::SignOptions;
+        use super::super::{verify_signer_detached, SigningCredentials};
+
+        let cert_pem = std::fs::read_to_string("tests/fixtures/test_signing_cert.pem").unwrap();
+        let key_pem = std::fs::read_to_string("tests/fixtures/test_signing_key.pem").unwrap();
+        let creds = SigningCredentials::from_pem(&cert_pem, &key_pem).unwrap();
+        let content = b"PAdES-B-B content under signature";
+        let signer = PdfSigner::new(creds, SignOptions::default());
+
+        // id-aa-signingCertificateV2 OID content octets.
+        const ESS_OID: &[u8] = &[
+            0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x10, 0x02, 0x2F,
+        ];
+
+        // Legacy path: still Valid, and carries NO ESS attribute
+        // (byte-compat for existing adbe.pkcs7.detached users — plan Q3).
+        let legacy = signer.sign(content).unwrap();
+        assert_eq!(verify_signer_detached(&legacy, content).unwrap(), SignerVerify::Valid);
+        assert!(
+            !legacy.windows(ESS_OID.len()).any(|w| w == ESS_OID),
+            "legacy sign() must not add the ESS attribute"
+        );
+
+        // PAdES path: the ESS signing-certificate-v2 attr is present AND
+        // the signature still verifies (the signed-attrs hash + RSA sign
+        // correctly account for the extra signed attribute — the core
+        // TODO #4 correctness check, short of the EU-DSS validator).
+        let pades = signer.sign_pades(content).unwrap();
+        assert!(
+            pades.windows(ESS_OID.len()).any(|w| w == ESS_OID),
+            "sign_pades() must embed the ESS signing-certificate-v2 attr"
+        );
+        assert_eq!(
+            verify_signer_detached(&pades, content).unwrap(),
+            SignerVerify::Valid,
+            "PAdES signature with ESS must still verify as Valid"
+        );
+        // Tampered content must fail for the PAdES blob too.
+        assert_ne!(
+            verify_signer_detached(&pades, b"different content").unwrap(),
+            SignerVerify::Valid
         );
     }
 
