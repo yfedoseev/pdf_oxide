@@ -469,18 +469,18 @@ mod tests {
     fn non_string_operators_byte_identical() {
         let mut out = Vec::new();
         serialize_operator(&mut out, &Operator::SaveState);
-        serialize_operator(&mut out, &Operator::Cm {
-            a: 1.0,
-            b: 0.0,
-            c: 0.0,
-            d: 1.0,
-            e: 10.0,
-            f: 20.0,
-        });
-        serialize_operator(&mut out, &Operator::RestoreState);
-        assert_eq!(
-            s(&out),
-            "q\n1.000000 0.000000 0.000000 1.000000 10.000000 20.000000 cm\nQ\n"
+        serialize_operator(
+            &mut out,
+            &Operator::Cm {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 1.0,
+                e: 10.0,
+                f: 20.0,
+            },
         );
+        serialize_operator(&mut out, &Operator::RestoreState);
+        assert_eq!(s(&out), "q\n1.000000 0.000000 0.000000 1.000000 10.000000 20.000000 cm\nQ\n");
     }
 }

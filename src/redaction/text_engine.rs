@@ -96,13 +96,7 @@ fn font_id(name: &str) -> u32 {
 /// Build the ISO 32000-1 §9.4.4 text-rendering matrix
 /// `[[Tfs·Th,0],[0,Tfs],[0,Trise]] × Tm × CTM` (row-vector convention,
 /// matching `Matrix::multiply`).
-fn text_rendering_matrix(
-    tfs: f32,
-    th: f32,
-    trise: f32,
-    tm: &Matrix,
-    ctm: &Matrix,
-) -> Matrix {
+fn text_rendering_matrix(tfs: f32, th: f32, trise: f32, tm: &Matrix, ctm: &Matrix) -> Matrix {
     let params = Matrix {
         a: tfs * th,
         b: 0.0,
@@ -390,8 +384,7 @@ pub fn redact_text_stream(
                 for el in array {
                     match el {
                         TextElement::String(s) => {
-                            let r =
-                                show_string(s, &mut ts, &ctm, fonts, regions, min_padding);
+                            let r = show_string(s, &mut ts, &ctm, fonts, regions, min_padding);
                             if r.glyphs_removed > 0 {
                                 any_removed = true;
                             }
