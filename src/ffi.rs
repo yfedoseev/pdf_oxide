@@ -1407,6 +1407,125 @@ pub extern "C" fn document_editor_apply_all_redactions(
     }
 }
 
+/// Queue an explicit destructive redaction rectangle on `page`
+/// (#231). Coordinates and colour are page user-space / DeviceRGB.
+/// Returns 0 on success, -1 on error. Matches the symbol the Node
+/// `editing-manager` already calls.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn pdf_redaction_add(
+    handle: *mut DocumentEditor,
+    page: usize,
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    r: f64,
+    g: f64,
+    b: f64,
+    error_code: *mut i32,
+) -> i32 {
+    if handle.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return -1;
+    }
+    let editor = handle_mut(handle);
+    let rect = [x1 as f32, y1 as f32, x2 as f32, y2 as f32];
+    let fill = Some([r as f32, g as f32, b as f32]);
+    match editor.add_redaction(page, rect, fill) {
+        Ok(()) => {
+            set_error(error_code, ERR_SUCCESS);
+            0
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            -1
+        },
+    }
+}
+
+/// Number of queued redaction regions for `page` (annotations +
+/// programmatic). Returns the count, or -1 on error.
+#[no_mangle]
+pub extern "C" fn pdf_redaction_count(
+    handle: *mut DocumentEditor,
+    page: usize,
+    error_code: *mut i32,
+) -> i32 {
+    if handle.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return -1;
+    }
+    let editor = handle_mut(handle);
+    match editor.redaction_count(page) {
+        Ok(n) => {
+            set_error(error_code, ERR_SUCCESS);
+            n as i32
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            -1
+        },
+    }
+}
+
+/// Destructively apply all queued redactions (true content removal +
+/// opaque overlay, ISO 32000-1 §12.5.6.23). `scrub_metadata` reserved
+/// for the document-scrub pass. Returns the number of glyphs physically
+/// removed, or -1 on error (e.g. composite-font content — fail closed).
+#[no_mangle]
+pub extern "C" fn pdf_redaction_apply(
+    handle: *mut DocumentEditor,
+    scrub_metadata: bool,
+    r: f64,
+    g: f64,
+    b: f64,
+    error_code: *mut i32,
+) -> i32 {
+    if handle.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return -1;
+    }
+    let editor = handle_mut(handle);
+    let opts = crate::redaction::RedactionOptions {
+        scrub_metadata,
+        default_fill: [r as f32, g as f32, b as f32],
+        ..crate::redaction::RedactionOptions::default()
+    };
+    match editor.apply_redactions_destructive(opts) {
+        Ok(report) => {
+            set_error(error_code, ERR_SUCCESS);
+            report.glyphs_removed.min(i32::MAX as usize) as i32
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            -1
+        },
+    }
+}
+
+/// Standalone document metadata scrub without geometric redaction.
+/// The dedicated sanitization pass (#231 T10) is not yet implemented;
+/// this fails loudly rather than silently pretending success.
+#[no_mangle]
+pub extern "C" fn pdf_redaction_scrub_metadata(
+    handle: *mut DocumentEditor,
+    error_code: *mut i32,
+) -> i32 {
+    if handle.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return -1;
+    }
+    let _ = handle_mut(handle);
+    set_error(
+        error_code,
+        classify_error(&crate::error::Error::Unsupported(
+            "standalone metadata sanitization (#231 T10) is not yet implemented".to_string(),
+        )),
+    );
+    -1
+}
+
 /// Rotate all pages by `degrees` (relative, added to existing rotation).
 #[no_mangle]
 pub extern "C" fn document_editor_rotate_all_pages(

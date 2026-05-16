@@ -78,7 +78,7 @@ impl Default for RedactionOptions {
 
 /// What a redaction pass actually removed — returned to every binding so
 /// callers can assert the redaction did real work (feature plan §5.1).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[non_exhaustive]
 pub struct RedactionReport {
     /// Number of regions applied.
