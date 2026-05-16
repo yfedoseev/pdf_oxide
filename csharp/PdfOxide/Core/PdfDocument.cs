@@ -1492,6 +1492,62 @@ namespace PdfOxide.Core
                         $"pdf_oxide_crypto_use_fips returned unknown error code {code}.");
             }
         }
+
+        /// <summary>
+        /// Installs the process-wide runtime crypto-governance policy
+        /// (issue #230) from its grammar string, e.g. <c>"strict"</c>,
+        /// <c>"fips-strict"</c>, or <c>"compat;deny:rc4@write"</c>.
+        /// Set-once; treat any exception as fatal (the policy is not
+        /// installed on failure — fail-closed).
+        /// </summary>
+        /// <exception cref="ArgumentException">Spec is null/non-UTF-8 or rejected.</exception>
+        /// <exception cref="InvalidOperationException">A policy is already set.</exception>
+        public static void SetCryptoPolicy(string spec)
+        {
+            var code = NativeMethods.PdfOxideCryptoSetPolicy(spec);
+            switch (code)
+            {
+                case 0: return;
+                case 1:
+                    throw new ArgumentException(
+                        "Invalid crypto policy spec (not valid UTF-8).", nameof(spec));
+                case 2:
+                    throw new ArgumentException(
+                        $"Crypto policy spec rejected (parse error): '{spec}'.", nameof(spec));
+                case 3:
+                    throw new InvalidOperationException(
+                        "Crypto policy already set — SetCryptoPolicy must be called once " +
+                        "before any PDF crypto operation.");
+                default:
+                    throw new InvalidOperationException(
+                        $"pdf_oxide_crypto_set_policy returned unknown error code {code}.");
+            }
+        }
+
+        /// <summary>The active crypto policy as its canonical grammar string.</summary>
+        public static string CryptoPolicy()
+        {
+            var ptr = NativeMethods.PdfOxideCryptoPolicy();
+            if (ptr == IntPtr.Zero) return "compat";
+            try { return Marshal.PtrToStringUTF8(ptr) ?? "compat"; }
+            finally { NativeMethods.FreeString(ptr); }
+        }
+
+        /// <summary>
+        /// The cryptographic algorithm tokens exercised so far this
+        /// process (governance report); empty when nothing exercised.
+        /// </summary>
+        public static string[] CryptoInventory()
+        {
+            var ptr = NativeMethods.PdfOxideCryptoInventory();
+            if (ptr == IntPtr.Zero) return Array.Empty<string>();
+            try
+            {
+                var s = Marshal.PtrToStringUTF8(ptr) ?? "";
+                return s.Length == 0 ? Array.Empty<string>() : s.Split(',');
+            }
+            finally { NativeMethods.FreeString(ptr); }
+        }
     }
 
     /// <summary>

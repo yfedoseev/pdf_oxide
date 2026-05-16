@@ -308,6 +308,25 @@ namespace PdfOxide.Internal
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
         public static partial int PdfOxideCryptoUseFips();
 
+        /// <summary>
+        /// Install the runtime crypto-governance policy (#230) from its
+        /// grammar string. 0 = ok, 1 = invalid arg, 2 = parse error
+        /// (not installed), 3 = already set.
+        /// </summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_oxide_crypto_set_policy", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int PdfOxideCryptoSetPolicy(string spec);
+
+        /// <summary>Active crypto policy as a UTF-8 grammar string; caller frees with FreeString.</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_oxide_crypto_policy")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial nint PdfOxideCryptoPolicy();
+
+        /// <summary>Comma-joined exercised-algorithm tokens; caller frees with FreeString.</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_oxide_crypto_inventory")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial nint PdfOxideCryptoInventory();
+
         #endregion
 
         #region Pdf Creation API
