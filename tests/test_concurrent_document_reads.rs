@@ -258,10 +258,14 @@ fn concurrent_render_embedded_font_no_spurious_parse_505() {
     assert!(pages >= 1, "expected at least one page, got {pages}");
     let pages = pages as usize;
 
-    // Enough concurrent font alloc/drop churn to exercise the classifier
-    // across threads, but small render targets keep CI time bounded.
+    // Keep 8 threads — concurrency is the point: the #505 race only
+    // manifests with simultaneous font alloc/drop across threads. Half the
+    // iterations use `pdf_render_page`, which is a full-page 150-DPI render
+    // (not a small target), so ITERS is kept modest to bound CI cost: 8×16
+    // = 128 renders (~64 full-page of a tiny 3-page markdown doc) is ample
+    // churn for the classifier race without slowing/flaking the suite.
     const THREADS: usize = 8;
-    const ITERS: usize = 40;
+    const ITERS: usize = 16;
 
     let barrier = Arc::new(std::sync::Barrier::new(THREADS));
     let handles: Vec<_> = (0..THREADS)

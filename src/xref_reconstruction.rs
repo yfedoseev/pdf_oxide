@@ -198,13 +198,18 @@ fn find_trailer<R: Read + Seek>(
     // Per ISO 32000-1:2008 Section 7.5.5, the most recent trailer (from the
     // latest incremental update) takes precedence. Using the first trailer can
     // miss /Encrypt entries added in later revisions.
-    let mut best_trailer: Option<Object> = None;
-    // Entries salvaged from /Root-less parsed trailers. If no /Root-bearing
-    // trailer exists and we have to synthesize a minimal one, an encrypted
-    // file's /Encrypt (and /ID, used for the encryption key) would otherwise
-    // be lost, making the document undecryptable. Last occurrence wins, for
-    // the same "latest incremental update" reason as /Root above.
-    let mut salvaged: HashMap<String, Object> = HashMap::new();
+    // The chosen /Root-bearing trailer plus the byte offset it was parsed
+    // from (RE_TRAILER yields matches in ascending file order, so a later
+    // offset = a more recent incremental update).
+    let mut best_trailer: Option<(Object, usize)> = None;
+    // /Encrypt //ID //Info salvaged from /Root-less parsed trailers, each
+    // tracked with the offset it came from. If no /Root-bearing trailer
+    // exists and we synthesize a minimal one, an encrypted file's /Encrypt
+    // (and /ID, used for the encryption key) would otherwise be lost, making
+    // the document undecryptable. Per ISO 32000-1 §7.5.5 the most recent
+    // occurrence wins — including over a /Root-bearing trailer that appears
+    // earlier in the file.
+    let mut salvaged: HashMap<String, (Object, usize)> = HashMap::new();
     for mat in RE_TRAILER.find_iter(contents) {
         let trailer_start = mat.start();
         log::debug!("Found trailer keyword at offset {}", trailer_start);
@@ -220,14 +225,14 @@ fn find_trailer<R: Read + Seek>(
                 // (issue #509). Accepting a /Root-less trailer here would
                 // short-circuit Catalog discovery and fail downstream with
                 // "Trailer missing /Root entry". The *last* /Root-bearing
-                // trailer still wins, so a later revision's /Encrypt is kept.
+                // trailer still wins for /Root itself.
                 if obj.as_dict().is_some_and(|d| d.get("Root").is_some()) {
-                    best_trailer = Some(obj);
+                    best_trailer = Some((obj, trailer_start));
                 } else {
                     if let Some(d) = obj.as_dict() {
                         for key in ["Encrypt", "ID", "Info"] {
                             if let Some(v) = d.get(key) {
-                                salvaged.insert(key.to_string(), v.clone());
+                                salvaged.insert(key.to_string(), (v.clone(), trailer_start));
                             }
                         }
                     }
@@ -242,17 +247,23 @@ fn find_trailer<R: Read + Seek>(
             },
         }
     }
-    if let Some(mut trailer) = best_trailer {
-        // A later /Root-less trailer may carry an /Encrypt /ID /Info that
-        // the chosen /Root-bearing trailer lacks (incremental update that
-        // adds encryption or rotates the file ID in a sparse trailer). Fill
-        // only the gaps so an explicit value in the /Root-bearing trailer is
-        // never clobbered, while encryption info that exists nowhere else is
-        // not lost (it is needed by `ensure_encryption_initialized`).
+    if let Some((mut trailer, best_off)) = best_trailer {
+        // Merge salvaged /Encrypt //ID //Info from /Root-less trailers using
+        // most-recent-occurrence-wins (ISO 32000-1 §7.5.5): a salvaged value
+        // overrides the /Root-bearing trailer's only when it was parsed from
+        // a *later* offset (a newer incremental update — e.g. a sparse
+        // trailer that adds encryption or rotates the file ID), and always
+        // fills a key the /Root-bearing trailer lacks. An earlier /Root-less
+        // value never clobbers a newer explicit one.
         if !salvaged.is_empty() {
             if let Object::Dictionary(d) = &mut trailer {
-                for (key, value) in &salvaged {
-                    d.entry(key.clone()).or_insert_with(|| value.clone());
+                for (key, (value, off)) in &salvaged {
+                    match d.get(key) {
+                        Some(_) if *off <= best_off => {}, // existing is newer/equal
+                        _ => {
+                            d.insert(key.clone(), value.clone());
+                        },
+                    }
                 }
             }
         }
@@ -266,7 +277,9 @@ fn find_trailer<R: Read + Seek>(
     log::info!(
         "No /Root-bearing trailer found; reconstructing minimal trailer via Catalog scan..."
     );
-    reconstruct_minimal_trailer(reader, xref, &salvaged)
+    let salvaged_values: HashMap<String, Object> =
+        salvaged.into_iter().map(|(k, (v, _))| (k, v)).collect();
+    reconstruct_minimal_trailer(reader, xref, &salvaged_values)
 }
 
 /// Reconstruct a minimal trailer dictionary.
@@ -287,15 +300,15 @@ fn reconstruct_minimal_trailer<R: Read + Seek>(
     let mut catalog_ref = None;
 
     // Scan objects looking for the catalog. `all_object_numbers()` is
-    // `HashMap`-backed, so iterating it directly is a nondeterministic order:
-    // a bounded scan over an arbitrary subset can miss the Catalog on
-    // different runs (even for a ~114-object Linearized file). Sort ascending
-    // so the scan is deterministic and visits low-numbered objects first,
-    // where the Catalog conventionally lives. The bound only guards against a
-    // pathologically large xref.
+    // `HashMap`-backed, so iterating it directly is nondeterministic: a
+    // bounded scan over an arbitrary subset can miss the Catalog on
+    // different runs (even for a ~114-object Linearized file).
+    // `smallest_object_numbers` is deterministic, visits low-numbered
+    // objects first (where the Catalog conventionally lives), and bounds the
+    // candidate set *before* sorting so a maliciously sparse/huge xref stays
+    // O(n log MAX_SCAN) time / O(MAX_SCAN) memory.
     const MAX_SCAN: usize = 4096;
-    let mut obj_nums: Vec<u32> = xref.all_object_numbers().collect();
-    obj_nums.sort_unstable();
+    let obj_nums = xref.smallest_object_numbers(MAX_SCAN);
     let mut checked = 0usize;
     for obj_num in obj_nums {
         if checked >= MAX_SCAN {

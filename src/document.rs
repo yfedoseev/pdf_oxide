@@ -730,12 +730,21 @@ impl PdfDocument {
         // shifted by header_offset bytes.
         if header_offset > 0 {
             // Probe an object to decide whether xref offsets are off by
-            // header_offset. Prefer /Root (common case, unchanged), but a
-            // Linearized file's sparse final trailer omits it (issue #509) —
-            // fall back to the first in-use uncompressed object so the shift
-            // decision no longer depends on /Root being present.
-            let probe =
-                get_root_ref_from_trailer(&trailer).or_else(|| first_in_use_uncompressed(&xref));
+            // header_offset. Prefer /Root (common case), but the probe MUST
+            // be seek-validatable: `validate_object_at_offset` returns true
+            // for *compressed* entries without seeking, so a /Root that
+            // lives in an object stream would falsely report "no shift
+            // needed" and leave every uncompressed offset wrong. Use /Root
+            // only when its entry is in-use + uncompressed; otherwise (no
+            // /Root — issue #509 — or a compressed /Root) fall back to the
+            // first in-use uncompressed object.
+            let probe = get_root_ref_from_trailer(&trailer)
+                .filter(|r| {
+                    xref.get(r.id).is_some_and(|e| {
+                        e.in_use && e.entry_type == crate::xref::XRefEntryType::Uncompressed
+                    })
+                })
+                .or_else(|| first_in_use_uncompressed(&xref));
             if let Some(probe_ref) = probe {
                 if !validate_object_at_offset(&mut reader, &xref, probe_ref) {
                     log::info!(
@@ -2949,16 +2958,16 @@ impl PdfDocument {
     /// Bounded so a pathological xref can't turn this into an unbounded
     /// scan; the Catalog is virtually always one of the first objects.
     ///
-    /// Object numbers are scanned in ascending order. `all_object_numbers()`
-    /// is `HashMap`-backed, so iterating it directly would be a
-    /// nondeterministic order — a bounded scan over an arbitrary subset can
-    /// miss the Catalog on different runs. Sorting makes discovery
-    /// deterministic and scans low-numbered objects first, where the Catalog
-    /// conventionally lives.
+    /// The smallest `MAX_SCAN` object numbers are scanned, ascending.
+    /// `all_object_numbers()` is `HashMap`-backed, so iterating it directly
+    /// would be nondeterministic — a bounded scan over an arbitrary subset
+    /// can miss the Catalog on different runs. `smallest_object_numbers`
+    /// makes discovery deterministic, scans low-numbered objects first
+    /// (where the Catalog conventionally lives), and bounds the candidate
+    /// set *before* sorting so a pathological xref stays O(n log MAX_SCAN).
     fn find_catalog_by_scan(&self) -> Option<Object> {
         const MAX_SCAN: usize = 4096;
-        let mut nums: Vec<u32> = self.xref.all_object_numbers().collect();
-        nums.sort_unstable();
+        let nums = self.xref.smallest_object_numbers(MAX_SCAN);
         let mut checked = 0usize;
         for num in nums {
             if checked >= MAX_SCAN {

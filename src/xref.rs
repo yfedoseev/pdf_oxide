@@ -133,6 +133,29 @@ impl CrossRefTable {
         self.entries.keys().copied()
     }
 
+    /// The `max` smallest object numbers, ascending.
+    ///
+    /// `entries` is a `HashMap`, so iteration order is nondeterministic; a
+    /// bounded scan over an arbitrary subset can miss the target. Selecting
+    /// the smallest numbers makes scans deterministic and prioritizes
+    /// low-numbered objects (where the Catalog conventionally lives). A
+    /// bounded max-heap keeps this O(n log max) time / O(max) memory rather
+    /// than sorting all n on a pathological or maliciously sparse xref.
+    pub(crate) fn smallest_object_numbers(&self, max: usize) -> Vec<u32> {
+        if max == 0 {
+            return Vec::new();
+        }
+        let mut heap: std::collections::BinaryHeap<u32> =
+            std::collections::BinaryHeap::with_capacity(max + 1);
+        for n in self.entries.keys().copied() {
+            heap.push(n);
+            if heap.len() > max {
+                heap.pop(); // drop the current largest
+            }
+        }
+        heap.into_sorted_vec()
+    }
+
     /// Merge entries from another xref table.
     ///
     /// Entries in self override entries in other (for incremental updates).
