@@ -114,7 +114,7 @@ impl PdfSigner {
     pub fn sign(&self, signed_bytes: &[u8]) -> Result<Vec<u8>> {
         // Legacy / adbe.pkcs7.detached path — no ESS attr, byte-identical
         // to prior releases (#235 plan Q3: ESS is PAdES-only in v0.3.50).
-        self.create_pkcs7_signature_inner(signed_bytes, None)
+        self.create_pkcs7_signature_inner(signed_bytes, None, None)
     }
 
     /// Sign producing a CAdES/PAdES-B-B-conformant CMS: adds the RFC 5035
@@ -132,23 +132,41 @@ impl PdfSigner {
             &self.credentials.certificate,
             self.options.digest_algorithm,
         )?;
-        self.create_pkcs7_signature_inner(signed_bytes, Some(&ess))
+        self.create_pkcs7_signature_inner(signed_bytes, Some(&ess), None)
     }
 
-    /// Build a detached CMS SignedData (RFC 5652) over `signed_bytes`.
-    ///
-    /// Produces a DER-encoded ContentInfo that wraps a SignedData with:
-    /// - SHA-256 digest (or the algorithm in `self.options.digest_algorithm`)
-    /// - RSA-PKCS#1 v1.5 signature
-    /// - Signed attributes: id-contentType + id-messageDigest
-    /// - Signer certificate embedded in the certificates field
-    ///
-    /// The blob is compatible with [`crate::signatures::verify_signer_detached`].
+    /// Sign producing PAdES-**B-T**: B-B (with ESS) + an RFC 3161
+    /// `signature-time-stamp` *unsigned* attribute over the signature
+    /// value (#235 TODO #7). `timestamper` receives the raw signature
+    /// value (`SignerInfo.signature` content) and returns the DER
+    /// `TimeStampToken` — in production this calls a TSA over the
+    /// imprint; offline callers pass a pre-fetched token. Because the
+    /// attribute is *unsigned*, the signed bytes are byte-identical to
+    /// the B-B form ([`Self::sign_pades`]) — invariant I7.
+    #[cfg(feature = "signatures")]
+    pub fn sign_pades_t(
+        &self,
+        signed_bytes: &[u8],
+        timestamper: &dyn Fn(&[u8]) -> Result<Vec<u8>>,
+    ) -> Result<Vec<u8>> {
+        let ess = crate::signatures::pades::build_signing_certificate_v2(
+            &self.credentials.certificate,
+            self.options.digest_algorithm,
+        )?;
+        self.create_pkcs7_signature_inner(signed_bytes, Some(&ess), Some(timestamper))
+    }
+
+    /// Build a detached CMS SignedData (RFC 5652) over `signed_bytes`:
+    /// SHA-256 (or `options.digest_algorithm`), RSA-PKCS#1 v1.5, signed
+    /// attrs (content-type + message-digest [+ ESS when `ess_attr`]),
+    /// optional B-T `signature-time-stamp` unsigned attr via
+    /// `timestamper`. Compatible with `verify_signer_detached`.
     #[cfg(feature = "signatures")]
     fn create_pkcs7_signature_inner(
         &self,
         signed_bytes: &[u8],
         ess_attr: Option<&[u8]>,
+        timestamper: Option<&dyn Fn(&[u8]) -> Result<Vec<u8>>>,
     ) -> Result<Vec<u8>> {
         use super::crypto::digest_info_prefix;
         use cms::cert::x509::Certificate as X509Certificate;
@@ -260,6 +278,22 @@ impl PdfSigner {
             .sign(Pkcs1v15Sign::new_unprefixed(), &digest_info_bytes)
             .map_err(|e| Error::InvalidPdf(format!("RSA signing failed: {e}")))?;
 
+        // ── B-T: unsigned signature-time-stamp attribute ────────────────
+        // RFC 3161 token over the signature value (SignerInfo.signature
+        // content). UNSIGNED — does not change the hashed signedAttrs,
+        // so the signature stays valid and the signed bytes are
+        // byte-identical to the B-B form (#235 plan §4 / I7).
+        // SignerInfo.unsignedAttrs ::= [1] IMPLICIT SET OF Attribute, so
+        // the [1] (0xA1) tag wraps the (single) attribute directly.
+        let unsigned_attrs: Option<Vec<u8>> = match timestamper {
+            Some(ts) => {
+                let token = ts(&sig_bytes)?;
+                let attr = crate::signatures::pades::build_signature_timestamp_attr(&token)?;
+                Some(der_tag(0xA1, &attr))
+            },
+            None => None,
+        };
+
         // ── Build SignerInfo ────────────────────────────────────────────
         let signer_info = {
             // IssuerAndSerialNumber SEQUENCE
@@ -286,6 +320,9 @@ impl PdfSigner {
             si.extend(attrs_for_storage);
             si.extend(sig_alg);
             si.extend(der_octet_string(&sig_bytes));
+            if let Some(ref ua) = unsigned_attrs {
+                si.extend_from_slice(ua);
+            }
             der_sequence(&si)
         };
 
@@ -547,6 +584,77 @@ mod tests {
             verify_signer_detached(&pades, b"different content").unwrap(),
             SignerVerify::Valid
         );
+    }
+
+    #[test]
+    #[cfg(feature = "signatures")]
+    fn test_sign_pades_t_embeds_timestamp_and_classifies_bt() {
+        use super::super::cms_verify::SignerVerify;
+        use super::super::types::{SignOptions, SignatureInfo};
+        use super::super::{classify_pades_level, verify_signer_detached, SigningCredentials};
+        use crate::signatures::PadesLevel;
+
+        let cert_pem = std::fs::read_to_string("tests/fixtures/test_signing_cert.pem").unwrap();
+        let key_pem = std::fs::read_to_string("tests/fixtures/test_signing_key.pem").unwrap();
+        let creds = SigningCredentials::from_pem(&cert_pem, &key_pem).unwrap();
+        let content = b"PAdES-B-T content under signature";
+        let signer = PdfSigner::new(creds, SignOptions::default());
+
+        // Offline stub TSA: returns a minimal well-formed DER SEQUENCE
+        // standing in for an RFC 3161 TimeStampToken (no network in unit
+        // tests — feature plan §5.1). It must receive the signature
+        // value to timestamp.
+        let seen = std::cell::RefCell::new(Vec::new());
+        let token: &dyn Fn(&[u8]) -> Result<Vec<u8>> = &|sig: &[u8]| {
+            *seen.borrow_mut() = sig.to_vec();
+            Ok(vec![0x30, 0x07, 0x02, 0x01, 0x01, 0x04, 0x02, b't', b's'])
+        };
+
+        let b_b = signer.sign_pades(content).unwrap();
+        let b_t = signer.sign_pades_t(content, token).unwrap();
+
+        // The timestamper was invoked over the (non-empty) signature value.
+        assert!(!seen.borrow().is_empty(), "timestamper must see the sig value");
+
+        // I7: B-T does not change the signed bytes — the RSA signature
+        // value is deterministic and identical to the B-B form (only an
+        // UNSIGNED attribute was added). The 256-byte sig appears in both.
+        let sig = &seen.borrow().clone();
+        assert!(b_b.windows(sig.len()).any(|w| w == sig.as_slice()));
+        assert!(b_t.windows(sig.len()).any(|w| w == sig.as_slice()));
+
+        // The B-T CMS still verifies (unsigned attr is outside the
+        // signed data).
+        assert_eq!(verify_signer_detached(&b_t, content).unwrap(), SignerVerify::Valid);
+
+        // id-aa-signatureTimeStampToken OID present, and the real cms
+        // decoder (via classify) sees it as an unsigned attr ⇒ B-T.
+        const TS_OID: &[u8] = &[
+            0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x10, 0x02, 0x0E,
+        ];
+        assert!(b_t.windows(TS_OID.len()).any(|w| w == TS_OID));
+        let info = SignatureInfo {
+            signer_name: None,
+            signing_time: None,
+            reason: None,
+            location: None,
+            contact_info: None,
+            sub_filter: None,
+            covers_whole_document: false,
+            byte_range: vec![],
+            certificate_cn: None,
+            certificate_issuer: None,
+            valid_from: None,
+            valid_to: None,
+            contents: Some(b_t.clone()),
+        };
+        assert_eq!(classify_pades_level(&info, None), PadesLevel::BT);
+        // The plain B-B blob (no ts attr) classifies as BB.
+        let info_bb = SignatureInfo {
+            contents: Some(b_b),
+            ..info
+        };
+        assert_eq!(classify_pades_level(&info_bb, None), PadesLevel::BB);
     }
 
     #[test]
