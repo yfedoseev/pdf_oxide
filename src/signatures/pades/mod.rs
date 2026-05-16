@@ -24,9 +24,11 @@
 //! is non-breaking).
 
 mod dss_read;
+mod ess;
 mod level;
 
 pub use dss_read::{parse_dss, read_dss};
+pub use ess::build_signing_certificate_v2;
 pub use level::{classify_pades_level, vri_key};
 
 /// PAdES baseline level. Each level is a strict superset of the one
