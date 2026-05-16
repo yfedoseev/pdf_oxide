@@ -155,6 +155,9 @@ from .pdf_oxide import (  # noqa: E402
     TextSpan,
     crypto_active_provider,
     crypto_available_providers,
+    crypto_inventory,
+    crypto_policy,
+    crypto_set_policy,
     crypto_use_fips,
     disable_logging,
     generate_barcode_svg,
@@ -219,5 +222,9 @@ __all__ = [
     "crypto_active_provider",
     "crypto_available_providers",
     "crypto_use_fips",
+    # Runtime crypto-governance policy surface (issue #230)
+    "crypto_inventory",
+    "crypto_policy",
+    "crypto_set_policy",
 ]
 __version__ = VERSION

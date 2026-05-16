@@ -7265,6 +7265,9 @@ fn pdf_oxide(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(crypto_active_provider, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(crypto_available_providers, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(crypto_use_fips, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(crypto_set_policy, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(crypto_policy, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(crypto_inventory, m)?)?;
     Ok(())
 }
 
@@ -7331,6 +7334,47 @@ fn crypto_use_fips() -> pyo3::PyResult<()> {
             "FIPS provider not compiled in; build wheel with --features fips",
         ))
     }
+}
+
+/// Install the process-wide runtime crypto-governance policy (#230).
+///
+/// ``spec`` grammar: ``mode[;clause]*`` where
+/// ``mode ∈ {compat, strict, fips-strict}`` and
+/// ``clause = (allow|deny):<alg>@<read|write>`` — e.g.
+/// ``"compat;deny:rc4@write;deny:md5@write"`` or ``"fips-strict"``.
+///
+/// Set-once (a runtime policy downgrade is an attack vector). Raises
+/// ``RuntimeError`` on an unparseable spec (**fail-closed** — treat
+/// this as fatal; the policy is *not* installed) or if a policy is
+/// already set. Default (never set) behaviour is ``compat`` —
+/// byte-for-byte identical to pre-#230.
+#[pyfunction]
+fn crypto_set_policy(spec: &str) -> pyo3::PyResult<()> {
+    let policy: crate::crypto::SecurityPolicy =
+        spec.parse().map_err(|e: crate::crypto::PolicyParseError| {
+            pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
+        })?;
+    crate::crypto::set_policy(policy)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+}
+
+/// Return the active crypto policy as its canonical grammar string
+/// (e.g. ``"strict"`` or ``"compat;deny:rc4@write"``). Non-mutating
+/// beyond the lazy ``compat`` default that every crypto path shares.
+#[pyfunction]
+fn crypto_policy() -> String {
+    crate::crypto::active_policy().to_string()
+}
+
+/// The cryptographic algorithms exercised so far this process, as
+/// stable lowercase tokens (e.g. ``["md5", "aes256"]``) — the minimal
+/// crypto-inventory / CBOM-adjacent governance report.
+#[pyfunction]
+fn crypto_inventory() -> Vec<String> {
+    crate::crypto::inventory()
+        .into_iter()
+        .map(|a| a.token().to_string())
+        .collect()
 }
 
 /// Sign raw PDF bytes and return the signed PDF as `bytes`.
