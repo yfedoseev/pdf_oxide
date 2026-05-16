@@ -207,6 +207,8 @@ pub mod elements;
 /// Cross-platform-safe filename slug helpers (shared, pure).
 pub mod filename;
 pub mod outline;
+/// Split a PDF into multiple PDFs at outline (bookmark) boundaries (#482).
+pub mod split_bookmarks;
 /// PDF logical structure (Tagged PDFs)
 pub mod structure;
 
