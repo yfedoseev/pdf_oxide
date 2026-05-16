@@ -1385,6 +1385,87 @@ impl PyPdfDocument {
         }
     }
 
+    /// Queue an explicit destructive redaction rectangle on a page.
+    ///
+    /// Args:
+    ///     page (int): zero-based page index.
+    ///     rect (tuple[float,float,float,float]): ``(x0, y0, x1, y1)`` in
+    ///         page user space.
+    ///     fill (tuple[float,float,float] | None): overlay DeviceRGB
+    ///         colour; ``None`` uses the default.
+    #[pyo3(signature = (page, rect, fill=None))]
+    fn add_redaction(
+        &mut self,
+        page: usize,
+        rect: (f32, f32, f32, f32),
+        fill: Option<(f32, f32, f32)>,
+    ) -> PyResult<()> {
+        self.ensure_editor()?;
+        if let Some(ref mut editor) = self.editor {
+            editor
+                .add_redaction(
+                    page,
+                    [rect.0, rect.1, rect.2, rect.3],
+                    fill.map(|(r, g, b)| [r, g, b]),
+                )
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Number of redaction regions queued for ``page`` (annotations +
+    /// programmatic rectangles).
+    fn redaction_count(&mut self, page: usize) -> PyResult<usize> {
+        self.ensure_editor()?;
+        match self.editor {
+            Some(ref mut editor) => editor
+                .redaction_count(page)
+                .map_err(|e| PyValueError::new_err(e.to_string())),
+            None => Err(PyRuntimeError::new_err("No document source available")),
+        }
+    }
+
+    /// Destructively apply all queued redactions (true content removal,
+    /// ISO 32000-1:2008 §12.5.6.23) and return a report dict.
+    ///
+    /// Raises ``RuntimeError`` if content uses a composite/Type0 font
+    /// (refused rather than risk a silent under-redaction).
+    #[pyo3(signature = (scrub_metadata=true, remove_javascript=true, remove_embedded_files=true, fill=(0.0, 0.0, 0.0)))]
+    fn apply_redactions_destructive(
+        &mut self,
+        py: Python<'_>,
+        scrub_metadata: bool,
+        remove_javascript: bool,
+        remove_embedded_files: bool,
+        fill: (f32, f32, f32),
+    ) -> PyResult<Py<pyo3::types::PyDict>> {
+        self.ensure_editor()?;
+        let opts = crate::redaction::RedactionOptions {
+            scrub_metadata,
+            remove_javascript,
+            remove_embedded_files,
+            default_fill: [fill.0, fill.1, fill.2],
+            ..crate::redaction::RedactionOptions::default()
+        };
+        let report = match self.editor {
+            Some(ref mut editor) => editor
+                .apply_redactions_destructive(opts)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+            None => return Err(PyRuntimeError::new_err("No document source available")),
+        };
+        let d = pyo3::types::PyDict::new(py);
+        d.set_item("regions", report.regions)?;
+        d.set_item("glyphs_removed", report.glyphs_removed)?;
+        d.set_item("images_modified", report.images_modified)?;
+        d.set_item("images_removed", report.images_removed)?;
+        d.set_item("paths_pruned", report.paths_pruned)?;
+        d.set_item("xobjects_specialized", report.xobjects_specialized)?;
+        d.set_item("annotations_removed", report.annotations_removed)?;
+        d.set_item("fonts_scrubbed", report.fonts_scrubbed)?;
+        d.set_item("bytes_removed", report.bytes_removed)?;
+        Ok(d.unbind())
+    }
+
     /// Get page images info.
     fn page_images(&mut self, page: usize, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.ensure_editor()?;

@@ -14,6 +14,7 @@ pub mod markdown;
 pub mod merge;
 pub mod metadata;
 pub mod paths;
+pub mod redact;
 pub mod render;
 pub mod reorder;
 pub mod rotate;

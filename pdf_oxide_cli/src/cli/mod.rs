@@ -156,6 +156,21 @@ fn dispatch(
             forms,
             annotations,
         } => commands::flatten::run(file, forms, annotations, output, password),
+        Command::Redact {
+            ref file,
+            ref rects,
+            from_annotations,
+            ref fill,
+            no_scrub_metadata,
+        } => commands::redact::run(
+            file,
+            rects,
+            from_annotations,
+            fill.as_deref(),
+            no_scrub_metadata,
+            output,
+            password,
+        ),
         Command::Crop {
             ref file,
             ref margins,

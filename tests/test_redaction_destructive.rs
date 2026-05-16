@@ -28,10 +28,6 @@ fn build_secret_pdf() -> Vec<u8> {
     pdf.to_bytes().expect("fixture to bytes")
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    needle.len() <= haystack.len() && haystack.windows(needle.len()).any(|w| w == needle)
-}
-
 /// Whole-page redaction must physically remove every glyph and leave no
 /// recoverable trace of the secret anywhere.
 #[test]

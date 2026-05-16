@@ -2718,6 +2718,67 @@ impl WasmPdfDocument {
             .apply_all_redactions()
             .map_err(|e| JsValue::from_str(&format!("Failed to apply redactions: {}", e)))
     }
+
+    /// Queue an explicit destructive redaction rectangle on a page
+    /// (page user space; `fill` is an optional DeviceRGB `[r,g,b]`).
+    #[wasm_bindgen(js_name = "addRedaction")]
+    pub fn add_redaction(
+        &mut self,
+        page: usize,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        fill: Option<Vec<f32>>,
+    ) -> Result<(), JsValue> {
+        let editor_arc = self.ensure_editor()?;
+        let mut editor = editor_arc
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?;
+        let fill = fill.and_then(|v| {
+            if v.len() == 3 {
+                Some([v[0], v[1], v[2]])
+            } else {
+                None
+            }
+        });
+        editor
+            .add_redaction(page, [x0, y0, x1, y1], fill)
+            .map_err(|e| JsValue::from_str(&format!("Failed to add redaction: {}", e)))
+    }
+
+    /// Number of redaction regions queued for `page`.
+    #[wasm_bindgen(js_name = "redactionCount")]
+    pub fn redaction_count(&mut self, page: usize) -> Result<usize, JsValue> {
+        let editor_arc = self.ensure_editor()?;
+        let mut editor = editor_arc
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?;
+        editor
+            .redaction_count(page)
+            .map_err(|e| JsValue::from_str(&format!("Failed to count redactions: {}", e)))
+    }
+
+    /// Destructively apply all queued redactions (true content removal,
+    /// ISO 32000-1:2008 §12.5.6.23). Returns a `RedactionReport` object.
+    #[wasm_bindgen(js_name = "applyRedactionsDestructive")]
+    pub fn apply_redactions_destructive(
+        &mut self,
+        scrub_metadata: Option<bool>,
+    ) -> Result<JsValue, JsValue> {
+        let editor_arc = self.ensure_editor()?;
+        let mut editor = editor_arc
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?;
+        let opts = crate::redaction::RedactionOptions {
+            scrub_metadata: scrub_metadata.unwrap_or(true),
+            ..crate::redaction::RedactionOptions::default()
+        };
+        let report = editor
+            .apply_redactions_destructive(opts)
+            .map_err(|e| JsValue::from_str(&format!("Failed to apply redactions: {}", e)))?;
+        serde_wasm_bindgen::to_value(&report).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
 }
 
 /// Style configuration for header/footer text.

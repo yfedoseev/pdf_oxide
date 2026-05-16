@@ -269,6 +269,28 @@ pub enum Command {
         annotations: bool,
     },
 
+    /// Destructively redact regions — true content removal (#231)
+    Redact {
+        /// Input PDF file
+        file: PathBuf,
+
+        /// Redaction rectangle as PAGE:x0,y0,x1,y1 (repeatable)
+        #[arg(long = "rect")]
+        rects: Vec<String>,
+
+        /// Apply existing /Redact annotations in the source
+        #[arg(long = "from-annotations")]
+        from_annotations: bool,
+
+        /// Overlay fill colour as R,G,B in 0..1 (default 0,0,0)
+        #[arg(long)]
+        fill: Option<String>,
+
+        /// Do not scrub document metadata
+        #[arg(long = "no-scrub-metadata")]
+        no_scrub_metadata: bool,
+    },
+
     /// Crop page margins
     Crop {
         /// Input PDF file
