@@ -270,7 +270,7 @@ pub fn split_by_bookmarks_to_bytes(
     let doc = crate::document::PdfDocument::from_bytes(src_bytes.to_vec())?;
     let segments = plan_split_by_bookmarks(&doc, opts)?;
 
-    let mut editor = crate::editor::DocumentEditor::open_from_bytes(src_bytes.to_vec())?;
+    let mut editor = crate::editor::DocumentEditor::from_bytes(src_bytes.to_vec())?;
     let ranges: Vec<(usize, usize)> = segments
         .iter()
         .map(|s| (s.start_page, s.end_page))
