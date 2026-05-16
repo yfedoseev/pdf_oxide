@@ -17,6 +17,7 @@
 
 pub mod classify;
 pub mod options;
+pub mod path_prune;
 pub mod region;
 
 pub use classify::Classification;
