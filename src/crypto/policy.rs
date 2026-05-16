@@ -129,6 +129,18 @@ impl AlgorithmId {
         Self::ALL.into_iter().find(|a| a.token() == s)
     }
 
+    /// Stable position in [`Self::ALL`] — the bit index used by the
+    /// process-wide crypto inventory bitset. Never reordered (it is a
+    /// persisted-shape-adjacent contract); new ids append.
+    pub fn index(self) -> usize {
+        // Linear scan over 17 `Copy` values — trivially cheap and
+        // keeps a single source of truth (`ALL`), DRY.
+        Self::ALL
+            .iter()
+            .position(|&a| a == self)
+            .expect("every AlgorithmId is in ALL")
+    }
+
     /// The broad algorithm family, reusing the existing
     /// [`AlgorithmKind`] so error/audit grouping stays DRY. Signature
     /// ids report `SignatureSign` as their family; the sign-vs-verify
@@ -873,6 +885,20 @@ mod tests {
         // Unknown token → fail-closed Deny even under Compat.
         assert_eq!(p.evaluate_token("kyber768", AlgorithmUse::Read), Decision::Deny);
         assert_eq!(p.unknown_algorithm_decision(), Decision::Deny);
+    }
+
+    #[test]
+    fn index_is_stable_and_unique() {
+        for (i, &a) in AlgorithmId::ALL.iter().enumerate() {
+            assert_eq!(a.index(), i, "index must match position in ALL for {a:?}");
+        }
+        // All indices distinct and < 64 (the inventory bitset width).
+        let mut seen = [false; 64];
+        for &a in &AlgorithmId::ALL {
+            assert!(a.index() < 64);
+            assert!(!seen[a.index()], "duplicate index for {a:?}");
+            seen[a.index()] = true;
+        }
     }
 
     #[test]

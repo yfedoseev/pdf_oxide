@@ -17,9 +17,10 @@
 //! [`active`]: self::active
 //! [`RustCryptoProvider`]: super::RustCryptoProvider
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use super::policy::SecurityPolicy;
+use super::policy::{AlgorithmId, SecurityPolicy};
 use super::provider::CryptoProvider;
 use super::rust_provider::RustCryptoProvider;
 
@@ -132,6 +133,33 @@ pub fn active_policy() -> &'static SecurityPolicy {
 /// [`set_policy`] or lazily by a previous [`active_policy`] call).
 pub fn is_policy_set() -> bool {
     ACTIVE_POLICY.get().is_some()
+}
+
+/// Process-wide crypto inventory: bit `AlgorithmId::index()` is set
+/// the first time that algorithm is exercised at an enforcement
+/// boundary. This is the minimal "what crypto did this run use?"
+/// report regulated buyers ask for (CBOM-adjacent — see #230 plan
+/// §3.7).
+///
+/// It is a **content-keyed** atomic bitset, *not* a pointer-keyed
+/// global cache — explicitly the allowed shape per the shared
+/// foundation §6.2 (no #505-class data race). 17 ids fit in 64 bits
+/// with head-room.
+static INVENTORY: AtomicU64 = AtomicU64::new(0);
+
+/// Record that `alg` was exercised this process (idempotent, lock-free).
+pub fn record_algorithm_use(alg: AlgorithmId) {
+    INVENTORY.fetch_or(1u64 << alg.index(), Ordering::Relaxed);
+}
+
+/// The set of [`AlgorithmId`]s exercised so far this process, in
+/// declaration order. Cheap; no allocation beyond the result `Vec`.
+pub fn inventory() -> Vec<AlgorithmId> {
+    let bits = INVENTORY.load(Ordering::Relaxed);
+    AlgorithmId::ALL
+        .into_iter()
+        .filter(|a| bits & (1u64 << a.index()) != 0)
+        .collect()
 }
 
 #[cfg(test)]

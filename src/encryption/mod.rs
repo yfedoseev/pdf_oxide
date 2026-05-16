@@ -475,6 +475,9 @@ impl EncryptDictBuilder {
         // default `compat` policy (byte-stable); `strict`/`fips-strict`
         // forbid *writing* legacy R≤4 (it fundamentally needs the MD5
         // KDF, ISO 32000-1 §7.6.3) while still allowing legacy reads.
+        if revision > 0 && revision <= 4 {
+            crate::crypto::record_algorithm_use(crate::crypto::AlgorithmId::HashMd5);
+        }
         if revision > 0
             && revision <= 4
             && !crate::crypto::active_policy()

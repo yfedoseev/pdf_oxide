@@ -81,6 +81,9 @@ impl EncryptionHandler {
         // (byte-stable); a `strict`/`fips-strict` policy can forbid
         // reading legacy R≤4 (which fundamentally needs the MD5 KDF,
         // ISO 32000-1 §7.6.3 Algorithm 2).
+        if dict.revision <= 4 {
+            crate::crypto::record_algorithm_use(crate::crypto::AlgorithmId::HashMd5);
+        }
         if dict.revision <= 4
             && !crate::crypto::active_policy()
                 .allows(crate::crypto::AlgorithmId::HashMd5, crate::crypto::AlgorithmUse::Read)

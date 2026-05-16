@@ -27,8 +27,8 @@ mod rust_provider;
 mod types;
 
 pub use active::{
-    active, active_policy, is_policy_set, is_set, set_policy, set_provider, SetPolicyError,
-    SetProviderError,
+    active, active_policy, inventory, is_policy_set, is_set, record_algorithm_use, set_policy,
+    set_provider, SetPolicyError, SetProviderError,
 };
 #[cfg(feature = "fips")]
 pub use aws_lc_provider::AwsLcProvider;
