@@ -56,8 +56,8 @@ run_case() {
       echo "FAIL [$name]: --check disagreed (expected ok)"
       FAIL=$((FAIL + 1)); rm -rf "$workdir"; return
     fi
-    if [ -f "$workdir/release-title.txt" ]; then
-      echo "FAIL [$name]: --check wrote release-title.txt (should be no-op)"
+    if [ -f "$workdir/release-title.txt" ] || [ -f "$workdir/release-notes.md" ]; then
+      echo "FAIL [$name]: --check wrote output (release-title.txt / release-notes.md) — should be no-op"
       FAIL=$((FAIL + 1)); rm -rf "$workdir"; return
     fi
     echo "PASS [$name]"

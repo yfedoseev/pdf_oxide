@@ -243,7 +243,7 @@ fn find_trailer<R: Read + Seek>(
         }
     }
     if let Some(mut trailer) = best_trailer {
-        // A later /Root-less trailer may carry an /Encrypt //ID //Info that
+        // A later /Root-less trailer may carry an /Encrypt /ID /Info that
         // the chosen /Root-bearing trailer lacks (incremental update that
         // adds encryption or rotates the file ID in a sparse trailer). Fill
         // only the gaps so an explicit value in the /Root-bearing trailer is

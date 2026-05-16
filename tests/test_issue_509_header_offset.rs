@@ -90,10 +90,15 @@ fn test_issue_509_garbage_prefix_sparse_trailer() {
     assert_eq!(pages, 1, "single-page PDF must report 1 page");
 }
 
-/// Isolates the `catalog()` Catalog-discovery fallback: a well-formed PDF
-/// (no leading garbage) whose final trailer omits `/Root`. The Catalog is
-/// still discoverable by scanning objects for `/Type /Catalog`, which is
-/// what Poppler / PDFium do.
+/// A well-formed PDF (no leading garbage) whose final trailer omits
+/// `/Root`. NOTE: this exercises the *xref-reconstruction* Catalog
+/// synthesis path, not `catalog()`'s `find_catalog_by_scan` fallback —
+/// the public open path fails root validation on the `/Root`-less trailer
+/// and reconstructs a `/Root`-bearing trailer before `catalog()` runs
+/// (the `catalog()` fallback itself is covered by the unit test
+/// `document::tests::test_catalog_recovers_when_trailer_omits_root`).
+/// Either way the Catalog is discovered by scanning objects for
+/// `/Type /Catalog`, which is what Poppler / PDFium do.
 #[test]
 fn test_issue_509_catalog_fallback_when_trailer_omits_root() {
     let doc = PdfDocument::from_bytes(build_logical_pdf(false))
