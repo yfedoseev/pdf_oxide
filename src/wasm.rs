@@ -200,6 +200,39 @@ pub fn split_by_bookmarks(
 }
 
 // ============================================================================
+// crypto governance policy (#230) — free functions binding the Rust core
+// ============================================================================
+
+/// Install the process-wide runtime crypto policy from its grammar
+/// string (`"compat"|"strict"|"fips-strict"[;…]`). Fail-closed:
+/// throws on an unparseable spec (policy NOT installed) or if a
+/// policy is already set. Default (never set) is `compat`.
+#[wasm_bindgen(js_name = "setCryptoPolicy")]
+pub fn set_crypto_policy(spec: &str) -> Result<(), JsValue> {
+    let policy: crate::crypto::SecurityPolicy = spec
+        .parse()
+        .map_err(|e: crate::crypto::PolicyParseError| JsValue::from_str(&e.to_string()))?;
+    crate::crypto::set_policy(policy).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// The active crypto policy as its canonical grammar string.
+#[wasm_bindgen(js_name = "cryptoPolicy")]
+pub fn crypto_policy() -> String {
+    crate::crypto::active_policy().to_string()
+}
+
+/// The cryptographic algorithm tokens exercised so far this process
+/// (governance report), as a JSON string array.
+#[wasm_bindgen(js_name = "cryptoInventory")]
+pub fn crypto_inventory() -> Result<JsValue, JsValue> {
+    let tokens: Vec<&'static str> = crate::crypto::inventory()
+        .into_iter()
+        .map(|a| a.token())
+        .collect();
+    serde_wasm_bindgen::to_value(&tokens).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+// ============================================================================
 // WasmPdfDocument — read, convert, search, extract, and edit PDFs
 // ============================================================================
 
