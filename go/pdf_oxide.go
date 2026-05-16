@@ -423,6 +423,9 @@ extern int pdf_oxide_get_log_level();
 extern char* pdf_oxide_crypto_active_provider();
 extern int pdf_oxide_crypto_fips_available();
 extern int pdf_oxide_crypto_use_fips();
+extern int pdf_oxide_crypto_set_policy(const char* spec);
+extern char* pdf_oxide_crypto_policy();
+extern char* pdf_oxide_crypto_inventory();
 
 // OCR (v0.3.27 — FFI bridge wrapping src/ocr::OcrEngine)
 // Returns _ERR_UNSUPPORTED when the Rust crate was built without --features ocr.
@@ -449,6 +452,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -4208,6 +4212,66 @@ func UseFipsCryptoProvider() error {
 	default:
 		return fmt.Errorf("pdf_oxide_crypto_use_fips returned unknown error code")
 	}
+}
+
+// ErrCryptoPolicyInvalidArg is returned by SetCryptoPolicy for a
+// null/non-UTF-8 spec.
+var ErrCryptoPolicyInvalidArg = errors.New("invalid crypto policy spec (not valid UTF-8)")
+
+// ErrCryptoPolicyParse is returned by SetCryptoPolicy when the spec
+// string is rejected (fail-closed: the policy is NOT installed).
+var ErrCryptoPolicyParse = errors.New("crypto policy spec rejected (parse error)")
+
+// ErrCryptoPolicyAlreadySet is returned by SetCryptoPolicy when a
+// policy was already installed (set-once).
+var ErrCryptoPolicyAlreadySet = errors.New("crypto policy already set")
+
+// SetCryptoPolicy installs the process-wide runtime crypto-governance
+// policy (#230) from its grammar string, e.g. "strict",
+// "fips-strict", or "compat;deny:rc4@write". Set-once; treat any
+// error as fatal (the policy is not installed on failure).
+func SetCryptoPolicy(spec string) error {
+	cSpec := C.CString(spec)
+	defer C.free(unsafe.Pointer(cSpec))
+	switch C.pdf_oxide_crypto_set_policy(cSpec) {
+	case 0:
+		return nil
+	case 1:
+		return ErrCryptoPolicyInvalidArg
+	case 2:
+		return ErrCryptoPolicyParse
+	case 3:
+		return ErrCryptoPolicyAlreadySet
+	default:
+		return fmt.Errorf("pdf_oxide_crypto_set_policy returned unknown error code")
+	}
+}
+
+// CryptoPolicy returns the active crypto policy as its canonical
+// grammar string (e.g. "compat", "strict;deny:md5@write").
+func CryptoPolicy() string {
+	cstr := C.pdf_oxide_crypto_policy()
+	if cstr == nil {
+		return "compat"
+	}
+	defer C.free_string(cstr)
+	return C.GoString(cstr)
+}
+
+// CryptoInventory returns the cryptographic algorithm tokens
+// exercised so far this process (governance report); empty slice
+// when nothing has been exercised.
+func CryptoInventory() []string {
+	cstr := C.pdf_oxide_crypto_inventory()
+	if cstr == nil {
+		return nil
+	}
+	defer C.free_string(cstr)
+	joined := C.GoString(cstr)
+	if joined == "" {
+		return nil
+	}
+	return strings.Split(joined, ",")
 }
 
 // ================================================================
