@@ -2969,7 +2969,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_oxide"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "aes 0.9.0",
  "aws-lc-rs",
@@ -3060,7 +3060,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_oxide_cli"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "clap",
  "is-terminal",
@@ -3070,7 +3070,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_oxide_mcp"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "pdf_oxide",
  "serde_json",
