@@ -7682,7 +7682,14 @@ mod tests {
         FontInfo {
             base_font: "TestType0Font".to_string(),
             subtype: "Type0".to_string(),
-            encoding: Encoding::Standard(encoding_name.to_string()),
+            // Mirror the real parser (`parse_encoding`): a `/Identity-H` or
+            // `/Identity-V` encoding name resolves to `Encoding::Identity`, not
+            // `Encoding::Standard("Identity-H")` — production never produces the
+            // latter for an Identity name, so tests must not either (#504).
+            encoding: match encoding_name {
+                "Identity-H" | "Identity-V" => Encoding::Identity,
+                name => Encoding::Standard(name.to_string()),
+            },
             to_unicode: to_unicode_stream.map(LazyCMap::new),
             font_weight: None,
             flags: None,
@@ -7709,9 +7716,15 @@ mod tests {
 
     /// Fix A — ToUnicode present but code not covered → U+FFFD (no Priority-3 fallback).
     ///
-    /// A Type0 font with Adobe-GB1 ordering and a ToUnicode CMap covering only A–Z.
-    /// Querying code 0x0061 (not in CMap) must return U+FFFD, NOT a CJK character
-    /// that would result from the Priority-3 predefined CMap lookup.
+    /// A Type0 font with Adobe-GB1 ordering, a *non-Identity* predefined-CMap
+    /// encoding (`UniGB-UCS2-H` → `Encoding::Standard`), and a ToUnicode CMap
+    /// covering only A–Z.  The Fix-A guard is deliberately scoped to
+    /// non-Identity Type0 fonts (Identity fonts map CID→Unicode directly and
+    /// have a valid CMap-miss fallback), so the encoding here must be a real
+    /// predefined CMap — not Identity-H — for this guard to apply in
+    /// production.  Querying code 0x0061 (not in the ToUnicode CMap) must
+    /// return U+FFFD, NOT the CJK character the Priority-3 predefined CMap
+    /// lookup would otherwise produce.
     #[test]
     fn test_fix_a_tounicode_present_miss_returns_fffd_not_cjk() {
         let cid_system_info = Some(CIDSystemInfo {
@@ -7719,7 +7732,7 @@ mod tests {
             ordering: "GB1".to_string(),
             supplement: 2,
         });
-        let font = make_type0_font(Some(make_tounicode_az()), "Identity-H", cid_system_info);
+        let font = make_type0_font(Some(make_tounicode_az()), "UniGB-UCS2-H", cid_system_info);
 
         // Code 0x0061 ('a') is NOT in the ToUnicode CMap (which only covers A–Z).
         // The Priority-3 predefined CMap for Adobe-GB1 would map CID 97 to some
@@ -7742,10 +7755,11 @@ mod tests {
     /// A Type0 font with Adobe-Japan1 ordering and NO ToUnicode CMap.
     /// Querying CID 843 must return U+3042 (あ) via the predefined CMap.
     ///
-    /// The encoding must be Identity-H (not a UCS2/UTF16 variant) combined with a
-    /// non-Identity CIDSystemInfo ordering so the code reaches the
-    /// `!is_ucs2_or_utf16 && is_non_identity_ordering` branch (line ~2568) that
-    /// calls lookup_predefined_cmap directly.
+    /// `Identity-H` resolves to `Encoding::Identity` (as in production);
+    /// combined with a non-Identity CIDSystemInfo ordering (Japan1) and no
+    /// ToUnicode CMap, the lookup routes through the predefined-CMap path
+    /// (`lookup_predefined_cmap`) rather than treating the CID as a raw
+    /// Unicode code point.
     #[test]
     fn test_fix_a_no_tounicode_priority3_triggered() {
         let cid_system_info = Some(CIDSystemInfo {
