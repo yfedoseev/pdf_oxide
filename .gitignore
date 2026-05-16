@@ -378,3 +378,6 @@ examples/**/dist/
 *.rlib
 /output/
 /js/output/
+
+# Local release planning workspace (not version-controlled)
+docs/releases/

@@ -2,6 +2,22 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.50] - 2026-05-16
+
+> Cryptographic algorithm-governance policy engine, true destructive
+> redaction, PAdES-B-T/B-LT long-term-validation signatures, and
+> split-by-bookmarks — across all bindings.
+
+### Added
+
+### Fixed
+
+### Security
+
+### CI / Infrastructure
+
+### Thanks
+
 ## [0.3.49] - 2026-05-15
 
 > Off-byte-0 PDF header recovery, sparse-trailer Catalog discovery,
