@@ -392,31 +392,14 @@ fn escape_pdf_string(s: &str) -> String {
     result
 }
 
-/// Format current time as a PDF date string.
+/// Current time as a PDF date string. Delegates to the single
+/// leap-year-correct implementation; the prior local copy hard-coded
+/// month/day to "0101" and approximated the year as 1970 + days/365,
+/// corrupting every signature /M date (README latent bug). WASM note:
+/// SystemTime::now() in the shared helper still needs cfg-gating if
+/// signatures are ever enabled for wasm32 (currently masked).
 fn format_pdf_date() -> String {
-    // WASM note: if signatures are ever enabled for wasm32, SystemTime::now()
-    // here will also need cfg-gating (currently masked because the `signatures`
-    // feature is not enabled in the wasm build).
-    use std::time::SystemTime;
-
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    // Convert to a simple date format: D:YYYYMMDDHHmmSS
-    // This is a simplified version - a real implementation would use chrono
-    let secs_per_day = 86400;
-    let days_since_1970 = now / secs_per_day;
-    let secs_today = now % secs_per_day;
-
-    // Very rough approximation for date calculation
-    let years = 1970 + (days_since_1970 / 365);
-    let hours = secs_today / 3600;
-    let mins = (secs_today % 3600) / 60;
-    let secs = secs_today % 60;
-
-    format!("D:{:04}0101{:02}{:02}{:02}Z", years, hours, mins, secs)
+    super::pdf_date::format_pdf_date_utc()
 }
 
 // SignOptions is re-exported from super::types

@@ -97,6 +97,54 @@ fn days_from_civil(year: u32, month: u32, day: u32) -> Option<i64> {
     Some(era * 146_097 + doe as i64 - 719_468)
 }
 
+/// Civil date `(year, month, day)` from days since 1970-01-01 — the
+/// exact inverse of [`days_from_civil`] (Howard Hinnant, public
+/// domain). Leap-year-correct for all dates.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    (y + i64::from(m <= 2), m, d)
+}
+
+/// Format a Unix timestamp (seconds since 1970-01-01 UTC) as a
+/// PDF date string `D:YYYYMMDDHHmmSSZ` (ISO 32000-1 §7.9.4). Pure
+/// and leap-year-correct — replaces the prior buggy code that
+/// hard-coded month/day to `0101` and approximated the year as
+/// `1970 + days/365`.
+pub(crate) fn pdf_date_from_unix_secs(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let tod = secs % 86_400;
+    let (y, m, d) = civil_from_days(days);
+    format!(
+        "D:{:04}{:02}{:02}{:02}{:02}{:02}Z",
+        y,
+        m,
+        d,
+        tod / 3600,
+        (tod % 3600) / 60,
+        tod % 60
+    )
+}
+
+/// Current UTC time as a PDF date string. The single correct source
+/// for signature `/M` and document-timestamp dates (DRY — replaces
+/// two divergent buggy copies in `sign_bytes.rs` / `signer.rs`).
+pub(crate) fn format_pdf_date_utc() -> String {
+    use std::time::SystemTime;
+    let secs = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    pdf_date_from_unix_secs(secs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +197,50 @@ mod tests {
     fn rejects_invalid_month_day() {
         assert_eq!(parse_pdf_date_to_epoch("D:20260099"), None);
         assert_eq!(parse_pdf_date_to_epoch("D:20260400"), None);
+    }
+
+    // ── format_pdf_date latent-bug fix (#235 / README) ───────────────
+
+    #[test]
+    fn unix_epoch_formats_exactly() {
+        assert_eq!(pdf_date_from_unix_secs(0), "D:19700101000000Z");
+    }
+
+    #[test]
+    fn formats_real_date_not_hardcoded_jan_1() {
+        // The bug hard-coded month/day to "0101" and approximated the
+        // year as 1970 + days/365. Assert a real mid-year date with a
+        // time-of-day round-trips through the module's own inverse.
+        for s in [
+            "D:20260516123456Z",
+            "D:20240229080000Z", // leap day — old code could never emit 0229
+            "D:20250301000001Z", // day after non-leap Feb
+            "D:19991231235959Z",
+            "D:20000101000000Z", // leap-century boundary
+        ] {
+            let epoch = parse_pdf_date_to_epoch(s).expect("parse fixture");
+            assert!(epoch >= 0);
+            assert_eq!(
+                pdf_date_from_unix_secs(epoch as u64),
+                s,
+                "format/parse round-trip must be exact for {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_pdf_date_utc_is_well_formed_and_current() {
+        let d = format_pdf_date_utc();
+        assert!(d.starts_with("D:") && d.ends_with('Z') && d.len() == 17);
+        // Year is the real current year, not a leap-drifted 1970+days/365.
+        let yr: i64 = d[2..6].parse().expect("year digits");
+        assert!((2025..=2100).contains(&yr), "implausible year {yr} in {d}");
+        // Month/day are real (not the old constant 0101 unless it truly is).
+        let mo: u32 = d[6..8].parse().unwrap();
+        let dy: u32 = d[8..10].parse().unwrap();
+        assert!((1..=12).contains(&mo) && (1..=31).contains(&dy));
+        // Must round-trip back to the same instant.
+        let e = parse_pdf_date_to_epoch(&d).expect("self-parse");
+        assert_eq!(pdf_date_from_unix_secs(e as u64), d);
     }
 }

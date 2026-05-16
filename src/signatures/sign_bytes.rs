@@ -287,22 +287,13 @@ fn pdf_text_hex(s: &str) -> String {
 }
 
 fn format_pdf_date() -> String {
-    // WASM note: if signatures are ever enabled for wasm32, SystemTime::now()
-    // here will also need cfg-gating (currently masked because the `signatures`
-    // feature is not enabled in the wasm build).
-    use std::time::SystemTime;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let secs_per_day = 86400u64;
-    let days = now / secs_per_day;
-    let today = now % secs_per_day;
-    let year = 1970 + days / 365;
-    let h = today / 3600;
-    let m = (today % 3600) / 60;
-    let s = today % 60;
-    format!("D:{:04}0101{:02}{:02}{:02}Z", year, h, m, s)
+    // Delegates to the single leap-year-correct implementation. The
+    // prior local copy hard-coded month/day to "0101" and approximated
+    // the year as 1970 + days/365 — corrupting every signature /M date
+    // (README latent bug). WASM note: SystemTime::now() in the shared
+    // helper still needs cfg-gating if signatures are ever enabled for
+    // wasm32 (currently masked — `signatures` is off in the wasm build).
+    super::pdf_date::format_pdf_date_utc()
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
