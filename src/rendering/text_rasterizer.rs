@@ -358,8 +358,10 @@ impl TextRasterizer {
                     // for this subtype so the byte→GID route is taken for every
                     // `Tj` / `TJ` call, not just the ones whose decoded Unicode
                     // happens to miss the cmap.
-                    // Classify the embedded font's cmap tables once per Arc lifetime;
-                    // subsequent calls for the same font bytes are a cheap HashMap hit.
+                    // Classify the embedded font's cmap tables. Computed
+                    // locally on every call — a cheap zero-copy `ttf_parser`
+                    // probe; the process-wide memoisation was removed as
+                    // unsound under concurrency (issue #505).
                     let (is_byte_indexed, has_unicode_cmap) = classify_embedded_font(embedded);
                     if info.subtype != "Type0" && is_byte_indexed {
                         log::debug!(

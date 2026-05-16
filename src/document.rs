@@ -2907,9 +2907,12 @@ impl PdfDocument {
     /// # Errors
     ///
     /// Returns an error if:
-    /// - The trailer does not contain a /Root entry
-    /// - The /Root entry is not a reference
+    /// - The /Root entry is present but is not a reference
     /// - Loading the catalog object fails
+    /// - The trailer omits /Root **and** no `/Type /Catalog` object can be
+    ///   found by scanning (the issue #509 recovery path: a missing /Root is
+    ///   not itself fatal — the Catalog is discovered by object scan, as
+    ///   Poppler / PDFium do — but it does error if that scan also fails)
     ///
     /// # Example
     ///
@@ -14064,6 +14067,41 @@ mod tests {
         let doc = PdfDocument::from_bytes(pdf).unwrap();
         assert_eq!(doc.version(), (1, 4));
         assert!(doc.trailer().as_dict().is_some());
+    }
+
+    // Issue #509: catalog() must fall back to scanning indirect objects for
+    // `/Type /Catalog` when the trailer omits /Root. The public open path
+    // can't reach this — a /Root-less parsed trailer fails root validation
+    // and xref reconstruction synthesizes a /Root-bearing trailer before
+    // catalog() ever runs — so cover find_catalog_by_scan() directly: open a
+    // valid PDF, then strip /Root from the in-memory trailer and confirm
+    // catalog() still resolves the Catalog by object scan.
+    #[test]
+    fn test_catalog_recovers_when_trailer_omits_root() {
+        let mut doc = PdfDocument::from_bytes(build_minimal_pdf(b"")).unwrap();
+        // Sanity: the normal /Root path resolves the Catalog.
+        assert!(doc.catalog().is_ok());
+
+        // Drop /Root so only the indirect-object scan can find the Catalog.
+        match doc.trailer {
+            Object::Dictionary(ref mut d) => {
+                d.remove("Root");
+                assert!(d.get("Root").is_none());
+            },
+            _ => panic!("trailer is not a dictionary"),
+        }
+
+        let catalog = doc.catalog().expect(
+            "catalog() must recover the /Type /Catalog object by scan when /Root is absent",
+        );
+        assert_eq!(
+            catalog
+                .as_dict()
+                .and_then(|d| d.get("Type"))
+                .and_then(|t| t.as_name()),
+            Some("Catalog"),
+            "find_catalog_by_scan must return the actual Catalog object"
+        );
     }
 
     #[test]

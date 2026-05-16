@@ -242,7 +242,20 @@ fn find_trailer<R: Read + Seek>(
             },
         }
     }
-    if let Some(trailer) = best_trailer {
+    if let Some(mut trailer) = best_trailer {
+        // A later /Root-less trailer may carry an /Encrypt //ID //Info that
+        // the chosen /Root-bearing trailer lacks (incremental update that
+        // adds encryption or rotates the file ID in a sparse trailer). Fill
+        // only the gaps so an explicit value in the /Root-bearing trailer is
+        // never clobbered, while encryption info that exists nowhere else is
+        // not lost (it is needed by `ensure_encryption_initialized`).
+        if !salvaged.is_empty() {
+            if let Object::Dictionary(d) = &mut trailer {
+                for (key, value) in &salvaged {
+                    d.entry(key.clone()).or_insert_with(|| value.clone());
+                }
+            }
+        }
         log::info!("Successfully parsed trailer dictionary (last /Root-bearing occurrence)");
         return Ok(trailer);
     }
