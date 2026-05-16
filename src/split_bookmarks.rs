@@ -462,4 +462,42 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err2, Error::InvalidOperation(_)));
     }
+
+    /// Cross-binding wire-shape golden. Every #482 surface (C-ABI →
+    /// Go/C#/Node, WASM, Python) marshals `BookmarkSegment` through
+    /// this exact JSON shape; a field rename/reorder would silently
+    /// break all of them at once. This is the single source of truth
+    /// the binding parity tests compare against (foundation §5.3).
+    #[test]
+    fn bookmark_segment_json_wire_shape_is_frozen() {
+        let titled = BookmarkSegment {
+            index: 2,
+            start_page: 3,
+            end_page: 7,
+            title: Some("Chapter 1".to_string()),
+            file_stem: "Chapter-1".to_string(),
+            page_label: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&titled).unwrap(),
+            r#"{"index":2,"start_page":3,"end_page":7,"title":"Chapter 1","file_stem":"Chapter-1","page_label":null}"#
+        );
+        // Front-matter segment: null title.
+        let fm = BookmarkSegment {
+            index: 1,
+            start_page: 0,
+            end_page: 3,
+            title: None,
+            file_stem: "front-matter".to_string(),
+            page_label: Some("iii".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_string(&fm).unwrap(),
+            r#"{"index":1,"start_page":0,"end_page":3,"title":null,"file_stem":"front-matter","page_label":"iii"}"#
+        );
+        // Round-trips (Deserialize parity for any binding that reads back).
+        let back: BookmarkSegment =
+            serde_json::from_str(&serde_json::to_string(&titled).unwrap()).unwrap();
+        assert_eq!(back, titled);
+    }
 }
