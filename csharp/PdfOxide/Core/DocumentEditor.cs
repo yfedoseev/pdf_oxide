@@ -723,6 +723,45 @@ namespace PdfOxide.Core
         }
 
         /// <summary>
+        /// Queues an explicit destructive redaction rectangle on a page
+        /// (page user space). The underlying content is physically removed
+        /// by <see cref="ApplyRedactions"/> — not a cosmetic overlay
+        /// (ISO 32000-1:2008 §12.5.6.23).
+        /// </summary>
+        public void AddRedaction(int pageIndex, double x1, double y1, double x2, double y2,
+            double r = 0, double g = 0, double b = 0)
+        {
+            ThrowIfDisposed();
+            NativeMethods.pdf_redaction_add(_handle, (nuint)pageIndex, x1, y1, x2, y2, r, g, b, out int err);
+            ExceptionMapper.ThrowIfError(err);
+        }
+
+        /// <summary>
+        /// Number of redaction regions queued for a page (annotations +
+        /// programmatic rectangles).
+        /// </summary>
+        public int RedactionCount(int pageIndex)
+        {
+            ThrowIfDisposed();
+            int n = NativeMethods.pdf_redaction_count(_handle, (nuint)pageIndex, out int err);
+            ExceptionMapper.ThrowIfError(err);
+            return n;
+        }
+
+        /// <summary>
+        /// Destructively applies all queued redactions (true content
+        /// removal). Returns the number of glyphs physically removed.
+        /// </summary>
+        public int ApplyRedactions(bool scrubMetadata = true,
+            double r = 0, double g = 0, double b = 0)
+        {
+            ThrowIfDisposed();
+            int removed = NativeMethods.pdf_redaction_apply(_handle, scrubMetadata, r, g, b, out int err);
+            ExceptionMapper.ThrowIfError(err);
+            return removed;
+        }
+
+        /// <summary>
         /// Rotates all pages by <paramref name="degrees"/> (additive, not absolute).
         /// </summary>
         public void RotateAllPages(int degrees)

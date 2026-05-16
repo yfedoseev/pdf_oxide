@@ -328,6 +328,10 @@ extern int32_t document_editor_merge_from_bytes(void* handle, const uint8_t* dat
 extern int   document_editor_embed_file(void* handle, const char* name, const uint8_t* data, size_t len, int* error_code);
 extern int   document_editor_apply_page_redactions(void* handle, size_t page, int* error_code);
 extern int   document_editor_apply_all_redactions(void* handle, int* error_code);
+extern int   pdf_redaction_add(void* handle, size_t page, double x1, double y1, double x2, double y2, double r, double g, double b, int* error_code);
+extern int   pdf_redaction_count(void* handle, size_t page, int* error_code);
+extern int   pdf_redaction_apply(void* handle, bool scrub_metadata, double r, double g, double b, int* error_code);
+extern int   pdf_redaction_scrub_metadata(void* handle, int* error_code);
 extern int   document_editor_rotate_all_pages(void* handle, int32_t degrees, int* error_code);
 extern int   document_editor_rotate_page_by(void* handle, size_t page, int32_t degrees, int* error_code);
 extern int   document_editor_get_page_media_box(void* handle, size_t page, double* x, double* y, double* w, double* h, int* error_code);
@@ -2546,6 +2550,60 @@ func (editor *DocumentEditor) ApplyAllRedactions() error {
 		return ffiError(errorCode)
 	}
 	return nil
+}
+
+// AddRedaction queues an explicit destructive redaction rectangle (page
+// user space). The content is physically removed by ApplyRedactions —
+// not a cosmetic overlay (ISO 32000-1:2008 §12.5.6.23). fill is an
+// optional DeviceRGB [r,g,b]; nil uses black.
+func (editor *DocumentEditor) AddRedaction(page int, rect [4]float64, fill *[3]float64) error {
+	if err := editor.acquireWrite(); err != nil {
+		return err
+	}
+	defer editor.mu.Unlock()
+	r, g, b := 0.0, 0.0, 0.0
+	if fill != nil {
+		r, g, b = fill[0], fill[1], fill[2]
+	}
+	var errorCode C.int
+	C.pdf_redaction_add(editor.handle, C.size_t(page),
+		C.double(rect[0]), C.double(rect[1]), C.double(rect[2]), C.double(rect[3]),
+		C.double(r), C.double(g), C.double(b), &errorCode)
+	if errorCode != 0 {
+		return ffiError(errorCode)
+	}
+	return nil
+}
+
+// RedactionCount returns the number of redaction regions queued for a
+// page (annotations + programmatic rectangles).
+func (editor *DocumentEditor) RedactionCount(page int) (int, error) {
+	if err := editor.acquireWrite(); err != nil {
+		return 0, err
+	}
+	defer editor.mu.Unlock()
+	var errorCode C.int
+	n := C.pdf_redaction_count(editor.handle, C.size_t(page), &errorCode)
+	if errorCode != 0 {
+		return 0, ffiError(errorCode)
+	}
+	return int(n), nil
+}
+
+// ApplyRedactions destructively applies all queued redactions (true
+// content removal). Returns the number of glyphs physically removed.
+func (editor *DocumentEditor) ApplyRedactions(scrubMetadata bool) (int, error) {
+	if err := editor.acquireWrite(); err != nil {
+		return 0, err
+	}
+	defer editor.mu.Unlock()
+	var errorCode C.int
+	removed := C.pdf_redaction_apply(editor.handle, C.bool(scrubMetadata),
+		C.double(0), C.double(0), C.double(0), &errorCode)
+	if errorCode != 0 {
+		return 0, ffiError(errorCode)
+	}
+	return int(removed), nil
 }
 
 // RotateAllPages rotates every page by degrees (additive, not absolute).

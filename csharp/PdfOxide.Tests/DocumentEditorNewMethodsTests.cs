@@ -241,6 +241,23 @@ namespace PdfOxide.Tests
             finally { File.Delete(path); }
         }
 
+        // Destructive redaction (#231): AddRedaction / RedactionCount / ApplyRedactions
+        [Fact]
+        public void DestructiveRedaction_Parity()
+        {
+            var path = CreateTestPdf("# Destructive redact parity");
+            try
+            {
+                using var editor = DocumentEditor.Open(path);
+                Assert.Equal(0, editor.RedactionCount(0));
+                editor.AddRedaction(0, 0, 0, 5000, 5000);
+                Assert.Equal(1, editor.RedactionCount(0));
+                // Must not throw on a simple-font document.
+                editor.ApplyRedactions(scrubMetadata: true);
+            }
+            finally { File.Delete(path); }
+        }
+
         // ---------------------------------------------------------------
         // RotateAllPages / RotatePageBy
         // ---------------------------------------------------------------

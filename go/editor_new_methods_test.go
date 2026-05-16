@@ -187,6 +187,27 @@ func TestDocumentEditor_ApplyAllRedactions_DoesNotError(t *testing.T) {
 	}
 }
 
+// ── Destructive redaction (#231): AddRedaction / RedactionCount / ApplyRedactions
+
+func TestDocumentEditor_DestructiveRedaction_Parity(t *testing.T) {
+	editor, cleanup := openEditorForTest(t, "# Destructive redact parity")
+	defer cleanup()
+
+	if n, err := editor.RedactionCount(0); err != nil || n != 0 {
+		t.Fatalf("RedactionCount initial: n=%d err=%v", n, err)
+	}
+	if err := editor.AddRedaction(0, [4]float64{0, 0, 5000, 5000}, nil); err != nil {
+		t.Fatalf("AddRedaction: %v", err)
+	}
+	if n, err := editor.RedactionCount(0); err != nil || n != 1 {
+		t.Fatalf("RedactionCount after add: n=%d err=%v", n, err)
+	}
+	// Destructively apply — must not error on a simple-font document.
+	if _, err := editor.ApplyRedactions(true); err != nil {
+		t.Fatalf("ApplyRedactions: %v", err)
+	}
+}
+
 // ── RotateAllPages ────────────────────────────────────────────────────────────
 
 func TestDocumentEditor_RotateAllPages_DoesNotError(t *testing.T) {

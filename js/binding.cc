@@ -270,6 +270,10 @@ extern "C" {
   extern int   document_editor_embed_file(void* handle, const char* name, const uint8_t* data, size_t len, int* error_code);
   extern int   document_editor_apply_page_redactions(void* handle, size_t page, int* error_code);
   extern int   document_editor_apply_all_redactions(void* handle, int* error_code);
+  extern int   pdf_redaction_add(void* handle, size_t page, double x1, double y1, double x2, double y2, double r, double g, double b, int* error_code);
+  extern int   pdf_redaction_count(void* handle, size_t page, int* error_code);
+  extern int   pdf_redaction_apply(void* handle, bool scrub_metadata, double r, double g, double b, int* error_code);
+  extern int   pdf_redaction_scrub_metadata(void* handle, int* error_code);
   extern int   document_editor_rotate_all_pages(void* handle, int32_t degrees, int* error_code);
   extern int   document_editor_rotate_page_by(void* handle, size_t page, int32_t degrees, int* error_code);
   extern int   document_editor_get_page_media_box(void* handle, size_t page, double* x, double* y, double* w, double* h, int* error_code);
@@ -2666,6 +2670,57 @@ Napi::Value EditorApplyPageRedactions(const Napi::CallbackInfo& info) {
   return env.Undefined();
 }
 
+// Destructive redaction (#231): true content removal, not a cosmetic
+// overlay (ISO 32000-1:2008 §12.5.6.23).
+Napi::Value RedactionAdd(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  void* handle = info[0].As<Napi::External<void>>().Data();
+  size_t page = (size_t)info[1].As<Napi::Number>().Uint32Value();
+  double x1 = info[2].As<Napi::Number>().DoubleValue();
+  double y1 = info[3].As<Napi::Number>().DoubleValue();
+  double x2 = info[4].As<Napi::Number>().DoubleValue();
+  double y2 = info[5].As<Napi::Number>().DoubleValue();
+  double r = info[6].As<Napi::Number>().DoubleValue();
+  double g = info[7].As<Napi::Number>().DoubleValue();
+  double b = info[8].As<Napi::Number>().DoubleValue();
+  int errorCode = 0;
+  pdf_redaction_add(handle, page, x1, y1, x2, y2, r, g, b, &errorCode);
+  if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
+  return env.Undefined();
+}
+
+Napi::Value RedactionCount(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  void* handle = info[0].As<Napi::External<void>>().Data();
+  size_t page = (size_t)info[1].As<Napi::Number>().Uint32Value();
+  int errorCode = 0;
+  int count = pdf_redaction_count(handle, page, &errorCode);
+  if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
+  return Napi::Number::New(env, count);
+}
+
+Napi::Value RedactionApply(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  void* handle = info[0].As<Napi::External<void>>().Data();
+  bool scrub = info[1].As<Napi::Boolean>().Value();
+  double r = info[2].As<Napi::Number>().DoubleValue();
+  double g = info[3].As<Napi::Number>().DoubleValue();
+  double b = info[4].As<Napi::Number>().DoubleValue();
+  int errorCode = 0;
+  int removed = pdf_redaction_apply(handle, scrub, r, g, b, &errorCode);
+  if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
+  return Napi::Number::New(env, removed);
+}
+
+Napi::Value RedactionScrubMetadata(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  void* handle = info[0].As<Napi::External<void>>().Data();
+  int errorCode = 0;
+  pdf_redaction_scrub_metadata(handle, &errorCode);
+  if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
+  return env.Undefined();
+}
+
 Napi::Value EditorApplyAllRedactions(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   void* handle = info[0].As<Napi::External<void>>().Data();
@@ -4017,6 +4072,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("editorEmbedFile", Napi::Function::New(env, EditorEmbedFile));
   exports.Set("editorApplyPageRedactions", Napi::Function::New(env, EditorApplyPageRedactions));
   exports.Set("editorApplyAllRedactions", Napi::Function::New(env, EditorApplyAllRedactions));
+  exports.Set("redactionAdd", Napi::Function::New(env, RedactionAdd));
+  exports.Set("redactionCount", Napi::Function::New(env, RedactionCount));
+  exports.Set("redactionApply", Napi::Function::New(env, RedactionApply));
+  exports.Set("redactionScrubMetadata", Napi::Function::New(env, RedactionScrubMetadata));
   exports.Set("editorRotateAllPages", Napi::Function::New(env, EditorRotateAllPages));
   exports.Set("editorRotatePageBy", Napi::Function::New(env, EditorRotatePageBy));
   exports.Set("editorGetPageMediaBox", Napi::Function::New(env, EditorGetPageMediaBox));

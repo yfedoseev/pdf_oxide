@@ -6257,6 +6257,47 @@ namespace PdfOxide.Internal
             NativeHandle handle,
             out int errorCode);
 
+        /// <summary>Queues an explicit destructive redaction rectangle (#231).</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_redaction_add")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int pdf_redaction_add(
+            NativeHandle handle,
+            nuint page,
+            double x1,
+            double y1,
+            double x2,
+            double y2,
+            double r,
+            double g,
+            double b,
+            out int errorCode);
+
+        /// <summary>Number of queued redaction regions for a page.</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_redaction_count")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int pdf_redaction_count(
+            NativeHandle handle,
+            nuint page,
+            out int errorCode);
+
+        /// <summary>Destructively applies all queued redactions; returns glyphs removed.</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_redaction_apply")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int pdf_redaction_apply(
+            NativeHandle handle,
+            [MarshalAs(UnmanagedType.U1)] bool scrubMetadata,
+            double r,
+            double g,
+            double b,
+            out int errorCode);
+
+        /// <summary>Standalone metadata scrub (not yet implemented; fails loud).</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_redaction_scrub_metadata")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int pdf_redaction_scrub_metadata(
+            NativeHandle handle,
+            out int errorCode);
+
         /// <summary>Rotates all pages by degrees (additive).</summary>
         [LibraryImport(LibName, EntryPoint = "document_editor_rotate_all_pages")]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
