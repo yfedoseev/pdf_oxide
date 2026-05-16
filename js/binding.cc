@@ -117,6 +117,9 @@ extern "C" {
   extern char* pdf_oxide_crypto_active_provider();
   extern int pdf_oxide_crypto_fips_available();
   extern int pdf_oxide_crypto_use_fips();
+  extern int pdf_oxide_crypto_set_policy(const char* spec);
+  extern char* pdf_oxide_crypto_policy();
+  extern char* pdf_oxide_crypto_inventory();
 
   // Document Operations
   extern void* pdf_document_open(const char* path, int* error_code);
@@ -2373,6 +2376,57 @@ Napi::Value UseFipsCryptoProvider(const Napi::CallbackInfo& info) {
   throw Napi::Error::New(env, "pdf_oxide_crypto_use_fips returned unknown error code");
 }
 
+// #230 — install the runtime crypto-governance policy. arg[0] = spec
+// grammar string. Fail-closed: throws on parse error / already-set.
+Napi::Value SetCryptoPolicy(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsString()) {
+    throw Napi::Error::New(env, "setCryptoPolicy: expected a policy spec string");
+  }
+  std::string spec = info[0].As<Napi::String>().Utf8Value();
+  int code = pdf_oxide_crypto_set_policy(spec.c_str());
+  if (code == 0) return env.Undefined();
+  if (code == 1) {
+    throw Napi::Error::New(env, "invalid crypto policy spec (not valid UTF-8)");
+  }
+  if (code == 2) {
+    throw Napi::Error::New(env, "crypto policy spec rejected (parse error)");
+  }
+  if (code == 3) {
+    throw Napi::Error::New(env, "crypto policy already set");
+  }
+  throw Napi::Error::New(env, "pdf_oxide_crypto_set_policy returned unknown error code");
+}
+
+Napi::Value CryptoPolicy(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  char* s = pdf_oxide_crypto_policy();
+  if (!s) return Napi::String::New(env, "compat");
+  Napi::String result = Napi::String::New(env, s);
+  free_string(s);
+  return result;
+}
+
+Napi::Value CryptoInventory(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  char* s = pdf_oxide_crypto_inventory();
+  std::string joined = s ? s : "";
+  if (s) free_string(s);
+  Napi::Array arr = Napi::Array::New(env);
+  if (joined.empty()) return arr;
+  uint32_t i = 0;
+  size_t start = 0;
+  while (true) {
+    size_t comma = joined.find(',', start);
+    std::string tok = joined.substr(
+        start, comma == std::string::npos ? std::string::npos : comma - start);
+    arr.Set(i++, Napi::String::New(env, tok));
+    if (comma == std::string::npos) break;
+    start = comma + 1;
+  }
+  return arr;
+}
+
 // ============================================================
 // Document Editor (missing wrappers)
 // ============================================================
@@ -3861,6 +3915,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("getActiveCryptoProvider", Napi::Function::New(env, GetActiveCryptoProvider));
   exports.Set("isFipsCryptoAvailable", Napi::Function::New(env, IsFipsCryptoAvailable));
   exports.Set("useFipsCryptoProvider", Napi::Function::New(env, UseFipsCryptoProvider));
+  exports.Set("setCryptoPolicy", Napi::Function::New(env, SetCryptoPolicy));
+  exports.Set("cryptoPolicy", Napi::Function::New(env, CryptoPolicy));
+  exports.Set("cryptoInventory", Napi::Function::New(env, CryptoInventory));
 
   // Document Operations
   exports.Set("openDocument", Napi::Function::New(env, OpenDocument));
