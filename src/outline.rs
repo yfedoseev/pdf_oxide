@@ -187,12 +187,45 @@ impl PdfDocument {
         Ok(None)
     }
 
+    /// Resolve a *named* destination (PDF 1.1 catalog `/Dests` dict, or
+    /// PDF 1.2+ `/Names` → `/Dests` name tree, ISO 32000-1 §12.3.2.3 /
+    /// §7.9.6) to a 0-based page index. `Ok(None)` when the name is
+    /// genuinely unresolvable (caller keeps [`Destination::Named`]).
+    pub(crate) fn resolve_named_destination(&self, name: &str) -> Result<Option<usize>> {
+        let catalog = self.catalog()?;
+        let Some(cat) = catalog.as_dict() else {
+            return Ok(None);
+        };
+        let resolve = |r: crate::object::ObjectRef| self.load_object(r).ok();
+        let Some(dest) = lookup_named_dest(cat, name.as_bytes(), &resolve, 0) else {
+            return Ok(None);
+        };
+        // The found value is a dest array (or was already normalised
+        // from a `<< /D [...] >>` wrapper). Reuse the array path.
+        match self.resolve_destination(&dest)? {
+            Some(Destination::PageIndex(i)) => Ok(Some(i)),
+            _ => Ok(None),
+        }
+    }
+
     /// Resolve a destination object to a Destination enum.
     fn resolve_destination(&self, dest_obj: &Object) -> Result<Option<Destination>> {
         match dest_obj {
-            // Named destination (string)
+            // Named destination — a byte string (`/Dest (name)`) or a
+            // name object (`/Dest /name`). Resolve via the catalog
+            // /Dests dict / /Names name tree; fall back to the
+            // unresolved name for backward compatibility (the
+            // `bookmarks` JSON still prints names when unresolvable).
             Object::String(name) => {
-                Ok(Some(Destination::Named(String::from_utf8_lossy(name).to_string())))
+                let s = String::from_utf8_lossy(name).to_string();
+                match self.resolve_named_destination(&s)? {
+                    Some(idx) => Ok(Some(Destination::PageIndex(idx))),
+                    None => Ok(Some(Destination::Named(s))),
+                }
+            },
+            Object::Name(name) => match self.resolve_named_destination(name)? {
+                Some(idx) => Ok(Some(Destination::PageIndex(idx))),
+                None => Ok(Some(Destination::Named(name.clone()))),
             },
 
             // Direct destination (array)
@@ -232,9 +265,163 @@ impl PdfDocument {
     }
 }
 
+/// Max name-tree descent — guards malformed/cyclic `/Kids` trees from
+/// unbounded recursion (foundation §6.3 untrusted-input limits).
+const NAME_TREE_MAX_DEPTH: u8 = 32;
+
+/// Follow one level of indirection. Pure given `resolve`.
+fn deref_obj(
+    o: &Object,
+    resolve: &dyn Fn(crate::object::ObjectRef) -> Option<Object>,
+) -> Option<Object> {
+    match o {
+        Object::Reference(r) => resolve(*r),
+        other => Some(other.clone()),
+    }
+}
+
+/// A name-tree / `/Dests` value is either the destination **array**
+/// directly, or a dictionary with a `/D` entry holding it
+/// (ISO 32000-1 §12.3.2.3). Normalise to the array object.
+fn normalize_dest_value(
+    v: &Object,
+    resolve: &dyn Fn(crate::object::ObjectRef) -> Option<Object>,
+) -> Option<Object> {
+    let v = deref_obj(v, resolve)?;
+    if let Some(d) = v.as_dict() {
+        if let Some(inner) = d.get("D") {
+            return deref_obj(inner, resolve);
+        }
+    }
+    if v.as_array().is_some() {
+        return Some(v);
+    }
+    None
+}
+
+/// Walk a name-tree node (`/Names` leaf or `/Kids` intermediate),
+/// `/Limits`-guided per ISO 32000-1 §7.9.6. Pure given `resolve`.
+fn walk_name_tree(
+    node: &Object,
+    target: &[u8],
+    resolve: &dyn Fn(crate::object::ObjectRef) -> Option<Object>,
+    depth: u8,
+) -> Option<Object> {
+    if depth > NAME_TREE_MAX_DEPTH {
+        return None;
+    }
+    let node = deref_obj(node, resolve)?;
+    let dict = node.as_dict()?;
+
+    // Leaf: `/Names` is a flat [key1 val1 key2 val2 …] array.
+    if let Some(names) = dict.get("Names").and_then(|n| {
+        deref_obj(n, resolve).and_then(|d| {
+            if d.as_array().is_some() {
+                Some(d)
+            } else {
+                None
+            }
+        })
+    }) {
+        let arr = names.as_array().expect("checked array above");
+        let mut i = 0;
+        while i + 1 < arr.len() {
+            if arr[i].as_string() == Some(target) {
+                return normalize_dest_value(&arr[i + 1], resolve);
+            }
+            i += 2;
+        }
+        // A pure-leaf node with no match is terminal.
+        if !dict.contains_key("Kids") {
+            return None;
+        }
+    }
+
+    // Intermediate: `/Kids` are child node refs; `/Limits [lo hi]`
+    // (byte strings) bracket each child's key range.
+    if let Some(kids) = dict
+        .get("Kids")
+        .and_then(|k| deref_obj(k, resolve))
+        .and_then(|k| {
+            if k.as_array().is_some() {
+                Some(k)
+            } else {
+                None
+            }
+        })
+    {
+        for kid in kids.as_array().expect("checked array above") {
+            let Some(kid_node) = deref_obj(kid, resolve) else {
+                continue;
+            };
+            let in_range = match kid_node.as_dict().and_then(|d| d.get("Limits")) {
+                Some(lim) => match deref_obj(lim, resolve).as_ref().and_then(Object::as_array) {
+                    Some(l) if l.len() == 2 => match (l[0].as_string(), l[1].as_string()) {
+                        (Some(lo), Some(hi)) => lo <= target && target <= hi,
+                        // Malformed Limits → search the kid anyway (robust).
+                        _ => true,
+                    },
+                    _ => true,
+                },
+                None => true,
+            };
+            if in_range {
+                if let Some(found) = walk_name_tree(&kid_node, target, resolve, depth + 1) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Resolve `target` to its destination object via the catalog
+/// `/Dests` dictionary (PDF 1.1) then the `/Names` → `/Dests` name
+/// tree (PDF 1.2+). Pure given `resolve`; bounded; returns the
+/// normalised destination array object, or `None`.
+fn lookup_named_dest(
+    catalog: &std::collections::HashMap<String, Object>,
+    target: &[u8],
+    resolve: &dyn Fn(crate::object::ObjectRef) -> Option<Object>,
+    depth: u8,
+) -> Option<Object> {
+    // Step A — catalog /Dests (a name→dest *dictionary*, PDF 1.1).
+    if let Some(dests) = catalog.get("Dests").and_then(|d| deref_obj(d, resolve)) {
+        if let Some(dd) = dests.as_dict() {
+            let key = String::from_utf8_lossy(target);
+            if let Some(v) = dd.get(key.as_ref()) {
+                if let Some(found) = normalize_dest_value(v, resolve) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    // Step B — catalog /Names → /Dests name tree (PDF 1.2+).
+    let names = catalog.get("Names").and_then(|n| deref_obj(n, resolve))?;
+    let root = names
+        .as_dict()?
+        .get("Dests")
+        .and_then(|d| deref_obj(d, resolve))?;
+    walk_name_tree(&root, target, resolve, depth)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    fn s(b: &str) -> Object {
+        Object::String(b.as_bytes().to_vec())
+    }
+    fn arr_dest(page_obj: u32) -> Object {
+        Object::Array(vec![
+            Object::Reference(crate::object::ObjectRef::new(page_obj, 0)),
+            Object::Name("Fit".to_string()),
+        ])
+    }
+    fn no_resolve() -> impl Fn(crate::object::ObjectRef) -> Option<Object> {
+        |_r| None
+    }
 
     #[test]
     fn test_outline_item_creation() {
@@ -265,5 +452,154 @@ mod tests {
 
         assert_eq!(parent.children.len(), 1);
         assert_eq!(parent.children[0].title, "Section 1.1");
+    }
+
+    // ---- pure named-destination resolver (#482) -------------------
+
+    /// Catalog `/Dests` dict, value is the destination array directly.
+    #[test]
+    fn dests_dict_direct_array() {
+        let mut dests = HashMap::new();
+        dests.insert("chap1".to_string(), arr_dest(7));
+        let mut cat = HashMap::new();
+        cat.insert("Dests".to_string(), Object::Dictionary(dests));
+        let r = no_resolve();
+        let got = lookup_named_dest(&cat, b"chap1", &r, 0).expect("found");
+        assert_eq!(got.as_array().unwrap()[0].as_reference().unwrap().id, 7);
+        assert!(lookup_named_dest(&cat, b"missing", &r, 0).is_none());
+    }
+
+    /// `/Dests` value is a `<< /D [...] >>` wrapper (must unwrap /D).
+    #[test]
+    fn dests_dict_d_wrapper() {
+        let mut inner = HashMap::new();
+        inner.insert("D".to_string(), arr_dest(9));
+        let mut dests = HashMap::new();
+        dests.insert("c".to_string(), Object::Dictionary(inner));
+        let mut cat = HashMap::new();
+        cat.insert("Dests".to_string(), Object::Dictionary(dests));
+        let got = lookup_named_dest(&cat, b"c", &no_resolve(), 0).expect("found");
+        assert_eq!(got.as_array().unwrap()[0].as_reference().unwrap().id, 9);
+    }
+
+    /// `/Names` → `/Dests` flat-`/Names`-array leaf.
+    #[test]
+    fn names_tree_flat_leaf() {
+        let dests_root = Object::Dictionary(HashMap::from([(
+            "Names".to_string(),
+            Object::Array(vec![
+                s("a"),
+                arr_dest(1),
+                s("b"),
+                arr_dest(4),
+                s("c"),
+                arr_dest(6),
+            ]),
+        )]));
+        let names = Object::Dictionary(HashMap::from([("Dests".to_string(), dests_root)]));
+        let cat = HashMap::from([("Names".to_string(), names)]);
+        let r = no_resolve();
+        assert_eq!(
+            lookup_named_dest(&cat, b"b", &r, 0)
+                .unwrap()
+                .as_array()
+                .unwrap()[0]
+                .as_reference()
+                .unwrap()
+                .id,
+            4
+        );
+        assert!(lookup_named_dest(&cat, b"z", &r, 0).is_none());
+    }
+
+    /// `/Kids` intermediate node with `/Limits`-guided descent, the
+    /// child nodes reached through indirect references (exercises the
+    /// injected `resolve`).
+    #[test]
+    fn names_tree_kids_with_limits_and_indirection() {
+        use crate::object::ObjectRef;
+        // obj 100 = left leaf [a,b], obj 101 = right leaf [m,z]
+        let leaf_l = Object::Dictionary(HashMap::from([
+            ("Limits".to_string(), Object::Array(vec![s("a"), s("b")])),
+            (
+                "Names".to_string(),
+                Object::Array(vec![s("a"), arr_dest(1), s("b"), arr_dest(2)]),
+            ),
+        ]));
+        let leaf_r = Object::Dictionary(HashMap::from([
+            ("Limits".to_string(), Object::Array(vec![s("m"), s("z")])),
+            (
+                "Names".to_string(),
+                Object::Array(vec![s("m"), arr_dest(3), s("z"), arr_dest(4)]),
+            ),
+        ]));
+        let resolve = move |rf: ObjectRef| match rf.id {
+            100 => Some(leaf_l.clone()),
+            101 => Some(leaf_r.clone()),
+            _ => None,
+        };
+        let root = Object::Dictionary(HashMap::from([(
+            "Kids".to_string(),
+            Object::Array(vec![
+                Object::Reference(ObjectRef::new(100, 0)),
+                Object::Reference(ObjectRef::new(101, 0)),
+            ]),
+        )]));
+        let names = Object::Dictionary(HashMap::from([("Dests".to_string(), root)]));
+        let cat = HashMap::from([("Names".to_string(), names)]);
+        assert_eq!(
+            lookup_named_dest(&cat, b"z", &resolve, 0)
+                .unwrap()
+                .as_array()
+                .unwrap()[0]
+                .as_reference()
+                .unwrap()
+                .id,
+            4
+        );
+        assert_eq!(
+            lookup_named_dest(&cat, b"a", &resolve, 0)
+                .unwrap()
+                .as_array()
+                .unwrap()[0]
+                .as_reference()
+                .unwrap()
+                .id,
+            1
+        );
+        // Out of every child's Limits → not found, no panic.
+        assert!(lookup_named_dest(&cat, b"c", &resolve, 0).is_none());
+    }
+
+    /// Cyclic `/Kids` must terminate via the depth guard (no panic /
+    /// stack overflow) — adversarial-input safety (foundation §6.3).
+    #[test]
+    fn names_tree_cyclic_kids_is_bounded() {
+        use crate::object::ObjectRef;
+        // obj 200's Kids points back at obj 200 forever.
+        let resolve = |rf: ObjectRef| {
+            if rf.id == 200 {
+                Some(Object::Dictionary(HashMap::from([(
+                    "Kids".to_string(),
+                    Object::Array(vec![Object::Reference(ObjectRef::new(200, 0))]),
+                )])))
+            } else {
+                None
+            }
+        };
+        let names = Object::Dictionary(HashMap::from([(
+            "Dests".to_string(),
+            Object::Reference(ObjectRef::new(200, 0)),
+        )]));
+        let cat = HashMap::from([("Names".to_string(), names)]);
+        // Must return None (bounded), not hang or overflow.
+        assert!(lookup_named_dest(&cat, b"x", &resolve, 0).is_none());
+    }
+
+    /// No /Dests and no /Names → cleanly None.
+    #[test]
+    fn no_dests_no_names_is_none() {
+        let cat = HashMap::from([("Type".to_string(), Object::Name("Catalog".to_string()))]);
+        assert!(lookup_named_dest(&cat, b"anything", &no_resolve(), 0).is_none());
     }
 }
