@@ -26,10 +26,12 @@
 mod dss_read;
 mod ess;
 mod level;
+mod ts_attr;
 
 pub use dss_read::{parse_dss, read_dss};
 pub use ess::build_signing_certificate_v2;
 pub use level::{classify_pades_level, vri_key};
+pub use ts_attr::build_signature_timestamp_attr;
 
 /// PAdES baseline level. Each level is a strict superset of the one
 /// below (ETSI EN 319 142-1 §5). Ordered `BB < BT < BLt < BLta`.
