@@ -899,6 +899,46 @@ namespace PdfOxide.Core
             finally { _lock.ExitReadLock(); }
         }
 
+        /// <summary>
+        /// Plans a split of the document at outline/bookmark boundaries
+        /// (issue #482). Returns a JSON array of segment objects
+        /// (index, start_page, end_page, title, file_stem, page_label) —
+        /// the same raw-JSON convention as <see cref="GetOutline"/>.
+        /// Throws if the document has no outline or nothing resolves.
+        /// </summary>
+        /// <param name="titlePrefix">Only split at bookmarks whose title starts with this.</param>
+        /// <param name="ignoreCase">Case-insensitive prefix match.</param>
+        /// <param name="level">0 = all depths, 1 = top-level (default), n = up to depth n.</param>
+        /// <param name="includeFrontMatter">Emit a leading front-matter segment when non-empty.</param>
+        public string PlanSplitByBookmarks(
+            string? titlePrefix = null,
+            bool ignoreCase = false,
+            int level = 1,
+            bool includeFrontMatter = true)
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                // Hand-built (AOT/trim-safe — no reflection-based
+                // JsonSerializer); only titlePrefix is user-controlled
+                // and is escaped via JsonEncodedText.
+                var prefixJson = titlePrefix is null
+                    ? "null"
+                    : $"\"{System.Text.Json.JsonEncodedText.Encode(titlePrefix)}\"";
+                var optionsJson =
+                    $"{{\"title_prefix\":{prefixJson}," +
+                    $"\"ignore_case\":{(ignoreCase ? "true" : "false")}," +
+                    $"\"level\":{level}," +
+                    $"\"include_front_matter\":{(includeFrontMatter ? "true" : "false")}}}";
+                var ptr = NativeMethods.pdf_document_plan_split_by_bookmarks(
+                    _handle.Ptr, optionsJson, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
+        }
+
         /// <summary>Extracts individual characters from a page.</summary>
         public (char Char, float X, float Y, float W, float H)[] ExtractChars(int pageIndex)
         {
