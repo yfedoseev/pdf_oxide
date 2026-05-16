@@ -7823,4 +7823,28 @@ mod tests {
             "Code mapping to U+0007 (BEL) must be filtered to U+FFFD by Fix B"
         );
     }
+
+    /// #504: `make_type0_font` must mirror the real `parse_encoding`
+    /// mapping. A direct guard so a future revert of the helper is caught
+    /// tightly (the Fix-A/B tests above only assert it *indirectly* via
+    /// `char_to_unicode` outcomes).
+    #[test]
+    fn test_make_type0_font_encoding_matches_parser() {
+        assert!(
+            matches!(make_type0_font(None, "Identity-H", None).encoding, Encoding::Identity),
+            "Identity-H must map to Encoding::Identity (production never yields Standard(\"Identity-H\"))"
+        );
+        assert!(
+            matches!(make_type0_font(None, "Identity-V", None).encoding, Encoding::Identity),
+            "Identity-V must map to Encoding::Identity"
+        );
+        match make_type0_font(None, "WinAnsiEncoding", None).encoding {
+            Encoding::Standard(ref n) => assert_eq!(n, "WinAnsiEncoding"),
+            other => panic!("non-Identity name must stay Encoding::Standard, got {other:?}"),
+        }
+        match make_type0_font(None, "UniGB-UCS2-H", None).encoding {
+            Encoding::Standard(ref n) => assert_eq!(n, "UniGB-UCS2-H"),
+            other => panic!("predefined CMap name must be Encoding::Standard, got {other:?}"),
+        }
+    }
 }
