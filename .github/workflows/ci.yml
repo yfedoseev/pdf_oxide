@@ -755,8 +755,25 @@ jobs:
       #   exports (`./builders`, `./managers`, `./errors`) don't
       #   simulate cleanly under node10's CJS resolver. Same
       #   justification.
+      #
+      # NON-BLOCKING (continue-on-error) due to an upstream attw bug, NOT a
+      # problem with our types. attw's `extractTarball`
+      # (@arethetypeswrong/core createPackage.js) does
+      # `new Gunzip((chunk) => (unzipped = chunk)).push(tgz, true)` — it keeps
+      # only the LAST fflate gunzip chunk. Any package whose *decompressed*
+      # tarball spans multiple fflate chunks (ours is ~1.16 MB / 118 files of
+      # legit .js + .d.ts) ends with an empty final chunk, so `untar` sees no
+      # files and attw crashes: "Cannot read properties of undefined (reading
+      # 'filename')". Reproduced against every attw 0.15.0–0.18.2 — there is
+      # no good version to pin, and the package can't be shrunk (no maps /
+      # tests / source are shipped; it's all real API surface). It "used to
+      # work" only while the package was small enough to fit one chunk.
+      # Every other Node-binding gate (typecheck, biome, publint, npm audit,
+      # node-gyp build, node tests) still hard-fails the job. Remove
+      # continue-on-error once attw upstream fixes the chunk handling.
       - name: arethetypeswrong (types vs runtime)
         if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
         working-directory: js
         run: >-
           npx --yes @arethetypeswrong/cli --pack .
