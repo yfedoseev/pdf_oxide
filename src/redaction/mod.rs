@@ -22,6 +22,7 @@ pub mod options;
 pub mod overlay;
 pub mod path_prune;
 pub mod region;
+pub mod serialize;
 pub mod text_prune;
 
 pub use classify::Classification;
