@@ -372,6 +372,7 @@ extern void pdf_oxide_path_list_free(void* handle);
 extern char* pdf_document_get_page_labels(void* handle, int* error_code);
 extern char* pdf_document_get_xmp_metadata(void* handle, int* error_code);
 extern char* pdf_document_get_outline(void* handle, int* error_code);
+extern char* pdf_document_plan_split_by_bookmarks(void* handle, const char* options_json, int* error_code);
 
 // Rendering
 extern void* pdf_render_page(void* doc, int32_t page_index, int32_t format, int* error_code);
@@ -2909,6 +2910,62 @@ func (doc *PdfDocument) Outline() (string, error) {
 	text := C.GoString(cText)
 	C.free_string(cText)
 	return text, nil
+}
+
+// SplitSegment is one planned output segment of a bookmark split (#482).
+type SplitSegment struct {
+	Index     int     `json:"index"`
+	StartPage int     `json:"start_page"`
+	EndPage   int     `json:"end_page"`
+	Title     *string `json:"title"`
+	FileStem  string  `json:"file_stem"`
+	PageLabel *string `json:"page_label"`
+}
+
+// SplitByBookmarksOptions controls a bookmark split. Level: 0 = all
+// depths, 1 = top-level only (default), n = up to depth n.
+type SplitByBookmarksOptions struct {
+	TitlePrefix        *string
+	IgnoreCase         bool
+	Level              int
+	IncludeFrontMatter bool
+}
+
+// PlanSplitByBookmarks plans (does not produce) a split of the document
+// at outline/bookmark boundaries (#482), mirroring the core
+// plan_split_by_bookmarks. Returns the planned segments or an error
+// (e.g. the document has no outline / nothing resolved).
+func (doc *PdfDocument) PlanSplitByBookmarks(opts SplitByBookmarksOptions) ([]SplitSegment, error) {
+	if err := doc.acquireRead(); err != nil {
+		return nil, err
+	}
+	defer doc.mu.Unlock()
+
+	optJSON, err := json.Marshal(map[string]interface{}{
+		"title_prefix":         opts.TitlePrefix,
+		"ignore_case":          opts.IgnoreCase,
+		"level":                opts.Level,
+		"include_front_matter": opts.IncludeFrontMatter,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("pdf_oxide: marshal split options: %w", err)
+	}
+	cOpts := C.CString(string(optJSON))
+	defer C.free(unsafe.Pointer(cOpts))
+
+	var errorCode C.int
+	cText := C.pdf_document_plan_split_by_bookmarks(doc.handle, cOpts, &errorCode)
+	if errorCode != 0 {
+		return nil, ffiError(errorCode)
+	}
+	text := C.GoString(cText)
+	C.free_string(cText)
+
+	var segs []SplitSegment
+	if err := json.Unmarshal([]byte(text), &segs); err != nil {
+		return nil, fmt.Errorf("pdf_oxide: parse split plan JSON: %w", err)
+	}
+	return segs, nil
 }
 
 // FromImage creates a PDF from an image file
