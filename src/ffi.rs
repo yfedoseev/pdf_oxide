@@ -325,6 +325,52 @@ pub extern "C" fn pdf_oxide_crypto_use_fips() -> i32 {
     }
 }
 
+// ─── Crypto governance policy (#230) ───────────────────────────────────────
+
+/// Install the process-wide runtime crypto policy from its grammar
+/// string (`"compat"|"strict"|"fips-strict"[;<allow|deny>:<alg>@<use>]`).
+///
+/// Error codes (fail-closed):
+///   0 = success
+///   1 = invalid argument (null/non-UTF-8 spec)
+///   2 = parse error (spec rejected — policy NOT installed)
+///   3 = a policy is already set (set-once)
+#[no_mangle]
+pub extern "C" fn pdf_oxide_crypto_set_policy(spec: *const c_char) -> i32 {
+    let s = match c_str(spec) {
+        Ok(s) => s,
+        Err(_) => return 1,
+    };
+    let policy: crate::crypto::SecurityPolicy = match s.parse() {
+        Ok(p) => p,
+        Err(_) => return 2,
+    };
+    match crate::crypto::set_policy(policy) {
+        Ok(()) => 0,
+        Err(_) => 3,
+    }
+}
+
+/// The active crypto policy as its canonical grammar string. Caller
+/// frees via [`free_string`]. Never null on success.
+#[no_mangle]
+pub extern "C" fn pdf_oxide_crypto_policy() -> *mut c_char {
+    to_c_string(&crate::crypto::active_policy().to_string())
+}
+
+/// Comma-joined lowercase tokens of the algorithms exercised so far
+/// this process (governance inventory). Caller frees via
+/// [`free_string`]; `""` when nothing has been exercised.
+#[no_mangle]
+pub extern "C" fn pdf_oxide_crypto_inventory() -> *mut c_char {
+    let joined = crate::crypto::inventory()
+        .into_iter()
+        .map(|a| a.token())
+        .collect::<Vec<_>>()
+        .join(",");
+    to_c_string(&joined)
+}
+
 // ─── Memory management ──────────────────────────────────────────────────────
 
 /// Free a string returned by any FFI function.
