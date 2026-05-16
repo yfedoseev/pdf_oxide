@@ -756,28 +756,41 @@ jobs:
       #   simulate cleanly under node10's CJS resolver. Same
       #   justification.
       #
-      # NON-BLOCKING (continue-on-error) due to an upstream attw bug, NOT a
-      # problem with our types. attw's `extractTarball`
-      # (@arethetypeswrong/core createPackage.js) does
-      # `new Gunzip((chunk) => (unzipped = chunk)).push(tgz, true)` — it keeps
+      # This tolerates ONLY one specific upstream attw crash, not arbitrary
+      # attw failures — a real types-vs-runtime regression still fails CI.
+      # The crash: attw's `extractTarball` (@arethetypeswrong/core
+      # createPackage.js) does
+      # `new Gunzip((chunk) => (unzipped = chunk)).push(tgz, true)`, keeping
       # only the LAST fflate gunzip chunk. Any package whose *decompressed*
       # tarball spans multiple fflate chunks (ours is ~1.16 MB / 118 files of
       # legit .js + .d.ts) ends with an empty final chunk, so `untar` sees no
-      # files and attw crashes: "Cannot read properties of undefined (reading
-      # 'filename')". Reproduced against every attw 0.15.0–0.18.2 — there is
-      # no good version to pin, and the package can't be shrunk (no maps /
-      # tests / source are shipped; it's all real API surface). It "used to
-      # work" only while the package was small enough to fit one chunk.
-      # Every other Node-binding gate (typecheck, biome, publint, npm audit,
-      # node-gyp build, node tests) still hard-fails the job. Remove
-      # continue-on-error once attw upstream fixes the chunk handling.
+      # files and attw aborts with exactly:
+      # "Cannot read properties of undefined (reading 'filename')".
+      # Reproduced against every attw 0.15.0–0.18.2 — no version to pin, and
+      # the package can't be shrunk (no maps/tests/source shipped; all real
+      # API surface). It "used to work" only while the package fit one chunk.
+      # We swallow ONLY that exact signature; any other non-zero exit (i.e. a
+      # genuine export/type problem) still fails the job, as do all other
+      # Node-binding gates. Drop this wrapper once attw fixes chunk handling.
       - name: arethetypeswrong (types vs runtime)
         if: matrix.os == 'ubuntu-latest'
-        continue-on-error: true
         working-directory: js
-        run: >-
-          npx --yes @arethetypeswrong/cli --pack .
-          --ignore-rules cjs-resolves-to-esm no-resolution internal-resolution-error
+        shell: bash
+        run: |
+          set +e
+          out="$(npx --yes @arethetypeswrong/cli --pack . \
+            --ignore-rules cjs-resolves-to-esm no-resolution internal-resolution-error 2>&1)"
+          rc=$?
+          printf '%s\n' "$out"
+          if [ "$rc" -eq 0 ]; then
+            exit 0
+          fi
+          if printf '%s' "$out" | grep -qF "Cannot read properties of undefined (reading 'filename')"; then
+            echo "::warning::attw hit the known upstream tarball-extraction bug (multi-chunk gunzip drops files); tolerated — see the comment above this step in ci.yml."
+            exit 0
+          fi
+          echo "::error::attw reported a real types-vs-runtime problem (not the known upstream crash)."
+          exit "$rc"
 
       # npm audit fails on high+ severity transitive vulns.
       - name: npm audit (prod deps, high severity)

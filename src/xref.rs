@@ -133,21 +133,30 @@ impl CrossRefTable {
         self.entries.keys().copied()
     }
 
-    /// The `max` smallest object numbers, ascending.
+    /// The `max` smallest **in-use** object numbers, ascending.
     ///
     /// `entries` is a `HashMap`, so iteration order is nondeterministic; a
     /// bounded scan over an arbitrary subset can miss the target. Selecting
-    /// the smallest numbers makes scans deterministic and prioritizes
-    /// low-numbered objects (where the Catalog conventionally lives). A
-    /// bounded max-heap keeps this O(n log max) time / O(max) memory rather
-    /// than sorting all n on a pathological or maliciously sparse xref.
+    /// the smallest in-use numbers makes scans deterministic and prioritizes
+    /// low-numbered live objects (where the Catalog conventionally lives).
+    /// Free entries are excluded so a long low-numbered free list can't
+    /// crowd the bounded set. A bounded max-heap keeps this O(n log max)
+    /// time / O(max) memory rather than sorting all n on a pathological or
+    /// maliciously sparse xref.
     pub(crate) fn smallest_object_numbers(&self, max: usize) -> Vec<u32> {
         if max == 0 {
             return Vec::new();
         }
         let mut heap: std::collections::BinaryHeap<u32> =
             std::collections::BinaryHeap::with_capacity(max + 1);
-        for n in self.entries.keys().copied() {
+        // Only live objects are scan candidates. Traditional xref tables
+        // store free entries (the free list); a file with more than `max`
+        // low-numbered *free* objects would otherwise exhaust the bounded
+        // candidate set before any live Catalog is even considered.
+        for (&n, e) in self.entries.iter() {
+            if !e.in_use {
+                continue;
+            }
             heap.push(n);
             if heap.len() > max {
                 heap.pop(); // drop the current largest

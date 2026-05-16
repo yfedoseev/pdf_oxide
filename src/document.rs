@@ -2948,8 +2948,12 @@ impl PdfDocument {
         // trailer legitimately does this (issue #509); discover the Catalog
         // by scanning indirect objects for /Type /Catalog, as Poppler /
         // PDFium do.
-        self.find_catalog_by_scan()
-            .ok_or_else(|| Error::InvalidPdf("Trailer missing /Root entry".to_string()))
+        self.find_catalog_by_scan().ok_or_else(|| {
+            Error::InvalidPdf(
+                "Trailer omits /Root and no /Type /Catalog object could be found by scanning"
+                    .to_string(),
+            )
+        })
     }
 
     /// Scan indirect objects for the document Catalog (`/Type /Catalog`).

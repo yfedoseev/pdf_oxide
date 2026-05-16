@@ -202,7 +202,7 @@ fn find_trailer<R: Read + Seek>(
     // from (RE_TRAILER yields matches in ascending file order, so a later
     // offset = a more recent incremental update).
     let mut best_trailer: Option<(Object, usize)> = None;
-    // /Encrypt //ID //Info salvaged from /Root-less parsed trailers, each
+    // /Encrypt /ID /Info salvaged from /Root-less parsed trailers, each
     // tracked with the offset it came from. If no /Root-bearing trailer
     // exists and we synthesize a minimal one, an encrypted file's /Encrypt
     // (and /ID, used for the encryption key) would otherwise be lost, making
@@ -248,7 +248,7 @@ fn find_trailer<R: Read + Seek>(
         }
     }
     if let Some((mut trailer, best_off)) = best_trailer {
-        // Merge salvaged /Encrypt //ID //Info from /Root-less trailers using
+        // Merge salvaged /Encrypt /ID /Info from /Root-less trailers using
         // most-recent-occurrence-wins (ISO 32000-1 §7.5.5): a salvaged value
         // overrides the /Root-bearing trailer's only when it was parsed from
         // a *later* offset (a newer incremental update — e.g. a sparse
