@@ -1,12 +1,43 @@
 use pdf_oxide::editor::{DocumentEditor, EditableDocument, SaveOptions};
 use std::path::Path;
 
+#[allow(clippy::too_many_arguments)] // internal CLI command mirroring clap args
 pub fn run(
     file: &Path,
     pages: Option<&str>,
     output: Option<&Path>,
     password: Option<&str>,
+    by_bookmarks: bool,
+    bookmark_prefix: Option<&str>,
+    bookmark_level: u32,
+    ignore_case: bool,
+    no_front_matter: bool,
 ) -> pdf_oxide::Result<()> {
+    // #482: split at outline/bookmark boundaries instead of per-page.
+    // Backward compatible — without --by-bookmarks the legacy per-page
+    // path below is byte-for-byte unchanged.
+    if by_bookmarks {
+        use pdf_oxide::split_bookmarks::{
+            split_by_bookmarks_to_dir, BookmarkLevel, SplitByBookmarksOptions,
+        };
+        let out_dir = match output {
+            Some(p) => p.to_path_buf(),
+            None => super::output_dir_beside(file),
+        };
+        let opts = SplitByBookmarksOptions {
+            title_prefix: bookmark_prefix.map(str::to_string),
+            ignore_case,
+            level: BookmarkLevel::from_u32(bookmark_level),
+            include_front_matter: !no_front_matter,
+            ..Default::default()
+        };
+        let paths = split_by_bookmarks_to_dir(file, &out_dir, &opts)?;
+        for p in &paths {
+            eprintln!("Wrote {}", p.display());
+        }
+        return Ok(());
+    }
+
     let doc = super::open_doc(file, password)?;
     let page_count = doc.page_count()?;
     drop(doc);

@@ -96,10 +96,25 @@ pub enum Command {
         files: Vec<PathBuf>,
     },
 
-    /// Split a PDF into individual pages
+    /// Split a PDF into individual pages, or by bookmarks with --by-bookmarks
     Split {
         /// Input PDF file
         file: PathBuf,
+        /// Split by document bookmarks/outline instead of per-page (#482)
+        #[arg(long = "by-bookmarks")]
+        by_bookmarks: bool,
+        /// Only split at bookmarks whose title starts with this prefix
+        #[arg(long = "bookmark-prefix", value_name = "PREFIX")]
+        bookmark_prefix: Option<String>,
+        /// Outline depth to split at (1 = top-level only, 0 = all levels)
+        #[arg(long = "bookmark-level", default_value_t = 1)]
+        bookmark_level: u32,
+        /// Case-insensitive prefix matching for --bookmark-prefix
+        #[arg(long = "ignore-case")]
+        ignore_case: bool,
+        /// Do not emit the pages before the first bookmark as a front-matter file
+        #[arg(long = "no-front-matter")]
+        no_front_matter: bool,
     },
 
     /// Create a PDF from Markdown, HTML, or plain text
