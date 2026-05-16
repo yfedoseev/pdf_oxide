@@ -4,12 +4,37 @@ All notable changes to PDFOxide are documented here.
 
 ## [0.3.50] - 2026-05-16
 
-> Runtime cryptographic algorithm-governance policy and split-PDF-by-
-> bookmarks across all seven bindings, plus a signature-date
-> correctness fix and a redaction-safety fix.
+> True destructive PDF redaction and a runtime cryptographic
+> algorithm-governance policy and split-PDF-by-bookmarks across all
+> seven bindings, plus a signature-date correctness fix.
 
 ### Added
 
+- **True destructive redaction
+  ([#231](https://github.com/yfedoseev/pdf_oxide/issues/231))** — the
+  prior "redaction" only drew a filled rectangle over content whose
+  bytes survived (recoverable by copy-paste / `pdftotext` / a hex
+  editor). Redaction is now **destructive**: the text under each region
+  is physically removed from the content stream — every glyph whose
+  ISO 32000-1:2008 §9.4.4 text-rendering box intersects the
+  (edge-padded) region is deleted, survivors are re-emitted with a
+  fresh absolute `Tm` and **no** `TJ` deltas so neither the glyphs nor
+  a width/shift side channel (Bland et al., PETS 2023) remain; the page
+  is rewritten so the original content object is dropped by the
+  garbage-collected full rewrite (no residual recoverable bytes); an
+  opaque overlay marks the area (ISO 32000-1:2008 §12.5.6.23, "remove
+  all traces … clipping shall not be used"). Composite/Type0/unknown
+  fonts are **refused** rather than risk a silent under-redaction
+  (fail-closed). New `DocumentEditor::add_redaction` /
+  `redaction_count` / `apply_redactions_destructive` plus the
+  `pdf_redaction_add/count/apply/scrub_metadata` C ABI and Python,
+  WASM, Node, C#, Go bindings and a `pdf-oxide redact INPUT --rect
+  PAGE:x0,y0,x1,y1 [--from-annotations] [--fill R,G,B]
+  [--no-scrub-metadata]` CLI. The legacy
+  `apply_page_redactions`/`apply_all_redactions` keep their signatures.
+  Standalone metadata-only sanitization (`scrub_metadata`) and
+  image/path/XObject pruning are roadmap; composite-font text and
+  encrypted documents are refused (not under-redacted).
 - **Runtime crypto-governance policy
   ([#230](https://github.com/yfedoseev/pdf_oxide/issues/230))** — a
   process-wide `crypto::SecurityPolicy` (modes `compat` / `strict` /
@@ -48,17 +73,19 @@ All notable changes to PDFOxide are documented here.
 
 ### Security
 
-- **Redaction API no longer silently fakes success
+- **Redaction now actually removes content
   ([#231](https://github.com/yfedoseev/pdf_oxide/issues/231))** — the
-  Node `editing-manager` redaction methods (`addRedaction`,
-  `applyRedactions`, `scrubMetadata`, `getRedactionCount`) referenced
-  native `pdf_redaction_*` symbols that do not exist; when absent they
-  silently no-op'd / returned `0` / emitted a success event — a
+  Node `editing-manager` redaction methods previously called native
+  `pdf_redaction_*` symbols that did not exist (silently no-op'ing — a
   security-critical operation pretending to succeed while removing
-  nothing. They now fail loudly with a clear error until destructive
-  redaction lands (#231 remains open). True destructive redaction
-  (#231) and PAdES-B-T/B-LT long-term-validation signatures (#235) are
-  **not** in this release; they are tracked for a follow-up.
+  nothing). Those C ABI symbols now exist and perform **true
+  destructive** redaction (see Added); the binding gap is closed across
+  all surfaces. A `[BLOCK]` integration test builds a real PDF
+  containing a secret, redacts it through the public API, and asserts
+  the secret is absent from **both** re-extracted text and the raw
+  saved bytes (idempotent). PAdES-B-T/B-LT long-term-validation
+  signatures (#235) are **not** in this release; they are tracked for a
+  follow-up.
 
 ### Thanks
 
