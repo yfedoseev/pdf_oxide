@@ -23,6 +23,12 @@
 //! mapping is stable from v0.3.50 onward (OCP — adding behaviour later
 //! is non-breaking).
 
+mod dss_read;
+mod level;
+
+pub use dss_read::{parse_dss, read_dss};
+pub use level::{classify_pades_level, vri_key};
+
 /// PAdES baseline level. Each level is a strict superset of the one
 /// below (ETSI EN 319 142-1 §5). Ordered `BB < BT < BLt < BLta`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

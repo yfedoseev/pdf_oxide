@@ -73,7 +73,9 @@ pub use cms::extract_signer_certificate_der;
 pub use cms_verify::{verify_signer, verify_signer_detached, SignerVerify};
 pub use enumerate::{count_signatures, enumerate_signatures};
 #[cfg(feature = "signatures")]
-pub use pades::{DocumentSecurityStore, PadesLevel, RevocationMaterial, VriEntry};
+pub use pades::{
+    classify_pades_level, read_dss, DocumentSecurityStore, PadesLevel, RevocationMaterial, VriEntry,
+};
 pub use pdf_date::parse_pdf_date_to_epoch;
 #[cfg(feature = "signatures")]
 pub use sign_bytes::sign_pdf_bytes;
