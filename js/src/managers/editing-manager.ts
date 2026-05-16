@@ -14,7 +14,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { mapFfiErrorCode } from '../errors';
+import { mapFfiErrorCode, PdfException } from '../errors';
 
 // =============================================================================
 // Type Definitions
@@ -149,6 +149,8 @@ export class EditingManager extends EventEmitter {
       }
     } else if (this.document?.addRedaction) {
       this.document.addRedaction(page, rect, fillColor);
+    } else {
+      this.redactionUnavailable('addRedaction');
     }
 
     this.emit('redactionAdded', { page, rect, color: fillColor });
@@ -203,7 +205,7 @@ export class EditingManager extends EventEmitter {
       return count ?? 0;
     }
 
-    return 0;
+    return this.redactionUnavailable('applyRedactions');
   }
 
   /**
@@ -244,6 +246,8 @@ export class EditingManager extends EventEmitter {
       }
     } else if (this.document?.scrubMetadata) {
       this.document.scrubMetadata(options);
+    } else {
+      this.redactionUnavailable('scrubMetadata');
     }
 
     this.emit('metadataScrubbed', { removeInfo, removeXmp, removeJs });
@@ -279,7 +283,28 @@ export class EditingManager extends EventEmitter {
       return this.document.getRedactionCount() ?? 0;
     }
 
-    return 0;
+    return this.redactionUnavailable('getRedactionCount');
+  }
+
+  /**
+   * Fail loudly when no real redaction backend is wired.
+   *
+   * Latent bug fix (README / #231): `editing-manager.ts` referenced
+   * native `pdf_redaction_add/apply/scrub_metadata/count` symbols that
+   * do **not** exist in `src/ffi.rs`. The previous fall-throughs
+   * silently no-op'd / returned 0 / emitted a success event — a
+   * security-critical "redaction" API pretending to succeed while
+   * removing nothing. Until destructive redaction lands (#231) these
+   * operations must refuse rather than give a false sense of safety.
+   */
+  private redactionUnavailable(op: string): never {
+    throw new PdfException(
+      '5000',
+      `Destructive redaction is unavailable in this build: '${op}' requires ` +
+        `native redaction support that is not yet implemented (tracked in ` +
+        `issue #231). Refusing to silently no-op a security-critical ` +
+        `operation.`
+    );
   }
 
   // ===========================================================================
