@@ -204,6 +204,8 @@ pub mod annotation_types;
 pub mod annotations;
 /// Content elements for PDF generation
 pub mod elements;
+/// Cross-platform-safe filename slug helpers (shared, pure).
+pub mod filename;
 pub mod outline;
 /// PDF logical structure (Tagged PDFs)
 pub mod structure;
