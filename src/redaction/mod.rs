@@ -20,6 +20,7 @@ pub mod image_prune;
 pub mod options;
 pub mod path_prune;
 pub mod region;
+pub mod text_prune;
 
 pub use classify::Classification;
 pub use options::{OcgPolicy, RedactionOptions, RedactionReport};
