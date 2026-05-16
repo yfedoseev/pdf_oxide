@@ -159,14 +159,14 @@ from .pdf_oxide import (  # noqa: E402
     crypto_policy,
     crypto_set_policy,
     crypto_use_fips,
-    plan_split_by_bookmarks,
-    split_by_bookmarks,
     disable_logging,
     generate_barcode_svg,
     generate_qr_svg,
     get_log_level,
+    plan_split_by_bookmarks,
     set_log_level,
     setup_logging,
+    split_by_bookmarks,
 )
 
 
