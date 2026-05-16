@@ -145,6 +145,61 @@ pub fn generate_qr_svg(data: String, error_correction: i32, size: u32) -> Result
 }
 
 // ============================================================================
+// split-by-bookmarks (#482) — free functions binding the Rust core
+// ============================================================================
+
+fn wasm_split_opts(
+    title_prefix: Option<String>,
+    ignore_case: bool,
+    level: u32,
+    include_front_matter: bool,
+) -> crate::split_bookmarks::SplitByBookmarksOptions {
+    crate::split_bookmarks::SplitByBookmarksOptions {
+        title_prefix,
+        ignore_case,
+        level: crate::split_bookmarks::BookmarkLevel::from_u32(level),
+        include_front_matter,
+        ..Default::default()
+    }
+}
+
+/// Plan a bookmark split without producing PDFs. Returns a JSON array
+/// of segment objects (`index, startPage…` shape from
+/// `BookmarkSegment`). `level`: 0 = all depths, 1 = top-level.
+#[wasm_bindgen(js_name = "planSplitByBookmarks")]
+pub fn plan_split_by_bookmarks(
+    src_bytes: &[u8],
+    title_prefix: Option<String>,
+    ignore_case: bool,
+    level: u32,
+    include_front_matter: bool,
+) -> Result<JsValue, JsValue> {
+    let doc = crate::document::PdfDocument::from_bytes(src_bytes.to_vec())
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let opts = wasm_split_opts(title_prefix, ignore_case, level, include_front_matter);
+    let segs = crate::split_bookmarks::plan_split_by_bookmarks(&doc, &opts)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    serde_wasm_bindgen::to_value(&segs).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Split at bookmark boundaries. Returns a JSON array of
+/// `[segment, bytes]` pairs (bytes as a number array; source
+/// unmodified).
+#[wasm_bindgen(js_name = "splitByBookmarks")]
+pub fn split_by_bookmarks(
+    src_bytes: &[u8],
+    title_prefix: Option<String>,
+    ignore_case: bool,
+    level: u32,
+    include_front_matter: bool,
+) -> Result<JsValue, JsValue> {
+    let opts = wasm_split_opts(title_prefix, ignore_case, level, include_front_matter);
+    let parts = crate::split_bookmarks::split_by_bookmarks_to_bytes(src_bytes, &opts)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    serde_wasm_bindgen::to_value(&parts).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+// ============================================================================
 // WasmPdfDocument — read, convert, search, extract, and edit PDFs
 // ============================================================================
 

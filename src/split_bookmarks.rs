@@ -85,7 +85,11 @@ impl Default for SplitByBookmarksOptions {
 }
 
 /// One planned output segment (also a `--dry-run` row).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` so every binding (WASM, C-ABI, Go, C#)
+/// marshals it through the one JSON shape and the parity goldens
+/// compare a single source of truth (DRY — foundation §5.3).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BookmarkSegment {
     /// 1-based segment ordinal across the whole document.
     pub index: usize,
