@@ -443,6 +443,7 @@ extern int pdf_oxide_crypto_use_fips();
 extern int pdf_oxide_crypto_set_policy(const char* spec);
 extern char* pdf_oxide_crypto_policy();
 extern char* pdf_oxide_crypto_inventory();
+extern char* pdf_oxide_crypto_cbom();
 
 // OCR (v0.3.27 — FFI bridge wrapping src/ocr::OcrEngine)
 // Returns _ERR_UNSUPPORTED when the Rust crate was built without --features ocr.
@@ -4577,6 +4578,17 @@ func CryptoInventory() []string {
 		return nil
 	}
 	return strings.Split(joined, ",")
+}
+
+// CryptoCBOM returns a CycloneDX 1.6 Cryptographic Bill of Materials
+// (JSON) of the algorithms exercised so far this process (#230 Phase F).
+func CryptoCBOM() string {
+	cstr := C.pdf_oxide_crypto_cbom()
+	if cstr == nil {
+		return ""
+	}
+	defer C.free_string(cstr)
+	return C.GoString(cstr)
 }
 
 // ================================================================

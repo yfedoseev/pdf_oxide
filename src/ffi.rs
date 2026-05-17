@@ -371,6 +371,14 @@ pub extern "C" fn pdf_oxide_crypto_inventory() -> *mut c_char {
     to_c_string(&joined)
 }
 
+/// A CycloneDX 1.6 Cryptographic Bill of Materials (JSON) of the
+/// algorithms exercised so far this process (#230 Phase F). Caller
+/// frees via [`free_string`].
+#[no_mangle]
+pub extern "C" fn pdf_oxide_crypto_cbom() -> *mut c_char {
+    to_c_string(&crate::crypto::cbom_json())
+}
+
 // ─── Memory management ──────────────────────────────────────────────────────
 
 /// Free a string returned by any FFI function.

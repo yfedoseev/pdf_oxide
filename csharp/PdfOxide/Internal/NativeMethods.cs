@@ -327,6 +327,11 @@ namespace PdfOxide.Internal
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
         public static partial nint PdfOxideCryptoInventory();
 
+        /// <summary>CycloneDX 1.6 crypto BOM (JSON); caller frees with FreeString.</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_oxide_crypto_cbom")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial nint PdfOxideCryptoCbom();
+
         #endregion
 
         #region Pdf Creation API

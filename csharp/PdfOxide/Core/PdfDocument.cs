@@ -1611,6 +1611,21 @@ namespace PdfOxide.Core
             }
             finally { NativeMethods.FreeString(ptr); }
         }
+
+        /// <summary>
+        /// A CycloneDX 1.6 Cryptographic Bill of Materials (JSON string)
+        /// of the algorithms exercised so far this process (#230 Phase F).
+        /// </summary>
+        public static string CryptoCbom()
+        {
+            var ptr = NativeMethods.PdfOxideCryptoCbom();
+            if (ptr == IntPtr.Zero) return "{}";
+            try
+            {
+                return Marshal.PtrToStringUTF8(ptr) ?? "{}";
+            }
+            finally { NativeMethods.FreeString(ptr); }
+        }
     }
 
     /// <summary>

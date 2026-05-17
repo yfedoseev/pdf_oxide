@@ -85,7 +85,11 @@ All notable changes to PDFOxide are documented here.
   (existing encrypted PDFs still decrypt; newly written ones are
   bit-for-bit unchanged). Non-security opaque MD5 (file identifier,
   embedded-file `/CheckSum`) is deliberately left direct so a strict
-  policy still permits AES-256 writes.
+  policy still permits AES-256 writes. A machine-readable **CycloneDX
+  1.6 Cryptographic Bill of Materials** of the algorithms a run
+  actually exercised is exported via `crypto_cbom` (core `cbom_json` +
+  C ABI / Python / WASM / Go / Node / C# bindings) — the structured
+  complement to `crypto_inventory` for CBOM/SPDX-crypto governance.
 - **Split a PDF by bookmarks
   ([#482](https://github.com/yfedoseev/pdf_oxide/issues/482))** — new
   `pdf-oxide split --by-bookmarks [--bookmark-prefix P]

@@ -20,6 +20,7 @@
 mod active;
 #[cfg(feature = "fips")]
 mod aws_lc_provider;
+mod cbom;
 mod error;
 mod policy;
 mod provider;
@@ -32,6 +33,7 @@ pub use active::{
 };
 #[cfg(feature = "fips")]
 pub use aws_lc_provider::AwsLcProvider;
+pub use cbom::cbom_json;
 pub use error::{not_permitted, AlgorithmKind, Error, Result};
 pub use policy::{
     AlgorithmId, AlgorithmUse, AuditEvent, AuditSink, Decision, LogAuditSink, NoopAuditSink,

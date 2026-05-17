@@ -232,6 +232,13 @@ pub fn crypto_inventory() -> Result<JsValue, JsValue> {
     serde_wasm_bindgen::to_value(&tokens).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+/// A CycloneDX 1.6 Cryptographic Bill of Materials (JSON string) of the
+/// algorithms exercised so far this process (#230 Phase F).
+#[wasm_bindgen(js_name = "cryptoCbom")]
+pub fn crypto_cbom() -> String {
+    crate::crypto::cbom_json()
+}
+
 // ============================================================================
 // WasmPdfDocument — read, convert, search, extract, and edit PDFs
 // ============================================================================

@@ -7384,6 +7384,7 @@ fn pdf_oxide(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(crypto_set_policy, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(crypto_policy, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(crypto_inventory, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(crypto_cbom, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(plan_split_by_bookmarks, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(split_by_bookmarks, m)?)?;
     Ok(())
@@ -7582,6 +7583,13 @@ fn crypto_inventory() -> Vec<String> {
         .into_iter()
         .map(|a| a.token().to_string())
         .collect()
+}
+
+/// A CycloneDX 1.6 Cryptographic Bill of Materials (JSON string) of the
+/// algorithms exercised so far this process (#230 Phase F).
+#[pyfunction]
+fn crypto_cbom() -> String {
+    crate::crypto::cbom_json()
 }
 
 /// Sign raw PDF bytes and return the signed PDF as `bytes`.

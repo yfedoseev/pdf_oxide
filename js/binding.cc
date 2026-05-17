@@ -121,6 +121,7 @@ extern "C" {
   extern int pdf_oxide_crypto_set_policy(const char* spec);
   extern char* pdf_oxide_crypto_policy();
   extern char* pdf_oxide_crypto_inventory();
+  extern char* pdf_oxide_crypto_cbom();
 
   // Document Operations
   extern void* pdf_document_open(const char* path, int* error_code);
@@ -2443,6 +2444,16 @@ Napi::Value CryptoInventory(const Napi::CallbackInfo& info) {
   return arr;
 }
 
+// CycloneDX 1.6 Cryptographic Bill of Materials (JSON) of algorithms
+// exercised this process (#230 Phase F).
+Napi::Value CryptoCbom(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  char* s = pdf_oxide_crypto_cbom();
+  std::string json = s ? s : "{}";
+  if (s) free_string(s);
+  return Napi::String::New(env, json);
+}
+
 // ============================================================
 // Document Editor (missing wrappers)
 // ============================================================
@@ -4103,6 +4114,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("setCryptoPolicy", Napi::Function::New(env, SetCryptoPolicy));
   exports.Set("cryptoPolicy", Napi::Function::New(env, CryptoPolicy));
   exports.Set("cryptoInventory", Napi::Function::New(env, CryptoInventory));
+  exports.Set("cryptoCbom", Napi::Function::New(env, CryptoCbom));
 
   // Document Operations
   exports.Set("openDocument", Napi::Function::New(env, OpenDocument));
