@@ -120,7 +120,14 @@ All notable changes to PDFOxide are documented here.
   (byte-for-byte unchanged). (Finer X.509 cert-policy governance —
   keyUsage / extendedKeyUsage / validity-window enforcement for the
   signing certificate — is the remaining #230 roadmap item, tracked as
-  a focused follow-up.)
+  a focused follow-up. Per-document policy override (Phase G) was
+  design-assessed and deliberately deferred: the active policy is
+  set-once specifically because a mid-flight downgrade is an attack
+  vector, so a runtime *widening* override (e.g. relax-for-one-document)
+  cannot be added safely; the only sound shape is an explicit
+  per-document policy threaded through every crypto call site — a large
+  cross-cutting change, tracked as a separate follow-up, not a set-once
+  relaxation.)
 - **Split a PDF by bookmarks
   ([#482](https://github.com/yfedoseev/pdf_oxide/issues/482))** — new
   `pdf-oxide split --by-bookmarks [--bookmark-prefix P]
