@@ -73,12 +73,30 @@ pub enum AlgorithmId {
     SigEcdsaP256Sha256,
     /// ECDSA P-384 signature over SHA-384.
     SigEcdsaP384Sha384,
+    // ── Post-quantum (FIPS 203/204, 2024) — #230 Phase E governance
+    // vocabulary. The policy *recognises and governs* these ids;
+    // actual ML-DSA/ML-KEM primitives are a separate provider concern
+    // (a sign attempt fails closed at the provider until they land).
+    // Appended last so existing `index()` / inventory-bit positions
+    // stay frozen.
+    /// ML-DSA-44 signature (FIPS 204; NIST security level 2).
+    SigMlDsa44,
+    /// ML-DSA-65 signature (FIPS 204; NIST security level 3).
+    SigMlDsa65,
+    /// ML-DSA-87 signature (FIPS 204; NIST security level 5).
+    SigMlDsa87,
+    /// ML-KEM-512 key encapsulation (FIPS 203; NIST level 1).
+    KemMlKem512,
+    /// ML-KEM-768 key encapsulation (FIPS 203; NIST level 3).
+    KemMlKem768,
+    /// ML-KEM-1024 key encapsulation (FIPS 203; NIST level 5).
+    KemMlKem1024,
 }
 
 impl AlgorithmId {
     /// Every algorithm id this build knows, in declaration order.
     /// Used by the policy-matrix tests and `inventory()`.
-    pub const ALL: [AlgorithmId; 17] = [
+    pub const ALL: [AlgorithmId; 23] = [
         AlgorithmId::HashMd5,
         AlgorithmId::HashSha1,
         AlgorithmId::HashSha256,
@@ -96,6 +114,13 @@ impl AlgorithmId {
         AlgorithmId::SigRsaPssSha512,
         AlgorithmId::SigEcdsaP256Sha256,
         AlgorithmId::SigEcdsaP384Sha384,
+        // #230 Phase E — appended; never reordered.
+        AlgorithmId::SigMlDsa44,
+        AlgorithmId::SigMlDsa65,
+        AlgorithmId::SigMlDsa87,
+        AlgorithmId::KemMlKem512,
+        AlgorithmId::KemMlKem768,
+        AlgorithmId::KemMlKem1024,
     ];
 
     /// Stable lowercase token used in the policy grammar, audit logs,
@@ -119,6 +144,12 @@ impl AlgorithmId {
             AlgorithmId::SigRsaPssSha512 => "rsa-pss-sha512",
             AlgorithmId::SigEcdsaP256Sha256 => "ecdsa-p256-sha256",
             AlgorithmId::SigEcdsaP384Sha384 => "ecdsa-p384-sha384",
+            AlgorithmId::SigMlDsa44 => "ml-dsa-44",
+            AlgorithmId::SigMlDsa65 => "ml-dsa-65",
+            AlgorithmId::SigMlDsa87 => "ml-dsa-87",
+            AlgorithmId::KemMlKem512 => "ml-kem-512",
+            AlgorithmId::KemMlKem768 => "ml-kem-768",
+            AlgorithmId::KemMlKem1024 => "ml-kem-1024",
         }
     }
 
@@ -133,8 +164,8 @@ impl AlgorithmId {
     /// process-wide crypto inventory bitset. Never reordered (it is a
     /// persisted-shape-adjacent contract); new ids append.
     pub fn index(self) -> usize {
-        // Linear scan over 17 `Copy` values — trivially cheap and
-        // keeps a single source of truth (`ALL`), DRY.
+        // Linear scan over the `ALL` `Copy` values — trivially cheap
+        // and keeps a single source of truth (`ALL`), DRY.
         Self::ALL
             .iter()
             .position(|&a| a == self)
@@ -163,7 +194,17 @@ impl AlgorithmId {
             | AlgorithmId::SigRsaPssSha384
             | AlgorithmId::SigRsaPssSha512
             | AlgorithmId::SigEcdsaP256Sha256
-            | AlgorithmId::SigEcdsaP384Sha384 => AlgorithmKind::SignatureSign,
+            | AlgorithmId::SigEcdsaP384Sha384
+            | AlgorithmId::SigMlDsa44
+            | AlgorithmId::SigMlDsa65
+            | AlgorithmId::SigMlDsa87 => AlgorithmKind::SignatureSign,
+            // ML-KEM is key *encapsulation*; classified under the
+            // existing `KeyDerivation` family (it establishes a shared
+            // key) so no new `AlgorithmKind` variant / match ripple —
+            // #230 Phase E governance vocab.
+            AlgorithmId::KemMlKem512 | AlgorithmId::KemMlKem768 | AlgorithmId::KemMlKem1024 => {
+                AlgorithmKind::KeyDerivation
+            },
         }
     }
 
@@ -188,6 +229,12 @@ impl AlgorithmId {
                 | AlgorithmId::SigRsaPssSha512
                 | AlgorithmId::SigEcdsaP256Sha256
                 | AlgorithmId::SigEcdsaP384Sha384
+                | AlgorithmId::SigMlDsa44
+                | AlgorithmId::SigMlDsa65
+                | AlgorithmId::SigMlDsa87
+                | AlgorithmId::KemMlKem512
+                | AlgorithmId::KemMlKem768
+                | AlgorithmId::KemMlKem1024
         )
     }
 
@@ -211,6 +258,11 @@ impl AlgorithmId {
             | AlgorithmId::CipherAes256Cbc
             | AlgorithmId::SigRsaPkcs1v15Sha512
             | AlgorithmId::SigRsaPssSha512 => 256,
+            // PQC (NIST security levels → SP 800-57 classical-bit
+            // ballpark): L1/L2 ≈ 128, L3 ≈ 192, L5 ≈ 256.
+            AlgorithmId::SigMlDsa44 | AlgorithmId::KemMlKem512 => 128,
+            AlgorithmId::SigMlDsa65 | AlgorithmId::KemMlKem768 => 192,
+            AlgorithmId::SigMlDsa87 | AlgorithmId::KemMlKem1024 => 256,
         }
     }
 
@@ -277,6 +329,20 @@ pub enum PolicyMode {
     /// Pairs with `--features fips`. SHA-1 *verify* of historical
     /// signatures still allowed (SP 800-131A).
     FipsStrict,
+    /// CNSA 2.0 posture (#230 Phase E): like `FipsStrict` for read,
+    /// but new (`Write`) crypto must be quantum-resistant /
+    /// high-strength — only FIPS-approved primitives at the **192-bit
+    /// class or above** (ML-DSA-65/87, ML-KEM-768/1024, SHA-384/512,
+    /// AES-256, RSA/ECDSA-384+). 128-bit-class classical is denied for
+    /// write.
+    Cnsa2,
+    /// PQC migration posture (#230 Phase E): `Strict` semantics (read
+    /// legacy OK; write must be FIPS-approved, 128-bit floor) that
+    /// *additionally* recognises and permits the ML-DSA / ML-KEM ids,
+    /// so deployments can dual-stack classical + post-quantum during
+    /// the transition toward `Cnsa2` without yet enforcing the CNSA 2.0
+    /// 192-bit-class mandate.
+    PqcReady,
 }
 
 impl PolicyMode {
@@ -286,6 +352,8 @@ impl PolicyMode {
             PolicyMode::Compat => "compat",
             PolicyMode::Strict => "strict",
             PolicyMode::FipsStrict => "fips-strict",
+            PolicyMode::Cnsa2 => "cnsa2",
+            PolicyMode::PqcReady => "pqc-ready",
         }
     }
 
@@ -293,7 +361,8 @@ impl PolicyMode {
     const fn default_min_bits(self) -> u16 {
         match self {
             PolicyMode::Compat => 0,
-            PolicyMode::Strict | PolicyMode::FipsStrict => 128,
+            PolicyMode::Strict | PolicyMode::FipsStrict | PolicyMode::PqcReady => 128,
+            PolicyMode::Cnsa2 => 192,
         }
     }
 
@@ -328,6 +397,36 @@ impl PolicyMode {
                         _ => Decision::Deny,
                     }
                 }
+            },
+            // #230 Phase E. `PqcReady` == `Strict`'s matrix (read
+            // legacy OK; write must be FIPS-approved — which now
+            // includes ML-DSA/ML-KEM, enabling classical+PQC
+            // dual-stacking during migration). Strength tightening to
+            // CNSA-2.0 levels is `Cnsa2`'s job, not this transitional
+            // mode's.
+            PolicyMode::PqcReady => match use_ {
+                AlgorithmUse::Read => Decision::Allow,
+                AlgorithmUse::Write => {
+                    if alg.is_fips_approved() {
+                        Decision::Allow
+                    } else {
+                        Decision::Deny
+                    }
+                },
+            },
+            // CNSA 2.0: read legacy OK, but new crypto must be
+            // FIPS-approved **and** 192-bit-class or stronger — denies
+            // 128-bit classical (SHA-256/AES-128/RSA|ECDSA-256) and the
+            // L1/L2 PQC params for write.
+            PolicyMode::Cnsa2 => match use_ {
+                AlgorithmUse::Read => Decision::Allow,
+                AlgorithmUse::Write => {
+                    if alg.is_fips_approved() && alg.min_security_bits() >= 192 {
+                        Decision::Allow
+                    } else {
+                        Decision::Deny
+                    }
+                },
             },
         }
     }
@@ -554,9 +653,11 @@ impl FromStr for SecurityPolicy {
             "compat" => PolicyMode::Compat,
             "strict" => PolicyMode::Strict,
             "fips-strict" => PolicyMode::FipsStrict,
+            "cnsa2" => PolicyMode::Cnsa2,
+            "pqc-ready" => PolicyMode::PqcReady,
             other => {
                 return Err(PolicyParseError(format!(
-                    "unknown mode '{other}' (expected compat|strict|fips-strict)"
+                    "unknown mode '{other}' (expected compat|strict|fips-strict|cnsa2|pqc-ready)"
                 )))
             },
         };
@@ -907,5 +1008,68 @@ mod tests {
             .unknown_algorithm(Decision::Allow)
             .build();
         assert_eq!(p.evaluate_token("future-pqc", AlgorithmUse::Read), Decision::Allow);
+    }
+
+    // ── #230 Phase E: PQC governance vocabulary ──────────────────────
+
+    #[test]
+    fn pqc_algorithm_ids_round_trip_and_are_fips_classified() {
+        for (tok, sec) in [
+            ("ml-dsa-44", 128u16),
+            ("ml-dsa-65", 192),
+            ("ml-dsa-87", 256),
+            ("ml-kem-512", 128),
+            ("ml-kem-768", 192),
+            ("ml-kem-1024", 256),
+        ] {
+            let a = AlgorithmId::from_token(tok).unwrap_or_else(|| panic!("{tok} known"));
+            assert_eq!(a.token(), tok, "token round-trips");
+            assert!(a.is_fips_approved(), "{tok} is FIPS 203/204 approved");
+            assert_eq!(a.min_security_bits(), sec, "{tok} NIST-level strength");
+        }
+        // ML-DSA → signature family; ML-KEM → key-establishment.
+        assert_eq!(
+            AlgorithmId::from_token("ml-dsa-65").unwrap().kind(),
+            AlgorithmKind::SignatureSign
+        );
+        assert_eq!(
+            AlgorithmId::from_token("ml-kem-768").unwrap().kind(),
+            AlgorithmKind::KeyDerivation
+        );
+        // Frozen indices preserved: the 17 pre-Phase-E ids keep their
+        // positions; PQC ids appended at 17..23.
+        assert_eq!(AlgorithmId::HashMd5.index(), 0);
+        assert_eq!(AlgorithmId::SigEcdsaP384Sha384.index(), 16);
+        assert_eq!(AlgorithmId::SigMlDsa44.index(), 17);
+        assert_eq!(AlgorithmId::KemMlKem1024.index(), 22);
+    }
+
+    #[test]
+    fn cnsa2_and_pqc_ready_modes_parse_and_govern() {
+        // Mode grammar round-trips through the public string API.
+        for tok in ["cnsa2", "pqc-ready"] {
+            let p: SecurityPolicy = tok.parse().expect("mode parses");
+            assert_eq!(p.mode().token(), tok);
+        }
+        let cnsa2: SecurityPolicy = "cnsa2".parse().unwrap();
+        let pqc: SecurityPolicy = "pqc-ready".parse().unwrap();
+
+        // Read of legacy is still permitted (open old documents).
+        assert_eq!(cnsa2.evaluate_token("rsa-pkcs1-sha256", AlgorithmUse::Read), Decision::Allow);
+
+        // CNSA 2.0 write: 192-bit-class FIPS or stronger only.
+        assert_eq!(cnsa2.evaluate_token("ml-dsa-65", AlgorithmUse::Write), Decision::Allow);
+        assert_eq!(cnsa2.evaluate_token("ml-dsa-87", AlgorithmUse::Write), Decision::Allow);
+        // 128-bit-class classical AND L1/L2 PQC are denied for write.
+        assert_eq!(cnsa2.evaluate_token("rsa-pss-sha256", AlgorithmUse::Write), Decision::Deny);
+        assert_eq!(cnsa2.evaluate_token("ml-dsa-44", AlgorithmUse::Write), Decision::Deny);
+        // Weak legacy never writes.
+        assert_eq!(cnsa2.evaluate_token("md5", AlgorithmUse::Write), Decision::Deny);
+
+        // PqcReady write: any FIPS-approved (incl. ML-DSA + classical
+        // 128-bit for migration); legacy denied.
+        assert_eq!(pqc.evaluate_token("ml-dsa-44", AlgorithmUse::Write), Decision::Allow);
+        assert_eq!(pqc.evaluate_token("rsa-pss-sha256", AlgorithmUse::Write), Decision::Allow);
+        assert_eq!(pqc.evaluate_token("rc4", AlgorithmUse::Write), Decision::Deny);
     }
 }

@@ -90,6 +90,20 @@ All notable changes to PDFOxide are documented here.
   actually exercised is exported via `crypto_cbom` (core `cbom_json` +
   C ABI / Python / WASM / Go / Node / C# bindings) — the structured
   complement to `crypto_inventory` for CBOM/SPDX-crypto governance.
+  The policy now also **recognises and governs post-quantum
+  algorithms**: `PolicyMode::Cnsa2` (CNSA 2.0 — new crypto must be
+  FIPS-approved *and* 192-bit-class or stronger; 128-bit classical and
+  L1/L2 PQC denied for write) and `PolicyMode::PqcReady` (Strict
+  semantics that additionally recognise/permit ML-DSA/ML-KEM for
+  classical+PQC dual-stacking during migration), plus ML-DSA-44/65/87
+  (FIPS 204)
+  and ML-KEM-512/768/1024 (FIPS 203) `AlgorithmId`s in
+  `inventory()`/CBOM/the policy grammar. This is governance vocabulary
+  (the policy decides; the actual ML-DSA/ML-KEM primitives are a
+  separate provider concern — a sign attempt fails closed until they
+  land). Set via the string grammar (`crypto_policy("cnsa2")`), so all
+  seven bindings get it with no API change; frozen `AlgorithmId` bit
+  indices are preserved (PQC ids appended).
 - **Split a PDF by bookmarks
   ([#482](https://github.com/yfedoseev/pdf_oxide/issues/482))** — new
   `pdf-oxide split --by-bookmarks [--bookmark-prefix P]
