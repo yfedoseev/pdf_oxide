@@ -227,6 +227,27 @@ impl PdfSigner {
                 Error::InvalidPdf("private key is not valid PKCS#8 or PKCS#1 RSA DER".into())
             })?;
 
+        // ── #230 Phase D: governed RSA modulus-size floor ─────────────
+        // A `strict`/`fips-strict`/`cnsa2` policy refuses to *sign* with
+        // a weak RSA key (NIST SP 800-131A ≥2048; CNSA 2.0 ≥3072) — the
+        // strength gate that `min_security_bits` (algorithm-level)
+        // cannot see, since key size is a property of the key, not the
+        // algorithm id. Default `compat` keeps the floor at 0 (no
+        // behaviour change).
+        let modulus_bits = {
+            use rsa::traits::PublicKeyParts;
+            rsa_key.n().bits()
+        };
+        if crate::crypto::active_policy().rsa_modulus_allowed(modulus_bits as u32)
+            == crate::crypto::Decision::Deny
+        {
+            return Err(Error::Unsupported(format!(
+                "RSA signing key modulus is {modulus_bits} bits; the active crypto \
+                 SecurityPolicy requires at least {} (#230 Phase D)",
+                crate::crypto::active_policy().min_rsa_modulus_bits()
+            )));
+        }
+
         // ── Signed attributes ──────────────────────────────────────────
         // Attribute 1: id-contentType = id-data
         let attr_ct = {

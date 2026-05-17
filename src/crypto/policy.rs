@@ -366,6 +366,18 @@ impl PolicyMode {
         }
     }
 
+    /// Default minimum RSA *modulus* size (bits) this mode permits for
+    /// signing (#230 Phase D). `0` = no floor (Compat). NIST SP
+    /// 800-131A sets the floor at 2048; CNSA 2.0 mandates RSA-3072 as
+    /// the transitional classical minimum.
+    const fn default_min_rsa_bits(self) -> u16 {
+        match self {
+            PolicyMode::Compat => 0,
+            PolicyMode::Strict | PolicyMode::PqcReady => 2048,
+            PolicyMode::FipsStrict | PolicyMode::Cnsa2 => 3072,
+        }
+    }
+
     /// The mode's built-in decision for `(alg, use_)`, *before*
     /// explicit overrides and the `min_security_bits` floor. This is
     /// the §3.4 matrix encoded verbatim.
@@ -477,6 +489,9 @@ pub struct SecurityPolicy {
     /// API can relax it deliberately later.
     unknown_algorithm: Decision,
     min_security_bits: u16,
+    /// #230 Phase D: minimum RSA modulus (bits) permitted for signing.
+    /// `0` = no floor.
+    min_rsa_modulus_bits: u16,
 }
 
 impl SecurityPolicy {
@@ -506,6 +521,7 @@ impl SecurityPolicy {
             overrides: BTreeMap::new(),
             unknown_algorithm: Decision::Deny,
             min_security_bits: mode.default_min_bits(),
+            min_rsa_modulus_bits: mode.default_min_rsa_bits(),
         }
     }
 
@@ -517,6 +533,25 @@ impl SecurityPolicy {
     /// The `min_security_bits` Write floor in effect.
     pub fn min_security_bits(&self) -> u16 {
         self.min_security_bits
+    }
+
+    /// The minimum RSA modulus size (bits) permitted for signing
+    /// (#230 Phase D). `0` = no floor.
+    pub fn min_rsa_modulus_bits(&self) -> u16 {
+        self.min_rsa_modulus_bits
+    }
+
+    /// Whether an RSA signing key with a `modulus_bits`-bit modulus is
+    /// permitted (#230 Phase D). `Allow` when there is no floor
+    /// (`min_rsa_modulus_bits == 0`) or the modulus meets it; else
+    /// `Deny` (fail-closed — a weak key must not sign under a
+    /// hardened policy).
+    pub fn rsa_modulus_allowed(&self, modulus_bits: u32) -> Decision {
+        if self.min_rsa_modulus_bits == 0 || modulus_bits >= u32::from(self.min_rsa_modulus_bits) {
+            Decision::Allow
+        } else {
+            Decision::Deny
+        }
     }
 
     /// Decide whether `alg` may be used for `use_`.
@@ -592,6 +627,7 @@ pub struct SecurityPolicyBuilder {
     overrides: BTreeMap<(AlgorithmId, AlgorithmUse), Decision>,
     unknown_algorithm: Decision,
     min_security_bits: u16,
+    min_rsa_modulus_bits: u16,
 }
 
 impl SecurityPolicyBuilder {
@@ -615,6 +651,14 @@ impl SecurityPolicyBuilder {
         self
     }
 
+    /// Set the minimum RSA modulus size (bits) permitted for signing
+    /// (#230 Phase D; e.g. `3072` for CNSA-2.0-class). `0` disables
+    /// the floor.
+    pub fn min_rsa_modulus_bits(mut self, bits: u16) -> Self {
+        self.min_rsa_modulus_bits = bits;
+        self
+    }
+
     /// Decision for an algorithm id this build does not recognise.
     /// Defaults to `Deny` (fail-closed) and v0.3.50 callers should not
     /// relax it; exposed so the forward-shaped API can do so
@@ -631,6 +675,7 @@ impl SecurityPolicyBuilder {
             overrides: self.overrides,
             unknown_algorithm: self.unknown_algorithm,
             min_security_bits: self.min_security_bits,
+            min_rsa_modulus_bits: self.min_rsa_modulus_bits,
         }
     }
 }
@@ -1071,5 +1116,56 @@ mod tests {
         assert_eq!(pqc.evaluate_token("ml-dsa-44", AlgorithmUse::Write), Decision::Allow);
         assert_eq!(pqc.evaluate_token("rsa-pss-sha256", AlgorithmUse::Write), Decision::Allow);
         assert_eq!(pqc.evaluate_token("rc4", AlgorithmUse::Write), Decision::Deny);
+    }
+
+    // ── #230 Phase D: RSA modulus-size governance ────────────────────
+
+    #[test]
+    fn rsa_modulus_floor_defaults_and_enforcement() {
+        // Per-mode defaults: Compat none; Strict/PqcReady 2048;
+        // FipsStrict/Cnsa2 3072 (NIST SP 800-131A / CNSA 2.0).
+        assert_eq!(SecurityPolicy::compat().min_rsa_modulus_bits(), 0);
+        assert_eq!(SecurityPolicy::strict().min_rsa_modulus_bits(), 2048);
+        assert_eq!(SecurityPolicy::fips_strict().min_rsa_modulus_bits(), 3072);
+        assert_eq!(
+            "pqc-ready"
+                .parse::<SecurityPolicy>()
+                .unwrap()
+                .min_rsa_modulus_bits(),
+            2048
+        );
+        assert_eq!(
+            "cnsa2"
+                .parse::<SecurityPolicy>()
+                .unwrap()
+                .min_rsa_modulus_bits(),
+            3072
+        );
+
+        // Compat: no floor → any modulus (incl. weak 1024) allowed.
+        assert_eq!(SecurityPolicy::compat().rsa_modulus_allowed(1024), Decision::Allow);
+
+        // Strict (2048): 1024 denied, 2048/4096 allowed.
+        let strict = SecurityPolicy::strict();
+        assert_eq!(strict.rsa_modulus_allowed(1024), Decision::Deny);
+        assert_eq!(strict.rsa_modulus_allowed(2048), Decision::Allow);
+        assert_eq!(strict.rsa_modulus_allowed(4096), Decision::Allow);
+
+        // Cnsa2 (3072): 2048 denied, 3072/4096 allowed.
+        let cnsa2: SecurityPolicy = "cnsa2".parse().unwrap();
+        assert_eq!(cnsa2.rsa_modulus_allowed(2048), Decision::Deny);
+        assert_eq!(cnsa2.rsa_modulus_allowed(3072), Decision::Allow);
+
+        // Builder override is honoured.
+        let p = SecurityPolicy::builder(PolicyMode::Strict)
+            .min_rsa_modulus_bits(4096)
+            .build();
+        assert_eq!(p.rsa_modulus_allowed(3072), Decision::Deny);
+        assert_eq!(p.rsa_modulus_allowed(4096), Decision::Allow);
+        // Floor 0 disables the check even under a hardened mode.
+        let none = SecurityPolicy::builder(PolicyMode::FipsStrict)
+            .min_rsa_modulus_bits(0)
+            .build();
+        assert_eq!(none.rsa_modulus_allowed(1024), Decision::Allow);
     }
 }

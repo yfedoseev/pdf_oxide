@@ -103,7 +103,17 @@ All notable changes to PDFOxide are documented here.
   separate provider concern — a sign attempt fails closed until they
   land). Set via the string grammar (`crypto_policy("cnsa2")`), so all
   seven bindings get it with no API change; frozen `AlgorithmId` bit
-  indices are preserved (PQC ids appended).
+  indices are preserved (PQC ids appended). A governed **RSA
+  modulus-size floor** is also enforced for *signing*:
+  `SecurityPolicy::min_rsa_modulus_bits` (per-mode default — Compat 0,
+  Strict/PqcReady 2048, FipsStrict/Cnsa2 3072 per NIST SP 800-131A /
+  CNSA 2.0) makes `sign_pdf_bytes`/`sign_pdf_bytes_pades` fail closed
+  with a weak RSA key — the key-strength gate the algorithm-level
+  `min_security_bits` cannot see. Default `compat` keeps no floor
+  (byte-for-byte unchanged). (Finer X.509 cert-policy governance —
+  keyUsage / extendedKeyUsage / validity-window enforcement for the
+  signing certificate — is the remaining #230 roadmap item, tracked as
+  a focused follow-up.)
 - **Split a PDF by bookmarks
   ([#482](https://github.com/yfedoseev/pdf_oxide/issues/482))** — new
   `pdf-oxide split --by-bookmarks [--bookmark-prefix P]
