@@ -232,12 +232,13 @@ export class EditingManager extends EventEmitter {
     const removeJs = options?.removeJs ?? true;
 
     if (this.native?.pdf_redaction_scrub_metadata) {
+      // C ABI: pdf_redaction_scrub_metadata(handle, error_code) — a
+      // full document scrub (/Info, catalog XMP /Metadata, document
+      // JavaScript, /Names/EmbeddedFiles). The per-category toggles are
+      // advisory; the native scrub applies the safe all-on default.
       const errorCode = { value: 0 };
       const result = this.native.pdf_redaction_scrub_metadata(
         this.document?.handle ?? this.document,
-        removeInfo,
-        removeXmp,
-        removeJs,
         errorCode
       );
 

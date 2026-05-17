@@ -1512,9 +1512,12 @@ pub extern "C" fn pdf_redaction_apply(
     }
 }
 
-/// Standalone document metadata scrub without geometric redaction.
-/// The dedicated sanitization pass (#231 T10) is not yet implemented;
-/// this fails loudly rather than silently pretending success.
+/// Standalone document sanitization without geometric redaction
+/// (#231 T10): strips `/Info`, catalog XMP `/Metadata`, document
+/// JavaScript (`/OpenAction`, `/AA`, `/Names/JavaScript`) and
+/// `/Names/EmbeddedFiles`; the removed subtrees are hard-excluded from
+/// the output (G6). Returns the number of top-level constructs removed,
+/// or -1 on error.
 #[no_mangle]
 pub extern "C" fn pdf_redaction_scrub_metadata(
     handle: *mut DocumentEditor,
@@ -1524,14 +1527,17 @@ pub extern "C" fn pdf_redaction_scrub_metadata(
         set_error(error_code, ERR_INVALID_ARG);
         return -1;
     }
-    let _ = handle_mut(handle);
-    set_error(
-        error_code,
-        classify_error(&crate::error::Error::Unsupported(
-            "standalone metadata sanitization (#231 T10) is not yet implemented".to_string(),
-        )),
-    );
-    -1
+    let editor = handle_mut(handle);
+    match editor.sanitize_document(crate::redaction::RedactionOptions::default()) {
+        Ok(report) => {
+            set_error(error_code, ERR_SUCCESS);
+            report.annotations_removed.min(i32::MAX as usize) as i32
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            -1
+        },
+    }
 }
 
 /// Rotate all pages by `degrees` (relative, added to existing rotation).

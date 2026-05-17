@@ -1482,6 +1482,43 @@ impl PyPdfDocument {
         Ok(d.unbind())
     }
 
+    /// Standalone document sanitization (#231 T10): strip `/Info`,
+    /// catalog XMP `/Metadata`, document JavaScript and embedded files
+    /// without geometric redaction. Returns a report dict.
+    #[pyo3(signature = (scrub_metadata=true, remove_javascript=true, remove_embedded_files=true))]
+    fn sanitize_document(
+        &mut self,
+        py: Python<'_>,
+        scrub_metadata: bool,
+        remove_javascript: bool,
+        remove_embedded_files: bool,
+    ) -> PyResult<Py<pyo3::types::PyDict>> {
+        self.ensure_editor()?;
+        let opts = crate::redaction::RedactionOptions {
+            scrub_metadata,
+            remove_javascript,
+            remove_embedded_files,
+            ..crate::redaction::RedactionOptions::default()
+        };
+        let report = match self.editor {
+            Some(ref mut editor) => editor
+                .sanitize_document(opts)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+            None => return Err(PyRuntimeError::new_err("No document source available")),
+        };
+        let d = pyo3::types::PyDict::new(py);
+        d.set_item("regions", report.regions)?;
+        d.set_item("glyphs_removed", report.glyphs_removed)?;
+        d.set_item("images_modified", report.images_modified)?;
+        d.set_item("images_removed", report.images_removed)?;
+        d.set_item("paths_pruned", report.paths_pruned)?;
+        d.set_item("xobjects_specialized", report.xobjects_specialized)?;
+        d.set_item("annotations_removed", report.annotations_removed)?;
+        d.set_item("fonts_scrubbed", report.fonts_scrubbed)?;
+        d.set_item("bytes_removed", report.bytes_removed)?;
+        Ok(d.unbind())
+    }
+
     /// Get page images info.
     fn page_images(&mut self, page: usize, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.ensure_editor()?;

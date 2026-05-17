@@ -33,9 +33,16 @@ All notable changes to PDFOxide are documented here.
   PAGE:x0,y0,x1,y1 [--from-annotations] [--fill R,G,B]
   [--no-scrub-metadata]` CLI. The legacy
   `apply_page_redactions`/`apply_all_redactions` keep their signatures.
-  Standalone metadata-only sanitization (`scrub_metadata`) and
-  image/path/XObject pruning are roadmap; composite-font text and
-  encrypted documents are refused (not under-redacted).
+  Standalone document sanitization (`DocumentEditor::sanitize_document`,
+  the live `pdf_redaction_scrub_metadata` C ABI, Python
+  `sanitize_document`, WASM `sanitizeDocument`, and the already-wired
+  Node/C#/Go scrub paths) strips the `/Info` dictionary, the catalog
+  XMP `/Metadata` stream, document JavaScript (`/OpenAction`, `/AA`,
+  `/Names/JavaScript`) and `/Names/EmbeddedFiles`; the removed object
+  subtrees are hard-excluded from the rewritten file so a secret cannot
+  survive even as a GC-missed orphan (G6). Geometric image/path/XObject
+  pruning remains roadmap; composite-font text and encrypted documents
+  are refused (not under-redacted).
 - **PAdES long-term-validation signatures
   ([#235](https://github.com/yfedoseev/pdf_oxide/issues/235))** —
   signing now produces ETSI EN 319 142-1 PAdES baseline signatures, not

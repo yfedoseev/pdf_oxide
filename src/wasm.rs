@@ -2975,6 +2975,32 @@ impl WasmPdfDocument {
             .map_err(|e| JsValue::from_str(&format!("Failed to apply redactions: {}", e)))?;
         serde_wasm_bindgen::to_value(&report).map_err(|e| JsValue::from_str(&e.to_string()))
     }
+
+    /// Standalone document sanitization (#231 T10): strip `/Info`,
+    /// catalog XMP `/Metadata`, document JavaScript and embedded files
+    /// without geometric redaction. Returns a `RedactionReport` object.
+    #[wasm_bindgen(js_name = "sanitizeDocument")]
+    pub fn sanitize_document(
+        &mut self,
+        scrub_metadata: Option<bool>,
+        remove_javascript: Option<bool>,
+        remove_embedded_files: Option<bool>,
+    ) -> Result<JsValue, JsValue> {
+        let editor_arc = self.ensure_editor()?;
+        let mut editor = editor_arc
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?;
+        let opts = crate::redaction::RedactionOptions {
+            scrub_metadata: scrub_metadata.unwrap_or(true),
+            remove_javascript: remove_javascript.unwrap_or(true),
+            remove_embedded_files: remove_embedded_files.unwrap_or(true),
+            ..crate::redaction::RedactionOptions::default()
+        };
+        let report = editor
+            .sanitize_document(opts)
+            .map_err(|e| JsValue::from_str(&format!("Failed to sanitize document: {}", e)))?;
+        serde_wasm_bindgen::to_value(&report).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
 }
 
 /// Style configuration for header/footer text.

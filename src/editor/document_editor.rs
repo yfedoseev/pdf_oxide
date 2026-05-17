@@ -6385,6 +6385,126 @@ impl DocumentEditor {
         Ok(total)
     }
 
+    /// Standalone document sanitization without geometric redaction
+    /// (#231 T10, feature plan §4.6 / §5.1).
+    ///
+    /// Strips document-level secrets that cosmetic redaction left behind:
+    /// the `/Info` dictionary, the catalog XMP `/Metadata` stream,
+    /// document JavaScript (`/OpenAction`, `/AA`, `/Names/JavaScript`)
+    /// and `/Names/EmbeddedFiles`, subject to the [`RedactionOptions`]
+    /// toggles. The removed object subtrees are hard-excluded from the
+    /// output (G6) so a secret cannot survive even as a GC-missed
+    /// orphan, and `/Info` is replaced with an empty dictionary.
+    ///
+    /// Returns a [`crate::redaction::RedactionReport`]; `bytes_removed`
+    /// is a best-effort total of the dropped objects' sizes so callers
+    /// can assert the scrub did real work.
+    ///
+    /// # Errors
+    /// [`Error::InvalidPdf`] if the document has no resolvable catalog.
+    pub fn sanitize_document(
+        &mut self,
+        opts: crate::redaction::RedactionOptions,
+    ) -> Result<crate::redaction::RedactionReport> {
+        use std::collections::{HashSet, VecDeque};
+
+        let catalog_ref = self
+            .source
+            .trailer()
+            .as_dict()
+            .and_then(|d| d.get("Root"))
+            .and_then(|r| r.as_reference())
+            .ok_or_else(|| Error::InvalidPdf("Missing catalog reference".to_string()))?;
+        let info_root = self
+            .source
+            .trailer()
+            .as_dict()
+            .and_then(|d| d.get("Info"))
+            .and_then(|r| r.as_reference())
+            .map(|r| r.id);
+
+        let catalog_dict = match self.modified_objects.get(&catalog_ref.id) {
+            Some(obj) => obj.clone(),
+            None => self.source.catalog()?,
+        };
+        let catalog_dict = catalog_dict
+            .as_dict()
+            .ok_or_else(|| Error::InvalidPdf("Catalog is not a dictionary".to_string()))?
+            .clone();
+
+        let scrub = crate::redaction::sanitize_catalog(&catalog_dict, &opts, |id| {
+            self.source.load_object(ObjectRef { id, gen: 0 }).ok()
+        });
+        let counts = scrub.counts;
+        let removed_roots = scrub.removed_roots.clone();
+
+        // Stage the scrubbed catalog and the cleared /Info first so the
+        // post-scrub reachability set reflects them.
+        self.modified_objects
+            .insert(catalog_ref.id, Object::Dictionary(scrub.catalog));
+        if opts.scrub_metadata {
+            self.modified_info = Some(DocumentInfo::default());
+        }
+
+        let reachable = self.collect_reachable_ids();
+
+        // Expand the catalog-derived roots → full subtree, excluding
+        // anything still reachable after the scrub (a genuinely shared
+        // object — e.g. a filespec also referenced by a file-attachment
+        // annotation — must not be dropped).
+        let mut to_drop: HashSet<u32> = HashSet::new();
+        let mut queue: VecDeque<u32> = removed_roots.into_iter().collect();
+        let mut bytes_removed: u64 = 0;
+        let account = |obj: &Object, b: &mut u64| {
+            *b += match obj {
+                Object::Stream { data, .. } => data.len() as u64 + 64,
+                _ => 48,
+            };
+        };
+        while let Some(id) = queue.pop_front() {
+            if id == 0 || reachable.contains(&id) || !to_drop.insert(id) {
+                continue;
+            }
+            if let Ok(obj) = self.source.load_object(ObjectRef { id, gen: 0 }) {
+                account(&obj, &mut bytes_removed);
+                fn walk(o: &Object, q: &mut VecDeque<u32>) {
+                    match o {
+                        Object::Reference(r) => q.push_back(r.id),
+                        Object::Array(a) => a.iter().for_each(|x| walk(x, q)),
+                        Object::Dictionary(d) => d.values().for_each(|x| walk(x, q)),
+                        Object::Stream { dict, .. } => dict.values().for_each(|x| walk(x, q)),
+                        _ => {},
+                    }
+                }
+                walk(&obj, &mut queue);
+            }
+        }
+
+        // The original /Info object is *replaced* by an empty dict, so it
+        // must be hard-excluded unconditionally — `collect_reachable_ids`
+        // always seeds the source trailer /Info, so the reachable-subtract
+        // guard above would wrongly protect the secret-bearing original
+        // (same defense-in-depth as redacted content streams, G6).
+        if opts.scrub_metadata {
+            if let Some(id) = info_root {
+                if to_drop.insert(id) {
+                    if let Ok(obj) = self.source.load_object(ObjectRef { id, gen: 0 }) {
+                        account(&obj, &mut bytes_removed);
+                    }
+                }
+            }
+        }
+
+        self.redacted_orphan_ids.extend(to_drop.iter().copied());
+        self.is_modified = true;
+
+        Ok(crate::redaction::RedactionReport {
+            annotations_removed: counts.total(),
+            bytes_removed,
+            ..crate::redaction::RedactionReport::default()
+        })
+    }
+
     /// Mark a page for (legacy) redaction application.
     ///
     /// Historically this drew a cosmetic overlay only. Prefer
