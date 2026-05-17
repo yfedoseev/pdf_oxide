@@ -52,12 +52,17 @@ All notable changes to PDFOxide are documented here.
   `sign_pdf_bytes_pades` / `PadesLevel` / `RevocationMaterial` /
   `DocumentSecurityStore` in core, the `pdf_sign_bytes_pades` /
   `pdf_signature_get_pades_level` / `pdf_document_get_dss` /
-  `pdf_dss_*` C ABI, and Python, WASM, Node, C#, Go bindings. B-LTA
-  (document timestamp) is reserved (frozen enum slot; requesting it
-  fail-closes with `Unsupported`). The legacy `sign_pdf_bytes`
-  `adbe.pkcs7.detached` path is byte-for-byte unchanged. This is the
-  v0.3.50 PAdES slice; final ETSI conformance is gated on the EU DSS
-  demonstration-validator release check (online TSA fetch is
+  `pdf_dss_*` C ABI, and Python, WASM, Node, C#, Go bindings. **B-LTA**
+  is also produced: a `/Type /DocTimeStamp` (`/SubFilter
+  /ETSI.RFC3161`) RFC 3161 timestamp over the whole file *including*
+  the DSS, appended as a third incremental update so the archival
+  timestamp covers the signature and its validation material;
+  `has_document_timestamp` is the document-scoped reader signal
+  (`classify_pades_level` stays signature-scoped and tops out at B-LT
+  by design — the frozen `pdf_signature_get_pades_level` C ABI has no
+  document handle). The legacy `sign_pdf_bytes` `adbe.pkcs7.detached`
+  path is byte-for-byte unchanged. Final ETSI conformance is gated on
+  the EU DSS demonstration-validator release check (online TSA fetch is
   CGo/native-only — WASM takes a pre-fetched RFC 3161 token).
 - **Runtime crypto-governance policy
   ([#230](https://github.com/yfedoseev/pdf_oxide/issues/230))** — a

@@ -185,16 +185,17 @@ fn sign_pdf_bytes_with_cms(
 /// (ETSI EN 319 142-1 §5). Reuses the proven byte-range assembler
 /// verbatim; B-B/B-T differ only in the CMS builder, B-LT adds the DSS
 /// as a *second* incremental update so the B-T signature byte-range is
-/// untouched (feature plan §4.1).
+/// untouched (feature plan §4.1), and B-LTA adds a `/DocTimeStamp`
+/// (ETSI.RFC3161) over the whole file incl. the DSS as a *third*
+/// incremental update (ETSI EN 319 142-1 §5).
 ///
-/// `timestamper` (required for `BT`/`BLt`) returns the RFC 3161 token
-/// over the signature value — an offline pre-fetched token or a live
-/// TSA call by the caller. `material` is the DSS validation set for
-/// `BLt`. `BLta` is reserved (returns [`Error::Unsupported`]).
+/// `timestamper` (required for `BT`/`BLt`/`BLta`) returns the RFC 3161
+/// token over the supplied digest input — an offline pre-fetched token
+/// or a live TSA call by the caller. `material` is the DSS validation
+/// set for `BLt`/`BLta`.
 ///
 /// # Errors
-/// - [`Error::Unsupported`] — `BLta` (planned later), or `BT`/`BLt`
-///   without a `timestamper`.
+/// - [`Error::Unsupported`] — `BT`/`BLt`/`BLta` without a `timestamper`.
 /// - [`Error::InvalidPdf`] — unparseable PDF / signature.
 #[allow(clippy::too_many_arguments)]
 pub fn sign_pdf_bytes_pades(
@@ -207,26 +208,26 @@ pub fn sign_pdf_bytes_pades(
 ) -> Result<Vec<u8>> {
     use crate::signatures::PadesLevel;
 
-    if level == PadesLevel::BLta {
-        return Err(Error::Unsupported("PAdES-B-LTA is planned for a later release".into()));
-    }
-    if matches!(level, PadesLevel::BT | PadesLevel::BLt) && timestamper.is_none() {
+    // B-T, B-LT and B-LTA all need an RFC 3161 token source (B-LTA's
+    // document timestamp included).
+    if matches!(level, PadesLevel::BT | PadesLevel::BLt | PadesLevel::BLta) && timestamper.is_none()
+    {
         return Err(Error::Unsupported(
-            "PAdES-B-T/B-LT require a timestamper (RFC 3161 token source)".into(),
+            "PAdES-B-T/B-LT/B-LTA require a timestamper (RFC 3161 token source)".into(),
         ));
     }
 
+    let dts_size = opts.estimated_size.max(8192);
     let signer = PdfSigner::new(credentials.clone(), opts);
     let (signed, contents_string) = match level {
         PadesLevel::BB => sign_pdf_bytes_with_cms(pdf_data, signer, &|s, sb| s.sign_pades(sb)),
-        PadesLevel::BT | PadesLevel::BLt => {
+        PadesLevel::BT | PadesLevel::BLt | PadesLevel::BLta => {
             let ts = timestamper.expect("checked above");
             sign_pdf_bytes_with_cms(pdf_data, signer, &|s, sb| s.sign_pades_t(sb, ts))
         },
-        PadesLevel::BLta => unreachable!("handled above"),
     }?;
 
-    if level != PadesLevel::BLt {
+    if level == PadesLevel::BB || level == PadesLevel::BT {
         return Ok(signed);
     }
 
@@ -244,7 +245,18 @@ pub fn sign_pdf_bytes_pades(
     let keys: Vec<String> = crate::signatures::pades::vri_key(&contents_string)
         .into_iter()
         .collect();
-    crate::signatures::pades::append_dss(&signed, &doc, material, &keys)
+    let blt = crate::signatures::pades::append_dss(&signed, &doc, material, &keys)?;
+
+    if level == PadesLevel::BLt {
+        return Ok(blt);
+    }
+
+    // B-LTA = B-LT + a `/DocTimeStamp` (ETSI.RFC3161) over the whole
+    // file *including* the DSS, as a third incremental update — so the
+    // archival timestamp covers the signature and its validation
+    // material (ETSI EN 319 142-1 §5; feature plan §1.2).
+    let ts = timestamper.expect("checked above");
+    append_doc_timestamp(&blt, ts, dts_size)
 }
 
 // ─── Text builders ───────────────────────────────────────────────────────────
@@ -283,6 +295,94 @@ fn build_sig_dict_text(signer: &PdfSigner, obj_num: u64) -> String {
     dict.push_str(&format!("/M ({})\n", format_pdf_date()));
     dict.push_str(">>\nendobj\n");
     dict
+}
+
+/// Build a `/Type /DocTimeStamp` dictionary (PAdES-B-LTA, ETSI EN
+/// 319 142-1 §5 / ISO 32000-2 §12.8.5): a `SubFilter /ETSI.RFC3161`
+/// object whose `/Contents` is a bare RFC 3161 timestamp token over the
+/// `/ByteRange`-covered bytes — *no* CMS SignerInfo, *no* signer
+/// certificate. Same fixed-width placeholders as `build_sig_dict_text`.
+fn build_doctimestamp_dict_text(obj_num: u64, contents_placeholder: &str) -> String {
+    let mut dict = format!(
+        "{} 0 obj\n<< /Type /DocTimeStamp\n/Filter /Adobe.PPKLite\n/SubFilter /ETSI.RFC3161\n",
+        obj_num,
+    );
+    dict.push_str(&format!("/ByteRange [{}]\n", BR_PLACEHOLDER));
+    dict.push_str(&format!("/Contents {}\n", contents_placeholder));
+    dict.push_str(&format!("/M ({})\n", format_pdf_date()));
+    dict.push_str(">>\nendobj\n");
+    dict
+}
+
+/// Append a PAdES-B-LTA document timestamp as a further incremental
+/// update over `pdf_data` (which already carries the B-T signature and
+/// the B-LT DSS). The whole current file is the `/ByteRange`-covered
+/// region, so the timestamp protects the signature *and* its DSS
+/// (archival LTV — feature plan §1.2). `timestamper` returns the
+/// RFC 3161 token over the supplied digest input (same closure contract
+/// as B-T). The byte-range math is the proven protocol from
+/// [`sign_pdf_bytes_with_cms`], replicated standalone so that function
+/// stays byte-for-byte unmodified (#235 plan §2.3).
+fn append_doc_timestamp(
+    pdf_data: &[u8],
+    timestamper: &dyn Fn(&[u8]) -> Result<Vec<u8>>,
+    est_size: usize,
+) -> Result<Vec<u8>> {
+    let prev_startxref = scan_startxref(pdf_data)
+        .ok_or_else(|| Error::InvalidPdf("B-LTA: cannot find startxref".into()))?;
+    let root_ref = scan_root_ref(pdf_data)
+        .ok_or_else(|| Error::InvalidPdf("B-LTA: cannot find /Root ref".into()))?;
+    let next_obj_num = scan_next_obj_num(pdf_data)
+        .ok_or_else(|| Error::InvalidPdf("B-LTA: cannot determine next object number".into()))?;
+
+    let calc = super::byterange::ByteRangeCalculator::with_placeholder_size(est_size * 2 + 2);
+    let placeholder = calc.generate_placeholder();
+    let dict_text = build_doctimestamp_dict_text(next_obj_num, &placeholder);
+    let contents_in_dict = find_contents_offset_in_text(dict_text.as_bytes())
+        .ok_or_else(|| Error::InvalidPdf("B-LTA: cannot find /Contents in DocTimeStamp".into()))?;
+
+    let sig_dict_start = pdf_data.len();
+    let xref_start = sig_dict_start + dict_text.len();
+    let xref_entry = format!("{:010} 00000 n \r\n", sig_dict_start);
+    let xref_section = format!("xref\n{} 1\n{}", next_obj_num, xref_entry);
+    let trailer_section = format!(
+        "trailer\n<< /Size {} /Prev {} /Root {} >>\n",
+        next_obj_num + 1,
+        prev_startxref,
+        root_ref,
+    );
+    let startxref_section = format!("startxref\n{}\n%%EOF\n", xref_start);
+    let total_len = sig_dict_start
+        + dict_text.len()
+        + xref_section.len()
+        + trailer_section.len()
+        + startxref_section.len();
+
+    let contents_abs = sig_dict_start + contents_in_dict;
+    let contents_size = calc.placeholder_size();
+    let after_contents = contents_abs + contents_size;
+    let byte_range: [i64; 4] = [
+        0,
+        contents_abs as i64,
+        after_contents as i64,
+        (total_len - after_contents) as i64,
+    ];
+
+    let patched = patch_byterange(dict_text, &byte_range);
+    let mut output = Vec::with_capacity(total_len);
+    output.extend_from_slice(pdf_data);
+    output.extend_from_slice(patched.as_bytes());
+    output.extend_from_slice(xref_section.as_bytes());
+    output.extend_from_slice(trailer_section.as_bytes());
+    output.extend_from_slice(startxref_section.as_bytes());
+    debug_assert_eq!(output.len(), total_len, "B-LTA assembled length mismatch");
+
+    let signed_bytes =
+        super::byterange::ByteRangeCalculator::extract_signed_bytes(&output, &byte_range)?;
+    let token = timestamper(&signed_bytes)?;
+    let token_hex: String = token.iter().map(|b| format!("{b:02X}")).collect();
+    calc.insert_signature(&mut output, contents_abs, &token_hex)?;
+    Ok(output)
 }
 
 /// Patch the `0000000000 0000000000 0000000000 0000000000` placeholder in the
@@ -734,9 +834,34 @@ mod tests {
             "signature classifies as B-LT with the DSS+VRI present"
         );
 
-        // B-LTA is reserved.
+        // B-LTA: B-LT + a /DocTimeStamp (ETSI.RFC3161) over the whole
+        // file *including* the DSS, as a 3rd incremental update.
+        let blta =
+            sign_pdf_bytes_pades(&pdf, &creds, mk_opts(), PadesLevel::BLta, Some(ts), &material)
+                .expect("B-LTA sign");
+        // The B-T signature still verifies — its ByteRange self-delimits;
+        // the DSS and DocTimeStamp appends fall outside it.
+        let (v_blta, _, _) = verify_appended_signature(pdf.len(), &blta);
+        assert_eq!(v_blta, SignerVerify::Valid, "B-LTA: original sig still valid");
+        // The archival document timestamp object is present…
+        assert!(
+            crate::signatures::has_document_timestamp(&blta),
+            "B-LTA carries a /DocTimeStamp ETSI.RFC3161 object"
+        );
+        // …and it is appended *after* the DSS (so it covers it).
+        let dts_pos = blta
+            .windows(13)
+            .position(|w| w == b"/DocTimeStamp")
+            .expect("/DocTimeStamp present");
+        let dss_pos = blta
+            .windows(4)
+            .position(|w| w == b"/DSS")
+            .expect("/DSS present");
+        assert!(dss_pos < dts_pos, "DocTimeStamp is appended after the DSS");
+
+        // Fail-closed: B-LTA without a timestamper is Unsupported.
         assert!(matches!(
-            sign_pdf_bytes_pades(&pdf, &creds, mk_opts(), PadesLevel::BLta, Some(ts), &material),
+            sign_pdf_bytes_pades(&pdf, &creds, mk_opts(), PadesLevel::BLta, None, &material),
             Err(Error::Unsupported(_))
         ));
     }

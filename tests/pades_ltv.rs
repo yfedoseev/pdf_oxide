@@ -268,19 +268,52 @@ fn b_lt_tamper_breaks_signature() {
     );
 }
 
-/// `B-LTA` is reserved this release — explicit `Unsupported`, never a
-/// panic and never a silent B-LT.
+/// B-LTA: B-LT + an archival `/DocTimeStamp` (ETSI.RFC3161) over the
+/// whole file including the DSS, as a 3rd incremental update. The
+/// original signature still verifies (I1) and the document-timestamp
+/// object is present and ordered after the DSS.
 #[test]
-fn b_lta_is_unsupported() {
+fn b_lta_roundtrip() {
     let pdf = minimal_pdf();
+    let c = creds();
     let ts = mock_tsa();
+    let material = material_with(c.certificate.clone());
+    let blta = sign_pdf_bytes_pades(&pdf, &c, opts(), PadesLevel::BLta, Some(&ts), &material)
+        .expect("B-LTA sign");
+
+    assert_eq!(verify(pdf.len(), &blta), SignerVerify::Valid, "I1 under B-LTA");
+    assert!(
+        pdf_oxide::signatures::has_document_timestamp(&blta),
+        "B-LTA carries a /DocTimeStamp ETSI.RFC3161 object"
+    );
+    let dts = blta
+        .windows(13)
+        .position(|w| w == b"/DocTimeStamp")
+        .expect("/DocTimeStamp");
+    let dss = blta.windows(4).position(|w| w == b"/DSS").expect("/DSS");
+    assert!(dss < dts, "the DocTimeStamp is appended after (covers) the DSS");
+
+    // Signature-scoped classify still reports B-LT (B-LTA is the
+    // document-level DocTimeStamp signal, by design — see
+    // `has_document_timestamp`).
+    let doc = pdf_oxide::document::PdfDocument::from_bytes(blta.clone()).unwrap();
+    let dss_parsed = read_dss(&doc).unwrap().expect("DSS present");
+    let (_, _, contents) = parse_sig(pdf.len(), &blta);
+    assert_eq!(classify_pades_level(&info_with(contents), Some(&dss_parsed)), PadesLevel::BLt);
+}
+
+/// B-LTA fails closed without a timestamper (its document timestamp
+/// needs an RFC 3161 source) — explicit `Unsupported`, never a panic.
+#[test]
+fn b_lta_requires_timestamper() {
+    let pdf = minimal_pdf();
     assert!(matches!(
         sign_pdf_bytes_pades(
             &pdf,
             &creds(),
             opts(),
             PadesLevel::BLta,
-            Some(&ts),
+            None,
             &RevocationMaterial::default()
         ),
         Err(pdf_oxide::error::Error::Unsupported(_))

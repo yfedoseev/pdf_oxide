@@ -107,6 +107,27 @@ pub fn classify_pades_level(
     PadesLevel::BT
 }
 
+/// Whether the document carries a PAdES-B-LTA archival document
+/// timestamp: a `/Type /DocTimeStamp` object with
+/// `/SubFilter /ETSI.RFC3161` (ETSI EN 319 142-1 §5 / ISO 32000-2
+/// §12.8.5).
+///
+/// B-LTA is inherently *document*-scoped — the timestamp is a separate
+/// object covering the whole file (signature **and** its DSS), not a
+/// property of any one signature — so it cannot be derived from the
+/// signature-scoped [`classify_pades_level`] (whose `(info, dss)`
+/// inputs and the frozen `pdf_signature_get_pades_level` C ABI have no
+/// document handle). A reader concludes **B-LTA** when
+/// `classify_pades_level(sig, dss) == BLt` **and**
+/// `has_document_timestamp(file) == true`. Byte-scan (AcroForm-
+/// independent, matching the rest of this module).
+pub fn has_document_timestamp(pdf: &[u8]) -> bool {
+    fn contains(hay: &[u8], needle: &[u8]) -> bool {
+        needle.len() <= hay.len() && hay.windows(needle.len()).any(|w| w == needle)
+    }
+    contains(pdf, b"/DocTimeStamp") && contains(pdf, b"/ETSI.RFC3161")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

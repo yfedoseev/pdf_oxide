@@ -32,7 +32,7 @@ mod ts_attr;
 pub use dss::append_dss;
 pub use dss_read::{parse_dss, read_dss};
 pub use ess::build_signing_certificate_v2;
-pub use level::{classify_pades_level, vri_key};
+pub use level::{classify_pades_level, has_document_timestamp, vri_key};
 pub use ts_attr::build_signature_timestamp_attr;
 
 /// PAdES baseline level. Each level is a strict superset of the one

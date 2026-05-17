@@ -76,7 +76,8 @@ pub use cms_verify::{verify_signer, verify_signer_detached, SignerVerify};
 pub use enumerate::{count_signatures, enumerate_signatures};
 #[cfg(feature = "signatures")]
 pub use pades::{
-    classify_pades_level, read_dss, DocumentSecurityStore, PadesLevel, RevocationMaterial, VriEntry,
+    classify_pades_level, has_document_timestamp, read_dss, DocumentSecurityStore, PadesLevel,
+    RevocationMaterial, VriEntry,
 };
 pub use pdf_date::parse_pdf_date_to_epoch;
 #[cfg(feature = "signatures")]
