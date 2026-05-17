@@ -20,6 +20,19 @@ pub fn run(
         use pdf_oxide::split_bookmarks::{
             split_by_bookmarks_to_dir, BookmarkLevel, SplitByBookmarksOptions,
         };
+        // `split_by_bookmarks_to_dir` re-reads the file as raw bytes and
+        // cannot decrypt. Rather than silently ignore `--password` and
+        // fail later with an opaque parse error, refuse fail-closed with
+        // an actionable message (encrypted-input bookmark split is a
+        // documented non-goal for this release).
+        if password.is_some() {
+            return Err(pdf_oxide::Error::InvalidOperation(
+                "split --by-bookmarks does not support encrypted PDFs: \
+                 decrypt the document first (e.g. `pdf-oxide decrypt`) \
+                 then split the result"
+                    .to_string(),
+            ));
+        }
         let out_dir = match output {
             Some(p) => p.to_path_buf(),
             None => super::output_dir_beside(file),

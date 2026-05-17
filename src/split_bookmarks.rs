@@ -289,10 +289,14 @@ pub fn split_by_bookmarks_to_bytes(
 /// missing. The CLI uses this.
 ///
 /// NOTE (deviation from #482 plan §4): the planned `password` parameter
-/// is omitted in v0.3.50 — encrypted-input splitting is CLI-mediated
-/// (the CLI authenticates via its existing open path) and full
-/// encrypted-output handling is explicitly out of scope per plan §9.
-/// This keeps the core helper a pure, testable byte→files step.
+/// is omitted in v0.3.50. This helper `std::fs::read`s `src_path` and
+/// operates on **raw bytes** — it does NOT decrypt, so encrypted inputs
+/// are unsupported here. The CLI does not silently ignore a password:
+/// `pdf-oxide split --by-bookmarks` rejects `--password` fail-closed
+/// with an actionable message. A caller needing to split an encrypted
+/// document must decrypt it first and pass the decrypted bytes/file.
+/// Keeping this a pure, testable byte→files step is intentional;
+/// encrypted-output handling is out of scope per plan §9.
 ///
 /// # Errors
 /// Propagates planning errors and any filesystem error

@@ -93,7 +93,15 @@ pub struct RedactionReport {
     pub paths_pruned: usize,
     /// Shared XObjects/patterns/Type3 fonts cloned-and-specialized.
     pub xobjects_specialized: usize,
-    /// Annotations removed (`/Redact` and overlapping markup).
+    /// Count of removed top-level objects. For destructive redaction
+    /// this is annotations dropped (`/Redact` and overlapping markup).
+    /// `RedactionReport` is also the return type of
+    /// [`crate::editor::DocumentEditor::sanitize_document`], where this
+    /// instead counts the sanitized document-level roots that were
+    /// stripped (`/Info`, catalog XMP `/Metadata`, document JavaScript,
+    /// `/Names/EmbeddedFiles`) — i.e. "top-level items removed", not
+    /// necessarily annotations. Treat it as a did-work signal, not an
+    /// annotation-specific metric, when consuming a sanitize report.
     pub annotations_removed: usize,
     /// Fonts whose `/Widths`/`/ToUnicode` were scrubbed.
     pub fonts_scrubbed: usize,
