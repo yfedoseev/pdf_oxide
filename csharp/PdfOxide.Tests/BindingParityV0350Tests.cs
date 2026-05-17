@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using PdfOxide.Core;
+using PdfOxide.Exceptions;
 using Xunit;
 
 namespace PdfOxide.Tests
@@ -11,6 +12,11 @@ namespace PdfOxide.Tests
     /// signal (#235) the other bindings expose must also exist in the
     /// managed surface, plus the frozen PAdES level enum (#235) and the
     /// process-wide crypto-governance readers (#230).
+    ///
+    /// The native-touching cases swallow <see cref="UnsupportedFeatureException"/>
+    /// so they no-op on the bare-features regression-guard build (the
+    /// lib compiled without the optional feature), matching the
+    /// established pattern in CertificateTests / PadesTests.
     /// </summary>
     public class BindingParityV0350Tests
     {
@@ -35,6 +41,10 @@ namespace PdfOxide.Tests
                 Assert.True(bytes.Length > 50);
                 Assert.Equal((byte)'%', bytes[0]);
             }
+            catch (UnsupportedFeatureException)
+            {
+                // bare-features build: sanitize unavailable — skip.
+            }
             finally { File.Delete(path); }
         }
 
@@ -47,12 +57,18 @@ namespace PdfOxide.Tests
                 using var doc = PdfDocument.Open(path);
                 Assert.False(doc.HasDocumentTimestamp());
             }
+            catch (UnsupportedFeatureException)
+            {
+                // bare-features build: signatures off, B-LTA reader
+                // returns the unsupported sentinel — skip.
+            }
             finally { File.Delete(path); }
         }
 
         [Fact]
         public void PadesLevel_FrozenEnumMapping()
         {
+            // Pure managed enum — no native call, always asserts.
             Assert.Equal(0, (int)PadesLevel.BB);
             Assert.Equal(1, (int)PadesLevel.BT);
             Assert.Equal(2, (int)PadesLevel.BLt);
@@ -62,9 +78,16 @@ namespace PdfOxide.Tests
         [Fact]
         public void CryptoGovernance_PolicyAndCbom_Callable()
         {
-            Assert.False(string.IsNullOrEmpty(PdfDocument.CryptoPolicy()));
-            Assert.NotNull(PdfDocument.CryptoInventory());
-            Assert.Contains("CycloneDX", PdfDocument.CryptoCbom());
+            try
+            {
+                Assert.False(string.IsNullOrEmpty(PdfDocument.CryptoPolicy()));
+                Assert.NotNull(PdfDocument.CryptoInventory());
+                Assert.Contains("CycloneDX", PdfDocument.CryptoCbom());
+            }
+            catch (UnsupportedFeatureException)
+            {
+                // bare-features build: governance surface unavailable — skip.
+            }
         }
     }
 }

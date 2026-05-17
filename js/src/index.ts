@@ -1125,6 +1125,9 @@ export {
   createExtractionStream,
   createMetadataStream,
   createSearchStream,
+  cryptoCbom,
+  cryptoInventory,
+  cryptoPolicy,
   DigestAlgorithm,
   // Write-side fluent API
   DocumentBuilder,
@@ -1146,13 +1149,6 @@ export {
   generateBarcodeSvg,
   generateQrCodeSvg,
   getActiveCryptoProvider,
-  // Runtime crypto-governance policy (#230)
-  setCryptoPolicy,
-  cryptoPolicy,
-  cryptoInventory,
-  cryptoCbom,
-  // PAdES baseline signing (#235)
-  signPdfBytesPades,
   getPdfOxideVersion,
   // Version info
   getVersion,
@@ -1216,6 +1212,8 @@ export {
   SigningFailed,
   // v0.3.39 — managed streaming-table adapter (#393)
   StreamingTable,
+  setCryptoPolicy,
+  signPdfBytesPades,
   // Utilities
   TextSearcher,
   ThumbnailManager,

@@ -28,7 +28,7 @@ def main() -> None:
             p12_data = f.read()
 
         cert = pdf_oxide.Certificate.load_pkcs12(p12_data, "testpass")
-        print(f"  Certificate subject: {cert.subject()}")
+        print(f"  Certificate subject: {cert.subject}")
 
         pdf_bytes: bytes = (
             pdf_oxide.DocumentBuilder()
