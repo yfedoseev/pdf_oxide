@@ -6,10 +6,10 @@
 //! *"shall remove all traces of the specified content … clipping or image
 //! masks shall not be used to hide that data."*
 //!
-//! The capability is built incrementally per the feature plan
-//! (`docs/releases/plans/v0.3.50/feature-231-destructive-redaction.md`,
-//! §4 architecture). One responsibility per submodule (SRP); the geometric
-//! region model lands first and is the shared input to every pruner. The
+//! The capability is built incrementally per the feature plan tracked in
+//! <https://github.com/yfedoseev/pdf_oxide/issues/231>. One responsibility
+//! per submodule (SRP); the geometric region model lands first and is the
+//! shared input to every pruner. The
 //! pruners (text/image/path/xobject), the font scrubber, the sanitizer and
 //! the orchestrating engine follow as subsequent submodules.
 

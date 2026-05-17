@@ -21,8 +21,13 @@ pub fn run(
     output: Option<&Path>,
     password: Option<&str>,
 ) -> pdf_oxide::Result<()> {
-    let _ = password;
-    let mut editor = DocumentEditor::open(file)?;
+    // Authenticate first so `--password` actually works on encrypted
+    // inputs (the shared open_doc helper handles the password); then
+    // build the editor from the opened document. `DocumentEditor::open`
+    // alone would ignore `--password` and later fail on encrypted PDFs
+    // with an opaque "not authenticated" error (Copilot review #512).
+    let doc = super::open_doc(file, password)?;
+    let mut editor = DocumentEditor::from_document(doc)?;
     let fill_color = parse_fill(fill)?;
 
     let mut queued = 0usize;

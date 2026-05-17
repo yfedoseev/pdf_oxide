@@ -328,3 +328,38 @@ fn existing_pkcs7_unaffected() {
     let signed = sign_pdf_bytes(&pdf, &creds(), opts()).expect("legacy sign");
     assert_eq!(verify(pdf.len(), &signed), SignerVerify::Valid);
 }
+
+/// The `pdf_document_has_timestamp` C ABI (the doc-scoped B-LTA reader
+/// signal shared by every binding) returns `1` for a B-LTA document,
+/// `0` for a non-LTA one, and `-1` (with a non-zero error code) for a
+/// null handle. This is the acceptance gate for the C#/Go/Node/purego
+/// `HasDocumentTimestamp` wrappers.
+#[test]
+fn ffi_pdf_document_has_timestamp() {
+    use std::ffi::c_void;
+
+    let pdf = minimal_pdf();
+    let c = creds();
+    let ts = mock_tsa();
+    let material = material_with(c.certificate.clone());
+    let blta = sign_pdf_bytes_pades(&pdf, &c, opts(), PadesLevel::BLta, Some(&ts), &material)
+        .expect("B-LTA sign");
+
+    let check = |bytes: &[u8]| -> (i32, i32) {
+        let mut ec: i32 = 0;
+        let h = pdf_oxide::ffi::pdf_document_open_from_bytes(bytes.as_ptr(), bytes.len(), &mut ec);
+        assert!(!h.is_null() && ec == 0, "open_from_bytes failed (ec={ec})");
+        let mut tec: i32 = 0;
+        let r = pdf_oxide::ffi::pdf_document_has_timestamp(h as *const c_void, &mut tec);
+        pdf_oxide::ffi::pdf_document_free(h);
+        (r, tec)
+    };
+
+    assert_eq!(check(&blta), (1, 0), "B-LTA ⇒ has document timestamp");
+    assert_eq!(check(&pdf), (0, 0), "plain PDF ⇒ no document timestamp");
+
+    let mut nec: i32 = 0;
+    let r = pdf_oxide::ffi::pdf_document_has_timestamp(std::ptr::null(), &mut nec);
+    assert_eq!(r, -1, "null handle ⇒ -1");
+    assert_ne!(nec, 0, "null handle ⇒ non-zero error code");
+}

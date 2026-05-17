@@ -192,6 +192,53 @@ var (
 	// Logging
 	ffiSetLogLevel func(level int32)
 	ffiGetLogLevel func() int32
+
+	// Runtime crypto-governance policy (#230) — process-wide, no handle.
+	ffiCryptoSetPolicy func(spec string) int32
+	ffiCryptoPolicy    func() *byte
+	ffiCryptoInventory func() *byte
+	ffiCryptoCbom      func() *byte
+
+	// Split-by-bookmarks (#482) — plans against a PdfDocument handle.
+	ffiPdfDocumentPlanSplitByBookmarks func(handle uintptr, optionsJSON string, errCode *int32) *byte
+
+	// DocumentEditor + destructive redaction / sanitize (#231).
+	ffiDocumentEditorOpen          func(path string, errCode *int32) uintptr
+	ffiDocumentEditorOpenFromBytes func(data []byte, length uintptr, errCode *int32) uintptr
+	ffiDocumentEditorSaveToBytes   func(handle uintptr, outLen *uintptr, errCode *int32) *byte
+	ffiDocumentEditorSave          func(handle uintptr, path string, errCode *int32) int32
+	ffiDocumentEditorFree          func(handle uintptr)
+	ffiRedactionAdd                func(handle uintptr, page uintptr, x1, y1, x2, y2, r, g, b float64, errCode *int32) int32
+	ffiRedactionCount              func(handle uintptr, page uintptr, errCode *int32) int32
+	ffiRedactionApply              func(handle uintptr, scrub bool, r, g, b float64, errCode *int32) int32
+	ffiRedactionScrubMetadata      func(handle uintptr, errCode *int32) int32
+
+	// PAdES signing + DSS read side (#235).
+	ffiCertificateLoadFromBytes func(certBytes []byte, certLen int32, password string, errCode *int32) uintptr
+	ffiCertificateLoadFromPem   func(certPem, keyPem string, errCode *int32) uintptr
+	ffiCertificateFree          func(handle uintptr)
+	ffiSignBytes                func(pdf []byte, pdfLen uintptr, cert uintptr, reason, location string, outLen *uintptr, errCode *int32) *byte
+	ffiSignBytesPades           func(
+		pdf []byte, pdfLen uintptr, cert uintptr, level int32,
+		tsaURL, reason, location string,
+		certs *uintptr, certLens *uintptr, nCerts uintptr,
+		crls *uintptr, crlLens *uintptr, nCRLs uintptr,
+		ocsps *uintptr, ocspLens *uintptr, nOCSPs uintptr,
+		outLen *uintptr, errCode *int32) *byte
+	ffiDocumentGetSignatureCount func(handle uintptr, errCode *int32) int32
+	ffiDocumentGetSignature      func(handle uintptr, index int32, errCode *int32) uintptr
+	ffiSignatureGetPadesLevel    func(handle uintptr, errCode *int32) int32
+	ffiSignatureFree             func(handle uintptr)
+	ffiDocumentGetDss            func(handle uintptr, errCode *int32) uintptr
+	ffiDocumentHasTimestamp      func(handle uintptr, errCode *int32) int32
+	ffiDssCertCount              func(dss uintptr) int32
+	ffiDssCrlCount               func(dss uintptr) int32
+	ffiDssOcspCount              func(dss uintptr) int32
+	ffiDssVriCount               func(dss uintptr) int32
+	ffiDssGetCert                func(dss uintptr, index int32, outLen *uintptr, errCode *int32) *byte
+	ffiDssGetCrl                 func(dss uintptr, index int32, outLen *uintptr, errCode *int32) *byte
+	ffiDssGetOcsp                func(dss uintptr, index int32, outLen *uintptr, errCode *int32) *byte
+	ffiDssFree                   func(dss uintptr)
 )
 
 func registerFFI(lib uintptr) {
@@ -246,6 +293,43 @@ func registerFFI(lib uintptr) {
 
 	r(&ffiSetLogLevel, "pdf_oxide_set_log_level")
 	r(&ffiGetLogLevel, "pdf_oxide_get_log_level")
+
+	r(&ffiCryptoSetPolicy, "pdf_oxide_crypto_set_policy")
+	r(&ffiCryptoPolicy, "pdf_oxide_crypto_policy")
+	r(&ffiCryptoInventory, "pdf_oxide_crypto_inventory")
+	r(&ffiCryptoCbom, "pdf_oxide_crypto_cbom")
+
+	r(&ffiPdfDocumentPlanSplitByBookmarks, "pdf_document_plan_split_by_bookmarks")
+
+	r(&ffiDocumentEditorOpen, "document_editor_open")
+	r(&ffiDocumentEditorOpenFromBytes, "document_editor_open_from_bytes")
+	r(&ffiDocumentEditorSaveToBytes, "document_editor_save_to_bytes")
+	r(&ffiDocumentEditorSave, "document_editor_save")
+	r(&ffiDocumentEditorFree, "document_editor_free")
+	r(&ffiRedactionAdd, "pdf_redaction_add")
+	r(&ffiRedactionCount, "pdf_redaction_count")
+	r(&ffiRedactionApply, "pdf_redaction_apply")
+	r(&ffiRedactionScrubMetadata, "pdf_redaction_scrub_metadata")
+
+	r(&ffiCertificateLoadFromBytes, "pdf_certificate_load_from_bytes")
+	r(&ffiCertificateLoadFromPem, "pdf_certificate_load_from_pem")
+	r(&ffiCertificateFree, "pdf_certificate_free")
+	r(&ffiSignBytes, "pdf_sign_bytes")
+	r(&ffiSignBytesPades, "pdf_sign_bytes_pades")
+	r(&ffiDocumentGetSignatureCount, "pdf_document_get_signature_count")
+	r(&ffiDocumentGetSignature, "pdf_document_get_signature")
+	r(&ffiSignatureGetPadesLevel, "pdf_signature_get_pades_level")
+	r(&ffiSignatureFree, "pdf_signature_free")
+	r(&ffiDocumentGetDss, "pdf_document_get_dss")
+	r(&ffiDocumentHasTimestamp, "pdf_document_has_timestamp")
+	r(&ffiDssCertCount, "pdf_dss_cert_count")
+	r(&ffiDssCrlCount, "pdf_dss_crl_count")
+	r(&ffiDssOcspCount, "pdf_dss_ocsp_count")
+	r(&ffiDssVriCount, "pdf_dss_vri_count")
+	r(&ffiDssGetCert, "pdf_dss_get_cert")
+	r(&ffiDssGetCrl, "pdf_dss_get_crl")
+	r(&ffiDssGetOcsp, "pdf_dss_get_ocsp")
+	r(&ffiDssFree, "pdf_dss_free")
 }
 
 // goStringAndFree copies a NUL-terminated C string at p into a Go string and
@@ -891,4 +975,653 @@ func GetLogLevel() LogLevel {
 		return LogOff
 	}
 	return LogLevel(ffiGetLogLevel())
+}
+
+// goBytesAndFree copies n bytes from the C buffer at p into a fresh Go
+// slice and then calls free_bytes(p). Safe when p == nil (returns nil).
+func goBytesAndFree(p *byte, n int) []byte {
+	if p == nil || n <= 0 {
+		if p != nil {
+			ffiFreeBytes(p)
+		}
+		return nil
+	}
+	out := make([]byte, n)
+	copy(out, unsafe.Slice(p, n))
+	ffiFreeBytes(p)
+	return out
+}
+
+// ─── Runtime crypto-governance policy (#230) ─────────────────────────────────
+
+// SetCryptoPolicy installs the process-wide runtime crypto policy from
+// its grammar string ("compat"|"strict"|"fips-strict"[;…]). Fail-closed:
+// returns ErrCryptoPolicyParse on an unparseable spec or
+// ErrCryptoPolicyAlreadySet if a policy is already set. The signature
+// matches the cgo backend exactly.
+func SetCryptoPolicy(spec string) error {
+	if err := loadLib(); err != nil {
+		return err
+	}
+	switch ffiCryptoSetPolicy(spec) {
+	case 0:
+		return nil
+	case 1:
+		return ErrCryptoPolicyInvalidArg
+	case 2:
+		return ErrCryptoPolicyParse
+	case 3:
+		return ErrCryptoPolicyAlreadySet
+	default:
+		return fmt.Errorf("pdf_oxide_crypto_set_policy returned unknown error code")
+	}
+}
+
+// CryptoPolicy returns the active crypto policy as its canonical
+// grammar string (default "compat" when never set or the library
+// cannot be loaded). Signature matches the cgo backend.
+func CryptoPolicy() string {
+	if err := loadLib(); err != nil {
+		return "compat"
+	}
+	s := goStringAndFree(ffiCryptoPolicy())
+	if s == "" {
+		return "compat"
+	}
+	return s
+}
+
+// CryptoInventory returns the cryptographic algorithm tokens exercised
+// so far this process (governance report). Signature matches the cgo
+// backend (CSV from the C ABI, split on ',').
+func CryptoInventory() []string {
+	if err := loadLib(); err != nil {
+		return nil
+	}
+	joined := goStringAndFree(ffiCryptoInventory())
+	if joined == "" {
+		return nil
+	}
+	return splitCSV(joined)
+}
+
+// CryptoCBOM returns a CycloneDX 1.6 Cryptographic Bill of Materials
+// (JSON) of the algorithms exercised so far this process (#230).
+// Signature matches the cgo backend.
+func CryptoCBOM() string {
+	if err := loadLib(); err != nil {
+		return ""
+	}
+	return goStringAndFree(ffiCryptoCbom())
+}
+
+func splitCSV(s string) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == ',' {
+			out = append(out, s[start:i])
+			start = i + 1
+		}
+	}
+	out = append(out, s[start:])
+	return out
+}
+
+// ─── Split a PDF by bookmarks (#482) ─────────────────────────────────────────
+
+// SplitSegment is one planned output segment of a bookmark split (#482).
+type SplitSegment struct {
+	Index     int     `json:"index"`
+	StartPage int     `json:"start_page"`
+	EndPage   int     `json:"end_page"`
+	Title     *string `json:"title"`
+	FileStem  string  `json:"file_stem"`
+	PageLabel *string `json:"page_label"`
+}
+
+// SplitByBookmarksOptions controls a bookmark split. Level: 0 = all
+// depths, 1 = top-level only (default), n = up to depth n.
+type SplitByBookmarksOptions struct {
+	TitlePrefix        *string
+	IgnoreCase         bool
+	Level              int
+	IncludeFrontMatter bool
+}
+
+// PlanSplitByBookmarks plans (does not produce) a split of the document
+// at outline/bookmark boundaries (#482), mirroring the core
+// plan_split_by_bookmarks.
+func (doc *PdfDocument) PlanSplitByBookmarks(opts SplitByBookmarksOptions) ([]SplitSegment, error) {
+	if err := doc.acquireRead(); err != nil {
+		return nil, err
+	}
+	defer doc.mu.Unlock()
+	optJSON, err := json.Marshal(map[string]interface{}{
+		"title_prefix":         opts.TitlePrefix,
+		"ignore_case":          opts.IgnoreCase,
+		"level":                opts.Level,
+		"include_front_matter": opts.IncludeFrontMatter,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("pdf_oxide: marshal split options: %w", err)
+	}
+	var ec int32
+	p := ffiPdfDocumentPlanSplitByBookmarks(doc.handle, string(optJSON), &ec)
+	if ec != 0 {
+		return nil, ffiErrorFromInt(int(ec))
+	}
+	text := goStringAndFree(p)
+	var segs []SplitSegment
+	if err := json.Unmarshal([]byte(text), &segs); err != nil {
+		return nil, fmt.Errorf("pdf_oxide: parse split plan JSON: %w", err)
+	}
+	return segs, nil
+}
+
+// ─── DocumentEditor + destructive redaction / sanitize (#231) ────────────────
+
+// DocumentEditor is a mutable PDF document for the purego backend. It is
+// safe for concurrent use by multiple goroutines.
+type DocumentEditor struct {
+	mu     sync.RWMutex
+	handle uintptr
+	closed bool
+}
+
+func (editor *DocumentEditor) acquireWrite() error {
+	editor.mu.Lock()
+	if editor.closed {
+		editor.mu.Unlock()
+		return ErrEditorClosed
+	}
+	return nil
+}
+
+// OpenEditor opens a PDF document from a file path for editing.
+func OpenEditor(path string) (*DocumentEditor, error) {
+	if err := loadLib(); err != nil {
+		return nil, err
+	}
+	var ec int32
+	h := ffiDocumentEditorOpen(path, &ec)
+	if ec != 0 {
+		return nil, ffiErrorFromInt(int(ec))
+	}
+	if h == 0 {
+		return nil, fmt.Errorf("pdf_oxide: failed to open document editor: %w", ErrInternal)
+	}
+	return &DocumentEditor{handle: h}, nil
+}
+
+// OpenEditorFromBytes opens a PDF document from memory for editing.
+func OpenEditorFromBytes(data []byte) (*DocumentEditor, error) {
+	if err := loadLib(); err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("pdf_oxide: data must not be empty: %w", ErrInvalidPath)
+	}
+	var ec int32
+	h := ffiDocumentEditorOpenFromBytes(data, uintptr(len(data)), &ec)
+	if ec != 0 {
+		return nil, ffiErrorFromInt(int(ec))
+	}
+	if h == 0 {
+		return nil, fmt.Errorf("pdf_oxide: failed to open editor from bytes: %w", ErrInternal)
+	}
+	return &DocumentEditor{handle: h}, nil
+}
+
+// Close releases editor resources. Safe to call multiple times.
+func (editor *DocumentEditor) Close() {
+	editor.mu.Lock()
+	defer editor.mu.Unlock()
+	if !editor.closed && editor.handle != 0 {
+		ffiDocumentEditorFree(editor.handle)
+		editor.closed = true
+		editor.handle = 0
+	}
+}
+
+// Save writes the edited document to a file path.
+func (editor *DocumentEditor) Save(path string) error {
+	if err := editor.acquireWrite(); err != nil {
+		return err
+	}
+	defer editor.mu.Unlock()
+	var ec int32
+	ffiDocumentEditorSave(editor.handle, path, &ec)
+	if ec != 0 {
+		return ffiErrorFromInt(int(ec))
+	}
+	return nil
+}
+
+// SaveToBytes serialises the edited document into an in-memory slice.
+func (editor *DocumentEditor) SaveToBytes() ([]byte, error) {
+	if err := editor.acquireWrite(); err != nil {
+		return nil, err
+	}
+	defer editor.mu.Unlock()
+	var outLen uintptr
+	var ec int32
+	p := ffiDocumentEditorSaveToBytes(editor.handle, &outLen, &ec)
+	if ec != 0 {
+		return nil, ffiErrorFromInt(int(ec))
+	}
+	if p == nil {
+		return nil, fmt.Errorf("pdf_oxide: failed to save editor to bytes: %w", ErrInternal)
+	}
+	return goBytesAndFree(p, int(outLen)), nil
+}
+
+// AddRedaction queues an explicit destructive redaction rectangle (page
+// user space). The content is physically removed by ApplyRedactions —
+// not a cosmetic overlay (ISO 32000-1:2008 §12.5.6.23). fill is an
+// optional DeviceRGB [r,g,b]; nil uses black.
+func (editor *DocumentEditor) AddRedaction(page int, rect [4]float64, fill *[3]float64) error {
+	if err := editor.acquireWrite(); err != nil {
+		return err
+	}
+	defer editor.mu.Unlock()
+	r, g, b := 0.0, 0.0, 0.0
+	if fill != nil {
+		r, g, b = fill[0], fill[1], fill[2]
+	}
+	var ec int32
+	ffiRedactionAdd(editor.handle, uintptr(page),
+		rect[0], rect[1], rect[2], rect[3], r, g, b, &ec)
+	if ec != 0 {
+		return ffiErrorFromInt(int(ec))
+	}
+	return nil
+}
+
+// RedactionCount returns the number of redaction regions queued for a
+// page (annotations + programmatic rectangles).
+func (editor *DocumentEditor) RedactionCount(page int) (int, error) {
+	if err := editor.acquireWrite(); err != nil {
+		return 0, err
+	}
+	defer editor.mu.Unlock()
+	var ec int32
+	n := ffiRedactionCount(editor.handle, uintptr(page), &ec)
+	if ec != 0 {
+		return 0, ffiErrorFromInt(int(ec))
+	}
+	return int(n), nil
+}
+
+// ApplyRedactions destructively applies all queued redactions (true
+// content removal). Returns the number of glyphs physically removed.
+func (editor *DocumentEditor) ApplyRedactions(scrubMetadata bool) (int, error) {
+	if err := editor.acquireWrite(); err != nil {
+		return 0, err
+	}
+	defer editor.mu.Unlock()
+	var ec int32
+	removed := ffiRedactionApply(editor.handle, scrubMetadata, 0, 0, 0, &ec)
+	if ec != 0 {
+		return 0, ffiErrorFromInt(int(ec))
+	}
+	return int(removed), nil
+}
+
+// SanitizeDocument performs standalone document sanitization (no
+// geometric redaction): it strips the /Info dictionary, the catalog
+// XMP /Metadata stream, document JavaScript (/OpenAction, /AA,
+// /Names/JavaScript) and /Names/EmbeddedFiles, hard-excluding the
+// removed object subtrees from the rewritten file. Returns the number
+// of annotations removed (issue #231).
+func (editor *DocumentEditor) SanitizeDocument() (int, error) {
+	if err := editor.acquireWrite(); err != nil {
+		return 0, err
+	}
+	defer editor.mu.Unlock()
+	var ec int32
+	removed := ffiRedactionScrubMetadata(editor.handle, &ec)
+	if ec != 0 {
+		return 0, ffiErrorFromInt(int(ec))
+	}
+	return int(removed), nil
+}
+
+// ─── PAdES LTV signing + DSS read side (#235) ────────────────────────────────
+
+// PAdESLevel is the PAdES baseline level. The integer mapping
+// (PAdESBB=0, PAdESBT=1, PAdESBLt=2, PAdESBLta=3) is frozen and shared
+// with the C ABI and every binding — never renumber.
+type PAdESLevel int32
+
+const (
+	// PAdESBB is CAdES-B-B (signed attrs incl. ESS signing-certificate-v2).
+	PAdESBB PAdESLevel = 0
+	// PAdESBT is B-B + an RFC 3161 signature-time-stamp unsigned attr.
+	PAdESBT PAdESLevel = 1
+	// PAdESBLt is B-T + a Document Security Store (DSS/VRI).
+	PAdESBLt PAdESLevel = 2
+	// PAdESBLta is B-LT + a document-scoped /DocTimeStamp archival timestamp.
+	PAdESBLta PAdESLevel = 3
+)
+
+// RevocationMaterial is the offline B-LT validation set: DER X.509
+// certificates, CRLs, and OCSP responses.
+type RevocationMaterial struct {
+	Certs [][]byte
+	CRLs  [][]byte
+	OCSPs [][]byte
+}
+
+// PAdESOptions configures SignPdfBytesPAdES. TSAURL is required for
+// Level >= PAdESBT (the RFC 3161 source). Reason/Location are optional.
+// Revocation supplies the B-LT DSS material.
+type PAdESOptions struct {
+	Level      PAdESLevel
+	TSAURL     string
+	Reason     string
+	Location   string
+	Revocation *RevocationMaterial
+}
+
+// Certificate holds a loaded signing certificate (purego backend).
+type Certificate struct {
+	handle uintptr
+}
+
+// LoadCertificate loads a PKCS#12 certificate from bytes.
+func LoadCertificate(data []byte, password string) (*Certificate, error) {
+	if err := loadLib(); err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("pdf_oxide: certificate data is empty: %w", ErrEmptyContent)
+	}
+	var ec int32
+	h := ffiCertificateLoadFromBytes(data, int32(len(data)), password, &ec)
+	if ec != 0 {
+		return nil, ffiErrorFromInt(int(ec))
+	}
+	return &Certificate{handle: h}, nil
+}
+
+// LoadCertificateFromPem loads signing credentials from PEM-encoded
+// certificate and private-key strings.
+func LoadCertificateFromPem(certPem, keyPem string) (*Certificate, error) {
+	if err := loadLib(); err != nil {
+		return nil, err
+	}
+	var ec int32
+	h := ffiCertificateLoadFromPem(certPem, keyPem, &ec)
+	if ec != 0 {
+		return nil, ffiErrorFromInt(int(ec))
+	}
+	return &Certificate{handle: h}, nil
+}
+
+// Close releases certificate resources.
+func (cert *Certificate) Close() {
+	if cert.handle != 0 {
+		ffiCertificateFree(cert.handle)
+		cert.handle = 0
+	}
+}
+
+// SignPdfBytes applies a CMS/PKCS#7 detached signature to pdfData and
+// returns the signed PDF. The Certificate must carry a private key.
+func SignPdfBytes(pdfData []byte, cert *Certificate, reason, location string) ([]byte, error) {
+	if cert == nil || cert.handle == 0 {
+		return nil, ErrInternal
+	}
+	if len(pdfData) == 0 {
+		return nil, ErrEmptyContent
+	}
+	var outLen uintptr
+	var ec int32
+	p := ffiSignBytes(pdfData, uintptr(len(pdfData)), cert.handle, reason, location, &outLen, &ec)
+	if ec != 0 {
+		return nil, ffiErrorFromInt(int(ec))
+	}
+	if p == nil {
+		return nil, ErrInternal
+	}
+	return goBytesAndFree(p, int(outLen)), nil
+}
+
+// blobArrays builds parallel (ptrs, lens) uintptr slices over blobs for
+// the *_pades FFI. The caller MUST keep `blobs`, the returned slices,
+// and the originating RevocationMaterial alive across the FFI call
+// (runtime.KeepAlive) — the slices hold raw data addresses.
+func blobArrays(blobs [][]byte) (ptrs, lens []uintptr) {
+	if len(blobs) == 0 {
+		return nil, nil
+	}
+	ptrs = make([]uintptr, len(blobs))
+	lens = make([]uintptr, len(blobs))
+	for i, b := range blobs {
+		if len(b) == 0 {
+			continue
+		}
+		ptrs[i] = uintptr(unsafe.Pointer(&b[0]))
+		lens[i] = uintptr(len(b))
+	}
+	return ptrs, lens
+}
+
+func firstPtr(s []uintptr) *uintptr {
+	if len(s) == 0 {
+		return nil
+	}
+	return &s[0]
+}
+
+// SignPdfBytesPAdES signs pdfData at a PAdES baseline level and returns
+// the signed PDF. The Certificate must carry a private key. For
+// PAdESBT/PAdESBLt a TSAURL is required.
+func SignPdfBytesPAdES(pdfData []byte, cert *Certificate, opts PAdESOptions) ([]byte, error) {
+	if cert == nil || cert.handle == 0 {
+		return nil, ErrInternal
+	}
+	if len(pdfData) == 0 {
+		return nil, ErrEmptyContent
+	}
+	var certsP, certsL, crlsP, crlsL, ocspsP, ocspsL []uintptr
+	var nCerts, nCRLs, nOCSPs uintptr
+	if r := opts.Revocation; r != nil {
+		certsP, certsL = blobArrays(r.Certs)
+		crlsP, crlsL = blobArrays(r.CRLs)
+		ocspsP, ocspsL = blobArrays(r.OCSPs)
+		nCerts = uintptr(len(r.Certs))
+		nCRLs = uintptr(len(r.CRLs))
+		nOCSPs = uintptr(len(r.OCSPs))
+	}
+	var outLen uintptr
+	var ec int32
+	p := ffiSignBytesPades(
+		pdfData, uintptr(len(pdfData)), cert.handle, int32(opts.Level),
+		opts.TSAURL, opts.Reason, opts.Location,
+		firstPtr(certsP), firstPtr(certsL), nCerts,
+		firstPtr(crlsP), firstPtr(crlsL), nCRLs,
+		firstPtr(ocspsP), firstPtr(ocspsL), nOCSPs,
+		&outLen, &ec)
+	if opts.Revocation != nil {
+		runtime.KeepAlive(opts.Revocation.Certs)
+		runtime.KeepAlive(opts.Revocation.CRLs)
+		runtime.KeepAlive(opts.Revocation.OCSPs)
+		runtime.KeepAlive(certsP)
+		runtime.KeepAlive(certsL)
+		runtime.KeepAlive(crlsP)
+		runtime.KeepAlive(crlsL)
+		runtime.KeepAlive(ocspsP)
+		runtime.KeepAlive(ocspsL)
+	}
+	runtime.KeepAlive(pdfData)
+	if ec != 0 {
+		return nil, ffiErrorFromInt(int(ec))
+	}
+	if p == nil {
+		return nil, ErrInternal
+	}
+	return goBytesAndFree(p, int(outLen)), nil
+}
+
+// Signature is a live handle to an existing PDF digital signature
+// returned by PdfDocument.Signatures. Close() must be called.
+type Signature struct {
+	handle uintptr
+}
+
+// Close releases the underlying native signature handle.
+func (s *Signature) Close() {
+	if s != nil && s.handle != 0 {
+		ffiSignatureFree(s.handle)
+		s.handle = 0
+	}
+}
+
+// PAdESLevel classifies this signature from its CMS attributes alone
+// (PAdESBB vs PAdESBT). PAdESBLt additionally needs the document /DSS —
+// read it via (*PdfDocument).DSS and re-classify there.
+func (s *Signature) PAdESLevel() (PAdESLevel, error) {
+	if s == nil || s.handle == 0 {
+		return PAdESBB, ErrInternal
+	}
+	var ec int32
+	lvl := ffiSignatureGetPadesLevel(s.handle, &ec)
+	if ec != 0 {
+		return PAdESBB, ffiErrorFromInt(int(ec))
+	}
+	return PAdESLevel(lvl), nil
+}
+
+// SignatureCount returns the number of existing digital signatures in
+// the document (0 when none — not an error).
+func (doc *PdfDocument) SignatureCount() (int, error) {
+	if err := doc.acquireRead(); err != nil {
+		return 0, err
+	}
+	defer doc.mu.Unlock()
+	var ec int32
+	n := ffiDocumentGetSignatureCount(doc.handle, &ec)
+	if ec != 0 {
+		return 0, ffiErrorFromInt(int(ec))
+	}
+	return int(n), nil
+}
+
+// Signatures returns a snapshot of every signature on the document.
+// Each Signature must be Close()d by the caller.
+func (doc *PdfDocument) Signatures() ([]*Signature, error) {
+	if err := doc.acquireRead(); err != nil {
+		return nil, err
+	}
+	defer doc.mu.Unlock()
+	var ec int32
+	n := ffiDocumentGetSignatureCount(doc.handle, &ec)
+	if ec != 0 {
+		return nil, ffiErrorFromInt(int(ec))
+	}
+	out := make([]*Signature, 0, n)
+	for i := int32(0); i < n; i++ {
+		var e int32
+		h := ffiDocumentGetSignature(doc.handle, i, &e)
+		if e != 0 {
+			for _, s := range out {
+				s.Close()
+			}
+			return nil, ffiErrorFromInt(int(e))
+		}
+		if h == 0 {
+			for _, s := range out {
+				s.Close()
+			}
+			return nil, fmt.Errorf("pdf_oxide: pdf_document_get_signature(%d) returned null", i)
+		}
+		out = append(out, &Signature{handle: h})
+	}
+	return out, nil
+}
+
+// DSS is a parsed Document Security Store (/DSS, ISO 32000-2 §12.8.4.3).
+type DSS struct {
+	Certs    [][]byte
+	CRLs     [][]byte
+	OCSPs    [][]byte
+	VRICount int
+}
+
+// DSS reads the document's Document Security Store, or nil if the PDF
+// has no /DSS (not an error). Mirrors Rust signatures::read_dss.
+func (doc *PdfDocument) DSS() (*DSS, error) {
+	if err := doc.acquireRead(); err != nil {
+		return nil, err
+	}
+	defer doc.mu.Unlock()
+	var ec int32
+	h := ffiDocumentGetDss(doc.handle, &ec)
+	if ec != 0 {
+		return nil, ffiErrorFromInt(int(ec))
+	}
+	if h == 0 {
+		return nil, nil // no DSS present
+	}
+	defer ffiDssFree(h)
+
+	read := func(count func(uintptr) int32, get func(uintptr, int32, *uintptr, *int32) *byte) ([][]byte, error) {
+		nn := int(count(h))
+		if nn <= 0 {
+			return nil, nil
+		}
+		blobs := make([][]byte, 0, nn)
+		for i := 0; i < nn; i++ {
+			var l uintptr
+			var e int32
+			p := get(h, int32(i), &l, &e)
+			if e != 0 {
+				return nil, ffiErrorFromInt(int(e))
+			}
+			if p == nil {
+				continue
+			}
+			blobs = append(blobs, goBytesAndFree(p, int(l)))
+		}
+		return blobs, nil
+	}
+
+	certs, err := read(ffiDssCertCount, ffiDssGetCert)
+	if err != nil {
+		return nil, err
+	}
+	crls, err := read(ffiDssCrlCount, ffiDssGetCrl)
+	if err != nil {
+		return nil, err
+	}
+	ocsps, err := read(ffiDssOcspCount, ffiDssGetOcsp)
+	if err != nil {
+		return nil, err
+	}
+	return &DSS{
+		Certs:    certs,
+		CRLs:     crls,
+		OCSPs:    ocsps,
+		VRICount: int(ffiDssVriCount(h)),
+	}, nil
+}
+
+// HasDocumentTimestamp reports whether the document carries a
+// document-scoped RFC 3161 /DocTimeStamp archival timestamp
+// (PAdES-B-LTA, ISO 32000-2:2020 §12.8.5). This is the document-level
+// reader signal; (*Signature).PAdESLevel is signature-scoped and tops
+// out at B-LT by design.
+func (doc *PdfDocument) HasDocumentTimestamp() (bool, error) {
+	if err := doc.acquireRead(); err != nil {
+		return false, err
+	}
+	defer doc.mu.Unlock()
+	var ec int32
+	r := ffiDocumentHasTimestamp(doc.handle, &ec)
+	if ec != 0 {
+		return false, ffiErrorFromInt(int(ec))
+	}
+	return r == 1, nil
 }

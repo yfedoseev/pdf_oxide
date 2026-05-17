@@ -440,6 +440,7 @@ extern "C" {
   extern uint8_t* pdf_sign_bytes_pades(const uint8_t* pdf, size_t pdf_len, const void* cert, int32_t level, const char* tsa_url, const char* reason, const char* location, const uint8_t* const* certs, const size_t* cert_lens, size_t n_certs, const uint8_t* const* crls, const size_t* crl_lens, size_t n_crls, const uint8_t* const* ocsps, const size_t* ocsp_lens, size_t n_ocsps, size_t* out_len, int* error_code);
   extern int32_t pdf_signature_get_pades_level(const void* sig, int* error_code);
   extern void* pdf_document_get_dss(const void* doc, int* error_code);
+  extern int pdf_document_has_timestamp(const void* doc, int* error_code);
   extern int32_t pdf_dss_cert_count(const void* dss);
   extern int32_t pdf_dss_crl_count(const void* dss);
   extern int32_t pdf_dss_ocsp_count(const void* dss);
@@ -3665,6 +3666,17 @@ Napi::Value DocumentGetDss(const Napi::CallbackInfo& info) {
   return obj;
 }
 
+// Document-scoped PAdES-B-LTA reader signal: whether the PDF carries a
+// /DocTimeStamp archival timestamp (ISO 32000-2:2020 §12.8.5).
+Napi::Value DocumentHasTimestamp(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  void* doc = info[0].As<Napi::External<void>>().Data();
+  int errorCode = 0;
+  int r = pdf_document_has_timestamp(doc, &errorCode);
+  if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
+  return Napi::Boolean::New(env, r == 1);
+}
+
 Napi::Value SignatureAddTimestamp(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   void* sig = info[0].As<Napi::External<void>>().Data();
@@ -4246,6 +4258,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("signPdfBytesPades", Napi::Function::New(env, SignPdfBytesPades));
   exports.Set("signatureGetPadesLevel", Napi::Function::New(env, SignatureGetPadesLevel));
   exports.Set("documentGetDss", Napi::Function::New(env, DocumentGetDss));
+  exports.Set("documentHasTimestamp", Napi::Function::New(env, DocumentHasTimestamp));
 
   // Regional Extraction
   exports.Set("extractImagesInRect", Napi::Function::New(env, ExtractImagesInRect));

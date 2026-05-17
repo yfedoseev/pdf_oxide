@@ -185,6 +185,7 @@ extern uint8_t* pdf_sign_bytes(const uint8_t* pdf_data, size_t pdf_len, const vo
 extern uint8_t* pdf_sign_bytes_pades(const uint8_t* pdf, size_t pdf_len, const void* cert_handle, int32_t level, const char* tsa_url, const char* reason, const char* location, const uint8_t* const* certs, const size_t* cert_lens, size_t n_certs, const uint8_t* const* crls, const size_t* crl_lens, size_t n_crls, const uint8_t* const* ocsps, const size_t* ocsp_lens, size_t n_ocsps, size_t* out_len, int* error_code);
 extern int32_t pdf_signature_get_pades_level(const void* sig_handle, int* error_code);
 extern void* pdf_document_get_dss(const void* doc_handle, int* error_code);
+extern int   pdf_document_has_timestamp(const void* doc_handle, int* error_code);
 extern int32_t pdf_dss_cert_count(const void* dss);
 extern int32_t pdf_dss_crl_count(const void* dss);
 extern int32_t pdf_dss_ocsp_count(const void* dss);
@@ -2620,6 +2621,25 @@ func (editor *DocumentEditor) ApplyRedactions(scrubMetadata bool) (int, error) {
 	return int(removed), nil
 }
 
+// SanitizeDocument performs standalone document sanitization (no
+// geometric redaction): it strips the /Info dictionary, the catalog
+// XMP /Metadata stream, document JavaScript (/OpenAction, /AA,
+// /Names/JavaScript) and /Names/EmbeddedFiles, hard-excluding the
+// removed object subtrees from the rewritten file. Returns the number
+// of annotations removed (ISO 32000 §12.5.6.23; issue #231).
+func (editor *DocumentEditor) SanitizeDocument() (int, error) {
+	if err := editor.acquireWrite(); err != nil {
+		return 0, err
+	}
+	defer editor.mu.Unlock()
+	var errorCode C.int
+	removed := C.pdf_redaction_scrub_metadata(editor.handle, &errorCode)
+	if errorCode != 0 {
+		return 0, ffiError(errorCode)
+	}
+	return int(removed), nil
+}
+
 // RotateAllPages rotates every page by degrees (additive, not absolute).
 func (editor *DocumentEditor) RotateAllPages(degrees int) error {
 	if err := editor.acquireWrite(); err != nil {
@@ -3932,6 +3952,24 @@ func (doc *PdfDocument) DSS() (*DSS, error) {
 	}, nil
 }
 
+// HasDocumentTimestamp reports whether the document carries a
+// document-scoped RFC 3161 /DocTimeStamp archival timestamp
+// (PAdES-B-LTA, ISO 32000-2:2020 §12.8.5). This is the document-level
+// reader signal; (*Signature).PAdESLevel is signature-scoped and tops
+// out at B-LT by design.
+func (doc *PdfDocument) HasDocumentTimestamp() (bool, error) {
+	if err := doc.acquireRead(); err != nil {
+		return false, err
+	}
+	defer doc.mu.Unlock()
+	var errorCode C.int
+	r := C.pdf_document_has_timestamp(doc.handle, &errorCode)
+	if errorCode != 0 {
+		return false, ffiError(errorCode)
+	}
+	return r == 1, nil
+}
+
 // certReadString is the shared body for Subject / Issuer / Serial — each FFI
 // call returns a `*C.char` that must be copied to Go memory and freed.
 func (cert *Certificate) certReadString(fn func(unsafe.Pointer, *C.int) *C.char) (string, error) {
@@ -4519,18 +4557,6 @@ func UseFipsCryptoProvider() error {
 		return fmt.Errorf("pdf_oxide_crypto_use_fips returned unknown error code")
 	}
 }
-
-// ErrCryptoPolicyInvalidArg is returned by SetCryptoPolicy for a
-// null/non-UTF-8 spec.
-var ErrCryptoPolicyInvalidArg = errors.New("invalid crypto policy spec (not valid UTF-8)")
-
-// ErrCryptoPolicyParse is returned by SetCryptoPolicy when the spec
-// string is rejected (fail-closed: the policy is NOT installed).
-var ErrCryptoPolicyParse = errors.New("crypto policy spec rejected (parse error)")
-
-// ErrCryptoPolicyAlreadySet is returned by SetCryptoPolicy when a
-// policy was already installed (set-once).
-var ErrCryptoPolicyAlreadySet = errors.New("crypto policy already set")
 
 // SetCryptoPolicy installs the process-wide runtime crypto-governance
 // policy (#230) from its grammar string, e.g. "strict",

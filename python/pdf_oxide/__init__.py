@@ -123,11 +123,14 @@ from .pdf_oxide import (  # noqa: E402
     Artifact,
     ArtifactStyle,
     BlendMode,
+    # Digital signatures / PAdES (issue #235)
+    Certificate,
     # Advanced Graphics
     Color,
     Column,
     # Write-side fluent API
     DocumentBuilder,
+    Dss,
     EmbeddedFont,
     ExtGState,
     # Extraction
@@ -144,17 +147,21 @@ from .pdf_oxide import (  # noqa: E402
     OcrEngine,
     # Office (always available as stub if feature is off)
     OfficeConverter,
+    PadesLevel,
     PageTemplate,
     PatternPresets,
     # PDF Creation
     Pdf,
     PdfDocument,
     RadialGradient,
+    RevocationMaterial,
+    Signature,
     StreamingTable,
     Table,
     TextSpan,
     crypto_active_provider,
     crypto_available_providers,
+    crypto_cbom,
     crypto_inventory,
     crypto_policy,
     crypto_set_policy,
@@ -163,9 +170,12 @@ from .pdf_oxide import (  # noqa: E402
     generate_barcode_svg,
     generate_qr_svg,
     get_log_level,
+    has_document_timestamp,
     plan_split_by_bookmarks,
     set_log_level,
     setup_logging,
+    sign_pdf_bytes,
+    sign_pdf_bytes_pades,
     split_by_bookmarks,
 )
 
@@ -225,9 +235,19 @@ __all__ = [
     "crypto_available_providers",
     "crypto_use_fips",
     # Runtime crypto-governance policy surface (issue #230)
+    "crypto_cbom",
     "crypto_inventory",
     "crypto_policy",
     "crypto_set_policy",
+    # Digital signatures / PAdES surface (issue #235)
+    "Certificate",
+    "Signature",
+    "PadesLevel",
+    "RevocationMaterial",
+    "Dss",
+    "sign_pdf_bytes",
+    "sign_pdf_bytes_pades",
+    "has_document_timestamp",
     # Split-by-bookmarks surface (issue #482)
     "plan_split_by_bookmarks",
     "split_by_bookmarks",

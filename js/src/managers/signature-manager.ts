@@ -2016,6 +2016,91 @@ export class SignatureManager extends EventEmitter {
     }
   }
 
+  /**
+   * Sign a PDF at a PAdES baseline level (ETSI EN 319 142-1) using PEM
+   * credentials (#235). `level`: 0=B-B, 1=B-T, 2=B-LT, 3=B-LTA (frozen
+   * mapping shared with every binding). For B-T/B-LT/B-LTA an
+   * `options.tsaUrl` (RFC 3161 source) is required; `options.revocation`
+   * supplies the B-LT DSS material.
+   */
+  async signPdfDataPades(
+    pdfData: Buffer,
+    certPem: string,
+    keyPem: string,
+    level: number,
+    options?: {
+      tsaUrl?: string;
+      reason?: string;
+      location?: string;
+      revocation?: { certs?: Buffer[]; crls?: Buffer[]; ocsps?: Buffer[] };
+    }
+  ): Promise<Buffer> {
+    if (!this.native?.certificateLoadFromPem) {
+      throw new SignatureException(
+        'Native signing not available: certificateLoadFromPem not found'
+      );
+    }
+    if (!this.native?.signPdfBytesPades) {
+      throw new SignatureException('Native signing not available: signPdfBytesPades not found');
+    }
+    const certHandle = this.native.certificateLoadFromPem(certPem, keyPem);
+    if (!certHandle) {
+      throw new SignatureException('Failed to load PEM certificate');
+    }
+    try {
+      const result = this.native.signPdfBytesPades(
+        pdfData,
+        certHandle,
+        level,
+        options?.tsaUrl ?? null,
+        options?.reason ?? null,
+        options?.location ?? null,
+        options?.revocation
+          ? {
+              certs: options.revocation.certs ?? [],
+              crls: options.revocation.crls ?? [],
+              ocsps: options.revocation.ocsps ?? [],
+            }
+          : undefined
+      );
+      if (!result) throw new SignatureException('signPdfBytesPades returned null');
+      return Buffer.from(result);
+    } finally {
+      this.native?.certificateFree?.(certHandle);
+    }
+  }
+
+  /**
+   * Read the document's Document Security Store (`/DSS`,
+   * ISO 32000-2:2020 §12.8.4.3) — PAdES-B-LT long-term-validation
+   * material — or `null` when the PDF has no DSS (#235).
+   */
+  getDocumentSecurityStore(): {
+    certs: Buffer[];
+    crls: Buffer[];
+    ocsps: Buffer[];
+    vriCount: number;
+  } | null {
+    if (!this.native?.documentGetDss) {
+      throw new SignatureException('Native DSS reader not available: documentGetDss not found');
+    }
+    return this.native.documentGetDss(this.document.handle) ?? null;
+  }
+
+  /**
+   * Whether the document carries a document-scoped RFC 3161
+   * `/DocTimeStamp` archival timestamp (PAdES-B-LTA,
+   * ISO 32000-2:2020 §12.8.5) (#235).
+   */
+  hasDocumentTimestamp(): boolean {
+    if (!this.native?.documentHasTimestamp) {
+      throw new SignatureException(
+        'Native B-LTA reader not available: documentHasTimestamp not found'
+      );
+    }
+    return this.native.documentHasTimestamp(this.document.handle) === true;
+  }
+
   // Private helpers
   private setCached(key: string, value: any): void {
     this.resultCache.set(key, value);

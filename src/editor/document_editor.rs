@@ -6391,8 +6391,9 @@ impl DocumentEditor {
     /// Strips document-level secrets that cosmetic redaction left behind:
     /// the `/Info` dictionary, the catalog XMP `/Metadata` stream,
     /// document JavaScript (`/OpenAction`, `/AA`, `/Names/JavaScript`)
-    /// and `/Names/EmbeddedFiles`, subject to the [`RedactionOptions`]
-    /// toggles. The removed object subtrees are hard-excluded from the
+    /// and `/Names/EmbeddedFiles`, subject to the
+    /// [`crate::redaction::RedactionOptions`] toggles. The removed object
+    /// subtrees are hard-excluded from the
     /// output (G6) so a secret cannot survive even as a GC-missed
     /// orphan, and `/Info` is replaced with an empty dictionary.
     ///

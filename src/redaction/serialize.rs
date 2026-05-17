@@ -2,7 +2,7 @@
 //!
 //! After pruning, the redactor must turn an [`Operator`] sequence back
 //! into content-stream bytes. A near-complete serializer already lived in
-//! [`crate::editor::document_editor`]; duplicating it in the redactor
+//! the `crate::editor::document_editor` module; duplicating it in the redactor
 //! would be a DRY violation and a second place for a corruption bug to
 //! hide. So the canonical serializer lives here as `pub(crate)` free
 //! functions (they need no `DocumentEditor` state) and the editor

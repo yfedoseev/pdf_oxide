@@ -39,6 +39,35 @@ fn destructive_redaction_removes_secret_text_and_bytes() {
         "fixture must contain the secret before redaction"
     );
 
+    // Save *uncompressed* (still GC'd) so the raw-byte G6 scan is a
+    // valid oracle: with the default compressed `full_rewrite()`,
+    // FlateDecode would erase the literal `SECRET` byte sequence even
+    // if redaction did nothing, making the assertion vacuous (Copilot
+    // review, PR #512). `garbage_collect` is kept so the orphaned
+    // original content object is still dropped.
+    let raw_opts = pdf_oxide::editor::SaveOptions {
+        compress: false,
+        ..pdf_oxide::editor::SaveOptions::full_rewrite()
+    };
+
+    // Control: the *unredacted* document, saved through the exact same
+    // uncompressed path, MUST still contain the literal secret — this
+    // proves the byte scan can actually see it, so its later absence is
+    // caused by redaction and not by the serializer.
+    {
+        let mut ctrl = DocumentEditor::from_bytes(build_secret_pdf()).expect("open control");
+        let ctrl_bytes = ctrl
+            .save_to_bytes_with_options(raw_opts.clone())
+            .expect("save control pdf");
+        assert!(
+            ctrl_bytes
+                .windows(SECRET.len())
+                .any(|w| w == SECRET.as_bytes()),
+            "control: uncompressed save must preserve the literal secret \
+             (otherwise the G6 byte scan below is not a valid oracle)"
+        );
+    }
+
     let mut ed = DocumentEditor::from_bytes(src).expect("open editor");
     // Cover the whole page (over-redaction is acceptable; the point is
     // that nothing survives).
@@ -53,7 +82,9 @@ fn destructive_redaction_removes_secret_text_and_bytes() {
     );
     assert!(report.bytes_removed > 0, "expected non-zero bytes removed");
 
-    let out = ed.save_to_bytes().expect("save redacted pdf");
+    let out = ed
+        .save_to_bytes_with_options(raw_opts)
+        .expect("save redacted pdf");
 
     // G6: the secret literal must not survive in the raw saved bytes
     // (redacted content is written uncompressed; the original content

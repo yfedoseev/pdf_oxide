@@ -4313,6 +4313,36 @@ pub extern "C" fn pdf_document_get_dss(
     }
 }
 
+/// Whether the document carries a document-scoped RFC 3161
+/// `/DocTimeStamp` archival timestamp (PAdES-B-LTA, ISO 32000-2:2020
+/// §12.8.5). This is the document-level reader signal that
+/// `pdf_signature_get_pades_level` cannot report — that call is
+/// signature-scoped and tops out at B-LT by design. Returns `1` when a
+/// document timestamp is present, `0` when not, `-1` on a null handle
+/// or when the `signatures` feature is disabled.
+#[no_mangle]
+pub extern "C" fn pdf_document_has_timestamp(
+    document_handle: *const std::ffi::c_void,
+    error_code: *mut i32,
+) -> i32 {
+    #[cfg(feature = "signatures")]
+    {
+        if document_handle.is_null() {
+            set_error(error_code, ERR_INVALID_ARG);
+            return -1;
+        }
+        let doc = handle_ref(document_handle as *const PdfDocument);
+        set_error(error_code, ERR_SUCCESS);
+        i32::from(crate::signatures::has_document_timestamp(&doc.source_bytes))
+    }
+    #[cfg(not(feature = "signatures"))]
+    {
+        let _ = document_handle;
+        set_error(error_code, _ERR_UNSUPPORTED);
+        -1
+    }
+}
+
 #[cfg(feature = "signatures")]
 macro_rules! dss_count_fn {
     ($name:ident, $field:ident) => {

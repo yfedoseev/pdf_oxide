@@ -232,9 +232,22 @@ mod tests {
     fn format_pdf_date_utc_is_well_formed_and_current() {
         let d = format_pdf_date_utc();
         assert!(d.starts_with("D:") && d.ends_with('Z') && d.len() == 17);
-        // Year is the real current year, not a leap-drifted 1970+days/365.
+        // Year is the real current year, not a leap-drifted
+        // 1970+days/365. Derive the expected year from the system
+        // clock (independently of the code under test) so this never
+        // becomes a hard-coded calendar time-bomb and tolerates a
+        // year-boundary / clock-skew race with a ±1 window.
         let yr: i64 = d[2..6].parse().expect("year digits");
-        assert!((2025..=2100).contains(&yr), "implausible year {yr} in {d}");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before UNIX epoch")
+            .as_secs();
+        // 31_556_952 = mean Gregorian year length in seconds.
+        let approx_year = 1970 + (now / 31_556_952) as i64;
+        assert!(
+            (approx_year - 1..=approx_year + 1).contains(&yr),
+            "year {yr} in {d} is not within ±1 of the current year (~{approx_year})"
+        );
         // Month/day are real (not the old constant 0101 unless it truly is).
         let mo: u32 = d[6..8].parse().unwrap();
         let dy: u32 = d[8..10].parse().unwrap();

@@ -5,12 +5,12 @@
 //! Pipeline (ISO 32000-1:2008 §7.8.2 content-stream model):
 //!
 //! 1. `parse_content_stream` → operators.
-//! 2. [`text_engine::redact_text_stream`] removes every glyph touching a
+//! 2. `text_engine::redact_text_stream` removes every glyph touching a
 //!    region and re-emits survivors with absolute `Tm`, no `TJ` deltas
 //!    (G1/G2). A composite/Type0/unknown font ⇒ **hard refusal**
 //!    (`Err`), never a silent pass-through (feature plan §9 risk 6).
-//! 3. [`serialize`] re-serializes survivors (binary-safe strings, G6).
-//! 4. [`overlay`] appends one opaque block per region *after* the pruned
+//! 3. `serialize` re-serializes survivors (binary-safe strings, G6).
+//! 4. `overlay` appends one opaque block per region *after* the pruned
 //!    content so the redacted area is visibly marked (G7) and the
 //!    underlying bytes are already gone — not merely covered.
 //!

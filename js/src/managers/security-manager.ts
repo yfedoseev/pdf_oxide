@@ -342,4 +342,49 @@ export class SecurityManager {
 
     return lines.join('\n');
   }
+
+  // ── Runtime crypto-governance policy (#230) — process-wide ──
+  //
+  // The policy is a process-global, set-once decorator over the crypto
+  // provider, so these are static (no document handle required).
+
+  private static loadNativeAddon(): any {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      return require('../../index.node');
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Install the process-wide runtime crypto policy from its grammar
+   * string (`"compat"|"strict"|"fips-strict"[;…]`). Fail-closed: throws
+   * on an unparseable spec or if a policy is already set (#230).
+   */
+  static setCryptoPolicy(spec: string): void {
+    const n = SecurityManager.loadNativeAddon();
+    if (!n?.setCryptoPolicy) {
+      throw new Error('Native crypto-governance not available: setCryptoPolicy not found');
+    }
+    n.setCryptoPolicy(spec);
+  }
+
+  /** The active crypto policy as its canonical grammar string (#230). */
+  static getCryptoPolicy(): string {
+    const n = SecurityManager.loadNativeAddon();
+    return n?.cryptoPolicy ? (n.cryptoPolicy() as string) : 'compat';
+  }
+
+  /** Algorithm tokens exercised so far this process (governance) (#230). */
+  static cryptoInventory(): string[] {
+    const n = SecurityManager.loadNativeAddon();
+    return n?.cryptoInventory ? (n.cryptoInventory() as string[]) : [];
+  }
+
+  /** CycloneDX 1.6 Cryptographic Bill of Materials (JSON) (#230). */
+  static cryptoCbom(): string {
+    const n = SecurityManager.loadNativeAddon();
+    return n?.cryptoCbom ? (n.cryptoCbom() as string) : '';
+  }
 }

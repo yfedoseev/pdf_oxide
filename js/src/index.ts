@@ -295,6 +295,74 @@ export interface RgbaPixmap {
   height: number;
 }
 
+/**
+ * Parsed Document Security Store (`/DSS`, ISO 32000-2:2020 §12.8.4.3) —
+ * PAdES-B-LT offline long-term-validation material (#235). `certs` /
+ * `crls` / `ocsps` are document-level DER blobs; `vriCount` is the
+ * number of per-signature `/VRI` entries.
+ */
+export interface DocumentSecurityStore {
+  certs: Buffer[];
+  crls: Buffer[];
+  ocsps: Buffer[];
+  vriCount: number;
+}
+
+/**
+ * PAdES baseline level (ETSI EN 319 142-1). The integer mapping is
+ * frozen and shared with the C ABI and every binding (#235).
+ */
+export const PadesLevel = {
+  /** B-B: signed attrs incl. ESS signing-certificate-v2. */
+  B_B: 0,
+  /** B-T: B-B + an RFC 3161 signature-time-stamp. */
+  B_T: 1,
+  /** B-LT: B-T + a Document Security Store (DSS/VRI). */
+  B_LT: 2,
+  /** B-LTA: B-LT + a document-scoped /DocTimeStamp. */
+  B_LTA: 3,
+} as const;
+export type PadesLevelValue = (typeof PadesLevel)[keyof typeof PadesLevel];
+
+/** Offline B-LT validation set (DER X.509 certs / CRLs / OCSPs) (#235). */
+export interface RevocationMaterial {
+  certs?: Buffer[];
+  crls?: Buffer[];
+  ocsps?: Buffer[];
+}
+
+/** Options for {@link PdfDocument.signPdfBytesPades}-class signing (#235). */
+export interface PadesSignOptions {
+  /** RFC 3161 TSA URL — required for B-T/B-LT/B-LTA. */
+  tsaUrl?: string;
+  reason?: string;
+  location?: string;
+  /** B-LT revocation material embedded into the DSS. */
+  revocation?: RevocationMaterial;
+}
+
+/** One planned output segment of a bookmark split (#482). */
+export interface SplitSegment {
+  index: number;
+  start_page: number;
+  end_page: number;
+  title: string | null;
+  file_stem: string;
+  page_label: string | null;
+}
+
+/** Options controlling a {@link PdfDocument.planSplitByBookmarks} (#482). */
+export interface SplitByBookmarksOptions {
+  /** Only split at bookmarks whose title starts with this prefix. */
+  titlePrefix?: string;
+  /** Case-insensitive prefix match (default false). */
+  ignoreCase?: boolean;
+  /** 0 = all depths, 1 = top-level only (default), n = up to depth n. */
+  level?: number;
+  /** Emit a leading front-matter segment for pre-bookmark pages. */
+  includeFrontMatter?: boolean;
+}
+
 class PdfDocumentImpl {
   private _handle: any;
   private _closed = false;
@@ -411,6 +479,44 @@ class PdfDocumentImpl {
   hasXFA(): boolean {
     this.ensureOpen();
     return native.hasXFA(this._handle);
+  }
+
+  /**
+   * Reads the document's Document Security Store (`/DSS`,
+   * ISO 32000-2:2020 §12.8.4.3), or `null` when the PDF has no DSS
+   * (not an error). PAdES-B-LT long-term-validation material (#235).
+   */
+  getDocumentSecurityStore(): DocumentSecurityStore | null {
+    this.ensureOpen();
+    return native.documentGetDss(this._handle) as DocumentSecurityStore | null;
+  }
+
+  /**
+   * Whether the document carries a document-scoped RFC 3161
+   * `/DocTimeStamp` archival timestamp (PAdES-B-LTA,
+   * ISO 32000-2:2020 §12.8.5). This is the document-level reader
+   * signal; per-signature classification tops out at B-LT (#235).
+   */
+  hasDocumentTimestamp(): boolean {
+    this.ensureOpen();
+    return native.documentHasTimestamp(this._handle) as boolean;
+  }
+
+  /**
+   * Plans (does not produce) a split of the document at outline /
+   * bookmark boundaries (#482), mirroring the core
+   * `plan_split_by_bookmarks`. Returns the planned segments.
+   */
+  planSplitByBookmarks(options: SplitByBookmarksOptions = {}): SplitSegment[] {
+    this.ensureOpen();
+    const optsJson = JSON.stringify({
+      title_prefix: options.titlePrefix ?? null,
+      ignore_case: options.ignoreCase ?? false,
+      level: options.level ?? 1,
+      include_front_matter: options.includeFrontMatter ?? true,
+    });
+    const json = native.planSplitByBookmarks(this._handle, optsJson) as string;
+    return json ? (JSON.parse(json) as SplitSegment[]) : [];
   }
 
   getPageWidth(pageIndex: number): number {
@@ -909,6 +1015,60 @@ const getPdfOxideVersion = native.getPdfOxideVersion;
 const getActiveCryptoProvider = native.getActiveCryptoProvider;
 const isFipsCryptoAvailable = native.isFipsCryptoAvailable;
 const useFipsCryptoProvider = native.useFipsCryptoProvider;
+
+// ── Runtime crypto-governance policy (#230) — process-wide, no handle ──
+/**
+ * Install the process-wide runtime crypto policy from its grammar
+ * string (`"compat"|"strict"|"fips-strict"[;…]`). Fail-closed: throws
+ * on an unparseable spec or if a policy is already set.
+ */
+const setCryptoPolicy: (spec: string) => void = native.setCryptoPolicy;
+/** The active crypto policy as its canonical grammar string. */
+const cryptoPolicy: () => string = native.cryptoPolicy;
+/** Algorithm tokens exercised so far this process (governance report). */
+const cryptoInventory: () => string[] = native.cryptoInventory;
+/** CycloneDX 1.6 Cryptographic Bill of Materials (JSON) (#230). */
+const cryptoCbom: () => string = native.cryptoCbom;
+
+/**
+ * Sign raw PDF bytes at a PAdES baseline level (ETSI EN 319 142-1) and
+ * return the signed PDF (#235). The certificate is loaded and freed
+ * within this call. For B-T/B-LT/B-LTA an `opts.tsaUrl` is required.
+ */
+function signPdfBytesPades(
+  pdfData: Buffer | Uint8Array,
+  cert: { certPem: string; keyPem: string } | { pkcs12: Buffer | Uint8Array; password: string },
+  level: PadesLevelValue,
+  opts?: PadesSignOptions
+): Buffer {
+  const certHandle =
+    'certPem' in cert
+      ? native.certificateLoadFromPem(cert.certPem, cert.keyPem)
+      : native.certificateLoadFromBytes(Buffer.from(cert.pkcs12), cert.password);
+  if (!certHandle) throw new Error('Failed to load signing certificate');
+  try {
+    const out = native.signPdfBytesPades(
+      Buffer.isBuffer(pdfData) ? pdfData : Buffer.from(pdfData),
+      certHandle,
+      level,
+      opts?.tsaUrl ?? null,
+      opts?.reason ?? null,
+      opts?.location ?? null,
+      opts?.revocation
+        ? {
+            certs: opts.revocation.certs ?? [],
+            crls: opts.revocation.crls ?? [],
+            ocsps: opts.revocation.ocsps ?? [],
+          }
+        : undefined
+    );
+    if (!out) throw new Error('signPdfBytesPades returned null');
+    return Buffer.from(out);
+  } finally {
+    native.certificateFree?.(certHandle);
+  }
+}
+
 const PdfDocument = PdfDocumentImpl as any;
 const Pdf = PdfImpl as any;
 const PdfError = PdfException;
@@ -986,6 +1146,13 @@ export {
   generateBarcodeSvg,
   generateQrCodeSvg,
   getActiveCryptoProvider,
+  // Runtime crypto-governance policy (#230)
+  setCryptoPolicy,
+  cryptoPolicy,
+  cryptoInventory,
+  cryptoCbom,
+  // PAdES baseline signing (#235)
+  signPdfBytesPades,
   getPdfOxideVersion,
   // Version info
   getVersion,

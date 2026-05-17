@@ -4712,6 +4712,11 @@ namespace PdfOxide.Internal
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
         public static partial IntPtr pdf_document_get_dss(NativeHandle doc, out int errorCode);
 
+        /// <summary>1 if the document carries a /DocTimeStamp (PAdES-B-LTA), 0 if not, -1 on error.</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_document_has_timestamp")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int pdf_document_has_timestamp(NativeHandle doc, out int errorCode);
+
         [LibraryImport(LibName, EntryPoint = "pdf_dss_cert_count")]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
         public static partial int pdf_dss_cert_count(IntPtr dss);
@@ -6353,7 +6358,12 @@ namespace PdfOxide.Internal
             double b,
             out int errorCode);
 
-        /// <summary>Standalone metadata scrub (not yet implemented; fails loud).</summary>
+        /// <summary>
+        /// Standalone document sanitization: strips /Info, the catalog XMP
+        /// /Metadata stream, document JavaScript and /Names/EmbeddedFiles
+        /// without any geometric redaction. Returns the annotation count
+        /// removed, or -1 on error.
+        /// </summary>
         [LibraryImport(LibName, EntryPoint = "pdf_redaction_scrub_metadata")]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
         public static partial int pdf_redaction_scrub_metadata(

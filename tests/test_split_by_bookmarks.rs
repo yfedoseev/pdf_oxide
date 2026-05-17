@@ -117,15 +117,18 @@ xref\n0 4\n\
 0000000052 00000 n \n\
 0000000101 00000 n \n\
 trailer<</Size 4/Root 1 0 R>>\nstartxref\n164\n%%EOF";
-    if let Ok(doc) = PdfDocument::from_bytes(no_outline.to_vec()) {
-        match pdf_oxide::split_bookmarks::plan_split_by_bookmarks(
-            &doc,
-            &SplitByBookmarksOptions::default(),
-        ) {
-            Err(Error::InvalidOperation(msg)) => {
-                assert!(msg.contains("outline"), "no-outline error: {msg}");
-            },
-            other => panic!("expected InvalidOperation for no-outline doc, got {other:?}"),
-        }
+    // The bytes are a deliberately-minimal but valid PDF: the parse
+    // must succeed, otherwise the no-outline assertion below would be
+    // silently skipped and the test would pass vacuously.
+    let doc =
+        PdfDocument::from_bytes(no_outline.to_vec()).expect("the minimal fixture PDF must parse");
+    match pdf_oxide::split_bookmarks::plan_split_by_bookmarks(
+        &doc,
+        &SplitByBookmarksOptions::default(),
+    ) {
+        Err(Error::InvalidOperation(msg)) => {
+            assert!(msg.contains("outline"), "no-outline error: {msg}");
+        },
+        other => panic!("expected InvalidOperation for no-outline doc, got {other:?}"),
     }
 }

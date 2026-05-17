@@ -21,6 +21,8 @@
 //! security-critical logic is exhaustively unit-testable in isolation and
 //! cannot itself under-redact (it makes no I/O and is not yet wired in).
 
+use std::collections::HashSet;
+
 use super::region::RegionSet;
 use crate::geometry::Rect;
 
@@ -75,6 +77,9 @@ pub struct TextPruneResult {
 pub fn prune_run(glyphs: &[Glyph], regions: &RegionSet, min_padding: f32) -> TextPruneResult {
     let mut out = TextPruneResult::default();
     let mut cur: Option<PrunedRun> = None;
+    // O(1) membership for the dedup; the Vec still carries the public
+    // first-seen order (Copilot review, PR #512 — avoids O(n²)).
+    let mut seen_codes: HashSet<(u32, u32)> = HashSet::new();
 
     for g in glyphs {
         let removed = regions.any_intersects(&g.bbox, min_padding);
@@ -85,7 +90,7 @@ pub fn prune_run(glyphs: &[Glyph], regions: &RegionSet, min_padding: f32) -> Tex
                 out.runs.push(run);
             }
             out.glyphs_removed += 1;
-            if !out.removed_codes.contains(&g.code) {
+            if seen_codes.insert(g.code) {
                 out.removed_codes.push(g.code);
             }
         } else {

@@ -343,6 +343,26 @@ namespace PdfOxide.Core
             finally { _lock.ExitReadLock(); }
         }
 
+        /// <summary>
+        /// Whether the document carries a document-scoped RFC 3161
+        /// <c>/DocTimeStamp</c> archival timestamp (PAdES-B-LTA,
+        /// ISO 32000-2:2020 §12.8.5). This is the document-level reader
+        /// signal; <see cref="Signature.PadesLevel"/> is signature-scoped
+        /// and tops out at B-LT by design.
+        /// </summary>
+        public bool HasDocumentTimestamp()
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                int r = NativeMethods.pdf_document_has_timestamp(_handle, out int err);
+                ExceptionMapper.ThrowIfError(err);
+                return r == 1;
+            }
+            finally { _lock.ExitReadLock(); }
+        }
+
         private unsafe delegate byte* DssGetter(IntPtr dss, int index, out nuint outLen, out int errorCode);
 
         private static unsafe System.Collections.Generic.IReadOnlyList<byte[]> ReadDssArray(

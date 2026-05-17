@@ -61,6 +61,16 @@ var (
 	// cgo backend but have not yet been ported to the purego backend.
 	// Build with CGO_ENABLED=1 to use them.
 	ErrNotImplementedInPurego = errors.New("pdf_oxide: not implemented in pure-Go (purego) build; rebuild with CGO_ENABLED=1")
+
+	// ErrCryptoPolicyInvalidArg is returned by SetCryptoPolicy for a
+	// null/non-UTF-8 spec (#230).
+	ErrCryptoPolicyInvalidArg = errors.New("invalid crypto policy spec (not valid UTF-8)")
+	// ErrCryptoPolicyParse is returned by SetCryptoPolicy when the spec
+	// string is rejected (fail-closed: the policy is NOT installed).
+	ErrCryptoPolicyParse = errors.New("crypto policy spec rejected (parse error)")
+	// ErrCryptoPolicyAlreadySet is returned by SetCryptoPolicy when a
+	// policy was already installed (set-once).
+	ErrCryptoPolicyAlreadySet = errors.New("crypto policy already set")
 )
 
 // Error is a structured PDF error that carries an FFI error code alongside a

@@ -140,6 +140,38 @@ All notable changes to PDFOxide are documented here.
   `/Names` → `/Dests` name tree, ISO 32000-1 §12.3.2.3 / §7.9.6),
   bounded against malformed/cyclic name trees. Plain per-page `split`
   is unchanged (backward compatible).
+- **Full idiomatic cross-binding parity for #230/#231/#235/#482** —
+  every feature is now exposed *idiomatically* in **all** supported
+  bindings (Rust, Python, C ABI, WASM, C#, Go-cgo, Go-purego, Node/TS):
+  - A new additive C ABI `pdf_document_has_timestamp(doc)` exposes the
+    document-scoped PAdES-**B-LTA** reader signal that
+    `pdf_signature_get_pades_level` (signature-scoped, ≤B-LT by design)
+    cannot report; surfaced as Python `has_document_timestamp`, WASM
+    `hasDocumentTimestamp`, C# `PdfDocument.HasDocumentTimestamp`, Go
+    `(*PdfDocument).HasDocumentTimestamp`, and Node
+    `PdfDocument.hasDocumentTimestamp` / `SignatureManager`.
+  - Python now re-exports the entire signing/PAdES surface
+    (`sign_pdf_bytes`, `sign_pdf_bytes_pades`, `Certificate`,
+    `Signature`, `PadesLevel`, `RevocationMaterial`, `Dss`) plus
+    `crypto_cbom` from the top-level `pdf_oxide` package under idiomatic
+    names (the functions were previously reachable only as
+    `py_`-prefixed symbols on the private extension module).
+  - The standalone document **sanitization** entrypoint (#231) is now a
+    first-class `SanitizeDocument()` on the C# and Go (cgo + purego)
+    `DocumentEditor` (previously the live `pdf_redaction_scrub_metadata`
+    C ABI had no managed/Go wrapper).
+  - The Go **purego** (CGO-free) backend, previously read-side only,
+    now covers crypto-governance (#230), destructive redaction +
+    sanitize (#231), PAdES signing + DSS read + B-LTA (#235), and
+    split-by-bookmarks (#482) with signatures identical to the cgo
+    backend.
+  - Node/TS gains idiomatic `signPdfBytesPades`, `PadesLevel`,
+    `PdfDocument.getDocumentSecurityStore/hasDocumentTimestamp/
+    planSplitByBookmarks`, `setCryptoPolicy/cryptoPolicy/
+    cryptoInventory/cryptoCbom`, and `SecurityManager` /
+    `SignatureManager` / `OutlineManager` methods, all with generated
+    TypeScript declarations. Behaviour and the frozen `PadesLevel`
+    integer mapping are unchanged.
 
 ### Fixed
 

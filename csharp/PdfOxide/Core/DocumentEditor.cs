@@ -762,6 +762,22 @@ namespace PdfOxide.Core
         }
 
         /// <summary>
+        /// Standalone document sanitization (no geometric redaction): strips
+        /// the /Info dictionary, the catalog XMP /Metadata stream, document
+        /// JavaScript (/OpenAction, /AA, /Names/JavaScript) and
+        /// /Names/EmbeddedFiles, hard-excluding the removed object subtrees
+        /// from the rewritten file. Returns the number of annotations removed
+        /// (issue #231).
+        /// </summary>
+        public int SanitizeDocument()
+        {
+            ThrowIfDisposed();
+            int removed = NativeMethods.pdf_redaction_scrub_metadata(_handle, out int err);
+            ExceptionMapper.ThrowIfError(err);
+            return removed;
+        }
+
+        /// <summary>
         /// Rotates all pages by <paramref name="degrees"/> (additive, not absolute).
         /// </summary>
         public void RotateAllPages(int degrees)

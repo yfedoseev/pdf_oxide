@@ -1597,9 +1597,13 @@ pub fn wasm_sign_pdf_bytes(
 #[wasm_bindgen(js_name = "PadesLevel")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum WasmPadesLevel {
+    /// B-B: signed attrs incl. the ESS signing-certificate-v2.
     BB = 0,
+    /// B-T: B-B + an RFC 3161 signature-time-stamp unsigned attr.
     BT = 1,
+    /// B-LT: B-T + a Document Security Store (DSS/VRI).
     BLt = 2,
+    /// B-LTA: B-LT + a document-scoped `/DocTimeStamp`.
     BLta = 3,
 }
 
@@ -1633,6 +1637,7 @@ pub struct WasmRevocationMaterial {
 #[cfg(feature = "signatures")]
 #[wasm_bindgen]
 impl WasmRevocationMaterial {
+    /// Create an empty revocation-material set.
     #[wasm_bindgen(constructor)]
     pub fn new() -> WasmRevocationMaterial {
         WasmRevocationMaterial::default()
@@ -1666,26 +1671,32 @@ pub struct WasmDss {
 #[cfg(feature = "signatures")]
 #[wasm_bindgen]
 impl WasmDss {
+    /// Number of DER X.509 certificates in the DSS.
     #[wasm_bindgen(getter, js_name = "certCount")]
     pub fn cert_count(&self) -> usize {
         self.dss.certificates.len()
     }
+    /// The `i`-th DER certificate, or `undefined` if out of range.
     #[wasm_bindgen(js_name = "getCert")]
     pub fn get_cert(&self, i: usize) -> Option<Vec<u8>> {
         self.dss.certificates.get(i).cloned()
     }
+    /// Number of DER CRLs in the DSS.
     #[wasm_bindgen(getter, js_name = "crlCount")]
     pub fn crl_count(&self) -> usize {
         self.dss.crls.len()
     }
+    /// The `i`-th DER CRL, or `undefined` if out of range.
     #[wasm_bindgen(js_name = "getCrl")]
     pub fn get_crl(&self, i: usize) -> Option<Vec<u8>> {
         self.dss.crls.get(i).cloned()
     }
+    /// Number of DER OCSP responses in the DSS.
     #[wasm_bindgen(getter, js_name = "ocspCount")]
     pub fn ocsp_count(&self) -> usize {
         self.dss.ocsp_responses.len()
     }
+    /// The `i`-th DER OCSP response, or `undefined` if out of range.
     #[wasm_bindgen(js_name = "getOcsp")]
     pub fn get_ocsp(&self, i: usize) -> Option<Vec<u8>> {
         self.dss.ocsp_responses.get(i).cloned()
@@ -1699,6 +1710,16 @@ impl WasmDss {
             .map(|v| v.signature_digest.clone())
             .collect()
     }
+}
+
+/// Whether `pdf_data` carries a document-scoped RFC 3161
+/// `/DocTimeStamp` archival timestamp (PAdES-B-LTA). This is the
+/// document-level reader signal; a `WasmSignature`'s `padesLevel`
+/// getter is signature-scoped and tops out at B-LT by design.
+#[cfg(feature = "signatures")]
+#[wasm_bindgen(js_name = "hasDocumentTimestamp")]
+pub fn wasm_has_document_timestamp(pdf_data: &[u8]) -> bool {
+    crate::signatures::has_document_timestamp(pdf_data)
 }
 
 /// Sign raw PDF bytes at a PAdES baseline level and return the signed

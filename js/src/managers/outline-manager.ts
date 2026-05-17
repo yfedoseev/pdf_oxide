@@ -191,4 +191,28 @@ export class OutlineManager {
     const outlines = this.getOutlines();
     return outlines.some((item) => item.pageNumber === pageNumber);
   }
+
+  /**
+   * Plans (does not produce) a split of the document at outline /
+   * bookmark boundaries (#482), mirroring the core
+   * `plan_split_by_bookmarks`. Returns the planned segments.
+   *
+   * @param options - title-prefix filter / depth / front-matter controls
+   * @returns Array of planned split segments
+   */
+  planSplitByBookmarks(options?: {
+    titlePrefix?: string;
+    ignoreCase?: boolean;
+    level?: number;
+    includeFrontMatter?: boolean;
+  }): Array<{
+    index: number;
+    start_page: number;
+    end_page: number;
+    title: string | null;
+    file_stem: string;
+    page_label: string | null;
+  }> {
+    return this._document.planSplitByBookmarks(options ?? {});
+  }
 }

@@ -7407,6 +7407,7 @@ fn pdf_oxide(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDss>()?;
     m.add_function(pyo3::wrap_pyfunction!(py_sign_pdf_bytes, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(py_sign_pdf_bytes_pades, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(py_has_document_timestamp, m)?)?;
     #[cfg(feature = "barcodes")]
     m.add_function(pyo3::wrap_pyfunction!(generate_barcode_svg, m)?)?;
     #[cfg(feature = "barcodes")]
@@ -7647,6 +7648,7 @@ fn crypto_cbom() -> String {
 ///     f.write(signed)
 /// ```
 #[pyfunction]
+#[pyo3(name = "sign_pdf_bytes")]
 #[pyo3(signature = (pdf_data, cert, reason=None, location=None))]
 pub fn py_sign_pdf_bytes<'py>(
     py: pyo3::Python<'py>,
@@ -7830,6 +7832,7 @@ impl PyDss {
 /// )
 /// ```
 #[pyfunction]
+#[pyo3(name = "sign_pdf_bytes_pades")]
 #[pyo3(signature = (pdf_data, cert, level, tsa_url=None, reason=None, location=None, revocation=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn py_sign_pdf_bytes_pades<'py>(
@@ -7896,5 +7899,29 @@ pub fn py_sign_pdf_bytes_pades<'py>(
         Err(pyo3::exceptions::PyNotImplementedError::new_err(
             "sign_pdf_bytes_pades(): pdf_oxide was built without --features signatures",
         ))
+    }
+}
+
+/// Whether `pdf_data` carries a document-scoped RFC 3161
+/// `/DocTimeStamp` archival timestamp (PAdES-B-LTA). This is the
+/// document-level reader signal; `Signature.pades_level` is
+/// signature-scoped and tops out at B-LT by design.
+///
+/// ```python
+/// from pdf_oxide import has_document_timestamp
+/// with open("ltv.pdf", "rb") as f:
+///     is_lta = has_document_timestamp(f.read())
+/// ```
+#[pyfunction]
+#[pyo3(name = "has_document_timestamp")]
+pub fn py_has_document_timestamp(pdf_data: &Bound<'_, PyBytes>) -> bool {
+    #[cfg(feature = "signatures")]
+    {
+        crate::signatures::has_document_timestamp(pdf_data.as_bytes())
+    }
+    #[cfg(not(feature = "signatures"))]
+    {
+        let _ = pdf_data;
+        false
     }
 }

@@ -295,16 +295,20 @@ export class EditingManager extends EventEmitter {
    * do **not** exist in `src/ffi.rs`. The previous fall-throughs
    * silently no-op'd / returned 0 / emitted a success event — a
    * security-critical "redaction" API pretending to succeed while
-   * removing nothing. Until destructive redaction lands (#231) these
-   * operations must refuse rather than give a false sense of safety.
+   * removing nothing. Destructive redaction is implemented as of
+   * v0.3.50 (#231); reaching here now means the loaded native addon is
+   * missing/older than the bindings and does not export the
+   * `pdf_redaction_*` symbols — these operations must refuse rather
+   * than give a false sense of safety.
    */
   private redactionUnavailable(op: string): never {
     throw new PdfException(
       '5000',
-      `Destructive redaction is unavailable in this build: '${op}' requires ` +
-        `native redaction support that is not yet implemented (tracked in ` +
-        `issue #231). Refusing to silently no-op a security-critical ` +
-        `operation.`
+      `Destructive redaction is unavailable: '${op}' requires the native ` +
+        `pdf_redaction_* symbols, which the loaded pdf-oxide addon does not ` +
+        `export. The native module is missing or older than these bindings — ` +
+        `rebuild/upgrade the native addon to match. Refusing to silently ` +
+        `no-op a security-critical operation.`
     );
   }
 

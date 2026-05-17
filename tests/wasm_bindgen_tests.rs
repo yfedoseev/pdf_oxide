@@ -1012,3 +1012,13 @@ fn fluent_page_streaming_table_push_and_finish() {
         "streaming-table headers missing from extracted text: {text:?}",
     );
 }
+
+// v0.3.50 parity (#235): the document-scoped PAdES-B-LTA reader signal
+// is exposed to WASM as `hasDocumentTimestamp`. A freshly-built PDF has
+// no /DocTimeStamp, so the binding must return `false` (not throw).
+#[cfg(feature = "signatures")]
+#[wasm_bindgen_test]
+fn test_has_document_timestamp_plain_pdf_is_false() {
+    let bytes = make_text_pdf("plain document, no archival timestamp");
+    assert!(!pdf_oxide::wasm::wasm_has_document_timestamp(&bytes));
+}
