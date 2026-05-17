@@ -4682,6 +4682,63 @@ namespace PdfOxide.Internal
             string? reason, string? location,
             out nuint outLen, out int errorCode);
 
+        // --- PAdES LTV (#235) ---
+
+        /// <summary>Signs raw PDF bytes at a PAdES baseline level. Free the result with FreeBytes.</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_sign_bytes_pades", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static unsafe partial byte* PdfSignBytesPades(
+            byte* pdf, nuint pdfLen,
+            IntPtr certHandle,
+            int level,
+            string? tsaUrl, string? reason, string? location,
+            byte** certs, nuint* certLens, nuint nCerts,
+            byte** crls, nuint* crlLens, nuint nCrls,
+            byte** ocsps, nuint* ocspLens, nuint nOcsps,
+            out nuint outLen, out int errorCode);
+
+        /// <summary>Classifies a signature's PAdES level (B-B/B-T) from its CMS attributes.</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_signature_get_pades_level")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int pdf_signature_get_pades_level(NativeHandle sig, out int errorCode);
+
+        /// <summary>Reads the document /DSS into an opaque handle (IntPtr.Zero ⇒ no DSS). Free with pdf_dss_free.</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_document_get_dss")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr pdf_document_get_dss(NativeHandle doc, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_dss_cert_count")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int pdf_dss_cert_count(IntPtr dss);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_dss_crl_count")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int pdf_dss_crl_count(IntPtr dss);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_dss_ocsp_count")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int pdf_dss_ocsp_count(IntPtr dss);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_dss_vri_count")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int pdf_dss_vri_count(IntPtr dss);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_dss_get_cert")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static unsafe partial byte* pdf_dss_get_cert(IntPtr dss, int index, out nuint outLen, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_dss_get_crl")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static unsafe partial byte* pdf_dss_get_crl(IntPtr dss, int index, out nuint outLen, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_dss_get_ocsp")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static unsafe partial byte* pdf_dss_get_ocsp(IntPtr dss, int index, out nuint outLen, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_dss_free")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial void pdf_dss_free(IntPtr dss);
+
         /// <summary>
         /// Gets the common name (CN) from a certificate handle.
         /// </summary>

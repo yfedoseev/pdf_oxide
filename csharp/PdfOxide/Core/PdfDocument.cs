@@ -310,6 +310,69 @@ namespace PdfOxide.Core
         }
 
         /// <summary>
+        /// Reads the document's Document Security Store (<c>/DSS</c>,
+        /// ISO 32000-2:2020 §12.8.4.3), or <c>null</c> when the PDF has
+        /// no DSS (not an error). Mirrors Rust <c>signatures::read_dss</c>.
+        /// </summary>
+        public unsafe DocumentSecurityStore? GetDss()
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                IntPtr dss = NativeMethods.pdf_document_get_dss(_handle, out int err);
+                ExceptionMapper.ThrowIfError(err);
+                if (dss == IntPtr.Zero)
+                    return null; // no /DSS present
+                try
+                {
+                    var certs = ReadDssArray(
+                        dss, NativeMethods.pdf_dss_cert_count, NativeMethods.pdf_dss_get_cert);
+                    var crls = ReadDssArray(
+                        dss, NativeMethods.pdf_dss_crl_count, NativeMethods.pdf_dss_get_crl);
+                    var ocsps = ReadDssArray(
+                        dss, NativeMethods.pdf_dss_ocsp_count, NativeMethods.pdf_dss_get_ocsp);
+                    int vri = NativeMethods.pdf_dss_vri_count(dss);
+                    return new DocumentSecurityStore(certs, crls, ocsps, vri < 0 ? 0 : vri);
+                }
+                finally
+                {
+                    NativeMethods.pdf_dss_free(dss);
+                }
+            }
+            finally { _lock.ExitReadLock(); }
+        }
+
+        private unsafe delegate byte* DssGetter(IntPtr dss, int index, out nuint outLen, out int errorCode);
+
+        private static unsafe System.Collections.Generic.IReadOnlyList<byte[]> ReadDssArray(
+            IntPtr dss, Func<IntPtr, int> count, DssGetter get)
+        {
+            int n = count(dss);
+            if (n <= 0)
+                return Array.Empty<byte[]>();
+            var list = new System.Collections.Generic.List<byte[]>(n);
+            for (int i = 0; i < n; i++)
+            {
+                byte* p = get(dss, i, out nuint len, out int ec);
+                ExceptionMapper.ThrowIfError(ec);
+                if (p == null)
+                    continue;
+                try
+                {
+                    var blob = new byte[(int)len];
+                    Marshal.Copy((IntPtr)p, blob, 0, (int)len);
+                    list.Add(blob);
+                }
+                finally
+                {
+                    NativeMethods.FreeBytes((IntPtr)p);
+                }
+            }
+            return list;
+        }
+
+        /// <summary>
         /// Gets a value indicating whether the document has a structure tree (Tagged PDF).
         /// </summary>
         /// <value>True if the document has a structure tree, false otherwise.</value>

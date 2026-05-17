@@ -181,6 +181,19 @@ extern void pdf_signature_free(void* handle);
 extern void pdf_certificate_free(void* handle);
 extern uint8_t* pdf_sign_bytes(const uint8_t* pdf_data, size_t pdf_len, const void* certificate_handle, const char* reason, const char* location, size_t* out_len, int* error_code);
 
+// PAdES LTV FFI declarations (#235)
+extern uint8_t* pdf_sign_bytes_pades(const uint8_t* pdf, size_t pdf_len, const void* cert_handle, int32_t level, const char* tsa_url, const char* reason, const char* location, const uint8_t* const* certs, const size_t* cert_lens, size_t n_certs, const uint8_t* const* crls, const size_t* crl_lens, size_t n_crls, const uint8_t* const* ocsps, const size_t* ocsp_lens, size_t n_ocsps, size_t* out_len, int* error_code);
+extern int32_t pdf_signature_get_pades_level(const void* sig_handle, int* error_code);
+extern void* pdf_document_get_dss(const void* doc_handle, int* error_code);
+extern int32_t pdf_dss_cert_count(const void* dss);
+extern int32_t pdf_dss_crl_count(const void* dss);
+extern int32_t pdf_dss_ocsp_count(const void* dss);
+extern int32_t pdf_dss_vri_count(const void* dss);
+extern uint8_t* pdf_dss_get_cert(const void* dss, int32_t index, size_t* out_len, int* error_code);
+extern uint8_t* pdf_dss_get_crl(const void* dss, int32_t index, size_t* out_len, int* error_code);
+extern uint8_t* pdf_dss_get_ocsp(const void* dss, int32_t index, size_t* out_len, int* error_code);
+extern void pdf_dss_free(void* dss);
+
 // Rendering FFI declarations (21 functions)
 extern int32_t pdf_estimate_render_time(const void* document_handle, int32_t page_index, int* error_code);
 extern void* pdf_create_renderer(int32_t dpi, int32_t format, int32_t quality, bool anti_alias, int* error_code);
@@ -3682,6 +3695,240 @@ func SignPdfBytes(pdfData []byte, cert *Certificate, reason, location string) ([
 	result := C.GoBytes(unsafe.Pointer(out), C.int(outLen))
 	C.free_bytes(unsafe.Pointer(out))
 	return result, nil
+}
+
+// ─── PAdES LTV (#235) ───────────────────────────────────────────────────────
+
+// PAdESLevel is the PAdES baseline level. The integer mapping
+// (PAdESBB=0, PAdESBT=1, PAdESBLt=2, PAdESBLta=3) is frozen and shared
+// with the C ABI and every binding — never renumber.
+type PAdESLevel int32
+
+const (
+	// PAdESBB is CAdES-B-B (signed attrs incl. ESS signing-certificate-v2).
+	PAdESBB PAdESLevel = 0
+	// PAdESBT is B-B + an RFC 3161 signature-time-stamp unsigned attr.
+	PAdESBT PAdESLevel = 1
+	// PAdESBLt is B-T + a Document Security Store (DSS/VRI).
+	PAdESBLt PAdESLevel = 2
+	// PAdESBLta is reserved; producing it is not supported in this release.
+	PAdESBLta PAdESLevel = 3
+)
+
+// RevocationMaterial is the offline B-LT validation set: DER X.509
+// certificates, CRLs, and OCSP responses. Mirrors Rust
+// signatures::RevocationMaterial.
+type RevocationMaterial struct {
+	Certs [][]byte
+	CRLs  [][]byte
+	OCSPs [][]byte
+}
+
+// PAdESOptions configures SignPdfBytesPAdES. TSAURL is required for
+// Level >= PAdESBT (the RFC 3161 source; needs the cgo build — purego
+// has no signing). Reason/Location are optional. Revocation supplies
+// the B-LT DSS material.
+type PAdESOptions struct {
+	Level      PAdESLevel
+	TSAURL     string
+	Reason     string
+	Location   string
+	Revocation *RevocationMaterial
+}
+
+// cBlobArray copies blobs into C memory as parallel (ptrs, lens, n)
+// arrays for the *_pades FFI; the returned func frees everything.
+// Empty input ⇒ (nil, nil, 0, no-op).
+func cBlobArray(blobs [][]byte) (**C.uint8_t, *C.size_t, C.size_t, func()) {
+	if len(blobs) == 0 {
+		return nil, nil, 0, func() {}
+	}
+	ptrs := make([]*C.uint8_t, len(blobs))
+	lens := make([]C.size_t, len(blobs))
+	for i, b := range blobs {
+		if len(b) == 0 {
+			ptrs[i] = nil
+			lens[i] = 0
+			continue
+		}
+		ptrs[i] = (*C.uint8_t)(C.CBytes(b))
+		lens[i] = C.size_t(len(b))
+	}
+	free := func() {
+		for _, p := range ptrs {
+			if p != nil {
+				C.free(unsafe.Pointer(p))
+			}
+		}
+	}
+	return (**C.uint8_t)(unsafe.Pointer(&ptrs[0])), (*C.size_t)(unsafe.Pointer(&lens[0])), C.size_t(len(blobs)), free
+}
+
+// SignPdfBytesPAdES signs pdfData at a PAdES baseline level and returns
+// the signed PDF. The Certificate must carry a private key. PAdESBLta
+// is reserved (returns an error). For PAdESBT/PAdESBLt a TSAURL is
+// required.
+func SignPdfBytesPAdES(pdfData []byte, cert *Certificate, opts PAdESOptions) ([]byte, error) {
+	if cert == nil || cert.handle == nil {
+		return nil, ErrInternal
+	}
+	if len(pdfData) == 0 {
+		return nil, ErrEmptyContent
+	}
+	var tsaPtr, reasonPtr, locationPtr *C.char
+	if opts.TSAURL != "" {
+		cs := C.CString(opts.TSAURL)
+		defer C.free(unsafe.Pointer(cs))
+		tsaPtr = cs
+	}
+	if opts.Reason != "" {
+		cs := C.CString(opts.Reason)
+		defer C.free(unsafe.Pointer(cs))
+		reasonPtr = cs
+	}
+	if opts.Location != "" {
+		cs := C.CString(opts.Location)
+		defer C.free(unsafe.Pointer(cs))
+		locationPtr = cs
+	}
+
+	var certsP, crlsP, ocspsP **C.uint8_t
+	var certsL, crlsL, ocspsL *C.size_t
+	var nCerts, nCRLs, nOCSPs C.size_t
+	if r := opts.Revocation; r != nil {
+		var fc, fr, fo func()
+		certsP, certsL, nCerts, fc = cBlobArray(r.Certs)
+		crlsP, crlsL, nCRLs, fr = cBlobArray(r.CRLs)
+		ocspsP, ocspsL, nOCSPs, fo = cBlobArray(r.OCSPs)
+		defer fc()
+		defer fr()
+		defer fo()
+	}
+
+	var outLen C.size_t
+	var errorCode C.int
+	out := C.pdf_sign_bytes_pades(
+		(*C.uint8_t)(unsafe.Pointer(&pdfData[0])),
+		C.size_t(len(pdfData)),
+		cert.handle,
+		C.int32_t(opts.Level),
+		tsaPtr,
+		reasonPtr,
+		locationPtr,
+		certsP, certsL, nCerts,
+		crlsP, crlsL, nCRLs,
+		ocspsP, ocspsL, nOCSPs,
+		&outLen,
+		&errorCode,
+	)
+	if errorCode != 0 {
+		return nil, ffiError(errorCode)
+	}
+	if out == nil {
+		return nil, ErrInternal
+	}
+	result := C.GoBytes(unsafe.Pointer(out), C.int(outLen))
+	C.free_bytes(unsafe.Pointer(out))
+	return result, nil
+}
+
+// PAdESLevel classifies this signature from its CMS attributes alone
+// (PAdESBB vs PAdESBT). PAdESBLt additionally needs the document /DSS —
+// read it via (*PdfDocument).DSS and re-classify there.
+func (s *Signature) PAdESLevel() (PAdESLevel, error) {
+	if s == nil || s.handle == nil {
+		return PAdESBB, ErrInternal
+	}
+	var errorCode C.int
+	lvl := C.pdf_signature_get_pades_level(s.handle, &errorCode)
+	if errorCode != 0 {
+		return PAdESBB, ffiError(errorCode)
+	}
+	return PAdESLevel(lvl), nil
+}
+
+// DSS is a parsed Document Security Store (/DSS, ISO 32000-2 §12.8.4.3).
+type DSS struct {
+	// Certs/CRLs/OCSPs are the document-level DER blobs; VRICount is
+	// the number of per-signature /VRI entries.
+	Certs    [][]byte
+	CRLs     [][]byte
+	OCSPs    [][]byte
+	VRICount int
+}
+
+// DSS reads the document's Document Security Store, or nil if the PDF
+// has no /DSS (not an error). Mirrors Rust signatures::read_dss.
+func (doc *PdfDocument) DSS() (*DSS, error) {
+	if err := doc.acquireRead(); err != nil {
+		return nil, err
+	}
+	defer doc.mu.Unlock()
+	var errorCode C.int
+	h := C.pdf_document_get_dss(doc.handle, &errorCode)
+	if errorCode != 0 {
+		return nil, ffiError(errorCode)
+	}
+	if h == nil {
+		return nil, nil // no DSS present
+	}
+	defer C.pdf_dss_free(h)
+
+	read := func(
+		count func(unsafe.Pointer) C.int32_t,
+		get func(unsafe.Pointer, C.int32_t, *C.size_t, *C.int) *C.uint8_t,
+	) ([][]byte, error) {
+		n := int(count(h))
+		if n <= 0 {
+			return nil, nil
+		}
+		blobs := make([][]byte, 0, n)
+		for i := 0; i < n; i++ {
+			var l C.size_t
+			var ec C.int
+			p := get(h, C.int32_t(i), &l, &ec)
+			if ec != 0 {
+				return nil, ffiError(ec)
+			}
+			if p == nil {
+				continue
+			}
+			blobs = append(blobs, C.GoBytes(unsafe.Pointer(p), C.int(l)))
+			C.free_bytes(unsafe.Pointer(p))
+		}
+		return blobs, nil
+	}
+
+	certs, err := read(
+		func(d unsafe.Pointer) C.int32_t { return C.pdf_dss_cert_count(d) },
+		func(d unsafe.Pointer, i C.int32_t, l *C.size_t, ec *C.int) *C.uint8_t {
+			return C.pdf_dss_get_cert(d, i, l, ec)
+		})
+	if err != nil {
+		return nil, err
+	}
+	crls, err := read(
+		func(d unsafe.Pointer) C.int32_t { return C.pdf_dss_crl_count(d) },
+		func(d unsafe.Pointer, i C.int32_t, l *C.size_t, ec *C.int) *C.uint8_t {
+			return C.pdf_dss_get_crl(d, i, l, ec)
+		})
+	if err != nil {
+		return nil, err
+	}
+	ocsps, err := read(
+		func(d unsafe.Pointer) C.int32_t { return C.pdf_dss_ocsp_count(d) },
+		func(d unsafe.Pointer, i C.int32_t, l *C.size_t, ec *C.int) *C.uint8_t {
+			return C.pdf_dss_get_ocsp(d, i, l, ec)
+		})
+	if err != nil {
+		return nil, err
+	}
+	return &DSS{
+		Certs:    certs,
+		CRLs:     crls,
+		OCSPs:    ocsps,
+		VRICount: int(C.pdf_dss_vri_count(h)),
+	}, nil
 }
 
 // certReadString is the shared body for Subject / Issuer / Serial — each FFI

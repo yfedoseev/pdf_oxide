@@ -57,8 +57,42 @@ pub fn sign_pdf_bytes(
     credentials: &SigningCredentials,
     opts: SignOptions,
 ) -> Result<Vec<u8>> {
+    // Legacy adbe.pkcs7.detached path — CMS via PdfSigner::sign,
+    // byte-for-byte unchanged from prior releases.
     let signer = PdfSigner::new(credentials.clone(), opts);
+    sign_pdf_bytes_with(pdf_data, signer, &|s, sb| s.sign(sb))
+}
 
+/// Thin wrapper over [`sign_pdf_bytes_with_cms`] that discards the CMS
+/// blob — the byte-for-byte-unchanged legacy entry point.
+fn sign_pdf_bytes_with(
+    pdf_data: &[u8],
+    signer: PdfSigner,
+    cms_fn: &dyn Fn(&PdfSigner, &[u8]) -> Result<Vec<u8>>,
+) -> Result<Vec<u8>> {
+    sign_pdf_bytes_with_cms(pdf_data, signer, cms_fn).map(|(out, _cms)| out)
+}
+
+/// The shared byte-range / incremental-update assembler. The CMS blob
+/// is produced by `cms_fn` — the *only* variation point between the
+/// legacy and PAdES paths; the byte-range math is identical (and must
+/// stay so — #235 plan §2.3 "do not modify the byte-range logic").
+///
+/// Returns `(signed_pdf, contents_string)`. `contents_string` is the
+/// exact byte string stored in `/Contents` (the CMS DER **plus the
+/// zero-padding** that fills the fixed-width placeholder) — i.e. the
+/// literal value a reader's PDF parser hex-decodes. The B-LT path keys
+/// its DSS `/VRI` off `SHA-1(contents_string)`; computing it here from
+/// the same bytes the reader will (`SignatureInfo::contents`, used by
+/// `classify_pades_level`) makes the write-side and read-side keys
+/// identical *by construction* — and avoids `enumerate_signatures`,
+/// which only surfaces AcroForm-linked fields, not the bare
+/// `/Type /Sig` object this minimal incremental update emits.
+fn sign_pdf_bytes_with_cms(
+    pdf_data: &[u8],
+    signer: PdfSigner,
+    cms_fn: &dyn Fn(&PdfSigner, &[u8]) -> Result<Vec<u8>>,
+) -> Result<(Vec<u8>, Vec<u8>)> {
     // ── 1. Extract the minimum structural info from the existing PDF ──────
     let prev_startxref = scan_startxref(pdf_data)
         .ok_or_else(|| Error::InvalidPdf("cannot find startxref in existing PDF".into()))?;
@@ -129,12 +163,88 @@ pub fn sign_pdf_bytes(
     // ── 7. Extract signed bytes and sign ─────────────────────────────────
     let signed_bytes =
         super::byterange::ByteRangeCalculator::extract_signed_bytes(&output, &byte_range)?;
-    let cms_blob = signer.sign(&signed_bytes)?;
+    let cms_blob = cms_fn(&signer, &signed_bytes)?;
 
     // ── 8. Insert signature ───────────────────────────────────────────────
     signer.insert_signature(&mut output, contents_abs, &cms_blob)?;
 
-    Ok(output)
+    // The `/Contents` *value* a reader parses is the CMS DER followed by
+    // the zero-padding that fills the fixed-width hex placeholder
+    // (`insert_signature` pads with `'0'` hex chars ⇒ `0x00` bytes).
+    // `(placeholder_size - 2) / 2` is that decoded length in bytes
+    // (`< … >` minus the two angle brackets, two hex chars per byte).
+    let contents_len = (signer.placeholder_size() - 2) / 2;
+    let mut contents_string = cms_blob;
+    contents_string.resize(contents_len, 0);
+
+    Ok((output, contents_string))
+}
+
+/// Sign a PDF at a PAdES baseline level (#235 TODO #12) — the
+/// level-driven public entry point that ties the pieces together
+/// (ETSI EN 319 142-1 §5). Reuses the proven byte-range assembler
+/// verbatim; B-B/B-T differ only in the CMS builder, B-LT adds the DSS
+/// as a *second* incremental update so the B-T signature byte-range is
+/// untouched (feature plan §4.1).
+///
+/// `timestamper` (required for `BT`/`BLt`) returns the RFC 3161 token
+/// over the signature value — an offline pre-fetched token or a live
+/// TSA call by the caller. `material` is the DSS validation set for
+/// `BLt`. `BLta` is reserved (returns [`Error::Unsupported`]).
+///
+/// # Errors
+/// - [`Error::Unsupported`] — `BLta` (planned later), or `BT`/`BLt`
+///   without a `timestamper`.
+/// - [`Error::InvalidPdf`] — unparseable PDF / signature.
+#[allow(clippy::too_many_arguments)]
+pub fn sign_pdf_bytes_pades(
+    pdf_data: &[u8],
+    credentials: &SigningCredentials,
+    opts: SignOptions,
+    level: crate::signatures::PadesLevel,
+    timestamper: Option<&dyn Fn(&[u8]) -> Result<Vec<u8>>>,
+    material: &crate::signatures::RevocationMaterial,
+) -> Result<Vec<u8>> {
+    use crate::signatures::PadesLevel;
+
+    if level == PadesLevel::BLta {
+        return Err(Error::Unsupported("PAdES-B-LTA is planned for a later release".into()));
+    }
+    if matches!(level, PadesLevel::BT | PadesLevel::BLt) && timestamper.is_none() {
+        return Err(Error::Unsupported(
+            "PAdES-B-T/B-LT require a timestamper (RFC 3161 token source)".into(),
+        ));
+    }
+
+    let signer = PdfSigner::new(credentials.clone(), opts);
+    let (signed, contents_string) = match level {
+        PadesLevel::BB => sign_pdf_bytes_with_cms(pdf_data, signer, &|s, sb| s.sign_pades(sb)),
+        PadesLevel::BT | PadesLevel::BLt => {
+            let ts = timestamper.expect("checked above");
+            sign_pdf_bytes_with_cms(pdf_data, signer, &|s, sb| s.sign_pades_t(sb, ts))
+        },
+        PadesLevel::BLta => unreachable!("handled above"),
+    }?;
+
+    if level != PadesLevel::BLt {
+        return Ok(signed);
+    }
+
+    // B-LT: append the DSS as a SECOND incremental update keyed by the
+    // signature's uppercase-hex SHA-1(/Contents) (the B-T byte range is
+    // a strict prefix and stays valid — feature plan §4.1 / I1/I2). The
+    // VRI key is computed over the *padded* /Contents byte string the
+    // assembler returned — byte-identical to what a reader parses into
+    // `SignatureInfo::contents` and feeds to `classify_pades_level`, so
+    // the write-side and read-side keys match by construction. (Using
+    // `enumerate_signatures` here would yield an empty VRI set —
+    // silently degrading B-LT — for the bare `/Type /Sig` object this
+    // path emits, since it only surfaces AcroForm-linked fields.)
+    let doc = crate::document::PdfDocument::from_bytes(signed.clone())?;
+    let keys: Vec<String> = crate::signatures::pades::vri_key(&contents_string)
+        .into_iter()
+        .collect();
+    crate::signatures::pades::append_dss(&signed, &doc, material, &keys)
 }
 
 // ─── Text builders ───────────────────────────────────────────────────────────
@@ -444,6 +554,192 @@ mod tests {
     }
 
     // ── Finding 3 regression: scan_root_ref must ignore /Root in body ────────
+
+    /// Parse + verify the appended signature exactly as a reader would
+    /// (mirrors `test_sign_pdf_bytes_roundtrip`'s extraction). Returns
+    /// `(verification, decoded_cms, contents_string)`:
+    /// - `decoded_cms` — the CMS trimmed to its DER length, for
+    ///   inspecting signed/unsigned attributes (the OID bytes are
+    ///   hex-encoded in `/Contents`, never raw in the file).
+    /// - `contents_string` — the **full** `/Contents` value incl. the
+    ///   zero-padding (every hex pair decoded), i.e. byte-identical to
+    ///   what a PDF parser stores in `SignatureInfo::contents` and what
+    ///   `classify_pades_level` / `vri_key` hash. Lets the VRI key be
+    ///   checked for write/read parity without an AcroForm.
+    fn verify_appended_signature(
+        orig_len: usize,
+        signed: &[u8],
+    ) -> (SignerVerify, Vec<u8>, Vec<u8>) {
+        // Byte-oriented scan: a B-LT file appends *binary* DSS streams
+        // after the signature, so the tail is not valid UTF-8 — only
+        // the small ASCII `/ByteRange [...]` and `/Contents <...>` runs
+        // are. `windows().position()` finds the first match, i.e. the
+        // signature appended at `orig_len` (before any DSS increment).
+        let tail = &signed[orig_len..];
+        let br = tail
+            .windows(12)
+            .position(|w| w == b"/ByteRange [")
+            .expect("/ByteRange");
+        let after = &tail[br + 12..];
+        let end = after.iter().position(|&b| b == b']').unwrap();
+        let n: Vec<i64> = std::str::from_utf8(&after[..end])
+            .unwrap()
+            .split_whitespace()
+            .map(|s| s.parse().unwrap())
+            .collect();
+        let byte_range = [n[0], n[1], n[2], n[3]];
+        let ct = tail
+            .windows(11)
+            .position(|w| w == b"/Contents <")
+            .expect("/Contents");
+        let after_ct = &tail[ct + 11..];
+        let close = after_ct.iter().position(|&b| b == b'>').unwrap();
+        let hex_str = std::str::from_utf8(&after_ct[..close]).unwrap();
+        let cms_len = der_sequence_len_from_hex(hex_str);
+        let cms = hex_decode(&hex_str[..cms_len * 2]);
+        let contents_string = hex_decode(hex_str);
+        let content = ByteRangeCalculator::extract_signed_bytes(signed, &byte_range).unwrap();
+        let v = verify_signer_detached(&cms, &content).expect("verify must not error");
+        (v, cms, contents_string)
+    }
+
+    #[test]
+    #[cfg(feature = "signatures")]
+    fn test_sign_pdf_bytes_pades_levels() {
+        use crate::signatures::pades::vri_key;
+        use crate::signatures::{
+            classify_pades_level, read_dss, sign_pdf_bytes_pades, PadesLevel, RevocationMaterial,
+            SignatureInfo,
+        };
+
+        // Build a `SignatureInfo` carrying just the parsed `/Contents`
+        // (all `classify_pades_level` needs) — AcroForm-independent, so
+        // it works on the bare `/Type /Sig` object `sign_pdf_bytes`
+        // emits (which `enumerate_signatures` deliberately won't surface).
+        let info_with = |contents: Vec<u8>| SignatureInfo {
+            contents: Some(contents),
+            ..Default::default()
+        };
+
+        let pdf = minimal_pdf();
+        let creds = load_test_creds();
+        let mk_opts = || SignOptions {
+            estimated_size: 4096,
+            ..Default::default()
+        };
+        let ts: &dyn Fn(&[u8]) -> Result<Vec<u8>> =
+            &|_sig| Ok(vec![0x30, 0x07, 0x02, 0x01, 0x01, 0x04, 0x02, b't', b's']);
+
+        // B-B: signs, verifies, and carries the ESS attribute.
+        let bb = sign_pdf_bytes_pades(
+            &pdf,
+            &creds,
+            mk_opts(),
+            PadesLevel::BB,
+            None,
+            &RevocationMaterial::default(),
+        )
+        .expect("B-B sign");
+        let (v_bb, cms_bb, contents_bb) = verify_appended_signature(pdf.len(), &bb);
+        assert_eq!(v_bb, SignerVerify::Valid);
+        // id-aa-signingCertificateV2 = 1.2.840.113549.1.9.16.2.47.
+        const ESS_OID: &[u8] = &[
+            0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x10, 0x02, 0x2F,
+        ];
+        // The ESS OID lives in the *decoded* CMS (hex-encoded in the PDF).
+        assert!(
+            cms_bb.windows(ESS_OID.len()).any(|w| w == ESS_OID),
+            "B-B CMS carries the ESS signing-certificate-v2 attribute"
+        );
+        // No timestamp attr ⇒ classifies as plain B-B.
+        assert_eq!(classify_pades_level(&info_with(contents_bb), None), PadesLevel::BB);
+
+        // B-T without a timestamper → fail-closed Unsupported.
+        assert!(matches!(
+            sign_pdf_bytes_pades(
+                &pdf,
+                &creds,
+                mk_opts(),
+                PadesLevel::BT,
+                None,
+                &RevocationMaterial::default()
+            ),
+            Err(Error::Unsupported(_))
+        ));
+
+        // B-T: signs with the timestamp attr, still verifies, classifies BT.
+        let bt = sign_pdf_bytes_pades(
+            &pdf,
+            &creds,
+            mk_opts(),
+            PadesLevel::BT,
+            Some(ts),
+            &RevocationMaterial::default(),
+        )
+        .expect("B-T sign");
+        let (v_bt, cms_bt, contents_bt) = verify_appended_signature(pdf.len(), &bt);
+        assert_eq!(v_bt, SignerVerify::Valid);
+        // id-aa-signatureTimeStampToken = 1.2.840.113549.1.9.16.2.14 —
+        // the B-T unsigned attr must be spliced into the SignerInfo.
+        const TS_OID: &[u8] = &[
+            0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x10, 0x02, 0x0E,
+        ];
+        assert!(
+            cms_bt.windows(TS_OID.len()).any(|w| w == TS_OID),
+            "B-T CMS carries the signature-time-stamp unsigned attribute"
+        );
+        // The timestamp attr present (no DSS) ⇒ classifies as B-T.
+        assert_eq!(classify_pades_level(&info_with(contents_bt), None), PadesLevel::BT);
+
+        // B-LT: B-T + a DSS appended as a 2nd incremental update.
+        let material = RevocationMaterial {
+            certificates: vec![creds.certificate.clone()],
+            ..RevocationMaterial::default()
+        };
+        let blt =
+            sign_pdf_bytes_pades(&pdf, &creds, mk_opts(), PadesLevel::BLt, Some(ts), &material)
+                .expect("B-LT sign");
+        // The DSS is an append-only 2nd incremental update (I2): the
+        // B-T signature's own /ByteRange self-delimits the bytes it
+        // signed (the DSS append falls outside it), so the signature
+        // still verifies within the full B-LT file — I1. (Slicing to
+        // `bt.len()` would be wrong: `bt` and `blt` are separate sign
+        // calls whose `/M` signing time differs byte-for-byte.)
+        assert!(blt.len() > bt.len());
+        let (v_blt, _cms_blt, contents_blt) = verify_appended_signature(pdf.len(), &blt);
+        assert_eq!(
+            v_blt,
+            SignerVerify::Valid,
+            "I1: the B-T signature still verifies in the full B-LT file"
+        );
+        let doc_blt = crate::document::PdfDocument::from_bytes(blt).unwrap();
+        let dss = read_dss(&doc_blt)
+            .expect("read_dss ok")
+            .expect("DSS present after B-LT");
+        assert_eq!(dss.certificates, vec![creds.certificate.clone()]);
+        // Write/read VRI-key parity: the DSS must carry a /VRI entry
+        // keyed by SHA-1 of the *exact* /Contents bytes a reader parses
+        // — proving the write-side key (computed in `sign_pdf_bytes_pades`
+        // over the padded contents) equals the read-side key.
+        let key = vri_key(&contents_blt).expect("provider supports SHA-1");
+        assert!(
+            dss.vri_for(&key).is_some(),
+            "DSS /VRI is keyed by SHA-1(/Contents) — write/read parity"
+        );
+        // …and the public read API agrees: timestamp attr + matching
+        // VRI ⇒ B-LT.
+        assert_eq!(
+            classify_pades_level(&info_with(contents_blt), Some(&dss)),
+            PadesLevel::BLt,
+            "signature classifies as B-LT with the DSS+VRI present"
+        );
+
+        // B-LTA is reserved.
+        assert!(matches!(
+            sign_pdf_bytes_pades(&pdf, &creds, mk_opts(), PadesLevel::BLta, Some(ts), &material),
+            Err(Error::Unsupported(_))
+        ));
+    }
 
     #[test]
     fn test_scan_root_ref_ignores_body_occurrence() {

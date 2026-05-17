@@ -173,6 +173,22 @@ impl PyPdfDocument {
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to count signatures: {}", e)))
     }
 
+    /// The document's Document Security Store (`/DSS`) as a :class:`Dss`,
+    /// or ``None`` if the PDF has no DSS. Mirrors Rust
+    /// `signatures::read_dss`.
+    fn dss(&self) -> PyResult<Option<PyDss>> {
+        #[cfg(feature = "signatures")]
+        {
+            crate::signatures::read_dss(&self.inner)
+                .map(|opt| opt.map(|dss| PyDss { dss }))
+                .map_err(|e| PyRuntimeError::new_err(format!("Failed to read DSS: {}", e)))
+        }
+        #[cfg(not(feature = "signatures"))]
+        {
+            Ok(None)
+        }
+    }
+
     /// Extract text from a page.
     #[pyo3(signature = (page, region=None))]
     fn extract_text(
@@ -7192,6 +7208,21 @@ impl PySignature {
         self.info.covers_whole_document
     }
 
+    /// PAdES baseline level from this signature's CMS attributes alone
+    /// (`B_B` vs `B_T`). `B_LT` additionally needs the document `/DSS`
+    /// — combine with :meth:`PdfDocument.dss` and re-classify there.
+    #[getter]
+    fn pades_level(&self) -> PyPadesLevel {
+        #[cfg(feature = "signatures")]
+        {
+            PyPadesLevel::from_core(crate::signatures::classify_pades_level(&self.info, None))
+        }
+        #[cfg(not(feature = "signatures"))]
+        {
+            PyPadesLevel::BB
+        }
+    }
+
     /// Run the RFC 5652 §5.4 signer-attributes crypto check against the
     /// certificate embedded in this signature's CMS blob. Today this
     /// covers RSA-PKCS#1 v1.5 over SHA-1/256/384/512 — the padding
@@ -7334,7 +7365,11 @@ fn pdf_oxide(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCertificate>()?;
     m.add_class::<PyTimestamp>()?;
     m.add_class::<PyTsaClient>()?;
+    m.add_class::<PyPadesLevel>()?;
+    m.add_class::<PyRevocationMaterial>()?;
+    m.add_class::<PyDss>()?;
     m.add_function(pyo3::wrap_pyfunction!(py_sign_pdf_bytes, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(py_sign_pdf_bytes_pades, m)?)?;
     #[cfg(feature = "barcodes")]
     m.add_function(pyo3::wrap_pyfunction!(generate_barcode_svg, m)?)?;
     #[cfg(feature = "barcodes")]
@@ -7593,6 +7628,224 @@ pub fn py_sign_pdf_bytes<'py>(
         let _ = (pdf_data, cert, reason, location);
         Err(pyo3::exceptions::PyNotImplementedError::new_err(
             "sign_pdf_bytes(): pdf_oxide was built without --features signatures",
+        ))
+    }
+}
+
+// ─── PAdES LTV (#235) ───────────────────────────────────────────────────────
+
+/// PAdES baseline level. Frozen integer mapping (B_B=0, B_T=1, B_LT=2,
+/// B_LTA=3) shared with the C ABI and every binding — never renumber.
+#[pyclass(
+    module = "pdf_oxide.pdf_oxide",
+    name = "PadesLevel",
+    eq,
+    eq_int,
+    skip_from_py_object
+)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PyPadesLevel {
+    BB = 0,
+    BT = 1,
+    BLt = 2,
+    BLta = 3,
+}
+
+#[cfg(feature = "signatures")]
+impl PyPadesLevel {
+    fn to_core(self) -> crate::signatures::PadesLevel {
+        // `from_code` is total over the four frozen codes.
+        crate::signatures::PadesLevel::from_code(self as i32)
+            .expect("frozen PadesLevel code round-trips")
+    }
+    fn from_core(level: crate::signatures::PadesLevel) -> PyPadesLevel {
+        match level.code() {
+            0 => PyPadesLevel::BB,
+            1 => PyPadesLevel::BT,
+            2 => PyPadesLevel::BLt,
+            _ => PyPadesLevel::BLta,
+        }
+    }
+}
+
+#[pymethods]
+impl PyPadesLevel {
+    #[classattr]
+    const B_B: PyPadesLevel = PyPadesLevel::BB;
+    #[classattr]
+    const B_T: PyPadesLevel = PyPadesLevel::BT;
+    #[classattr]
+    const B_LT: PyPadesLevel = PyPadesLevel::BLt;
+    #[classattr]
+    const B_LTA: PyPadesLevel = PyPadesLevel::BLta;
+
+    fn __int__(&self) -> i32 {
+        *self as i32
+    }
+
+    fn __repr__(&self) -> &'static str {
+        match self {
+            PyPadesLevel::BB => "PadesLevel.B_B",
+            PyPadesLevel::BT => "PadesLevel.B_T",
+            PyPadesLevel::BLt => "PadesLevel.B_LT",
+            PyPadesLevel::BLta => "PadesLevel.B_LTA",
+        }
+    }
+}
+
+/// Offline validation material for B-LT (DER certificates / CRLs /
+/// OCSP responses). Mirrors Rust `signatures::RevocationMaterial`.
+#[pyclass(module = "pdf_oxide.pdf_oxide", name = "RevocationMaterial", skip_from_py_object)]
+#[derive(Clone, Default)]
+pub struct PyRevocationMaterial {
+    certs: Vec<Vec<u8>>,
+    crls: Vec<Vec<u8>>,
+    ocsps: Vec<Vec<u8>>,
+}
+
+#[pymethods]
+impl PyRevocationMaterial {
+    #[new]
+    #[pyo3(signature = (certs=None, crls=None, ocsps=None))]
+    fn new(
+        certs: Option<Vec<Vec<u8>>>,
+        crls: Option<Vec<Vec<u8>>>,
+        ocsps: Option<Vec<Vec<u8>>>,
+    ) -> Self {
+        PyRevocationMaterial {
+            certs: certs.unwrap_or_default(),
+            crls: crls.unwrap_or_default(),
+            ocsps: ocsps.unwrap_or_default(),
+        }
+    }
+}
+
+/// A parsed Document Security Store (`/DSS`, ISO 32000-2 §12.8.4.3).
+/// `certs`/`crls`/`ocsps` are document-level DER blobs; `vri` is the
+/// list of per-signature VRI keys (uppercase-hex SHA-1 of `/Contents`).
+#[pyclass(module = "pdf_oxide.pdf_oxide", name = "Dss")]
+pub struct PyDss {
+    #[cfg(feature = "signatures")]
+    dss: crate::signatures::DocumentSecurityStore,
+}
+
+#[cfg(feature = "signatures")]
+#[pymethods]
+impl PyDss {
+    #[getter]
+    fn certs<'py>(&self, py: pyo3::Python<'py>) -> Vec<Bound<'py, PyBytes>> {
+        self.dss
+            .certificates
+            .iter()
+            .map(|d| PyBytes::new(py, d))
+            .collect()
+    }
+    #[getter]
+    fn crls<'py>(&self, py: pyo3::Python<'py>) -> Vec<Bound<'py, PyBytes>> {
+        self.dss.crls.iter().map(|d| PyBytes::new(py, d)).collect()
+    }
+    #[getter]
+    fn ocsps<'py>(&self, py: pyo3::Python<'py>) -> Vec<Bound<'py, PyBytes>> {
+        self.dss
+            .ocsp_responses
+            .iter()
+            .map(|d| PyBytes::new(py, d))
+            .collect()
+    }
+    #[getter]
+    fn vri(&self) -> Vec<String> {
+        self.dss
+            .vri
+            .iter()
+            .map(|v| v.signature_digest.clone())
+            .collect()
+    }
+}
+
+/// Sign raw PDF bytes at a PAdES baseline level and return the signed
+/// PDF as `bytes`.
+///
+/// `level` is a :class:`PadesLevel` (``B_LTA`` is reserved →
+/// ``NotImplementedError``). For ``B_T``/``B_LT`` a `tsa_url` is
+/// required (RFC 3161 source; needs the ``tsa-client`` build feature).
+/// `revocation` supplies the B-LT DSS material.
+///
+/// ```python
+/// from pdf_oxide import Certificate, PadesLevel, RevocationMaterial, sign_pdf_bytes_pades
+///
+/// cert = Certificate.load_pkcs12(open("id.p12","rb").read(), "pw")
+/// signed = sign_pdf_bytes_pades(
+///     open("in.pdf","rb").read(), cert, PadesLevel.B_LT,
+///     tsa_url="https://freetsa.org/tsr",
+///     revocation=RevocationMaterial(certs=[cert_der]),
+/// )
+/// ```
+#[pyfunction]
+#[pyo3(signature = (pdf_data, cert, level, tsa_url=None, reason=None, location=None, revocation=None))]
+#[allow(clippy::too_many_arguments)]
+pub fn py_sign_pdf_bytes_pades<'py>(
+    py: pyo3::Python<'py>,
+    pdf_data: &Bound<'py, PyBytes>,
+    cert: &PyCertificate,
+    level: &PyPadesLevel,
+    tsa_url: Option<&str>,
+    reason: Option<&str>,
+    location: Option<&str>,
+    revocation: Option<&PyRevocationMaterial>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    #[cfg(feature = "signatures")]
+    {
+        use crate::signatures::{sign_pdf_bytes_pades, RevocationMaterial, SignOptions};
+        let opts = SignOptions {
+            reason: reason.map(str::to_owned),
+            location: location.map(str::to_owned),
+            ..Default::default()
+        };
+        let material = revocation
+            .map(|r| RevocationMaterial {
+                certificates: r.certs.clone(),
+                crls: r.crls.clone(),
+                ocsp_responses: r.ocsps.clone(),
+                ..Default::default()
+            })
+            .unwrap_or_default();
+
+        #[cfg(feature = "tsa-client")]
+        let ts_closure: Option<Box<dyn Fn(&[u8]) -> crate::error::Result<Vec<u8>>>> =
+            tsa_url.map(|u| {
+                let client = crate::signatures::TsaClient::new(
+                    crate::signatures::TsaClientConfig::new(u.to_owned()),
+                );
+                Box::new(move |sig: &[u8]| {
+                    client
+                        .request_timestamp(sig)
+                        .map(|t| t.token_bytes().to_vec())
+                }) as Box<dyn Fn(&[u8]) -> crate::error::Result<Vec<u8>>>
+            });
+        #[cfg(not(feature = "tsa-client"))]
+        let ts_closure: Option<Box<dyn Fn(&[u8]) -> crate::error::Result<Vec<u8>>>> = {
+            let _ = tsa_url;
+            None
+        };
+
+        let signed = sign_pdf_bytes_pades(
+            pdf_data.as_bytes(),
+            &cert.creds,
+            opts,
+            level.to_core(),
+            ts_closure.as_deref(),
+            &material,
+        )
+        .map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("sign_pdf_bytes_pades failed: {e}"))
+        })?;
+        Ok(PyBytes::new(py, &signed))
+    }
+    #[cfg(not(feature = "signatures"))]
+    {
+        let _ = (pdf_data, cert, level, tsa_url, reason, location, revocation);
+        Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            "sign_pdf_bytes_pades(): pdf_oxide was built without --features signatures",
         ))
     }
 }

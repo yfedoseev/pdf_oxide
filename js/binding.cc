@@ -3,6 +3,7 @@
 #include <cstring>
 #include <cstdint>
 #include <mutex>
+#include <vector>
 
 // Forward declaration needed by DocumentWrapper destructor (full declaration
 // appears in the extern "C" block below).
@@ -435,6 +436,17 @@ extern "C" {
   extern void* pdf_certificate_load_from_bytes(const uint8_t* data, int32_t len, const char* password, int* error_code);
   extern void* pdf_certificate_load_from_pem(const char* cert_pem, const char* key_pem, int* error_code);
   extern uint8_t* pdf_sign_bytes(const uint8_t* pdf_data, size_t pdf_len, const void* cert, const char* reason, const char* location, size_t* out_len, int* error_code);
+  extern uint8_t* pdf_sign_bytes_pades(const uint8_t* pdf, size_t pdf_len, const void* cert, int32_t level, const char* tsa_url, const char* reason, const char* location, const uint8_t* const* certs, const size_t* cert_lens, size_t n_certs, const uint8_t* const* crls, const size_t* crl_lens, size_t n_crls, const uint8_t* const* ocsps, const size_t* ocsp_lens, size_t n_ocsps, size_t* out_len, int* error_code);
+  extern int32_t pdf_signature_get_pades_level(const void* sig, int* error_code);
+  extern void* pdf_document_get_dss(const void* doc, int* error_code);
+  extern int32_t pdf_dss_cert_count(const void* dss);
+  extern int32_t pdf_dss_crl_count(const void* dss);
+  extern int32_t pdf_dss_ocsp_count(const void* dss);
+  extern int32_t pdf_dss_vri_count(const void* dss);
+  extern uint8_t* pdf_dss_get_cert(const void* dss, int32_t index, size_t* out_len, int* error_code);
+  extern uint8_t* pdf_dss_get_crl(const void* dss, int32_t index, size_t* out_len, int* error_code);
+  extern uint8_t* pdf_dss_get_ocsp(const void* dss, int32_t index, size_t* out_len, int* error_code);
+  extern void pdf_dss_free(void* dss);
   extern bool pdf_signature_add_timestamp(const void* signature, const void* timestamp, int* error_code);
   extern void* pdf_signature_get_timestamp(const void* signature, int* error_code);
   extern bool pdf_signature_has_timestamp(const void* signature, int* error_code);
@@ -3524,6 +3536,124 @@ Napi::Value SignPdfBytes(const Napi::CallbackInfo& info) {
   return buf;
 }
 
+// ─── PAdES LTV (#235) ───────────────────────────────────────────────────────
+
+// Collect a JS value that is (optionally) an Array of Buffers/TypedArrays
+// into parallel pointer/length vectors. The underlying JS buffers stay
+// alive for the synchronous native call, so no copy is needed.
+static void collectBlobs(const Napi::Value& v,
+                         std::vector<const uint8_t*>& ptrs,
+                         std::vector<size_t>& lens) {
+  if (!v.IsArray()) return;
+  auto arr = v.As<Napi::Array>();
+  for (uint32_t i = 0; i < arr.Length(); i++) {
+    Napi::Value e = arr.Get(i);
+    if (e.IsBuffer()) {
+      auto b = e.As<Napi::Buffer<uint8_t>>();
+      ptrs.push_back(b.Data());
+      lens.push_back(b.ByteLength());
+    } else if (e.IsTypedArray()) {
+      auto ta = e.As<Napi::TypedArray>();
+      ptrs.push_back(reinterpret_cast<const uint8_t*>(ta.ArrayBuffer().Data()) + ta.ByteOffset());
+      lens.push_back(ta.ByteLength());
+    }
+  }
+}
+
+Napi::Value SignPdfBytesPades(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 3)
+    throw Napi::TypeError::New(env, "Expected (pdfData, certificate, level, [tsaUrl], [reason], [location], [revocation])");
+
+  uint8_t* data;
+  size_t len;
+  if (info[0].IsBuffer()) {
+    auto buf = info[0].As<Napi::Buffer<uint8_t>>();
+    data = buf.Data();
+    len = buf.ByteLength();
+  } else {
+    auto ta = info[0].As<Napi::TypedArray>();
+    data = reinterpret_cast<uint8_t*>(ta.ArrayBuffer().Data()) + ta.ByteOffset();
+    len = ta.ByteLength();
+  }
+
+  void* cert = info[1].As<Napi::External<void>>().Data();
+  int32_t level = (int32_t)info[2].As<Napi::Number>().Int32Value();
+
+  std::string tsa      = (info.Length() > 3 && info[3].IsString()) ? info[3].As<Napi::String>().Utf8Value() : "";
+  std::string reason   = (info.Length() > 4 && info[4].IsString()) ? info[4].As<Napi::String>().Utf8Value() : "";
+  std::string location = (info.Length() > 5 && info[5].IsString()) ? info[5].As<Napi::String>().Utf8Value() : "";
+  const char* tsaPtr      = (info.Length() > 3 && info[3].IsString()) ? tsa.c_str()      : nullptr;
+  const char* reasonPtr   = (info.Length() > 4 && info[4].IsString()) ? reason.c_str()   : nullptr;
+  const char* locationPtr = (info.Length() > 5 && info[5].IsString()) ? location.c_str() : nullptr;
+
+  std::vector<const uint8_t*> cP, rP, oP;
+  std::vector<size_t> cL, rL, oL;
+  if (info.Length() > 6 && info[6].IsObject()) {
+    auto rev = info[6].As<Napi::Object>();
+    collectBlobs(rev.Get("certs"), cP, cL);
+    collectBlobs(rev.Get("crls"),  rP, rL);
+    collectBlobs(rev.Get("ocsps"), oP, oL);
+  }
+
+  int errorCode = 0;
+  size_t outLen = 0;
+  uint8_t* out = pdf_sign_bytes_pades(
+    data, len, cert, level, tsaPtr, reasonPtr, locationPtr,
+    cP.empty() ? nullptr : cP.data(), cL.empty() ? nullptr : cL.data(), cP.size(),
+    rP.empty() ? nullptr : rP.data(), rL.empty() ? nullptr : rL.data(), rP.size(),
+    oP.empty() ? nullptr : oP.data(), oL.empty() ? nullptr : oL.data(), oP.size(),
+    &outLen, &errorCode);
+  if (errorCode != 0) throw Napi::Error::New(env, "pdf_sign_bytes_pades failed: " + getErrorMessage(errorCode));
+  if (!out) return env.Null();
+  return Napi::Buffer<uint8_t>::New(env, out, outLen,
+    [](Napi::Env, uint8_t* p) { free_bytes(p); });
+}
+
+Napi::Value SignatureGetPadesLevel(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  void* sig = info[0].As<Napi::External<void>>().Data();
+  int errorCode = 0;
+  int32_t lvl = pdf_signature_get_pades_level(sig, &errorCode);
+  if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
+  return Napi::Number::New(env, lvl);
+}
+
+// Read all DSS material into a plain JS object and free the native
+// handle immediately — simpler for the JS consumer than handle
+// lifetime management. Returns null when the document has no /DSS.
+Napi::Value DocumentGetDss(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  void* doc = info[0].As<Napi::External<void>>().Data();
+  int errorCode = 0;
+  void* dss = pdf_document_get_dss(doc, &errorCode);
+  if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
+  if (!dss) return env.Null();
+
+  auto readArr = [&](int32_t (*count)(const void*),
+                     uint8_t* (*get)(const void*, int32_t, size_t*, int*)) {
+    int32_t n = count(dss);
+    auto arr = Napi::Array::New(env, n < 0 ? 0 : (uint32_t)n);
+    for (int32_t i = 0; i < n; i++) {
+      size_t l = 0;
+      int ec = 0;
+      uint8_t* p = get(dss, i, &l, &ec);
+      if (ec != 0 || !p) continue;
+      arr.Set((uint32_t)i, Napi::Buffer<uint8_t>::New(env, p, l,
+        [](Napi::Env, uint8_t* q) { free_bytes(q); }));
+    }
+    return arr;
+  };
+
+  auto obj = Napi::Object::New(env);
+  obj.Set("certs", readArr(pdf_dss_cert_count, pdf_dss_get_cert));
+  obj.Set("crls",  readArr(pdf_dss_crl_count,  pdf_dss_get_crl));
+  obj.Set("ocsps", readArr(pdf_dss_ocsp_count, pdf_dss_get_ocsp));
+  obj.Set("vriCount", Napi::Number::New(env, pdf_dss_vri_count(dss)));
+  pdf_dss_free(dss);
+  return obj;
+}
+
 Napi::Value SignatureAddTimestamp(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   void* sig = info[0].As<Napi::External<void>>().Data();
@@ -4101,6 +4231,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("documentRemoveHeaders", Napi::Function::New(env, DocumentRemoveHeaders));
   exports.Set("documentSign", Napi::Function::New(env, DocumentSign));
   exports.Set("signPdfBytes", Napi::Function::New(env, SignPdfBytes));
+  exports.Set("signPdfBytesPades", Napi::Function::New(env, SignPdfBytesPades));
+  exports.Set("signatureGetPadesLevel", Napi::Function::New(env, SignatureGetPadesLevel));
+  exports.Set("documentGetDss", Napi::Function::New(env, DocumentGetDss));
 
   // Regional Extraction
   exports.Set("extractImagesInRect", Napi::Function::New(env, ExtractImagesInRect));

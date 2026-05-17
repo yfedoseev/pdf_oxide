@@ -16,7 +16,7 @@ use crate::signatures::types::SignatureInfo;
 use cms::content_info::ContentInfo;
 use cms::signed_data::SignedData;
 use der::oid::ObjectIdentifier;
-use der::{Decode, Encode};
+use der::{Decode, Encode, SliceReader};
 
 /// `id-aa-signatureTimeStampToken` — the RFC 3161 timestamp carried as a
 /// CMS **unsigned** attribute that distinguishes PAdES-B-T from B-B
@@ -28,7 +28,15 @@ const OID_SIGNATURE_TIME_STAMP: ObjectIdentifier =
 /// timestamp unsigned attribute. Malformed CMS ⇒ `false` (conservative:
 /// never over-claim a level).
 fn has_bt_timestamp(cms: &[u8]) -> bool {
-    let Ok(ci) = ContentInfo::from_der(cms) else {
+    // A PDF `/Contents` value is the CMS DER followed by zero-padding to
+    // the fixed-width placeholder, so it almost always has trailing
+    // bytes. Decode one self-delimiting element via a reader (no
+    // `finish()`), tolerating that padding — strict `from_der` would
+    // reject it and silently down-classify every real signature to B-B.
+    let Ok(mut reader) = SliceReader::new(cms) else {
+        return false;
+    };
+    let Ok(ci) = ContentInfo::decode(&mut reader) else {
         return false;
     };
     let Ok(sd_bytes) = ci.content.to_der() else {

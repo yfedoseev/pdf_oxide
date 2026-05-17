@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using PdfOxide.Exceptions;
 using PdfOxide.Internal;
@@ -174,6 +175,97 @@ namespace PdfOxide.Core
                     NativeMethods.FreeBytes((IntPtr)outPtr);
                 }
             }
+        }
+
+        /// <summary>
+        /// Signs <paramref name="pdfData"/> at a PAdES baseline level
+        /// (<see cref="PadesSignOptions.Level"/>) and returns the signed
+        /// PDF. <see cref="PadesLevel.BLta"/> is reserved (throws). For
+        /// <see cref="PadesLevel.BT"/>/<see cref="PadesLevel.BLt"/> a
+        /// <see cref="PadesSignOptions.TsaUrl"/> is required.
+        /// </summary>
+        public unsafe byte[] SignPdfBytesPades(byte[] pdfData, PadesSignOptions options)
+        {
+            ThrowIfDisposed();
+            ArgumentNullException.ThrowIfNull(pdfData);
+            ArgumentNullException.ThrowIfNull(options);
+            if (pdfData.Length == 0)
+                throw new ArgumentException("PDF data must not be empty.", nameof(pdfData));
+
+            var rev = options.Revocation;
+            IList<byte[]> certs = rev?.Certificates ?? (IList<byte[]>)Array.Empty<byte[]>();
+            IList<byte[]> crls = rev?.Crls ?? (IList<byte[]>)Array.Empty<byte[]>();
+            IList<byte[]> ocsps = rev?.OcspResponses ?? (IList<byte[]>)Array.Empty<byte[]>();
+
+            var pins = new List<GCHandle>();
+            try
+            {
+                var (cPtrs, cLens) = PinBlobs(certs, pins);
+                var (rPtrs, rLens) = PinBlobs(crls, pins);
+                var (oPtrs, oLens) = PinBlobs(ocsps, pins);
+
+                IntPtr certPtr = _handle.Ptr;
+                fixed (byte* pdfPtr = pdfData)
+                fixed (IntPtr* cP = cPtrs)
+                fixed (nuint* cL = cLens)
+                fixed (IntPtr* rP = rPtrs)
+                fixed (nuint* rL = rLens)
+                fixed (IntPtr* oP = oPtrs)
+                fixed (nuint* oL = oLens)
+                {
+                    byte* outPtr = NativeMethods.PdfSignBytesPades(
+                        pdfPtr, (nuint)pdfData.Length,
+                        certPtr,
+                        (int)options.Level,
+                        options.TsaUrl, options.Reason, options.Location,
+                        (byte**)cP, (nuint*)cL, (nuint)certs.Count,
+                        (byte**)rP, (nuint*)rL, (nuint)crls.Count,
+                        (byte**)oP, (nuint*)oL, (nuint)ocsps.Count,
+                        out nuint outLen, out int err);
+                    ExceptionMapper.ThrowIfError(err);
+                    if (outPtr == null)
+                        throw new PdfException("pdf_sign_bytes_pades returned null with no error code");
+                    try
+                    {
+                        var result = new byte[(int)outLen];
+                        Marshal.Copy((IntPtr)outPtr, result, 0, (int)outLen);
+                        return result;
+                    }
+                    finally
+                    {
+                        NativeMethods.FreeBytes((IntPtr)outPtr);
+                    }
+                }
+            }
+            finally
+            {
+                foreach (var h in pins)
+                    h.Free();
+            }
+        }
+
+        // Pin each DER blob (stable address while pinned) and return
+        // parallel pointer/length arrays for the *_pades FFI.
+        private static (IntPtr[] ptrs, nuint[] lens) PinBlobs(
+            IList<byte[]> blobs, List<GCHandle> pins)
+        {
+            var ptrs = new IntPtr[blobs.Count];
+            var lens = new nuint[blobs.Count];
+            for (int i = 0; i < blobs.Count; i++)
+            {
+                var b = blobs[i] ?? Array.Empty<byte>();
+                if (b.Length == 0)
+                {
+                    ptrs[i] = IntPtr.Zero;
+                    lens[i] = 0;
+                    continue;
+                }
+                var h = GCHandle.Alloc(b, GCHandleType.Pinned);
+                pins.Add(h);
+                ptrs[i] = h.AddrOfPinnedObject();
+                lens[i] = (nuint)b.Length;
+            }
+            return (ptrs, lens);
         }
 
         /// <inheritdoc />

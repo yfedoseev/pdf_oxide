@@ -4,9 +4,10 @@ All notable changes to PDFOxide are documented here.
 
 ## [0.3.50] - 2026-05-16
 
-> True destructive PDF redaction and a runtime cryptographic
-> algorithm-governance policy and split-PDF-by-bookmarks across all
-> seven bindings, plus a signature-date correctness fix.
+> True destructive PDF redaction, PAdES-B-T/B-LT long-term-validation
+> signatures, a runtime cryptographic algorithm-governance policy, and
+> split-PDF-by-bookmarks across all seven bindings, plus a
+> signature-date correctness fix.
 
 ### Added
 
@@ -35,6 +36,29 @@ All notable changes to PDFOxide are documented here.
   Standalone metadata-only sanitization (`scrub_metadata`) and
   image/path/XObject pruning are roadmap; composite-font text and
   encrypted documents are refused (not under-redacted).
+- **PAdES long-term-validation signatures
+  ([#235](https://github.com/yfedoseev/pdf_oxide/issues/235))** —
+  signing now produces ETSI EN 319 142-1 PAdES baseline signatures, not
+  just bare `adbe.pkcs7.detached`: **B-B** embeds the RFC 5035 ESS
+  `signing-certificate-v2` signed attribute; **B-T** adds an RFC 3161
+  `signature-time-stamp` unsigned attribute over the signature value;
+  **B-LT** appends a Document Security Store (ISO 32000-2:2020
+  §12.8.4.3 — certs/CRLs/OCSPs + a per-signature `/VRI` keyed by the
+  uppercase-hex SHA-1 of the signature's `/Contents`) as an
+  **append-only second incremental update**, so the original
+  signature's byte range is untouched and stays `Valid`. Read side:
+  `read_dss` parses a `/DSS` and `classify_pades_level` reports a
+  signature's level (B-B/B-T/B-LT). New
+  `sign_pdf_bytes_pades` / `PadesLevel` / `RevocationMaterial` /
+  `DocumentSecurityStore` in core, the `pdf_sign_bytes_pades` /
+  `pdf_signature_get_pades_level` / `pdf_document_get_dss` /
+  `pdf_dss_*` C ABI, and Python, WASM, Node, C#, Go bindings. B-LTA
+  (document timestamp) is reserved (frozen enum slot; requesting it
+  fail-closes with `Unsupported`). The legacy `sign_pdf_bytes`
+  `adbe.pkcs7.detached` path is byte-for-byte unchanged. This is the
+  v0.3.50 PAdES slice; final ETSI conformance is gated on the EU DSS
+  demonstration-validator release check (online TSA fetch is
+  CGo/native-only — WASM takes a pre-fetched RFC 3161 token).
 - **Runtime crypto-governance policy
   ([#230](https://github.com/yfedoseev/pdf_oxide/issues/230))** — a
   process-wide `crypto::SecurityPolicy` (modes `compat` / `strict` /
@@ -83,9 +107,17 @@ All notable changes to PDFOxide are documented here.
   all surfaces. A `[BLOCK]` integration test builds a real PDF
   containing a secret, redacts it through the public API, and asserts
   the secret is absent from **both** re-extracted text and the raw
-  saved bytes (idempotent). PAdES-B-T/B-LT long-term-validation
-  signatures (#235) are **not** in this release; they are tracked for a
-  follow-up.
+  saved bytes (idempotent).
+- **PAdES long-term-validation signatures
+  ([#235](https://github.com/yfedoseev/pdf_oxide/issues/235))** — PDF
+  signatures can now carry the ESS `signing-certificate-v2` binding
+  (RFC 5035, defeats certificate-substitution), an RFC 3161 timestamp
+  (B-T), and a Document Security Store for offline long-term validation
+  (B-LT). The DSS is added as an append-only incremental update so
+  pre-existing signatures provably remain `Valid` (asserted by the
+  I1–I7 integrity-invariant suite in `tests/pades_ltv.rs`); a tampered
+  signed region still fails verification (negative test). See Added for
+  scope and the EU-DSS conformance gate.
 
 ### Thanks
 

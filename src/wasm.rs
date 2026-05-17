@@ -347,6 +347,20 @@ impl WasmPdfDocument {
             .collect())
     }
 
+    /// The document's Document Security Store (`/DSS`) as a `Dss`, or
+    /// `undefined` if absent. Mirrors Rust `signatures::read_dss`.
+    #[cfg(feature = "signatures")]
+    #[wasm_bindgen(js_name = "dss")]
+    pub fn dss(&mut self) -> Result<Option<WasmDss>, JsValue> {
+        let doc = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?;
+        crate::signatures::read_dss(&doc)
+            .map(|opt| opt.map(|dss| WasmDss { dss }))
+            .map_err(|e| JsValue::from_str(&format!("Failed to read DSS: {}", e)))
+    }
+
     /// Get the PDF version as [major, minor].
     #[wasm_bindgen(js_name = "version")]
     pub fn version(&self) -> Result<Vec<u8>, JsValue> {
@@ -1568,6 +1582,173 @@ pub fn wasm_sign_pdf_bytes(
         .map_err(|e| JsValue::from_str(&format!("signPdfBytes failed: {e}")))
 }
 
+// ─── PAdES LTV (#235) ───────────────────────────────────────────────────────
+
+/// PAdES baseline level. Frozen integer mapping (BB=0, BT=1, BLt=2,
+/// BLta=3) shared with the C ABI and every binding — never renumber.
+#[cfg(feature = "signatures")]
+#[wasm_bindgen(js_name = "PadesLevel")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WasmPadesLevel {
+    BB = 0,
+    BT = 1,
+    BLt = 2,
+    BLta = 3,
+}
+
+#[cfg(feature = "signatures")]
+impl WasmPadesLevel {
+    fn to_core(self) -> crate::signatures::PadesLevel {
+        crate::signatures::PadesLevel::from_code(self as i32)
+            .expect("frozen PadesLevel code round-trips")
+    }
+    fn from_core(level: crate::signatures::PadesLevel) -> WasmPadesLevel {
+        match level.code() {
+            0 => WasmPadesLevel::BB,
+            1 => WasmPadesLevel::BT,
+            2 => WasmPadesLevel::BLt,
+            _ => WasmPadesLevel::BLta,
+        }
+    }
+}
+
+/// Offline B-LT validation material (DER certs / CRLs / OCSP
+/// responses). Build with `new()` then `addCert`/`addCrl`/`addOcsp`.
+#[cfg(feature = "signatures")]
+#[wasm_bindgen(js_name = "RevocationMaterial")]
+#[derive(Default)]
+pub struct WasmRevocationMaterial {
+    certs: Vec<Vec<u8>>,
+    crls: Vec<Vec<u8>>,
+    ocsps: Vec<Vec<u8>>,
+}
+
+#[cfg(feature = "signatures")]
+#[wasm_bindgen]
+impl WasmRevocationMaterial {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> WasmRevocationMaterial {
+        WasmRevocationMaterial::default()
+    }
+    /// Add a DER X.509 certificate.
+    #[wasm_bindgen(js_name = "addCert")]
+    pub fn add_cert(&mut self, der: &[u8]) {
+        self.certs.push(der.to_vec());
+    }
+    /// Add a DER CRL.
+    #[wasm_bindgen(js_name = "addCrl")]
+    pub fn add_crl(&mut self, der: &[u8]) {
+        self.crls.push(der.to_vec());
+    }
+    /// Add a DER OCSP response.
+    #[wasm_bindgen(js_name = "addOcsp")]
+    pub fn add_ocsp(&mut self, der: &[u8]) {
+        self.ocsps.push(der.to_vec());
+    }
+}
+
+/// A parsed Document Security Store (`/DSS`, ISO 32000-2 §12.8.4.3).
+/// Count + index accessors mirror `WasmCertificate`'s flat shape
+/// (wasm-bindgen cannot return `Uint8Array[]` directly).
+#[cfg(feature = "signatures")]
+#[wasm_bindgen(js_name = "Dss")]
+pub struct WasmDss {
+    dss: crate::signatures::DocumentSecurityStore,
+}
+
+#[cfg(feature = "signatures")]
+#[wasm_bindgen]
+impl WasmDss {
+    #[wasm_bindgen(getter, js_name = "certCount")]
+    pub fn cert_count(&self) -> usize {
+        self.dss.certificates.len()
+    }
+    #[wasm_bindgen(js_name = "getCert")]
+    pub fn get_cert(&self, i: usize) -> Option<Vec<u8>> {
+        self.dss.certificates.get(i).cloned()
+    }
+    #[wasm_bindgen(getter, js_name = "crlCount")]
+    pub fn crl_count(&self) -> usize {
+        self.dss.crls.len()
+    }
+    #[wasm_bindgen(js_name = "getCrl")]
+    pub fn get_crl(&self, i: usize) -> Option<Vec<u8>> {
+        self.dss.crls.get(i).cloned()
+    }
+    #[wasm_bindgen(getter, js_name = "ocspCount")]
+    pub fn ocsp_count(&self) -> usize {
+        self.dss.ocsp_responses.len()
+    }
+    #[wasm_bindgen(js_name = "getOcsp")]
+    pub fn get_ocsp(&self, i: usize) -> Option<Vec<u8>> {
+        self.dss.ocsp_responses.get(i).cloned()
+    }
+    /// Per-signature VRI keys (uppercase-hex SHA-1 of `/Contents`).
+    #[wasm_bindgen(getter)]
+    pub fn vri(&self) -> Vec<String> {
+        self.dss
+            .vri
+            .iter()
+            .map(|v| v.signature_digest.clone())
+            .collect()
+    }
+}
+
+/// Sign raw PDF bytes at a PAdES baseline level and return the signed
+/// PDF as a `Uint8Array`.
+///
+/// `level` `BLTA` is reserved (→ error). For `BT`/`BLt` pass a
+/// pre-fetched RFC 3161 `timestampToken` (DER): WASM intentionally
+/// omits the online TSA client (same `ureq`-incompat carve-out as
+/// v0.3.38) — without a token the core fail-closes with `Unsupported`.
+/// `revocation` supplies the B-LT DSS material.
+#[cfg(feature = "signatures")]
+#[wasm_bindgen(js_name = "signPdfBytesPades")]
+#[allow(clippy::too_many_arguments)]
+pub fn wasm_sign_pdf_bytes_pades(
+    pdf_data: &[u8],
+    cert: &WasmCertificate,
+    level: WasmPadesLevel,
+    timestamp_token: Option<Vec<u8>>,
+    revocation: Option<WasmRevocationMaterial>,
+    reason: Option<String>,
+    location: Option<String>,
+) -> Result<Vec<u8>, JsValue> {
+    use crate::signatures::{sign_pdf_bytes_pades, RevocationMaterial, SignOptions};
+    let opts = SignOptions {
+        reason,
+        location,
+        ..Default::default()
+    };
+    let material = revocation
+        .map(|r| RevocationMaterial {
+            certificates: r.certs,
+            crls: r.crls,
+            ocsp_responses: r.ocsps,
+            ..Default::default()
+        })
+        .unwrap_or_default();
+
+    // The caller-supplied token is the timestamp source; the imprint is
+    // computed by the core over the signature value, so the closure
+    // simply returns the pre-fetched token verbatim.
+    let ts_closure: Option<Box<dyn Fn(&[u8]) -> crate::error::Result<Vec<u8>>>> = timestamp_token
+        .map(|tok| {
+            Box::new(move |_sig: &[u8]| Ok(tok.clone()))
+                as Box<dyn Fn(&[u8]) -> crate::error::Result<Vec<u8>>>
+        });
+
+    sign_pdf_bytes_pades(
+        pdf_data,
+        &cert.creds,
+        opts,
+        level.to_core(),
+        ts_closure.as_deref(),
+        &material,
+    )
+    .map_err(|e| JsValue::from_str(&format!("signPdfBytesPades failed: {e}")))
+}
+
 /// RFC 3161 timestamp parsed from a DER TimeStampToken or bare
 /// TSTInfo. Mirrors the C#, Go, and Python `Timestamp` surfaces.
 #[cfg(feature = "signatures")]
@@ -1693,6 +1874,14 @@ impl WasmSignature {
     #[wasm_bindgen(getter, js_name = "coversWholeDocument")]
     pub fn covers_whole_document(&self) -> bool {
         self.info.covers_whole_document
+    }
+
+    /// PAdES baseline level from this signature's CMS attributes alone
+    /// (`BB` vs `BT`). `BLt` additionally needs the document `/DSS` —
+    /// read it via `WasmPdfDocument.dss()` and re-classify there.
+    #[wasm_bindgen(getter, js_name = "padesLevel")]
+    pub fn pades_level(&self) -> WasmPadesLevel {
+        WasmPadesLevel::from_core(crate::signatures::classify_pades_level(&self.info, None))
     }
 
     /// Run the RFC 5652 §5.4 signer-attributes crypto check. Today

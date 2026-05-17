@@ -111,6 +111,24 @@ namespace PdfOxide.Core
         }
 
         /// <summary>
+        /// The PAdES baseline level from this signature's CMS attributes
+        /// alone (<see cref="PadesLevel.BB"/> vs <see cref="PadesLevel.BT"/>).
+        /// <see cref="PadesLevel.BLt"/> additionally requires the
+        /// document <c>/DSS</c> — read it via
+        /// <see cref="PdfDocument.GetDss"/> and combine there.
+        /// </summary>
+        public PadesLevel PadesLevel
+        {
+            get
+            {
+                ThrowIfDisposed();
+                int code = NativeMethods.pdf_signature_get_pades_level(_handle, out int err);
+                ExceptionMapper.ThrowIfError(err);
+                return (PadesLevel)code;
+            }
+        }
+
+        /// <summary>
         /// End-to-end detached-signature verification: runs the
         /// signer-attributes RSA-PKCS#1 v1.5 crypto check AND the
         /// RFC 5652 §11.2 <c>messageDigest</c> attribute check against

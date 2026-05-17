@@ -106,7 +106,7 @@ pub fn append_dss(
 
     // (object_id, raw DER body) for every cert/CRL/OCSP stream.
     let mut streams: Vec<(u32, Vec<u8>)> = Vec::new();
-    let mut id_array =
+    let id_array =
         |items: &[Vec<u8>], streams: &mut Vec<(u32, Vec<u8>)>, a: &mut dyn FnMut() -> u32| {
             let mut refs = Vec::with_capacity(items.len());
             for it in items {

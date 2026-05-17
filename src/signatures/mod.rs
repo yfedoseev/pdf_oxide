@@ -80,7 +80,7 @@ pub use pades::{
 };
 pub use pdf_date::parse_pdf_date_to_epoch;
 #[cfg(feature = "signatures")]
-pub use sign_bytes::sign_pdf_bytes;
+pub use sign_bytes::{sign_pdf_bytes, sign_pdf_bytes_pades};
 pub use signer::PdfSigner;
 #[cfg(feature = "signatures")]
 pub use timestamp::{HashAlgorithm, Timestamp};
