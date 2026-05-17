@@ -286,6 +286,12 @@ impl EmbeddedFilesBuilder {
 }
 
 /// MD5 hash function for embedded-file checksum (PDF spec §7.11.4).
+///
+/// #230 Phase C: intentionally a *direct* MD5 — the `/CheckSum` is a
+/// non-security integrity tag fixed by ISO 32000-1 §7.11.4, not a
+/// key-derivation, so it is NOT routed through
+/// `encryption::md5_kdf_hasher` (gating it would make a strict policy
+/// refuse to embed a file even in an AES-256 document).
 #[cfg(feature = "legacy-crypto")]
 fn md5_hash(data: &[u8]) -> Vec<u8> {
     use md5::{Digest, Md5};

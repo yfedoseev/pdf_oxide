@@ -7695,7 +7695,11 @@ impl PyPadesLevel {
 
 /// Offline validation material for B-LT (DER certificates / CRLs /
 /// OCSP responses). Mirrors Rust `signatures::RevocationMaterial`.
-#[pyclass(module = "pdf_oxide.pdf_oxide", name = "RevocationMaterial", skip_from_py_object)]
+#[pyclass(
+    module = "pdf_oxide.pdf_oxide",
+    name = "RevocationMaterial",
+    skip_from_py_object
+)]
 #[derive(Clone, Default)]
 pub struct PyRevocationMaterial {
     certs: Vec<Vec<u8>>,

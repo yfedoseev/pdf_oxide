@@ -6,8 +6,6 @@
 //! PDF Spec: Section 7.6.3 - Standard Security Handler
 //! PDF 2.0 Spec (ISO 32000-2:2020): Section 7.6.4.3.3 - Algorithm 8-11 for R>=5
 
-#[cfg(feature = "legacy-crypto")]
-use md5::Md5;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 
 /// Padding string used in PDF encryption (32 bytes).
@@ -59,7 +57,9 @@ pub fn compute_encryption_key(
 
     #[cfg(feature = "legacy-crypto")]
     {
-        let mut hasher = Md5::new();
+        // #230 Phase C: route the primitive through the governed
+        // provider (byte-identical under the default `compat` policy).
+        let mut hasher = super::md5_kdf_hasher()?;
 
         // Step a: Pad or truncate password to 32 bytes
         let mut padded_password = [0u8; 32];
@@ -70,31 +70,31 @@ pub fn compute_encryption_key(
         }
 
         // Step b: Pass the password to MD5
-        hasher.update(padded_password);
+        hasher.update(&padded_password);
 
         // Step c: Pass the owner password hash
         hasher.update(owner_key);
 
         // Step d: Pass permissions as 32-bit little-endian
-        hasher.update(permissions.to_le_bytes());
+        hasher.update(&permissions.to_le_bytes());
 
         // Step e: Pass the file identifier
         hasher.update(file_id);
 
         // Step f: For R >= 4, if EncryptMetadata is false, pass 0xFFFFFFFF
         if revision >= 4 && !encrypt_metadata {
-            hasher.update([0xFF, 0xFF, 0xFF, 0xFF]);
+            hasher.update(&[0xFF, 0xFF, 0xFF, 0xFF]);
         }
 
         // Step g: Finish MD5 hash
-        let mut hash = hasher.finalize().to_vec();
+        let mut hash = hasher.finalize();
 
         // Step h: For R >= 3, do 50 additional MD5 iterations on first key_length bytes
         if revision >= 3 {
             for _ in 0..50 {
-                let mut h = Md5::new();
+                let mut h = super::md5_kdf_hasher()?;
                 h.update(&hash[..key_length.min(16)]);
-                hash = h.finalize().to_vec();
+                hash = h.finalize();
             }
         }
 
@@ -357,11 +357,12 @@ fn compute_user_key_r2(key: &[u8]) -> crate::Result<Vec<u8>> {
 /// PDF Spec: Section 7.6.3.4 - Algorithm 5
 #[cfg(feature = "legacy-crypto")]
 fn compute_user_key_r3(key: &[u8], file_id: &[u8]) -> crate::Result<Vec<u8>> {
-    // Step a: Create MD5 hash of padding + file ID
-    let mut hasher = Md5::new();
+    // Step a: Create MD5 hash of padding + file ID (#230 Phase C:
+    // governed provider; byte-identical under the default policy).
+    let mut hasher = super::md5_kdf_hasher()?;
     hasher.update(PADDING);
     hasher.update(file_id);
-    let mut hash = hasher.finalize().to_vec();
+    let mut hash = hasher.finalize();
 
     // Step b: Encrypt the hash 20 times with modified keys
     for i in 0..20 {
@@ -424,17 +425,18 @@ pub fn compute_owner_password_hash(
         // Step b: Pad the password to 32 bytes
         let padded_password = pad_password(password);
 
-        // Step c: Initialize MD5 and pass the padded password
-        let mut hasher = Md5::new();
+        // Step c: Initialize MD5 and pass the padded password (#230
+        // Phase C: governed provider; byte-identical default policy).
+        let mut hasher = super::md5_kdf_hasher()?;
         hasher.update(&padded_password);
-        let mut hash = hasher.finalize().to_vec();
+        let mut hash = hasher.finalize();
 
         // Step d: For R >= 3, do 50 additional MD5 iterations
         if revision >= 3 {
             for _ in 0..50 {
-                let mut h = Md5::new();
+                let mut h = super::md5_kdf_hasher()?;
                 h.update(&hash[..key_length.min(16)]);
-                hash = h.finalize().to_vec();
+                hash = h.finalize();
             }
         }
 
@@ -747,15 +749,16 @@ pub fn authenticate_owner_password(
         }
         let padded_password = pad_password(owner_password);
 
-        let mut hasher = Md5::new();
+        // #230 Phase C: governed provider; byte-identical default policy.
+        let mut hasher = super::md5_kdf_hasher()?;
         hasher.update(&padded_password);
-        let mut hash = hasher.finalize().to_vec();
+        let mut hash = hasher.finalize();
 
         if revision >= 3 {
             for _ in 0..50 {
-                let mut h = Md5::new();
+                let mut h = super::md5_kdf_hasher()?;
                 h.update(&hash[..key_length.min(16)]);
-                hash = h.finalize().to_vec();
+                hash = h.finalize();
             }
         }
 

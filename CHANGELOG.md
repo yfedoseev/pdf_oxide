@@ -71,8 +71,16 @@ All notable changes to PDFOxide are documented here.
   governance report and a pluggable `AuditSink`. Exposed across all
   seven surfaces (Rust, Python, C ABI, Go, C#, WASM, Node) as
   `set_crypto_policy` / `crypto_policy` / `crypto_inventory`. Default
-  (`compat`) behaviour is byte-for-byte unchanged. This is the v0.3.50
-  slice of #230; the residual-MD5-KDF routing remains roadmap.
+  (`compat`) behaviour is byte-for-byte unchanged. The residual
+  password-key-derivation MD5 (ISO 32000-1 §7.6.3 Algorithm 1/2/3/5/7)
+  is now also routed through the governed provider, so a
+  `strict`/`fips-strict` policy denies legacy R≤4 at the **primitive**
+  level, not only the operation gate — closing the gap noted in the
+  v0.3.50 slice. The hashing is byte-identical under `compat`
+  (existing encrypted PDFs still decrypt; newly written ones are
+  bit-for-bit unchanged). Non-security opaque MD5 (file identifier,
+  embedded-file `/CheckSum`) is deliberately left direct so a strict
+  policy still permits AES-256 writes.
 - **Split a PDF by bookmarks
   ([#482](https://github.com/yfedoseev/pdf_oxide/issues/482))** — new
   `pdf-oxide split --by-bookmarks [--bookmark-prefix P]

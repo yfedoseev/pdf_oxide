@@ -283,9 +283,11 @@ impl EncryptionHandler {
 
         #[cfg(feature = "legacy-crypto")]
         {
-            use md5::{Digest, Md5};
-
-            let mut hasher = Md5::new();
+            // #230 Phase C: route the Algorithm-1 per-object-key MD5
+            // through the governed provider (byte-identical under the
+            // default `compat` policy; a strict/FIPS policy denies it
+            // at the primitive, not just the operation gate).
+            let mut hasher = super::md5_kdf_hasher()?;
 
             // Step a: Extend key with object/generation number
             hasher.update(base_key);

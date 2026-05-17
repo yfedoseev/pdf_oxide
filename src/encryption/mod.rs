@@ -55,6 +55,46 @@ pub use certificate::{
 pub use handler::EncryptionHandler;
 pub use write_handler::EncryptionWriteHandler;
 
+/// A fresh MD5 hasher for the ISO 32000-1 §7.6.3 Standard-Security-
+/// Handler password key-derivation, obtained through the active
+/// [`crate::crypto`] provider (#230 Phase C).
+///
+/// Routing the *primitive* through the provider — not just the
+/// operation gate in [`handler::EncryptionHandler::new`] /
+/// [`write_handler`] — lets a `strict`/`fips-strict`
+/// `SecurityPolicy` (or a FIPS provider) deny weak-crypto key
+/// derivation at the boundary it actually happens, closing the
+/// "operation-gated but primitive-ungated" gap (feature-230 §3.5 risk
+/// table). Under the default `compat` policy the returned hasher is
+/// the same `md5::Md5`, so every existing encrypted PDF still decrypts
+/// and newly written ones are **byte-for-byte unchanged**.
+///
+/// The *non-security* opaque MD5 uses — the file identifier
+/// ([`generate_file_id`]) and the embedded-file `/CheckSum`
+/// (`writer::embedded_files`) — are deliberately **not** routed here:
+/// they are not security decisions, and `AlgorithmUse` has no
+/// non-security variant, so gating them would make a strict policy
+/// refuse to write otherwise-compliant AES-256 documents. They remain
+/// direct `md5` calls (feature-230 §2.2).
+///
+/// # Errors
+/// Maps the provider/policy denial
+/// ([`crate::crypto::Error::AlgorithmNotPermitted`]) to a clear
+/// [`Error::InvalidPdf`], consistent with the existing R≤4 / legacy
+/// rejection messages in this module.
+#[cfg(feature = "legacy-crypto")]
+pub(crate) fn md5_kdf_hasher() -> Result<Box<dyn crate::crypto::Hasher>> {
+    crate::crypto::active()
+        .hasher(crate::crypto::HashAlgorithm::Md5)
+        .map_err(|e| {
+            Error::InvalidPdf(format!(
+                "MD5 key derivation is not permitted by the active crypto \
+                 policy/provider (ISO 32000-1 §7.6.3 Standard Security \
+                 Handler, R≤4): {e}"
+            ))
+        })
+}
+
 /// Encryption algorithm used in the PDF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Algorithm {
@@ -659,6 +699,11 @@ pub fn generate_file_id() -> (Vec<u8>, Vec<u8>) {
 
     // PDF spec (ISO 32000-1 §14.4) specifies MD5; when legacy-crypto is off
     // we use SHA-256 truncated to 16 bytes — still a unique opaque identifier.
+    // #230 Phase C: intentionally a *direct* MD5 — the file identifier
+    // is a non-security opaque tag, not a key-derivation. It is NOT
+    // routed through `md5_kdf_hasher` (see that fn's docs): doing so
+    // would let a strict policy refuse to write an otherwise-compliant
+    // AES-256 document, and `AlgorithmUse` has no non-security variant.
     #[cfg(feature = "legacy-crypto")]
     let id = {
         use md5::{Digest, Md5};

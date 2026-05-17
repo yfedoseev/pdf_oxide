@@ -124,6 +124,20 @@ impl EncryptionWriteHandler {
         {
             use md5::{Digest, Md5};
 
+            // #230 Phase C note: this per-object key (Algorithm 1) is
+            // *intentionally* not re-routed through the governed
+            // provider. It is always downstream of the document
+            // encryption key, which is derived by the now-governed
+            // `algorithms::compute_encryption_key`
+            // (`EncryptionWriteHandler::new`) / `compute_owner_password_hash`
+            // (EncryptDict build) — both call `md5_kdf_hasher()?`, so a
+            // `strict`/`fips-strict` policy already fail-closes R≤4
+            // *before* this code is reachable. Re-gating here would add
+            // no governance (set-once policy, already permitted upstream)
+            // while forcing a fallible-Result cascade through the PDF
+            // object serializer (KISS / byte-stability — feature-230
+            // §4.2's stated deferral reason).
+
             // Algorithm 1: Derive object-specific key
             let mut hasher = Md5::new();
 
