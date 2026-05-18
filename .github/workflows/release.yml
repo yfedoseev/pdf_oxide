@@ -4,12 +4,33 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  # #515: PR dry-run — build/validate/package the WHOLE release pipeline
+  # on release-branch PRs so publish-time failures (version drift,
+  # packaging, "already published") fail the PR instead of surfacing
+  # only post-tag (when the merge is done and publishing is
+  # irreversible). Mirrors release-fips.yml. Mutating publish jobs are
+  # hard-gated below so a pull_request can NEVER publish.
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'pyproject.toml'
+      - 'js/**'
+      - 'csharp/**'
+      - 'go/**'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
       tag:
         description: 'Tag to release (e.g., v0.1.1)'
         required: true
         type: string
+      publish:
+        description: 'Publish to package indexes (false = dry-run, build/validate only)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read   # global default — jobs that need write declare it locally
@@ -22,6 +43,13 @@ jobs:
   validate:
     name: Validate Release
     runs-on: ubuntu-latest
+    # #515 (maintainer-directed 2026-05-17): the no-publish PR dry-run
+    # runs ONLY on release/* branch PRs (where pre-tag validation is
+    # the point) — never on ordinary feature PRs. Every other job
+    # `needs: validate`, so skipping it here makes release.yml a no-op
+    # on non-release PRs. Real tag-push / dispatch releases are
+    # unaffected (`github.event_name != 'pull_request'`).
+    if: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/') }}
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -35,6 +63,11 @@ jobs:
           echo "Detected version: $VERSION"
 
       - name: Validate tag matches version
+        # #515: no tag on a pull_request dry-run — skip the tag↔version
+        # check (the manifest-consistency steps below still run, which
+        # is the dry-run's value); the tag check applies on real
+        # tag-push / dispatch-publish releases.
+        if: ${{ github.event_name != 'pull_request' }}
         run: |
           TAG="${{ github.ref_name }}"
           VERSION="${{ steps.version.outputs.version }}"
@@ -74,6 +107,10 @@ jobs:
           echo "✓ All language binding versions match: $VERSION"
 
       - name: Verify release is from main branch
+        # #515: a pull_request dry-run is BY DEFINITION not yet on main
+        # (that's what the PR is for) — skip; this check applies only to
+        # a real tag-push / dispatch-publish release.
+        if: ${{ github.event_name != 'pull_request' }}
         run: |
           # Fetch main branch
           git fetch origin main
@@ -508,7 +545,9 @@ jobs:
     # Restricted to full releases (no `-rc.1`-style prereleases), matching
     # verify-go-install. Tagging a Go module drops the tag on module-proxy /
     # sum.golang.org in minutes, and we don't want RC tags polluting that.
-    if: ${{ !contains(needs.validate.outputs.version, '-') }}
+    # #515 hard-gate: a pull_request (PR dry-run) can NEVER publish;
+    # only a real tag push, or workflow_dispatch with publish=true.
+    if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
     permissions:
       contents: write
     steps:
@@ -542,7 +581,9 @@ jobs:
     name: Verify Go build (${{ matrix.os }})
     needs: [validate, package-go-ffi]
     runs-on: ${{ matrix.os }}
-    if: ${{ !contains(needs.validate.outputs.version, '-') }}
+    # #515 hard-gate: a pull_request (PR dry-run) can NEVER publish;
+    # only a real tag push, or workflow_dispatch with publish=true.
+    if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
     strategy:
       fail-fast: false
       matrix:
@@ -1041,7 +1082,9 @@ jobs:
     # into a tagged release. For prereleases (`-rc.1` etc.) verify-go-install
     # is skipped; `always() && result != failure` lets the release proceed.
     needs: [validate, build-binaries, build-python-wheels, build-python-wheels-musl, build-wasm, build-nodejs, build-csharp, package-go-ffi, verify-go-install]
-    if: ${{ always() && needs.verify-go-install.result != 'failure' && needs.package-go-ffi.result == 'success' }}
+    # #515 hard-gate: create-release publishes a GitHub Release (mutating)
+    # — never on a pull_request dry-run; only a real tag / dispatch+publish.
+    if: ${{ always() && needs.verify-go-install.result != 'failure' && needs.package-go-ffi.result == 'success' && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1112,7 +1155,9 @@ jobs:
     name: Publish to crates.io
     needs: [validate, create-release]
     runs-on: ubuntu-latest
-    if: ${{ !contains(needs.validate.outputs.version, '-') }}
+    # #515 hard-gate: a pull_request (PR dry-run) can NEVER publish;
+    # only a real tag push, or workflow_dispatch with publish=true.
+    if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
     environment:
       name: crates-io
       url: https://crates.io/crates/pdf_oxide
@@ -1145,7 +1190,9 @@ jobs:
     name: Publish to PyPI
     needs: [validate, build-python-wheels, create-release]
     runs-on: ubuntu-latest
-    if: ${{ !contains(needs.validate.outputs.version, '-') }}
+    # #515 hard-gate: a pull_request (PR dry-run) can NEVER publish;
+    # only a real tag push, or workflow_dispatch with publish=true.
+    if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
     environment:
       name: pypi
       url: https://pypi.org/p/pdf_oxide
@@ -1176,7 +1223,9 @@ jobs:
     name: Publish to npm
     needs: [validate, build-wasm, create-release]
     runs-on: ubuntu-latest
-    if: ${{ !contains(needs.validate.outputs.version, '-') }}
+    # #515 hard-gate: a pull_request (PR dry-run) can NEVER publish;
+    # only a real tag push, or workflow_dispatch with publish=true.
+    if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
     environment:
       name: npm
       url: https://www.npmjs.com/package/pdf-oxide-wasm
@@ -1218,7 +1267,9 @@ jobs:
     name: Publish Homebrew & Scoop
     needs: [validate, create-release]
     runs-on: ubuntu-latest
-    if: ${{ !contains(needs.validate.outputs.version, '-') }}
+    # #515 hard-gate: a pull_request (PR dry-run) can NEVER publish;
+    # only a real tag push, or workflow_dispatch with publish=true.
+    if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
     environment:
       name: packaging
       url: https://github.com/yfedoseev/homebrew-tap
@@ -1315,7 +1366,9 @@ jobs:
     name: Publish to npm (pdf-oxide)
     needs: [validate, build-nodejs, create-release]
     runs-on: ubuntu-latest
-    if: ${{ !contains(needs.validate.outputs.version, '-') }}
+    # #515 hard-gate: a pull_request (PR dry-run) can NEVER publish;
+    # only a real tag push, or workflow_dispatch with publish=true.
+    if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
     environment:
       name: npm-native
       url: https://www.npmjs.com/package/pdf-oxide
@@ -1383,7 +1436,9 @@ jobs:
     name: Publish to NuGet
     needs: [validate, build-csharp, create-release]
     runs-on: ubuntu-latest
-    if: ${{ !contains(needs.validate.outputs.version, '-') }}
+    # #515 hard-gate: a pull_request (PR dry-run) can NEVER publish;
+    # only a real tag push, or workflow_dispatch with publish=true.
+    if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
     environment:
       name: nuget
       url: https://www.nuget.org/packages/PdfOxide

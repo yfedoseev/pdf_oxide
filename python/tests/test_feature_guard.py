@@ -115,6 +115,33 @@ def test_ocr_engine_raises_runtime_error_not_attribute_error_when_no_models():
         pass
 
 
+def test_extract_text_ocr_error_is_actionable_not_opaque_513():
+    """#513: a wheel/build without the ``ocr`` feature must NOT raise the
+    old opaque ``RuntimeError("OCR feature not enabled.")`` (which left
+    the reporter, on Windows, with no path forward). The message must be
+    *actionable*: name the install extra and point at the graceful auto
+    path. Runs on every platform incl. ``windows-latest`` (the reporter's
+    platform — closes the Linux-only coverage gap)."""
+    doc = _make_doc()
+    try:
+        doc.extract_text_ocr(0)
+    except RuntimeError as exc:
+        msg = str(exc)
+        low = msg.lower()
+        if "ocr" in low and ("unavailable" in low or "not enabled" in low or "without the" in low):
+            # OCR-disabled build → the message MUST be actionable (#513).
+            assert msg.strip() != "OCR feature not enabled.", (
+                "#513 regression: the bare opaque message is back"
+            )
+            assert "pip install" in low and "[ocr]" in low, (
+                f"#513: extract_text_ocr error must say how to fix it: {msg!r}"
+            )
+            assert "extract_text_auto" in low, (
+                f"#513: error must point at the graceful path: {msg!r}"
+            )
+    # OCR-enabled build (or any other outcome) → no opaque error: pass.
+
+
 # ── HTML + CSS creation (always available) ────────────────────────────────────
 
 

@@ -1,4 +1,6 @@
+pub mod auto;
 pub mod bookmarks;
+pub mod classify;
 pub mod compress;
 pub mod create;
 pub mod crop;
@@ -13,6 +15,7 @@ pub mod info;
 pub mod markdown;
 pub mod merge;
 pub mod metadata;
+pub mod models;
 pub mod paths;
 pub mod redact;
 pub mod render;

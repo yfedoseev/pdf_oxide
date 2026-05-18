@@ -182,6 +182,7 @@ pub fn paint_document<'sty>(
             &mut page_builder,
             page,
             tree,
+            doc.config.width_px,
             doc.config.height_px,
             doc.config.margin_px.left,
             doc.config.margin_px.top,
@@ -198,10 +199,40 @@ pub fn paint_document<'sty>(
     }
 }
 
+/// CSS 2.1 §14.2 / CSS Backgrounds 3 §3.11.2 canvas background
+/// propagation: the root element's `background-color` is propagated to
+/// the page canvas; if the root's is transparent/absent, the `body`
+/// element's is used. Returns the opaque RGB to paint over the whole
+/// page, or `None` if both are transparent/absent.
+fn canvas_background<'sty>(
+    tree: &BoxTree,
+    style_for: &impl Fn(u32) -> Option<ComputedStyles<'sty>>,
+) -> Option<(f32, f32, f32)> {
+    fn bg_of(styles: &ComputedStyles<'_>) -> Option<(f32, f32, f32)> {
+        let rv = styles.get("background-color")?;
+        let color = parse_color(&rv.value, "background-color").ok()?;
+        (color.a > 0.01).then_some((color.r, color.g, color.b))
+    }
+    // Box 0 (`BoxTree::ROOT`) is the `html` element box.
+    if let Some(rgb) = style_for(BoxTree::ROOT).as_ref().and_then(bg_of) {
+        return Some(rgb);
+    }
+    // Root transparent → propagate `body` (first element-backed child
+    // of the root box).
+    let body = tree
+        .get(BoxTree::ROOT)
+        .children
+        .iter()
+        .copied()
+        .find(|&c| tree.get(c).element.is_some())?;
+    style_for(body).as_ref().and_then(bg_of)
+}
+
 fn paint_page<'sty>(
     page_builder: &mut PageBuilder<'_>,
     fragment: &PageFragment,
     tree: &BoxTree,
+    page_width_px: f32,
     page_height_px: f32,
     margin_left: f32,
     margin_top: f32,
@@ -215,6 +246,15 @@ fn paint_page<'sty>(
     pseudo_after_for: &impl Fn(u32) -> Option<String>,
     image_for: &impl Fn(u32) -> Option<PaintImage>,
 ) {
+    // CSS 2.1 §14.2 / CSS Backgrounds 3 §3.11.2 — canvas background
+    // propagation: the root element's `background-color` (or, if that
+    // is transparent, the `body` element's) is propagated to the page
+    // canvas and painted over the *entire* page, under all content.
+    // Fixes #516: `body { background-color: … }` previously only filled
+    // the (zero-size) body box → byte-identical output.
+    if let Some((r, g, b)) = canvas_background(tree, style_for) {
+        page_builder.fill_rect_colored(0.0, 0.0, page_width_px, page_height_px, r, g, b);
+    }
     for pb in &fragment.boxes {
         let node = tree.get(pb.box_id);
         // CSS `opacity` + `transform: translate*(…)`. Only the first

@@ -220,6 +220,79 @@ fn parse_page_ranges(input: &str) -> Result<Vec<usize>, (i32, String)> {
     Ok(pages)
 }
 
+fn open_authed(args: &Value) -> Result<PdfDocument, (i32, String)> {
+    let file_path = args
+        .get("file_path")
+        .and_then(|v| v.as_str())
+        .ok_or((-32602, "Missing required parameter: file_path".to_string()))?;
+    let password = args.get("password").and_then(|v| v.as_str());
+    let doc =
+        PdfDocument::open(file_path).map_err(|e| (-32603, format!("Failed to open PDF: {e}")))?;
+    if let Some(pw) = password {
+        let ok = doc
+            .authenticate(pw.as_bytes())
+            .map_err(|e| (-32603, format!("Authentication error: {e}")))?;
+        if !ok {
+            return Err((-32603, "Incorrect password".to_string()));
+        }
+    }
+    Ok(doc)
+}
+
+/// MCP `classify` tool (#517): cheap per-page text-vs-OCR
+/// classification (no OCR/rasterisation) → JSON `DocumentClassification`
+/// as the text content, so an agent can branch on `pages_needing_ocr`.
+pub fn classify(args: &Value) -> Result<Value, (i32, String)> {
+    let doc = open_authed(args)?;
+    let cls = doc
+        .classify_document()
+        .map_err(|e| (-32603, format!("classify failed: {e}")))?;
+    let text = serde_json::to_string(&cls).map_err(|e| (-32603, e.to_string()))?;
+    Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+}
+
+/// MCP `auto` tool (#517): auto-extract text — per-page text-vs-OCR
+/// routing with graceful native fallback (never the opaque OCR error,
+/// #513). `format`: `text` (assembled) or `json` (rich
+/// `PageExtraction[]` with per-region bbox + typed reasons).
+pub fn auto(args: &Value) -> Result<Value, (i32, String)> {
+    let format = args
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text");
+    if !matches!(format, "text" | "json") {
+        return Err((-32602, format!("Invalid format: {format}. Must be text or json")));
+    }
+    let doc = open_authed(args)?;
+    let n = doc
+        .page_count()
+        .map_err(|e| (-32603, format!("page_count failed: {e}")))?;
+    let ae = pdf_oxide::extractors::AutoExtractor::new();
+    let text = if format == "json" {
+        let mut v = Vec::with_capacity(n);
+        for p in 0..n {
+            v.push(
+                ae.extract_page(&doc, p)
+                    .map_err(|e| (-32603, format!("extract_page {p}: {e}")))?,
+            );
+        }
+        serde_json::to_string(&v).map_err(|e| (-32603, e.to_string()))?
+    } else {
+        let mut s = String::new();
+        for p in 0..n {
+            if p > 0 {
+                s.push_str("\n\n");
+            }
+            s.push_str(
+                &ae.extract_text(&doc, p)
+                    .map_err(|e| (-32603, format!("extract_text {p}: {e}")))?,
+            );
+        }
+        s
+    };
+    Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

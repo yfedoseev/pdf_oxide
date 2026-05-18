@@ -239,6 +239,29 @@ pub fn crypto_cbom() -> String {
     crate::crypto::cbom_json()
 }
 
+/// #519: Air-gapped OCR model manifest — JSON (detector + every
+/// supported language's cache filenames and source URLs).
+///
+/// WASM provisioning is **host-side**: browser/WASM has no filesystem
+/// or network-to-disk, so a download-to-cache prefetch cannot run
+/// here. This manifest is informational — it lets the JS host learn
+/// which model files/URLs to fetch and bundle (or ship out of band)
+/// before driving OCR. There is intentionally no `prefetchModels` in
+/// the WASM surface (see `prefetchAvailable`, which always returns
+/// `false`).
+#[wasm_bindgen(js_name = "modelManifest")]
+pub fn model_manifest() -> String {
+    crate::extractors::auto::AutoExtractor::model_manifest()
+}
+
+/// #519: Whether this build can download OCR models to a local cache.
+/// Always `false` in WASM — provisioning is host-side (see
+/// `modelManifest`).
+#[wasm_bindgen(js_name = "prefetchAvailable")]
+pub fn prefetch_available() -> bool {
+    false
+}
+
 // ============================================================================
 // WasmPdfDocument — read, convert, search, extract, and edit PDFs
 // ============================================================================
@@ -5791,6 +5814,81 @@ impl WasmStreamingTable {
 //
 // Run native tests:  cargo test --lib --features wasm -- wasm::tests
 // Run wasm tests:    wasm-pack test --headless --node --features wasm
+
+// ─── Comprehensive auto extraction (#517) ──────────────────────────────────
+//
+// Frozen JSON-string envelope, identical to the C-ABI / Python / other
+// bindings (api-design.md §4 parity contract — JS callers `JSON.parse`).
+// Strictly additive; existing methods byte-identical. WASM ships
+// classify + reasons + native fallback (OCR is a documented WASM stub —
+// `extractTextOcr` — so the auto path gracefully returns native text +
+// an `ocr_requested_but_unavailable` reason, never an opaque error).
+#[wasm_bindgen]
+impl WasmPdfDocument {
+    /// Cheap per-page text-vs-OCR classification → JSON
+    /// `DocumentClassification`.
+    #[wasm_bindgen(js_name = "classifyDocument")]
+    pub fn classify_document(&mut self) -> Result<String, JsValue> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?;
+        let cls = inner
+            .classify_document()
+            .map_err(|e| JsValue::from_str(&format!("classify failed: {e}")))?;
+        serde_json::to_string(&cls).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Cheap per-page classification → JSON `PageClassification`.
+    #[wasm_bindgen(js_name = "classifyPage")]
+    pub fn classify_page(&mut self, page_index: usize) -> Result<String, JsValue> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?;
+        let c = inner
+            .classify_page(page_index)
+            .map_err(|e| JsValue::from_str(&format!("classify failed: {e}")))?;
+        serde_json::to_string(&c).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// One-shot auto text extraction — graceful native fallback (never
+    /// the opaque OCR error #513).
+    #[wasm_bindgen(js_name = "extractTextAuto")]
+    pub fn extract_text_auto(&mut self, page_index: usize) -> Result<String, JsValue> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?;
+        inner
+            .extract_text_auto(page_index)
+            .map_err(|e| JsValue::from_str(&format!("auto extraction failed: {e}")))
+    }
+
+    /// Rich per-page extraction → JSON `PageExtraction` (per-region
+    /// bbox + typed reason). `optionsJson` is `{}`-tolerant
+    /// `AutoExtractOptions`; undefined/empty → defaults.
+    #[wasm_bindgen(js_name = "extractPageAuto")]
+    pub fn extract_page_auto(
+        &mut self,
+        page_index: usize,
+        options_json: Option<String>,
+    ) -> Result<String, JsValue> {
+        let opts = match options_json {
+            Some(ref s) if !s.trim().is_empty() => serde_json::from_str(s)
+                .map_err(|e| JsValue::from_str(&format!("invalid optionsJson: {e}")))?,
+            _ => crate::extractors::auto::AutoExtractOptions::default(),
+        };
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?;
+        let pe = crate::extractors::auto::AutoExtractor::with(opts)
+            .extract_page(&inner, page_index)
+            .map_err(|e| JsValue::from_str(&format!("auto extraction failed: {e}")))?;
+        serde_json::to_string(&pe).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+}
 
 #[cfg(test)]
 mod tests {

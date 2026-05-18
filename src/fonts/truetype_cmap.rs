@@ -239,7 +239,7 @@ impl TrueTypeCMap {
     /// Unicode cmap is missing or malformed we fall back to this one; the
     /// byte code acts as the Mac Roman character code.
     ///
-    /// Benchmark canary: ~8 Kreuzberg MS Office fixtures previously logged
+    /// Benchmark canary: ~8 MS Office corpus fixtures previously logged
     /// "Unsupported cmap format: 0" warnings and lost font glyph mapping
     /// as a consequence (B9).
     fn parse_cmap_format0(cursor: &mut Cursor<&[u8]>) -> Result<HashMap<u16, char>, String> {

@@ -2,6 +2,214 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.51] - 2026-05-17
+
+> Comprehensive auto extraction — per-page text-vs-OCR with typed
+> reason codes, graceful native fallback, and image-table recovery —
+> across all seven bindings plus the CLI and MCP server; a pre-merge
+> release-pipeline dry-run; and five bundled fixes.
+
+### Added
+
+- **Comprehensive auto extraction
+  ([#517](https://github.com/yfedoseev/pdf_oxide/issues/517))** — a
+  new, **strictly additive** surface that returns recoverable text
+  decided **per page/region** with a machine-readable reason for every
+  degraded result, and a **graceful warn-and-fall-back-to-native**
+  policy (never a crash, never a silent empty). The classifier consumes
+  pdf_oxide *internals* (Tr render-mode-3, GlyphlessFont/no-embedded
+  ratio, notdef/U+FFFD, union of CTM-transformed image boxes, image
+  codec, structure tree, producer/XMP) — strictly more accurate than a
+  post-hoc heuristic on the flattened text. New: a configured-once
+  `AutoExtractor` (`new`/`text_only`/`with` + `fast`/`balanced`/
+  `high_fidelity` presets + builder), `extract_text`/`extract_markdown`/
+  `extract_html`/`extract_page`/`extract_document`, the cheap
+  `classify_page`/`classify_document` preflight (+ `pages_needing_ocr`),
+  a one-shot `PdfDocument::extract_text_auto`, an enriched T0.5
+  text-quality gate (U+FFFD ratio + critical-fragmentation hard-trigger
+  + a column-scramble/consecutive-repeat detector), an optional
+  `force_ocr_pages` per-page OCR override, and build-time
+  `AutoExtractor::prefetch_models()` / `model_manifest()` (the
+  `pdf-oxide models prefetch`/`manifest` Dockerfile contract). Exposed
+  across all seven bindings (Rust, C-ABI, Python, WASM, Node, C#,
+  Go cgo+purego — Go via idiomatic functional options) as a frozen
+  JSON envelope, plus CLI subcommands `classify`/`auto`/`models` and
+  MCP tools `classify`/`auto`. Existing `extract_text`/CLI/MCP
+  behaviour is byte-identical.
+- AutoExtractor semantics are precisely specified: `TextOnly` returns
+  native text **without** classifying (the cheapest path); each
+  per-page result reports its **actual** source/reason, so a native
+  fallback after a failed/empty/absent OCR is `Fallback` +
+  `OcrRequestedButUnavailable` — never mislabelled `Ocr`;
+  `classify_page`/`classify_document` **fail closed** on
+  encrypted-unauthenticated PDFs (a security op) while non-security
+  per-page errors degrade gracefully; the "OCR unavailable" warning
+  is emitted only when the `ocr` feature is absent; and
+  `model_cache_dir()` resolves cross-platform (Windows
+  `%LOCALAPPDATA%`/`%USERPROFILE%`, else `$XDG_CACHE_HOME` or
+  `$HOME/.cache`; dependency-free).
+- The local-CPU tier ships via the existing ONNX OCR engine + spatial
+  table detector; the SLANet + PP-DocLayout-S ONNX *models* are a
+  documented **zero-API-change point-release follow-up**
+  (`tier-model-strategy.md` §5) — the API, prefetch and manifest
+  contracts are stable now.
+
+### Fixed
+
+- **CSS `background-color` ignored in HTML/CSS→PDF
+  ([#516](https://github.com/yfedoseev/pdf_oxide/issues/516))** — a
+  v0.3.50 regression where output was byte-identical with/without a
+  page/`body` `background-color`. Implemented CSS 2.1 §14.2 / CSS
+  Backgrounds 3 §3.11.2 **canvas background propagation** (root → else
+  `body`, painted over the whole page under content); guarded by a
+  core-level Rust test plus the existing Python/Go oracles.
+- **OCR-only reading-order parity
+  ([#460](https://github.com/yfedoseev/pdf_oxide/issues/460))** —
+  `detect_page_type`/`needs_ocr` now route through the unified
+  classifier so OCR detection matches `extract_page_auto` exactly;
+  `extract_text_ocr` is retained as the documented forced-OCR escape
+  hatch; `extract_text` is unchanged.
+- **Opaque OCR error on Windows
+  ([#513](https://github.com/yfedoseev/pdf_oxide/issues/513))** — the
+  bare `RuntimeError("OCR feature not enabled.")` is replaced with an
+  actionable message (which wheel/extra, how to supply models, and the
+  graceful `extract_text_auto` path); plus a cross-platform Python
+  feature-guard test (runs on `windows-latest`).
+- **Stale PAdES module rustdoc
+  ([#514](https://github.com/yfedoseev/pdf_oxide/issues/514))** —
+  `src/signatures/pades/mod.rs` no longer claims the B-T/B-LT/B-LTA
+  pieces are "deferred / must not be shipped" (they shipped in
+  v0.3.50).
+- **Per-glyph `Tm`+`Tj` jitter scrambled reading order
+  ([#518](https://github.com/yfedoseev/pdf_oxide/issues/518))** —
+  Microsoft Word emits broken-image placeholder text as one
+  `BT Tm Tj ET` block per glyph with ±2.5–5pt sinusoidal Y-jitter;
+  the `Tm`-run merge tolerated only ±0.5pt, splitting jittered
+  glyphs into separate Y-banded spans that the reading-order sort
+  then emitted top-to-bottom (e.g. `"Hello"` → `"elH l o"`). The
+  same-line tolerance is now scale-relative (0.5× the text-space
+  glyph height, ≥0.5pt floor) so typographic jitter merges while
+  genuine line breaks (leading ≳ 1.0× font size) still split.
+  Pinned by an end-to-end regression suite (the reported repro plus
+  a max-amplitude case and an anti-over-merge two-line case).
+- **Go `purego` backend panicked at runtime on the first call** — the
+  `CGO_ENABLED=0` backend registers every FFI symbol in one
+  `sync.Once`; `pdf_sign_bytes_pades` has 18 scalar parameters, which
+  exceeds `purego`'s SysV/AMD64 argument limit, so
+  `purego.RegisterLibFunc` panicked (`too many stack arguments`) and
+  the entire pure-Go backend was unusable (any first call aborted).
+  A pre-existing v0.3.50 defect — `cgo` is unaffected and CI only
+  *built* (never *ran*) the `purego` backend, so it went unnoticed.
+  Fixed additively: a new C-ABI `pdf_sign_bytes_pades_opts` collapses
+  the parameters into one `#[repr(C)]` options struct (5-argument
+  call surface; delegates to `pdf_sign_bytes_pades`, byte-identical
+  behaviour — the 18-argument function is unchanged for existing
+  C/C++/C#/Node callers). The `purego` binding now uses it; a Go
+  regression test exercises the registration path (closing the
+  build-only CI gap). Surfaced by a cross-binding smoke pass of the
+  full v0.3.51 + v0.3.50 API.
+- **Auto-extract reported a complete native result as
+  `partial_success` / `ocr_requested_but_unavailable`** — when the
+  classifier routed a page to OCR but OCR was unavailable, the native
+  fallback was *unconditionally* labelled degraded, even when that
+  native text was itself high quality. A downstream consumer trusting
+  `status` / `reason` / `pages_needing_ocr` would run needless OCR and
+  treat a perfect extraction as incomplete. Now `route` re-checks the
+  T0.5 quality gate on the fallback text: high-quality native text is
+  reported `Complete` / `NativeText` / `NativeTextHighConfidence`
+  (only genuinely poor fallback stays `partial`). Also: a short,
+  clean, image-free text page is classified `TextLayer` (not
+  `Scanned`) so it is no longer wrongly listed in
+  `pages_needing_ocr`; only *garbled* glyphs route to OCR. Pinned by
+  a semantic regression suite that additionally asserts
+  `AutoExtractor::extract_text` is byte-identical to the canonical
+  `extract_text` per page, plus a default-running **fidelity** suite
+  (known prose extracts verbatim, in reading order, ungarbled, and
+  `extract_markdown`/`extract_html` delegate faithfully and carry the
+  content). Surfaced by the cross-binding smoke pass.
+- **AutoExtractor never actually ran OCR** — `route()` invoked
+  `extract_text_with_ocr(.., None, ..)` with a `None` engine and there
+  was no default engine loader, so the function returned native text
+  *without OCR*. The Auto surface silently fell back to native for
+  *every* image page even with the `ocr` feature and models present —
+  text-from-images was non-functional, not merely untested (#519).
+  Fixed: `route()` now builds an `OcrEngine` from the documented
+  `model_cache_dir()` (`$PDF_OXIDE_MODEL_DIR` / the `prefetch_models`
+  layout: `det.onnx` / `rec.onnx` / `en_dict.txt`) and passes
+  `Some(&engine)`; unprovisioned → graceful native fallback (never
+  fail-loud — only security ops fail-closed). Pinned by a model-gated
+  `#[cfg(feature = "ocr")]` end-to-end test (real image-only PDF →
+  AutoExtractor recovers the text, `source = Ocr`) **plus a new CI
+  `ocr` lane** that provisions the models + ONNX Runtime and runs it,
+  so the path is genuinely exercised. Multi-script note: native
+  CJK/Arabic/Hebrew/Cyrillic extraction via the auto surface is
+  guaranteed by the byte-identical-to-canonical invariant over the
+  repo's running script suites (a direct CJK auto test is included);
+  OCR *recognition* of non-Latin images is bounded by which
+  PaddleOCR language models are provisioned (provisioning, not a code
+  defect).
+- **Multi-language OCR + a real model-provisioning API**: the engine
+  loader honors `AutoExtractOptions.ocr_languages` and, when unset, a
+  cheap script heuristic (`detect_ocr_language`) reads the document's
+  own native text so a scanned Chinese/Arabic/Cyrillic/Devanagari PDF
+  is not OCR'd with the English model; it selects the per-language
+  recognition model + dictionary from the model cache dir (shared
+  script-agnostic detector), falling back English → native (never
+  fail-loud). `AutoExtractor::prefetch_models(&[OcrLanguage])` is **no
+  longer a stub — it actually downloads** (idempotent, atomic) the
+  detector + requested language packs into `model_cache_dir()`; new
+  `prefetch_models_default()`, instance `AutoExtractor::prefetch()`
+  (uses the configured `ocr_languages`), `prefetch_available()`,
+  `OcrLanguage` enum + `OcrLanguage::ALL`, and a real
+  `model_manifest()` (det + every language's files/URLs). The
+  provisioning trio (`prefetch_models` / `model_manifest` /
+  `prefetch_available`) is exposed **across all bindings** — C-ABI
+  (`pdf_oxide_prefetch_models`/`_model_manifest`/`_prefetch_available`),
+  Python, Node, Go (cgo+purego), C# — so the Docker/CI build-time
+  predownload story works from any consumer language, not just Rust;
+  WASM exposes `modelManifest()` only (browser has no
+  filesystem/network-to-disk — host-side provisioning, stated
+  honestly). CLI: `pdf-oxide models prefetch [-l <lang>… | --all]`,
+  and (real fix) the CLI now **warns instead of silently lying** when
+  built without the `ocr` feature (the downloader is `ocr`-gated;
+  `pdf_oxide_cli` gained an `ocr` feature forwarding `pdf_oxide/ocr`).
+  Honest scope (empirically verified end-to-end through the auto
+  surface, **10/12**): english · chinese (Simplified) · **cyrillic** ·
+  arabic · korean · latin · devanagari · tamil · telugu · kannada.
+  **japanese & chinese-traditional**: the loader/prefetch/detect
+  pipeline is correct and their packs download fine, but the specific
+  deepghs `japan_PP-OCRv3_rec` / `chinese_cht_PP-OCRv3_rec` models do
+  not produce output through the current recognizer (model/engine
+  compat — `source=Fallback`; the same pipeline works for the other
+  10 incl. Simplified Chinese); their tests are `#[ignore]` with that
+  reason — a tracked follow-up, not a code defect, not hidden.
+  **Hebrew**: a genuine hard limit — PaddleOCR publishes a Hebrew
+  *dict* but no recognition model anywhere, so it cannot be fetched
+  (the loader is ready the instant a pair is provided — upstream
+  limit, not our code). Pinned by a network-gated `prefetch_models`
+  download test (proves real fetch-to-disk), the model-gated
+  per-language auto-OCR matrix, the cross-binding manifest-parity
+  tests (C-ABI/Python/Node/Go/C#), and the new CI `ocr` lane
+  (provisions models + ONNX Runtime and runs them).
+
+### CI / Release
+
+- **Release pipeline unverifiable pre-merge
+  ([#515](https://github.com/yfedoseev/pdf_oxide/issues/515))** —
+  `release.yml` now runs a no-publish **dry-run on `release/*`
+  pull requests** (parity with `release-fips.yml`) plus
+  `workflow_dispatch{publish}`; every mutating publish job is
+  hard-gated so a `pull_request` can **never** publish, while the
+  full build/validate/package matrix runs on the release PR. Scoped
+  to `release/*` PRs so ordinary feature PRs are unaffected.
+
+### Thanks
+
+- [@Suleman-Elahi](https://github.com/Suleman-Elahi) for reporting
+  [#513](https://github.com/yfedoseev/pdf_oxide/issues/513).
+- [@kh3rld](https://github.com/kh3rld) for reporting
+  [#518](https://github.com/yfedoseev/pdf_oxide/issues/518).
+
 ## [0.3.50] - 2026-05-16
 
 > True destructive PDF redaction, PAdES-B-T/B-LT long-term-validation

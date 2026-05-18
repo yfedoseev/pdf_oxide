@@ -71,6 +71,12 @@ fn dispatch(
             commands::markdown::run(file, pages, output, password, json)
         },
         Command::Html { ref file } => commands::html::run(file, pages, output, password, json),
+        Command::Classify { ref file } => commands::classify::run(file, password, json),
+        Command::Auto {
+            ref file,
+            ref format,
+        } => commands::auto::run(file, format, pages, output, password, json),
+        Command::Models { ref action } => commands::models::run(action),
         Command::Info { ref file } => commands::info::run(file, password, json),
         Command::Merge { ref files } => commands::merge::run(files, output),
         Command::Split {

@@ -4247,6 +4247,80 @@ pub unsafe extern "C" fn pdf_sign_bytes_pades(
     }
 }
 
+/// Options for [`pdf_sign_bytes_pades_opts`] — the same parameters as
+/// [`pdf_sign_bytes_pades`], collapsed into one `#[repr(C)]` struct.
+///
+/// `pdf_sign_bytes_pades` takes 18 scalar arguments, which exceeds the
+/// argument-marshalling limit of some FFI clients (notably the pure-Go
+/// `purego` backend on the SysV/AMD64 ABI, which panics at registration
+/// above ~9 arguments). This struct-pointer variant keeps the call
+/// surface at 5 arguments so every binding — including `CGO_ENABLED=0`
+/// Go — can invoke PAdES signing. Field order/types mirror the scalar
+/// function exactly; `#[repr(C)]` makes the layout match a C struct of
+/// the same fields on every supported platform.
+#[repr(C)]
+pub struct PadesSignOptionsC {
+    pub certificate_handle: *const std::ffi::c_void,
+    pub certs: *const *const u8,
+    pub cert_lens: *const usize,
+    pub n_certs: usize,
+    pub crls: *const *const u8,
+    pub crl_lens: *const usize,
+    pub n_crls: usize,
+    pub ocsps: *const *const u8,
+    pub ocsp_lens: *const usize,
+    pub n_ocsps: usize,
+    pub tsa_url: *const c_char,
+    pub reason: *const c_char,
+    pub location: *const c_char,
+    pub level: i32,
+}
+
+/// Struct-options variant of [`pdf_sign_bytes_pades`] (5 arguments).
+/// Functionally identical — it unpacks `options` and delegates to
+/// `pdf_sign_bytes_pades`, so behaviour, error codes and the returned
+/// buffer are byte-for-byte the same. Additive: the 18-argument
+/// function is unchanged for existing C/C++/C#/Node callers.
+///
+/// # Safety
+/// `options` must be a valid pointer to a `PadesSignOptionsC` whose
+/// pointer fields are valid for the duration of the call (same
+/// contract as the scalar function).
+#[no_mangle]
+pub unsafe extern "C" fn pdf_sign_bytes_pades_opts(
+    pdf_data: *const u8,
+    pdf_len: usize,
+    options: *const PadesSignOptionsC,
+    out_len: *mut usize,
+    error_code: *mut i32,
+) -> *mut u8 {
+    if options.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let o = &*options;
+    pdf_sign_bytes_pades(
+        pdf_data,
+        pdf_len,
+        o.certificate_handle,
+        o.level,
+        o.tsa_url,
+        o.reason,
+        o.location,
+        o.certs,
+        o.cert_lens,
+        o.n_certs,
+        o.crls,
+        o.crl_lens,
+        o.n_crls,
+        o.ocsps,
+        o.ocsp_lens,
+        o.n_ocsps,
+        out_len,
+        error_code,
+    )
+}
+
 /// Classify a signature's PAdES level from its CMS attributes alone
 /// (B-B vs B-T). B-LT additionally needs the document `/DSS` — read it
 /// via [`pdf_document_get_dss`] and inspect its VRI. Returns the frozen
@@ -7865,6 +7939,228 @@ pub extern "C" fn pdf_document_plan_split_by_bookmarks(
             ptr::null_mut()
         },
     }
+}
+
+// ─── Comprehensive auto extraction (#517) ──────────────────────────────────
+//
+// JSON-string result at the C-ABI (matches the shipped split-by-bookmarks
+// idiom — api-design.md §4; the frozen parity contract for all bindings).
+// Enums serialise as stable snake_case tokens. Read-only inspection;
+// encrypted-unauthenticated fails closed (case L) via `classify_error`.
+
+/// Cheap per-page text-vs-OCR classification (no OCR, no rasterisation).
+/// Returns a malloc'd JSON `PageClassification`
+/// (`{page,kind,confidence,reason,signals}`); free via the string-free.
+/// On failure sets `error_code` non-zero and returns null.
+#[no_mangle]
+pub extern "C" fn pdf_document_classify_page(
+    handle: *mut PdfDocument,
+    page_index: i32,
+    error_code: *mut i32,
+) -> *mut c_char {
+    if handle.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let doc = handle_ref(handle);
+    match doc.classify_page(page_index as usize) {
+        Ok(c) => match serde_json::to_string(&c) {
+            Ok(j) => {
+                set_error(error_code, ERR_SUCCESS);
+                to_c_string(&j)
+            },
+            Err(e) => {
+                set_error(
+                    error_code,
+                    classify_error(&crate::error::Error::InvalidOperation(e.to_string())),
+                );
+                ptr::null_mut()
+            },
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
+    }
+}
+
+/// Cheap whole-document classification (per-page kinds +
+/// `pages_needing_ocr` + aggregate summary). Malloc'd JSON
+/// `DocumentClassification`; free via the string-free.
+#[no_mangle]
+pub extern "C" fn pdf_document_classify_document(
+    handle: *mut PdfDocument,
+    error_code: *mut i32,
+) -> *mut c_char {
+    if handle.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let doc = handle_ref(handle);
+    match doc.classify_document() {
+        Ok(c) => match serde_json::to_string(&c) {
+            Ok(j) => {
+                set_error(error_code, ERR_SUCCESS);
+                to_c_string(&j)
+            },
+            Err(e) => {
+                set_error(
+                    error_code,
+                    classify_error(&crate::error::Error::InvalidOperation(e.to_string())),
+                );
+                ptr::null_mut()
+            },
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
+    }
+}
+
+/// One-shot auto text extraction (`AutoExtractor::new()`): per-page,
+/// auto-routed text-vs-OCR with graceful native fallback (never the
+/// opaque OCR error — #513). Malloc'd UTF-8 string; free via the
+/// string-free.
+#[no_mangle]
+pub extern "C" fn pdf_document_extract_text_auto(
+    handle: *mut PdfDocument,
+    page_index: i32,
+    error_code: *mut i32,
+) -> *mut c_char {
+    if handle.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let doc = handle_ref(handle);
+    match doc.extract_text_auto(page_index as usize) {
+        Ok(text) => {
+            set_error(error_code, ERR_SUCCESS);
+            to_c_string(&text)
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
+    }
+}
+
+/// Rich per-page extraction. `options_json` is `{}`-tolerant
+/// (`AutoExtractOptions`: `mode`, `reconstruct_image_tables`,
+/// `emit_placeholders`, `ocr_languages`, `min_text_confidence`,
+/// `table_confidence`, `force_ocr_pages`); NULL/empty → defaults.
+/// Returns a malloc'd JSON `PageExtraction` (per-region bbox + typed
+/// reason — never bare-empty). Free via the string-free.
+#[no_mangle]
+pub extern "C" fn pdf_document_extract_page_auto(
+    handle: *mut PdfDocument,
+    page_index: i32,
+    options_json: *const c_char,
+    error_code: *mut i32,
+) -> *mut c_char {
+    if handle.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    // Per the doc contract a NULL or empty `options_json` selects the
+    // defaults. `c_str` returns `Err` on NULL, so handle NULL the same
+    // as an empty string instead of failing with ERR_INVALID_ARG
+    // (PR #519 review).
+    let opts: crate::extractors::auto::AutoExtractOptions = if options_json.is_null() {
+        crate::extractors::auto::AutoExtractOptions::default()
+    } else {
+        match c_str(options_json) {
+            Ok(s) if !s.trim().is_empty() => match serde_json::from_str(s) {
+                Ok(o) => o,
+                Err(_) => {
+                    set_error(error_code, ERR_INVALID_ARG);
+                    return ptr::null_mut();
+                },
+            },
+            Ok(_) => crate::extractors::auto::AutoExtractOptions::default(),
+            Err(_) => {
+                set_error(error_code, ERR_INVALID_ARG);
+                return ptr::null_mut();
+            },
+        }
+    };
+    let doc = handle_ref(handle);
+    let ae = crate::extractors::auto::AutoExtractor::with(opts);
+    match ae.extract_page(doc, page_index as usize) {
+        Ok(pe) => match serde_json::to_string(&pe) {
+            Ok(j) => {
+                set_error(error_code, ERR_SUCCESS);
+                to_c_string(&j)
+            },
+            Err(e) => {
+                set_error(
+                    error_code,
+                    classify_error(&crate::error::Error::InvalidOperation(e.to_string())),
+                );
+                ptr::null_mut()
+            },
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
+    }
+}
+
+/// Build-time OCR model provisioning (#519, cross-binding). Downloads
+/// the shared detector + the recognition model/dict for each requested
+/// language into the model cache dir (`$PDF_OXIDE_MODEL_DIR` / the
+/// platform cache) and returns that dir as a malloc'd UTF-8 string
+/// (free via `free_string`). `languages_csv` is comma-separated
+/// language codes (e.g. `"english,chinese,arabic"`); NULL/empty →
+/// English. Unknown codes are skipped. Idempotent. Actual download
+/// requires the library built with the `ocr` feature; without it the
+/// cache dir is still created (no fetch) — query
+/// `pdf_oxide_prefetch_available()`.
+#[no_mangle]
+pub extern "C" fn pdf_oxide_prefetch_models(
+    languages_csv: *const c_char,
+    error_code: *mut i32,
+) -> *mut c_char {
+    use crate::extractors::auto::{AutoExtractor, OcrLanguage};
+    let langs: Vec<OcrLanguage> = match c_str(languages_csv) {
+        Ok(s) if !s.trim().is_empty() => s
+            .split(',')
+            .filter_map(|t| OcrLanguage::from_code(t.trim()))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let want = if langs.is_empty() {
+        vec![OcrLanguage::English]
+    } else {
+        langs
+    };
+    match AutoExtractor::prefetch_models(&want) {
+        Ok(dir) => {
+            set_error(error_code, ERR_SUCCESS);
+            to_c_string(&dir.to_string_lossy())
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
+    }
+}
+
+/// Air-gapped OCR model manifest — JSON (detector + every supported
+/// language's cache filenames and source URLs). Malloc'd; free via
+/// `free_string`. Never errors.
+#[no_mangle]
+pub extern "C" fn pdf_oxide_model_manifest() -> *mut c_char {
+    to_c_string(&crate::extractors::auto::AutoExtractor::model_manifest())
+}
+
+/// Whether this build can actually download models (compiled with the
+/// `ocr` feature). `1` = downloads work; `0` =
+/// `pdf_oxide_prefetch_models` only creates the cache dir (no fetch).
+#[no_mangle]
+pub extern "C" fn pdf_oxide_prefetch_available() -> i32 {
+    i32::from(crate::extractors::auto::AutoExtractor::prefetch_available())
 }
 
 // ─── Form field mutation (via DocumentEditor) ──────────────────────────────

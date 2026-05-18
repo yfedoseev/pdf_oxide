@@ -34,6 +34,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -158,6 +159,11 @@ var (
 	ffiPdfDocumentToMarkdownAll    func(handle uintptr, errCode *int32) *byte
 	ffiPdfDocumentToHtmlAll        func(handle uintptr, errCode *int32) *byte
 	ffiPdfDocumentToPlainTextAll   func(handle uintptr, errCode *int32) *byte
+	// #517 comprehensive auto extraction (frozen JSON envelope).
+	ffiPdfDocumentClassifyPage     func(handle uintptr, pageIndex int32, errCode *int32) *byte
+	ffiPdfDocumentClassifyDocument func(handle uintptr, errCode *int32) *byte
+	ffiPdfDocumentExtractTextAuto  func(handle uintptr, pageIndex int32, errCode *int32) *byte
+	ffiPdfDocumentExtractPageAuto  func(handle uintptr, pageIndex int32, optionsJSON string, errCode *int32) *byte
 
 	// PdfCreator — minimal, enough to generate test fixtures via FromMarkdown.
 	ffiPdfFromMarkdown func(markdown string, errCode *int32) uintptr
@@ -193,6 +199,11 @@ var (
 	ffiSetLogLevel func(level int32)
 	ffiGetLogLevel func() int32
 
+	// OCR model provisioning (#519) — process-wide, no handle.
+	ffiPrefetchModels    func(languagesCSV string, errCode *int32) *byte
+	ffiModelManifest     func() *byte
+	ffiPrefetchAvailable func() int32
+
 	// Runtime crypto-governance policy (#230) — process-wide, no handle.
 	ffiCryptoSetPolicy func(spec string) int32
 	ffiCryptoPolicy    func() *byte
@@ -218,12 +229,12 @@ var (
 	ffiCertificateLoadFromPem   func(certPem, keyPem string, errCode *int32) uintptr
 	ffiCertificateFree          func(handle uintptr)
 	ffiSignBytes                func(pdf []byte, pdfLen uintptr, cert uintptr, reason, location string, outLen *uintptr, errCode *int32) *byte
-	ffiSignBytesPades           func(
-		pdf []byte, pdfLen uintptr, cert uintptr, level int32,
-		tsaURL, reason, location string,
-		certs *uintptr, certLens *uintptr, nCerts uintptr,
-		crls *uintptr, crlLens *uintptr, nCRLs uintptr,
-		ocsps *uintptr, ocspLens *uintptr, nOCSPs uintptr,
+	// 5-arg struct-options variant. The 18-arg pdf_sign_bytes_pades
+	// exceeds purego's SysV/AMD64 argument limit (panics at
+	// registration), so the purego backend uses the collapsed
+	// pdf_sign_bytes_pades_opts (parity with cgo via the same core).
+	ffiSignBytesPadesOpts func(
+		pdf []byte, pdfLen uintptr, opts *padesSignOptsC,
 		outLen *uintptr, errCode *int32) *byte
 	ffiDocumentGetSignatureCount func(handle uintptr, errCode *int32) int32
 	ffiDocumentGetSignature      func(handle uintptr, index int32, errCode *int32) uintptr
@@ -263,6 +274,10 @@ func registerFFI(lib uintptr) {
 	r(&ffiPdfDocumentToHtml, "pdf_document_to_html")
 	r(&ffiPdfDocumentToPlainText, "pdf_document_to_plain_text")
 	r(&ffiPdfDocumentToMarkdownAll, "pdf_document_to_markdown_all")
+	r(&ffiPdfDocumentClassifyPage, "pdf_document_classify_page")
+	r(&ffiPdfDocumentClassifyDocument, "pdf_document_classify_document")
+	r(&ffiPdfDocumentExtractTextAuto, "pdf_document_extract_text_auto")
+	r(&ffiPdfDocumentExtractPageAuto, "pdf_document_extract_page_auto")
 	r(&ffiPdfDocumentToHtmlAll, "pdf_document_to_html_all")
 	r(&ffiPdfDocumentToPlainTextAll, "pdf_document_to_plain_text_all")
 
@@ -294,6 +309,10 @@ func registerFFI(lib uintptr) {
 	r(&ffiSetLogLevel, "pdf_oxide_set_log_level")
 	r(&ffiGetLogLevel, "pdf_oxide_get_log_level")
 
+	r(&ffiPrefetchModels, "pdf_oxide_prefetch_models")
+	r(&ffiModelManifest, "pdf_oxide_model_manifest")
+	r(&ffiPrefetchAvailable, "pdf_oxide_prefetch_available")
+
 	r(&ffiCryptoSetPolicy, "pdf_oxide_crypto_set_policy")
 	r(&ffiCryptoPolicy, "pdf_oxide_crypto_policy")
 	r(&ffiCryptoInventory, "pdf_oxide_crypto_inventory")
@@ -315,7 +334,7 @@ func registerFFI(lib uintptr) {
 	r(&ffiCertificateLoadFromPem, "pdf_certificate_load_from_pem")
 	r(&ffiCertificateFree, "pdf_certificate_free")
 	r(&ffiSignBytes, "pdf_sign_bytes")
-	r(&ffiSignBytesPades, "pdf_sign_bytes_pades")
+	r(&ffiSignBytesPadesOpts, "pdf_sign_bytes_pades_opts")
 	r(&ffiDocumentGetSignatureCount, "pdf_document_get_signature_count")
 	r(&ffiDocumentGetSignature, "pdf_document_get_signature")
 	r(&ffiSignatureGetPadesLevel, "pdf_signature_get_pades_level")
@@ -521,6 +540,72 @@ func (doc *PdfDocument) ExtractAllText() (string, error) {
 	defer doc.mu.Unlock()
 	var ec int32
 	p := ffiPdfDocumentExtractAllText(doc.handle, &ec)
+	if ec != 0 {
+		return "", ffiErrorFromInt(int(ec))
+	}
+	return goStringAndFree(p), nil
+}
+
+// ClassifyPage — see the cgo backend for docs (#517). Signature-
+// identical so the build-tag split is transparent.
+func (doc *PdfDocument) ClassifyPage(pageIndex int) (string, error) {
+	if err := doc.acquireRead(); err != nil {
+		return "", err
+	}
+	defer doc.mu.Unlock()
+	if pageIndex < 0 {
+		return "", ErrInvalidPageIndex
+	}
+	var ec int32
+	p := ffiPdfDocumentClassifyPage(doc.handle, int32(pageIndex), &ec)
+	if ec != 0 {
+		return "", ffiErrorFromInt(int(ec))
+	}
+	return goStringAndFree(p), nil
+}
+
+// ClassifyDocument — JSON DocumentClassification (#517).
+func (doc *PdfDocument) ClassifyDocument() (string, error) {
+	if err := doc.acquireRead(); err != nil {
+		return "", err
+	}
+	defer doc.mu.Unlock()
+	var ec int32
+	p := ffiPdfDocumentClassifyDocument(doc.handle, &ec)
+	if ec != 0 {
+		return "", ffiErrorFromInt(int(ec))
+	}
+	return goStringAndFree(p), nil
+}
+
+// ExtractTextAuto — graceful text-vs-OCR (#513/#517).
+func (doc *PdfDocument) ExtractTextAuto(pageIndex int) (string, error) {
+	if err := doc.acquireRead(); err != nil {
+		return "", err
+	}
+	defer doc.mu.Unlock()
+	if pageIndex < 0 {
+		return "", ErrInvalidPageIndex
+	}
+	var ec int32
+	p := ffiPdfDocumentExtractTextAuto(doc.handle, int32(pageIndex), &ec)
+	if ec != 0 {
+		return "", ffiErrorFromInt(int(ec))
+	}
+	return goStringAndFree(p), nil
+}
+
+// ExtractPageAuto — JSON PageExtraction; functional options (#517).
+func (doc *PdfDocument) ExtractPageAuto(pageIndex int, opts ...AutoOption) (string, error) {
+	if err := doc.acquireRead(); err != nil {
+		return "", err
+	}
+	defer doc.mu.Unlock()
+	if pageIndex < 0 {
+		return "", ErrInvalidPageIndex
+	}
+	var ec int32
+	p := ffiPdfDocumentExtractPageAuto(doc.handle, int32(pageIndex), autoOptionsJSON(opts), &ec)
 	if ec != 0 {
 		return "", ffiErrorFromInt(int(ec))
 	}
@@ -977,6 +1062,52 @@ func GetLogLevel() LogLevel {
 	return LogLevel(ffiGetLogLevel())
 }
 
+// ─── OCR model provisioning (#519) ───────────────────────────────────────────
+
+// PrefetchModels downloads the shared OCR detector plus the
+// recognition model and dictionary for each requested language code
+// (e.g. "english", "chinese", "arabic") into the model cache dir
+// ($PDF_OXIDE_MODEL_DIR / the platform cache) and returns that dir.
+// No languages → English. Unknown codes are skipped. Idempotent.
+// Actual download requires the native lib built with the ocr feature;
+// without it the cache dir is still created (no fetch) — query
+// PrefetchAvailable. The signature matches the cgo backend exactly.
+func PrefetchModels(langs ...string) (string, error) {
+	if err := loadLib(); err != nil {
+		return "", err
+	}
+	var ec int32
+	p := ffiPrefetchModels(strings.Join(langs, ","), &ec)
+	if ec != 0 {
+		return "", ffiErrorFromInt(int(ec))
+	}
+	if p == nil {
+		return "", ErrInternal
+	}
+	return goStringAndFree(p), nil
+}
+
+// ModelManifest returns the air-gapped OCR model manifest as JSON
+// (detector + every supported language's cache filenames and source
+// URLs). Never errors. Signature matches the cgo backend.
+func ModelManifest() string {
+	if err := loadLib(); err != nil {
+		return ""
+	}
+	return goStringAndFree(ffiModelManifest())
+}
+
+// PrefetchAvailable reports whether this build can actually download
+// models (compiled with the ocr feature). When false, PrefetchModels
+// only creates the cache dir (no fetch). Signature matches the cgo
+// backend.
+func PrefetchAvailable() bool {
+	if err := loadLib(); err != nil {
+		return false
+	}
+	return ffiPrefetchAvailable() != 0
+}
+
 // goBytesAndFree copies n bytes from the C buffer at p into a fresh Go
 // slice and then calls free_bytes(p). Safe when p == nil (returns nil).
 func goBytesAndFree(p *byte, n int) []byte {
@@ -1415,6 +1546,41 @@ func firstPtr(s []uintptr) *uintptr {
 	return &s[0]
 }
 
+// padesSignOptsC mirrors the Rust `#[repr(C)] PadesSignOptionsC`
+// EXACTLY (field order + pointer-sized types); passed by pointer to
+// pdf_sign_bytes_pades_opts so the purego call stays at 5 arguments.
+type padesSignOptsC struct {
+	certHandle uintptr
+	certs      uintptr
+	certLens   uintptr
+	nCerts     uintptr
+	crls       uintptr
+	crlLens    uintptr
+	nCRLs      uintptr
+	ocsps      uintptr
+	ocspLens   uintptr
+	nOCSPs     uintptr
+	tsaURL     uintptr
+	reason     uintptr
+	location   uintptr
+	level      int32
+}
+
+// cBytes returns a NUL-terminated copy of s and its first-byte address.
+// The caller MUST runtime.KeepAlive the returned slice across the call.
+func cBytes(s string) ([]byte, uintptr) {
+	b := append([]byte(s), 0)
+	return b, uintptr(unsafe.Pointer(&b[0]))
+}
+
+// sliceAddr is the address of s[0], or 0 for an empty slice.
+func sliceAddr(s []uintptr) uintptr {
+	if len(s) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(&s[0]))
+}
+
 // SignPdfBytesPAdES signs pdfData at a PAdES baseline level and returns
 // the signed PDF. The Certificate must carry a private key. For
 // PAdESBT/PAdESBLt a TSAURL is required.
@@ -1435,15 +1601,28 @@ func SignPdfBytesPAdES(pdfData []byte, cert *Certificate, opts PAdESOptions) ([]
 		nCRLs = uintptr(len(r.CRLs))
 		nOCSPs = uintptr(len(r.OCSPs))
 	}
+	tsaB, tsaP := cBytes(opts.TSAURL)
+	rsnB, rsnP := cBytes(opts.Reason)
+	locB, locP := cBytes(opts.Location)
+	o := padesSignOptsC{
+		certHandle: cert.handle,
+		certs:      sliceAddr(certsP),
+		certLens:   sliceAddr(certsL),
+		nCerts:     nCerts,
+		crls:       sliceAddr(crlsP),
+		crlLens:    sliceAddr(crlsL),
+		nCRLs:      nCRLs,
+		ocsps:      sliceAddr(ocspsP),
+		ocspLens:   sliceAddr(ocspsL),
+		nOCSPs:     nOCSPs,
+		tsaURL:     tsaP,
+		reason:     rsnP,
+		location:   locP,
+		level:      int32(opts.Level),
+	}
 	var outLen uintptr
 	var ec int32
-	p := ffiSignBytesPades(
-		pdfData, uintptr(len(pdfData)), cert.handle, int32(opts.Level),
-		opts.TSAURL, opts.Reason, opts.Location,
-		firstPtr(certsP), firstPtr(certsL), nCerts,
-		firstPtr(crlsP), firstPtr(crlsL), nCRLs,
-		firstPtr(ocspsP), firstPtr(ocspsL), nOCSPs,
-		&outLen, &ec)
+	p := ffiSignBytesPadesOpts(pdfData, uintptr(len(pdfData)), &o, &outLen, &ec)
 	if opts.Revocation != nil {
 		runtime.KeepAlive(opts.Revocation.Certs)
 		runtime.KeepAlive(opts.Revocation.CRLs)
@@ -1456,6 +1635,10 @@ func SignPdfBytesPAdES(pdfData []byte, cert *Certificate, opts PAdESOptions) ([]
 		runtime.KeepAlive(ocspsL)
 	}
 	runtime.KeepAlive(pdfData)
+	runtime.KeepAlive(tsaB)
+	runtime.KeepAlive(rsnB)
+	runtime.KeepAlive(locB)
+	runtime.KeepAlive(&o)
 	if ec != 0 {
 		return nil, ffiErrorFromInt(int(ec))
 	}

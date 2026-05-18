@@ -1124,6 +1124,354 @@ impl PdfDocument {
             .is_some()
     }
 
+    /// Whether content extraction is permitted right now — `true` if the
+    /// PDF is unencrypted, or encrypted and successfully authenticated.
+    ///
+    /// Cheap, side-effect-free preflight for the auto-extraction
+    /// classifier (#517): lets it emit
+    /// [`ReasonCode::EncryptedNoExtractPermission`](crate::extractors::auto::ReasonCode)
+    /// gracefully instead of attempting extraction and erroring.
+    #[must_use]
+    pub fn is_authenticated(&self) -> bool {
+        // Fail closed: if encryption init errors (malformed / unsupported
+        // `/Encrypt`), the document IS encrypted but we cannot have
+        // authenticated it — a security preflight must report `false`
+        // here, not `true` (PR #519 review). Only when init succeeds
+        // (incl. the trivial unencrypted case) do we trust the guard.
+        if self.ensure_encryption_initialized().is_err() {
+            return false;
+        }
+        !self.is_encrypted_and_unauthenticated()
+    }
+
+    /// Document Info dictionary `/Producer` (decoded, trimmed), if present
+    /// and non-empty. A weak document-level prior for the scanner-vs-
+    /// authoring heuristic (#517 case P) — never decisive.
+    #[must_use]
+    pub fn document_producer(&self) -> Option<String> {
+        self.document_info_string("Producer")
+    }
+
+    /// Document Info dictionary `/Creator` (decoded, trimmed), if present
+    /// and non-empty. See [`document_producer`](Self::document_producer).
+    #[must_use]
+    pub fn document_creator(&self) -> Option<String> {
+        self.document_info_string("Creator")
+    }
+
+    fn document_info_string(&self, key: &str) -> Option<String> {
+        let info_raw = self.trailer.as_dict()?.get("Info")?;
+        let info = self.resolve_obj_ref(info_raw);
+        let val_raw = info.as_dict()?.get(key)?.clone();
+        let val = self.resolve_obj_ref(&val_raw);
+        let s = Self::decode_pdf_text_string(val.as_string()?);
+        let trimmed = s.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    }
+
+    /// Axis-aligned intersection area of a [`Rect`](crate::geometry::Rect)
+    /// with the page box `(x0, y0, x1, y1)`.
+    fn rect_isect_area(r: &crate::geometry::Rect, x0: f32, y0: f32, x1: f32, y1: f32) -> f32 {
+        let (rx1, ry1) = (r.x + r.width, r.y + r.height);
+        let ix = (rx1.min(x1) - r.x.max(x0)).max(0.0);
+        let iy = (ry1.min(y1) - r.y.max(y0)).max(0.0);
+        ix * iy
+    }
+
+    /// Gather per-page classification signals from pdf_oxide
+    /// **internals** (00-common-foundation §9 — never the flattened
+    /// output string). Returns the signals plus the enriched T0.5
+    /// quality-gate verdict (research §3a) computed from the *same*
+    /// single span extraction (no double work). Pure inspection.
+    fn gather_page_signals(
+        &self,
+        page: usize,
+    ) -> Result<(
+        crate::extractors::auto::PageSignals,
+        Option<crate::extractors::auto::ReasonCode>,
+    )> {
+        use crate::content::{Operator, TextElement};
+        use crate::extractors::auto::{ImageCodecClass, PageSignals, ProducerPrior};
+        use crate::extractors::ImageData;
+
+        let (llx, lly, urx, ury) = self.get_page_media_box(page)?;
+        let rot = self.get_page_rotation(page).unwrap_or(0);
+        let (mut pw, mut ph) = ((urx - llx).abs(), (ury - lly).abs());
+        if rot % 180 != 0 {
+            std::mem::swap(&mut pw, &mut ph);
+        }
+        let page_area = (pw * ph).max(1.0);
+        let (px0, py0, px1, py1) = (llx.min(urx), lly.min(ury), llx.max(urx), lly.max(ury));
+
+        // ── native text (artifact spans downweighted — cases G/T) ──
+        let spans = self.extract_spans(page).unwrap_or_default();
+        let mut text = String::new();
+        let mut glyphs = 0usize;
+        let mut text_area = 0.0f32;
+        for s in &spans {
+            if s.artifact_type.is_some() {
+                continue;
+            }
+            let n = s.text.chars().count();
+            if n == 0 {
+                continue;
+            }
+            glyphs += n;
+            text.push_str(&s.text);
+            text.push(' ');
+            text_area += Self::rect_isect_area(&s.bbox, px0, py0, px1, py1);
+        }
+        let text_area_ratio = (text_area / page_area).clamp(0.0, 1.0);
+
+        let chars: Vec<char> = text.chars().collect();
+        let total = chars.len().max(1);
+        let bad = chars
+            .iter()
+            .filter(|&&c| {
+                c == '\u{FFFD}' || c.is_control() || ('\u{E000}'..='\u{F8FF}').contains(&c)
+            })
+            .count();
+        let garbled_ratio = bad as f32 / total as f32;
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let (fragmented_word_ratio, consecutive_repeat_ratio) = if words.is_empty() {
+            (0.0, 0.0)
+        } else {
+            let frag =
+                words.iter().filter(|w| w.chars().count() <= 2).count() as f32 / words.len() as f32;
+            let rep = words.windows(2).filter(|w| w[0] == w[1]).count() as f32 / words.len() as f32;
+            (frag, rep)
+        };
+
+        // ── images: union coverage (summed → multi-strip, case J) + codec ──
+        let images = self.extract_images(page).unwrap_or_default();
+        let mut img_area = 0.0f32;
+        let mut codec = ImageCodecClass::None;
+        for im in &images {
+            if let Some(b) = im.bbox() {
+                img_area += Self::rect_isect_area(b, px0, py0, px1, py1);
+            }
+            let c = if im.ccitt_params().is_some() {
+                ImageCodecClass::Ccitt
+            } else {
+                match im.data() {
+                    ImageData::Jpeg(_) => ImageCodecClass::Dct,
+                    _ => ImageCodecClass::Other,
+                }
+            };
+            codec = match (codec, c) {
+                (ImageCodecClass::None, x) => x,
+                (_, ImageCodecClass::Ccitt) => ImageCodecClass::Ccitt,
+                (cur, _) => cur,
+            };
+        }
+        let image_area_ratio = (img_area / page_area).clamp(0.0, 1.0);
+
+        // ── content-stream ops: Tr-mode-3 ratio (cases C/C2) ──
+        let mut invisible = 0usize;
+        let mut glyph_bytes = 0usize;
+        if let Ok(data) = self.get_page_content_data(page) {
+            if let Ok(ops) = crate::content::parse_content_stream(&data) {
+                let mut rm: u8 = 0;
+                let mut stack: Vec<u8> = Vec::new();
+                for op in &ops {
+                    match op {
+                        Operator::SaveState => stack.push(rm),
+                        Operator::RestoreState => {
+                            if let Some(p) = stack.pop() {
+                                rm = p;
+                            }
+                        },
+                        Operator::Tr { render } => rm = *render,
+                        Operator::Tj { text } => {
+                            glyph_bytes += text.len();
+                            if rm == 3 {
+                                invisible += text.len();
+                            }
+                        },
+                        Operator::TJ { array } => {
+                            let g: usize = array
+                                .iter()
+                                .map(|e| match e {
+                                    TextElement::String(b) => b.len(),
+                                    TextElement::Offset(_) => 0,
+                                })
+                                .sum();
+                            glyph_bytes += g;
+                            if rm == 3 {
+                                invisible += g;
+                            }
+                        },
+                        _ => {},
+                    }
+                }
+            }
+        }
+        let invisible_text_ratio = if glyph_bytes == 0 {
+            0.0
+        } else {
+            invisible as f32 / glyph_bytes as f32
+        };
+
+        // ── vector path density (case F) ──
+        let path_count = self.extract_paths(page).map(|p| p.len()).unwrap_or(0);
+        let vector_path_density = {
+            let denom = (path_count + glyphs + images.len()).max(1) as f32;
+            (path_count as f32 / denom).clamp(0.0, 1.0)
+        };
+
+        // ── structure / producer / empty ──
+        let has_reliable_structure = self
+            .mark_info()
+            .map(|m| m.is_structure_reliable())
+            .unwrap_or(false);
+        let producer_prior = {
+            let p = format!(
+                "{} {}",
+                self.document_producer().unwrap_or_default(),
+                self.document_creator().unwrap_or_default()
+            )
+            .to_lowercase();
+            const SCAN: &[&str] = &[
+                "scan",
+                "abbyy",
+                "tesseract",
+                "scansnap",
+                "finereader",
+                "ocr",
+                "lens",
+                "camscanner",
+                "kofax",
+            ];
+            const AUTH: &[&str] = &[
+                "word",
+                "libreoffice",
+                "latex",
+                "pdftex",
+                "chromium",
+                "skia",
+                "quartz",
+                "wkhtmltopdf",
+                "pdf_oxide",
+                "reportlab",
+                "prince",
+                "weasyprint",
+                "powerpoint",
+                "excel",
+                "indesign",
+            ];
+            if SCAN.iter().any(|k| p.contains(k)) {
+                ProducerPrior::Scanner
+            } else if AUTH.iter().any(|k| p.contains(k)) {
+                ProducerPrior::Authoring
+            } else {
+                ProducerPrior::Unknown
+            }
+        };
+        let page_is_empty = glyphs == 0 && image_area_ratio < 0.01 && path_count == 0;
+
+        let signals = PageSignals {
+            text_glyph_count: glyphs,
+            text_area_ratio,
+            image_area_ratio,
+            codec,
+            invisible_text_ratio,
+            garbled_ratio,
+            fragmented_word_ratio,
+            consecutive_repeat_ratio,
+            vector_path_density,
+            has_reliable_structure,
+            producer_prior,
+            page_is_empty,
+        };
+        let gate = crate::extractors::auto::text_quality_gate(&text);
+        Ok((signals, gate))
+    }
+
+    /// Cheap per-page text-vs-OCR classification (the `classify_page`
+    /// preflight, #517 — no OCR, no rasterisation). Returns kind +
+    /// confidence + typed [`ReasonCode`](crate::extractors::auto::ReasonCode)
+    /// + the raw signals (explainable).
+    ///
+    /// Fails closed on an encrypted-unauthenticated document
+    /// (`Error::EncryptedPdf`, case L) — consistent with every other
+    /// `extract_*`; the graceful warn+fallback applies to *extraction*
+    /// (`extract_page_auto`), not this preflight.
+    pub fn classify_page(
+        &self,
+        page: usize,
+    ) -> Result<crate::extractors::auto::PageClassification> {
+        use crate::extractors::auto::{
+            classify_from_signals, AutoExtractOptions, PageClassification, PageKind,
+        };
+        if !self.is_authenticated() {
+            return Err(Error::EncryptedPdf);
+        }
+        let (signals, gate) = self.gather_page_signals(page)?;
+        let opts = AutoExtractOptions::balanced();
+        let (mut kind, mut confidence, mut reason) = classify_from_signals(&signals, &opts);
+        // Enriched T0.5 gate (research §3a): unusable born-digital text
+        // overrides a TextLayer verdict → route to OCR with the typed
+        // reason (column-scramble / cid-garbage / fragmentation).
+        if matches!(kind, PageKind::TextLayer) {
+            if let Some(r) = gate {
+                kind = PageKind::Scanned;
+                confidence = confidence.min(0.80);
+                reason = r;
+            }
+        }
+        Ok(PageClassification {
+            page,
+            kind,
+            confidence,
+            reason,
+            signals,
+        })
+    }
+
+    /// Cheap whole-document classification (#517): per-page kinds (the
+    /// decision is **per-page**, never one forced doc mode — case Q),
+    /// the 0-based `pages_needing_ocr` list, and an aggregate summary.
+    ///
+    /// Fails closed on an encrypted-unauthenticated document
+    /// (`Error::EncryptedPdf`) — a security op must never be silently
+    /// degraded to a benign `Empty` (#519 review). Any *non-security*
+    /// per-page failure degrades to `Empty` (graceful — only security
+    /// ops fail closed).
+    pub fn classify_document(&self) -> Result<crate::extractors::auto::DocumentClassification> {
+        use crate::extractors::auto::{summarise, DocumentClassification, PageKind};
+        let n = self.page_count()?;
+        let mut kinds = Vec::with_capacity(n);
+        let mut need = Vec::new();
+        for p in 0..n {
+            let k = match self.classify_page(p) {
+                Ok(c) => c.kind,
+                // Security op: propagate, never mask as Empty (case L).
+                Err(e @ Error::EncryptedPdf) => return Err(e),
+                // Non-security per-page failure: graceful degrade.
+                Err(_) => PageKind::Empty,
+            };
+            if matches!(k, PageKind::Scanned | PageKind::ImageText | PageKind::Mixed) {
+                need.push(p);
+            }
+            kinds.push(k);
+        }
+        let summary = summarise(&kinds);
+        Ok(DocumentClassification {
+            pages: kinds,
+            pages_needing_ocr: need,
+            summary,
+        })
+    }
+
+    /// One-shot convenience for the 90% case (#517): equivalent to
+    /// `AutoExtractor::new().extract_text(self, page)`. **Strictly
+    /// additive** — the existing [`extract_text`](Self::extract_text) is
+    /// byte-identical/unchanged; this is a *new* opt-in entry point that
+    /// auto-routes text-vs-OCR with graceful native fallback.
+    pub fn extract_text_auto(&self, page: usize) -> Result<String> {
+        crate::extractors::auto::AutoExtractor::new().extract_text(self, page)
+    }
+
     /// Check if the PDF is encrypted but has NOT been successfully authenticated.
     ///
     /// This returns `true` when the document requires a password that has not
@@ -3263,6 +3611,35 @@ impl PdfDocument {
             to_f32(&media_box[2]),
             to_f32(&media_box[3]),
         ))
+    }
+
+    /// Page `/Rotate` normalised to one of `{0, 90, 180, 270}`
+    /// (ISO 32000-1 §7.7.3.3); `0` when absent or invalid.
+    ///
+    /// Pure inspection (no feature gate) for the auto-extraction
+    /// classifier (#517 case I — transformed-bbox coverage / OCR
+    /// orientation). Resolves via [`get_page`](Self::get_page), so the
+    /// inheritable `/Rotate` attribute (ISO 32000-1 §7.7.3.4) is walked
+    /// up the page tree — a `/Rotate` set on an ancestor `/Pages` node
+    /// is honoured, not just one on the leaf page object.
+    pub fn get_page_rotation(&self, page_index: usize) -> Result<i32> {
+        let page = self.get_page(page_index)?;
+        let dict = page
+            .as_dict()
+            .ok_or_else(|| Error::InvalidPdf("Page is not a dictionary".to_string()))?;
+        let raw = match dict.get("Rotate") {
+            Some(r) => match self.resolve_obj_ref(r) {
+                Object::Integer(v) => v as i32,
+                Object::Real(v) => v as i32,
+                _ => 0,
+            },
+            None => 0,
+        };
+        // `/Rotate` shall be a multiple of 90 (ISO 32000-1 §7.7.3.3);
+        // a non-multiple is invalid → `0` (per this fn's contract),
+        // NOT silently floored (e.g. 135 must not become 90).
+        let n = ((raw % 360) + 360) % 360;
+        Ok(if n % 90 == 0 { n } else { 0 })
     }
 
     /// Get page count using the standard /Count field
@@ -5849,7 +6226,7 @@ impl PdfDocument {
     /// bbox.width is >40% larger than char_widths imply.  This pattern occurs in
     /// sailing-score / competition-table PDFs where two adjacent columns (e.g. Q8=1,
     /// F9=10) are stored as a single Tj text run "1.10" spanning both column cells.
-    /// kreuzberg's GT tokenises them as separate words; we must split at the dot.
+    /// Reference ground truth tokenises them as separate words; we must split at the dot.
     pub(crate) fn is_column_spanning_decimal(span: &TextSpan) -> bool {
         let text = &span.text;
         let dot_pos = match text.find('.') {
@@ -7706,7 +8083,7 @@ impl PdfDocument {
         // to ASCII space.  Some PDF producers encode word separators as hair-space
         // or thin-space variants in ToUnicode CMaps (e.g. justified text layouts);
         // normalising here gives consistent word boundaries to every downstream
-        // consumer (extract_text, kreuzberg word-F1, etc.).
+        // consumer (extract_text, word-F1 scoring, etc.).
         for span in &mut spans {
             if span
                 .text

@@ -1999,6 +1999,52 @@ impl PyPdfDocument {
         Ok(list.into())
     }
 
+    /// #517: cheap per-page text-vs-OCR classification → JSON
+    /// `PageClassification` (the frozen cross-binding envelope —
+    /// `json.loads` it). No OCR/rasterisation.
+    fn classify_page(&mut self, page: usize) -> PyResult<String> {
+        let c = self
+            .inner
+            .classify_page(page)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        serde_json::to_string(&c).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// #517: cheap whole-document classification → JSON
+    /// `DocumentClassification` (per-page kinds + `pages_needing_ocr`).
+    fn classify_document(&mut self) -> PyResult<String> {
+        let c = self
+            .inner
+            .classify_document()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        serde_json::to_string(&c).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// #517: one-shot auto text extraction — auto-routes text-vs-OCR
+    /// with graceful native fallback (never the opaque OCR error #513).
+    fn extract_text_auto(&mut self, page: usize) -> PyResult<String> {
+        self.inner
+            .extract_text_auto(page)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// #517: rich per-page extraction → JSON `PageExtraction`
+    /// (per-region bbox + typed reason; never bare-empty).
+    /// `options_json` is `{}`-tolerant `AutoExtractOptions`; None/empty
+    /// → defaults.
+    #[pyo3(signature = (page, options_json=None))]
+    fn extract_page_auto(&mut self, page: usize, options_json: Option<&str>) -> PyResult<String> {
+        let opts = match options_json {
+            Some(s) if !s.trim().is_empty() => serde_json::from_str(s)
+                .map_err(|e| PyRuntimeError::new_err(format!("invalid options_json: {e}")))?,
+            _ => crate::extractors::auto::AutoExtractOptions::default(),
+        };
+        let pe = crate::extractors::auto::AutoExtractor::with(opts)
+            .extract_page(&self.inner, page)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        serde_json::to_string(&pe).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
     /// Extract text using OCR.
     #[pyo3(signature = (page, engine=None))]
     fn extract_text_ocr(
@@ -2023,7 +2069,21 @@ impl PyPdfDocument {
         #[cfg(not(feature = "ocr"))]
         {
             let _ = (engine, page);
-            Err(PyRuntimeError::new_err("OCR feature not enabled."))
+            // #513: actionable, not opaque. The bare "OCR feature not
+            // enabled." gave a stuck Windows user no path forward. Say
+            // exactly how to fix it + point at the graceful auto path
+            // that never errors.
+            Err(PyRuntimeError::new_err(
+                "OCR is unavailable: this pdf_oxide build was compiled \
+                 without the `ocr` feature. Fix: install the OCR-enabled \
+                 wheel with `pip install 'pdf_oxide[ocr]'`, then build an \
+                 OcrEngine with detection/recognition/dictionary model \
+                 paths and pass it as extract_text_ocr(page, engine) — see \
+                 examples/python/09-new-features/ocr_scanned_pdf. For \
+                 automatic text-vs-OCR routing that gracefully falls back \
+                 to native text instead of raising, use \
+                 extract_text_auto(page).",
+            ))
         }
     }
 
@@ -7425,6 +7485,9 @@ fn pdf_oxide(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(crypto_cbom, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(plan_split_by_bookmarks, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(split_by_bookmarks, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(prefetch_models, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(model_manifest, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(prefetch_available, m)?)?;
     Ok(())
 }
 
@@ -7515,6 +7578,47 @@ fn split_by_bookmarks(
         list.append(tup)?;
     }
     Ok(list.unbind())
+}
+
+/// #519: Build-time OCR model provisioning. Downloads the shared
+/// detector + the recognition model/dict for each requested language
+/// into the model cache dir (``$PDF_OXIDE_MODEL_DIR`` / the platform
+/// cache) and returns that dir as a string. ``languages`` is a list of
+/// language codes (e.g. ``["english", "chinese", "arabic"]``); empty →
+/// English. Unknown codes are skipped. Idempotent. Actual download
+/// requires the wheel built with the ``ocr`` feature; without it the
+/// cache dir is still created (no fetch) — query
+/// :func:`prefetch_available`.
+#[pyfunction]
+fn prefetch_models(languages: Vec<String>) -> PyResult<String> {
+    use crate::extractors::auto::{AutoExtractor, OcrLanguage};
+    let langs: Vec<OcrLanguage> = languages
+        .iter()
+        .filter_map(|s| OcrLanguage::from_code(s.trim()))
+        .collect();
+    let want = if langs.is_empty() {
+        vec![OcrLanguage::English]
+    } else {
+        langs
+    };
+    let dir = AutoExtractor::prefetch_models(&want)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+/// #519: Air-gapped OCR model manifest — JSON (detector + every
+/// supported language's cache filenames and source URLs). Never errors.
+#[pyfunction]
+fn model_manifest() -> String {
+    crate::extractors::auto::AutoExtractor::model_manifest()
+}
+
+/// #519: Whether this build can actually download models (compiled
+/// with the ``ocr`` feature). ``True`` = downloads work; ``False`` =
+/// :func:`prefetch_models` only creates the cache dir (no fetch).
+#[pyfunction]
+fn prefetch_available() -> bool {
+    crate::extractors::auto::AutoExtractor::prefetch_available()
 }
 
 /// Return the name of the currently active cryptographic provider

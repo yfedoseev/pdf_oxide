@@ -381,3 +381,7 @@ examples/**/dist/
 
 # Local release planning workspace (not version-controlled)
 docs/releases/
+
+# OCR models (provisioned, large; never committed)
+tests/fixtures/ocr/models/
+.ocr-models/

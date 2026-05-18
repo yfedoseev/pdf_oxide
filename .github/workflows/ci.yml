@@ -40,6 +40,26 @@ jobs:
       - name: Check formatting
         run: cargo fmt -- --check
 
+  # C ABI header drift guard: regenerate include/pdf_oxide_c/pdf_oxide.h
+  # with cbindgen and fail if it differs from the committed file. The
+  # header had silently drifted to v0.3.24 (missing every v0.3.50/0.3.51
+  # C symbol) because nothing regenerated it — this job makes
+  # `make c-header-check` a real CI guard so it cannot rot again.
+  c-header:
+    name: C Header Drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Install cbindgen
+        run: cargo install cbindgen --version 0.29.2 --locked
+
+      - name: Check C header is in sync with src/ffi.rs
+        run: make c-header-check
+
   # Fixture hygiene: every .pdf under tools/benchmark-harness/fixtures
   # must start with %PDF- (or be listed in a directory-local .skip).
   # Catches ISP DNS-hijack HTML, CMS-wrapped PDFs, and 404 pages
@@ -298,6 +318,40 @@ jobs:
 
       - name: Build MCP server
         run: cargo build -p pdf_oxide_mcp
+
+  # OCR auto-surface end-to-end: provisions the models + ONNX Runtime
+  # so the AutoExtractor OCR path (image → text) is actually EXERCISED,
+  # not merely built. Closes the #519 gap where OCR tests skipped for
+  # lack of a provisioned lane.
+  ocr:
+    name: OCR (auto image→text)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Provision OCR models (english + language packs)
+        run: bash scripts/setup_ocr_models.sh "$GITHUB_WORKSPACE/.ocr-models" chinese arabic cyrillic
+
+      - name: Install ONNX Runtime (for ort load-dynamic)
+        run: |
+          python3 -m pip install --user --quiet onnxruntime
+          so=$(python3 -c 'import onnxruntime,glob,os;print(sorted(glob.glob(os.path.join(os.path.dirname(onnxruntime.__file__),"capi","libonnxruntime.so*")))[-1])')
+          echo "ORT_DYLIB_PATH=$so" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$(dirname "$so"):${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Auto OCR-from-image e2e + multi-language (#519)
+        env:
+          PDF_OXIDE_MODEL_DIR: ${{ github.workspace }}/.ocr-models
+        run: |
+          cargo test --features ocr \
+            --test test_auto_ocr_image_519 \
+            --test test_auto_ocr_multilang_519 -- --nocapture
 
   # Python bindings test
   python:

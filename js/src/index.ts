@@ -427,6 +427,37 @@ class PdfDocumentImpl {
     this.ensureOpen();
     return native.extractText(this._handle, pageIndex);
   }
+
+  /** #517: cheap per-page text-vs-OCR classification → JSON
+   * PageClassification string (the frozen cross-binding envelope;
+   * `JSON.parse` it). No OCR/rasterisation. */
+  classifyPage(pageIndex: number): string {
+    this.ensureOpen();
+    return native.classifyPage(this._handle, pageIndex);
+  }
+
+  /** #517: cheap whole-document classification → JSON
+   * DocumentClassification (per-page kinds + pagesNeedingOcr). */
+  classifyDocument(): string {
+    this.ensureOpen();
+    return native.classifyDocument(this._handle);
+  }
+
+  /** #517/#513: one-shot auto text extraction — graceful native
+   * fallback (never an opaque OCR error). */
+  extractTextAuto(pageIndex: number): string {
+    this.ensureOpen();
+    return native.extractTextAuto(this._handle, pageIndex);
+  }
+
+  /** #517: rich per-page extraction → JSON PageExtraction (per-region
+   * bbox + typed reason). `optionsJson` is `{}`-tolerant
+   * AutoExtractOptions; omitted → defaults. */
+  extractPageAuto(pageIndex: number, optionsJson?: string): string {
+    this.ensureOpen();
+    return native.extractPageAuto(this._handle, pageIndex, optionsJson ?? '');
+  }
+
   toMarkdown(pageIndex: number): string {
     this.ensureOpen();
     return native.toMarkdown(this._handle, pageIndex);
@@ -1016,6 +1047,21 @@ const getActiveCryptoProvider = native.getActiveCryptoProvider;
 const isFipsCryptoAvailable = native.isFipsCryptoAvailable;
 const useFipsCryptoProvider = native.useFipsCryptoProvider;
 
+// ── OCR model provisioning (#519) — process-wide, no handle ──
+/**
+ * Build-time / first-run OCR model prefetch. Downloads the shared
+ * detector + the recognition model & dict for each requested language
+ * code (e.g. `["english", "chinese"]`; empty → English) into the model
+ * cache dir and returns that dir. Idempotent. Actual download requires
+ * the addon built with the `ocr` feature — query `prefetchAvailable()`.
+ */
+const prefetchModels: (languages?: string[]) => string = (languages = []) =>
+  native.prefetchModels(languages);
+/** Air-gapped OCR model manifest as JSON (detector + per-language files & URLs). */
+const modelManifest: () => string = native.modelManifest;
+/** Whether this build can actually download models (`ocr` feature). */
+const prefetchAvailable: () => boolean = native.prefetchAvailable;
+
 // ── Runtime crypto-governance policy (#230) — process-wide, no handle ──
 /**
  * Install the process-wide runtime crypto policy from its grammar
@@ -1164,6 +1210,7 @@ export {
   MetadataManager,
   MetadataStream,
   mapFfiErrorCode,
+  modelManifest,
   OCRDetectionMode,
   OCRLanguage,
   OCRManager,
@@ -1192,6 +1239,8 @@ export {
   PdfUALevel,
   PdfXLevel,
   Point,
+  prefetchAvailable,
+  prefetchModels,
   Rect,
   RedactionException,
   RenderingException,

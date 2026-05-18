@@ -106,6 +106,36 @@ fn handle_tools_list() -> Result<Value, (i32, String)> {
                         }
                     }
                 }
+            },
+            {
+                "name": "classify",
+                "description": "Cheap per-page text-vs-OCR classification (no OCR, no rasterisation). Returns JSON DocumentClassification with per-page kinds, pages_needing_ocr, and an aggregate summary — so an agent can decide whether/where OCR is needed before extracting.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["file_path"],
+                    "properties": {
+                        "file_path": { "type": "string", "description": "Path to the PDF file" },
+                        "password": { "type": "string", "description": "Password for encrypted PDFs" }
+                    }
+                }
+            },
+            {
+                "name": "auto",
+                "description": "Auto-extract text: per-page text-vs-OCR routing with graceful native fallback (never an opaque OCR error). format=text returns assembled text; format=json returns rich per-page PageExtraction with per-region bbox + typed reason codes.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["file_path"],
+                    "properties": {
+                        "file_path": { "type": "string", "description": "Path to the PDF file" },
+                        "format": {
+                            "type": "string",
+                            "enum": ["text", "json"],
+                            "default": "text",
+                            "description": "text (assembled) or json (rich PageExtraction[] with typed reasons)"
+                        },
+                        "password": { "type": "string", "description": "Password for encrypted PDFs" }
+                    }
+                }
             }
         ]
     }))
@@ -118,6 +148,8 @@ fn handle_tools_call(msg: &Value) -> Result<Value, (i32, String)> {
 
     match tool_name {
         "extract" => extract::run(arguments),
+        "classify" => extract::classify(arguments),
+        "auto" => extract::auto(arguments),
         _ => Err((-32602, format!("Unknown tool: {tool_name}"))),
     }
 }
@@ -154,13 +186,17 @@ mod tests {
     fn test_tools_list() {
         let resp = parse_response(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let tools = resp["result"]["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), 1);
+        // #517: `extract` (unchanged) + additive `classify` + `auto`.
+        assert_eq!(tools.len(), 3);
         assert_eq!(tools[0]["name"], "extract");
         let required = tools[0]["inputSchema"]["required"]
             .as_array()
             .expect("required array");
         assert!(required.contains(&json!("file_path")));
         assert!(required.contains(&json!("output_path")));
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"classify"));
+        assert!(names.contains(&"auto"));
     }
 
     #[test]

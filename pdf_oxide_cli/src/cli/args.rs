@@ -57,6 +57,31 @@ pub enum Command {
         area: Option<String>,
     },
 
+    /// Classify each page (text vs OCR) — cheap preflight, no OCR.
+    /// Prints JSON `DocumentClassification` (#517).
+    Classify {
+        /// Input PDF file
+        file: PathBuf,
+    },
+
+    /// Auto-extract text: auto-routes text-vs-OCR per page with
+    /// graceful native fallback (never the opaque OCR error — #513).
+    Auto {
+        /// Input PDF file
+        file: PathBuf,
+
+        /// Output format: `text` (assembled) or `json` (rich
+        /// per-region `PageExtraction` with typed reasons)
+        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
+        format: String,
+    },
+
+    /// Manage OCR/layout models (build-time provisioning, #513/#517)
+    Models {
+        #[command(subcommand)]
+        action: ModelsAction,
+    },
+
     /// Extract vector paths from a PDF
     Paths {
         /// Input PDF file
@@ -336,4 +361,29 @@ pub enum Command {
         #[arg(long, default_value = "85")]
         quality: u8,
     },
+}
+
+/// `pdf-oxide models <action>` — build-time model provisioning (#517).
+#[derive(Subcommand)]
+pub enum ModelsAction {
+    /// Download/verify OCR models into the cache dir
+    /// (`$PDF_OXIDE_MODEL_DIR`). The documented Dockerfile `RUN`.
+    /// Repeat `--language` for multi-language packs (default: english).
+    /// e.g. `pdf-oxide models prefetch -l english -l chinese -l arabic`
+    Prefetch {
+        /// OCR language(s) to provision (english, chinese, arabic,
+        /// cyrillic, latin, devanagari, korean, japanese,
+        /// chinese_traditional, tamil, telugu, kannada). Default:
+        /// english. Hebrew has no upstream PaddleOCR model.
+        #[arg(short = 'l', long = "language", value_name = "LANG")]
+        languages: Vec<String>,
+        /// Provision EVERY supported language (the Docker/CI build
+        /// case). Overrides `--language`. e.g. in a Dockerfile:
+        /// `RUN pdf-oxide models prefetch --all`
+        #[arg(long = "all", conflicts_with = "languages")]
+        all: bool,
+    },
+    /// Print the JSON model manifest (`name/sha256/size/source_url`)
+    /// for air-gapped verification.
+    Manifest,
 }

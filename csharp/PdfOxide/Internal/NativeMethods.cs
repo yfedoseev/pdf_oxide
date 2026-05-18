@@ -114,6 +114,35 @@ namespace PdfOxide.Internal
             int pageIndex,
             out int errorCode);
 
+        // #517 comprehensive auto extraction (frozen JSON envelope).
+        [LibraryImport(LibName, EntryPoint = "pdf_document_classify_page", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr PdfDocumentClassifyPage(
+            NativeHandle handle,
+            int pageIndex,
+            out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_document_classify_document", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr PdfDocumentClassifyDocument(
+            NativeHandle handle,
+            out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_document_extract_text_auto", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr PdfDocumentExtractTextAuto(
+            NativeHandle handle,
+            int pageIndex,
+            out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_document_extract_page_auto", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr PdfDocumentExtractPageAuto(
+            NativeHandle handle,
+            int pageIndex,
+            string optionsJson,
+            out int errorCode);
+
         /// <summary>
         /// Converts a page to Markdown format.
         /// </summary>
@@ -280,6 +309,37 @@ namespace PdfOxide.Internal
         [LibraryImport(LibName, EntryPoint = "pdf_oxide_get_log_level", StringMarshalling = StringMarshalling.Utf8)]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
         public static partial int PdfOxideGetLogLevel();
+
+        // ── OCR model provisioning (#519) ────────────────────────────
+
+        /// <summary>
+        /// Downloads the shared OCR detector + per-language recognition
+        /// model and dictionary into the model cache dir and returns
+        /// that dir as a native UTF-8 string (caller frees with
+        /// FreeString). <paramref name="languagesCsv"/> is comma-joined
+        /// language codes; NULL/empty → English.
+        /// </summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_oxide_prefetch_models", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial nint PdfOxidePrefetchModels(
+            string languagesCsv,
+            out int errorCode);
+
+        /// <summary>
+        /// Air-gapped OCR model manifest as a UTF-8 JSON string; caller
+        /// frees with FreeString. Never errors.
+        /// </summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_oxide_model_manifest")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial nint PdfOxideModelManifest();
+
+        /// <summary>
+        /// 1 if this build can actually download models (compiled with
+        /// the ocr feature); 0 otherwise.
+        /// </summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_oxide_prefetch_available")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int PdfOxidePrefetchAvailable();
 
         // ── Crypto provider (issue #236) ─────────────────────────────
 

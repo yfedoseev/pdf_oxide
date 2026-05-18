@@ -102,6 +102,58 @@ if [ -f "$DICT_PATH" ]; then
     fi
 fi
 
+# ---------------------------------------------------------------------
+# Optional per-language recognition models (multi-language OCR, #519).
+# Usage: setup_ocr_models.sh <dir> <lang>...   e.g. ... chinese arabic
+# Saved as rec_<lang>.onnx / <lang>_dict.txt so AutoExtractor's
+# language-aware loader (ocr_languages) can select them. The detector
+# (det.onnx, above) is shared and script-agnostic. Availability is
+# upstream-bound: chinese/arabic/korean/latin/cyrillic/devanagari/
+# ka/ta/te/japan/chinese_cht all have deepghs PP-OCRv3 (or monkt
+# PP-OCRv5) ONNX rec models and are downloaded below. Only hebrew has
+# NO upstream ONNX rec model (provisioning limit, not our code).
+# (japan/chinese_cht fetch fine but the PP-OCRv3 model yields no output
+# through the current recognizer — a tracked #519 follow-up.)
+shift || true
+# Per-language recognition models: deepghs/paddleocr (same provenance
+# as the detector above) has PP-OCRv3 ONNX rec models for a broad set
+# — cyrillic, arabic, latin, devanagari, korean, japan, chinese_cht,
+# ka, ta, te. Dictionaries come from PaddleOCR upstream. Saved as
+# rec_<lang>.onnx / <lang>_dict.txt for the language-aware loader.
+REC_BASE="https://huggingface.co/deepghs/paddleocr/resolve/main/rec"
+DICT_BASE="https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/dict"
+for lang in "$@"; do
+    case "$lang" in
+        en|eng|english) continue ;;  # default rec.onnx/en_dict.txt
+        ru|rus|russian) lang=cyrillic ;;
+        zh|ch|chi) lang=chinese ;;
+    esac
+    echo ""
+    echo -e "${YELLOW}Fetching language pack: $lang${NC}"
+    rp="$MODELS_DIR/rec_${lang}.onnx"
+    dp="$MODELS_DIR/${lang}_dict.txt"
+    if [ "$lang" = "chinese" ]; then
+        # Chinese uses the v5 mobile rec + ppocr keys (large dict).
+        ru_ok=0
+        download_file "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/chinese/rec.onnx" "$rp" "rec (chinese)" \
+          && download_file "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/chinese/dict.txt" "$dp" "dict (chinese)" && ru_ok=1
+    else
+        ru_ok=0
+        download_file "$REC_BASE/${lang}_PP-OCRv3_rec/model.onnx" "$rp" "rec ($lang)" \
+          && download_file "$DICT_BASE/${lang}_dict.txt" "$dp" "dict ($lang)" && ru_ok=1
+    fi
+    if [ "$ru_ok" = "1" ]; then
+        last=$(tail -1 "$dp" 2>/dev/null || true)
+        [ "$last" != " " ] && echo " " >> "$dp"
+        echo -e "${GREEN}OK${NC} language pack '$lang' ready (rec_${lang}.onnx / ${lang}_dict.txt)"
+    else
+        rm -f "$rp" "$dp"
+        echo -e "${RED}NOTE${NC} '$lang' has no PaddleOCR ONNX rec model upstream — skipped"
+        echo -e "       (e.g. Hebrew: dict exists but no published rec model;"
+        echo -e "        the loader is ready the instant a pair is provided.)"
+    fi
+done
+
 echo ""
 echo "================================================================"
 echo "Setup Complete!"

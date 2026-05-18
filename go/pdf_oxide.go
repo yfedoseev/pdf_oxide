@@ -45,6 +45,10 @@ extern char* pdf_document_to_markdown(void* handle, int32_t page_index, int* err
 extern char* pdf_document_to_html(void* handle, int32_t page_index, int* error_code);
 extern char* pdf_document_to_plain_text(void* handle, int32_t page_index, int* error_code);
 extern char* pdf_document_to_markdown_all(void* handle, int* error_code);
+extern char* pdf_document_classify_page(void* handle, int32_t page_index, int* error_code);
+extern char* pdf_document_classify_document(void* handle, int* error_code);
+extern char* pdf_document_extract_text_auto(void* handle, int32_t page_index, int* error_code);
+extern char* pdf_document_extract_page_auto(void* handle, int32_t page_index, const char* options_json, int* error_code);
 
 // Document Editor FFI declarations
 extern void* document_editor_open(const char* path, int* error_code);
@@ -437,6 +441,11 @@ extern void* pdf_document_extract_tables_in_rect(void* handle, int32_t page_inde
 extern void pdf_oxide_set_log_level(int level);
 extern int pdf_oxide_get_log_level();
 
+// OCR model provisioning (#519)
+extern char* pdf_oxide_prefetch_models(const char* languages_csv, int* error_code);
+extern char* pdf_oxide_model_manifest();
+extern int pdf_oxide_prefetch_available();
+
 // Crypto provider (issue #236)
 extern char* pdf_oxide_crypto_active_provider();
 extern int pdf_oxide_crypto_fips_available();
@@ -612,6 +621,99 @@ func (doc *PdfDocument) ExtractText(pageIndex int) (string, error) {
 	C.free_string(cText)
 
 	return text, nil
+}
+
+// ClassifyPage returns a cheap per-page text-vs-OCR classification as a
+// JSON PageClassification string (#517 — the frozen cross-binding
+// envelope; json.Unmarshal it). No OCR/rasterisation.
+func (doc *PdfDocument) ClassifyPage(pageIndex int) (string, error) {
+	if err := doc.acquireRead(); err != nil {
+		return "", err
+	}
+	defer doc.mu.Unlock()
+	if pageIndex < 0 {
+		return "", ErrInvalidPageIndex
+	}
+	var errorCode C.int
+	c := C.pdf_document_classify_page(doc.handle, C.int32_t(pageIndex), &errorCode)
+	if errorCode != 0 {
+		return "", ffiError(errorCode)
+	}
+	if c == nil {
+		return "", ErrInternal
+	}
+	s := C.GoString(c)
+	C.free_string(c)
+	return s, nil
+}
+
+// ClassifyDocument returns a JSON DocumentClassification string
+// (per-page kinds + pages_needing_ocr + summary) (#517).
+func (doc *PdfDocument) ClassifyDocument() (string, error) {
+	if err := doc.acquireRead(); err != nil {
+		return "", err
+	}
+	defer doc.mu.Unlock()
+	var errorCode C.int
+	c := C.pdf_document_classify_document(doc.handle, &errorCode)
+	if errorCode != 0 {
+		return "", ffiError(errorCode)
+	}
+	if c == nil {
+		return "", ErrInternal
+	}
+	s := C.GoString(c)
+	C.free_string(c)
+	return s, nil
+}
+
+// ExtractTextAuto auto-routes text-vs-OCR per page with graceful native
+// fallback (never an opaque OCR error — #513).
+func (doc *PdfDocument) ExtractTextAuto(pageIndex int) (string, error) {
+	if err := doc.acquireRead(); err != nil {
+		return "", err
+	}
+	defer doc.mu.Unlock()
+	if pageIndex < 0 {
+		return "", ErrInvalidPageIndex
+	}
+	var errorCode C.int
+	c := C.pdf_document_extract_text_auto(doc.handle, C.int32_t(pageIndex), &errorCode)
+	if errorCode != 0 {
+		return "", ffiError(errorCode)
+	}
+	if c == nil {
+		return "", ErrInternal
+	}
+	s := C.GoString(c)
+	C.free_string(c)
+	return s, nil
+}
+
+// ExtractPageAuto returns a JSON PageExtraction string (per-region bbox
+// + typed reason; never bare-empty). Configure via functional options
+// (the idiomatic Go surface — WithMode, WithImageTables, …).
+func (doc *PdfDocument) ExtractPageAuto(pageIndex int, opts ...AutoOption) (string, error) {
+	if err := doc.acquireRead(); err != nil {
+		return "", err
+	}
+	defer doc.mu.Unlock()
+	if pageIndex < 0 {
+		return "", ErrInvalidPageIndex
+	}
+	cOpts := C.CString(autoOptionsJSON(opts))
+	defer C.free(unsafe.Pointer(cOpts))
+	var errorCode C.int
+	c := C.pdf_document_extract_page_auto(doc.handle, C.int32_t(pageIndex), cOpts, &errorCode)
+	if errorCode != 0 {
+		return "", ffiError(errorCode)
+	}
+	if c == nil {
+		return "", ErrInternal
+	}
+	s := C.GoString(c)
+	C.free_string(c)
+	return s, nil
 }
 
 // ToMarkdown converts a page to Markdown format
@@ -4506,6 +4608,53 @@ func SetLogLevel(level LogLevel) {
 // GetLogLevel returns the current log level of the pdf_oxide library.
 func GetLogLevel() LogLevel {
 	return LogLevel(C.pdf_oxide_get_log_level())
+}
+
+// ================================================================
+// OCR model provisioning (#519)
+// ================================================================
+
+// PrefetchModels downloads the shared OCR detector plus the
+// recognition model and dictionary for each requested language code
+// (e.g. "english", "chinese", "arabic") into the model cache dir
+// ($PDF_OXIDE_MODEL_DIR / the platform cache) and returns that dir.
+// No languages → English. Unknown codes are skipped. Idempotent.
+// Actual download requires the native lib built with the ocr feature;
+// without it the cache dir is still created (no fetch) — query
+// PrefetchAvailable.
+func PrefetchModels(langs ...string) (string, error) {
+	cCsv := C.CString(strings.Join(langs, ","))
+	defer C.free(unsafe.Pointer(cCsv))
+	var errorCode C.int
+	c := C.pdf_oxide_prefetch_models(cCsv, &errorCode)
+	if errorCode != 0 {
+		return "", ffiError(errorCode)
+	}
+	if c == nil {
+		return "", ErrInternal
+	}
+	s := C.GoString(c)
+	C.free_string(c)
+	return s, nil
+}
+
+// ModelManifest returns the air-gapped OCR model manifest as JSON
+// (detector + every supported language's cache filenames and source
+// URLs). Never errors.
+func ModelManifest() string {
+	cstr := C.pdf_oxide_model_manifest()
+	if cstr == nil {
+		return ""
+	}
+	defer C.free_string(cstr)
+	return C.GoString(cstr)
+}
+
+// PrefetchAvailable reports whether this build can actually download
+// models (compiled with the ocr feature). When false, PrefetchModels
+// only creates the cache dir (no fetch).
+func PrefetchAvailable() bool {
+	return C.pdf_oxide_prefetch_available() != 0
 }
 
 // ================================================================

@@ -26,7 +26,7 @@ mod ccitt_params {
         println!("║  CCITT PARAMETER ANALYSIS - Pride & Prejudice PDF             ║");
         println!("╚═══════════════════════════════════════════════════════════════╝");
 
-        let mut doc = match PdfDocument::open(pdf_path) {
+        let doc = match PdfDocument::open(pdf_path) {
             Ok(d) => d,
             Err(e) => {
                 println!("❌ Failed to open PDF: {}", e);

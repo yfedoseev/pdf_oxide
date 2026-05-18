@@ -7,16 +7,16 @@
 //! in the bundled ISO 32000-1 `docs/spec/pdf.md`; implemented from the
 //! ETSI/ISO text).
 //!
-//! Only the **risk-free foundation** lands here first (feature plan
-//! TODO #5): pure value types with no cryptographic, ASN.1, or
-//! byte-range behaviour. The signature-correctness-critical pieces — the
-//! ESS `signing-certificate-v2` signed attribute, the B-T
+//! The signature-correctness-critical pieces — the ESS
+//! `signing-certificate-v2` signed attribute, the B-T
 //! `signature-time-stamp` unsigned attribute, and the
-//! Catalog-overriding DSS incremental-update appender — are deferred:
-//! the feature plan §4/§5.5/§10 mandate the **EU DSS demonstration
-//! validator** as the conformance oracle (a manual release gate; a
-//! single ASN.1/byte-range error silently produces an invalid
-//! signature), so they must not be shipped without that gate.
+//! Catalog-overriding DSS incremental-update appender — are
+//! **implemented and shipped as of v0.3.50 (#235)** and re-exported
+//! from this module (see `pub use` below). The **EU DSS demonstration
+//! validator** is the release *conformance gate* (a manual release
+//! verification step — a single ASN.1/byte-range error silently
+//! produces an invalid signature), not a reason these pieces are
+//! absent.
 //!
 //! [`PadesLevel`] is `#[non_exhaustive]` and its integer mapping is
 //! frozen now (BB=0, BT=1, BLt=2, BLta=3) so every binding's enum
@@ -49,9 +49,10 @@ pub enum PadesLevel {
     /// B-T + a Document Security Store (certs/CRLs/OCSPs + per-signature
     /// VRI) added by a separate incremental update.
     BLt,
-    /// B-LT + a document timestamp (`/DocTimeStamp`). Reserved so the
-    /// enum and every binding mapping is stable; producing this level is
-    /// not supported in this release.
+    /// B-LT + a document timestamp. Produced by appending a document
+    /// `/DocTimeStamp` (ETSI.RFC3161) over the B-LT file via
+    /// [`sign_pdf_bytes_pades`](crate::signatures::sign_pdf_bytes_pades)
+    /// (shipped v0.3.50, #235).
     BLta,
 }
 

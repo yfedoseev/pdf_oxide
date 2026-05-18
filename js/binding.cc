@@ -114,6 +114,11 @@ extern "C" {
   extern void pdf_oxide_set_log_level(int level);
   extern int pdf_oxide_get_log_level();
 
+  // OCR model provisioning (#519)
+  extern char* pdf_oxide_prefetch_models(const char* languages_csv, int* error_code);
+  extern char* pdf_oxide_model_manifest();
+  extern int pdf_oxide_prefetch_available();
+
   // Crypto provider (issue #236)
   extern char* pdf_oxide_crypto_active_provider();
   extern int pdf_oxide_crypto_fips_available();
@@ -132,6 +137,10 @@ extern "C" {
   extern void pdf_document_get_version(const void* handle, uint8_t* major, uint8_t* minor);
   extern bool pdf_document_has_structure_tree(void* handle);
   extern char* pdf_document_extract_text(void* handle, int32_t page_index, int* error_code);
+  extern char* pdf_document_classify_page(void* handle, int32_t page_index, int* error_code);
+  extern char* pdf_document_classify_document(void* handle, int* error_code);
+  extern char* pdf_document_extract_text_auto(void* handle, int32_t page_index, int* error_code);
+  extern char* pdf_document_extract_page_auto(void* handle, int32_t page_index, const char* options_json, int* error_code);
   extern char* pdf_document_to_markdown(void* handle, int32_t page_index, int* error_code);
   extern char* pdf_document_to_html(void* handle, int32_t page_index, int* error_code);
   extern char* pdf_document_to_plain_text(void* handle, int32_t page_index, int* error_code);
@@ -856,6 +865,90 @@ Napi::Value ExtractText(const Napi::CallbackInfo& info) {
   std::string result(text);
   free_string(text);
 
+  return Napi::String::New(env, result);
+}
+
+// #517 comprehensive auto extraction — frozen JSON-string envelope.
+Napi::Value ClassifyPage(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 2 || !info[0].IsExternal() || !info[1].IsNumber()) {
+    throw Napi::TypeError::New(env, "invalid arguments");
+  }
+  LOCK_DOC(info, handle);
+  int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
+  int errorCode = 0;
+  char* s = pdf_document_classify_page(handle, pageIndex, &errorCode);
+  if (errorCode != 0) {
+    throw Napi::Error::New(env, "classifyPage failed: " + getErrorMessage(errorCode));
+  }
+  if (!s) {
+    throw Napi::Error::New(env, "classifyPage failed: returned null");
+  }
+  std::string result(s);
+  free_string(s);
+  return Napi::String::New(env, result);
+}
+
+Napi::Value ClassifyDocument(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsExternal()) {
+    throw Napi::TypeError::New(env, "invalid arguments");
+  }
+  LOCK_DOC(info, handle);
+  int errorCode = 0;
+  char* s = pdf_document_classify_document(handle, &errorCode);
+  if (errorCode != 0) {
+    throw Napi::Error::New(env, "classifyDocument failed: " + getErrorMessage(errorCode));
+  }
+  if (!s) {
+    throw Napi::Error::New(env, "classifyDocument failed: returned null");
+  }
+  std::string result(s);
+  free_string(s);
+  return Napi::String::New(env, result);
+}
+
+Napi::Value ExtractTextAuto(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 2 || !info[0].IsExternal() || !info[1].IsNumber()) {
+    throw Napi::TypeError::New(env, "invalid arguments");
+  }
+  LOCK_DOC(info, handle);
+  int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
+  int errorCode = 0;
+  char* s = pdf_document_extract_text_auto(handle, pageIndex, &errorCode);
+  if (errorCode != 0) {
+    throw Napi::Error::New(env, "extractTextAuto failed: " + getErrorMessage(errorCode));
+  }
+  if (!s) {
+    throw Napi::Error::New(env, "extractTextAuto failed: returned null");
+  }
+  std::string result(s);
+  free_string(s);
+  return Napi::String::New(env, result);
+}
+
+Napi::Value ExtractPageAuto(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 2 || !info[0].IsExternal() || !info[1].IsNumber()) {
+    throw Napi::TypeError::New(env, "invalid arguments");
+  }
+  LOCK_DOC(info, handle);
+  int32_t pageIndex = info[1].As<Napi::Number>().Int32Value();
+  std::string optionsJson;
+  if (info.Length() >= 3 && info[2].IsString()) {
+    optionsJson = info[2].As<Napi::String>().Utf8Value();
+  }
+  int errorCode = 0;
+  char* s = pdf_document_extract_page_auto(handle, pageIndex, optionsJson.c_str(), &errorCode);
+  if (errorCode != 0) {
+    throw Napi::Error::New(env, "extractPageAuto failed: " + getErrorMessage(errorCode));
+  }
+  if (!s) {
+    throw Napi::Error::New(env, "extractPageAuto failed: returned null");
+  }
+  std::string result(s);
+  free_string(s);
   return Napi::String::New(env, result);
 }
 
@@ -2359,6 +2452,47 @@ Napi::Value GetLogLevel(const Napi::CallbackInfo& info) {
   return Napi::Number::New(env, pdf_oxide_get_log_level());
 }
 
+// OCR model provisioning (#519) — build-time / first-run prefetch of
+// the shared detector + per-language recognition model & dict.
+Napi::Value PrefetchModels(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  std::string csv;
+  if (info.Length() >= 1 && info[0].IsArray()) {
+    Napi::Array langs = info[0].As<Napi::Array>();
+    for (uint32_t i = 0; i < langs.Length(); ++i) {
+      if (i > 0) csv += ",";
+      csv += langs.Get(i).ToString().Utf8Value();
+    }
+  }
+  int errorCode = 0;
+  char* s = pdf_oxide_prefetch_models(csv.c_str(), &errorCode);
+  if (errorCode != 0) {
+    throw Napi::Error::New(env, "prefetchModels failed: " + getErrorMessage(errorCode));
+  }
+  if (!s) {
+    throw Napi::Error::New(env, "prefetchModels failed: returned null");
+  }
+  std::string result(s);
+  free_string(s);
+  return Napi::String::New(env, result);
+}
+
+Napi::Value ModelManifest(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  char* s = pdf_oxide_model_manifest();
+  if (!s) {
+    throw Napi::Error::New(env, "modelManifest failed: returned null");
+  }
+  std::string result(s);
+  free_string(s);
+  return Napi::String::New(env, result);
+}
+
+Napi::Value PrefetchAvailable(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  return Napi::Boolean::New(env, pdf_oxide_prefetch_available() != 0);
+}
+
 // Crypto provider (issue #236) — runtime opt-in to FIPS-validated
 // `aws-lc-rs` backend. Build the addon with --features fips
 // for the FIPS path to be available; otherwise UseFipsProvider
@@ -3636,7 +3770,13 @@ Napi::Value SignatureGetPadesLevel(const Napi::CallbackInfo& info) {
 // lifetime management. Returns null when the document has no /DSS.
 Napi::Value DocumentGetDss(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* doc = info[0].As<Napi::External<void>>().Data();
+  // info[0] is an External<DocumentWrapper> (see OpenDocument). It must
+  // be unwrapped + locked like every other document handler. Passing
+  // the raw DocumentWrapper* straight to the FFI (which expects
+  // *const PdfDocument) reinterpreted the wrong struct, so
+  // getDocumentSecurityStore() threw a spurious parse/unsupported
+  // error for *every* PDF (#235 Node binding defect).
+  LOCK_DOC(info, doc);
   int errorCode = 0;
   void* dss = pdf_document_get_dss(doc, &errorCode);
   if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
@@ -3670,7 +3810,10 @@ Napi::Value DocumentGetDss(const Napi::CallbackInfo& info) {
 // /DocTimeStamp archival timestamp (ISO 32000-2:2020 §12.8.5).
 Napi::Value DocumentHasTimestamp(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  void* doc = info[0].As<Napi::External<void>>().Data();
+  // Same DocumentWrapper unwrap bug as DocumentGetDss: the raw wrapper
+  // pointer was passed to the FFI, so this silently always returned
+  // false (a hidden B-LTA correctness bug, not just a throw). #235.
+  LOCK_DOC(info, doc);
   int errorCode = 0;
   int r = pdf_document_has_timestamp(doc, &errorCode);
   if (errorCode != 0) throw Napi::Error::New(env, getErrorMessage(errorCode));
@@ -4118,6 +4261,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   // Logging
   exports.Set("setLogLevel", Napi::Function::New(env, SetLogLevel));
   exports.Set("getLogLevel", Napi::Function::New(env, GetLogLevel));
+  exports.Set("prefetchModels", Napi::Function::New(env, PrefetchModels));
+  exports.Set("modelManifest", Napi::Function::New(env, ModelManifest));
+  exports.Set("prefetchAvailable", Napi::Function::New(env, PrefetchAvailable));
 
   // Crypto provider (issue #236) — runtime FIPS opt-in.
   exports.Set("getActiveCryptoProvider", Napi::Function::New(env, GetActiveCryptoProvider));
@@ -4137,6 +4283,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("getVersion", Napi::Function::New(env, GetVersion));
   exports.Set("hasStructureTree", Napi::Function::New(env, HasStructureTree));
   exports.Set("extractText", Napi::Function::New(env, ExtractText));
+  exports.Set("classifyPage", Napi::Function::New(env, ClassifyPage));
+  exports.Set("classifyDocument", Napi::Function::New(env, ClassifyDocument));
+  exports.Set("extractTextAuto", Napi::Function::New(env, ExtractTextAuto));
+  exports.Set("extractPageAuto", Napi::Function::New(env, ExtractPageAuto));
   exports.Set("toMarkdown", Napi::Function::New(env, ToMarkdown));
   exports.Set("toHtml", Napi::Function::New(env, ToHtml));
   exports.Set("toPlainText", Napi::Function::New(env, ToPlainText));

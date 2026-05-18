@@ -98,11 +98,16 @@ pub enum PageType {
 
 /// Detect the type of a PDF page for OCR purposes.
 ///
-/// Uses multiple heuristics:
-/// 1. Native text length — substantial text means NativeText
-/// 2. Image coverage — a single image covering >80% of the page area suggests a scan
-/// 3. Text density — very sparse text with large images suggests HybridPage
-/// 4. Replacement characters — high ratio of U+FFFD suggests garbled OCR layer
+/// Since #460 this delegates to the unified v0.3.51 classifier
+/// [`PdfDocument::classify_page`] (render-mode-3, union
+/// CTM-transformed image coverage, the enriched T0.5 garbled gate,
+/// structure-tree + producer priors) and maps its [`PageKind`] to a
+/// [`PageType`]: `TextLayer`/`Empty` → `NativeText`, `Scanned` →
+/// `ScannedPage`, `ImageText`/`Mixed` → `HybridPage`. This keeps
+/// `detect_page_type` / `needs_ocr` / `extract_text_with_ocr` and the
+/// `AutoExtractor` making the *same* per-page decision (the headline
+/// #460 win); the old bespoke text-length / largest-image / U+FFFD
+/// heuristics were replaced — the `PageType` contract is unchanged.
 ///
 /// # Arguments
 ///
@@ -113,57 +118,29 @@ pub enum PageType {
 ///
 /// The detected [`PageType`].
 pub fn detect_page_type(doc: &PdfDocument, page: usize) -> Result<PageType> {
-    // IMPORTANT: Use extract_spans() instead of extract_text() to avoid infinite
-    // recursion. extract_text() calls needs_ocr() which calls detect_page_type(),
-    // creating a stack overflow loop when the OCR feature is enabled.
-    let spans = doc.extract_spans(page).unwrap_or_default();
-    let native_text: String = spans
-        .iter()
-        .map(|s| s.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let trimmed = native_text.trim();
-    let text_len = trimmed.len();
-
-    // Check for replacement characters (garbled OCR layer)
-    let replacement_count = trimmed.chars().filter(|&c| c == '\u{FFFD}').count();
-    let total_chars = trimmed.chars().count().max(1);
-    let replacement_ratio = replacement_count as f32 / total_chars as f32;
-
-    // If text has >20% replacement characters, it's garbled — treat as scanned
-    let text_is_garbled = replacement_ratio > 0.20 && total_chars > 10;
-
-    // Check for images
-    let images = doc.extract_images(page)?;
-    if images.is_empty() {
-        // No images — return native text regardless of quality
-        return Ok(PageType::NativeText);
-    }
-
-    // Calculate image coverage: does a single image cover most of the page?
-    // Use standard US Letter page area as baseline (612 × 792 points)
-    let page_area: f32 = 612.0 * 792.0;
-    let largest_image_area = images
-        .iter()
-        .map(|img| (img.width() as f32) * (img.height() as f32))
-        .fold(0.0_f32, f32::max);
-
-    // Scale image area to PDF points (approximate: assume 72 DPI baseline)
-    // Images are in pixels; a full A4 scan at 300 DPI ≈ 2480×3508 pixels
-    // Page in points ≈ 612×792. Ratio: image_pixels / (page_points * dpi/72)
-    let high_coverage = largest_image_area > page_area * 4.0; // ~72 DPI equivalent
-
-    if text_len <= 50 || text_is_garbled {
-        // No substantial (or garbled) text, and we know images exist (early return above).
-        // Treat as scanned page.
-        Ok(PageType::ScannedPage)
-    } else if high_coverage && text_len < 500 {
-        // Some text but a large image covers the page — hybrid
-        Ok(PageType::HybridPage)
-    } else {
-        // Substantial text — native extraction is fine
-        Ok(PageType::NativeText)
-    }
+    // #460: route OCR detection through the unified v0.3.51 classifier
+    // (`PdfDocument::classify_page`) instead of a separate heuristic, so
+    // `detect_page_type` / `needs_ocr` / `extract_text_with_ocr` and the
+    // new `AutoExtractor`/`extract_page_auto` make the *same* per-page
+    // decision (the headline #460 win — no divergent reading order /
+    // sparse-text-over-scan misfire). The classifier is signal-richer
+    // (render-mode-3, union transformed-image coverage, enriched T0.5
+    // garbled gate) than the old text-len/largest-image heuristic, so
+    // results are equal-or-better; the `PageType` contract is unchanged.
+    // (No recursion: `classify_page` uses `extract_spans`, never
+    // `extract_text`.)
+    use crate::extractors::auto::PageKind;
+    let cls = doc.classify_page(page)?;
+    Ok(match cls.kind {
+        // Usable native text (incl. a good invisible OCR sidecar) or a
+        // blank page → no OCR needed.
+        PageKind::TextLayer | PageKind::Empty => PageType::NativeText,
+        // Image-dominated / garbled-or-no usable text → OCR the page.
+        PageKind::Scanned => PageType::ScannedPage,
+        // Real native text *and* image regions that may carry text →
+        // hybrid merge (native + region OCR).
+        PageKind::ImageText | PageKind::Mixed => PageType::HybridPage,
+    })
 }
 
 /// Check if a PDF page needs OCR (is a scanned page).
@@ -317,6 +294,52 @@ pub fn ocr_page_spans(
     Ok(ocr_result.to_text_spans(options.scale))
 }
 
+/// Merge a page's native text layer with text OCR'd from its image
+/// region(s) for a [`PageType::HybridPage`].
+///
+/// A hybrid page has a genuine native text layer **and** a raster
+/// image that may carry its own text. The two are disjoint sources, so
+/// the correct combined result is their union (native first — it is
+/// the higher-fidelity, reading-ordered layer — then any OCR fragment
+/// not already represented natively). OCR lines whose
+/// whitespace-normalised, lower-cased form is already a substring of
+/// the native layer are skipped, so a sparse invisible-OCR sidecar is
+/// not double-emitted. Empty inputs degrade gracefully.
+pub(crate) fn merge_native_and_ocr(native: &str, ocr: &str) -> String {
+    let native_trimmed = native.trim_end();
+    if ocr.trim().is_empty() {
+        return native.to_string();
+    }
+    if native_trimmed.trim().is_empty() {
+        return ocr.to_string();
+    }
+    let norm = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    let native_norm = norm(native_trimmed);
+    let mut extra: Vec<&str> = Vec::new();
+    for line in ocr.lines() {
+        let lt = line.trim();
+        if lt.is_empty() {
+            continue;
+        }
+        let ln = norm(lt);
+        // Skip blank-after-norm or already-present-in-native lines, and
+        // de-dup within the OCR block itself.
+        if ln.is_empty() || native_norm.contains(&ln) || extra.iter().any(|e| norm(e) == ln) {
+            continue;
+        }
+        extra.push(lt);
+    }
+    if extra.is_empty() {
+        return native.to_string();
+    }
+    format!("{native_trimmed}\n{}", extra.join("\n"))
+}
+
 /// Extract text from a page, automatically using OCR if needed.
 ///
 /// This is the main entry point for text extraction that handles both
@@ -377,38 +400,20 @@ pub fn extract_text_with_ocr(
             }
         },
         PageType::HybridPage => {
-            // Has some native text and large images — merge both sources
+            // Real native text layer AND an image that may carry its own
+            // text (screenshot/figure/caption). The two sources are
+            // disjoint, so the correct result is their UNION — not
+            // whichever string is longer. The old `ocr_len >
+            // native_len*2 ? ocr : native` either/or silently DROPPED
+            // the in-image text whenever the native layer was longer
+            // (you got the paragraph, lost the caption — could not
+            // "extract both"). #517's `PageKind::ImageText` is
+            // specified as "native + region OCR"; honour it by merging.
             let native_text = doc.extract_text(page).unwrap_or_default();
 
             if let Some(ocr_engine) = engine {
                 match ocr_page(doc, page, ocr_engine, &options) {
-                    Ok(ocr_text) => {
-                        // Hybrid merge: if OCR produced substantially more text,
-                        // it likely captured content from images that native extraction missed.
-                        // Use the longer result, preferring native when close.
-                        let native_len = native_text.trim().len();
-                        let ocr_len = ocr_text.trim().len();
-
-                        if ocr_len > native_len * 2 {
-                            // OCR found significantly more content — use it
-                            log::debug!(
-                                "Hybrid page {}: OCR ({} chars) >> native ({} chars), using OCR",
-                                page,
-                                ocr_len,
-                                native_len
-                            );
-                            Ok(ocr_text)
-                        } else {
-                            // Native text is comparable or better — prefer it (higher quality)
-                            log::debug!(
-                                "Hybrid page {}: native ({} chars) >= OCR ({} chars), using native",
-                                page,
-                                native_len,
-                                ocr_len
-                            );
-                            Ok(native_text)
-                        }
-                    },
+                    Ok(ocr_text) => Ok(merge_native_and_ocr(&native_text, &ocr_text)),
                     Err(e) => {
                         log::warn!("OCR failed for hybrid page {}: {}, using native text", page, e);
                         Ok(native_text)
@@ -448,5 +453,40 @@ mod tests {
         assert_eq!(PageType::NativeText, PageType::NativeText);
         assert_ne!(PageType::NativeText, PageType::ScannedPage);
         assert_ne!(PageType::ScannedPage, PageType::HybridPage);
+    }
+
+    // Deterministic, model-free pins for the HybridPage merge — the
+    // regression that an external consumer hit: a native text layer +
+    // an image-with-text must yield the UNION, never one-or-the-other.
+    #[test]
+    fn merge_unions_disjoint_native_and_image_text() {
+        let m = merge_native_and_ocr(
+            "Native paragraph stays.\nSecond native line.",
+            "Caption text from the figure",
+        );
+        assert!(m.contains("Native paragraph stays."), "{m:?}");
+        assert!(m.contains("Second native line."), "{m:?}");
+        assert!(m.contains("Caption text from the figure"), "{m:?}");
+    }
+
+    #[test]
+    fn merge_is_not_either_or_when_native_is_longer() {
+        // The exact shape of the old bug: native much longer than OCR.
+        // Old code returned native and dropped the image text.
+        let native = "A very long native paragraph ".repeat(8);
+        let m = merge_native_and_ocr(&native, "INVOICE 42");
+        assert!(m.contains("INVOICE 42"), "in-image text must survive: {m:?}");
+        assert!(m.contains("A very long native paragraph"), "{m:?}");
+    }
+
+    #[test]
+    fn merge_dedups_sidecar_and_handles_empties() {
+        // An OCR line already present in the native layer is not
+        // double-emitted (whitespace/case-insensitive).
+        let m = merge_native_and_ocr("Hello World\nKeep me", "hello   world\nNEW LINE");
+        assert_eq!(m.matches("Hello World").count(), 1, "{m:?}");
+        assert!(m.contains("NEW LINE"), "{m:?}");
+        assert_eq!(merge_native_and_ocr("only native", "   "), "only native");
+        assert_eq!(merge_native_and_ocr("   ", "only ocr"), "only ocr");
     }
 }

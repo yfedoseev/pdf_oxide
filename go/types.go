@@ -7,9 +7,72 @@
 package pdfoxide
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 )
+
+// ─── Comprehensive auto extraction (#517) — functional options ─────────────
+//
+// Go-idiomatic functional options (the locked decision); they reduce to
+// the same `AutoExtractOptions` JSON the frozen C-ABI parses, so cgo and
+// purego are signature-identical and consistent with every other
+// binding. Build-tag-agnostic (shared by both backends).
+
+type autoOpts struct {
+	Mode                   string   `json:"mode,omitempty"`
+	ReconstructImageTables *bool    `json:"reconstruct_image_tables,omitempty"`
+	EmitPlaceholders       *bool    `json:"emit_placeholders,omitempty"`
+	OcrLanguages           []string `json:"ocr_languages,omitempty"`
+	MinTextConfidence      *float32 `json:"min_text_confidence,omitempty"`
+	TableConfidence        *float32 `json:"table_confidence,omitempty"`
+	ForceOcrPages          []uint   `json:"force_ocr_pages,omitempty"`
+}
+
+// AutoOption configures an auto-extraction call. Pass zero or more to
+// ExtractPageAuto; none = the `balanced` defaults.
+type AutoOption func(*autoOpts)
+
+// WithMode sets the text-vs-OCR mode ("text_only" | "auto" | "force_ocr").
+func WithMode(mode string) AutoOption { return func(o *autoOpts) { o.Mode = mode } }
+
+// WithImageTables toggles image-table reconstruction.
+func WithImageTables(yes bool) AutoOption {
+	return func(o *autoOpts) { o.ReconstructImageTables = &yes }
+}
+
+// WithPlaceholders toggles figure/table placeholders in the text flow.
+func WithPlaceholders(yes bool) AutoOption {
+	return func(o *autoOpts) { o.EmitPlaceholders = &yes }
+}
+
+// WithOCRLanguages sets OCR language hints.
+func WithOCRLanguages(langs ...string) AutoOption {
+	return func(o *autoOpts) { o.OcrLanguages = langs }
+}
+
+// WithForceOCRPages forces OCR on the given 0-based page indices
+// (additive on the mode; does not change it).
+func WithForceOCRPages(pages ...uint) AutoOption {
+	return func(o *autoOpts) { o.ForceOcrPages = pages }
+}
+
+// autoOptionsJSON reduces the functional options to the C-ABI JSON
+// (empty string when no options were given → C-ABI uses defaults).
+func autoOptionsJSON(opts []AutoOption) string {
+	if len(opts) == 0 {
+		return ""
+	}
+	var o autoOpts
+	for _, f := range opts {
+		f(&o)
+	}
+	b, err := json.Marshal(&o)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
 
 // Sentinel errors for errors.Is comparisons. Every failure path in this
 // package reports one of these wrapped in an *Error for FFI errors, or

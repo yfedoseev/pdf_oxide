@@ -36,6 +36,22 @@ build:
 build-all:
 	maturin build --release --interpreter python3.8 python3.9 python3.10 python3.11 python3.12
 
+# Regenerate the C ABI header from src/ffi.rs (cbindgen).
+# The committed header had silently drifted to v0.3.24 (missing every
+# v0.3.50/v0.3.51 C symbol) because nothing regenerated it. Run this
+# whenever src/ffi.rs changes.
+c-header:
+	cbindgen --config cbindgen.toml --crate pdf_oxide \
+		--output include/pdf_oxide_c/pdf_oxide.h
+
+# CI drift guard: fail if the committed C header is out of sync with
+# src/ffi.rs. Keeps the C/C++ binding from going stale again.
+c-header-check:
+	cbindgen --config cbindgen.toml --crate pdf_oxide \
+		--output /tmp/pdf_oxide.h.gen 2>/dev/null
+	diff -u include/pdf_oxide_c/pdf_oxide.h /tmp/pdf_oxide.h.gen \
+		|| (echo "C header out of sync with src/ffi.rs — run 'make c-header'"; exit 1)
+
 # Clean build artifacts
 # Removes all build artifacts and compiled extensions
 clean:

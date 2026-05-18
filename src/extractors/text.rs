@@ -3814,11 +3814,29 @@ impl<'doc> TextExtractor<'doc> {
                 // keep accumulating into the existing buffer instead of flushing
                 // (avoids creating thousands of 1-char TextSpans per page).
                 // When merge_tm_tj_runs is false, every Tm always starts a fresh span.
+                //
+                // #518: glyph-jitter tolerance. Microsoft Word emits each
+                // glyph in its own `BT Tm Tj ET` block with ±2.5–5pt
+                // sinusoidal baseline jitter for broken-image placeholder
+                // text. ISO 32000-1 §9.4 leaves logical reading order to
+                // the extractor, so a baseline delta far smaller than the
+                // line's own height is the SAME visual line — only a
+                // delta on the order of the font size is a real line
+                // break (body leading ≳ 1.0× font size). The previous
+                // `f.round() as i32 ==` check tolerated only ±0.5pt and
+                // split jittered glyphs into separate Y-banded spans that
+                // the reading-order sort then scrambled. Tolerance is
+                // scale-relative (0.5× the text-space glyph height, ≥0.5pt
+                // floor) so it is correct at any font size and still
+                // splits genuine line breaks.
+                let cur_font_size = self.state_stack.current().font_size;
                 let is_continuation = self.merging_config.merge_tm_tj_runs
                     && match self.tj_span_buffer {
                         Some(ref mut buffer)
                             if !buffer.is_empty()
-                                && f.round() as i32 == buffer.start_matrix.f.round() as i32
+                                && (f - buffer.start_matrix.f).abs()
+                                    <= ((cur_font_size * buffer.start_matrix.d).abs() * 0.5)
+                                        .max(0.5)
                                 && a == buffer.start_matrix.a
                                 && b == buffer.start_matrix.b
                                 && c == buffer.start_matrix.c

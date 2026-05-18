@@ -441,6 +441,74 @@ namespace PdfOxide.Core
             finally { _lock.ExitReadLock(); }
         }
 
+        /// <summary>#517: cheap per-page text-vs-OCR classification → JSON
+        /// PageClassification (the frozen cross-binding envelope).</summary>
+        public string ClassifyPage(int pageIndex)
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                if (pageIndex < 0 || pageIndex >= PageCount)
+                    throw new ArgumentOutOfRangeException(nameof(pageIndex));
+                var ptr = NativeMethods.PdfDocumentClassifyPage(_handle, pageIndex, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
+        }
+
+        /// <summary>#517: cheap whole-document classification → JSON
+        /// DocumentClassification (per-page kinds + pages_needing_ocr).</summary>
+        public string ClassifyDocument()
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                var ptr = NativeMethods.PdfDocumentClassifyDocument(_handle, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
+        }
+
+        /// <summary>#517/#513: one-shot auto text extraction — graceful
+        /// native fallback (never an opaque OCR error).</summary>
+        public string ExtractTextAuto(int pageIndex)
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                if (pageIndex < 0 || pageIndex >= PageCount)
+                    throw new ArgumentOutOfRangeException(nameof(pageIndex));
+                var ptr = NativeMethods.PdfDocumentExtractTextAuto(_handle, pageIndex, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
+        }
+
+        /// <summary>#517: rich per-page extraction → JSON PageExtraction
+        /// (per-region bbox + typed reason). <paramref name="optionsJson"/>
+        /// is `{}`-tolerant AutoExtractOptions; null/empty → defaults.</summary>
+        public string ExtractPageAuto(int pageIndex, string? optionsJson = null)
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                if (pageIndex < 0 || pageIndex >= PageCount)
+                    throw new ArgumentOutOfRangeException(nameof(pageIndex));
+                var ptr = NativeMethods.PdfDocumentExtractPageAuto(
+                    _handle, pageIndex, optionsJson ?? string.Empty, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
+        }
+
         /// <summary>
         /// Asynchronously extracts text from a page.
         /// </summary>
@@ -1514,6 +1582,47 @@ namespace PdfOxide.Core
         public static int GetLogLevel()
         {
             return NativeMethods.PdfOxideGetLogLevel();
+        }
+
+        /// <summary>
+        /// #519: Build-time / first-run OCR model provisioning. Downloads
+        /// the shared detector + the recognition model and dictionary
+        /// for each requested language code (e.g. <c>"english"</c>,
+        /// <c>"chinese"</c>, <c>"arabic"</c>) into the model cache dir
+        /// (<c>$PDF_OXIDE_MODEL_DIR</c> / the platform cache) and returns
+        /// that dir. No languages → English. Unknown codes are skipped.
+        /// Idempotent. Actual download requires the native library built
+        /// with the <c>ocr</c> feature; without it the cache dir is still
+        /// created (no fetch) — query <see cref="PrefetchAvailable"/>.
+        /// </summary>
+        public static string PrefetchModels(params string[] languages)
+        {
+            var csv = languages is { Length: > 0 } ? string.Join(",", languages) : string.Empty;
+            var ptr = NativeMethods.PdfOxidePrefetchModels(csv, out var errorCode);
+            ExceptionMapper.ThrowIfError(errorCode);
+            return StringMarshaler.PtrToStringAndFree(ptr);
+        }
+
+        /// <summary>
+        /// #519: Air-gapped OCR model manifest as JSON (detector + every
+        /// supported language's cache filenames and source URLs). Never
+        /// errors.
+        /// </summary>
+        public static string ModelManifest()
+        {
+            var ptr = NativeMethods.PdfOxideModelManifest();
+            return StringMarshaler.PtrToStringAndFree(ptr);
+        }
+
+        /// <summary>
+        /// #519: Whether this build can actually download models
+        /// (compiled with the <c>ocr</c> feature). When <c>false</c>,
+        /// <see cref="PrefetchModels"/> only creates the cache dir
+        /// (no fetch).
+        /// </summary>
+        public static bool PrefetchAvailable()
+        {
+            return NativeMethods.PdfOxidePrefetchAvailable() != 0;
         }
 
         /// <summary>
