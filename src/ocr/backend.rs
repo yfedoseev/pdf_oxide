@@ -7,10 +7,11 @@
 //!
 //! * [`OrtBackend`]   — native ONNX Runtime (`ocr` feature), the
 //!   default everywhere it is available; unchanged behaviour.
-//! * [`TractBackend`] — pure-Rust `tract` (`ml` feature), the path the
-//!   browser/Deno/edge `wasm32` build uses since it needs no native
-//!   library and no JS bridge. Validated to load + run the PaddleOCR
-//!   det/rec graphs (issue #524 Approach-B gate).
+//! * [`TractBackend`] — pure-Rust `tract` (`ocr-tract` feature, which
+//!   `ml` implies), the path the browser/Deno/edge `wasm32` build uses
+//!   since it needs no native library and no JS bridge. Validated to
+//!   load + run the PaddleOCR det/rec graphs (issue #524 Approach-B
+//!   gate).
 //!
 //! Both consume ONNX model **bytes** and expose one call: a single
 //! `f32` input tensor named `"x"` in, the first `f32` output tensor
@@ -30,8 +31,8 @@ pub(crate) trait InferenceBackend: Send + Sync {
 
 /// Build the backend appropriate for the current build: native ONNX
 /// Runtime when the `ocr` feature is on, otherwise the pure-Rust
-/// `tract` backend (`ml`, used by `wasm-ml`). `num_threads` is honoured
-/// only by the native backend.
+/// `tract` backend (`ocr-tract`, which `ml` implies and `wasm-ml`
+/// uses). `num_threads` is honoured only by the native backend.
 #[allow(unused_variables)]
 pub(crate) fn build_backend(
     model_bytes: &[u8],
@@ -43,14 +44,14 @@ pub(crate) fn build_backend(
     {
         Ok(Box::new(OrtBackend::from_bytes(model_bytes, num_threads)?))
     }
-    #[cfg(all(not(feature = "ocr"), feature = "ml"))]
+    #[cfg(all(not(feature = "ocr"), feature = "ocr-tract"))]
     {
         Ok(Box::new(TractBackend::from_bytes(model_bytes)?))
     }
-    #[cfg(all(not(feature = "ocr"), not(feature = "ml")))]
+    #[cfg(all(not(feature = "ocr"), not(feature = "ocr-tract")))]
     {
         Err(OcrError::ModelLoadError(
-            "no OCR inference backend compiled in (enable `ocr` or `ml`)".to_string(),
+            "no OCR inference backend compiled in (enable `ocr` or `ocr-tract`)".to_string(),
         ))
     }
 }
@@ -120,12 +121,12 @@ impl InferenceBackend for OrtBackend {
 // Pure-Rust `tract` backend — the wasm32 path.
 // ---------------------------------------------------------------------------
 
-// When both `ocr` and `ml` are on (e.g. the `gpu` feature), the native
-// `ort` backend wins in `build_backend`, so this type is compiled but
-// unconstructed — intentional, not dead code. In a real `wasm-ml`
-// build (`ocr` off) it *is* constructed, so the allow is scoped to the
-// combined-feature case only.
-#[cfg(feature = "ml")]
+// When both `ocr` and `ocr-tract` are on (e.g. `--features ocr,ml`),
+// the native `ort` backend wins in `build_backend`, so this type is
+// compiled but unconstructed — intentional, not dead code. In a real
+// `wasm-ml` build (`ocr` off) it *is* constructed, so the allow is
+// scoped to the combined-feature case only.
+#[cfg(feature = "ocr-tract")]
 #[cfg_attr(feature = "ocr", allow(dead_code))]
 pub(crate) struct TractBackend {
     // The unoptimized inference graph. PaddleOCR det/rec have dynamic
@@ -136,11 +137,11 @@ pub(crate) struct TractBackend {
     plans: std::sync::Mutex<std::collections::HashMap<Vec<usize>, std::sync::Arc<TractPlan>>>,
 }
 
-#[cfg(feature = "ml")]
+#[cfg(feature = "ocr-tract")]
 #[cfg_attr(feature = "ocr", allow(dead_code))]
 type TractPlan = tract_onnx::prelude::TypedRunnableModel<tract_onnx::prelude::TypedModel>;
 
-#[cfg(feature = "ml")]
+#[cfg(feature = "ocr-tract")]
 #[cfg_attr(feature = "ocr", allow(dead_code))]
 impl TractBackend {
     pub(crate) fn from_bytes(model_bytes: &[u8]) -> OcrResult<Self> {
@@ -185,7 +186,7 @@ impl TractBackend {
     }
 }
 
-#[cfg(feature = "ml")]
+#[cfg(feature = "ocr-tract")]
 impl InferenceBackend for TractBackend {
     fn run(&self, input: &ndarray::Array4<f32>) -> OcrResult<ndarray::ArrayD<f32>> {
         use tract_onnx::prelude::*;
