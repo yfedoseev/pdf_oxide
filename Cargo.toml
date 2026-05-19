@@ -142,7 +142,7 @@ smallvec = "1.13" # Stack-allocated small vectors for content stream operands (#
 
 # Compression/Decompression
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
-weezl = "0.1"                                                                  # LZW compression
+weezl = "0.2"                                                                  # LZW compression
 brotli = "8"                                                                   # Brotli compression (PDF 2.0, ISO 32000-2:2020)
 
 # Font parsing
