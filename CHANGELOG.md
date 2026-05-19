@@ -2,6 +2,12 @@
 
 All notable changes to PDFOxide are documented here.
 
+## next-version
+
+### Fixed
+
+- **ToUnicode CMap `bfchar` and `bfrange` sections are now processed in document order** — previously all `bfchar` sections were processed before all `bfrange` sections, so `bfrange` entries always silently discarded any `bfchar` correction for the same code. Sections are now processed in the order they appear in the stream (last entry wins), matching the behaviour of pdf.js, MuPDF, and Poppler.
+
 ## [0.3.57] - 2026-05-30
 
 > Community contributions + extraction-quality sweep — separation plates, OCG ink filtering, two-phase images, rendered-advance metrics, plus multi-column reading order, page-rotation, CJK/UTF-8 CMap decoding, RTL logical order, indirect-ref page boxes, and font-cache correctness
