@@ -67,7 +67,9 @@ impl From<std::io::Error> for OcrError {
     }
 }
 
-#[cfg(feature = "ocr")]
+// Available wherever the OCR module is (`ocr` or `ml` — #524), so the
+// `?` operator works on the tract/wasm path too.
+#[cfg(any(feature = "ocr", feature = "ml"))]
 impl From<OcrError> for crate::Error {
     fn from(err: OcrError) -> Self {
         crate::Error::Ocr(err.to_string())

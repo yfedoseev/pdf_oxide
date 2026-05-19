@@ -166,6 +166,10 @@ impl TractBackend {
         if let Some(p) = plans.get(&key) {
             return Ok(p.clone());
         }
+        // `into_optimized()` is mandatory, not a nicety: with only
+        // `into_typed()` the DBNet detector graph is so slow on a
+        // full-page image that a single inference effectively hangs
+        // (empirically >5 min vs sub-second optimized — #524 task 5).
         let runnable = self
             .model
             .clone()

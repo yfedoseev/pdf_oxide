@@ -93,6 +93,18 @@ impl TextRecognizer {
     /// and dictionary characters map to indices 1..N. We insert a blank
     /// placeholder at index 0 so that `dictionary[model_index]` gives
     /// the correct character.
+    ///
+    /// PaddleOCR also emits a **space** as its last class. Native
+    /// provisioning (`AutoExtractor::prefetch_models`) appends a
+    /// trailing-space line to the dict file so that class is decodable.
+    /// The `wasm32` build, however, receives dict *bytes* directly from
+    /// the host (no filesystem / no `prefetch_models` post-processing —
+    /// #524), so guarantee the space class here instead: append a
+    /// trailing space unless the dict already ends with one. Idempotent
+    /// (native dicts already end with `" "` → no-op) and safe for models
+    /// without a space class (the extra index is simply never the
+    /// arg-max). Without this, every inter-word space is dropped and the
+    /// text runs together (empirically confirmed, #524 task 5).
     fn parse_dictionary(content: &str) -> OcrResult<Vec<char>> {
         let chars: Vec<char> = content
             .lines()
@@ -105,9 +117,12 @@ impl TextRecognizer {
         }
 
         // Prepend blank character at index 0 (PaddleOCR CTC blank convention)
-        let mut dict = Vec::with_capacity(chars.len() + 1);
+        let mut dict = Vec::with_capacity(chars.len() + 2);
         dict.push('\0'); // index 0 = CTC blank
         dict.extend(chars);
+        if dict.last() != Some(&' ') {
+            dict.push(' '); // PaddleOCR space class (last)
+        }
 
         Ok(dict)
     }
@@ -248,11 +263,28 @@ mod tests {
         let dict_content = "a\nb\nc\n1\n2\n3";
         let dict = TextRecognizer::parse_dictionary(dict_content).unwrap();
 
-        // Should have 1 blank + 6 chars
-        assert_eq!(dict.len(), 7);
+        // 1 blank + 6 chars + appended PaddleOCR space class (#524).
+        assert_eq!(dict.len(), 8);
         assert_eq!(dict[0], '\0'); // Blank at index 0 (PaddleOCR CTC convention)
         assert_eq!(dict[1], 'a');
         assert_eq!(dict[6], '3');
+        assert_eq!(dict[7], ' '); // space is the last class
+    }
+
+    #[test]
+    fn test_parse_dictionary_space_class_is_idempotent() {
+        // A dict that already ends with a lone-space line (how native
+        // `prefetch_models` writes it) must NOT get a second space —
+        // otherwise the dict is one class too long and every output
+        // index is shifted, garbling all text (#524 task 5).
+        let with_space = TextRecognizer::parse_dictionary("a\nb\n ").unwrap();
+        assert_eq!(with_space, vec!['\0', 'a', 'b', ' ']);
+
+        // A raw dict with no space line (how the wasm host supplies
+        // bytes) gets exactly one space appended so the space class is
+        // decodable and inter-word spaces survive.
+        let no_space = TextRecognizer::parse_dictionary("a\nb").unwrap();
+        assert_eq!(no_space, vec!['\0', 'a', 'b', ' ']);
     }
 
     #[test]
