@@ -101,6 +101,16 @@ export class WorkerPool {
         this.workers.push(worker);
       }
     } catch (error) {
+      // Best-effort terminate any workers spawned before the failure:
+      // `cleanup()` only drops references, so without this a partial
+      // init would leak live (even if unref'd) worker threads.
+      for (const worker of this.workers) {
+        try {
+          void worker.terminate();
+        } catch {
+          /* already gone / best-effort */
+        }
+      }
       this.cleanup();
       this.started = false;
       throw new Error(
@@ -257,6 +267,17 @@ export class WorkerPool {
   }
 
   /**
+   * Synchronously mark the pool terminated. Intended solely for the
+   * process `'exit'` hook, which cannot run the async {@link terminate}.
+   * Flipping this flag is what silences the per-worker teardown 'exit'
+   * handler — exposed as a method so shutdown code never has to reach
+   * into private state via an unsafe cast.
+   */
+  public markTerminatedForExit(): void {
+    this.terminated = true;
+  }
+
+  /**
    * Get current pool statistics
    */
   public getStats(): {
@@ -284,15 +305,22 @@ const hardwareConcurrency = Math.max(1, os.cpus().length);
 export const workerPool = new WorkerPool(Math.min(hardwareConcurrency, 8));
 
 /**
- * Graceful shutdown.
+ * Graceful shutdown — without hijacking the host's signal semantics.
  *
- * `process.on('exit')` runs synchronous code only — an `async` handler
- * there cannot await `terminate()`, so the previous implementation left
- * workers to be killed by the runtime (the source of the spurious
- * "Worker N exited with code 1"). Do the async graceful terminate on
- * `beforeExit` / signals (which CAN run async), and on the final hard
- * `exit` just flip the synchronous `terminated` flag so any in-flight
- * worker 'exit' events are silenced.
+ * `process.on('exit')` runs synchronous code only, so it cannot await
+ * `terminate()`. The async graceful terminate runs on `beforeExit`
+ * (normal event-loop drain — the path that produced the spurious
+ * "Worker N exited with code 1" for short-lived consumers such as
+ * `prefetchModels()`); on the final hard `exit` we only flip the
+ * synchronous `terminated` flag so any in-flight worker 'exit' events
+ * stay silent.
+ *
+ * Deliberately NO `SIGINT`/`SIGTERM` listeners: registering them in a
+ * library overrides Node's default "terminate on Ctrl-C / TERM" for
+ * every consumer that merely imports this package — a breaking
+ * operational change. Pooled workers are `unref()`'d (see
+ * {@link WorkerPool}), so an abrupt signal teardown already exits
+ * cleanly without us intercepting the signal.
  */
 let shuttingDown = false;
 function gracefulShutdown(): void {
@@ -303,9 +331,7 @@ function gracefulShutdown(): void {
   });
 }
 process.once('beforeExit', gracefulShutdown);
-process.once('SIGINT', gracefulShutdown);
-process.once('SIGTERM', gracefulShutdown);
 process.on('exit', () => {
   // Sync only: ensure `terminated` is set so worker teardown is silent.
-  (workerPool as unknown as { terminated: boolean }).terminated = true;
+  workerPool.markTerminatedForExit();
 });

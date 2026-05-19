@@ -407,7 +407,7 @@ jobs:
           # that compiles but always fails at runtime. OCR additionally
           # needs an ONNX Runtime shared lib + provisioned models at
           # runtime; the auto surface degrades gracefully to native text
-          # with a typed reason when they are absent (see docs/ocr.md).
+          # with a typed reason when they are absent (see docs/OCR_GUIDE.md).
           cargo build --release --lib \
             --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts \
             --target ${{ matrix.target }}

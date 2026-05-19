@@ -272,7 +272,7 @@ export ORT_LIB_LOCATION=$(brew --prefix onnxruntime)/lib
 
 ### WebAssembly
 
-OCR is **not supported** in **WebAssembly** builds (`pdf-oxide-wasm` — browser / Deno / edge): ONNX Runtime has no WASM target. This applies only to the WASM build — the **native Node.js** addon (`pdf-oxide`) *does* support OCR as of v0.3.52 (see *Node.js / TypeScript* above). Auto mode still works in WASM, falling back to native text with a typed reason.
+OCR is **not supported** in **WebAssembly** builds (`pdf-oxide-wasm` — browser / Deno / edge): pdf_oxide's OCR backend is the Rust `ort` crate, which links a **native** ONNX Runtime shared library and does not target `wasm32` (ONNX Runtime's separate `onnxruntime-web` build is a browser JS runtime, not usable from this Rust/wasm-bindgen pipeline). This applies only to the WASM build — the **native Node.js** addon (`pdf-oxide`) *does* support OCR as of v0.3.52 (see *Node.js / TypeScript* above). Auto mode still works in WASM, falling back to native text with a typed reason.
 
 ## Troubleshooting
 
