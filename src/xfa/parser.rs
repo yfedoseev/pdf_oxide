@@ -382,7 +382,7 @@ impl XfaParser {
                     self.context_stack.push(local_name);
                 },
                 Ok(Event::Text(e)) => {
-                    let text = e.xml_content().unwrap_or_default().to_string();
+                    let text = e.xml11_content().unwrap_or_default().to_string();
 
                     if let Some(parent) = self.context_stack.last() {
                         if in_items && parent == "text" {
@@ -483,7 +483,7 @@ impl XfaParser {
                     }
                 },
                 Ok(Event::Text(e)) => {
-                    current_text = e.xml_content().unwrap_or_default().to_string();
+                    current_text = e.xml11_content().unwrap_or_default().to_string();
                 },
                 Ok(Event::End(ref e)) => {
                     let local_name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();

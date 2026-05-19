@@ -256,7 +256,7 @@ impl XmpExtractor {
                     // Empty elements don't have text content
                 },
                 Ok(Event::Text(e)) => {
-                    let text = e.xml_content().unwrap_or_default().trim().to_string();
+                    let text = e.xml11_content().unwrap_or_default().trim().to_string();
                     if text.is_empty() {
                         continue;
                     }

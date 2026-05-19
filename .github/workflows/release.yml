@@ -216,7 +216,7 @@ jobs:
 
       - name: Upload .deb artifact
         if: matrix.target == 'x86_64-unknown-linux-gnu'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: debian-package
           path: target/x86_64-unknown-linux-gnu/debian/*.deb
@@ -241,7 +241,7 @@ jobs:
           Compress-Archive -Path @("pdf-oxide.exe", "pdf-oxide-mcp.exe") -DestinationPath ../../../dist/${{ matrix.artifact_name }}-${VERSION}.zip
 
       - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/*
@@ -307,7 +307,7 @@ jobs:
           cp wasm-pkg/README.md wasm-out/
 
       - name: Upload WASM artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wasm-package
           path: wasm-out/
@@ -434,7 +434,7 @@ jobs:
           ls -la native-out/
 
       - name: Upload native lib
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact_name }}
           path: native-out/
@@ -527,7 +527,7 @@ jobs:
           ls -lh "$OUT/"
 
       - name: Upload go-ffi assets artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: go-ffi-assets
           path: |
@@ -767,7 +767,7 @@ jobs:
           echo "pdf_oxide.node: ${BEFORE} -> ${AFTER} bytes"
 
       - name: Upload .node artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nodejs-${{ matrix.triple }}
           path: js/build/Release/pdf_oxide.node
@@ -886,7 +886,7 @@ jobs:
             || { echo "AOT smoke test failed"; exit 1; }
 
       - name: Upload NuGet package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nuget-package
           path: nuget-out/*.nupkg
@@ -906,13 +906,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
 
       - name: Generate type stubs
         run: uvx rylai -o python/pdf_oxide/
 
       - name: Upload type stubs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: python-type-stubs
           path: python/pdf_oxide/*.pyi
@@ -985,7 +985,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
 
       - name: Install maturin
         run: uv pip install --system maturin
@@ -1039,7 +1039,7 @@ jobs:
         run: maturin sdist --out dist
 
       - name: Upload wheels
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/*
@@ -1071,7 +1071,7 @@ jobs:
           args: --release --features python --out dist
 
       - name: Upload wheels
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-linux-${{ matrix.target }}-musl
           path: dist/*
@@ -1326,7 +1326,7 @@ jobs:
           cat pdf-oxide.json
 
       - name: Upload packaging artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: packaging-manifests
           path: |

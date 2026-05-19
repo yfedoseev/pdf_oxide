@@ -245,7 +245,7 @@ impl DocxConverter {
                     if in_text && in_run {
                         current_run
                             .text
-                            .push_str(&e.xml_content().unwrap_or_default());
+                            .push_str(&e.xml11_content().unwrap_or_default());
                     }
                 },
                 Ok(Event::Eof) => break,
@@ -301,7 +301,7 @@ impl DocxConverter {
                 },
                 Ok(Event::Text(e)) => {
                     if in_title {
-                        title = Some(e.xml_content().unwrap_or_default().to_string());
+                        title = Some(e.xml11_content().unwrap_or_default().to_string());
                     }
                 },
                 Ok(Event::Eof) => break,

@@ -73,7 +73,7 @@ jobs:
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
 
       - name: Create virtual environment with uv
         run: uv venv
@@ -138,7 +138,7 @@ jobs:
         run: cargo clippy --features python --all-targets --workspace -- -D warnings
 
       - name: Install uv
-        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
 
       - name: Pin Python version
         run: uv python pin 3.11
@@ -216,7 +216,7 @@ jobs:
           manylinux: ${{ matrix.manylinux }}
           args: --release --features python,ocr,barcodes --out dist
       - name: Upload wheels as artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-linux-${{ matrix.target }}-${{ matrix.manylinux }}
           path: dist/*.whl
@@ -241,7 +241,7 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --features python,ocr,barcodes --out dist
       - name: Upload wheels as artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-macos-${{ matrix.target }}
           path: dist/*.whl
@@ -267,7 +267,7 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --features python,ocr,barcodes --out dist
       - name: Upload wheels as artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-windows-${{ matrix.target }}
           path: dist/*.whl
@@ -284,7 +284,7 @@ jobs:
           command: sdist
           args: --out dist
       - name: Upload sdist as artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sdist
           path: dist/*.tar.gz
@@ -412,7 +412,7 @@ jobs:
         run: pdoc --html --output-dir docs-python pdf_oxide
 
       - name: Upload docs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: python-docs
           path: docs-python/
