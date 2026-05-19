@@ -436,3 +436,196 @@ let x = 42;
         assert!(bytes.len() > 100);
     }
 }
+
+/// Regression guards for issue #525: Markdown → PDF dropped all styling
+/// (headings rendered at body size, `**bold**` markers stripped to plain
+/// text). These round-trip through the real extractor and assert the
+/// styling actually lands in the PDF — the pre-existing
+/// `test_from_markdown_*` tests only checked `is_ok()`, so the bug shipped
+/// undetected.
+mod markdown_styling_regression {
+    use super::*;
+
+    /// Largest font size among ASCII-alphabetic glyphs (headings) and the
+    /// smallest (body), so the ratio proves headings are actually scaled.
+    fn alpha_size_extent(chars: &[pdf_oxide::layout::TextChar]) -> (f32, f32) {
+        let mut min = f32::MAX;
+        let mut max = 0.0_f32;
+        for c in chars.iter().filter(|c| c.char.is_ascii_alphabetic()) {
+            min = min.min(c.font_size);
+            max = max.max(c.font_size);
+        }
+        (min, max)
+    }
+
+    #[test]
+    fn heading_is_scaled_and_markers_consumed() {
+        // The exact reproduction attached to issue #525.
+        let mut pdf = Pdf::from_markdown("# Hello\n\nThis is **some** test.").unwrap();
+        let chars = pdf.extract_chars(0).expect("extract chars");
+        assert!(!chars.is_empty(), "no text extracted from generated PDF");
+
+        let text: String = chars.iter().map(|c| c.char).collect();
+        assert!(text.contains("Hello"), "heading text missing: {text:?}");
+        assert!(text.contains("test"), "body text missing: {text:?}");
+        // The `**` markers must be consumed, not rendered as glyphs.
+        assert!(!text.contains('*'), "literal emphasis markers leaked into output: {text:?}");
+
+        // Heading (`# ` => 2.0x of the 12pt default) must be visibly
+        // larger than body text.
+        let (body, heading) = alpha_size_extent(&chars);
+        assert!(heading >= body * 1.5, "heading not scaled: largest={heading} body={body}");
+
+        // The largest glyphs (the heading) must be drawn in a bold face.
+        let heading_font = chars
+            .iter()
+            .filter(|c| (c.font_size - heading).abs() < 0.5)
+            .map(|c| c.font_name.to_lowercase())
+            .next()
+            .unwrap_or_default();
+        assert!(heading_font.contains("bold"), "heading not bold, font was {heading_font:?}");
+    }
+
+    /// Characters belonging to a contiguous word, found by its first
+    /// letter run. Good enough for these single-occurrence fixtures.
+    fn word_chars<'a>(
+        chars: &'a [pdf_oxide::layout::TextChar],
+        word: &str,
+    ) -> Vec<&'a pdf_oxide::layout::TextChar> {
+        let flat: String = chars.iter().map(|c| c.char).collect();
+        match flat.find(word) {
+            Some(byte_pos) => {
+                let start = flat[..byte_pos].chars().count();
+                chars[start..start + word.chars().count()].iter().collect()
+            },
+            None => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn inline_bold_switches_font_within_body() {
+        let mut pdf = Pdf::from_markdown("This is **some** test.").unwrap();
+        let chars = pdf.extract_chars(0).expect("extract chars");
+
+        // No heading here — everything is body size. `**some**` must
+        // render in the bold face while the surrounding words stay
+        // regular, proving the markers triggered a real style switch
+        // rather than being stripped.
+        let some = word_chars(&chars, "some");
+        let this = word_chars(&chars, "This");
+        assert!(!some.is_empty() && !this.is_empty(), "words not extracted");
+        assert!(
+            some.iter()
+                .all(|c| c.font_name.to_lowercase().contains("bold")),
+            "**some** not rendered bold: {:?}",
+            some.iter().map(|c| &c.font_name).collect::<Vec<_>>()
+        );
+        assert!(
+            this.iter()
+                .all(|c| !c.font_name.to_lowercase().contains("bold")),
+            "surrounding text wrongly bold"
+        );
+        let text: String = chars.iter().map(|c| c.char).collect();
+        assert!(!text.contains('*'), "markers leaked: {text:?}");
+    }
+
+    #[test]
+    fn inline_italic_uses_oblique_face() {
+        let mut pdf = Pdf::from_markdown("plain *slanted* plain").unwrap();
+        let chars = pdf.extract_chars(0).expect("extract chars");
+        let slanted = word_chars(&chars, "slanted");
+        assert!(!slanted.is_empty(), "italic word not extracted");
+        // The oblique face must actually be selected (an unregistered
+        // resource was the second half of #525) — so the extractor sees
+        // an italic/oblique font, not a silent fall-back to regular.
+        assert!(
+            slanted
+                .iter()
+                .all(|c| c.is_italic || c.font_name.to_lowercase().contains("oblique")),
+            "*slanted* not rendered italic: {:?}",
+            slanted.iter().map(|c| &c.font_name).collect::<Vec<_>>()
+        );
+        let text: String = chars.iter().map(|c| c.char).collect();
+        assert!(!text.contains('*'), "markers leaked: {text:?}");
+    }
+
+    #[test]
+    fn fenced_code_block_uses_monospace() {
+        let mut pdf = Pdf::from_markdown("```\nfn main() {}\n```").unwrap();
+        let chars = pdf.extract_chars(0).expect("extract chars");
+        assert!(!chars.is_empty(), "code block produced no text");
+        let mono = chars
+            .iter()
+            .any(|c| c.is_monospace || c.font_name.to_lowercase().contains("courier"));
+        assert!(mono, "fenced code block not rendered in a monospace font");
+    }
+
+    #[test]
+    fn snake_case_underscores_are_preserved() {
+        // Underscores are *not* emphasis markers here — a regression in
+        // the old code stripped them, mangling identifiers.
+        let mut pdf = Pdf::from_markdown("call my_func_name(x) now").unwrap();
+        let chars = pdf.extract_chars(0).expect("extract chars");
+        let text: String = chars.iter().map(|c| c.char).collect();
+        assert!(text.contains("my_func_name"), "snake_case identifier mangled: {text:?}");
+    }
+
+    #[test]
+    fn unicode_heading_is_scaled() {
+        // A Greek capital sigma forces the Unicode (DejaVu) font path;
+        // headings must still be scaled there, not flattened to body size.
+        let mut pdf = Pdf::from_markdown("# \u{03A3}igma\n\nPlain body line.").unwrap();
+        let chars = pdf.extract_chars(0).expect("extract chars");
+        assert!(!chars.is_empty());
+        let (body, heading) = alpha_size_extent(&chars);
+        assert!(
+            heading >= body * 1.5,
+            "unicode heading not scaled: largest={heading} body={body}"
+        );
+        let text: String = chars.iter().map(|c| c.char).collect();
+        assert!(!text.contains('*'), "markers leaked: {text:?}");
+    }
+}
+
+/// `DocumentBuilder::rich_paragraph` set `font.name = "Helvetica-Bold"`
+/// but left `style.weight` default, so the old `map_font_name`
+/// collapsed it to plain `Helvetica` — the same root cause as #525 via
+/// a different public API, previously untested. Guards the latent fix.
+mod document_builder_rich_text_regression {
+    use pdf_oxide::writer::{DocumentBuilder, PageSize, TextRun};
+
+    #[test]
+    fn rich_paragraph_bold_and_italic_select_styled_faces() {
+        let mut b = DocumentBuilder::new();
+        {
+            let p = b
+                .page(PageSize::Letter)
+                .at(72.0, 700.0)
+                .font("Helvetica", 14.0);
+            p.rich_paragraph(&[
+                TextRun::normal("plain "),
+                TextRun::bold("BOLD "),
+                TextRun::italic("ITALIC"),
+            ])
+            .done();
+        }
+        let bytes = b.build().expect("build");
+        let mut pdf = pdf_oxide::api::Pdf::from_bytes(bytes).expect("load");
+        let chars = pdf.extract_chars(0).expect("extract chars");
+
+        let face = |word: &str| -> String {
+            let flat: String = chars.iter().map(|c| c.char).collect();
+            let start = flat.find(word).map(|b| flat[..b].chars().count()).unwrap();
+            chars[start].font_name.to_lowercase()
+        };
+        assert!(
+            !face("plain").contains("bold") && !face("plain").contains("oblique"),
+            "normal run not regular"
+        );
+        assert!(face("BOLD").contains("bold"), "bold run not bold");
+        assert!(
+            face("ITALIC").contains("oblique") || face("ITALIC").contains("italic"),
+            "italic run not oblique"
+        );
+    }
+}

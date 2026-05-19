@@ -5,8 +5,10 @@ All notable changes to PDFOxide are documented here.
 ## [0.3.52] - 2026-05-18
 
 > Out-of-the-box OCR for the Node.js, Go and C# prebuilts, a Node
-> worker-teardown fix that silenced a spurious exit warning, strict
-> CI toolchain-drift gating, and a dependency-maintenance batch.
+> worker-teardown fix that silenced a spurious exit warning, a
+> Markdown→PDF styling fix that restores headings, bold/italic and
+> monospace, strict CI toolchain-drift gating, and a
+> dependency-maintenance batch.
 
 ### Added
 
@@ -53,6 +55,25 @@ All notable changes to PDFOxide are documented here.
   semantics) with a synchronous `terminated` flag flipped on the hard
   `exit` so a normal process exit killing an unref'd worker is no longer
   reported as an abnormal exit.
+
+- **Markdown → PDF now renders styling instead of flat body text
+  ([#525](https://github.com/yfedoseev/pdf_oxide/issues/525))** —
+  `Pdf::from_markdown` (and `from_html`, which funnels through it)
+  computed heading sizes but only used them for line spacing, then drew
+  every line in a single regular font, and *stripped* `**bold**` /
+  `*italic*` markers to plain text. Headings (`#`–`####`) now render in
+  the bold face at 2.0/1.5/1.25/1.1× scale; inline `**bold**`,
+  `*italic*` and `` `code` `` produce real per-run font switches
+  (Helvetica-Bold/-Oblique, Courier) measured and positioned so a line
+  stays visually contiguous; fenced code blocks and GFM tables render
+  monospace. Two writer-layer bugs that masked this are also fixed:
+  `map_font_name` discarded explicit Standard-14 weight/oblique names
+  (`Helvetica-Bold` → `Helvetica`) and had no italic path, and the page
+  `/Font` resource set registered only 6 of the 12 Latin Standard-14
+  faces, so any `Tf` to an oblique/bold-serif face resolved to a missing
+  resource and silently fell back to regular. Underscores are no longer
+  treated as emphasis, so `snake_case` identifiers survive intact.
+  Reported by @Jethril.
 
 ### CI / Release
 

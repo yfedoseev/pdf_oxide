@@ -197,6 +197,88 @@ fn is_table_line(line: &str) -> bool {
     trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 2
 }
 
+/// An inline text run with its resolved emphasis, produced by
+/// [`parse_inline_runs`]. `code` wins over bold/italic — Markdown does not
+/// interpret emphasis inside a code span.
+struct InlineRun {
+    text: String,
+    bold: bool,
+    italic: bool,
+    code: bool,
+}
+
+/// True if `pat` occurs anywhere in `chars[from..]`.
+fn contains_subslice(chars: &[char], from: usize, pat: &[char]) -> bool {
+    if pat.is_empty() || from >= chars.len() || chars.len() - from < pat.len() {
+        return false;
+    }
+    (from..=chars.len() - pat.len()).any(|k| chars[k..k + pat.len()] == *pat)
+}
+
+/// Split one Markdown line into styled runs, honouring `**bold**`,
+/// `*italic*`, and `` `code` `` spans. A delimiter only opens a span when a
+/// matching closer exists later on the line; otherwise it is emitted
+/// literally — so stray `*`/back-ticks survive and `snake_case`
+/// underscores are never touched (underscores are not emphasis markers
+/// here). The markers themselves are consumed; every other character,
+/// spaces included, is preserved, so concatenating the run texts
+/// reproduces the visible line.
+fn parse_inline_runs(s: &str) -> Vec<InlineRun> {
+    fn flush(runs: &mut Vec<InlineRun>, buf: &mut String, bold: bool, italic: bool, code: bool) {
+        if !buf.is_empty() {
+            runs.push(InlineRun {
+                text: std::mem::take(buf),
+                bold,
+                italic,
+                code,
+            });
+        }
+    }
+
+    let chars: Vec<char> = s.chars().collect();
+    let mut runs: Vec<InlineRun> = Vec::new();
+    let mut buf = String::new();
+    let (mut bold, mut italic, mut code) = (false, false, false);
+    let mut i = 0;
+
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '`' {
+            if code {
+                flush(&mut runs, &mut buf, bold, italic, code);
+                code = false;
+                i += 1;
+                continue;
+            }
+            if contains_subslice(&chars, i + 1, &['`']) {
+                flush(&mut runs, &mut buf, bold, italic, code);
+                code = true;
+                i += 1;
+                continue;
+            }
+        } else if c == '*' && !code {
+            let dbl = i + 1 < chars.len() && chars[i + 1] == '*';
+            if dbl {
+                if bold || contains_subslice(&chars, i + 2, &['*', '*']) {
+                    flush(&mut runs, &mut buf, bold, italic, code);
+                    bold = !bold;
+                    i += 2;
+                    continue;
+                }
+            } else if italic || contains_subslice(&chars, i + 1, &['*']) {
+                flush(&mut runs, &mut buf, bold, italic, code);
+                italic = !italic;
+                i += 1;
+                continue;
+            }
+        }
+        buf.push(c);
+        i += 1;
+    }
+    flush(&mut runs, &mut buf, bold, italic, code);
+    runs
+}
+
 /// Configuration for PDF generation.
 #[derive(Debug, Clone)]
 pub struct PdfConfig {
@@ -3200,6 +3282,14 @@ impl PdfBuilder {
             ) {
                 builder = builder.register_embedded_font("DejaVuSans", font);
             }
+            // Bold face for headings / **bold** spans on the Unicode path
+            // (the Base-14 Helvetica-Bold only covers WinAnsi).
+            if let Ok(font) = crate::writer::EmbeddedFont::from_data(
+                Some("DejaVuSans-Bold".to_string()),
+                crate::fonts::bundled::DEJAVU_SANS_BOLD.to_vec(),
+            ) {
+                builder = builder.register_embedded_font("DejaVuSans-Bold", font);
+            }
         }
         // Caller-provided fonts (typically extracted from a source PDF in a
         // round-trip pipeline). Registered after DejaVu so they take
@@ -3216,8 +3306,57 @@ impl PdfBuilder {
         let (_page_width, page_height) = self.config.page_size.dimensions();
         let start_y = page_height - self.config.margin_top;
 
-        // Collect text items with positions
-        let mut text_items: Vec<(f32, f32, String)> = Vec::new();
+        // Resolve the font family up front. The Unicode path embeds DejaVu
+        // (regular + bold registered above); the ASCII path uses the
+        // Base-14 Helvetica family plus Courier for code — all
+        // auto-registered by the font manager, so nothing to embed there.
+        // Italic on the Unicode path degrades to regular/bold (no oblique
+        // DejaVu is bundled); headings/bold still apply correctly.
+        let (body_font, bold_font, italic_font, bolditalic_font, mono_font): (
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+        ) = if needs_unicode {
+            ("DejaVuSans", "DejaVuSans-Bold", "DejaVuSans", "DejaVuSans-Bold", "DejaVuSans")
+        } else {
+            (
+                "Helvetica",
+                "Helvetica-Bold",
+                "Helvetica-Oblique",
+                "Helvetica-BoldOblique",
+                "Courier",
+            )
+        };
+        let font_for = |r: &InlineRun, heading_bold: bool| -> &'static str {
+            let bold = r.bold || heading_bold;
+            if r.code {
+                mono_font
+            } else if bold && r.italic {
+                bolditalic_font
+            } else if bold {
+                bold_font
+            } else if r.italic {
+                italic_font
+            } else {
+                body_font
+            }
+        };
+
+        // A laid-out run: absolute baseline plus the font/size it must be
+        // shown with. Inline emphasis is resolved here so one source line
+        // can fan out into several differently-styled runs sharing a `y`.
+        struct LaidRun {
+            x0: f32,
+            y: f32,
+            text: String,
+            font: &'static str,
+            size: f32,
+            first: bool,
+        }
+
+        let mut runs_out: Vec<LaidRun> = Vec::new();
         let mut y = start_y;
         let mut in_code = false;
 
@@ -3238,24 +3377,27 @@ impl PdfBuilder {
                     j += 1;
                 }
 
-                // Try to parse as GFM table
+                // Try to parse as GFM table. Rendered monospace so the
+                // column padding actually lines up.
                 if let Some(table) = GfmTable::parse(&table_lines) {
-                    // Render the table as formatted text
-                    let table_font_size = self.config.font_size * 0.9; // Slightly smaller for tables
+                    let table_font_size = self.config.font_size * 0.9;
                     let line_height = table_font_size * self.config.line_height;
 
-                    // Add some space before table
                     y -= line_height * 0.5;
-
                     for table_line in table.render() {
                         y -= line_height;
                         if y < self.config.margin_bottom {
                             y = start_y - line_height;
                         }
-                        text_items.push((self.config.margin_left, y, table_line));
+                        runs_out.push(LaidRun {
+                            x0: self.config.margin_left,
+                            y,
+                            text: table_line,
+                            font: mono_font,
+                            size: table_font_size,
+                            first: true,
+                        });
                     }
-
-                    // Add some space after table
                     y -= line_height * 0.5;
 
                     i = j; // Skip all table lines
@@ -3263,7 +3405,7 @@ impl PdfBuilder {
                 }
             }
 
-            // Handle non-table lines
+            // Fenced code-block toggle.
             if line.starts_with("```") {
                 in_code = !in_code;
                 y -= self.config.font_size * self.config.line_height;
@@ -3271,70 +3413,96 @@ impl PdfBuilder {
                 continue;
             }
 
-            let (text, font_size) = if in_code {
-                (line.to_string(), self.config.font_size * 0.9)
-            } else if line.starts_with("# ") {
-                (line[2..].to_string(), self.config.font_size * 2.0)
-            } else if line.starts_with("## ") {
-                (line[3..].to_string(), self.config.font_size * 1.5)
-            } else if line.starts_with("### ") {
-                (line[4..].to_string(), self.config.font_size * 1.25)
-            } else if line.starts_with("#### ") {
-                (line[5..].to_string(), self.config.font_size * 1.1)
-            } else if line.starts_with("- ") || line.starts_with("* ") {
-                (format!("• {}", &line[2..]), self.config.font_size)
-            } else if line.starts_with("> ") {
-                (format!("  {}", &line[2..]), self.config.font_size)
+            // Classify the block: (content, point-size, force-bold, indent).
+            // `heading_bold` renders the whole line in the bold face.
+            let (block_text, size, heading_bold, indent) = if in_code {
+                (line.to_string(), self.config.font_size * 0.9, false, 0.0)
+            } else if let Some(rest) = line.strip_prefix("#### ") {
+                (rest.to_string(), self.config.font_size * 1.1, true, 0.0)
+            } else if let Some(rest) = line.strip_prefix("### ") {
+                (rest.to_string(), self.config.font_size * 1.25, true, 0.0)
+            } else if let Some(rest) = line.strip_prefix("## ") {
+                (rest.to_string(), self.config.font_size * 1.5, true, 0.0)
+            } else if let Some(rest) = line.strip_prefix("# ") {
+                (rest.to_string(), self.config.font_size * 2.0, true, 0.0)
+            } else if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+                (format!("\u{2022} {rest}"), self.config.font_size, false, 0.0)
+            } else if let Some(rest) = line.strip_prefix("> ") {
+                (rest.to_string(), self.config.font_size, false, 12.0)
             } else if line.trim().is_empty() {
                 y -= self.config.font_size * self.config.line_height;
                 i += 1;
                 continue;
             } else {
-                // Strip basic formatting markers
-                let text = line
-                    .replace("**", "")
-                    .replace("__", "")
-                    .replace("*", "")
-                    .replace("_", "");
-                (text, self.config.font_size)
+                (line.to_string(), self.config.font_size, false, 0.0)
             };
 
-            let line_height = font_size * self.config.line_height;
+            let line_height = size * self.config.line_height;
             y -= line_height;
-
             if y < self.config.margin_bottom {
                 y = start_y - line_height;
             }
 
-            if !text.is_empty() {
-                text_items.push((self.config.margin_left, y, text));
+            // Inside a fenced code block the line is verbatim — no inline
+            // parsing (back-ticks etc. are literal there).
+            let parsed = if in_code {
+                vec![InlineRun {
+                    text: block_text,
+                    bold: false,
+                    italic: false,
+                    code: true,
+                }]
+            } else {
+                parse_inline_runs(&block_text)
+            };
+
+            let x0 = self.config.margin_left + indent;
+            let mut first = true;
+            for r in &parsed {
+                if r.text.is_empty() {
+                    continue;
+                }
+                runs_out.push(LaidRun {
+                    x0,
+                    y,
+                    text: r.text.clone(),
+                    font: font_for(r, heading_bold),
+                    size,
+                    first,
+                });
+                first = false;
             }
 
             i += 1;
         }
 
-        // Render all items
+        // Emit. A run whose baseline rose above the previous one marks a
+        // page break the layout loop introduced when it ran out of space.
+        // Successive runs on the same line share `y`; `first` resets the
+        // horizontal pen, and each run advances it by its measured width
+        // so inline style changes stay visually contiguous.
         {
-            let font_name: &str = if needs_unicode {
-                "DejaVuSans"
-            } else {
-                "Helvetica"
-            };
             let mut page = builder
                 .page(self.config.page_size)
-                .font(font_name, self.config.font_size);
+                .font(body_font, self.config.font_size);
             let mut last_y = f32::MAX;
+            let mut pen_x = self.config.margin_left;
 
-            for (x, y, text) in text_items {
-                // If y increased, we hit a page break in the collection loop
-                if y > last_y {
+            for run in runs_out {
+                if run.y > last_y {
                     page.done();
                     page = builder
                         .page(self.config.page_size)
-                        .font(font_name, self.config.font_size);
+                        .font(body_font, self.config.font_size);
                 }
-                page = page.at(x, y).text(&text);
-                last_y = y;
+                if run.first {
+                    pen_x = run.x0;
+                }
+                page = page.font(run.font, run.size);
+                let width = page.measure(&run.text);
+                page = page.at(pen_x, run.y).text(&run.text);
+                pen_x += width;
+                last_y = run.y;
             }
             page.done();
         }
@@ -3469,6 +3637,56 @@ impl Default for PdfBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Encode runs as `"<tag>:<text>"` joined by `|` for compact
+    /// assertions. tag = B(old) / I(talic) / J(=bold+italic) / C(ode) /
+    /// P(lain).
+    fn enc(s: &str) -> String {
+        parse_inline_runs(s)
+            .iter()
+            .map(|r| {
+                let tag = match (r.code, r.bold, r.italic) {
+                    (true, _, _) => "C",
+                    (false, true, true) => "J",
+                    (false, true, false) => "B",
+                    (false, false, true) => "I",
+                    (false, false, false) => "P",
+                };
+                format!("{tag}:{}", r.text)
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
+    #[test]
+    fn test_parse_inline_runs_basic_and_edges() {
+        // Plain / single spans.
+        assert_eq!(enc("plain"), "P:plain");
+        assert_eq!(enc("**bold**"), "B:bold");
+        assert_eq!(enc("*it*"), "I:it");
+        assert_eq!(enc("`code`"), "C:code");
+        assert_eq!(enc("a **b** c"), "P:a |B:b|P: c");
+
+        // Underscores are literal — `snake_case` must survive intact.
+        assert_eq!(enc("call my_func_name(x)"), "P:call my_func_name(x)");
+
+        // Unbalanced delimiters fall back to literal text, not
+        // "rest of line is italic".
+        assert_eq!(enc("a * b"), "P:a * b");
+        assert_eq!(enc("a `b"), "P:a `b");
+        assert_eq!(enc("**oops"), "P:**oops");
+
+        // Nesting and combined bold+italic.
+        assert_eq!(enc("**b *bi* b**"), "B:b |J:bi|B: b");
+        assert_eq!(enc("***x***"), "J:x");
+
+        // Code span wins over emphasis: markers inside are literal.
+        assert_eq!(enc("`a*b*c`"), "C:a*b*c");
+
+        // Degenerate inputs produce no runs (and never panic).
+        assert_eq!(enc(""), "");
+        assert_eq!(enc("****"), "");
+    }
 
     #[test]
     fn test_pdf_config_default() {

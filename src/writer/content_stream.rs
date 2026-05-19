@@ -875,18 +875,65 @@ impl ContentStreamBuilder {
 
     /// Map a font name to a PDF base font name.
     fn map_font_name(&self, name: &str, bold: bool) -> String {
-        let base = match name.to_lowercase().as_str() {
-            "helvetica" | "arial" | "sans-serif" => "Helvetica",
-            "times" | "times-roman" | "times new roman" | "serif" => "Times-Roman",
-            "courier" | "courier new" | "monospace" => "Courier",
-            _ => "Helvetica",
+        let lower = name.to_lowercase();
+
+        // The two single-style Standard-14 fonts have no weight/oblique
+        // variants.
+        if lower == "symbol" {
+            return "Symbol".to_string();
+        }
+        if lower == "zapfdingbats" || lower == "zapf-dingbats" {
+            return "ZapfDingbats".to_string();
+        }
+
+        // Resolve the family. `sans` must be tested before `serif`
+        // because "sans-serif" contains "serif". Unknown names keep the
+        // historical Helvetica fallback — embedded fonts never reach this
+        // path (they are emitted as ShowEmbeddedText), so this only
+        // governs Base-14 substitution for generic family names.
+        enum Family {
+            Helvetica,
+            Times,
+            Courier,
+        }
+        let family = if lower.contains("courier") || lower.contains("mono") {
+            Family::Courier
+        } else if lower.contains("sans") || lower.contains("helvetica") || lower.contains("arial") {
+            Family::Helvetica
+        } else if lower.contains("times") || lower.contains("serif") {
+            Family::Times
+        } else {
+            Family::Helvetica
         };
 
-        if bold {
-            format!("{}-Bold", base)
-        } else {
-            base.to_string()
+        // Weight/slant come from the caller's flag *or* an explicit
+        // Standard-14 PostScript name (e.g. "Helvetica-Bold",
+        // "Times-Italic"), so callers can request a styled face by name
+        // without also threading a style struct through every layer.
+        let want_bold = bold || lower.contains("bold");
+        let want_italic = lower.contains("italic") || lower.contains("oblique");
+
+        match family {
+            Family::Helvetica => match (want_bold, want_italic) {
+                (false, false) => "Helvetica",
+                (true, false) => "Helvetica-Bold",
+                (false, true) => "Helvetica-Oblique",
+                (true, true) => "Helvetica-BoldOblique",
+            },
+            Family::Times => match (want_bold, want_italic) {
+                (false, false) => "Times-Roman",
+                (true, false) => "Times-Bold",
+                (false, true) => "Times-Italic",
+                (true, true) => "Times-BoldItalic",
+            },
+            Family::Courier => match (want_bold, want_italic) {
+                (false, false) => "Courier",
+                (true, false) => "Courier-Bold",
+                (false, true) => "Courier-Oblique",
+                (true, true) => "Courier-BoldOblique",
+            },
         }
+        .to_string()
     }
 
     /// Add path content element.
@@ -1827,6 +1874,47 @@ mod tests {
         assert_eq!(builder.map_font_name("Arial", true), "Helvetica-Bold");
         assert_eq!(builder.map_font_name("Times New Roman", false), "Times-Roman");
         assert_eq!(builder.map_font_name("Courier", false), "Courier");
+    }
+
+    /// Issue #525 core: an explicit Standard-14 PostScript name (with or
+    /// without a style flag) must resolve to *itself*, not collapse to
+    /// the regular family face. Also covers the oblique path that did not
+    /// exist before, and Symbol/ZapfDingbats which have no variants.
+    #[test]
+    fn test_font_mapping_explicit_standard14() {
+        let b = ContentStreamBuilder::new();
+
+        // Every Latin Standard-14 face round-trips by name.
+        for f in [
+            "Helvetica",
+            "Helvetica-Bold",
+            "Helvetica-Oblique",
+            "Helvetica-BoldOblique",
+            "Times-Roman",
+            "Times-Bold",
+            "Times-Italic",
+            "Times-BoldItalic",
+            "Courier",
+            "Courier-Bold",
+            "Courier-Oblique",
+            "Courier-BoldOblique",
+        ] {
+            assert_eq!(b.map_font_name(f, false), f, "{f} did not round-trip");
+        }
+
+        // The style flag composes with a name-derived style.
+        assert_eq!(b.map_font_name("Helvetica", true), "Helvetica-Bold");
+        assert_eq!(b.map_font_name("Helvetica-Oblique", true), "Helvetica-BoldOblique");
+
+        // Case-insensitive, and generic styled aliases.
+        assert_eq!(b.map_font_name("helvetica-bold", false), "Helvetica-Bold");
+        assert_eq!(b.map_font_name("Arial Bold", false), "Helvetica-Bold");
+        assert_eq!(b.map_font_name("Times New Roman Italic", false), "Times-Italic");
+
+        // The two single-style Base-14 fonts have no weight/oblique form.
+        assert_eq!(b.map_font_name("Symbol", false), "Symbol");
+        assert_eq!(b.map_font_name("Symbol", true), "Symbol");
+        assert_eq!(b.map_font_name("ZapfDingbats", true), "ZapfDingbats");
     }
 
     #[test]
@@ -2834,7 +2922,10 @@ mod tests {
     fn test_font_mapping_serif() {
         let builder = ContentStreamBuilder::new();
         assert_eq!(builder.map_font_name("serif", false), "Times-Roman");
-        assert_eq!(builder.map_font_name("serif", true), "Times-Roman-Bold");
+        // Standard-14 bold serif is "Times-Bold" (issue #525): the old
+        // "Times-Roman-Bold" was not a real Base-14 name and selected no
+        // embedded resource, so bold serif text rendered as regular.
+        assert_eq!(builder.map_font_name("serif", true), "Times-Bold");
     }
 
     #[test]
