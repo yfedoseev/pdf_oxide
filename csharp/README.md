@@ -240,6 +240,28 @@ using var pdf = Pdf.FromMarkdown("# Async");
 await pdf.SaveAsync("output.pdf");
 ```
 
+## OCR & Auto Mode
+
+OCR ships in the prebuilt `PdfOxide` NuGet package as of v0.3.52 — no
+`--build-from-source`. Supply an ONNX Runtime shared library (point
+`ORT_DYLIB_PATH` at it) and the models, then let `pdf_oxide` route per
+page (native text where present, OCR where the page is image-only,
+graceful fallback when OCR is unavailable):
+
+```csharp
+using PdfOxide.Core;
+
+OcrEngine.PrefetchModels("english");                   // one-off provisioning
+
+using var doc = PdfDocument.Open("scanned-or-mixed.pdf");
+string text = doc.ExtractTextAuto(0);                  // recommended
+```
+
+For manual `OcrEngine` usage (`Load(...)` + `ExtractText(doc, page)`),
+page-type classification (`doc.ClassifyPage(0)`), config knobs, model
+selection, and ONNX Runtime install recipes:
+**[OCR Guide](https://github.com/yfedoseev/pdf_oxide/blob/main/docs/OCR_GUIDE.md)**.
+
 ## Other languages
 
 PDF Oxide ships the same Rust core through six bindings:

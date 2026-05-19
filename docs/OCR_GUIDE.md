@@ -112,7 +112,31 @@ After MinSide(64, 4000): 96×64 (scaled up)
 
 ## Configuration Reference
 
+> **Recommended entrypoint — auto mode.** Each binding exposes an
+> `extract_text_auto` / `extractTextAuto` / `ExtractTextAuto` that
+> classifies each page (native text / scanned / hybrid) and routes
+> accordingly: native extraction when text is present, OCR when the
+> page is image-only, and merged output for hybrid pages. When OCR is
+> unavailable (no models, no ORT, or the binding lacks the `ocr`
+> feature) it **degrades gracefully** to native text with the typed
+> reason `ocr_requested_but_unavailable` — never a crash. The manual
+> `OcrEngine` usage below is for advanced cases where you want
+> control over the config or want to OCR a single image directly.
+
 ### Rust
+
+**Auto mode (recommended):**
+
+```rust
+use pdf_oxide::PdfDocument;
+
+let doc = PdfDocument::open("scanned-or-mixed.pdf")?;
+// Per-page: native text if present, OCR if scanned, hybrid merge
+// otherwise. Falls back to native text if OCR isn't built/available.
+let text = doc.extract_text_auto(0)?;
+```
+
+**Manual `OcrEngine` (advanced — direct control over models/config):**
 
 ```rust
 use pdf_oxide::ocr::{OcrConfig, OcrEngine, DetResizeStrategy};
@@ -144,6 +168,19 @@ let engine = OcrEngine::new("det.onnx", "rec.onnx", "dict.txt", config)?;
 # Recommended: Install with OCR support
 pip install pdf_oxide[ocr]
 ```
+
+**Auto mode (recommended):**
+
+```python
+from pdf_oxide import PdfDocument
+
+doc = PdfDocument("scanned-or-mixed.pdf")
+# Per-page native/OCR/hybrid routing. Gracefully falls back to native
+# text if OCR isn't installed or models aren't present.
+text = doc.extract_text_auto(0)
+```
+
+**Manual `OcrEngine` (advanced):**
 
 ```python
 from pdf_oxide import OcrConfig, OcrEngine
@@ -199,9 +236,87 @@ console.log(doc.extractTextAuto(0));     // native + OCR'd image text
 
 Run `prefetchModels()` as a one-off provisioning step, or place
 `det.onnx` / `rec.onnx` / `en_dict.txt` in `PDF_OXIDE_MODEL_DIR`
-yourself. **Go** and **C#** follow the same model: the prebuilt carries
-`ocr`; you supply an ONNX Runtime shared library (point `ORT_DYLIB_PATH`
-at it) and the models.
+yourself.
+
+### Go
+
+The published Go native library ships with `ocr` as of v0.3.52. Supply
+ONNX Runtime + models via environment variables; everything else is
+identical to the Node/Python path.
+
+```bash
+# install onnxruntime however you prefer (apt / brew / tarball / etc.)
+export ORT_DYLIB_PATH=/usr/lib/libonnxruntime.so
+export PDF_OXIDE_MODEL_DIR=/path/to/models
+```
+
+**Auto mode (recommended):**
+
+```go
+import po "github.com/yfedoseev/pdf_oxide/go"
+
+// One-off provisioning (mirrors Node's prefetchModels):
+_, _ = po.PrefetchModels("english")
+
+doc, err := po.Open("scanned-or-mixed.pdf")
+if err != nil { panic(err) }
+defer doc.Close()
+text, err := doc.ExtractTextAuto(0)   // native / OCR / hybrid auto
+```
+
+**Manual `OcrEngine` (advanced):**
+
+```go
+eng, err := po.NewOcrEngine(
+    "/path/to/models/det.onnx",
+    "/path/to/models/rec.onnx",
+    "/path/to/models/en_dict.txt",
+)
+if err != nil { panic(err) }
+defer eng.Close()
+text, err := doc.ExtractTextWithOcr(0, eng)
+```
+
+`doc.ClassifyPage(0)` exposes the page-type classification for routing
+decisions, and `po.PrefetchModels("english", "chinese")` (variadic)
+downloads the manifest entries into `PDF_OXIDE_MODEL_DIR`.
+
+### C# / .NET
+
+The published `PdfOxide` NuGet package ships with `ocr` as of v0.3.52.
+Same shape as Go: supply an ONNX Runtime shared library and models.
+
+```bash
+# Linux / macOS:  /usr/lib/libonnxruntime.so  /  /usr/local/lib/libonnxruntime.dylib
+# Windows:        onnxruntime.dll on PATH
+export ORT_DYLIB_PATH=/usr/lib/libonnxruntime.so
+export PDF_OXIDE_MODEL_DIR=/path/to/models
+```
+
+**Auto mode (recommended):**
+
+```csharp
+using PdfOxide.Core;
+
+// One-off provisioning (downloads det/rec/dict into PDF_OXIDE_MODEL_DIR):
+OcrEngine.PrefetchModels("english");
+
+using var doc = PdfDocument.Open("scanned-or-mixed.pdf");
+string text = doc.ExtractTextAuto(0);          // native / OCR / hybrid auto
+```
+
+**Manual `OcrEngine` (advanced):**
+
+```csharp
+using var eng = OcrEngine.Load(
+    "/path/to/models/det.onnx",
+    "/path/to/models/rec.onnx",
+    "/path/to/models/en_dict.txt");
+string text = eng.ExtractText(doc, 0);
+```
+
+`doc.ClassifyPage(0)` returns the page-type classification string;
+`OcrEngine.PageNeedsOcr(doc, 0)` is the shortcut needs-OCR check.
 
 ## Page Type Detection
 
@@ -317,6 +432,23 @@ const doc = new WasmPdfDocument(pdfBytes);
 const text = doc.extractTextOcr(0, ocr);                    // OCR page 0
 // or, for a raw scan image:  JSON.parse(ocr.ocrImage(pngBytes))
 ```
+
+**Auto-routing per page** (classify, then OCR only when needed):
+
+```js
+function extractPage(doc, pageIndex, ocrEngine) {
+  // 'TextLayer' | 'Scanned' | 'ImageText' | 'Mixed' | 'Empty'
+  const kind = doc.classifyPage(pageIndex);
+  if (kind === 'Scanned' || kind === 'ImageText' || kind === 'Mixed') {
+    return doc.extractTextOcr(pageIndex, ocrEngine);        // run OCR
+  }
+  return doc.extractText(pageIndex);                        // native path
+}
+```
+
+This mirrors the native `extract_text_auto` flow: native extraction
+where text exists, OCR where it doesn't, no OCR cost on text-layer
+pages.
 
 OCR inference is CPU-bound and **synchronous** — run it in a **Web
 Worker** so it doesn't block the UI thread; model fetch/caching is

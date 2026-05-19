@@ -238,6 +238,25 @@ async def main():
 asyncio.run(main())
 ```
 
+## OCR & Auto Mode
+
+The published Python wheel ships with `ocr` built in. Install ONNX
+Runtime, drop the models in `PDF_OXIDE_MODEL_DIR`, then let
+`pdf_oxide` route per page (native text where present, OCR where the
+page is image-only, graceful fallback when OCR is unavailable):
+
+```python
+from pdf_oxide import PdfDocument
+
+doc = PdfDocument("scanned-or-mixed.pdf")
+text = doc.extract_text_auto(0)         # recommended
+```
+
+For manual `OcrEngine(det, rec, dict)` usage,
+`doc.extract_text_ocr(page, engine)`, page-type classification, model
+selection, and ONNX Runtime install recipes:
+**[OCR Guide](https://github.com/yfedoseev/pdf_oxide/blob/main/docs/OCR_GUIDE.md)**.
+
 ## Other languages
 
 PDF Oxide ships the same Rust core through six bindings:

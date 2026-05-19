@@ -659,11 +659,47 @@ Some features require native dependencies and are **not available** in WebAssemb
 | PDF creation | Yes | Markdown, HTML, text, images |
 | PDF editing | Yes | Full support |
 | Encryption | Yes | AES-256 |
-| OCR | **No** | Requires ONNX Runtime (native only) |
+| OCR | Default build: **No**. `wasm-ocr` build: **Yes** (experimental) | Pure-Rust [`tract`](https://github.com/sonos/tract) backend — no native lib, no `onnxruntime-web` JS bridge. Output-equivalent to native `ort`. See *OCR (wasm-ocr build)* below. |
 | Digital signatures | **No** | Requires native crypto libraries |
 | Page rendering | **No** | Requires tiny-skia (native only) |
 
-For OCR support, use the [Rust](getting-started-rust.md) or [Python](getting-started-python.md) bindings. See the [OCR Guide](OCR_GUIDE.md) for details.
+### OCR (`wasm-ocr` build)
+
+The **default** `pdf-oxide-wasm` package has no OCR. The opt-in
+`wasm-ocr` build runs OCR entirely in-WASM via pure-Rust `tract`, with
+host-supplied model bytes (no filesystem):
+
+```sh
+RUSTFLAGS='--cfg getrandom_backend="wasm_js"' \
+  wasm-pack build --target web -- --no-default-features --features wasm-ocr
+```
+
+```js
+import init, { WasmOcrEngine, WasmPdfDocument, modelManifest } from "pdf-oxide";
+await init();
+
+// modelManifest() lists the detector + per-language recognizer/dict
+// URLs. Fetch them once, cache them with the Cache API / IndexedDB,
+// then hand the bytes in:
+const ocr = new WasmOcrEngine(detBytes, recBytes, dictString);
+const doc = new WasmPdfDocument(pdfBytes);
+
+// Auto-route per page (classify first, OCR only what needs it):
+function extractPage(p) {
+  const kind = doc.classifyPage(p);                       // 'TextLayer'|'Scanned'|...
+  return (kind === 'TextLayer' || kind === 'Empty')
+    ? doc.extractText(p)
+    : doc.extractTextOcr(p, ocr);
+}
+```
+
+OCR inference is CPU-bound and synchronous — run it in a **Web Worker**
+so it doesn't block the UI thread. Full recipe (fetch + Cache API,
+size budget, Web Worker pattern): the **WebAssembly** section of the
+[OCR Guide](OCR_GUIDE.md#webassembly).
+
+For OCR in the **native** bindings (Rust / Python / Node / Go / C#),
+see [OCR Guide](OCR_GUIDE.md).
 
 ## Next Steps
 

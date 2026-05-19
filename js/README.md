@@ -162,6 +162,32 @@ try {
 }
 ```
 
+## OCR & Auto Mode
+
+OCR ships in the prebuilt `pdf-oxide` native addon as of v0.3.52 — no
+`--build-from-source`. Install ONNX Runtime via npm, point at it once,
+then let `pdf_oxide` route per page (native text where present, OCR
+where the page is image-only, graceful fallback when OCR is
+unavailable):
+
+```js
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+process.env.ORT_DYLIB_PATH = require.resolve(
+  'onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime.so.1');
+
+const px = await import('pdf-oxide');
+px.prefetchModels(['english']);                    // one-off provisioning
+
+const doc = px.PdfDocument.open('scanned-or-mixed.pdf');
+console.log(doc.extractTextAuto(0));               // recommended
+```
+
+For manual OCR engine setup, `doc.classifyPage(0)` routing,
+custom configs, the WebAssembly (`wasm-ocr`) build, and full
+per-binding recipes:
+**[OCR Guide](https://github.com/yfedoseev/pdf_oxide/blob/main/docs/OCR_GUIDE.md)**.
+
 ## Other languages
 
 PDF Oxide ships the same Rust core through six bindings:
