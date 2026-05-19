@@ -877,14 +877,14 @@ impl ContentStreamBuilder {
     fn map_font_name(&self, name: &str, bold: bool) -> String {
         let lower = name.to_lowercase();
 
-        // The two single-style Standard-14 fonts have no weight/oblique
-        // variants.
-        if lower == "symbol" {
-            return "Symbol".to_string();
-        }
-        if lower == "zapfdingbats" || lower == "zapf-dingbats" {
-            return "ZapfDingbats".to_string();
-        }
+        // Note: Symbol and ZapfDingbats are deliberately NOT routed
+        // here. They use built-in encodings (not WinAnsi) and are not
+        // pre-registered in the page `/Font` dict, so emitting their
+        // names would produce a dangling `Tf` and the wrong encoding
+        // even if the font dict were added later. Fall through to the
+        // Helvetica fallback for those names — the markdown / text /
+        // HTML renderers never request them anyway, and any caller who
+        // does should use the embedded-font path explicitly.
 
         // Resolve the family. `sans` must be tested before `serif`
         // because "sans-serif" contains "serif". Unknown names keep the
@@ -1878,8 +1878,10 @@ mod tests {
 
     /// Issue #525 core: an explicit Standard-14 PostScript name (with or
     /// without a style flag) must resolve to *itself*, not collapse to
-    /// the regular family face. Also covers the oblique path that did not
-    /// exist before, and Symbol/ZapfDingbats which have no variants.
+    /// the regular family face. Also covers the oblique path that did
+    /// not exist before. Symbol/ZapfDingbats are intentionally NOT
+    /// routed (they need built-in non-WinAnsi encodings and aren't in
+    /// the page font set) — they fall through to Helvetica.
     #[test]
     fn test_font_mapping_explicit_standard14() {
         let b = ContentStreamBuilder::new();
@@ -1911,10 +1913,15 @@ mod tests {
         assert_eq!(b.map_font_name("Arial Bold", false), "Helvetica-Bold");
         assert_eq!(b.map_font_name("Times New Roman Italic", false), "Times-Italic");
 
-        // The two single-style Base-14 fonts have no weight/oblique form.
-        assert_eq!(b.map_font_name("Symbol", false), "Symbol");
-        assert_eq!(b.map_font_name("Symbol", true), "Symbol");
-        assert_eq!(b.map_font_name("ZapfDingbats", true), "ZapfDingbats");
+        // Symbol / ZapfDingbats are NOT routed by this function: they
+        // use built-in (non-WinAnsi) encodings and aren't pre-registered
+        // in the page /Font dict, so emitting their names would yield a
+        // dangling Tf (Copilot review on PR #523 caught this). They
+        // fall through to the Helvetica fallback; callers who actually
+        // need Symbol/ZapfDingbats must use the embedded-font path.
+        assert_eq!(b.map_font_name("Symbol", false), "Helvetica");
+        assert_eq!(b.map_font_name("Symbol", true), "Helvetica-Bold");
+        assert_eq!(b.map_font_name("ZapfDingbats", true), "Helvetica-Bold");
     }
 
     #[test]
