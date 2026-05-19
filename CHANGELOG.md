@@ -2,6 +2,69 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.52] - 2026-05-18
+
+> Out-of-the-box OCR for the Node.js, Go and C# prebuilts, a Node
+> worker-teardown fix that silenced a spurious exit warning, strict
+> CI toolchain-drift gating, and a dependency-maintenance batch.
+
+### Added
+
+- **OCR in the prebuilt native library for Node.js, Go and C#
+  ([#520](https://github.com/yfedoseev/pdf_oxide/issues/520))** — the
+  `build-native-libs` release job now compiles the shared library with
+  the `ocr` feature (alongside
+  `rendering,signatures,barcodes,tsa-client,system-fonts`), so auto-mode
+  OCR / `extractTextAuto` works straight from the published Node, Go and
+  C# packages with **no `--build-from-source`**. `docs/OCR_GUIDE.md`
+  gains an "OCR Support by Binding" matrix and a pure-npm Node recipe
+  (`npm install pdf-oxide onnxruntime-node`, `ORT_DYLIB_PATH` via
+  `require.resolve(...)`, `prefetchModels` + `extractTextAuto`). The
+  WASM target still has no OCR by design (documented).
+
+### Fixed
+
+- **Node `prefetchModels()` no longer emits a spurious
+  `Worker N exited with code 1`
+  ([#521](https://github.com/yfedoseev/pdf_oxide/issues/521))** — the
+  `worker_threads` pool is now spawned **lazily** on the first real task
+  (importing the library, or calling the synchronous native APIs such as
+  `extractText*` / `classifyPage` / `prefetchModels`, spawns zero
+  workers); pooled workers are `unref()`'d so an idle pool never keeps
+  the event loop alive; and teardown does an async graceful
+  `terminate()` on `beforeExit`/`SIGINT`/`SIGTERM` with a synchronous
+  `terminated` flag flipped on the hard `exit` so a normal process exit
+  killing an unref'd worker is no longer reported as an abnormal exit.
+
+### CI / Release
+
+- **Strict toolchain-drift gating
+  ([#522](https://github.com/yfedoseev/pdf_oxide/issues/522))** —
+  `RUSTFLAGS=-D warnings` and `RUSTDOCFLAGS=-D warnings` are enforced on
+  the **stable** matrix leg only, and `continue-on-error` has been
+  removed from the beta/nightly legs so upstream-rustc drift surfaces as
+  a real signal instead of being silently swallowed. Residual nightly
+  `rust-lld` SIGBUS risk is mitigated with `CARGO_BUILD_JOBS=2` and
+  documented inline in the workflow.
+- **Dependency maintenance** — quick-xml `0.39 → 0.40`
+  ([#494](https://github.com/yfedoseev/pdf_oxide/issues/494)) with all
+  seven `BytesText::xml_content()` call sites migrated to the
+  behaviour-identical zero-arg `xml11_content()` (0.40 added a
+  `version: XmlVersion` parameter; 0.39's `xml_content()` was literally
+  `self.xml11_content()`, so this is a byte-for-byte no-op);
+  tokenizers `0.22 → 0.23`
+  ([#498](https://github.com/yfedoseev/pdf_oxide/issues/498)); and
+  SHA-pinned action bumps `actions/upload-artifact → v7.0.1`
+  ([#495](https://github.com/yfedoseev/pdf_oxide/issues/495)) with
+  `actions/download-artifact → v8.0.1` for compat and
+  `astral-sh/setup-uv → v8.1.0`
+  ([#502](https://github.com/yfedoseev/pdf_oxide/issues/502)), unified
+  across all nine workflows. The Dependabot `ort 2.0.0-rc.11 → rc.12`
+  bump ([#496](https://github.com/yfedoseev/pdf_oxide/issues/496)) was
+  **declined** — rc.12 is an upstream regression (missing
+  `SessionOptionsAppendExecutionProvider_VitisAI` on `OrtApi`); the pin
+  is held at `=2.0.0-rc.11`.
+
 ## [0.3.51] - 2026-05-17
 
 > Comprehensive auto extraction — per-page text-vs-OCR with typed
