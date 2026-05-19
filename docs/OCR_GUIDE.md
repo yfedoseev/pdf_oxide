@@ -42,7 +42,7 @@ it degrades gracefully to native text with a typed
 | Go (cgo + purego) | yes (v0.3.52+) | the published native lib ships `ocr`; supply ONNX Runtime + models |
 | C# / .NET | yes (v0.3.52+) | the published native lib ships `ocr`; supply ONNX Runtime + models |
 | WASM (browser/Deno/edge) — default `pdf-oxide-wasm` | no | ships without the OCR backend |
-| WASM — `wasm-ocr` build | yes (experimental, #524) | pure-Rust `tract` backend, no native lib / no JS bridge; host supplies model bytes (see *WebAssembly* below). Recognition-quality parity vs the native `ort` path is still being validated |
+| WASM — `wasm-ocr` build | yes (experimental, #524) | pure-Rust `tract` backend, no native lib / no JS bridge; host supplies model bytes (see *WebAssembly* below). **Output-equivalent to the native `ort` path** — verified both at the inference-engine level (max abs diff ≤ 3e-6 on the real det/rec graphs) and end-to-end (byte-identical recognized text on a shared fixture). "Experimental" refers to cross-target (browser/Deno/edge) hardening, not OCR quality |
 
 Before v0.3.52 only Rust and the Python wheel shipped with `ocr`; Node/Go/C#
 required a source build. As of v0.3.52 their prebuilts include it (#520).
@@ -320,9 +320,17 @@ const text = doc.extractTextOcr(0, ocr);                    // OCR page 0
 
 OCR inference is CPU-bound and **synchronous** — run it in a **Web
 Worker** so it doesn't block the UI thread; model fetch/caching is
-async on the host as shown. Recognition-quality parity vs the native
-`ort` path is still being validated (#524); treat wasm OCR as
-experimental.
+async on the host as shown.
+
+The tract backend is **output-equivalent to the native `ort` path**:
+verified at the inference-engine level (identical outputs on the real
+PaddleOCR det/rec graphs, max abs diff ≤ 3e-6) and end-to-end
+(byte-identical recognized text on a shared fixture). The
+`ort_vs_tract_*` equivalence tests in `src/ocr/backend.rs` pin this.
+wasm OCR is still labelled *experimental* because cross-target
+(browser / Deno / edge) integration testing and release `.wasm` size
+work are pending (#524 / #7) — **not** because of recognition quality,
+which matches native exactly.
 
 ## Troubleshooting
 

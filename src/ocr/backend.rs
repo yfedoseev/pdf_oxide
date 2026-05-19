@@ -220,3 +220,83 @@ impl InferenceBackend for TractBackend {
             .map_err(|e| OcrError::InferenceError(format!("tract: reshape output: {}", e)))
     }
 }
+
+// ---------------------------------------------------------------------------
+// #524 task 5 — ort↔tract numerical-equivalence harness.
+//
+// Feeds an *identical* deterministic input tensor through both backends
+// for the real PaddleOCR graphs and reports the output divergence. A
+// large diff localizes the recognition garble to a tract inference op
+// (vs. shared preprocessing/CTC, which cannot differ between backends).
+// `#[ignore]`d: needs the model files and the ONNX Runtime dylib —
+//   ORT_DYLIB_PATH=/path/libonnxruntime.so \
+//   cargo test --features ocr,ml --lib backend::parity -- --ignored --nocapture
+// ---------------------------------------------------------------------------
+#[cfg(all(test, feature = "ocr", feature = "ocr-tract"))]
+mod parity {
+    use super::*;
+
+    fn models_dir() -> std::path::PathBuf {
+        std::env::var_os("PDF_OXIDE_MODEL_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(std::env::var("HOME").expect("HOME"))
+                    .join(".cache/pdf_oxide/models")
+            })
+    }
+
+    /// Reproducible input; values span a typical normalized range so the
+    /// graphs exercise real arithmetic (we test engine *agreement*, not
+    /// OCR correctness — identical bytes go to both backends).
+    fn deterministic_input(shape: [usize; 4]) -> ndarray::Array4<f32> {
+        let n: usize = shape.iter().product();
+        let v: Vec<f32> = (0..n).map(|i| (i as f32 * 0.013).sin() * 2.0).collect();
+        ndarray::Array4::from_shape_vec(shape, v).expect("input shape")
+    }
+
+    fn diff(a: &ndarray::ArrayD<f32>, b: &ndarray::ArrayD<f32>) -> (f32, f64) {
+        assert_eq!(
+            a.shape(),
+            b.shape(),
+            "ort/tract output SHAPES differ: {:?} vs {:?}",
+            a.shape(),
+            b.shape()
+        );
+        let mut max = 0f32;
+        let mut sum = 0f64;
+        for (x, y) in a.iter().zip(b.iter()) {
+            let d = (x - y).abs();
+            max = max.max(d);
+            sum += d as f64;
+        }
+        (max, sum / a.len().max(1) as f64)
+    }
+
+    #[test]
+    #[ignore = "needs PDF_OXIDE_MODEL_DIR models + ORT_DYLIB_PATH"]
+    fn ort_vs_tract_detector() {
+        let m = std::fs::read(models_dir().join("det.onnx")).expect("det.onnx");
+        let ort = OrtBackend::from_bytes(&m, 1).expect("ort det");
+        let tract = TractBackend::from_bytes(&m).expect("tract det");
+        let inp = deterministic_input([1, 3, 640, 640]);
+        let o = ort.run(&inp).expect("ort run");
+        let t = tract.run(&inp).expect("tract run");
+        let (mx, mean) = diff(&o, &t);
+        println!("DET  shape={:?}  max_abs_diff={mx:.6}  mean_abs_diff={mean:.6}", o.shape());
+        assert!(mx < 1e-2, "detector ort/tract diverge: max_abs_diff={mx}");
+    }
+
+    #[test]
+    #[ignore = "needs PDF_OXIDE_MODEL_DIR models + ORT_DYLIB_PATH"]
+    fn ort_vs_tract_recognizer() {
+        let m = std::fs::read(models_dir().join("rec.onnx")).expect("rec.onnx");
+        let ort = OrtBackend::from_bytes(&m, 1).expect("ort rec");
+        let tract = TractBackend::from_bytes(&m).expect("tract rec");
+        let inp = deterministic_input([1, 3, 48, 320]);
+        let o = ort.run(&inp).expect("ort run");
+        let t = tract.run(&inp).expect("tract run");
+        let (mx, mean) = diff(&o, &t);
+        println!("REC  shape={:?}  max_abs_diff={mx:.6}  mean_abs_diff={mean:.6}", o.shape());
+        assert!(mx < 1e-2, "recognizer ort/tract diverge: max_abs_diff={mx}");
+    }
+}
