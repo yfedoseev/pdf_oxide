@@ -1212,7 +1212,7 @@ jobs:
           ls -lh wheels/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: wheels/
