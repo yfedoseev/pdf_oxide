@@ -2143,15 +2143,22 @@ impl WasmPdfPageRegion {
     }
 
     /// Extract text using OCR from this region.
+    ///
+    /// Region-scoped OCR is not wired yet; use the page-level
+    /// `WasmPdfDocument.extractTextOcr(pageIndex, engine)` for now
+    /// (#524 follow-up).
     #[wasm_bindgen(js_name = "extractTextOcr")]
     pub fn extract_text_ocr(&mut self, _engine: Option<WasmOcrEngine>) -> Result<String, JsValue> {
         Err(JsValue::from_str(
-            "OCR is not yet supported in WebAssembly. Please use the Python or Rust APIs for OCR.",
+            "region-scoped OCR is not implemented; use \
+             WasmPdfDocument.extractTextOcr(pageIndex, engine) for full-page OCR",
         ))
     }
 }
 
-/// OCR configuration for WebAssembly.
+/// OCR configuration for WebAssembly. (Currently a marker — the engine
+/// uses tuned defaults; knobs are exposed as the WASM OCR surface
+/// matures, #524.)
 #[wasm_bindgen]
 #[derive(Clone, Default)]
 pub struct WasmOcrConfig {}
@@ -2165,34 +2172,153 @@ impl WasmOcrConfig {
     }
 }
 
-/// OCR engine for WebAssembly.
+/// OCR engine for WebAssembly (#524).
+///
+/// OCR runs entirely in-WASM via the pure-Rust `tract` backend — no
+/// native ONNX Runtime, no JS bridge. Model **delivery is host-side**:
+/// the browser/Deno/edge host fetches the detector + recognizer ONNX
+/// files and the char dictionary (see `modelManifest()` for the URLs)
+/// — typically `fetch()` + the Cache API / IndexedDB for the
+/// tens-of-MB models — then hands the bytes to the constructor. This
+/// only works in the `wasm-ml` build of `pdf-oxide`; the default
+/// `pdf-oxide-wasm` has no OCR (the constructor returns an error
+/// explaining this).
 #[wasm_bindgen]
-pub struct WasmOcrEngine {}
+pub struct WasmOcrEngine {
+    #[cfg(feature = "ocr-tract")]
+    inner: std::rc::Rc<crate::ocr::OcrEngine>,
+}
 
+#[cfg(feature = "ocr-tract")]
 #[wasm_bindgen]
 impl WasmOcrEngine {
-    /// Create a new OCR engine.
+    /// Build an OCR engine from in-memory model bytes supplied by the
+    /// host.
+    ///
+    /// @param detModel - DBNet detector ONNX bytes (`det.onnx`)
+    /// @param recModel - SVTR recognizer ONNX bytes (e.g. `rec.onnx`)
+    /// @param dict     - recognizer char dictionary, one char per line
+    /// @param config   - reserved (tuned defaults are used)
     #[wasm_bindgen(constructor)]
     pub fn new(
-        _det_model_path: &str,
-        _rec_model_path: &str,
-        _dict_path: &str,
+        det_model: &[u8],
+        rec_model: &[u8],
+        dict: &str,
+        _config: Option<WasmOcrConfig>,
+    ) -> Result<WasmOcrEngine, JsValue> {
+        let engine = crate::ocr::OcrEngine::from_bytes(
+            det_model,
+            rec_model,
+            dict,
+            crate::ocr::OcrConfig::default(),
+        )
+        .map_err(|e| JsValue::from_str(&format!("OCR engine init failed: {e}")))?;
+        Ok(WasmOcrEngine {
+            inner: std::rc::Rc::new(engine),
+        })
+    }
+
+    /// Run OCR on a raw image (PNG / JPEG / TIFF bytes).
+    ///
+    /// Returns a JSON string:
+    /// `{ "text": "...", "confidence": 0.0,
+    ///    "spans": [ { "text": "...", "confidence": 0.0,
+    ///                 "polygon": [[x,y],[x,y],[x,y],[x,y]] } ] }`
+    #[wasm_bindgen(js_name = "ocrImage")]
+    pub fn ocr_image(&self, image_bytes: &[u8]) -> Result<String, JsValue> {
+        let img = image::load_from_memory(image_bytes)
+            .map_err(|e| JsValue::from_str(&format!("image decode failed: {e}")))?;
+        let out = self
+            .inner
+            .ocr_image(&img)
+            .map_err(|e| JsValue::from_str(&format!("OCR failed: {e}")))?;
+        Ok(ocr_output_to_json(&out))
+    }
+}
+
+#[cfg(not(feature = "ocr-tract"))]
+#[wasm_bindgen]
+impl WasmOcrEngine {
+    /// Not available in this build. OCR needs the `wasm-ml` build of
+    /// `pdf-oxide` (the pure-Rust tract backend); the default
+    /// `pdf-oxide-wasm` ships without it.
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        _det_model: &[u8],
+        _rec_model: &[u8],
+        _dict: &str,
         _config: Option<WasmOcrConfig>,
     ) -> Result<WasmOcrEngine, JsValue> {
         Err(JsValue::from_str(
-            "OCR is not yet supported in WebAssembly. Please use the Python or Rust APIs for OCR.",
+            "OCR is not available in this WASM build. Use the `wasm-ml` build of \
+             pdf-oxide (pure-Rust tract OCR); see modelManifest() for the model URLs.",
         ))
     }
 }
 
+/// Serialize an [`crate::ocr::OcrOutput`] to the documented JSON shape.
+#[cfg(feature = "ocr-tract")]
+fn ocr_output_to_json(out: &crate::ocr::OcrOutput) -> String {
+    let spans: Vec<serde_json::Value> = out
+        .spans
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "text": s.text,
+                "confidence": s.confidence,
+                "polygon": s.polygon,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "text": out.text_in_reading_order(),
+        "confidence": out.total_confidence,
+        "spans": spans,
+    })
+    .to_string()
+}
+
+#[cfg(feature = "ocr-tract")]
 #[wasm_bindgen]
 impl WasmPdfDocument {
     // =================================Group 6b: OCR========================================
 
-    /// Extract text using OCR (optical character recognition).
+    /// Extract text from a page using OCR.
     ///
-    /// NOTE: OCR is not yet supported in the WebAssembly build due to missing
-    /// ONNX Runtime support for the web backend in the current implementation.
+    /// Renders/extracts the page's scanned image and runs the in-WASM
+    /// tract OCR pipeline. Requires a [`WasmOcrEngine`] built from
+    /// host-supplied model bytes. Returns the recognized text in
+    /// reading order (falls back to any native page text if the page
+    /// has no extractable image).
+    #[wasm_bindgen(js_name = "extractTextOcr")]
+    pub fn extract_text_ocr(
+        &mut self,
+        page_index: usize,
+        engine: Option<WasmOcrEngine>,
+    ) -> Result<String, JsValue> {
+        let engine = engine
+            .ok_or_else(|| JsValue::from_str("extractTextOcr requires a WasmOcrEngine argument"))?;
+        let doc = self
+            .inner
+            .lock()
+            .map_err(|e| JsValue::from_str(&format!("document lock poisoned: {e}")))?;
+        crate::ocr::ocr_page(
+            &doc,
+            page_index,
+            &engine.inner,
+            &crate::ocr::OcrExtractOptions::default(),
+        )
+        .map_err(|e| JsValue::from_str(&format!("OCR failed: {e}")))
+    }
+}
+
+#[cfg(not(feature = "ocr-tract"))]
+#[wasm_bindgen]
+impl WasmPdfDocument {
+    // =================================Group 6b: OCR========================================
+
+    /// Extract text using OCR. Not available in this build — OCR needs
+    /// the `wasm-ml` build of `pdf-oxide`.
     #[wasm_bindgen(js_name = "extractTextOcr")]
     pub fn extract_text_ocr(
         &mut self,
@@ -2200,10 +2326,14 @@ impl WasmPdfDocument {
         _engine: Option<WasmOcrEngine>,
     ) -> Result<String, JsValue> {
         Err(JsValue::from_str(
-            "OCR is not yet supported in WebAssembly. Please use the Python or Rust APIs for OCR.",
+            "OCR is not available in this WASM build. Use the `wasm-ml` build of \
+             pdf-oxide (pure-Rust tract OCR); see modelManifest() for the model URLs.",
         ))
     }
+}
 
+#[wasm_bindgen]
+impl WasmPdfDocument {
     // ========================================================================
     // Group 6c: Form Fields
     // ========================================================================
