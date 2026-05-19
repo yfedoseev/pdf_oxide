@@ -235,27 +235,49 @@ fn min_area_rect(contour: &[[usize; 2]]) -> [[f32; 2]; 4] {
     ]
 }
 
-/// Expand polygon using unclip ratio.
+/// Expand (unclip) a detection box back to the true text extent.
 ///
-/// Uses simplified expansion: moves each edge outward by a distance
-/// proportional to the box size.
+/// DBNet predicts a **shrunken** text core, so the box must be offset
+/// outward. PaddleOCR's `DBPostProcess.unclip` offsets the polygon by a
+/// **uniform distance** `D = area * ratio / perimeter` (Vatti /
+/// pyclipper). For the axis-aligned rect from [`min_area_rect`] that is
+/// an even outset on all four sides.
+///
+/// The previous implementation instead scaled each corner by a *percent
+/// of its own dimension* from the centre (`(ratio-1)/2`). On a wide,
+/// short text line that is badly anisotropic: it over-expanded the long
+/// axis (shoving x off-image, negative origin) while barely expanding
+/// the short axis (box stayed ~one glyph-band tall). The recogniser
+/// then received a horizontally-shifted, vertically-clipped sliver and
+/// produced garbled text — e.g. "OCR fidelity test hello world 2024"
+/// came out "OcR tdenfy test neno woridZoZ4 s" (#524 task 8). A uniform
+/// offset expands height and width by the same absolute amount, so a
+/// long line is recovered to (about) its true height.
 fn unclip_polygon(polygon: &[[f32; 2]; 4], ratio: f32) -> [[f32; 2]; 4] {
-    // Calculate center
-    let cx: f32 = polygon.iter().map(|p| p[0]).sum::<f32>() / 4.0;
-    let cy: f32 = polygon.iter().map(|p| p[1]).sum::<f32>() / 4.0;
+    let xs = [polygon[0][0], polygon[1][0], polygon[2][0], polygon[3][0]];
+    let ys = [polygon[0][1], polygon[1][1], polygon[2][1], polygon[3][1]];
+    let min_x = xs.iter().copied().fold(f32::INFINITY, f32::min);
+    let max_x = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let min_y = ys.iter().copied().fold(f32::INFINITY, f32::min);
+    let max_y = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max);
 
-    // Expand each point away from center
-    let expansion = (ratio - 1.0) / 2.0;
+    let w = (max_x - min_x).max(0.0);
+    let h = (max_y - min_y).max(0.0);
+    let area = w * h;
+    let perimeter = 2.0 * (w + h);
+    // D = A * ratio / L  (PaddleOCR). Degenerate boxes → no offset.
+    let d = if perimeter > f32::EPSILON {
+        area * ratio / perimeter
+    } else {
+        0.0
+    };
 
-    let mut expanded = [[0.0f32; 2]; 4];
-    for (i, point) in polygon.iter().enumerate() {
-        let dx = point[0] - cx;
-        let dy = point[1] - cy;
-        expanded[i][0] = point[0] + dx * expansion;
-        expanded[i][1] = point[1] + dy * expansion;
-    }
-
-    expanded
+    [
+        [min_x - d, min_y - d],
+        [max_x + d, min_y - d],
+        [max_x + d, max_y + d],
+        [min_x - d, max_y + d],
+    ]
 }
 
 #[cfg(test)]
@@ -289,17 +311,59 @@ mod tests {
     }
 
     #[test]
-    fn test_unclip_polygon() {
+    fn test_unclip_polygon_uniform_offset() {
+        // 100 x 50 rect. PaddleOCR offset distance:
+        //   D = area * ratio / perimeter = (100*50)*1.5 / (2*(100+50))
+        //     = 7500 / 300 = 25
+        // => an even 25 px outset on every side (NOT a percent-of-
+        //    dimension scale — that anisotropy was the #524 garble bug).
         let polygon = [[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]];
-        let expanded = unclip_polygon(&polygon, 1.5);
+        let e = unclip_polygon(&polygon, 1.5);
+        let eps = 1e-3;
+        assert!((e[0][0] - -25.0).abs() < eps, "tl.x {}", e[0][0]);
+        assert!((e[0][1] - -25.0).abs() < eps, "tl.y {}", e[0][1]);
+        assert!((e[2][0] - 125.0).abs() < eps, "br.x {}", e[2][0]);
+        assert!((e[2][1] - 75.0).abs() < eps, "br.y {}", e[2][1]);
+        // The defining property: equal absolute growth on both axes.
+        let grow_x = (e[2][0] - e[0][0]) - 100.0;
+        let grow_y = (e[2][1] - e[0][1]) - 50.0;
+        assert!(
+            (grow_x - grow_y).abs() < eps,
+            "offset must be isotropic: dx={grow_x} dy={grow_y}"
+        );
+    }
 
-        // Center is (50, 25)
-        // With ratio 1.5, expansion factor is 0.25
-        // Top-left (0, 0) -> (0 + (0-50)*0.25, 0 + (0-25)*0.25) = (-12.5, -6.25)
-        assert!(expanded[0][0] < 0.0); // Expanded left
-        assert!(expanded[0][1] < 0.0); // Expanded up
-        assert!(expanded[2][0] > 100.0); // Expanded right
-        assert!(expanded[2][1] > 50.0); // Expanded down
+    #[test]
+    fn test_unclip_recovers_height_of_wide_thin_line() {
+        // The exact failure shape: a long, ~1-glyph-band-tall DB core
+        // (like a detected text line). The old percent-scale unclip
+        // grew width ~hugely and height ~nothing; the uniform offset
+        // must grow the *short* axis substantially so the recogniser
+        // sees full-height glyphs, and must not push x far negative.
+        let w = 700.0;
+        let h = 14.0;
+        let poly = [
+            [20.0, 60.0],
+            [20.0 + w, 60.0],
+            [20.0 + w, 60.0 + h],
+            [20.0, 60.0 + h],
+        ];
+        let e = unclip_polygon(&poly, 1.5);
+        let new_h = e[2][1] - e[0][1];
+        let new_w = e[2][0] - e[0][0];
+        // Height must clearly more-than-double. Old percent-scale
+        // unclip gave new_h = h*(1+2*0.25) = 1.5*h (= 21); the uniform
+        // offset gives ~34.6. `> 2*h` (= 28) cleanly separates them.
+        assert!(new_h > 2.0 * h, "height barely grew: {h} -> {new_h}");
+        // Width grows by the SAME absolute amount, not a % of width.
+        assert!(
+            ((new_w - w) - (new_h - h)).abs() < 1e-3,
+            "anisotropic: dw={} dh={}",
+            new_w - w,
+            new_h - h
+        );
+        // Left edge stays near the image (old bug drove it to ~-48).
+        assert!(e[0][0] > -40.0, "left edge shoved off-image: {}", e[0][0]);
     }
 
     #[test]

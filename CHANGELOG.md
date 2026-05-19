@@ -24,6 +24,22 @@ All notable changes to PDFOxide are documented here.
 
 ### Fixed
 
+- **OCR: wide text lines were misread (detection unclip bug)
+  ([#524](https://github.com/yfedoseev/pdf_oxide/issues/524))** — the
+  DBNet box-unclip step scaled each corner by a *percent of its own
+  dimension* from the centre instead of PaddleOCR's uniform
+  `area·ratio/perimeter` polygon offset. On a long, short text line
+  that is badly anisotropic: it over-grew the long axis (pushing the
+  box's x origin off-image, negative) and barely grew the short axis
+  (the box stayed ~one glyph-band tall), so the recognizer received a
+  horizontally-shifted, vertically-clipped sliver. A clean single
+  line "OCR fidelity test hello world 2024" came out
+  "OcR tdenfy test neno woridZoZ4 s" (confidence 0.66). Replaced with
+  the standard uniform offset: the same line now reads exactly, at
+  0.98 confidence. Affects the **native** OCR path (all bindings), not
+  just WASM — the two backends are bit-equivalent. Pinned by new
+  postprocessor unit tests and an end-to-end regression guard.
+
 - **Node `prefetchModels()` no longer emits a spurious
   `Worker N exited with code 1`
   ([#521](https://github.com/yfedoseev/pdf_oxide/issues/521))** — the
