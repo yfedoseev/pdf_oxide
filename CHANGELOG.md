@@ -2,6 +2,12 @@
 
 All notable changes to PDFOxide are documented here.
 
+## next-version
+
+### Fixed
+
+- **Inline images whose data ends with a null byte now parse correctly** — the EI end-of-data marker detection did not recognise NUL (0x00) as whitespace; PDFs that terminate inline image data with a null byte would silently drop the image and/or misparse subsequent content. All six PDF whitespace bytes (NUL, HT, LF, FF, CR, SP — ISO 32000-1 Table 1) are now recognised.
+
 ## [0.3.57] - 2026-05-30
 
 > Community contributions + extraction-quality sweep — separation plates, OCG ink filtering, two-phase images, rendered-advance metrics, plus multi-column reading order, page-rotation, CJK/UTF-8 CMap decoding, RTL logical order, indirect-ref page boxes, and font-cache correctness
