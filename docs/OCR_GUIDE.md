@@ -427,10 +427,16 @@ const en   = m.languages.find(l => l.language === "english");
 const rec  = await cached(en.rec_url);
 const dict = new TextDecoder().decode(await cached(en.dict_url));
 
-const ocr = new WasmOcrEngine(det, rec, dict);              // built once, reuse
+// Build the engine ONCE — extractTextOcr borrows it (it's not
+// consumed), so the same handle is reusable across pages and across
+// documents.
+const ocr = new WasmOcrEngine(det, rec, dict);
 const doc = new WasmPdfDocument(pdfBytes);
-const text = doc.extractTextOcr(0, ocr);                    // OCR page 0
-// or, for a raw scan image:  JSON.parse(ocr.ocrImage(pngBytes))
+for (let p = 0; p < doc.pageCount(); p++) {
+  const text = doc.extractTextOcr(p, ocr);
+  // ... use text
+}
+// Or, for a raw scan image:  JSON.parse(ocr.ocrImage(pngBytes))
 ```
 
 **Auto-routing per page** (classify, then OCR only when needed):

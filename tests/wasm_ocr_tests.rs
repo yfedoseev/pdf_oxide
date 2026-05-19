@@ -8,9 +8,14 @@
 //!   RUSTFLAGS='--cfg getrandom_backend="wasm_js"' \
 //!     wasm-pack test --node -- --no-default-features --features wasm-ocr
 //!
-//! Gated to `wasm-ocr` (= wasm + ocr-tract) so it neither compiles nor
-//! affects the default `--features wasm` test runs.
-#![cfg(all(target_arch = "wasm32", feature = "ocr-tract"))]
+//! Gated to the `wasm-ocr` feature directly (which is the documented
+//! build flag) so it can only compile when both `wasm` and
+//! `ocr-tract` are on — the prior `feature = "ocr-tract"` cfg alone
+//! would let this file try to compile under
+//! `--features ocr-tract --target wasm32` *without* `wasm`, where
+//! `pdf_oxide::wasm` doesn't exist and the imports below fail.
+//! (#523 Copilot review.)
+#![cfg(all(target_arch = "wasm32", feature = "wasm-ocr"))]
 
 use wasm_bindgen_test::*;
 

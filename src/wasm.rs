@@ -2294,10 +2294,15 @@ impl WasmPdfDocument {
     pub fn extract_text_ocr(
         &mut self,
         page_index: usize,
-        engine: Option<WasmOcrEngine>,
+        engine: &WasmOcrEngine,
     ) -> Result<String, JsValue> {
-        let engine = engine
-            .ok_or_else(|| JsValue::from_str("extractTextOcr requires a WasmOcrEngine argument"))?;
+        // Take `&WasmOcrEngine` by reference, not by value: passing an
+        // exported class by value in wasm-bindgen consumes the JS
+        // handle (its pointer is set to null after the call), which
+        // would break engine reuse across pages. Borrowed handles let
+        // callers build the engine once and call this method N times,
+        // matching the "built once, reuse" recipe in OCR_GUIDE.md.
+        // (#523 Copilot review.)
         let doc = self
             .inner
             .lock()
@@ -2323,7 +2328,7 @@ impl WasmPdfDocument {
     pub fn extract_text_ocr(
         &mut self,
         _page_index: usize,
-        _engine: Option<WasmOcrEngine>,
+        _engine: &WasmOcrEngine,
     ) -> Result<String, JsValue> {
         Err(JsValue::from_str(
             "OCR is not available in this WASM build. Use the `wasm-ocr` build of \
