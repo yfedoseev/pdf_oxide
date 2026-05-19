@@ -98,10 +98,19 @@ jobs:
   test:
     name: Test
     runs-on: ${{ matrix.os }}
-    # Nightly uses the bundled rust-lld linker, which intermittently crashes
-    # with SIGBUS on resource-constrained runners. Don't let a flaky nightly
-    # linker crash block a release; nightly only exists as an early warning.
-    continue-on-error: ${{ matrix.rust == 'nightly' }}
+    # #522 toolchain-drift policy: `-D warnings` is applied ONLY on the
+    # channel we ship (stable). beta/nightly still build/test/doc, so a
+    # genuine compile/test/doc regression there still hard-fails (the
+    # early warning we want), but a NEW beta/nightly lint can no longer
+    # red `main` with zero code change. No `continue-on-error` for any
+    # channel — a real beta/nightly break must stay visible.
+    # NOTE: this also removes the prior nightly flaky-`rust-lld`-SIGBUS
+    # guard; `CARGO_BUILD_JOBS: "2"` (cargo test step) is the remaining
+    # mitigation. If nightly linker SIGBUS recurs, fix it narrowly
+    # (e.g. pin a non-lld linker on the nightly job) — do NOT
+    # re-blanket-soften warnings.
+    env:
+      RUSTFLAGS: ${{ matrix.rust == 'stable' && '-D warnings' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -159,10 +168,13 @@ jobs:
           # job. #399.
           CARGO_BUILD_JOBS: "2"
 
-      - name: Build documentation (warnings as errors)
+      - name: Build documentation (warnings as errors on stable)
         run: cargo doc --no-deps --workspace
         env:
-          RUSTDOCFLAGS: "-D warnings"
+          # #522: deny rustdoc warnings only on stable; beta/nightly
+          # still run `cargo doc` (real doc breakage hard-fails) but a
+          # new beta/nightly rustdoc lint must not red `main`.
+          RUSTDOCFLAGS: ${{ matrix.rust == 'stable' && '-D warnings' || '' }}
 
       # Reclaim disk before the implicit rust-cache save step. The beta
       # ubuntu job has hit "No space left on device" during cache save
