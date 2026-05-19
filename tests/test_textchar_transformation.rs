@@ -33,6 +33,8 @@ fn create_char_with_transform(
         rotation_degrees: rotation,
         advance_width: 10.0,
         rendered_advance: 10.0,
+        ascent: 0.95,
+        descent: -0.35,
         matrix,
     }
 }
@@ -136,6 +138,8 @@ fn test_textchar_advance_width() {
         rotation_degrees: 0.0,
         advance_width: 15.5, // Wide character
         rendered_advance: 15.5,
+        ascent: 0.95,
+        descent: -0.35,
         matrix: None,
     };
 
@@ -185,6 +189,8 @@ fn test_textchar_with_matrix_builder() {
         rotation_degrees: 0.0,
         advance_width: 10.0,
         rendered_advance: 10.0,
+        ascent: 0.95,
+        descent: -0.35,
         matrix: None,
     };
 

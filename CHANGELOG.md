@@ -2,6 +2,12 @@
 
 All notable changes to PDFOxide are documented here.
 
+## next-version
+
+### Added
+
+- **`TextChar::ascent` and `TextChar::descent`** — glyph ascent and descent in device space (pre-multiplied by effective font size, matching the units of `advance_width` and `rendered_advance`). Sourced from the font's `FontDescriptor` (`/Ascent` / `/Descent`), with fallbacks to built-in metrics for the 14 standard PDF fonts and then Poppler-compatible defaults (0.95em / −0.35em). Use `origin_y + ascent` / `origin_y + descent` directly to get glyph bounding-box edges. Thanks @haberman.
+
 ## [0.3.59] - 2026-06-01
 
 > Community contributions — Type 4 PostScript calculator functions, optional-content (OCG/OCMD) render + extraction filtering, document-order ToUnicode parsing, per-variant standard-font width tables, subset-font cache isolation, and inline-image NUL-whitespace handling

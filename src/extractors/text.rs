@@ -4702,6 +4702,8 @@ impl<'doc> TextExtractor<'doc> {
                                             rotation_degrees,
                                             advance_width: tx.abs(),
                                             rendered_advance: tx.abs(),
+                                            ascent: 0.95 * effective_font_size,
+                                            descent: -0.35 * effective_font_size,
                                             matrix: Some([
                                                 final_matrix.a,
                                                 final_matrix.b,
@@ -7597,6 +7599,8 @@ impl<'doc> TextExtractor<'doc> {
                         rotation_degrees,
                         advance_width: char_width_device,
                         rendered_advance: rendered_advance_per_char,
+                        ascent: font.map(|f| f.ascent).unwrap_or(0.95) * effective_font_size,
+                        descent: font.map(|f| f.descent).unwrap_or(-0.35) * effective_font_size,
                         matrix: Some([
                             final_matrix.a,
                             final_matrix.b,
@@ -7704,6 +7708,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -9605,6 +9611,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 advance_width: 6.0,
                 rendered_advance: 6.0,
+                ascent: 11.4,
+                descent: -4.2,
                 matrix: None,
             },
             TextChar {
@@ -9622,6 +9630,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 advance_width: 6.0,
                 rendered_advance: 6.0,
+                ascent: 11.4,
+                descent: -4.2,
                 matrix: None,
             },
         ];
@@ -9651,6 +9661,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 advance_width: 6.0,
                 rendered_advance: 6.0,
+                ascent: 11.4,
+                descent: -4.2,
                 matrix: None,
             },
             TextChar {
@@ -9668,6 +9680,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 advance_width: 6.0,
                 rendered_advance: 6.0,
+                ascent: 11.4,
+                descent: -4.2,
                 matrix: None,
             },
         ];
@@ -9703,6 +9717,8 @@ mod tests {
             rotation_degrees: 0.0,
             advance_width: 6.0,
             rendered_advance: 6.0,
+            ascent: 11.4,
+            descent: -4.2,
             matrix: None,
         };
 
@@ -9744,6 +9760,8 @@ mod tests {
             rotation_degrees: 0.0,
             advance_width: 6.0,
             rendered_advance: 6.0,
+            ascent: 11.4,
+            descent: -4.2,
             matrix: None,
         };
 
@@ -9781,6 +9799,8 @@ mod tests {
             rotation_degrees: 0.0,
             advance_width: advance_em * font_size,
             rendered_advance: advance_em * font_size,
+            ascent: 11.4,
+            descent: -4.2,
             matrix: None,
         };
 
@@ -9833,6 +9853,8 @@ mod tests {
             rotation_degrees: 0.0,
             advance_width: 2.5, // 0.278 em × 9 pt
             rendered_advance: 2.5,
+            ascent: 11.4,
+            descent: -4.2,
             matrix: None,
         };
 
@@ -10079,6 +10101,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 advance_width: 6.0,
                 rendered_advance: 6.0,
+                ascent: 11.4,
+                descent: -4.2,
                 matrix: None,
             },
             TextChar {
@@ -10096,6 +10120,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 advance_width: 6.0,
                 rendered_advance: 6.0,
+                ascent: 11.4,
+                descent: -4.2,
                 matrix: None,
             },
         ];
@@ -10126,6 +10152,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 advance_width: 6.0,
                 rendered_advance: 6.0,
+                ascent: 11.4,
+                descent: -4.2,
                 matrix: None,
             },
             TextChar {
@@ -10143,6 +10171,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 advance_width: 6.0,
                 rendered_advance: 6.0,
+                ascent: 11.4,
+                descent: -4.2,
                 matrix: None,
             },
         ];
@@ -10172,6 +10202,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 advance_width: 6.0,
                 rendered_advance: 6.0,
+                ascent: 11.4,
+                descent: -4.2,
                 matrix: None,
             },
             TextChar {
@@ -10189,6 +10221,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 advance_width: 6.0,
                 rendered_advance: 6.0,
+                ascent: 11.4,
+                descent: -4.2,
                 matrix: None,
             },
         ];

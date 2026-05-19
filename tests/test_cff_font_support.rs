@@ -41,6 +41,8 @@ fn test_cff_font_detection_in_type0_fonts() {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None, // CFF data would be in CFF stream
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -96,6 +98,8 @@ fn test_cff_charstrings_glyph_lookup() {
         font_weight: Some(400),
         flags: Some(0x0010), // Symbolic font
         stem_v: Some(85.0),
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None, // Would contain CFF data
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -176,6 +180,8 @@ end
         font_weight: Some(400),
         flags: Some(0x0010),
         stem_v: Some(90.0), // Private Dict hint: stem vertical weight
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -233,7 +239,9 @@ fn test_cff_fdselect_array_font_program_selection() {
         to_unicode: None,
         font_weight: Some(400),
         flags: Some(0x0000),
-        stem_v: Some(75.0),       // Regular weight
+        stem_v: Some(75.0), // Regular weight
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None, // Would contain multi-program CFF
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -285,6 +293,8 @@ fn test_cff_glyph_name_to_unicode_mapping() {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -335,6 +345,8 @@ fn test_cff_fallback_to_identity_mapping() {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -415,6 +427,8 @@ end
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),

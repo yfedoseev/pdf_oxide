@@ -131,6 +131,8 @@ impl TextSpan {
                         rotation_degrees: 0.0,
                         advance_width: w,
                         rendered_advance: w,
+                        ascent: 0.95 * self.font_size,
+                        descent: -0.35 * self.font_size,
                         matrix: Some([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
                     }
                 })
@@ -160,6 +162,8 @@ impl TextSpan {
                     rotation_degrees: 0.0,
                     advance_width: char_width,
                     rendered_advance: char_width,
+                    ascent: 0.95 * self.font_size,
+                    descent: -0.35 * self.font_size,
                     matrix: Some([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
                 })
                 .collect()
@@ -261,6 +265,24 @@ pub struct TextChar {
     /// reliably identifies inter-word spacing.
     pub rendered_advance: f32,
 
+    /// Distance from the baseline to the top of the typographic glyph box (device space).
+    ///
+    /// From the font descriptor `/Ascent`; falls back to Adobe AFM values for the 14
+    /// standard PDF fonts, then to 0.95 × font_size (Poppler's default).
+    ///
+    /// `bbox.height` is the full em square and does not reflect the font's actual cap
+    /// height. Use `origin_y + ascent` for the glyph's true top edge.
+    pub ascent: f32,
+
+    /// Distance from the baseline to the bottom of the typographic glyph box (device space, negative).
+    ///
+    /// From the font descriptor `/Descent`; falls back to Adobe AFM values for the 14
+    /// standard PDF fonts, then to −0.35 × font_size (Poppler's default).
+    ///
+    /// `bbox` does not represent the descender region at all (its origin is the
+    /// baseline). Use `origin_y + descent` for the glyph's true bottom edge.
+    pub descent: f32,
+
     /// Full transformation matrix [a, b, c, d, e, f].
     ///
     /// The composed text matrix (CTM × Tm) that transforms this character
@@ -294,6 +316,8 @@ impl Default for TextChar {
             rotation_degrees: 0.0,
             advance_width: 0.0,
             rendered_advance: 0.0,
+            ascent: 0.95 * 12.0,
+            descent: -0.35 * 12.0,
             matrix: Some([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
         }
     }
@@ -370,6 +394,8 @@ impl TextChar {
             rotation_degrees: 0.0,
             advance_width: bbox.width,
             rendered_advance: bbox.width,
+            ascent: 0.95 * font_size,
+            descent: -0.35 * font_size,
             matrix: None,
         }
     }
@@ -635,6 +661,8 @@ mod tests {
             rotation_degrees: 0.0,
             advance_width: bbox.width,
             rendered_advance: bbox.width,
+            ascent: 0.95 * 12.0,
+            descent: -0.35 * 12.0,
             matrix: None,
         }
     }
@@ -694,6 +722,8 @@ mod tests {
             rotation_degrees: 0.0,
             advance_width: 10.0,
             rendered_advance: 10.0,
+            ascent: 0.95 * 12.0,
+            descent: -0.35 * 12.0,
             matrix: None,
         };
         assert!(c.is_monospace);

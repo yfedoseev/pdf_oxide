@@ -51,6 +51,8 @@ fn subset_type0_font() -> FontInfo {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         widths: None,
         first_char: None,
         last_char: None,
