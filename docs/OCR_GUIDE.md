@@ -327,10 +327,19 @@ verified at the inference-engine level (identical outputs on the real
 PaddleOCR det/rec graphs, max abs diff ≤ 3e-6) and end-to-end
 (byte-identical recognized text on a shared fixture). The
 `ort_vs_tract_*` equivalence tests in `src/ocr/backend.rs` pin this.
+
+**Footprint.** A `--release` `wasm-ocr` build is ~23 MB raw →
+~20.6 MB after `wasm-opt -Oz` → **~7 MB gzipped** over the wire (build
+the release `.wasm` with the same `RUSTFLAGS` as above, then
+`wasm-opt -Oz --enable-bulk-memory ...`). The PaddleOCR models
+(det ≈ 4.7 MB + rec ≈ 7.8 MB) are **not** in the `.wasm` — the host
+fetches them once and caches them (Cache API / IndexedDB), so they
+cost nothing on repeat loads.
+
 wasm OCR is still labelled *experimental* because cross-target
-(browser / Deno / edge) integration testing and release `.wasm` size
-work are pending (#524 / #7) — **not** because of recognition quality,
-which matches native exactly.
+(browser / Deno / edge) integration testing is pending (#524 / #7) —
+**not** because of recognition quality (matches native exactly) or
+size (shippable, measured above).
 
 ## Troubleshooting
 

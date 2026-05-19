@@ -298,11 +298,17 @@ getrandom_03 = { package = "getrandom", version = "0.3", features = [
 ], optional = true }
 
 [dev-dependencies]
-criterion = "0.8"
 tempfile = "3.27"
 crc32fast = "1.3"
 wasm-bindgen-test = "0.3"
 hex-literal = "1.1.0"
+
+# `criterion` pulls `rayon`, which cannot target wasm32. Benches only
+# ever run natively, so keep criterion out of the wasm32 dev-dep graph
+# — without this, `wasm-pack test` (any wasm integration test, not
+# just OCR) fails to build the test harness at all (#524 / #7).
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = "0.8"
 
 [features]
 default = ["icc", "legacy-crypto"]
