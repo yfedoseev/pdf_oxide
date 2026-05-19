@@ -41,7 +41,8 @@ it degrades gracefully to native text with a typed
 | Node.js / TypeScript | yes (v0.3.52+) | the published prebuilt ships `ocr`; `npm i onnxruntime-node` + models |
 | Go (cgo + purego) | yes (v0.3.52+) | the published native lib ships `ocr`; supply ONNX Runtime + models |
 | C# / .NET | yes (v0.3.52+) | the published native lib ships `ocr`; supply ONNX Runtime + models |
-| WASM (browser/Deno/edge) | no | OCR backend is the Rust `ort` crate, which needs a native ONNX Runtime lib and does not target `wasm32` |
+| WASM (browser/Deno/edge) — default `pdf-oxide-wasm` | no | ships without the OCR backend |
+| WASM — `wasm-ml` build | yes (experimental, #524) | pure-Rust `tract` backend, no native lib / no JS bridge; host supplies model bytes (see *WebAssembly* below). Recognition-quality parity vs the native `ort` path is still being validated |
 
 Before v0.3.52 only Rust and the Python wheel shipped with `ocr`; Node/Go/C#
 required a source build. As of v0.3.52 their prebuilts include it (#520).
@@ -272,7 +273,56 @@ export ORT_LIB_LOCATION=$(brew --prefix onnxruntime)/lib
 
 ### WebAssembly
 
-OCR is **not supported** in **WebAssembly** builds (`pdf-oxide-wasm` — browser / Deno / edge): pdf_oxide's OCR backend is the Rust `ort` crate, which links a **native** ONNX Runtime shared library and does not target `wasm32` (ONNX Runtime's separate `onnxruntime-web` build is a browser JS runtime, not usable from this Rust/wasm-bindgen pipeline). This applies only to the WASM build — the **native Node.js** addon (`pdf-oxide`) *does* support OCR as of v0.3.52 (see *Node.js / TypeScript* above). Auto mode still works in WASM, falling back to native text with a typed reason.
+The **default** `pdf-oxide-wasm` package ships **without** OCR — its
+`WasmOcrEngine` / `extractTextOcr` throw an error directing you to the
+`wasm-ml` build. (The native `ort` OCR backend links a native ONNX
+Runtime shared library and does not target `wasm32`.) Auto mode still
+works there, falling back to native text with a typed reason.
+
+The **`wasm-ml` build** (issue #524, *experimental*) runs OCR entirely
+in-WASM via a pure-Rust [`tract`](https://github.com/sonos/tract)
+backend — no native library, no `onnxruntime-web` JS bridge. Build it
+with the `wasm_js` getrandom backend flag:
+
+```sh
+RUSTFLAGS='--cfg getrandom_backend="wasm_js"' \
+  wasm-pack build --target web -- --no-default-features --features wasm-ml
+```
+
+Model **delivery is host-side** (the browser has no filesystem and the
+models are tens of MB). Fetch the detector + recognizer ONNX and the
+char dictionary — `modelManifest()` returns the URLs — cache them with
+the Cache API (or IndexedDB), then hand the bytes in:
+
+```js
+import init, { WasmOcrEngine, WasmPdfDocument, modelManifest } from "pdf-oxide";
+await init();
+
+// One-time: fetch + cache the (large) models. modelManifest() lists
+// the detector + per-language recognizer/dict URLs.
+const cache = await caches.open("pdf-oxide-ocr-v1");
+async function cached(url) {
+  let r = await cache.match(url);
+  if (!r) { await cache.add(url); r = await cache.match(url); }
+  return new Uint8Array(await r.arrayBuffer());
+}
+const m = JSON.parse(modelManifest());
+const det  = await cached(m.detector.url);
+const en   = m.languages.find(l => l.language === "english");
+const rec  = await cached(en.rec_url);
+const dict = new TextDecoder().decode(await cached(en.dict_url));
+
+const ocr = new WasmOcrEngine(det, rec, dict);              // built once, reuse
+const doc = new WasmPdfDocument(pdfBytes);
+const text = doc.extractTextOcr(0, ocr);                    // OCR page 0
+// or, for a raw scan image:  JSON.parse(ocr.ocrImage(pngBytes))
+```
+
+OCR inference is CPU-bound and **synchronous** — run it in a **Web
+Worker** so it doesn't block the UI thread; model fetch/caching is
+async on the host as shown. Recognition-quality parity vs the native
+`ort` path is still being validated (#524); treat wasm OCR as
+experimental.
 
 ## Troubleshooting
 
