@@ -125,7 +125,21 @@ All notable changes to PDFOxide are documented here.
   `actions/download-artifact → v8.0.1` for compat and
   `astral-sh/setup-uv → v8.1.0`
   ([#502](https://github.com/yfedoseev/pdf_oxide/issues/502)), unified
-  across all nine workflows. The Dependabot `ort 2.0.0-rc.11 → rc.12`
+  across all nine workflows. Additional pinned-action bumps in this
+  release: `pypa/gh-action-pypi-publish → v1.14.0`
+  ([#530](https://github.com/yfedoseev/pdf_oxide/pull/530)) which
+  carries a security fix
+  ([GHSA-vxmw-7h4f-hqxh](https://github.com/pypa/gh-action-pypi-publish/security/advisories/GHSA-vxmw-7h4f-hqxh))
+  for the action that publishes our Python wheel;
+  `github/codeql-action → v4.35.5`
+  ([#528](https://github.com/yfedoseev/pdf_oxide/pull/528));
+  `taiki-e/install-action → v2.79.2`
+  ([#529](https://github.com/yfedoseev/pdf_oxide/pull/529)) — the
+  upstream deprecations (`mdbook-alerts`, `iai-callgrind-runner`) do
+  not affect us (our tool list is `cargo-cyclonedx`, `wasm-tools`,
+  `taplo-cli`, `cargo-shear`); and `codecov/codecov-action → v6.0.1`
+  ([#531](https://github.com/yfedoseev/pdf_oxide/pull/531)).
+  The Dependabot `ort 2.0.0-rc.11 → rc.12`
   bump ([#496](https://github.com/yfedoseev/pdf_oxide/issues/496)) was
   **declined** — rc.12 is an upstream regression (missing
   `SessionOptionsAppendExecutionProvider_VitisAI` on `OrtApi`); the pin
