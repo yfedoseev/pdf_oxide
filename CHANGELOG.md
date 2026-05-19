@@ -5,10 +5,11 @@ All notable changes to PDFOxide are documented here.
 ## [0.3.52] - 2026-05-18
 
 > Out-of-the-box OCR for the Node.js, Go and C# prebuilts, a Node
-> worker-teardown fix that silenced a spurious exit warning, a
-> Markdown→PDF styling fix that restores headings, bold/italic and
-> monospace, strict CI toolchain-drift gating, and a
-> dependency-maintenance batch.
+> worker-teardown fix that silenced a spurious exit warning, an OCR
+> detection-unclip fix that restores recognition on wide text lines
+> (native and WASM bindings alike), a Markdown→PDF styling fix that
+> restores headings, bold/italic and monospace, strict CI
+> toolchain-drift gating, and a dependency-maintenance batch.
 
 ### Added
 
@@ -22,7 +23,23 @@ All notable changes to PDFOxide are documented here.
   gains an "OCR Support by Binding" matrix and a pure-npm Node recipe
   (`npm install pdf-oxide onnxruntime-node`, `ORT_DYLIB_PATH` via
   `require.resolve(...)`, `prefetchModels` + `extractTextAuto`). The
-  WASM target still has no OCR by design (documented).
+  default `pdf-oxide-wasm` still ships without OCR; see the opt-in
+  `wasm-ocr` build below for the experimental WASM OCR path.
+
+- **WASM OCR backend (#524, experimental, opt-in)** — pure-Rust
+  `tract` inference under a new `wasm-ocr` build feature
+  ([`ocr-tract`](https://github.com/yfedoseev/pdf_oxide/issues/524) is
+  the bare backend; `wasm-ml` is retained as a thin back-compat
+  alias). The default `pdf-oxide-wasm` package is **unchanged** and
+  still ships without OCR; only `wasm-ocr` builds include it. The
+  pure-Rust path is **output-equivalent to the native `ort`
+  backend** — verified at the inference-engine level (max abs diff
+  ≤ 3e-6 on the real PaddleOCR det/rec graphs) and end-to-end
+  (byte-identical recognized text on a shared fixture). Cross-target
+  (browser / Deno / edge) integration tests and a release `.wasm`
+  size gate are pending and will land in #524's own dedicated release
+  cycle. See `docs/OCR_GUIDE.md` for the JS fetch+Cache recipe and the
+  build command.
 
 ### Fixed
 
@@ -103,6 +120,13 @@ All notable changes to PDFOxide are documented here.
   **declined** — rc.12 is an upstream regression (missing
   `SessionOptionsAppendExecutionProvider_VitisAI` on `OrtApi`); the pin
   is held at `=2.0.0-rc.11`.
+
+### Thanks
+
+- **@Jethril** for reporting
+  [#525](https://github.com/yfedoseev/pdf_oxide/issues/525) — the
+  PDF-from-markdown-has-no-styling bug — with a minimal repro that led
+  directly to the renderer fix.
 
 ## [0.3.51] - 2026-05-17
 
