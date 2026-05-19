@@ -124,7 +124,11 @@ fn test_ocr_config_default() {
     let config = OcrConfig::default();
 
     assert!((config.det_threshold - 0.3).abs() < 0.01);
-    assert!((config.box_threshold - 0.5).abs() < 0.01);
+    // Default `box_threshold` is 0.6 (see src/ocr/config.rs and the
+    // `test_ocr_config_builder` / detector unit tests). This assertion
+    // had been left at the old 0.5 default — a stale pin, unrelated to
+    // the #524 backend work but fixed here so the OCR suite is green.
+    assert!((config.box_threshold - 0.6).abs() < 0.01);
     assert!((config.unclip_ratio - 1.5).abs() < 0.01);
     assert_eq!(config.det_max_side, 960);
     assert_eq!(config.rec_target_height, 48);

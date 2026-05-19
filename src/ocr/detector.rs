@@ -4,25 +4,20 @@
 //! that produces a probability map indicating text regions.
 
 use std::path::Path;
-use std::sync::Mutex;
 
 use image::DynamicImage;
 use ndarray::Array2;
-use ort::session::Session;
-use ort::value::TensorRef;
 
+use super::backend::{build_backend, InferenceBackend};
 use super::config::OcrConfig;
 use super::error::{OcrError, OcrResult};
 use super::postprocessor::{extract_boxes, DetectedBox};
 use super::preprocessor::preprocess_for_detection;
 
-/// Text detector using DBNet++ ONNX model.
+/// Text detector using a DBNet++ ONNX model, run through a pluggable
+/// [`InferenceBackend`] (`ort` natively, `tract` on `wasm32`).
 pub struct TextDetector {
-    /// ONNX Runtime session (Mutex for thread-safe mutable access)
-    session: Mutex<Option<Session>>,
-    /// Model bytes for deferred loading
-    #[allow(dead_code)]
-    model_bytes: Option<Vec<u8>>,
+    backend: Box<dyn InferenceBackend>,
     config: OcrConfig,
 }
 
@@ -55,21 +50,8 @@ impl TextDetector {
     /// * `model_bytes` - ONNX model data as bytes
     /// * `config` - OCR configuration
     pub fn from_bytes(model_bytes: &[u8], config: OcrConfig) -> OcrResult<Self> {
-        // Build session with optimization
-        let session = Session::builder()
-            .map_err(|e| {
-                OcrError::ModelLoadError(format!("Failed to create session builder: {}", e))
-            })?
-            .with_intra_threads(config.num_threads)
-            .map_err(|e| OcrError::ModelLoadError(format!("Failed to set threads: {}", e)))?
-            .commit_from_memory(model_bytes)
-            .map_err(|e| OcrError::ModelLoadError(format!("Failed to load model: {}", e)))?;
-
-        Ok(Self {
-            session: Mutex::new(Some(session)),
-            model_bytes: Some(model_bytes.to_vec()),
-            config,
-        })
+        let backend = build_backend(model_bytes, config.num_threads)?;
+        Ok(Self { backend, config })
     }
 
     /// Detect text regions in an image.
@@ -111,37 +93,10 @@ impl TextDetector {
         Ok(boxes)
     }
 
-    /// Run ONNX model inference.
+    /// Run model inference through the configured backend.
     fn run_inference(&self, input: &ndarray::Array4<f32>) -> OcrResult<Array2<f32>> {
-        let mut session_guard = self.session.lock().map_err(|e| {
-            OcrError::InferenceError(format!("Failed to acquire session lock: {}", e))
-        })?;
-
-        let session = session_guard
-            .as_mut()
-            .ok_or_else(|| OcrError::InferenceError("Model session not initialized".to_string()))?;
-
-        // Create input tensor reference from ndarray
-        let input_tensor = TensorRef::from_array_view(input).map_err(|e| {
-            OcrError::InferenceError(format!("Failed to create input tensor: {}", e))
-        })?;
-
-        // Run inference
-        // DBNet++ typically has input named "x" or "images" and output named "sigmoid_0.tmp_0" or "output"
-        let outputs = session
-            .run(ort::inputs!["x" => input_tensor])
-            .map_err(|e| OcrError::InferenceError(format!("Inference failed: {}", e)))?;
-
-        // Extract output - DBNet++ outputs [N, 1, H, W] probability map
-        // Get the first output (models typically have one output)
-        let (_, output_tensor) = outputs
-            .iter()
-            .next()
-            .ok_or_else(|| OcrError::InferenceError("No output tensor found".to_string()))?;
-
-        let output_array = output_tensor
-            .try_extract_array::<f32>()
-            .map_err(|e| OcrError::InferenceError(format!("Failed to extract output: {}", e)))?;
+        // DBNet++ outputs an `[N, 1, H, W]` probability map.
+        let output_array = self.backend.run(input)?;
 
         // Convert from [N, 1, H, W] to [H, W]
         let shape = output_array.shape();
@@ -166,13 +121,16 @@ impl TextDetector {
         Ok(prob_map)
     }
 
-    /// Check if model is loaded
+    /// Check if a model is loaded. A `TextDetector` cannot be
+    /// constructed without a successfully built backend, so this is
+    /// always `true` once the value exists (kept for API stability).
     pub fn is_loaded(&self) -> bool {
-        self.session.lock().map(|s| s.is_some()).unwrap_or(false)
+        true
     }
 }
 
-// TextDetector is Send + Sync because it uses Mutex<Session>
+// `TextDetector` is `Send + Sync`: the backend trait object is bound
+// `Send + Sync` and all other fields are.
 
 #[cfg(test)]
 mod tests {
