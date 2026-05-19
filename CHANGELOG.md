@@ -109,7 +109,17 @@ All notable changes to PDFOxide are documented here.
   `version: XmlVersion` parameter; 0.39's `xml_content()` was literally
   `self.xml11_content()`, so this is a byte-for-byte no-op);
   tokenizers `0.22 → 0.23`
-  ([#498](https://github.com/yfedoseev/pdf_oxide/issues/498)); and
+  ([#498](https://github.com/yfedoseev/pdf_oxide/issues/498));
+  weezl `0.1 → 0.2`
+  ([#527](https://github.com/yfedoseev/pdf_oxide/pull/527)) — picks
+  up the upstream LZW-decoder fix for streams that overwrote initial
+  table entries (benefits **pdf_oxide's direct PDF `LZWDecode` filter**
+  in `src/decoders/lzw.rs`; the `image` crate's TIFF reader still pins
+  weezl 0.1 transitively and is unaffected by this bump); aws-lc-rs
+  `1.16.3 → 1.17.0`
+  ([#526](https://github.com/yfedoseev/pdf_oxide/pull/526)) — build-
+  hygiene only (jitterentropy `CFLAGS` filtering for FreeBSD, MinGW
+  Win7 fixes, nightly clippy); and
   SHA-pinned action bumps `actions/upload-artifact → v7.0.1`
   ([#495](https://github.com/yfedoseev/pdf_oxide/issues/495)) with
   `actions/download-artifact → v8.0.1` for compat and
