@@ -32,9 +32,11 @@ All notable changes to PDFOxide are documented here.
   `extractText*` / `classifyPage` / `prefetchModels`, spawns zero
   workers); pooled workers are `unref()`'d so an idle pool never keeps
   the event loop alive; and teardown does an async graceful
-  `terminate()` on `beforeExit`/`SIGINT`/`SIGTERM` with a synchronous
-  `terminated` flag flipped on the hard `exit` so a normal process exit
-  killing an unref'd worker is no longer reported as an abnormal exit.
+  `terminate()` on `beforeExit` (deliberately **no** `SIGINT`/`SIGTERM`
+  listeners — a library must not change the host's default signal
+  semantics) with a synchronous `terminated` flag flipped on the hard
+  `exit` so a normal process exit killing an unref'd worker is no longer
+  reported as an abnormal exit.
 
 ### CI / Release
 

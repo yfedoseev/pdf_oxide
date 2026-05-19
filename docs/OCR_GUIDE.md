@@ -41,7 +41,7 @@ it degrades gracefully to native text with a typed
 | Node.js / TypeScript | yes (v0.3.52+) | the published prebuilt ships `ocr`; `npm i onnxruntime-node` + models |
 | Go (cgo + purego) | yes (v0.3.52+) | the published native lib ships `ocr`; supply ONNX Runtime + models |
 | C# / .NET | yes (v0.3.52+) | the published native lib ships `ocr`; supply ONNX Runtime + models |
-| WASM (browser/Deno/edge) | no | ONNX Runtime has no WASM target |
+| WASM (browser/Deno/edge) | no | OCR backend is the Rust `ort` crate, which needs a native ONNX Runtime lib and does not target `wasm32` |
 
 Before v0.3.52 only Rust and the Python wheel shipped with `ocr`; Node/Go/C#
 required a source build. As of v0.3.52 their prebuilts include it (#520).
