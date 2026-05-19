@@ -293,7 +293,7 @@ jobs:
           uv run --no-sync python -c "import pdf_oxide; pre=pdf_oxide.crypto_active_provider(); assert pre=='rust-crypto (default, lazy)',pre; providers=pdf_oxide.crypto_available_providers(); assert 'aws-lc-rs' in providers,providers; pdf_oxide.crypto_use_fips(); assert pdf_oxide.crypto_active_provider()=='aws-lc-rs'; print('FIPS smoke test passed:',providers)"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact }}
           path: dist/*.whl
@@ -454,7 +454,7 @@ jobs:
              js/prebuilds/${{ matrix.prebuild_dir }}/pdf_oxide.node
 
       - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pdf_oxide_fips-npm-prebuild-${{ matrix.prebuild_dir }}
           path: js/prebuilds/${{ matrix.prebuild_dir }}/
@@ -541,7 +541,7 @@ jobs:
           npm pack --pack-destination ../dist-npm
 
       - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pdf-oxide-fips-npm-tarball
           path: dist-npm/*.tgz
@@ -650,7 +650,7 @@ jobs:
              staging/runtimes/${{ matrix.rid }}/native/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pdf_oxide_fips-nuget-runtime-${{ matrix.rid }}
           path: staging/runtimes/${{ matrix.rid }}/
@@ -711,7 +711,7 @@ jobs:
             -o ../../dist-nuget
 
       - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: PdfOxide.Fips-nuget
           path: dist-nuget/*.nupkg
@@ -823,7 +823,7 @@ jobs:
           fi
 
       - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pdf_oxide_fips-go-${{ matrix.go_dir }}
           path: staging/${{ matrix.go_dir }}/
@@ -919,7 +919,7 @@ jobs:
         run: tar czf pdf_oxide_fips-go-bundle.tar.gz go-fips/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pdf_oxide_fips-go-bundle
           path: pdf_oxide_fips-go-bundle.tar.gz
