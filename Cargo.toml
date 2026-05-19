@@ -287,12 +287,12 @@ cmpv2 = { version = "0.2", optional = true }
 # the WASM build's RNG functional.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
-# tract-onnx / tokenizers (the `wasm-ml` OCR path, #524) pull
-# getrandom 0.3 transitively via ahash/rand. Its
-# wasm32-unknown-unknown backend needs the `wasm_js` feature AND the
-# `--cfg getrandom_backend="wasm_js"` rustflag (see .cargo/config.toml).
-# Aliased + optional so it coexists with the 0.4 entry and is only
-# pulled for `wasm-ml`, never bloating the existing non-ml wasm build.
+# tract-onnx (the `wasm-ocr` OCR path, #524) pulls getrandom 0.3
+# transitively via ahash/rand. Its wasm32-unknown-unknown backend
+# needs the `wasm_js` feature AND the `--cfg getrandom_backend="wasm_js"`
+# rustflag (see the OCR guide build recipe). Aliased + optional so it
+# coexists with the 0.4 entry and is only pulled for `wasm-ocr`, never
+# bloating the existing non-OCR wasm build.
 getrandom_03 = { package = "getrandom", version = "0.3", features = [
     "wasm_js",
 ], optional = true }
@@ -380,7 +380,12 @@ wasm = [
 # `getrandom_03` activates the `wasm_js` backend for the getrandom 0.3
 # that tract drags in (a no-op off-wasm32: the dep only exists under
 # the wasm32 target table).
-wasm-ml = ["wasm", "ocr-tract", "dep:getrandom_03"]
+wasm-ocr = ["wasm", "ocr-tract", "dep:getrandom_03"]
+# Back-compat alias: `wasm-ml` predates #524 on `main` (it was
+# `["wasm", "ml"]`). Kept as a thin alias so `--features wasm-ml`
+# keeps resolving, but `wasm-ocr` is the accurate, documented name
+# (this path is OCR-only — it does not pull full `ml`).
+wasm-ml = ["wasm-ocr"]
 
 # Debug feature for span merging analysis
 debug-span-merging = []

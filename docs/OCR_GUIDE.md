@@ -42,7 +42,7 @@ it degrades gracefully to native text with a typed
 | Go (cgo + purego) | yes (v0.3.52+) | the published native lib ships `ocr`; supply ONNX Runtime + models |
 | C# / .NET | yes (v0.3.52+) | the published native lib ships `ocr`; supply ONNX Runtime + models |
 | WASM (browser/Deno/edge) — default `pdf-oxide-wasm` | no | ships without the OCR backend |
-| WASM — `wasm-ml` build | yes (experimental, #524) | pure-Rust `tract` backend, no native lib / no JS bridge; host supplies model bytes (see *WebAssembly* below). Recognition-quality parity vs the native `ort` path is still being validated |
+| WASM — `wasm-ocr` build | yes (experimental, #524) | pure-Rust `tract` backend, no native lib / no JS bridge; host supplies model bytes (see *WebAssembly* below). Recognition-quality parity vs the native `ort` path is still being validated |
 
 Before v0.3.52 only Rust and the Python wheel shipped with `ocr`; Node/Go/C#
 required a source build. As of v0.3.52 their prebuilts include it (#520).
@@ -275,18 +275,18 @@ export ORT_LIB_LOCATION=$(brew --prefix onnxruntime)/lib
 
 The **default** `pdf-oxide-wasm` package ships **without** OCR — its
 `WasmOcrEngine` / `extractTextOcr` throw an error directing you to the
-`wasm-ml` build. (The native `ort` OCR backend links a native ONNX
+`wasm-ocr` build. (The native `ort` OCR backend links a native ONNX
 Runtime shared library and does not target `wasm32`.) Auto mode still
 works there, falling back to native text with a typed reason.
 
-The **`wasm-ml` build** (issue #524, *experimental*) runs OCR entirely
+The **`wasm-ocr` build** (issue #524, *experimental*) runs OCR entirely
 in-WASM via a pure-Rust [`tract`](https://github.com/sonos/tract)
 backend — no native library, no `onnxruntime-web` JS bridge. Build it
 with the `wasm_js` getrandom backend flag:
 
 ```sh
 RUSTFLAGS='--cfg getrandom_backend="wasm_js"' \
-  wasm-pack build --target web -- --no-default-features --features wasm-ml
+  wasm-pack build --target web -- --no-default-features --features wasm-ocr
 ```
 
 Model **delivery is host-side** (the browser has no filesystem and the

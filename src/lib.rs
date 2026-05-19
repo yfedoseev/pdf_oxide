@@ -283,7 +283,7 @@ pub mod hybrid;
 // OCR - PaddleOCR via a pluggable inference backend (optional).
 // Native ONNX Runtime when `ocr` is on; otherwise the pure-Rust
 // `tract` backend (`ocr-tract`, which `ml` implies and the
-// browser/Deno/edge `wasm-ml` build uses — issue #524). Exposing OCR
+// browser/Deno/edge `wasm-ocr` build uses — issue #524). Exposing OCR
 // wherever the tract backend is available costs only the small OCR
 // module itself and keeps it host-testable without a native dylib.
 #[cfg(any(feature = "ocr", feature = "ocr-tract"))]

@@ -31,7 +31,7 @@ pub(crate) trait InferenceBackend: Send + Sync {
 
 /// Build the backend appropriate for the current build: native ONNX
 /// Runtime when the `ocr` feature is on, otherwise the pure-Rust
-/// `tract` backend (`ocr-tract`, which `ml` implies and `wasm-ml`
+/// `tract` backend (`ocr-tract`, which `ml` implies and `wasm-ocr`
 /// uses). `num_threads` is honoured only by the native backend.
 #[allow(unused_variables)]
 pub(crate) fn build_backend(
@@ -124,7 +124,7 @@ impl InferenceBackend for OrtBackend {
 // When both `ocr` and `ocr-tract` are on (e.g. `--features ocr,ml`),
 // the native `ort` backend wins in `build_backend`, so this type is
 // compiled but unconstructed — intentional, not dead code. In a real
-// `wasm-ml` build (`ocr` off) it *is* constructed, so the allow is
+// `wasm-ocr` build (`ocr` off) it *is* constructed, so the allow is
 // scoped to the combined-feature case only.
 #[cfg(feature = "ocr-tract")]
 #[cfg_attr(feature = "ocr", allow(dead_code))]

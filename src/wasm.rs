@@ -2180,7 +2180,7 @@ impl WasmOcrConfig {
 /// files and the char dictionary (see `modelManifest()` for the URLs)
 /// — typically `fetch()` + the Cache API / IndexedDB for the
 /// tens-of-MB models — then hands the bytes to the constructor. This
-/// only works in the `wasm-ml` build of `pdf-oxide`; the default
+/// only works in the `wasm-ocr` build of `pdf-oxide`; the default
 /// `pdf-oxide-wasm` has no OCR (the constructor returns an error
 /// explaining this).
 #[wasm_bindgen]
@@ -2239,7 +2239,7 @@ impl WasmOcrEngine {
 #[cfg(not(feature = "ocr-tract"))]
 #[wasm_bindgen]
 impl WasmOcrEngine {
-    /// Not available in this build. OCR needs the `wasm-ml` build of
+    /// Not available in this build. OCR needs the `wasm-ocr` build of
     /// `pdf-oxide` (the pure-Rust tract backend); the default
     /// `pdf-oxide-wasm` ships without it.
     #[wasm_bindgen(constructor)]
@@ -2250,7 +2250,7 @@ impl WasmOcrEngine {
         _config: Option<WasmOcrConfig>,
     ) -> Result<WasmOcrEngine, JsValue> {
         Err(JsValue::from_str(
-            "OCR is not available in this WASM build. Use the `wasm-ml` build of \
+            "OCR is not available in this WASM build. Use the `wasm-ocr` build of \
              pdf-oxide (pure-Rust tract OCR); see modelManifest() for the model URLs.",
         ))
     }
@@ -2318,7 +2318,7 @@ impl WasmPdfDocument {
     // =================================Group 6b: OCR========================================
 
     /// Extract text using OCR. Not available in this build — OCR needs
-    /// the `wasm-ml` build of `pdf-oxide`.
+    /// the `wasm-ocr` build of `pdf-oxide`.
     #[wasm_bindgen(js_name = "extractTextOcr")]
     pub fn extract_text_ocr(
         &mut self,
@@ -2326,7 +2326,7 @@ impl WasmPdfDocument {
         _engine: Option<WasmOcrEngine>,
     ) -> Result<String, JsValue> {
         Err(JsValue::from_str(
-            "OCR is not available in this WASM build. Use the `wasm-ml` build of \
+            "OCR is not available in this WASM build. Use the `wasm-ocr` build of \
              pdf-oxide (pure-Rust tract OCR); see modelManifest() for the model URLs.",
         ))
     }
