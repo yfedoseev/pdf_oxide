@@ -400,12 +400,16 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ contains(matrix.target, 'aarch64-unknown-linux') && 'aarch64-linux-gnu-gcc' || '' }}
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: ${{ matrix.target == 'x86_64-pc-windows-gnu' && 'x86_64-w64-mingw32-gcc' || '' }}
         run: |
-          # Include all optional features that C#/Node.js/Go bindings expose in
-          # their public API surface. Without these the shipped libs return
-          # _ERR_UNSUPPORTED (8) for rendering, signatures, barcodes, and OCR
-          # calls — phantom APIs that compile but always fail at runtime.
+          # Include all optional features the C#/Node.js/Go bindings expose
+          # in their public API surface, INCLUDING `ocr` (#520 — Node/Go/C#
+          # OCR parity with the Python wheel). Without a feature the shipped
+          # libs return _ERR_UNSUPPORTED (8) for that area — a phantom API
+          # that compiles but always fails at runtime. OCR additionally
+          # needs an ONNX Runtime shared lib + provisioned models at
+          # runtime; the auto surface degrades gracefully to native text
+          # with a typed reason when they are absent (see docs/ocr.md).
           cargo build --release --lib \
-            --features rendering,signatures,barcodes,tsa-client,system-fonts \
+            --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts \
             --target ${{ matrix.target }}
           mkdir -p native-out
           # Shared library (cdylib) — always present

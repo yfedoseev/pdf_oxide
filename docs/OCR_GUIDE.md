@@ -26,6 +26,26 @@ cargo run --features ocr --example ocr_scanned_pdf -- \
     --dict .models/en_dict.txt
 ```
 
+## OCR Support by Binding
+
+OCR *recognition* needs the native `ocr` feature compiled in **plus** an
+ONNX Runtime shared library and provisioned models at runtime.
+**Auto mode works in every binding regardless**: when OCR is unavailable
+it degrades gracefully to native text with a typed
+`ocr_requested_but_unavailable` reason — never a crash or silent empty.
+
+| Binding | OCR recognition | How |
+|---|---|---|
+| Rust | yes | build with `--features ocr` |
+| Python | yes | the published wheel ships `ocr`; supply ONNX Runtime + models |
+| Node.js / TypeScript | yes (v0.3.52+) | the published prebuilt ships `ocr`; `npm i onnxruntime-node` + models |
+| Go (cgo + purego) | yes (v0.3.52+) | the published native lib ships `ocr`; supply ONNX Runtime + models |
+| C# / .NET | yes (v0.3.52+) | the published native lib ships `ocr`; supply ONNX Runtime + models |
+| WASM (browser/Deno/edge) | no | ONNX Runtime has no WASM target |
+
+Before v0.3.52 only Rust and the Python wheel shipped with `ocr`; Node/Go/C#
+required a source build. As of v0.3.52 their prebuilts include it (#520).
+
 ## Model Selection
 
 PDFOxide supports PaddleOCR v3, v4, and v5 models. Detection and recognition models can be mixed across versions.
@@ -151,6 +171,37 @@ engine = OcrEngine(
 )
 ```
 
+### Node.js / TypeScript
+
+The published `pdf-oxide` prebuilt ships with OCR as of v0.3.52. Supply
+ONNX Runtime via npm and provision models from JS — no Python, no shell
+scripts:
+
+```bash
+npm install pdf-oxide onnxruntime-node
+```
+
+```js
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+// ONNX Runtime shared lib, straight from the npm package
+// (adjust the path per OS/arch):
+process.env.ORT_DYLIB_PATH = require.resolve(
+  'onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime.so.1');
+process.env.PDF_OXIDE_MODEL_DIR = '/path/to/models';
+
+const px = await import('pdf-oxide');
+px.prefetchModels(['english']);          // one-off: downloads det/rec/dict
+const doc = px.PdfDocument.open('scan.pdf');
+console.log(doc.extractTextAuto(0));     // native + OCR'd image text
+```
+
+Run `prefetchModels()` as a one-off provisioning step, or place
+`det.onnx` / `rec.onnx` / `en_dict.txt` in `PDF_OXIDE_MODEL_DIR`
+yourself. **Go** and **C#** follow the same model: the prebuilt carries
+`ocr`; you supply an ONNX Runtime shared library (point `ORT_DYLIB_PATH`
+at it) and the models.
+
 ## Page Type Detection
 
 PDFOxide automatically classifies pages before extraction:
@@ -221,7 +272,7 @@ export ORT_LIB_LOCATION=$(brew --prefix onnxruntime)/lib
 
 ### WebAssembly
 
-OCR is **not supported** in WebAssembly builds. ONNX Runtime requires native code execution and is not available in the browser or Node.js WASM environment.
+OCR is **not supported** in **WebAssembly** builds (`pdf-oxide-wasm` — browser / Deno / edge): ONNX Runtime has no WASM target. This applies only to the WASM build — the **native Node.js** addon (`pdf-oxide`) *does* support OCR as of v0.3.52 (see *Node.js / TypeScript* above). Auto mode still works in WASM, falling back to native text with a typed reason.
 
 ## Troubleshooting
 
