@@ -543,8 +543,24 @@ jobs:
           #     part of that feature, not dead weight — the growth is
           #     legitimate, so the ceiling is raised rather than the
           #     fonts gated off wasm32.
-          # Ceiling leaves ~6% headroom above the 13546 KB v0.3.48 baseline.
-          max_kb=14336
+          #   v0.3.52 ~14.15 MB: the #525 Markdown→PDF styling fix
+          #     adds per-run font dispatch — `parse_inline_runs`, an
+          #     extended `map_font_name` covering all twelve Latin
+          #     Standard-14 faces, and per-run measure/position in
+          #     `render_markdown` — plus on-demand Standard-14
+          #     registration in `PdfWriter::finish` (the latter
+          #     actually shrinks image-only PDFs but the markdown
+          #     pipeline still nets larger). The WASM OCR surface
+          #     stubs (`WasmOcrEngine`, `extract_text_ocr`,
+          #     `model_manifest`) compile in even when `ocr-tract`
+          #     is off, since the `#[cfg(not(...))]` stub bodies and
+          #     wasm-bindgen glue still pay a small cost in the
+          #     default wasm build. Both are legitimate user-facing
+          #     improvements (#525, #524), so the ceiling is raised
+          #     rather than the styling fix gated off wasm32 — same
+          #     precedent the v0.3.48 bump followed.
+          # Ceiling leaves ~6% headroom above the 14489 KB v0.3.52 baseline.
+          max_kb=15360
           if [ "$after_kb" -gt "$max_kb" ]; then
             echo "::error::wasm bundle ${after_kb} KB exceeds ceiling ${max_kb} KB"
             exit 1
