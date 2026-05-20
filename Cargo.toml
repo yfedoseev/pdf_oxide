@@ -293,9 +293,7 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 # rustflag (see the OCR guide build recipe). Aliased + optional so it
 # coexists with the 0.4 entry and is only pulled for `wasm-ocr`, never
 # bloating the existing non-OCR wasm build.
-getrandom_03 = { package = "getrandom", version = "0.3", features = [
-    "wasm_js",
-], optional = true }
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"], optional = true }
 
 [dev-dependencies]
 tempfile = "3.27"
