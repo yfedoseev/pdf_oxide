@@ -578,8 +578,10 @@ mod markdown_styling_regression {
         // Pick the chars that belong to the code (`fn main() {}`) — any
         // of those characters being monospace is enough to prove the
         // mono font was selected for the code spans.
-        let code_chars: Vec<_> =
-            chars.iter().filter(|c| "fnmai(){}".contains(c.char)).collect();
+        let code_chars: Vec<_> = chars
+            .iter()
+            .filter(|c| "fnmai(){}".contains(c.char))
+            .collect();
         assert!(
             !code_chars.is_empty(),
             "no code characters extracted from Unicode-path document"
