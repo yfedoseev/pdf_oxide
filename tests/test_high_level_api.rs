@@ -560,6 +560,43 @@ mod markdown_styling_regression {
         assert!(mono, "fenced code block not rendered in a monospace font");
     }
 
+    /// On the Unicode path (where the document forces DejaVu via a
+    /// non-WinAnsi codepoint), code blocks must still be rendered with
+    /// a *monospace* font — otherwise GFM tables and fenced code lose
+    /// the space-padded alignment that's the whole point of mono. The
+    /// pre-fix behaviour used proportional `DejaVuSans` for code on
+    /// this path, which collapses table alignment. Courier-for-code is
+    /// the documented trade-off; this guards it. (#523 Copilot review.)
+    #[test]
+    fn fenced_code_block_uses_monospace_on_unicode_path() {
+        // Greek capital sigma in the body forces the DejaVu/Unicode path;
+        // the code block content is pure ASCII (the common case).
+        let md = "Body has \u{03A3} so we go through the Unicode path.\n\n```\nfn main() {}\n```\n";
+        let mut pdf = Pdf::from_markdown(md).unwrap();
+        let chars = pdf.extract_chars(0).expect("extract chars");
+        assert!(!chars.is_empty(), "code block produced no text");
+        // Pick the chars that belong to the code (`fn main() {}`) — any
+        // of those characters being monospace is enough to prove the
+        // mono font was selected for the code spans.
+        let code_chars: Vec<_> =
+            chars.iter().filter(|c| "fnmai(){}".contains(c.char)).collect();
+        assert!(
+            !code_chars.is_empty(),
+            "no code characters extracted from Unicode-path document"
+        );
+        let mono = code_chars
+            .iter()
+            .any(|c| c.is_monospace || c.font_name.to_lowercase().contains("courier"));
+        assert!(
+            mono,
+            "code block on Unicode path not monospace: {:?}",
+            code_chars
+                .iter()
+                .map(|c| (c.char, &c.font_name))
+                .collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn snake_case_underscores_are_preserved() {
         // Underscores are *not* emphasis markers here — a regression in

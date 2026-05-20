@@ -3312,6 +3312,18 @@ impl PdfBuilder {
         // auto-registered by the font manager, so nothing to embed there.
         // Italic on the Unicode path degrades to regular/bold (no oblique
         // DejaVu is bundled); headings/bold still apply correctly.
+        //
+        // `mono_font` on the Unicode path is **Courier**, not
+        // `DejaVuSans` — DejaVuSans is proportional, which would break
+        // alignment in fenced code blocks and GFM tables (both of which
+        // rely on space-padding for visual layout). Courier is monospace
+        // and ASCII-safe; the trade-off is that non-ASCII characters
+        // inside code spans/blocks render as missing glyphs (WinAnsi
+        // can't represent them). DejaVuSansMono isn't bundled because
+        // it would add ~330 KB to the wasm artifact for a fallback that
+        // matters only for non-ASCII code, and the alignment loss in
+        // the much more common ASCII-code-in-Unicode-prose case is the
+        // more visible bug.
         let (body_font, bold_font, italic_font, bolditalic_font, mono_font): (
             &'static str,
             &'static str,
@@ -3319,7 +3331,7 @@ impl PdfBuilder {
             &'static str,
             &'static str,
         ) = if needs_unicode {
-            ("DejaVuSans", "DejaVuSans-Bold", "DejaVuSans", "DejaVuSans-Bold", "DejaVuSans")
+            ("DejaVuSans", "DejaVuSans-Bold", "DejaVuSans", "DejaVuSans-Bold", "Courier")
         } else {
             (
                 "Helvetica",
