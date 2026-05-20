@@ -50,6 +50,15 @@ interface QueuedTask {
  */
 export class WorkerPool {
   private workers: Worker[] = [];
+  // Per-worker busy flag, parallel to `workers`. The old scheduler
+  // picked `activeCount % poolSize` which is a *global* counter and
+  // does not identify which worker actually freed up — when tasks
+  // finish out of order it could post a new task to a still-busy
+  // worker (which then receives two messages and crosses results)
+  // while an idle worker sat unused. `workerBusy[i] === false` is the
+  // single source of truth for "worker i can accept a new task".
+  // (#523 Copilot review.)
+  private workerBusy: boolean[] = [];
   private queue: QueuedTask[] = [];
   private activeCount = 0;
   private started = false;
@@ -99,6 +108,7 @@ export class WorkerPool {
         worker.unref();
 
         this.workers.push(worker);
+        this.workerBusy.push(false);
       }
     } catch (error) {
       // Best-effort terminate any workers spawned before the failure:
@@ -165,7 +175,22 @@ export class WorkerPool {
   }
 
   private processQueue(): void {
-    if (this.queue.length === 0 || this.activeCount >= this.poolSize) {
+    if (this.queue.length === 0) {
+      return;
+    }
+
+    // Find the lowest-index idle worker. Scanning is O(poolSize) which
+    // is bounded to 32 by `validatePoolSize`. Returning early when no
+    // worker is free leaves the task on the queue; the next handler
+    // completion will call back into `processQueue` and pick it up.
+    const workerIndex = this.workerBusy.findIndex((b) => !b);
+    if (workerIndex === -1) {
+      return;
+    }
+    const worker = this.workers[workerIndex];
+    if (!worker) {
+      // Should be impossible — `workers` and `workerBusy` are kept in
+      // lockstep — but fail safe rather than dereferencing undefined.
       return;
     }
 
@@ -174,47 +199,47 @@ export class WorkerPool {
 
     const { task, resolve, reject, timeout } = queuedTask;
 
-    // Find an available worker
-    const workerIndex = this.activeCount % this.poolSize;
-    const worker = this.workers[workerIndex];
-
-    if (!worker) {
-      reject(new Error('No available worker'));
-      clearTimeout(timeout);
-      return;
-    }
-
+    this.workerBusy[workerIndex] = true;
     this.activeCount++;
 
+    // `once` for the message handler — Node's `worker.on('message')`
+    // fires for every postMessage from that worker, so registering an
+    // `on` listener and `off`-ing it inside the callback still leaves
+    // a brief window where a second task posted to the same worker
+    // would deliver its result to the wrong listener. `once` removes
+    // the listener as soon as it fires, eliminating that window even
+    // if a future caller (or refactor) ever overlaps tasks on the
+    // same worker. The error handler is already `once`.
     const messageHandler = (result: WorkerResult<any>) => {
       clearTimeout(timeout);
-      resolve(result as WorkerResult<any>);
-      this.activeCount--;
-      worker.off('message', messageHandler);
       worker.off('error', errorHandler);
+      this.workerBusy[workerIndex] = false;
+      this.activeCount--;
+      resolve(result as WorkerResult<any>);
       this.processQueue();
     };
 
     const errorHandler = (error: Error) => {
       clearTimeout(timeout);
-      reject(error);
-      this.activeCount--;
       worker.off('message', messageHandler);
-      worker.off('error', errorHandler);
+      this.workerBusy[workerIndex] = false;
+      this.activeCount--;
+      reject(error);
       this.processQueue();
     };
 
-    worker.on('message', messageHandler);
+    worker.once('message', messageHandler);
     worker.once('error', errorHandler);
 
     try {
       worker.postMessage(task);
     } catch (error) {
       clearTimeout(timeout);
-      reject(error instanceof Error ? error : new Error(String(error)));
-      this.activeCount--;
       worker.off('message', messageHandler);
       worker.off('error', errorHandler);
+      this.workerBusy[workerIndex] = false;
+      this.activeCount--;
+      reject(error instanceof Error ? error : new Error(String(error)));
       this.processQueue();
     }
   }
@@ -262,6 +287,7 @@ export class WorkerPool {
 
   private cleanup(): void {
     this.workers = [];
+    this.workerBusy = [];
     this.queue = [];
     this.activeCount = 0;
   }
