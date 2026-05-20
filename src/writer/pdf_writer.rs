@@ -1247,31 +1247,43 @@ impl PdfWriter {
         // Binary marker (recommended for binary content)
         output.extend_from_slice(b"%\xE2\xE3\xCF\xD3\n");
 
-        // Register the full Latin Standard-14 set (all three families ×
-        // regular / bold / oblique / bold-oblique). These are the exact
-        // names `ContentStreamBuilder::map_font_name` can emit, so every
-        // `Tf` it writes resolves to a real resource. Registering only a
-        // subset was an issue-#525 bug: `*italic*` / bold-serif text
-        // referenced a missing resource and readers silently fell back to
-        // the regular face, so the emphasis vanished. Standard-14 dicts
-        // are tiny (no embedding), so listing all twelve is free.
-        // Symbol / ZapfDingbats are intentionally excluded — they need a
-        // built-in (non-WinAnsi) encoding and `map_font_name` never emits
-        // them.
-        let font_names: Vec<String> = vec![
-            "Helvetica".to_string(),
-            "Helvetica-Bold".to_string(),
-            "Helvetica-Oblique".to_string(),
-            "Helvetica-BoldOblique".to_string(),
-            "Times-Roman".to_string(),
-            "Times-Bold".to_string(),
-            "Times-Italic".to_string(),
-            "Times-BoldItalic".to_string(),
-            "Courier".to_string(),
-            "Courier-Bold".to_string(),
-            "Courier-Oblique".to_string(),
-            "Courier-BoldOblique".to_string(),
+        // Register only the Standard-14 Latin fonts that any page's
+        // content stream actually references via `Tf`, instead of
+        // always shipping all twelve. Issue-#525's earlier fix here
+        // (registering all twelve unconditionally) was over-broad:
+        // unused font dicts added ~400 B to every PDF and pushed the
+        // `test_identical_images_deduplicated` size budget over (#523
+        // Copilot review follow-up). The map_font_name() output domain
+        // is still limited to these twelve, so any name not in this
+        // allowlist is either an embedded font (handled elsewhere) or
+        // would be a dangling Tf — neither of which we register here.
+        // Symbol / ZapfDingbats remain excluded (built-in non-WinAnsi
+        // encoding required; map_font_name no longer emits them).
+        const STD14_LATIN: &[&str] = &[
+            "Helvetica",
+            "Helvetica-Bold",
+            "Helvetica-Oblique",
+            "Helvetica-BoldOblique",
+            "Times-Roman",
+            "Times-Bold",
+            "Times-Italic",
+            "Times-BoldItalic",
+            "Courier",
+            "Courier-Bold",
+            "Courier-Oblique",
+            "Courier-BoldOblique",
         ];
+        let mut used: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for page in &self.pages {
+            for name in page.content_builder.used_fonts() {
+                used.insert(name.clone());
+            }
+        }
+        let font_names: Vec<String> = STD14_LATIN
+            .iter()
+            .filter(|&&n| used.contains(n))
+            .map(|&n| n.to_string())
+            .collect();
 
         for font_name in &font_names {
             self.get_font_ref(font_name);
