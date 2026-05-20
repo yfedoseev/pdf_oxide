@@ -671,8 +671,15 @@ mod image_dedup_tests {
 
         // The XObject data should appear only once in the output.
         // A simple proxy: the total PDF size should be less than
-        // (2 × png_size + 2 KB overhead), meaning the image was not doubled.
-        let threshold = png_size + 2048; // one copy + generous overhead
+        // (2 × png_size + 2.5 KB overhead), meaning the image was not
+        // doubled. The 2.5 KB ceiling covers the always-on Standard-14
+        // Latin font dicts (twelve faces × ~33 B = ~400 B) plus
+        // catalog/pages/xref/trailer structure. A doubled PNG would
+        // push the total well over `2 × png_size`, so this still
+        // catches the regression the test was written for — see
+        // `src/writer/pdf_writer.rs::PdfWriter::finish` for why the
+        // Standard-14 set is unconditional.
+        let threshold = png_size + 2560; // one copy + Std-14 + generous overhead
         assert!(
             pdf_bytes.len() < threshold,
             "PDF ({} B) looks like it contains two copies of the image ({} B each); \

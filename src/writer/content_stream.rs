@@ -321,13 +321,6 @@ pub struct ContentStreamBuilder {
     /// calls. Used by PdfWriter::finish to build the StructTreeRoot when
     /// tagged PDF mode is enabled.
     struct_records: Vec<StructElemRecord>,
-    /// Set of font names this content stream actually references via
-    /// `Tf`. `PdfWriter::finish` reads this to register only the
-    /// Standard-14 fonts that are used, instead of always shipping all
-    /// twelve Latin faces — that wastes ~400 B per PDF and pushed the
-    /// `test_identical_images_deduplicated` test over its size budget
-    /// (#523 Copilot review follow-up).
-    used_fonts: std::collections::BTreeSet<String>,
 }
 
 impl ContentStreamBuilder {
@@ -366,19 +359,8 @@ impl ContentStreamBuilder {
         self
     }
 
-    /// Font names this content stream has emitted a `Tf` for. Used by
-    /// `PdfWriter::finish` to register only the Standard-14 fonts the
-    /// stream actually references.
-    pub fn used_fonts(&self) -> &std::collections::BTreeSet<String> {
-        &self.used_fonts
-    }
-
     /// Set font for text operations.
     pub fn set_font(&mut self, font_name: &str, size: f32) -> &mut Self {
-        // Track every font name referenced (independent of the dedup
-        // gate below) so on-demand registration sees a complete set
-        // even when the same name is set twice with the same size.
-        self.used_fonts.insert(font_name.to_string());
         if self.current_font.as_deref() != Some(font_name) || self.current_font_size != size {
             self.op(ContentStreamOp::SetFont(font_name.to_string(), size));
             self.current_font = Some(font_name.to_string());

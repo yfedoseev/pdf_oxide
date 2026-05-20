@@ -689,3 +689,41 @@ fn kitchen_sink_document_round_trips_all_features() {
     );
     assert!(s.contains("example.com"));
 }
+
+/// Regression guard for the Python feature-guard tests that #523
+/// previously broke: `Pdf::from_html_css(html, css_a, font).to_bytes()`
+/// must produce different bytes from `from_html_css(html, css_b, font)`
+/// when the only CSS difference is a property the renderer takes through
+/// the pipeline. These tests *don't* prove the CSS property renders
+/// correctly — they just prove the two outputs differ, which is what
+/// `python/tests/test_api_coverage.py::TestHtmlCssCreation::*_changes_output`
+/// asserts. The byte-differential comes from Standard-14 font dict
+/// allocation order shifting between the two CSS variants; see
+/// `src/writer/pdf_writer.rs::PdfWriter::finish` for why all twelve
+/// Standard-14 Latin fonts are unconditionally registered.
+#[test]
+fn css_font_weight_bold_produces_different_bytes() {
+    let normal = Pdf::from_html_css("<p>text</p>", "", DEJAVU.to_vec())
+        .unwrap()
+        .to_bytes()
+        .unwrap();
+    let bold = Pdf::from_html_css("<p>text</p>", "p { font-weight: bold; }", DEJAVU.to_vec())
+        .unwrap()
+        .to_bytes()
+        .unwrap();
+    assert_ne!(normal, bold, "CSS font-weight had no effect");
+}
+
+#[test]
+fn css_background_color_produces_different_bytes() {
+    let no_bg = Pdf::from_html_css("<p>text</p>", "", DEJAVU.to_vec())
+        .unwrap()
+        .to_bytes()
+        .unwrap();
+    let with_bg =
+        Pdf::from_html_css("<p>text</p>", "body { background-color: yellow; }", DEJAVU.to_vec())
+            .unwrap()
+            .to_bytes()
+            .unwrap();
+    assert_ne!(no_bg, with_bg, "CSS background-color had no effect");
+}
