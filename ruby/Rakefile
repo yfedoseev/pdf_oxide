@@ -1,0 +1,29 @@
+# frozen_string_literal: true
+
+require 'bundler/gem_tasks'
+require 'rspec/core/rake_task'
+require 'rubocop/rake_task'
+require 'yard'
+
+task default: %i[spec rubocop]
+
+RSpec::Core::RakeTask.new(:spec) do |task|
+  task.pattern = 'spec/**/*_spec.rb'
+  task.verbose = true
+end
+
+RuboCop::RakeTask.new(:rubocop) do |task|
+  task.patterns = ['lib/**/*.rb', 'spec/**/*.rb']
+  task.fail_on_offense = true
+end
+
+YARD::Rake::YardocTask.new(:doc) do |task|
+  task.files = ['lib/**/*.rb']
+  task.options = [
+    '--markup', 'markdown',
+    '--title', 'PDF Oxide Ruby Bindings',
+    '--protected'
+  ]
+end
+
+task build: :spec

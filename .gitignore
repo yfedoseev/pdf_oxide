@@ -22,6 +22,7 @@ eggs/
 .eggs/
 lib/
 !go/lib/
+!ruby/lib/
 lib64/
 parts/
 sdist/
@@ -385,3 +386,9 @@ docs/releases/
 # OCR models (provisioned, large; never committed)
 tests/fixtures/ocr/models/
 .ocr-models/
+
+# Ruby binding (gem build artifacts and locks — generated, never committed)
+ruby/Gemfile.lock
+ruby/coverage/
+ruby/*.gem
+ruby/.bundle/
