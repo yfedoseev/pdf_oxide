@@ -1,0 +1,280 @@
+name: Ruby Bindings CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'ruby/**'
+      - 'src/**'
+      - 'include/pdf_oxide_c/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/ruby.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'ruby/**'
+      - 'src/**'
+      - 'include/pdf_oxide_c/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/ruby.yml'
+
+# Cancel any in-progress run on the same branch when a new one starts.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Per-cell test job — builds the cdylib for the matrix target, stages
+  # it into ruby/ext/pdf_oxide/, runs the real-FFI integration suite,
+  # and packages the platform-tagged gem.  Source-gem cell builds the
+  # platform-less gem (RubyGems install-time `cargo build` fallback).
+  test:
+    name: Ruby ${{ matrix.ruby-version }} on ${{ matrix.os }} (${{ matrix.gem_platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # linux-x86_64
+          - os: ubuntu-latest
+            cargo_target: x86_64-unknown-linux-gnu
+            gem_platform: x86_64-linux
+            cdylib: libpdf_oxide.so
+            ruby-version: '3.1'
+          - os: ubuntu-latest
+            cargo_target: x86_64-unknown-linux-gnu
+            gem_platform: x86_64-linux
+            cdylib: libpdf_oxide.so
+            ruby-version: '3.2'
+          - os: ubuntu-latest
+            cargo_target: x86_64-unknown-linux-gnu
+            gem_platform: x86_64-linux
+            cdylib: libpdf_oxide.so
+            ruby-version: '3.3'
+          - os: ubuntu-latest
+            cargo_target: x86_64-unknown-linux-gnu
+            gem_platform: x86_64-linux
+            cdylib: libpdf_oxide.so
+            ruby-version: '3.4'
+
+          # linux-aarch64 (native ARM runners)
+          - os: ubuntu-24.04-arm
+            cargo_target: aarch64-unknown-linux-gnu
+            gem_platform: aarch64-linux
+            cdylib: libpdf_oxide.so
+            ruby-version: '3.1'
+          - os: ubuntu-24.04-arm
+            cargo_target: aarch64-unknown-linux-gnu
+            gem_platform: aarch64-linux
+            cdylib: libpdf_oxide.so
+            ruby-version: '3.2'
+          - os: ubuntu-24.04-arm
+            cargo_target: aarch64-unknown-linux-gnu
+            gem_platform: aarch64-linux
+            cdylib: libpdf_oxide.so
+            ruby-version: '3.3'
+          - os: ubuntu-24.04-arm
+            cargo_target: aarch64-unknown-linux-gnu
+            gem_platform: aarch64-linux
+            cdylib: libpdf_oxide.so
+            ruby-version: '3.4'
+
+          # darwin-x86_64 (Intel Mac runners)
+          - os: macos-13
+            cargo_target: x86_64-apple-darwin
+            gem_platform: x86_64-darwin
+            cdylib: libpdf_oxide.dylib
+            ruby-version: '3.1'
+          - os: macos-13
+            cargo_target: x86_64-apple-darwin
+            gem_platform: x86_64-darwin
+            cdylib: libpdf_oxide.dylib
+            ruby-version: '3.2'
+          - os: macos-13
+            cargo_target: x86_64-apple-darwin
+            gem_platform: x86_64-darwin
+            cdylib: libpdf_oxide.dylib
+            ruby-version: '3.3'
+          - os: macos-13
+            cargo_target: x86_64-apple-darwin
+            gem_platform: x86_64-darwin
+            cdylib: libpdf_oxide.dylib
+            ruby-version: '3.4'
+
+          # darwin-arm64 (Apple Silicon)
+          - os: macos-latest
+            cargo_target: aarch64-apple-darwin
+            gem_platform: arm64-darwin
+            cdylib: libpdf_oxide.dylib
+            ruby-version: '3.1'
+          - os: macos-latest
+            cargo_target: aarch64-apple-darwin
+            gem_platform: arm64-darwin
+            cdylib: libpdf_oxide.dylib
+            ruby-version: '3.2'
+          - os: macos-latest
+            cargo_target: aarch64-apple-darwin
+            gem_platform: arm64-darwin
+            cdylib: libpdf_oxide.dylib
+            ruby-version: '3.3'
+          - os: macos-latest
+            cargo_target: aarch64-apple-darwin
+            gem_platform: arm64-darwin
+            cdylib: libpdf_oxide.dylib
+            ruby-version: '3.4'
+
+          # windows-x64 (MSVC)
+          - os: windows-latest
+            cargo_target: x86_64-pc-windows-msvc
+            gem_platform: x64-mingw32
+            cdylib: pdf_oxide.dll
+            ruby-version: '3.1'
+          - os: windows-latest
+            cargo_target: x86_64-pc-windows-msvc
+            gem_platform: x64-mingw32
+            cdylib: pdf_oxide.dll
+            ruby-version: '3.2'
+          - os: windows-latest
+            cargo_target: x86_64-pc-windows-msvc
+            gem_platform: x64-mingw32
+            cdylib: pdf_oxide.dll
+            ruby-version: '3.3'
+          - os: windows-latest
+            cargo_target: x86_64-pc-windows-msvc
+            gem_platform: x64-mingw32
+            cdylib: pdf_oxide.dll
+            ruby-version: '3.4'
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Ruby ${{ matrix.ruby-version }}
+        uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1.310.0
+        with:
+          ruby-version: ${{ matrix.ruby-version }}
+          working-directory: ruby
+          bundler-cache: true
+
+      - name: Set up Rust (target ${{ matrix.cargo_target }})
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: ${{ matrix.cargo_target }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-${{ matrix.cargo_target }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache Cargo index
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-${{ matrix.cargo_target }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache Cargo build
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ matrix.cargo_target }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.cargo_target }}-cargo-build-release-
+
+      - name: Build cdylib (release, target ${{ matrix.cargo_target }})
+        run: cargo build --release --target ${{ matrix.cargo_target }} --lib
+
+      - name: Stage cdylib into ext/pdf_oxide/ (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p ruby/ext/pdf_oxide
+          src="target/${{ matrix.cargo_target }}/release/${{ matrix.cdylib }}"
+          test -f "$src" || { echo "::error::cdylib not produced at $src"; exit 1; }
+          cp "$src" "ruby/ext/pdf_oxide/${{ matrix.cdylib }}"
+          ls -la ruby/ext/pdf_oxide
+
+      - name: Stage cdylib into ext/pdf_oxide/ (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ruby/ext/pdf_oxide | Out-Null
+          $src = "target/${{ matrix.cargo_target }}/release/${{ matrix.cdylib }}"
+          if (-not (Test-Path $src)) {
+            Write-Error "cdylib not produced at $src"
+            exit 1
+          }
+          Copy-Item $src "ruby/ext/pdf_oxide/${{ matrix.cdylib }}"
+          Get-ChildItem ruby/ext/pdf_oxide
+
+      - name: Verify gem loads against cdylib
+        working-directory: ruby
+        shell: bash
+        run: |
+          bundle exec ruby -Ilib -rpdf_oxide -e 'puts PdfOxide::VERSION'
+
+      - name: Run integration spec suite (real cdylib)
+        working-directory: ruby
+        shell: bash
+        run: bundle exec rspec spec/integration/
+
+      - name: Build platform-tagged gem
+        working-directory: ruby
+        shell: bash
+        env:
+          PDF_OXIDE_CDYLIB_PATH: ${{ github.workspace }}/target/${{ matrix.cargo_target }}/release/${{ matrix.cdylib }}
+        run: |
+          # Rakefile native:<plat> task stages cdylib + builds platform-tagged gem.
+          bundle exec rake native:${{ matrix.gem_platform }}
+          ls -la *.gem
+
+      - name: Upload platform gem artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ruby-gem-${{ matrix.gem_platform }}-ruby${{ matrix.ruby-version }}
+          path: ruby/*.gem
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ruby-test-failures-${{ matrix.os }}-ruby${{ matrix.ruby-version }}-${{ matrix.gem_platform }}
+          path: |
+            ruby/coverage/
+            ruby/ext/pdf_oxide/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Source-gem cell — single job that proves the platform-less gem
+  # (no bundled cdylib) builds cleanly.  Distributed to users who want
+  # to recompile libpdf_oxide from source at install time.
+  source-gem:
+    name: source gem (platform-less)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Ruby 3.3
+        uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1.310.0
+        with:
+          ruby-version: '3.3'
+          working-directory: ruby
+          bundler-cache: true
+
+      - name: Build source gem
+        working-directory: ruby
+        run: bundle exec rake native:source
+
+      - name: Upload source gem artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ruby-gem-source
+          path: ruby/pdf_oxide-*.gem
+          if-no-files-found: error
+          retention-days: 7

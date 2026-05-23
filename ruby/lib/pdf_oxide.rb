@@ -45,14 +45,18 @@ require_relative 'pdf_oxide/managers/barcode'
 require_relative 'pdf_oxide/managers/analysis'
 
 # Phase 2 repair: managers that were present on disk but not wired in.
+# Phase 4 retired three phantom-symbol files (editing, optimization,
+# legacy signature_manager) — they referenced C symbols absent from the
+# current cdylib header and would NameError on any call.  The real
+# replacements live at:
+#   - editing/redaction        -> PdfOxide::RedactionManager  (Phase 3)
+#   - signature_manager PAdES  -> PdfOxide::PadesSigner       (Phase 3)
+#   - optimization             -> deferred to v0.4.x (no upstream symbol)
 require_relative 'pdf_oxide/managers/accessibility'
 require_relative 'pdf_oxide/managers/certificate'
 require_relative 'pdf_oxide/managers/document'
-require_relative 'pdf_oxide/managers/editing'
 require_relative 'pdf_oxide/managers/enterprise'
 require_relative 'pdf_oxide/managers/extraction_strategy'
-require_relative 'pdf_oxide/managers/optimization'
-require_relative 'pdf_oxide/managers/signature_manager'
 require_relative 'pdf_oxide/managers/xfa'
 
 # Main entry points

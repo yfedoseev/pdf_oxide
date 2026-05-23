@@ -2,28 +2,125 @@
 
 require 'bundler/gem_tasks'
 require 'rspec/core/rake_task'
-require 'rubocop/rake_task'
-require 'yard'
+require 'fileutils'
 
-task default: %i[spec rubocop]
+task default: %i[spec]
 
 RSpec::Core::RakeTask.new(:spec) do |task|
   task.pattern = 'spec/**/*_spec.rb'
   task.verbose = true
 end
 
-RuboCop::RakeTask.new(:rubocop) do |task|
-  task.patterns = ['lib/**/*.rb', 'spec/**/*.rb']
-  task.fail_on_offense = true
+# RuboCop is optional in the dev Gemfile; tolerate missing dependency.
+begin
+  require 'rubocop/rake_task'
+  RuboCop::RakeTask.new(:rubocop) do |task|
+    task.patterns = ['lib/**/*.rb', 'spec/**/*.rb']
+    task.fail_on_offense = true
+  end
+rescue LoadError
+  # rubocop not installed in this environment — skip silently.
 end
 
-YARD::Rake::YardocTask.new(:doc) do |task|
-  task.files = ['lib/**/*.rb']
-  task.options = [
-    '--markup', 'markdown',
-    '--title', 'PDF Oxide Ruby Bindings',
-    '--protected'
-  ]
+# YARD is optional in the dev Gemfile; tolerate missing dependency.
+begin
+  require 'yard'
+  YARD::Rake::YardocTask.new(:doc) do |task|
+    task.files = ['lib/**/*.rb']
+    task.options = [
+      '--markup', 'markdown',
+      '--title', 'PDF Oxide Ruby Bindings',
+      '--protected'
+    ]
+  end
+rescue LoadError
+  # yard not installed in this environment — skip silently.
 end
 
-task build: :spec
+# ---------------------------------------------------------------------
+# Native-gem packaging
+# ---------------------------------------------------------------------
+#
+# Strategy (per docs/releases/plans/v0.3.55/research-ruby-native-gem-
+# matrix.md §1 — Option A): build platform-tagged gems that bundle the
+# prebuilt libpdf_oxide.{so,dylib,dll} cdylib inside ext/pdf_oxide/.
+# RubyGems picks the most-specific platform variant at install time;
+# fall back to the source gem when no match exists.
+#
+# Mapping table (gem-platform tag -> cargo target triple -> cdylib name).
+NATIVE_GEM_PLATFORMS = {
+  'x86_64-linux'    => { triple: 'x86_64-unknown-linux-gnu',  cdylib: 'libpdf_oxide.so' },
+  'aarch64-linux'   => { triple: 'aarch64-unknown-linux-gnu', cdylib: 'libpdf_oxide.so' },
+  'x86_64-darwin'   => { triple: 'x86_64-apple-darwin',       cdylib: 'libpdf_oxide.dylib' },
+  'arm64-darwin'    => { triple: 'aarch64-apple-darwin',      cdylib: 'libpdf_oxide.dylib' },
+  'x64-mingw32'     => { triple: 'x86_64-pc-windows-msvc',    cdylib: 'pdf_oxide.dll' }
+}.freeze
+
+# Default cargo target directory (parent repo root).
+def repo_root
+  File.expand_path('..', __dir__)
+end
+
+# Stage the cdylib for `platform` from the cargo build output into
+# `ruby/ext/pdf_oxide/`.  CI sets PDF_OXIDE_CDYLIB_PATH directly when the
+# cdylib was produced under a non-standard path; honor it first.
+def stage_cdylib_for(platform)
+  cfg = NATIVE_GEM_PLATFORMS.fetch(platform)
+  dest_dir = File.expand_path('ext/pdf_oxide', __dir__)
+  FileUtils.mkdir_p(dest_dir)
+
+  src = ENV['PDF_OXIDE_CDYLIB_PATH']
+  if src.nil? || src.empty?
+    # default cargo layout for cross-compiled artifact
+    src = File.join(repo_root, 'target', cfg[:triple], 'release', cfg[:cdylib])
+    # host-native fallback
+    src = File.join(repo_root, 'target', 'release', cfg[:cdylib]) unless File.exist?(src)
+  end
+
+  unless File.exist?(src)
+    raise "cdylib not found for platform=#{platform} at #{src}.  " \
+          'Set PDF_OXIDE_CDYLIB_PATH or run cargo build --release --target ' \
+          "#{cfg[:triple]} --lib first."
+  end
+
+  dest = File.join(dest_dir, cfg[:cdylib])
+  FileUtils.cp(src, dest)
+  puts "Staged #{src} -> #{dest}"
+  dest
+end
+
+# Wipe any previously-staged binary so the source gem doesn't accidentally
+# bundle a platform-specific cdylib.
+def clean_ext_dir
+  dir = File.expand_path('ext/pdf_oxide', __dir__)
+  Dir.glob(File.join(dir, '*.{so,dylib,dll}')).each { |f| FileUtils.rm_f(f) }
+end
+
+namespace :native do
+  desc 'List supported native-gem platforms'
+  task :list do
+    NATIVE_GEM_PLATFORMS.each do |plat, cfg|
+      puts "#{plat}  -> cargo target=#{cfg[:triple]}, cdylib=#{cfg[:cdylib]}"
+    end
+  end
+
+  NATIVE_GEM_PLATFORMS.each_key do |plat|
+    desc "Stage cdylib and build platform-tagged gem for #{plat}"
+    task plat.to_sym do
+      stage_cdylib_for(plat)
+      # Pass platform via env var because RubyGems 4.x emits a generic
+      # 'ruby'-platform gem when --platform is set externally; setting
+      # spec.platform inside the gemspec is the reliable path.
+      sh({ 'PDF_OXIDE_GEM_PLATFORM' => plat }, 'gem build pdf_oxide.gemspec')
+    end
+  end
+
+  desc 'Build the platform-less source gem (no bundled cdylib)'
+  task :source do
+    clean_ext_dir
+    sh 'gem build pdf_oxide.gemspec'
+  end
+end
+
+desc 'Build the source gem (alias for native:source)'
+task build_source: 'native:source'

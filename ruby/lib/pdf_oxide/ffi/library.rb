@@ -32,14 +32,23 @@ module PdfOxide
       def self.find_library_path
         # Try to find in standard locations
         find_library.each do |lib_name|
+          # Native-gem layout: cdylib staged inside the gem at
+          # ext/pdf_oxide/ during platform-specific gem packaging.  This is
+          # the path bundled into platform-tagged gems and is the first
+          # thing the loader should try when installed from a native gem.
+          gem_native = File.expand_path("../../../ext/pdf_oxide/#{lib_name}", __dir__)
+          return gem_native if File.exist?(gem_native)
+
           # Try system paths
           result = system_find_library(lib_name)
           return result if result
 
-          # Try relative to gem
+          # Try relative to gem (dev-checkout layouts)
           relative_paths = [
             File.expand_path("../../target/release/#{lib_name}", __dir__),
             File.expand_path("../../target/debug/#{lib_name}", __dir__),
+            File.expand_path("../../../target/release/#{lib_name}", __dir__),
+            File.expand_path("../../../target/debug/#{lib_name}", __dir__),
             lib_name
           ]
 

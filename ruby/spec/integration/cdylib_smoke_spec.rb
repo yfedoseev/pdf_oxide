@@ -35,12 +35,13 @@ RSpec.describe 'libpdf_oxide cdylib smoke', :skip_mock do
     expect(PdfOxide::FFI::Bindings).to respond_to(:pdf_free)
   end
 
-  it 'wires all 25 manager files into the load path' do
-    # Some managers live under PdfOxide::Managers; others (the historically
-    # unloaded set) are at PdfOxide directly with a `Manager` suffix.  The
-    # acceptance criterion for Phase 2 is "the file gets required without
-    # error", which we verify by looking up the class symbol in either
-    # namespace.
+  it 'wires the surviving manager files into the load path' do
+    # Some managers live under PdfOxide::Managers; the historically-
+    # unloaded set lives at PdfOxide directly with a `Manager` suffix.
+    # Phase 4 retired EditingManager, OptimizationManager and the legacy
+    # PdfOxide::SignatureManager — all three referenced C symbols absent
+    # from the current cdylib header.  RedactionManager + PadesSigner
+    # (Phase 3) are the real replacements.
     expected = {
       'PdfOxide::Managers'      => %i[
         Analysis Annotation Barcode Base Cache Certificate Compliance
@@ -48,8 +49,8 @@ RSpec.describe 'libpdf_oxide cdylib smoke', :skip_mock do
         Outline Page Rendering Search Signature Xfa
       ],
       'PdfOxide'                => %i[
-        AccessibilityManager EditingManager EnterpriseManager
-        OptimizationManager SignatureManager
+        AccessibilityManager EnterpriseManager
+        RedactionManager PadesSigner
       ]
     }
     expected.each do |ns, classes|
