@@ -1,0 +1,144 @@
+<?php
+
+declare(strict_types=1);
+
+namespace PdfOxide\FFI;
+
+use FFI;
+use FFI\CData;
+
+/**
+ * Handles marshaling of strings between PHP and C/FFI.
+ *
+ * Manages UTF-8 encoding/decoding and memory management.
+ */
+class StringMarshaller
+{
+    /**
+     * Convert a PHP string to a C string (char*) for FFI.
+     *
+     * @param string $str The PHP string to convert
+     * @return CData FFI CData representation of the C string
+     */
+    public static function toCString(string $str): CData
+    {
+        $ffi = NativeLibrary::getInstance();
+        $bytes = strlen($str) + 1;
+
+        // Allocate C string
+        $cStr = FFI::new('char[' . $bytes . ']');
+
+        // Copy bytes
+        FFI::memcpy($cStr, $str, strlen($str));
+        $cStr[strlen($str)] = "\0";
+
+        return $cStr;
+    }
+
+    /**
+     * Convert a C string (char*) to a PHP string.
+     *
+     * @param CData $cStr The C string pointer
+     * @param bool $free Whether to free the C memory after conversion
+     * @return string The PHP string
+     */
+    public static function fromCString(CData $cStr, bool $free = true): string
+    {
+        if ($cStr === null) {
+            return '';
+        }
+
+        $ffi = NativeLibrary::getInstance();
+
+        // Find string length (C string is null-terminated)
+        $len = 0;
+        $ptr = FFI::cast('char*', $cStr);
+        while ($ptr[$len] !== "\0" && $len < 1000000) {  // Safety limit
+            $len++;
+        }
+
+        // Copy to PHP string
+        $str = '';
+        for ($i = 0; $i < $len; $i++) {
+            $str .= $ptr[$i];
+        }
+
+        // Validate UTF-8
+        if (!self::isValidUtf8($str)) {
+            throw new \RuntimeException('Invalid UTF-8 string from FFI');
+        }
+
+        // Free C memory if requested
+        if ($free) {
+            self::freeString($cStr);
+        }
+
+        return $str;
+    }
+
+    /**
+     * Free a C string allocated by the native library.
+     *
+     * @param CData|null $cStr The C string to free
+     */
+    public static function freeString(?CData $cStr): void
+    {
+        if ($cStr === null) {
+            return;
+        }
+
+        try {
+            $ffi = NativeLibrary::getInstance();
+            $ffi->free_string(FFI::cast('char*', $cStr));
+        } catch (\Exception $e) {
+            // Log but don't throw - we're in cleanup
+            trigger_error('Failed to free C string: ' . $e->getMessage(), E_USER_WARNING);
+        }
+    }
+
+    /**
+     * Free a byte array allocated by the native library.
+     *
+     * @param CData|null $bytes The byte array to free
+     */
+    public static function freeBytes(?CData $bytes): void
+    {
+        if ($bytes === null) {
+            return;
+        }
+
+        try {
+            $ffi = NativeLibrary::getInstance();
+            $ffi->free_bytes(FFI::cast('uint8_t*', $bytes));
+        } catch (\Exception $e) {
+            trigger_error('Failed to free bytes: ' . $e->getMessage(), E_USER_WARNING);
+        }
+    }
+
+    /**
+     * Check if a string is valid UTF-8.
+     */
+    public static function isValidUtf8(string $str): bool
+    {
+        return mb_check_encoding($str, 'UTF-8');
+    }
+
+    /**
+     * Ensure a string is UTF-8 encoded.
+     */
+    public static function ensureUtf8(string $str): string
+    {
+        if (!self::isValidUtf8($str)) {
+            // Try to convert from common encodings
+            if (mb_check_encoding($str, 'ISO-8859-1')) {
+                return mb_convert_encoding($str, 'UTF-8', 'ISO-8859-1');
+            }
+            if (mb_check_encoding($str, 'Windows-1252')) {
+                return mb_convert_encoding($str, 'UTF-8', 'Windows-1252');
+            }
+            // Last resort: replace invalid sequences
+            return mb_convert_encoding($str, 'UTF-8', 'UTF-8');
+        }
+        return $str;
+    }
+}

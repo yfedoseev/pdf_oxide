@@ -1,0 +1,45 @@
+# Composer
+vendor/
+composer.lock
+composer-lock.json
+
+# PHPUnit
+tests/coverage/
+coverage/
+.phpunit.result.cache
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# PHP
+.php-cs-fixer.cache
+.psalm.cache
+
+# Testing
+.phpstan.cache
+.phpunit.cache
+
+# Build artifacts
+*.so
+*.dylib
+*.dll
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Local configuration
+.env
+.env.local
+.env.*.local
+php.ini.local
+
+# OS
+Thumbs.db
+.DS_Store
