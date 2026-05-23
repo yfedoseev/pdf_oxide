@@ -295,6 +295,90 @@ class PdfDocument
     }
 
     /**
+     * Phase 6 / v0.3.55 — return the raw document handle.
+     *
+     * Used by {@see \PdfOxide\AutoExtractor} and other Phase 6
+     * managers that take the document by handle (mirrors Python's
+     * `_handle` accessor pattern). Avoids creating one
+     * `DocumentEditor` per call when only the read-only handle is
+     * needed.
+     *
+     * @internal Plain `CData|null`; callers must not free.
+     */
+    public function getHandle(): ?CData
+    {
+        $this->ensureOpen();
+        return $this->handle;
+    }
+
+    /**
+     * Phase 6.1 / v0.3.51 #519 — auto-extraction accessor.
+     *
+     * Returns a thin wrapper that exposes typed-reason auto-extract
+     * surfaces (classify / extract_text_auto / extract_page_auto).
+     * Cheap to construct (no FFI calls on instantiation); kept
+     * unmemoised so test setup-tear-down is simple.
+     */
+    public function auto(): AutoExtractor
+    {
+        $this->ensureOpen();
+        return new AutoExtractor();
+    }
+
+    // ==================== STATIC OPENERS (Phase 6.2 — #159) ====================
+
+    /**
+     * Open a PDF document from a DOCX byte string. The document is
+     * converted in-memory via the Rust pipeline.
+     */
+    public static function fromDocxBytes(string $data): self
+    {
+        $bindings = new FunctionBindings();
+        $handle = $bindings->pdfDocumentOpenFromDocxBytes($data);
+        return self::fromOfficeHandle($handle, 'docx');
+    }
+
+    /** Open a PDF document from a PPTX byte string. */
+    public static function fromPptxBytes(string $data): self
+    {
+        $bindings = new FunctionBindings();
+        $handle = $bindings->pdfDocumentOpenFromPptxBytes($data);
+        return self::fromOfficeHandle($handle, 'pptx');
+    }
+
+    /** Open a PDF document from an XLSX byte string. */
+    public static function fromXlsxBytes(string $data): self
+    {
+        $bindings = new FunctionBindings();
+        $handle = $bindings->pdfDocumentOpenFromXlsxBytes($data);
+        return self::fromOfficeHandle($handle, 'xlsx');
+    }
+
+    /**
+     * Common construction path for the {@see fromDocxBytes()} family.
+     *
+     * @internal
+     */
+    private static function fromOfficeHandle(?CData $handle, string $tag): self
+    {
+        if ($handle === null) {
+            throw new \PdfOxide\Exceptions\ParseException(
+                "Failed to open document from {$tag} bytes",
+                ['source' => $tag]
+            );
+        }
+        // Hydrate without re-running the constructor (the file-path
+        // constructor is not appropriate for in-memory documents).
+        $instance = (new \ReflectionClass(self::class))->newInstanceWithoutConstructor();
+        $instance->filePath = "<{$tag}-bytes>";
+        $instance->bindings = new FunctionBindings();
+        $instance->handle = $handle;
+        $instance->closed = false;
+        HandleManager::register($handle, 'PdfDocumentHandle', $instance->filePath);
+        return $instance;
+    }
+
+    /**
      * Check if document has XFA form.
      *
      * @return bool True if document contains XFA form

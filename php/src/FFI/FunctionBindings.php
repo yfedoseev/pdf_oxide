@@ -5672,4 +5672,500 @@ class FunctionBindings
     {
         return $this->ffi;
     }
+
+    // ============================================================
+    // Phase 6 / v0.3.50-v0.3.54 bindings — see
+    // docs/releases/plans/v0.3.55/feature-php-binding.md §6.
+    // Every wrapper below calls a symbol that EXISTS in
+    // php/include/pdf_oxide.h (verified at scaffold time);
+    // callers must hold the corresponding handle's lifetime.
+    // ============================================================
+
+    // -------- Auto-extraction (v0.3.51 #519) --------
+
+    /**
+     * #519: cheap per-page text-vs-OCR classification → JSON envelope.
+     * Caller `json_decode`s the returned string.
+     */
+    public function pdfDocumentClassifyPage(CData $handle, int $pageIndex): string
+    {
+        $errorCode = FFI::new('int');
+        $json = $this->ffi->pdf_document_classify_page($handle, $pageIndex, FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_document_classify_page', ['page' => $pageIndex]);
+        return StringMarshaller::fromCString($json);
+    }
+
+    /**
+     * #519: whole-document classification → JSON
+     * (per-page kinds + `pages_needing_ocr`).
+     */
+    public function pdfDocumentClassifyDocument(CData $handle): string
+    {
+        $errorCode = FFI::new('int');
+        $json = $this->ffi->pdf_document_classify_document($handle, FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_document_classify_document');
+        return StringMarshaller::fromCString($json);
+    }
+
+    /**
+     * #519: one-shot auto text extraction — auto-routes text vs OCR
+     * with graceful native fallback. Never returns the opaque OCR
+     * error #513; per spec the fallback is logged + reflected in the
+     * caller's ExtractReason.
+     */
+    public function pdfDocumentExtractTextAuto(CData $handle, int $pageIndex): string
+    {
+        $errorCode = FFI::new('int');
+        $text = $this->ffi->pdf_document_extract_text_auto($handle, $pageIndex, FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_document_extract_text_auto', ['page' => $pageIndex]);
+        return StringMarshaller::fromCString($text);
+    }
+
+    /**
+     * #519: rich per-page extraction → JSON `PageExtraction`
+     * (per-region bbox + typed reason; never bare-empty). `$optionsJson`
+     * is `{}`-tolerant `AutoExtractOptions`; empty / null → defaults.
+     */
+    public function pdfDocumentExtractPageAuto(CData $handle, int $pageIndex, ?string $optionsJson = null): string
+    {
+        $errorCode = FFI::new('int');
+        $cOpts = StringMarshaller::toCString($optionsJson ?? '{}');
+        try {
+            $json = $this->ffi->pdf_document_extract_page_auto(
+                $handle,
+                $pageIndex,
+                $cOpts,
+                FFI::addr($errorCode)
+            );
+            ErrorHandler::check($errorCode->cdata, 'pdf_document_extract_page_auto', ['page' => $pageIndex]);
+            return StringMarshaller::fromCString($json);
+        } finally {
+            unset($cOpts);
+        }
+    }
+
+    /**
+     * Provision OCR models for the given languages (CSV: "eng,rus").
+     * Returns the cache directory path. NOTE: per the Rust contract,
+     * this only *prepares* the cache dir; downloads happen lazily on
+     * first OCR call. Returns "" gracefully if the build lacks OCR.
+     */
+    public function pdfOxidePrefetchModels(string $languagesCsv): string
+    {
+        $errorCode = FFI::new('int');
+        $cCsv = StringMarshaller::toCString($languagesCsv);
+        try {
+            $path = $this->ffi->pdf_oxide_prefetch_models($cCsv, FFI::addr($errorCode));
+            ErrorHandler::check($errorCode->cdata, 'pdf_oxide_prefetch_models', ['languages' => $languagesCsv]);
+            return StringMarshaller::fromCString($path);
+        } finally {
+            unset($cCsv);
+        }
+    }
+
+    /**
+     * Return the model manifest as JSON. Always returns a string —
+     * empty / minimal JSON if the `ocr` cargo feature is off.
+     */
+    public function pdfOxideModelManifest(): string
+    {
+        $json = $this->ffi->pdf_oxide_model_manifest();
+        return StringMarshaller::fromCString($json);
+    }
+
+    /**
+     * Whether the build was compiled with the `ocr` feature AND a model
+     * cache appears available. Used by AutoExtractor's graceful-fallback
+     * decision: false → ExtractReason::OcrRequestedButUnavailable.
+     */
+    public function pdfOxidePrefetchAvailable(): bool
+    {
+        return $this->ffi->pdf_oxide_prefetch_available() !== 0;
+    }
+
+    // -------- Document editor open/free (correct ABI names) --------
+
+    /**
+     * Open a document for editing — returns a `DocumentEditor*` handle.
+     *
+     * NOTE: The scaffold's {@see self::pdfDocumentEditorOpen()} calls
+     * a symbol named `pdf_document_editor_open` which does NOT exist
+     * in the v0.3.55 C ABI. The correct symbol is bare
+     * `document_editor_open`. This wrapper uses the right name.
+     */
+    public function documentEditorOpen(string $path): ?CData
+    {
+        $cPath = StringMarshaller::toCString($path);
+        $errorCode = FFI::new('int');
+        try {
+            $handle = $this->ffi->document_editor_open($cPath, FFI::addr($errorCode));
+            ErrorHandler::check($errorCode->cdata, 'document_editor_open', ['path' => $path]);
+            return $handle;
+        } finally {
+            unset($cPath);
+        }
+    }
+
+    /** Free a `DocumentEditor*` handle. */
+    public function documentEditorFree(CData $editor): void
+    {
+        $this->ffi->document_editor_free($editor);
+    }
+
+    // -------- Destructive redaction (v0.3.50 #231) --------
+
+    /**
+     * Mark a rectangle for destructive redaction on the given page.
+     * Coordinates are PDF points; color is the fill that replaces
+     * the redacted region after {@see pdfRedactionApply()}.
+     */
+    public function pdfRedactionAdd(
+        CData $editor,
+        int $page,
+        float $x1,
+        float $y1,
+        float $x2,
+        float $y2,
+        float $r = 0.0,
+        float $g = 0.0,
+        float $b = 0.0
+    ): int {
+        $errorCode = FFI::new('int');
+        $result = $this->ffi->pdf_redaction_add(
+            $editor,
+            $page,
+            $x1,
+            $y1,
+            $x2,
+            $y2,
+            $r,
+            $g,
+            $b,
+            FFI::addr($errorCode)
+        );
+        ErrorHandler::check($errorCode->cdata, 'pdf_redaction_add', ['page' => $page]);
+        return (int)$result;
+    }
+
+    /**
+     * Number of pending redaction marks on a page.
+     */
+    public function pdfRedactionCount(CData $editor, int $page): int
+    {
+        $errorCode = FFI::new('int');
+        $n = $this->ffi->pdf_redaction_count($editor, $page, FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_redaction_count', ['page' => $page]);
+        return (int)$n;
+    }
+
+    /**
+     * Apply all pending redactions destructively (byte-level scrub).
+     * SECURITY OP: throws RedactionException on any non-zero error_code
+     * — never silently swallows.
+     */
+    public function pdfRedactionApply(
+        CData $editor,
+        bool $scrubMetadata = true,
+        float $r = 0.0,
+        float $g = 0.0,
+        float $b = 0.0
+    ): int {
+        $errorCode = FFI::new('int');
+        $result = $this->ffi->pdf_redaction_apply(
+            $editor,
+            $scrubMetadata,
+            $r,
+            $g,
+            $b,
+            FFI::addr($errorCode)
+        );
+        ErrorHandler::check($errorCode->cdata, 'pdf_redaction_apply');
+        return (int)$result;
+    }
+
+    /**
+     * Destructively wipe all document metadata (Info dict, XMP, etc.).
+     * Independent of any pending rect redactions.
+     */
+    public function pdfRedactionScrubMetadata(CData $editor): int
+    {
+        $errorCode = FFI::new('int');
+        $result = $this->ffi->pdf_redaction_scrub_metadata($editor, FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_redaction_scrub_metadata');
+        return (int)$result;
+    }
+
+    /**
+     * Apply redactions for a single page only (granular variant).
+     */
+    public function documentEditorApplyPageRedactions(CData $editor, int $page): int
+    {
+        $errorCode = FFI::new('int');
+        $result = $this->ffi->document_editor_apply_page_redactions(
+            $editor,
+            $page,
+            FFI::addr($errorCode)
+        );
+        ErrorHandler::check($errorCode->cdata, 'document_editor_apply_page_redactions', ['page' => $page]);
+        return (int)$result;
+    }
+
+    /**
+     * Apply redactions across every marked page.
+     */
+    public function documentEditorApplyAllRedactions(CData $editor): int
+    {
+        $errorCode = FFI::new('int');
+        $result = $this->ffi->document_editor_apply_all_redactions($editor, FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'document_editor_apply_all_redactions');
+        return (int)$result;
+    }
+
+    // -------- PAdES signature shim (v0.3.51) --------
+
+    /**
+     * Sign PDF bytes with PAdES — the 5-arg shim added in v0.3.51 for
+     * binders that can't handle the legacy 18-arg `pdf_sign_bytes_pades`
+     * call. PHP can do either, but the shim is the canonical entry.
+     *
+     * `$optionsBlob` must be a packed `PadesSignOptionsC` struct (PHP
+     * FFI CData). Built by {@see \PdfOxide\Managers\SignatureManager}.
+     */
+    public function pdfSignBytesPadesOpts(string $pdfData, CData $optionsBlob): string
+    {
+        $errorCode = FFI::new('int');
+        $outLen = FFI::new('size_t');
+        $pdfLen = strlen($pdfData);
+
+        $pdfBuf = FFI::new('uint8_t[' . ($pdfLen > 0 ? $pdfLen : 1) . ']', false);
+        if ($pdfLen > 0) {
+            FFI::memcpy($pdfBuf, $pdfData, $pdfLen);
+        }
+
+        $out = $this->ffi->pdf_sign_bytes_pades_opts(
+            FFI::cast('uint8_t*', $pdfBuf),
+            $pdfLen,
+            FFI::addr($optionsBlob),
+            FFI::addr($outLen),
+            FFI::addr($errorCode)
+        );
+        ErrorHandler::check($errorCode->cdata, 'pdf_sign_bytes_pades_opts');
+
+        $length = (int)$outLen->cdata;
+        $signed = FFI::string($out, $length);
+        // Free native buffer.
+        $this->ffi->free_bytes(FFI::cast('uint8_t*', $out));
+        FFI::free($pdfBuf);
+
+        return $signed;
+    }
+
+    /**
+     * Read back the detected PAdES level (B-B/B-T/B-LT/B-LTA) of a
+     * signature handle. Returns the integer ordinal.
+     */
+    public function pdfSignatureGetPadesLevel(CData $signatureHandle): int
+    {
+        $errorCode = FFI::new('int');
+        $level = $this->ffi->pdf_signature_get_pades_level($signatureHandle, FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_signature_get_pades_level');
+        return (int)$level;
+    }
+
+    /**
+     * Whether the document has at least one document-timestamp
+     * (B-T or above).
+     *
+     * Behavior on builds without the `signatures` cargo feature:
+     * the ABI returns ERR_UNSUPPORTED. Per
+     * `feedback_extraction_graceful_fallback`, this read-only
+     * inspection is NOT a security op — degrade to `false` rather
+     * than raise.
+     */
+    public function pdfDocumentHasTimestamp(CData $documentHandle): bool
+    {
+        $errorCode = FFI::new('int');
+        $r = $this->ffi->pdf_document_has_timestamp($documentHandle, FFI::addr($errorCode));
+        $code = (int)$errorCode->cdata;
+        if ($code === ErrorHandler::UNSUPPORTED) {
+            return false;
+        }
+        if ($code === ErrorHandler::SIGNATURE_ERROR) {
+            // Documents with no signatures: degrade rather than throw.
+            return false;
+        }
+        ErrorHandler::check($code, 'pdf_document_has_timestamp');
+        return $r !== 0;
+    }
+
+    // -------- Office converter (v0.3.48 #159) --------
+
+    /**
+     * Open a PDF document from raw DOCX bytes (converts in-memory).
+     */
+    public function pdfDocumentOpenFromDocxBytes(string $data): ?CData
+    {
+        $errorCode = FFI::new('int');
+        $len = strlen($data);
+        $buf = FFI::new('uint8_t[' . ($len > 0 ? $len : 1) . ']', false);
+        if ($len > 0) {
+            FFI::memcpy($buf, $data, $len);
+        }
+        try {
+            $handle = $this->ffi->pdf_document_open_from_docx_bytes(
+                FFI::cast('uint8_t*', $buf),
+                $len,
+                FFI::addr($errorCode)
+            );
+            ErrorHandler::check($errorCode->cdata, 'pdf_document_open_from_docx_bytes');
+            return $handle;
+        } finally {
+            FFI::free($buf);
+        }
+    }
+
+    public function pdfDocumentOpenFromPptxBytes(string $data): ?CData
+    {
+        $errorCode = FFI::new('int');
+        $len = strlen($data);
+        $buf = FFI::new('uint8_t[' . ($len > 0 ? $len : 1) . ']', false);
+        if ($len > 0) {
+            FFI::memcpy($buf, $data, $len);
+        }
+        try {
+            $handle = $this->ffi->pdf_document_open_from_pptx_bytes(
+                FFI::cast('uint8_t*', $buf),
+                $len,
+                FFI::addr($errorCode)
+            );
+            ErrorHandler::check($errorCode->cdata, 'pdf_document_open_from_pptx_bytes');
+            return $handle;
+        } finally {
+            FFI::free($buf);
+        }
+    }
+
+    public function pdfDocumentOpenFromXlsxBytes(string $data): ?CData
+    {
+        $errorCode = FFI::new('int');
+        $len = strlen($data);
+        $buf = FFI::new('uint8_t[' . ($len > 0 ? $len : 1) . ']', false);
+        if ($len > 0) {
+            FFI::memcpy($buf, $data, $len);
+        }
+        try {
+            $handle = $this->ffi->pdf_document_open_from_xlsx_bytes(
+                FFI::cast('uint8_t*', $buf),
+                $len,
+                FFI::addr($errorCode)
+            );
+            ErrorHandler::check($errorCode->cdata, 'pdf_document_open_from_xlsx_bytes');
+            return $handle;
+        } finally {
+            FFI::free($buf);
+        }
+    }
+
+    /**
+     * Export the PDF as DOCX bytes (forward conversion).
+     */
+    public function pdfDocumentToDocxBytes(CData $handle): string
+    {
+        $errorCode = FFI::new('int');
+        $outLen = FFI::new('size_t');
+        $out = $this->ffi->pdf_document_to_docx($handle, FFI::addr($outLen), FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_document_to_docx');
+        $length = (int)$outLen->cdata;
+        $bytes = FFI::string($out, $length);
+        $this->ffi->free_bytes(FFI::cast('uint8_t*', $out));
+        return $bytes;
+    }
+
+    public function pdfDocumentToPptxBytes(CData $handle): string
+    {
+        $errorCode = FFI::new('int');
+        $outLen = FFI::new('size_t');
+        $out = $this->ffi->pdf_document_to_pptx($handle, FFI::addr($outLen), FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_document_to_pptx');
+        $length = (int)$outLen->cdata;
+        $bytes = FFI::string($out, $length);
+        $this->ffi->free_bytes(FFI::cast('uint8_t*', $out));
+        return $bytes;
+    }
+
+    public function pdfDocumentToXlsxBytes(CData $handle): string
+    {
+        $errorCode = FFI::new('int');
+        $outLen = FFI::new('size_t');
+        $out = $this->ffi->pdf_document_to_xlsx($handle, FFI::addr($outLen), FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_document_to_xlsx');
+        $length = (int)$outLen->cdata;
+        $bytes = FFI::string($out, $length);
+        $this->ffi->free_bytes(FFI::cast('uint8_t*', $out));
+        return $bytes;
+    }
+
+    // -------- Split by bookmarks (v0.3.50) --------
+
+    /**
+     * Plan a split by outline bookmarks. Returns a JSON envelope the
+     * caller can feed to the binding-side splitter; native side does
+     * the planning only (per the v0.3.50 design — keep the cdylib
+     * lean).
+     *
+     * `$optionsJson` is a JSON object: `{ "min_level": 1, "max_level": 2 }`.
+     * `null` / empty → defaults.
+     */
+    public function pdfDocumentPlanSplitByBookmarks(CData $handle, ?string $optionsJson = null): string
+    {
+        $errorCode = FFI::new('int');
+        $cOpts = StringMarshaller::toCString($optionsJson ?? '{}');
+        try {
+            $json = $this->ffi->pdf_document_plan_split_by_bookmarks(
+                $handle,
+                $cOpts,
+                FFI::addr($errorCode)
+            );
+            ErrorHandler::check($errorCode->cdata, 'pdf_document_plan_split_by_bookmarks');
+            return StringMarshaller::fromCString($json);
+        } finally {
+            unset($cOpts);
+        }
+    }
+
+    // -------- Watermark / stamp builder ops --------
+
+    /**
+     * Append a watermark with custom text to the current page-builder.
+     */
+    public function pdfPageBuilderWatermark(CData $pageBuilder, string $text): int
+    {
+        $errorCode = FFI::new('int');
+        $cText = StringMarshaller::toCString($text);
+        try {
+            $result = $this->ffi->pdf_page_builder_watermark($pageBuilder, $cText, FFI::addr($errorCode));
+            ErrorHandler::check($errorCode->cdata, 'pdf_page_builder_watermark');
+            return (int)$result;
+        } finally {
+            unset($cText);
+        }
+    }
+
+    /** "CONFIDENTIAL" preset watermark. */
+    public function pdfPageBuilderWatermarkConfidential(CData $pageBuilder): int
+    {
+        $errorCode = FFI::new('int');
+        $result = $this->ffi->pdf_page_builder_watermark_confidential($pageBuilder, FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_page_builder_watermark_confidential');
+        return (int)$result;
+    }
+
+    /** "DRAFT" preset watermark. */
+    public function pdfPageBuilderWatermarkDraft(CData $pageBuilder): int
+    {
+        $errorCode = FFI::new('int');
+        $result = $this->ffi->pdf_page_builder_watermark_draft($pageBuilder, FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_page_builder_watermark_draft');
+        return (int)$result;
+    }
 }

@@ -103,4 +103,52 @@ class OutlineManager
     {
         $this->cachedOutlines = null;
     }
+
+    /**
+     * v0.3.50 #482 — plan a document split along outline bookmarks.
+     *
+     * Native side does the planning only (per v0.3.50 design — keep
+     * the cdylib lean and let bindings do the file I/O). The return
+     * value is a JSON envelope: an array of `{title, page_start,
+     * page_end, level}` records the caller can feed to a per-section
+     * extractor.
+     *
+     * @param array{min_level?:int,max_level?:int}|null $options
+     *        null / empty → defaults.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function planSplit(?array $options = null): array
+    {
+        // Empty-outline documents are a normal case (most PDFs lack
+        // bookmarks); per `feedback_extraction_graceful_fallback`,
+        // split-planning is NOT a security op — degrade to [].
+        // We deliberately DO NOT pre-check via hasOutlines() because
+        // the scaffold's outline-count binding targets a function that
+        // doesn't exist in the v0.3.55 C ABI; instead we let the FFI
+        // call below raise, and convert to [] in the catch.
+        $optionsJson = $options === null ? null : json_encode($options, JSON_THROW_ON_ERROR);
+        try {
+            $json = $this->bindings->pdfDocumentPlanSplitByBookmarks($this->handle, $optionsJson);
+        } catch (\PdfOxide\Exceptions\PdfException) {
+            // Most failure paths here are "no usable outline" — return
+            // empty rather than raise, matching the Python / Java
+            // contract.
+            return [];
+        }
+        if ($json === '') {
+            return [];
+        }
+        try {
+            $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            return [];
+        }
+        // Spec is array-shaped (Python returns list of dicts); be
+        // tolerant of `{ "sections": [...] }` envelope too.
+        if (is_array($decoded) && isset($decoded['sections']) && is_array($decoded['sections'])) {
+            return $decoded['sections'];
+        }
+        return is_array($decoded) ? $decoded : [];
+    }
 }

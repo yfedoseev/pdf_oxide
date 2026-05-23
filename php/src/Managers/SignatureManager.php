@@ -772,6 +772,127 @@ class SignatureManager
         }
     }
 
+    // ==================== PAdES B-B / B-T / B-LT (v0.3.50 #235 + v0.3.51 shim) ====================
+
+    /**
+     * Sign a PDF byte string with PAdES at the requested conformance
+     * level, using the 5-arg `pdf_sign_bytes_pades_opts` shim added in
+     * v0.3.51 (the simplified entry point for binders that can't pack
+     * the legacy 18-arg call).
+     *
+     * Per `feedback_extraction_graceful_fallback`, signing is a
+     * SECURITY OP — any non-success ABI code throws
+     * {@see \PdfOxide\Exceptions\SignatureException}.
+     *
+     * @param string $pdfData Raw PDF bytes to sign.
+     * @param CData $certificateHandle The signing certificate handle
+     *        (obtained via `pdf_certificate_load_from_pem` etc.).
+     * @param \PdfOxide\Enums\PadesLevel $level conformance level.
+     * @param string|null $tsaUrl REQUIRED for B-T/B-LT/B-LTA; ignored for B-B.
+     * @param string|null $reason  Signing reason (free-form).
+     * @param string|null $location Signing location (free-form).
+     * @return string Signed PDF byte string.
+     *
+     * @throws \InvalidArgumentException if $tsaUrl is missing for a
+     *         level that requires it.
+     * @throws \PdfOxide\Exceptions\SignatureException on signing failure.
+     */
+    public function signPades(
+        string $pdfData,
+        CData $certificateHandle,
+        \PdfOxide\Enums\PadesLevel $level,
+        ?string $tsaUrl = null,
+        ?string $reason = null,
+        ?string $location = null
+    ): string {
+        if ($level->requiresTsa() && ($tsaUrl === null || $tsaUrl === '')) {
+            throw new \InvalidArgumentException(
+                sprintf('PAdES level %s requires a TSA URL.', $level->name)
+            );
+        }
+
+        // Build the PadesSignOptionsC struct in PHP memory; pointer
+        // fields are kept alive in the local scope until the call
+        // completes.
+        $opts = $this->ffi->new('PadesSignOptionsC');
+        $opts->certificate_handle = FFI::cast('const void*', $certificateHandle);
+        $opts->certs = null;
+        $opts->cert_lens = null;
+        $opts->n_certs = 0;
+        $opts->crls = null;
+        $opts->crl_lens = null;
+        $opts->n_crls = 0;
+        $opts->ocsps = null;
+        $opts->ocsp_lens = null;
+        $opts->n_ocsps = 0;
+
+        // Keep references alive for the duration of the FFI call.
+        $cTsa = null;
+        $cReason = null;
+        $cLocation = null;
+        if ($tsaUrl !== null) {
+            $cTsa = StringMarshaller::toCString($tsaUrl);
+            $opts->tsa_url = FFI::cast('const char*', $cTsa);
+        } else {
+            $opts->tsa_url = null;
+        }
+        if ($reason !== null) {
+            $cReason = StringMarshaller::toCString($reason);
+            $opts->reason = FFI::cast('const char*', $cReason);
+        } else {
+            $opts->reason = null;
+        }
+        if ($location !== null) {
+            $cLocation = StringMarshaller::toCString($location);
+            $opts->location = FFI::cast('const char*', $cLocation);
+        } else {
+            $opts->location = null;
+        }
+        $opts->level = $level->value;
+
+        try {
+            return $this->bindings->pdfSignBytesPadesOpts($pdfData, $opts);
+        } catch (\PdfOxide\Exceptions\PdfException $e) {
+            // Promote any error type to SignatureException for the
+            // security-op fail-closed contract.
+            if ($e instanceof \PdfOxide\Exceptions\SignatureException) {
+                throw $e;
+            }
+            throw new \PdfOxide\Exceptions\SignatureException(
+                'PAdES signing failed: ' . $e->getMessage(),
+                $e->getContext(),
+                $e
+            );
+        } finally {
+            unset($cTsa, $cReason, $cLocation, $opts);
+        }
+    }
+
+    /**
+     * Read back the detected PAdES level of a signature (by index).
+     */
+    public function getPadesLevel(int $signatureIndex): \PdfOxide\Enums\PadesLevel
+    {
+        $sigHandle = $this->ffi->pdf_document_get_signature(
+            $this->handle,
+            $signatureIndex,
+            FFI::addr($errorCode = FFI::new('int'))
+        );
+        ErrorHandler::check($errorCode->cdata, 'pdf_document_get_signature', ['index' => $signatureIndex]);
+        try {
+            $level = $this->bindings->pdfSignatureGetPadesLevel($sigHandle);
+            return \PdfOxide\Enums\PadesLevel::tryFrom($level) ?? \PdfOxide\Enums\PadesLevel::BB;
+        } finally {
+            $this->ffi->pdf_signature_free($sigHandle);
+        }
+    }
+
+    /** Whether the document has a document-timestamp (B-T or above). */
+    public function hasDocumentTimestamp(): bool
+    {
+        return $this->bindings->pdfDocumentHasTimestamp($this->handle);
+    }
+
     // ==================== UTILITIES ====================
 
     /**
