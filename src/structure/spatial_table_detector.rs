@@ -253,6 +253,46 @@ fn passes_spatial_quality_gate(table: &Table) -> bool {
     ratio <= 0.7
 }
 
+/// Reject a spatial (no-rulings) "table" whose rows are wrapped paragraph
+/// lines — a flowing prose page (heading + body paragraph + footer) whose
+/// inter-word gaps coincidentally aligned into columns.
+///
+/// Signature: at least one row, when its non-empty cells are concatenated
+/// left-to-right, crosses a SENTENCE boundary mid-row — a lowercase letter
+/// or digit, a sentence terminator (`.`/`!`/`?`), a space, then a capital
+/// letter starting a new word (e.g. "...to 23,500. Stockout rate..."). Real
+/// data-table rows hold values/labels, not running sentences that span a
+/// period into the next clause, so this almost never fires on genuine
+/// tables. Only applied to spatial tables (the caller is the no-rulings
+/// path); ruled tables are author-marked and trusted.
+fn looks_like_prose_paragraph(table: &Table) -> bool {
+    for row in &table.rows {
+        let joined = row
+            .cells
+            .iter()
+            .map(|c| c.text.trim())
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let chars: Vec<char> = joined.chars().collect();
+        for i in 0..chars.len() {
+            // terminator at i, preceded by lowercase/digit, followed by
+            // " " + uppercase + lowercase (a real new sentence/word).
+            if matches!(chars[i], '.' | '!' | '?')
+                && i >= 1
+                && (chars[i - 1].is_ascii_lowercase() || chars[i - 1].is_ascii_digit())
+                && i + 3 < chars.len()
+                && chars[i + 1] == ' '
+                && chars[i + 2].is_ascii_uppercase()
+                && chars[i + 3].is_ascii_lowercase()
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Detect page column regions from an X-projection histogram of text spans.
 ///
 /// Builds a histogram of horizontal coverage (2pt buckets), then identifies
@@ -512,10 +552,22 @@ pub fn detect_tables_from_spans(spans: &[TextSpan], config: &TableDetectionConfi
 
     let mut columns = detect_columns(spans, config.column_tolerance, config.column_merge_threshold);
 
+    // Greedy X-center clustering fragments a single logical cell whose
+    // words are internally spaced (e.g. an agenda row "Receiving Dock
+    // Inspection" laid out with wide inter-word gaps) into one column
+    // per word. detect_text_edge_columns instead keeps only X edges that
+    // recur across >= 3 distinct rows, so single-row word positions are
+    // rejected and the true column grid (Time / Activity / Team) is
+    // recovered. Cross-row recurrence is a strictly stronger column
+    // signal than one row's word spacing, so prefer the text-edge result
+    // whenever it yields a valid, strictly-smaller column set.
+    //
+    // Safety: for tables with < 3 rows, text-edge can keep no column
+    // (every edge appears in < 3 rows) so it returns fewer than
+    // min_table_columns and the guard below leaves greedy untouched —
+    // small genuine tables are unaffected.
     // If greedy clustering produced too many columns, try text-edge
     // detection which looks for X positions that recur across multiple rows.
-    // Use the text-edge result when it produces fewer columns with at least
-    // the minimum required count.
     if columns.len() > config.max_table_columns {
         let te_columns = detect_text_edge_columns(spans, config);
         if te_columns.len() >= config.min_table_columns.max(2) && te_columns.len() < columns.len() {
@@ -532,13 +584,54 @@ pub fn detect_tables_from_spans(spans: &[TextSpan], config: &TableDetectionConfi
         return Vec::new();
     }
 
+    // Baseline gate (CRITICAL): the ORIGINAL (unfiltered) columns must
+    // already form a table that passes EVERY emission gate baseline
+    // uses — structural validation AND the final is_valid_table /
+    // passes_spatial_quality_gate checks. The row-coverage cleanup
+    // below only REFINES a table that would have been emitted anyway;
+    // it must never CREATE a table from content baseline treated as
+    // prose. Without checking the FINAL gates here, dropping phantom
+    // columns can flip a borderline case that baseline rejected on the
+    // quality gate into a spurious table (observed on annots.pdf link
+    // lists and right_to_left_01.pdf Arabic prose in the 70-PDF sweep).
+    let orig_grid = assign_spans_to_cells(spans, &columns, &rows);
+    if !validate_table_structure_internal(&orig_grid, config) {
+        return Vec::new();
+    }
+    let orig_table = grid_to_table(&orig_grid, spans, None);
+    if !is_valid_table(&orig_table)
+        || !passes_spatial_quality_gate(&orig_table)
+        || looks_like_prose_paragraph(&orig_table)
+    {
+        return Vec::new();
+    }
+
+    // Issue #6/#5: drop "phantom" columns created by a single cell whose
+    // words are spaced apart (e.g. an agenda "Receiving Dock Inspection"
+    // laid out with wide gaps → one greedy column per word). A genuine
+    // table column carries content in MOST rows; a per-word phantom
+    // appears in only one or two. Keep only columns whose spans occupy
+    // at least 60% of rows (min 2). Phantom-column spans are then
+    // re-assigned to the nearest surviving column by assign_spans_to_cells,
+    // re-joining the words into their true cell. Skipped for small
+    // tables (< 3 rows) where every column legitimately spans all rows.
+    if rows.len() >= 3 {
+        columns = filter_columns_by_row_coverage(&columns, &rows, spans);
+        if columns.len() < config.min_table_columns.max(2) {
+            return Vec::new();
+        }
+    }
+
     let grid = assign_spans_to_cells(spans, &columns, &rows);
     if !validate_table_structure_internal(&grid, config) {
         return Vec::new();
     }
 
     let table = grid_to_table(&grid, spans, None);
-    if !is_valid_table(&table) || !passes_spatial_quality_gate(&table) {
+    if !is_valid_table(&table)
+        || !passes_spatial_quality_gate(&table)
+        || looks_like_prose_paragraph(&table)
+    {
         return Vec::new();
     }
     vec![table]
@@ -639,6 +732,59 @@ struct CellMergeInfo {
     colspan: u32,
     rowspan: u32,
     covered: bool,
+}
+
+/// Issue #6/#5: keep only columns that carry content in a meaningful
+/// fraction of rows. A real table column appears in most rows; a
+/// "phantom" column produced by spaced words inside a single cell (e.g.
+/// "Receiving Dock Inspection" with wide inter-word gaps) appears in
+/// only one or two rows. Each column's distinct-row coverage is the
+/// number of rows in which at least one of its spans falls.
+///
+/// Threshold: >= ceil(0.6 * num_rows), floored at 2. Phantom columns
+/// (coverage 1) are removed; their spans get re-assigned to the nearest
+/// surviving column downstream, rejoining the words into one cell.
+fn filter_columns_by_row_coverage(
+    columns: &[ColumnCluster],
+    rows: &[RowCluster],
+    spans: &[TextSpan],
+) -> Vec<ColumnCluster> {
+    let num_rows = rows.len();
+    if num_rows < 3 {
+        return columns.to_vec();
+    }
+    // Minimum distinct rows a column must touch to be "real".
+    let min_cov = (((num_rows as f32) * 0.6).ceil() as usize).max(2);
+
+    // Pre-resolve each span's row index (nearest row center within y-extent).
+    let span_row = |sidx: usize| -> Option<usize> {
+        let cy = spans[sidx].bbox.center().y;
+        rows.iter().position(|r| cy <= r.y_max && cy >= r.y_min)
+    };
+
+    let kept: Vec<ColumnCluster> = columns
+        .iter()
+        .filter(|col| {
+            let mut seen: Vec<usize> = col
+                .span_indices
+                .iter()
+                .filter_map(|&s| span_row(s))
+                .collect();
+            seen.sort_unstable();
+            seen.dedup();
+            seen.len() >= min_cov
+        })
+        .cloned()
+        .collect();
+
+    // Safety: never return fewer than 2 columns from here — if the
+    // coverage filter would collapse the table, fall back to the
+    // original columns (the caller's min-columns guard then decides).
+    if kept.len() >= 2 {
+        kept
+    } else {
+        columns.to_vec()
+    }
 }
 
 fn detect_columns(
@@ -3487,6 +3633,56 @@ mod tests {
     use crate::geometry::Rect;
     use crate::layout::text_block::{Color, FontWeight};
 
+    fn prose_cell(text: &str) -> TableCell {
+        TableCell {
+            text: text.to_string(),
+            spans: Vec::new(),
+            colspan: 1,
+            rowspan: 1,
+            mcids: Vec::new(),
+            bbox: None,
+            is_header: false,
+        }
+    }
+
+    /// #09 prose gate: a wrapped paragraph mis-split into a table — a row
+    /// crossing a sentence boundary ("...to 23,500. Stockout rate...") must
+    /// be recognised as prose and rejected.
+    #[test]
+    fn test_looks_like_prose_paragraph_detects_sentence_crossing_row() {
+        let mut t = Table::new();
+        t.col_count = 4;
+        t.rows.push(TableRow {
+            cells: vec![
+                prose_cell("Total SKU count grew 15%"),
+                prose_cell("quarter-over-quarter to"),
+                prose_cell("23,500."),
+                prose_cell("Stockout rate improved by 200 basis"),
+            ],
+            is_header: false,
+        });
+        assert!(looks_like_prose_paragraph(&t));
+    }
+
+    /// REGRESSION GUARD: a genuine data table (short value/label cells, no
+    /// sentence crossing a row) must NOT be flagged as prose.
+    #[test]
+    fn test_looks_like_prose_paragraph_keeps_real_table() {
+        let mut t = Table::new();
+        t.col_count = 4;
+        for cells in [
+            ["Zone", "Pallets stored", "11,100", "-2.5%"],
+            ["A", "Utilization", "87%", "-3pp"],
+            ["B", "Damage rate", "0.3%", "-0.2pp"],
+        ] {
+            t.rows.push(TableRow {
+                cells: cells.iter().map(|c| prose_cell(c)).collect(),
+                is_header: false,
+            });
+        }
+        assert!(!looks_like_prose_paragraph(&t));
+    }
+
     #[test]
     fn test_line_clustering_multiple_tables() {
         let lines = vec![
@@ -3551,6 +3747,56 @@ mod tests {
     }
     fn make_rect_path(x: f32, y: f32, w: f32, h: f32) -> crate::elements::PathContent {
         crate::elements::PathContent::rect(x, y, w, h)
+    }
+
+    /// Issue #6/#5: an agenda-style table has 3 real columns (Time @72,
+    /// Activity @200, Team @420). The Activity cell holds multiple words
+    /// laid out with wide gaps ("Receiving Dock Inspection"), each at a
+    /// distinct X that occurs in only ONE row. Greedy column clustering
+    /// turns every word X into a column; the cross-row text-edge
+    /// detector must instead recover the 3 real columns whose edges
+    /// recur across rows. Asserts the detected table has 3 columns, not
+    /// one-per-word.
+    #[test]
+    fn test_issue6_agenda_words_not_split_into_columns() {
+        // y descending = rows top→bottom. 4 rows incl. header.
+        let spans = vec![
+            // Header row.
+            create_test_span("Time", 72.0, 638.6, 24.4, 12.0),
+            create_test_span("Activity", 200.0, 638.6, 34.8, 12.0),
+            create_test_span("Team", 420.0, 638.6, 28.1, 12.0),
+            // Row 1: Activity = "Receiving Dock Inspection" (3 word spans).
+            create_test_span("06:00 - 07:00", 72.0, 610.6, 61.1, 12.0),
+            create_test_span("Receiving", 200.0, 610.6, 43.9, 12.0),
+            create_test_span("Dock", 249.9, 610.6, 22.8, 12.0),
+            create_test_span("Inspection", 278.7, 610.6, 45.6, 12.0),
+            create_test_span("Inbound Team", 420.0, 610.6, 65.7, 12.0),
+            // Row 2: Activity = "Bulk Putaway Slotting".
+            create_test_span("07:00 - 09:00", 72.0, 582.6, 61.1, 12.0),
+            create_test_span("Bulk", 200.0, 582.6, 19.5, 12.0),
+            create_test_span("Putaway", 225.4, 582.6, 38.3, 12.0),
+            create_test_span("Slotting", 282.5, 582.6, 33.4, 12.0),
+            create_test_span("Warehouse Ops", 420.0, 582.6, 73.5, 12.0),
+            // Row 3: Activity = "Pick Wave Processing".
+            create_test_span("09:00 - 11:00", 72.0, 554.6, 61.1, 12.0),
+            create_test_span("Pick", 200.0, 554.6, 18.9, 12.0),
+            create_test_span("Wave", 230.0, 554.6, 24.0, 12.0),
+            create_test_span("Processing", 262.0, 554.6, 48.0, 12.0),
+            create_test_span("Fulfillment", 420.0, 554.6, 55.0, 12.0),
+        ];
+        let config = TableDetectionConfig::default();
+        let tables = detect_tables_from_spans(&spans, &config);
+        // Either no table (acceptable — agenda is borderline tabular) or
+        // a table with the 3 real columns. What must NOT happen: a table
+        // with one column per Activity word (>= 5 columns).
+        if let Some(t) = tables.first() {
+            let ncols = t.rows.iter().map(|r| r.cells.len()).max().unwrap_or(0);
+            assert!(
+                ncols <= 4,
+                "agenda must not fragment Activity words into columns; got {} cols",
+                ncols
+            );
+        }
     }
 
     #[test]

@@ -121,20 +121,11 @@ jobs:
           - os: ubuntu-latest
             rust: nightly
     steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
       - name: Free disk space (Linux)
         if: runner.os == 'Linux'
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          # Keep swap: removing it causes OOM-induced SIGBUS in the linker
-          # during parallel link steps (notably nightly's rust-lld).
-          swap-storage: false
-
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: ./.github/actions/free-disk-space
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -374,19 +365,12 @@ jobs:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          # Keep swap: removing it causes OOM-induced SIGBUS in the linker
-          # during parallel link steps (notably nightly's rust-lld).
-          swap-storage: false
-
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Free disk space
+        uses: ./.github/actions/free-disk-space
+        with:
+          tool-cache: 'false'
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -456,19 +440,12 @@ jobs:
     name: WASM Build
     runs-on: ubuntu-latest
     steps:
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          # Keep swap: removing it causes OOM-induced SIGBUS in the linker
-          # during parallel link steps (notably nightly's rust-lld).
-          swap-storage: false
-
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Free disk space
+        uses: ./.github/actions/free-disk-space
+        with:
+          tool-cache: 'false'
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -614,6 +591,16 @@ jobs:
             variant: go
             features: "barcodes,rendering,signatures,tsa-client,system-fonts"
             extra-target: "x86_64-pc-windows-gnu"
+          # Java JNI shim crate (`pdf_oxide_jni`) — cdylib that exports
+          # `Java_fyi_oxide_pdf_*` symbols. Built with the same
+          # extended feature set so Java tests can exercise rendering /
+          # signatures / TSA. Linux only in PR CI; release.yml fans
+          # out to the five JAR-bundled arches (linux x86_64/aarch64,
+          # macOS x86_64/aarch64, windows x86_64).
+          - os: ubuntu-latest
+            variant: java-jni
+            features: "rendering,signatures,tsa-client"
+            extra-target: ""
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
@@ -636,7 +623,14 @@ jobs:
           [ -n "${{ matrix.features }}" ] && FEATURE_FLAG="--features ${{ matrix.features }}"
           TARGET_FLAG=""
           [ -n "${{ matrix.extra-target }}" ] && TARGET_FLAG="--target ${{ matrix.extra-target }}"
-          cargo build --release --lib $FEATURE_FLAG $TARGET_FLAG
+          # The `java-jni` variant builds the JNI shim crate, not
+          # the main pdf_oxide library. Same `--features` flag,
+          # different `-p` package selector.
+          if [ "${{ matrix.variant }}" = "java-jni" ]; then
+            cargo build --release -p pdf_oxide_jni $FEATURE_FLAG $TARGET_FLAG
+          else
+            cargo build --release --lib $FEATURE_FLAG $TARGET_FLAG
+          fi
 
       # Upload every lib file that exists — paths vary by OS and target.
       # Downstream jobs download and find the file at its original location.
@@ -652,6 +646,9 @@ jobs:
             target/release/libpdf_oxide.dylib
             target/release/pdf_oxide.dll
             target/release/pdf_oxide.lib
+            target/release/libpdf_oxide_jni.so
+            target/release/libpdf_oxide_jni.dylib
+            target/release/pdf_oxide_jni.dll
             target/x86_64-pc-windows-gnu/release/libpdf_oxide.a
             target/x86_64-pc-windows-gnu/release/pdf_oxide.dll
             target/x86_64-pc-windows-gnu/release/pdf_oxide.lib
@@ -1100,6 +1097,123 @@ jobs:
         working-directory: csharp/PdfOxide.Tests
         run: dotnet test -c Release --no-build --verbosity normal
 
+  # Java bindings: build the Maven artifact and run JUnit against
+  # the JAR-embedded native (v0.3.53 new in tree). PR CI runs on
+  # ubuntu only with one JDK floor (11); release.yml fans out to
+  # the full os × JDK matrix. Mirrors the csharp/go/nodejs flow
+  # (pull pre-built native artifact, stage, build, test).
+  java:
+    name: Java Bindings (${{ matrix.os }}, JDK ${{ matrix.jdk }})
+    runs-on: ${{ matrix.os }}
+    needs: [build-lib]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            jdk: '11'
+          - os: ubuntu-latest
+            jdk: '17'
+          - os: ubuntu-latest
+            jdk: '21'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Set up JDK ${{ matrix.jdk }}
+        uses: actions/setup-java@7a6d8a8234af8eb26422e24e3006232cccaa061b # v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ matrix.jdk }}
+
+      - name: Cache Maven local repository
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ runner.os }}-${{ hashFiles('java/pom.xml') }}
+          restore-keys: |
+            maven-${{ runner.os }}-
+
+      - name: Download Java JNI native lib artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-lib-ubuntu-latest-java-jni
+
+      - name: Stage native lib into Maven resources
+        shell: bash
+        run: |
+          # The Java NativeLoader resolves
+          # /fyi/oxide/pdf/native/{OS}/{ARCH}/<libname> from the JAR.
+          # Stage the cdylib at that path before mvn package so it
+          # gets embedded into the published JAR.
+          DEST="java/src/main/resources/fyi/oxide/pdf/native/Linux/x86_64"
+          mkdir -p "$DEST"
+          cp target/release/libpdf_oxide_jni.so "$DEST/libpdf_oxide_jni.so"
+          ls -la "$DEST"
+
+      - name: mvn compile
+        working-directory: java
+        run: mvn -B -P!dev compile
+
+      - name: mvn test (Surefire — JNI-backed JUnit)
+        working-directory: java
+        run: mvn -B -P!dev test
+
+      - name: mvn package — build publishable JAR
+        working-directory: java
+        run: mvn -B -P!dev -DskipTests package
+
+      - name: Verify JAR contains embedded native + manifest
+        shell: bash
+        working-directory: java
+        run: |
+          JAR=target/pdf-oxide-0.3.53.jar
+          [ -f "$JAR" ] || { echo "::error::JAR not built"; exit 1; }
+          jar tf "$JAR" | grep -q "fyi/oxide/pdf/native/Linux/x86_64/libpdf_oxide_jni.so" \
+            || { echo "::error::Native lib missing from JAR"; exit 1; }
+          unzip -p "$JAR" META-INF/MANIFEST.MF | grep -q "Automatic-Module-Name: fyi.oxide.pdf" \
+            || { echo "::error::Manifest missing Automatic-Module-Name"; exit 1; }
+          echo "::notice::JAR validated: $(stat -c%s "$JAR") bytes"
+
+      - name: Upload Java JAR artifact
+        if: matrix.jdk == '11'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: java-jar-${{ matrix.os }}
+          retention-days: 7
+          path: java/target/pdf-oxide-*.jar
+
+  # Java format + static analysis (parity with the other bindings'
+  # fmt+lint gates). Pure-bytecode/source checks — no native lib needed,
+  # so this runs standalone and fast. palantir-java-format needs JDK
+  # internals access (java/.mvn/jvm.config provides the add-exports).
+  java-lint:
+    name: Java Lint (Spotless + SpotBugs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@7a6d8a8234af8eb26422e24e3006232cccaa061b # v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Cache Maven local repository
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ runner.os }}-${{ hashFiles('java/pom.xml') }}
+          restore-keys: |
+            maven-${{ runner.os }}-
+
+      - name: Spotless format check
+        working-directory: java
+        run: mvn -B -P!dev spotless:check
+
+      - name: SpotBugs static analysis
+        working-directory: java
+        run: mvn -B -P!dev compile spotbugs:check
+
   # Code coverage with enforcement
   coverage:
     name: Code Coverage
@@ -1108,20 +1222,17 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
-      # Free ~15 GB of disk before cargo-llvm-cov runs. The instrumented
+      # Free ~25-30 GB of disk before cargo-llvm-cov runs. The instrumented
       # build writes a second full target tree (target/llvm-cov-target/)
       # with much larger object files; ubuntu-latest starts with ~14 GB
       # free and has hit "No space left on device" on the v0.3.38
-      # post-merge run — see #399 Case B.
+      # post-merge run — see #399 Case B. The v0.3.53 PR #533 run also
+      # hit a silent OOM kill mid-build because this callsite previously
+      # missed the `swap-storage: false` override — fixed via the composite
+      # action which locks `swap-storage: false` in (linker needs the
+      # 4 GB swapfile).
       - name: Free disk space before coverage
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
+        uses: ./.github/actions/free-disk-space
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable

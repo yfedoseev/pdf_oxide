@@ -14,7 +14,7 @@
 
 use crate::error::Error;
 use crate::geometry::Rect;
-use crate::layout::TextBlock;
+use crate::layout::{Color, FontWeight, TextBlock, TextSpan};
 use crate::structure::types::{StructChild, StructElem, StructType};
 
 /// A complete extracted table with rows and optional header information.
@@ -633,11 +633,19 @@ fn extract_cell(
     // This prevents spurious spaces inside CJK expressions like "Q（peu/d）" whose
     // glyphs are stored as separate marked-content runs that abut each other.
     let mut cell_text = String::new();
+    // Issue #8 fix: also collect per-block style info as synthetic TextSpans
+    // so the markdown renderer's `render_table_markdown` can emit bold /
+    // italic markers per fragment. Without this, the tagged-PDF path
+    // produced cells with empty `spans`, which the markdown renderer
+    // falls back from to plain text — losing ~73% of inline formatting
+    // in the reporter's 54-PDF corpus.
+    let mut cell_spans: Vec<TextSpan> = Vec::new();
     let mut prev_block: Option<&TextBlock> = None;
     for mcid in &mcids {
         for block in text_blocks {
             if let Some(block_mcid) = block.mcid {
                 if block_mcid == *mcid {
+                    let mut leading_space = false;
                     if !cell_text.is_empty() {
                         let need_space = if let Some(prev) = prev_block {
                             let y_diff = (block.bbox.y - prev.bbox.y).abs();
@@ -700,9 +708,56 @@ fn extract_cell(
                         };
                         if need_space {
                             cell_text.push(' ');
+                            leading_space = true;
                         }
                     }
                     cell_text.push_str(&block.text);
+                    // Synthesize a minimal TextSpan capturing the block's
+                    // style. Only the fields the markdown converter
+                    // consults (text, font_weight, is_italic, font_size,
+                    // bbox) need real values — everything else is filled
+                    // from sensible defaults. Carry the inter-block space
+                    // into the span text as well: the markdown/HTML table
+                    // renderers reconstruct spacing from the spans (not from
+                    // cell_text), and their horizontal-gap heuristic cannot
+                    // see a line wrap, so without this they glue tokens
+                    // across wrapped lines. Both renderers already treat a
+                    // leading space in the span text as authoritative
+                    // (their `already_has_space` guard), so this never
+                    // double-spaces.
+                    let span_text = if leading_space {
+                        let mut s = String::with_capacity(block.text.len() + 1);
+                        s.push(' ');
+                        s.push_str(&block.text);
+                        s
+                    } else {
+                        block.text.clone()
+                    };
+                    cell_spans.push(TextSpan {
+                        artifact_type: None,
+                        text: span_text,
+                        bbox: block.bbox,
+                        font_name: block.dominant_font.clone(),
+                        font_size: block.avg_font_size,
+                        font_weight: if block.is_bold {
+                            FontWeight::Bold
+                        } else {
+                            FontWeight::Normal
+                        },
+                        is_italic: block.is_italic,
+                        is_monospace: false,
+                        color: Color::black(),
+                        mcid: block.mcid,
+                        sequence: 0,
+                        offset_semantic: false,
+                        split_boundary_before: false,
+                        char_spacing: 0.0,
+                        word_spacing: 0.0,
+                        horizontal_scaling: 100.0,
+                        primary_detected: false,
+                        char_widths: vec![],
+                        heading_level: None,
+                    });
                     prev_block = Some(block);
                     break;
                 }
@@ -712,6 +767,7 @@ fn extract_cell(
 
     let mut cell = TableCell::new(cell_text.trim().to_string(), is_header);
     cell.mcids = mcids;
+    cell.spans = cell_spans;
 
     Ok(cell)
 }
@@ -1226,6 +1282,86 @@ mod tests {
 
         let result = extract_table_from_spans(&table_elem, &spans).unwrap();
         assert_eq!(result.rows[0].cells[0].text, "Hello World");
+    }
+
+    /// The synthesized `cell.spans` on the tagged-PDF (MCID→TextBlock) path must
+    /// carry per-block `font_weight`/`is_italic`, otherwise the markdown/HTML
+    /// table renderers can't emit bold/italic markers and silently fall back to
+    /// plain text. Also asserts the inter-line space is carried into the span
+    /// text so renderers reconstructing from spans don't glue tokens across a
+    /// wrapped line.
+    #[test]
+    fn test_extract_cell_spans_carry_bold_italic_and_spacing() {
+        use crate::layout::text_block::{Color, FontWeight};
+
+        let mut td = StructElem::new(StructType::TD);
+        td.add_child(StructChild::MarkedContentRef { mcid: 1, page: 0 });
+        td.add_child(StructChild::MarkedContentRef { mcid: 2, page: 0 });
+        let mut tr = StructElem::new(StructType::TR);
+        tr.add_child(StructChild::StructElem(Box::new(td)));
+        let mut table_elem = StructElem::new(StructType::Table);
+        table_elem.add_child(StructChild::StructElem(Box::new(tr)));
+
+        let base = crate::layout::TextSpan {
+            artifact_type: None,
+            text: String::new(),
+            bbox: Rect::new(0.0, 0.0, 0.0, 12.0),
+            font_name: "Test".to_string(),
+            font_size: 12.0,
+            font_weight: FontWeight::Normal,
+            is_italic: false,
+            is_monospace: false,
+            color: Color::black(),
+            mcid: None,
+            sequence: 0,
+            split_boundary_before: false,
+            offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 1.0,
+            primary_detected: false,
+            char_widths: vec![],
+            heading_level: None,
+        };
+        // Line 1: bold "Bold" (y=200).  Line 2 (wrapped): italic "Italic" (y=188).
+        let spans = vec![
+            crate::layout::TextSpan {
+                text: "Bold".into(),
+                bbox: Rect::new(10.0, 200.0, 40.0, 12.0),
+                font_weight: FontWeight::Bold,
+                mcid: Some(1),
+                ..base.clone()
+            },
+            crate::layout::TextSpan {
+                text: "Italic".into(),
+                bbox: Rect::new(10.0, 188.0, 40.0, 12.0),
+                is_italic: true,
+                mcid: Some(2),
+                ..base.clone()
+            },
+        ];
+
+        let result = extract_table_from_spans(&table_elem, &spans).unwrap();
+        let cell = &result.rows[0].cells[0];
+        assert_eq!(cell.spans.len(), 2, "both MCID blocks must yield a span");
+        assert_eq!(cell.spans[0].text, "Bold");
+        assert!(
+            matches!(cell.spans[0].font_weight, FontWeight::Bold),
+            "bold block must propagate FontWeight::Bold into the synthesized span"
+        );
+        assert!(!cell.spans[0].is_italic, "non-italic block must not be italic");
+        assert!(
+            matches!(cell.spans[1].font_weight, FontWeight::Normal),
+            "non-bold block must stay FontWeight::Normal"
+        );
+        assert!(
+            cell.spans[1].is_italic,
+            "italic block must propagate is_italic into the synthesized span"
+        );
+        assert_eq!(
+            cell.spans[1].text, " Italic",
+            "wrapped-line span must carry the leading inter-block space (review #533)"
+        );
     }
 
     /// CJK + fullwidth operator with a gap that *exceeds* the 0.15em threshold must

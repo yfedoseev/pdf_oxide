@@ -1,0 +1,426 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  pdf_oxide Java binding — Maven POM
+  ===================================
+
+  groupId:     fyi.oxide      (matches the pdf.oxide.fyi brand;
+                               reverse-DNS for Maven Central
+                               namespace verification under oxide.fyi)
+  artifactId:  pdf-oxide      (the Maven artifact; matches the
+                               package fyi.oxide.pdf)
+  version:     0.3.53         (lockstep with Cargo workspace /
+                               js/package.json / .csproj /
+                               pyproject.toml — release-preflight
+                               from v0.3.51 #515 enforces parity)
+
+  JDK floor:   11 LTS         (broadest enterprise reach; matches
+                               the Polars/Lance/RocksDB precedent.
+                               FFM API + Java 22+ is a future opt-in
+                               variant artifact, not the default.)
+
+  Publishing:  Central Portal (post-OSSRH, June 2025) via
+               central-publishing-maven-plugin 0.9.0 with
+               autoPublish=false — matches feedback_release_gate:
+               human flips publish at Central Portal after VALIDATED.
+
+  Plan:        docs/releases/plans/v0.3.53/  (gitignored workspace)
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>fyi.oxide</groupId>
+    <artifactId>pdf-oxide</artifactId>
+    <version>0.3.53</version>
+    <packaging>jar</packaging>
+
+    <name>pdf_oxide — Java binding</name>
+    <description>
+        The fastest PDF library for Java: text extraction, markdown
+        conversion, PAdES B-T/B-LT signing, destructive redaction,
+        PDF/A·X·UA compliance. Native JNI on the same Rust core
+        Python/Go/JS/C# users get — 0.8 ms mean per document on a
+        3,830-PDF corpus, 100% pass rate on valid PDFs. MIT licensed.
+    </description>
+    <url>https://pdf.oxide.fyi</url>
+
+    <licenses>
+        <license>
+            <name>MIT</name>
+            <url>https://github.com/yfedoseev/pdf_oxide/blob/main/LICENSE-MIT</url>
+            <distribution>repo</distribution>
+        </license>
+        <license>
+            <name>Apache-2.0</name>
+            <url>https://github.com/yfedoseev/pdf_oxide/blob/main/LICENSE-APACHE</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <id>yfedoseev</id>
+            <name>Yury Fedoseev</name>
+            <email>yfedoseev@gmail.com</email>
+            <url>https://github.com/yfedoseev</url>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:https://github.com/yfedoseev/pdf_oxide.git</connection>
+        <developerConnection>scm:git:git@github.com:yfedoseev/pdf_oxide.git</developerConnection>
+        <url>https://github.com/yfedoseev/pdf_oxide</url>
+        <tag>v0.3.53</tag>
+    </scm>
+
+    <issueManagement>
+        <system>GitHub</system>
+        <url>https://github.com/yfedoseev/pdf_oxide/issues</url>
+    </issueManagement>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- JDK 11 floor — broadest enterprise reach. Records and
+             sealed classes (Java 14/17) are deferred until the floor
+             can move; value types ship as final classes with manual
+             equals/hashCode/toString (drop-in record replacement is
+             non-breaking when the floor moves). -->
+        <maven.compiler.release>11</maven.compiler.release>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+
+        <!-- Native cdylib path the test JVM loads. Defaults to the
+             Linux `.so` produced by a workspace-root cargo build;
+             CI on macOS / Windows overrides via `-Dfyi.oxide.pdf.lib.path=...`
+             at the mvn command line. Declaring as a property here
+             lets the CLI `-D` actually override surefire's
+             <systemPropertyVariables> (which otherwise hardcodes
+             whatever value is written there). -->
+        <fyi.oxide.pdf.lib.path>${project.basedir}/../target/release/libpdf_oxide_jni.so</fyi.oxide.pdf.lib.path>
+
+        <!-- Plugin versions, pinned for reproducible builds. -->
+        <maven.compiler.plugin.version>3.13.0</maven.compiler.plugin.version>
+        <maven.jar.plugin.version>3.4.2</maven.jar.plugin.version>
+        <maven.source.plugin.version>3.3.1</maven.source.plugin.version>
+        <maven.javadoc.plugin.version>3.10.1</maven.javadoc.plugin.version>
+        <maven.surefire.plugin.version>3.5.1</maven.surefire.plugin.version>
+        <maven.gpg.plugin.version>3.2.7</maven.gpg.plugin.version>
+        <central.publishing.plugin.version>0.9.0</central.publishing.plugin.version>
+
+        <!-- Code-quality gates (parity with the other bindings:
+             rustfmt+clippy / gofmt+golangci / biome / dotnet-format /
+             ruff). Spotless = formatter (palantir-java-format),
+             SpotBugs = static bug analysis. -->
+        <spotless.plugin.version>2.43.0</spotless.plugin.version>
+        <palantir.java.format.version>2.50.0</palantir.java.format.version>
+        <spotbugs.plugin.version>4.8.6.4</spotbugs.plugin.version>
+        <rust.maven.plugin.version>1.4.0</rust.maven.plugin.version>
+
+        <!-- Dependency versions. -->
+        <jspecify.version>1.0.0</jspecify.version>
+        <slf4j.version>2.0.16</slf4j.version>
+        <junit.version>5.11.3</junit.version>
+        <assertj.version>3.26.3</assertj.version>
+    </properties>
+
+    <dependencies>
+        <!-- JSpecify nullable annotations. Compile-time only — does
+             not add to the runtime classpath. Matches the api-design.md
+             convention: @Nullable on optional fields, not Optional<>. -->
+        <dependency>
+            <groupId>org.jspecify</groupId>
+            <artifactId>jspecify</artifactId>
+            <version>${jspecify.version}</version>
+        </dependency>
+
+        <!-- SLF4J API for diagnostic logging from NativeLoader and
+             optional warnings (e.g. OCR-models-not-found graceful
+             fallback). Users pick the binding (logback, log4j2, …);
+             no transitive binding bundled. -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+        </dependency>
+
+        <!-- Minimal JSON parser for AutoExtractor.extractDocument /
+             extractPage typed AutoResult unmarshalling. Used internally
+             only; for users who want raw JSON the
+             extractDocumentJson() / extractPageJson() escape hatch lets
+             them parse with their preferred library. org.json:json is
+             ~80KB, public-domain-equivalent, and widely available. -->
+        <dependency>
+            <groupId>org.json</groupId>
+            <artifactId>json</artifactId>
+            <version>20240303</version>
+        </dependency>
+
+        <!-- Test dependencies. -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <sourceDirectory>src/main/java</sourceDirectory>
+        <testSourceDirectory>src/test/java</testSourceDirectory>
+
+        <resources>
+            <!-- Native libraries land here via the rust-maven-plugin
+                 (build profile) or via CI artifact download (release
+                 profile). Resource path is /fyi/oxide/pdf/native/{OS}/{ARCH}/
+                 per the native-loader contract in
+                 docs/releases/plans/v0.3.53/00-common-foundation.md §3. -->
+            <resource>
+                <directory>src/main/resources</directory>
+                <includes>
+                    <include>fyi/oxide/pdf/native/**/*</include>
+                </includes>
+            </resource>
+        </resources>
+
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>${maven.compiler.plugin.version}</version>
+                <configuration>
+                    <showWarnings>true</showWarnings>
+                    <showDeprecation>true</showDeprecation>
+                    <failOnWarning>false</failOnWarning>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>${maven.jar.plugin.version}</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
+                        </manifest>
+                        <manifestEntries>
+                            <!-- Automatic-Module-Name for JPMS users
+                                 on JDK 9+ until we ship a full
+                                 module-info.java (deferred — floor is 11). -->
+                            <Automatic-Module-Name>fyi.oxide.pdf</Automatic-Module-Name>
+                        </manifestEntries>
+                    </archive>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${maven.surefire.plugin.version}</version>
+                <configuration>
+                    <!-- Fork mode for native-heavy tests: a SIGSEGV
+                         in one test class must not take down the whole
+                         JUnit run. The Native loader's UUID extraction
+                         is multi-classloader-safe per snappy-java
+                         pattern, so reuseForks=false is safe. -->
+                    <forkCount>2</forkCount>
+                    <reuseForks>false</reuseForks>
+                    <systemPropertyVariables>
+                        <!-- Tests bypass JAR resource extraction and
+                             load the locally-built cdylib directly.
+                             Value comes from the
+                             <fyi.oxide.pdf.lib.path> project property
+                             above — CI overrides it per-OS via
+                             `mvn ... -Dfyi.oxide.pdf.lib.path=...`. -->
+                        <fyi.oxide.pdf.lib.path>${fyi.oxide.pdf.lib.path}</fyi.oxide.pdf.lib.path>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+                <version>${maven.source.plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>attach-sources</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>jar-no-fork</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>${maven.javadoc.plugin.version}</version>
+                <configuration>
+                    <source>11</source>
+                    <!-- doclint loose during v0.3.53; tighten in
+                         follow-up issues as Javadoc lands per
+                         feature-NNN-java-binding.md T19. -->
+                    <doclint>none</doclint>
+                    <quiet>true</quiet>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>attach-javadoc</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Formatting gate. `mvn spotless:check` verifies, `mvn
+                 spotless:apply` fixes. palantir-java-format is a modern,
+                 lambda-friendly 120-col formatter. NOTE: it uses javac
+                 internals, so on JDK 16+ the Maven JVM needs the
+                 add-exports flags in java/.mvn/jvm.config. -->
+            <plugin>
+                <groupId>com.diffplug.spotless</groupId>
+                <artifactId>spotless-maven-plugin</artifactId>
+                <version>${spotless.plugin.version}</version>
+                <configuration>
+                    <java>
+                        <palantirJavaFormat>
+                            <version>${palantir.java.format.version}</version>
+                        </palantirJavaFormat>
+                        <removeUnusedImports/>
+                        <importOrder/>
+                    </java>
+                </configuration>
+            </plugin>
+
+            <!-- Static bug analysis gate (null derefs, resource leaks,
+                 etc.) — `mvn spotbugs:check`. Bytecode-based, so it runs
+                 after compile and needs no native lib. -->
+            <plugin>
+                <groupId>com.github.spotbugs</groupId>
+                <artifactId>spotbugs-maven-plugin</artifactId>
+                <version>${spotbugs.plugin.version}</version>
+                <configuration>
+                    <effort>Max</effort>
+                    <threshold>Medium</threshold>
+                    <includeTests>false</includeTests>
+                    <excludeFilterFile>spotbugs-exclude.xml</excludeFilterFile>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- Profile: dev
+             For local development on a single arch. Invokes Cargo
+             via questdb/rust-maven-plugin, builds the JNI cdylib in
+             release mode, copies it into src/main/resources/fyi/oxide/
+             pdf/native/{OS}/{ARCH}/ before package phase. -->
+        <profile>
+            <id>dev</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.questdb</groupId>
+                        <artifactId>rust-maven-plugin</artifactId>
+                        <version>${rust.maven.plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>cargo-build</id>
+                                <phase>process-resources</phase>
+                                <goals>
+                                    <goal>build</goal>
+                                </goals>
+                                <configuration>
+                                    <path>../pdf_oxide_jni</path>
+                                    <release>true</release>
+                                    <features>
+                                        <feature>full</feature>
+                                    </features>
+                                    <copyTo>${project.build.outputDirectory}/fyi/oxide/pdf/native</copyTo>
+                                    <copyWithPlatformDir>true</copyWithPlatformDir>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- Profile: release
+             For CI / Maven Central publish. Assumes natives are
+             pre-built and staged into src/main/resources/fyi/oxide/
+             pdf/native/{OS}/{ARCH}/ by the GitHub Actions job
+             (per feature-NNN-java-binding.md T21). GPG-signs all
+             artifacts; uploads to Central Portal via the central-
+             publishing-maven-plugin with autoPublish=false (matches
+             feedback_release_gate: human flips publish after
+             VALIDATED). -->
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>${maven.gpg.plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                                <configuration>
+                                    <gpgArguments>
+                                        <!-- CI-friendly: read the passphrase
+                                             from the environment, no TTY. -->
+                                        <arg>--pinentry-mode</arg>
+                                        <arg>loopback</arg>
+                                    </gpgArguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>${central.publishing.plugin.version}</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <!-- Stop at VALIDATED state — human flips
+                                 publish manually from the Central
+                                 Portal UI. Matches our release-gate
+                                 pattern across all bindings. -->
+                            <autoPublish>false</autoPublish>
+                            <waitUntil>validated</waitUntil>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

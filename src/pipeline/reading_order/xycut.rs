@@ -70,6 +70,34 @@ impl Default for XYCutStrategy {
         Self {
             min_spans_for_split: 5,
             valley_threshold: 0.3,
+            // 15pt. Issue #7 (multi-column prose interleaving on
+            // issue_07_orphaned_fragments.pdf) was attempted TWICE and
+            // REVERTED both times — the 70-PDF sweep caught data
+            // corruption in google_doc_document.pdf's population table
+            // ("273.879.7501" -> "1273.879.750") each time:
+            //
+            //   Attempt 1 — lower min_valley_width 15 -> 12 so the tight
+            //   ~12pt two-column gutter is detected. Also split the
+            //   table's ~12pt inter-cell gaps -> reordered digits.
+            //
+            //   Attempt 2 — a structural find_two_column_prose_split
+            //   (exactly-two recurring left-edge clusters, wide columns,
+            //   clean gutter) tried before the single-column check. It
+            //   never fired on issue_07's WHOLE page (three left-edge
+            //   clusters: full-width intro/footer @60 + left @82 + right
+            //   @312, because is_single_column blocks band separation
+            //   first), yet it DID fire on a 2-column sub-region of the
+            //   google_doc table and reordered cells.
+            //
+            // Root cause: the same XY-Cut machinery orders both
+            // prose-columns and table-cells. Any sensitivity increase
+            // that catches issue_07's tight 2-column prose also splits
+            // table cells and corrupts data. A correct #7 fix needs a
+            // real table-vs-prose classifier (column cells are short
+            // values; prose columns are tall stacks of wide lines) AND
+            // recursive band-separation of full-width header/footer rows
+            // before column detection — a substantial XY-Cut redesign,
+            // validated against the full CI corpus, not a local tweak.
             min_valley_width: 15.0,
             prefer_horizontal: true,
         }
@@ -249,10 +277,67 @@ impl XYCutStrategy {
                 }
             }
         }
+        // Centered-block guard (issue #1): a CENTERED title/subtitle/
+        // byline block (each line horizontally centered, varying widths)
+        // produces accidental gap clusters that look like a column
+        // gutter — but it is NOT columnar, and treating it as columns
+        // scrambles reading order ("Quarterly Inventory Review" centered
+        // title read as 3 columns → "Quarterly" / "Spring" / ... ).
+        //
+        // The distinguishing signal: a REAL multi-column layout has the
+        // left column starting at a consistent left edge across rows
+        // (low variance of per-line leftmost x). Centered text has its
+        // leftmost x scattered (each line centered with a different
+        // width). Compute the spread of per-line leftmost edges; if it
+        // is large relative to the region width, the block is centered,
+        // not columnar, so do NOT treat the gap cluster as a gutter.
+        // Centered iff the per-line leftmost edges do NOT share a common
+        // left margin. A left-aligned layout (single column OR real
+        // multi-column) has most rows starting at the same x (the left
+        // margin), so the largest cluster of leftmost edges covers a
+        // majority of lines. Centered text has each line's leftmost edge
+        // scattered (different per line), so no cluster dominates.
+        //
+        // Using a cluster fraction (not raw spread) is robust to rows
+        // that only contain right-column content — those push the spread
+        // up but do not change the fact that the left margin still
+        // dominates the remaining rows. (Raw spread mis-classified the
+        // two-column test where the last row held only a right cell.)
+        let looks_centered = {
+            let mins: Vec<f32> = lines
+                .values()
+                .map(|ls| ls.iter().map(|(l, _, _)| *l).fold(f32::MAX, f32::min))
+                .collect();
+            if mins.len() < 2 {
+                false
+            } else {
+                let tol = 10.0_f32;
+                let largest = mins
+                    .iter()
+                    .map(|&a| mins.iter().filter(|&&b| (a - b).abs() <= tol).count())
+                    .max()
+                    .unwrap_or(0);
+                // Centered when no left-margin cluster covers a majority.
+                (largest as f32) < (mins.len() as f32) * 0.5
+            }
+        };
+
+        // A SMALL centered block (title / subtitle / byline — few lines,
+        // scattered leftmost edges) is treated as a single column so its
+        // lines stay in top-to-bottom order and a centered multi-word
+        // title is not split into per-word "columns" (issue #1). Gated
+        // to <= 6 lines so it only catches title-page-style blocks: a
+        // real multi-column body has many lines and is never classified
+        // centered here (its left column starts at a consistent margin,
+        // giving a small leftmost-spread anyway).
+        if looks_centered && lines.len() <= 6 {
+            return true;
+        }
+
         // Cluster gap positions: count, for each observed gap, how many
         // other gaps fall within ±20pt. If any cluster contains gaps
         // from ≥30% of lines, it's a genuine column gutter.
-        if !gap_positions.is_empty() {
+        if !gap_positions.is_empty() && !looks_centered {
             let cluster_radius = 20.0_f32;
             // Require ≥3 gap positions (or 20% of lines, whichever is
             // larger) clustered within ±20pt. 20% accommodates pages
@@ -1134,6 +1219,43 @@ mod tests {
             result.is_none(),
             "expected None for projection spanning ~100 trillion points, got Some"
         );
+    }
+
+    /// Issue #1: a CENTERED title/subtitle/byline block (each line
+    /// centered, scattered leftmost edges) must NOT be split into
+    /// per-word "columns". The centered "Quarterly Inventory Review"
+    /// title (3 large words at the same Y with wide gaps) plus centered
+    /// subtitle/byline previously aligned accidentally into fake columns,
+    /// scrambling reading order. The centered-block guard must keep the
+    /// whole block as ONE group so the title line stays intact.
+    #[test]
+    fn test_issue1_centered_title_block_not_split_into_columns() {
+        let strat = XYCutStrategy::new();
+        // Centered title (y=612, fs=28), subtitle (y=572), byline (y=532).
+        // Leftmost edges scattered: 145 / 185 / 210 (centered, not columnar).
+        let spans = vec![
+            make_span_text(145.0, 612.0, 115.0, 28.0, "Quarterly", 28.0),
+            make_span_text(300.0, 612.0, 115.0, 28.0, "Inventory", 28.0),
+            make_span_text(430.0, 612.0, 92.0, 28.0, "Review", 28.0),
+            make_span_text(185.0, 572.0, 40.0, 14.0, "Spring", 14.0),
+            make_span_text(238.0, 572.0, 31.0, 14.0, "2025", 14.0),
+            make_span_text(300.0, 572.0, 70.0, 14.0, "Distribution", 14.0),
+            make_span_text(210.0, 532.0, 45.0, 10.0, "Northwind", 10.0),
+            make_span_text(290.0, 532.0, 34.0, 10.0, "Traders", 10.0),
+        ];
+        let groups = strat.partition_region(&spans);
+        assert_eq!(
+            groups.len(),
+            1,
+            "centered title block must stay one group, got {} groups",
+            groups.len()
+        );
+        // The three title words must appear in document order within the group.
+        let g0: Vec<&str> = groups[0].iter().map(|s| s.text.as_str()).collect();
+        let qi = g0.iter().position(|t| *t == "Quarterly").unwrap();
+        let ii = g0.iter().position(|t| *t == "Inventory").unwrap();
+        let ri = g0.iter().position(|t| *t == "Review").unwrap();
+        assert!(qi < ii && ii < ri, "title words out of order: {:?}", g0);
     }
 
     /// XYCut must assign distinct group_id values to spans in different

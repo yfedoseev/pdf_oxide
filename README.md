@@ -1,8 +1,8 @@
-# PDF Oxide - The Fastest PDF Toolkit for Python, Rust, Go, JS/TS, C#, WASM, CLI & AI
+# PDF Oxide - The Fastest PDF Toolkit for Python, Rust, Go, JS/TS, C#, Java, WASM, CLI & AI
 
-> **More language bindings coming in May 2026.** Java, Ruby, PHP, Swift, and Kotlin are on the roadmap. Want another language? [Open an issue](https://github.com/yfedoseev/pdf_oxide/issues/new) and tell us.
+> **New in v0.3.53 — Java is the 8th binding** (`fyi.oxide:pdf-oxide:0.3.53` on Maven Central, JDK 11+, free Kotlin interop via the same JAR). **Ruby, PHP, and Swift are next on the roadmap.** Want another language? [Open an issue](https://github.com/yfedoseev/pdf_oxide/issues/new) and tell us.
 
-The fastest PDF library for text extraction, image extraction, and markdown conversion. Rust core with bindings for Python, Go, JavaScript / TypeScript, C# / .NET, and WASM, plus a CLI tool and MCP server for AI assistants. 0.8ms mean per document, 5× faster than PyMuPDF, 15× faster than pypdf. 100% pass rate on 3,830 real-world PDFs. MIT licensed.
+The fastest PDF library for text extraction, image extraction, and markdown conversion. Rust core with bindings for Python, Go, JavaScript / TypeScript, C# / .NET, **Java (JDK 11+, Kotlin-compatible)**, and WASM, plus a CLI tool and MCP server for AI assistants. 0.8ms mean per document, 5× faster than PyMuPDF, 15× faster than pypdf. 100% pass rate on 3,830 real-world PDFs. MIT licensed.
 
 [![Crates.io](https://img.shields.io/crates/v/pdf_oxide.svg)](https://crates.io/crates/pdf_oxide)
 [![PyPI](https://img.shields.io/pypi/v/pdf_oxide.svg)](https://pypi.org/project/pdf_oxide/)
@@ -16,7 +16,7 @@ The fastest PDF library for text extraction, image extraction, and markdown conv
 
 > **New in v0.3.24 — now available in Go, JavaScript / TypeScript, and C# / .NET**, alongside the existing Python, Rust, and WASM bindings.
 > Same Rust core, same 0.8 ms extraction speed, same 100% pass rate.
-> See the language guides: [Python](python/README.md) · [Go](go/README.md) · [JavaScript / TypeScript](js/README.md) · [C# / .NET](csharp/README.md) · [WASM](wasm-pkg/README.md)
+> See the language guides: [Python](python/README.md) · [Go](go/README.md) · [JavaScript / TypeScript](js/README.md) · [C# / .NET](csharp/README.md) · [Java / Kotlin](java/README.md) · [WASM](wasm-pkg/README.md)
 
 ## Quick Start
 
@@ -81,7 +81,7 @@ brew install yfedoseev/tap/pdf-oxide   # includes pdf-oxide-mcp
 - **Fast** — 0.8ms mean per document, 5× faster than PyMuPDF, 15× faster than pypdf, 29× faster than pdfplumber
 - **Reliable** — 100% pass rate on 3,830 test PDFs, zero panics, zero timeouts
 - **Complete** — Text extraction, image extraction, PDF creation, and editing in one library
-- **Multi-platform** — Rust, Python, Go, JavaScript/TypeScript, C#/.NET, WASM, CLI, and MCP server for AI assistants
+- **Multi-platform** — Rust, Python, Go, JavaScript/TypeScript, C#/.NET, Java/Kotlin, WASM, CLI, and MCP server for AI assistants
 - **Permissive license** — MIT / Apache-2.0 — use freely in commercial and open-source projects
 
 ## Performance
@@ -284,8 +284,22 @@ cargo install pdf_oxide_mcp             # Cargo
 - **Go** — `go get github.com/yfedoseev/pdf_oxide/go` — see [go/README.md](go/README.md)
 - **JavaScript / TypeScript (Node.js)** — `npm install pdf-oxide` — see [js/README.md](js/README.md)
 - **C# / .NET** — `dotnet add package PdfOxide` — see [csharp/README.md](csharp/README.md)
+- **Java / Kotlin (JDK 11+)** — Maven coords `fyi.oxide:pdf-oxide:0.3.53` — see [java/README.md](java/README.md)
 
-All three share the same Rust core as the Python and WASM bindings, so everything you read in this README applies to them as well — just with each language's native naming conventions.
+  ```xml
+  <dependency>
+    <groupId>fyi.oxide</groupId>
+    <artifactId>pdf-oxide</artifactId>
+    <version>0.3.53</version>
+  </dependency>
+  ```
+
+  ```gradle
+  // Gradle (Kotlin DSL)
+  implementation("fyi.oxide:pdf-oxide:0.3.53")
+  ```
+
+All four share the same Rust core as the Python and WASM bindings, so everything you read in this README applies to them as well — just with each language's native naming conventions.
 
 ## CLI
 

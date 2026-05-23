@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SpotBugs exclusion filter. Keep this list short and justified; every
+  entry is a deliberate, documented decision, not a way to silence real
+  findings.
+-->
+<FindBugsFilter>
+    <!--
+      CT_CONSTRUCTOR_THROW: throwing from an exception constructor (here,
+      argument validation via Objects.requireNonNull) is idiomatic — every
+      JDK exception validates this way. The "finalizer attack" surface only
+      exists if a type in the hierarchy overrides finalize(); none do, and
+      the binding ships no finalizers. The class is part of a public
+      exception hierarchy, so it cannot be made final. Scoped to the
+      exception package only.
+    -->
+    <Match>
+        <Package name="fyi.oxide.pdf.exception"/>
+        <Bug pattern="CT_CONSTRUCTOR_THROW"/>
+    </Match>
+</FindBugsFilter>

@@ -2,6 +2,257 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.53] - 2026-05-22
+
+> Java is the 8th binding, plus a markdown-extraction quality pass
+> and OCR parity across every prebuilt. Native Maven-Central
+> artifact on jni-rs 0.22 (JDK 11+, five-arch fat JAR), full v0.3.52
+> surface parity across text / markdown / AutoExtractor / forms /
+> render / PAdES B-B+B-T+B-LT / destructive redaction /
+> split-by-bookmarks / compliance / crypto-policy. Free Kotlin
+> interop via the same JAR. Published Python wheels and the Java JAR
+> now ship OCR (parity with Node / Go / C#). Markdown extraction
+> fixes: table-cell bold/italic preserved, CamelCase brand names no
+> longer split, spatial cell words no longer fragment into columns,
+> centered titles read in order. The May-2026 language promise
+> ([README:3](README.md)) lands.
+
+### Added
+
+- **Java binding (`fyi.oxide:pdf-oxide:0.3.53`, [#NNN](https://github.com/yfedoseev/pdf_oxide/issues/NNN))**
+  — native JNI binding to pdf_oxide via jni-rs 0.22 with the same
+  Rust core the existing seven bindings sit on. Maven Central
+  publish via `central-publishing-maven-plugin` 0.9.0 under groupId
+  `fyi.oxide` (matching the `pdf.oxide.fyi` brand), Java package
+  `fyi.oxide.pdf.*`. **JDK 11 LTS floor** — broadest enterprise
+  reach, Polars/Lance/RocksDB precedent (not kreuzberg-style
+  FFM+Java 25 which excludes the JDK 17/21 majority). Five native
+  arches embedded in the published fat JAR (linux x86_64, linux
+  aarch64, macOS x86_64, macOS aarch64, windows x86_64). 52 JNI
+  symbols across 9 wired classes; 82 JUnit tests green.
+
+- **`PdfDocument`** — `open(Path/byte[]/InputStream/String)`,
+  `open(Path, String password)` + bytes variant, `authenticate`,
+  `pageCount`, `extractText(int)`, `extractTextAuto(int)` (v0.3.51
+  graceful auto-routing), `render(int)` + DPI overload (PNG bytes),
+  `producer`/`creator` Info dict, `formFields()`,
+  `search(query, caseInsensitive, regex, maxResults)`,
+  `toMarkdown`/`toHtml` convenience, `page(int)` /
+  `pages()` / `pagesStream()`. `AutoCloseable` with idempotent
+  `close()` (shared `AtomicLong` + Cleaner backstop — multi-class-
+  loader safe).
+
+- **`PdfPage`** — `mediaBox` / `cropBox`, `width` / `height`,
+  `rotation`, `text()`, `text(BBox region)`, `words()`, `lines()`
+  (nested `List<TextWord>` per line), `chars()`, `images()`
+  (`ExtractedImage` with bytes + format enum + bbox + dimensions),
+  `tables()` (flat `List<TableCell>` with row/col indices + spans),
+  `annotations()` (13-subtype enum + URI extraction for Link).
+
+- **`MarkdownConverter`** — `toMarkdown(doc)` /
+  `toMarkdown(doc, page)` / `toHtml(doc)` / `toHtml(doc, page)`.
+
+- **`Pdf`** — `fromMarkdown(String)` / `fromHtml(String)` /
+  `fromImages(List<byte[]>)` (auto-detects JPEG/PNG), `save()` /
+  `saveTo(Path)`, `planSplitByBookmarksCount(byte[], int)`,
+  `splitByBookmarksFromBytes(byte[], int) -> byte[][]` (v0.3.50
+  #482 — round-trip proven: outlined PDF → segments → each
+  reopenable).
+
+- **`DocumentEditor`** — `open(Path/byte[]/String)`,
+  `setFormField(name, String/boolean)`, `addRedaction(page, BBox)`,
+  `redactionCount(page)`, `applyRedactionsDestructive()` (v0.3.50
+  #231 — full Phase 3 T11 pipeline; default `RedactionOptions`
+  scrub metadata + strip JS + remove embedded files + hide OCG;
+  fail-closed on composite/Type0/unknown fonts), `scrubMetadata()`,
+  `save()` / `saveTo(Path)`.
+
+- **`AutoExtractor`** (v0.3.51 #517) — `of(doc)` /
+  `fast(doc)` / `balanced(doc)` / `highFidelity(doc)` presets,
+  `classifyPageKind(int)` / `classifyDocumentKinds()` (returns
+  per-page `PageClass` enum), `extractText()` /
+  `extractTextForPage(int)` (graceful OCR fallback), `extractAutoPage(int)`
+  / `extractAutoDocument()` (simplified `AutoResult`), and the
+  rich-shape escape hatch **`extractPageJson(int)` /
+  `extractDocumentJson()`** returning serde-JSON of the full
+  v0.3.51 `PageExtraction` / `DocumentExtraction` (typed reasons +
+  per-region bboxes + confidence + ocr_used + pages_needing_ocr).
+
+- **`PdfSigner`** (v0.3.50 #235) — `fromPkcs12(Path/byte[], String)`,
+  `sign(byte[] pdf, SignOptions opts)` supporting PAdES **B-B**
+  (no TSA needed), **B-T** and **B-LT** (RFC 3161 TSA HTTP via the
+  `tsa-client` Cargo feature; `opts.tsaUrl()` required for B-T/B-LT),
+  `verify(byte[])`, `classifyLevel(byte[])` (static — returns highest
+  PAdES level present in a signed PDF without needing key material).
+
+- **`PdfValidator`** — `isPdfA(doc, PdfALevel)` /
+  `isPdfUa(doc, PdfUaLevel)` (simplified boolean verdict);
+  `validatePdfA` / `validatePdfUa` return `ValidationResult`. PDF/A
+  levels 1a/1b/2a/2b/2u/3a/3b/3u supported; PDF/A-4 + PDF/UA-2
+  surface as `PdfUnsupportedException` (pdf_oxide core gaps).
+
+- **`PdfPolicy`** (v0.3.50 #230) — `current()` / `set(PolicyMode)`
+  + `compat/strict/fipsStrict` presets. **Set-once enforced** at
+  process startup per the v0.3.50 design (second `set` throws with
+  a clear `"already set"` message).
+
+- **Exception taxonomy** — `PdfException extends RuntimeException`
+  (unchecked, modern Java consensus per Effective Java Item 71) +
+  8 typed subclasses (`PdfParseException`, `PdfEncryptedException`,
+  `PdfPermissionException`, `PdfIoException`,
+  `PdfOcrUnavailableException`, `PdfSignatureException`,
+  `PdfInvalidStateException`, `PdfUnsupportedException`) +
+  `PdfErrorKind` enum for switch-on-enum dispatch. Rust `Error::*`
+  variants mapped 1:1 in `pdf_oxide_jni/src/error.rs`.
+
+- **Value types** — `geometry.{BBox, Point, Rect, Color}`,
+  `text.{TextStyle, TextWord, TextLine, TextChar, TextSpan}`,
+  `table.{Table, TableCell}`, `image.{ImageFormat, ExtractedImage}`,
+  `form.{FormField, FormFieldType}`,
+  `auto.{ExtractMode, ExtractReason, PageClass, RegionResult,
+  AutoResult, ClassifyResult, AutoExtractConfig + Builder}`,
+  `compliance.{PdfALevel, PdfXLevel, PdfUaLevel, ValidationResult,
+  ValidationViolation}`,
+  `signature.{SignatureLevel, SignOptions + Builder}`,
+  `policy.{PolicyMode, SecurityPolicy + Builder}`,
+  `render.PixelFormat`, `redaction.RedactResult`,
+  `split.{SplitByBookmarksOptions + Builder, BookmarkSegment}`,
+  `metadata.{DocumentInfo, XmpMetadata}`,
+  `search.{SearchOptions + Builder, SearchMatch, SearchResult}`,
+  `annotation.{Annotation, AnnotationType}`. JDK 11 floor → final
+  classes with manual `equals`/`hashCode`/`toString` and
+  record-shaped accessor names (drop-in `record` migration when
+  floor moves to 17+). JSpecify `@Nullable` annotations throughout.
+
+- **`NativeLoader`** — multi-classloader-safe UUID-suffixed temp
+  extraction (snappy-java pattern, avoids the Tomcat/OSGi
+  `UnsatisfiedLinkError` trap from FLINK-5408). Honors
+  `-Dfyi.oxide.pdf.lib.path` / `-Dfyi.oxide.pdf.use.systemlib` /
+  `-Dfyi.oxide.pdf.tempdir` overrides for FIPS / locked-down
+  `/tmp` / read-only-rootfs deployments.
+
+### Fixed
+
+- **OCR now ships in the published Python wheels and Java JAR** — CI
+  test builds compiled OCR (`--features python,ocr,barcodes`) but the
+  released wheels used `--features python`, so PyPI users got a wheel
+  without OCR even though CI exercised it. Both glibc and musl Python
+  wheels, and the Java JNI fat JAR, now build with OCR for parity with
+  the Node / Go / C# prebuilts. FIPS variants deliberately exclude OCR
+  (no ONNX in FIPS deployments).
+
+- **Markdown table cells preserve bold/italic** — the tagged-PDF table
+  extractor built `TableCell`s from joined text only, discarding the
+  per-span font weight/style, so `**bold**` / `*italic*` inside table
+  cells was lost on the way out. Cells now carry their span styles
+  end-to-end (`table_extractor` populates `cell.spans`).
+
+- **Words no longer split mid-word by phantom spacing** — words whose
+  glyph runs are positioned edge-to-edge (common in presentation
+  exports) could be emitted with a spurious internal space when the
+  source font lacked a `/Widths` array. Per ISO 32000-1 §9.4.4,
+  inter-glyph spacing is the displacement between glyph origins; the
+  fallback-width correction that compensates for missing width metrics
+  now applies only when glyph boxes actually overlap, never to
+  cleanly-adjacent glyphs. Legitimate word spacing — including after a
+  token that ends in a capital letter — is preserved.
+
+- **Spatially-positioned cell words no longer fragment into columns** —
+  a single table cell whose words are laid out with wide gaps was split
+  into one column per word. A row-coverage filter drops phantom columns
+  present in too few rows, gated so it only refines an already-detected
+  table and never fabricates one from prose.
+
+- **Prose pages no longer mis-detected as tables** — a single-column
+  page whose wrapped paragraph lines' inter-word gaps coincidentally
+  aligned could be emitted as a fragmented table. A prose gate rejects a
+  spatially-detected (no-rulings) table when a row crosses a sentence
+  boundary, a structure genuine data tables do not exhibit. Ruled and
+  tagged tables are unaffected.
+
+- **Centered titles read in document order** — a centered multi-word
+  title plus subtitle/byline was misread as multiple columns,
+  scrambling the heading. A centered-block guard (scattered leftmost
+  edges, small block) keeps such blocks as a single column.
+
+- **Fewer fragmented headings** — runs of same-level heading fragments
+  (PowerPoint word-per-heading exports, wrapped headings) are merged
+  when the run is unambiguous; KPI numeric-only heading runs collapse
+  to a list.
+
+- **Stray pipe characters escaped** — a `|` outside a markdown table
+  block is escaped so downstream renderers do not misread it as a
+  malformed table row.
+
+- **Content-preservation policy for markdown post-processing** — the
+  post-process pass never drops or rewrites legitimate text. Earlier
+  band-aids that filtered "Page N" lines, rewrote bullet-glyph
+  codepoints, flattened sparse-but-real tables, or deduped repeated
+  content were removed after a 70-PDF baseline-vs-HEAD regression sweep
+  proved they damaged real documents; the correct upstream fixes are
+  tracked as follow-ups.
+
+### Known issues
+
+- Tight two-column **prose** bodies can still interleave row-by-row in
+  reading order
+  ([#534](https://github.com/yfedoseev/pdf_oxide/issues/534)). A safe
+  fix needs a table-vs-prose classifier so it does not regress
+  table-cell ordering; two threshold/structural attempts were reverted
+  after the regression sweep caught table-data corruption.
+
+- Bullet and ligature glyphs in fonts with no usable `/ToUnicode` CMap
+  can decode to an incorrect code point or be dropped
+  ([#535](https://github.com/yfedoseev/pdf_oxide/issues/535)). The fix
+  is a §9.10 decode fallback (glyph-name / encoding) in the font layer,
+  not a markdown-layer code-point rewrite (which was removed as content
+  corruption — see the content-preservation note above).
+
+### CI / Release
+
+- **`.github/workflows/ci.yml`** — new `build-lib` variant
+  `java-jni` builds the JNI cdylib with `--features rendering,
+  signatures,tsa-client`. New `java` job (matrix: ubuntu × JDK
+  {11, 17, 21}) downloads the native, stages into the Maven
+  resource path, runs `mvn compile/test/package`, validates JAR
+  contents + manifest, uploads the JAR artifact. New `java-lint`
+  job runs the Java code-quality gates — Spotless
+  (palantir-java-format) formatting check and SpotBugs static
+  analysis — bringing the Java binding to parity with the
+  format+lint gates the other bindings already enforce (rustfmt +
+  clippy / gofmt + golangci-lint / Biome / dotnet-format / ruff).
+
+- **`.github/workflows/ci-fips.yml`** — new `fips-java` job
+  (ubuntu + macOS) builds `pdf_oxide_jni` with `--no-default-features
+  --features fips,signatures` and runs the full JUnit suite against
+  the FIPS-compiled cdylib. Validates the `legacy-crypto` exclusion
+  holds end-to-end.
+
+- **`.github/workflows/release.yml`** — new `build-java-native`
+  matrix (5 arches: linux x86_64/aarch64, macOS x86_64/aarch64,
+  windows x86_64) cross-compiles the JNI cdylib per target with
+  `ocr,rendering,signatures,barcodes,tsa-client` (OCR-enabled parity
+  with the Node/Go/C# native cdylib; `system-fonts` arrives
+  transitively via `rendering`). New
+  `package-java-jar` job assembles the fat JAR (all 5 natives
+  embedded). New `publish-maven` job uploads to Maven Central via
+  `central-publishing-maven-plugin` with `autoPublish=false` per
+  `feedback_release_gate` — the upload reaches `VALIDATED` state and
+  the maintainer flips Publish from the Central Portal UI. Python
+  wheel jobs (glibc + musl) build `--features python,ocr,barcodes`
+  so the published wheels ship OCR. `validate` job extended to
+  enforce `java/pom.xml` version matches Cargo workspace.
+
+- **`pdf_oxide_jni`** — new workspace member crate (`crate-type =
+  ["cdylib", "rlib"]`; jni 0.22; feature-mirrored `ocr` /
+  `signatures` / `tsa-client` / `rendering` / `barcodes` / `full`
+  / `fips` / `legacy-crypto`; not published to crates.io — the
+  consumable artifact is the Maven Central jar).
+
+### Thanks
+
+<!-- TBD on issue close + Suleman-Elahi / other reporters -->
+
 ## [0.3.52] - 2026-05-18
 
 > Out-of-the-box OCR for the Node.js, Go and C# prebuilts, a Node

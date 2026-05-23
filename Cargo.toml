@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "pdf_oxide_mcp", "pdf_oxide_cli"]
+members = [".", "pdf_oxide_mcp", "pdf_oxide_cli", "pdf_oxide_jni"]
 exclude = ["js"]
 
 # cargo-shear exemptions: these optional deps are referenced from `[features]`
@@ -58,7 +58,7 @@ manual_checked_ops = "allow"
 
 [package]
 name = "pdf_oxide"
-version = "0.3.52"
+version = "0.3.53"
 # MSRV — driven up from 1.82 for v0.3.38. Transitive deps pulled in
 # this release push the floor to 1.88:
 #   - hybrid-array 0.4.10 (via RustCrypto) → edition 2024 → 1.85

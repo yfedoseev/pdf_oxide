@@ -20,6 +20,8 @@ on:
       - 'js/**'
       - 'csharp/**'
       - 'go/**'
+      - 'java/**'
+      - 'pdf_oxide_jni/**'
       - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
@@ -94,8 +96,11 @@ jobs:
           JS_VERSION=$(node -p "require('./js/package.json').version")
           WASM_VERSION=$(node -p "require('./wasm-pkg/package.json').version")
           CSHARP_VERSION=$(grep '<Version>' csharp/PdfOxide/PdfOxide.csproj | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/')
+          # v0.3.53: Java binding (fyi.oxide:pdf-oxide). Version pinned
+          # in the top-level <version> element of java/pom.xml.
+          JAVA_VERSION=$(grep -m1 '<version>' java/pom.xml | sed 's/.*<version>\(.*\)<\/version>.*/\1/' | tr -d ' ')
           ERRORS=0
-          for LANG_VER in "js/package.json:$JS_VERSION" "wasm-pkg/package.json:$WASM_VERSION" "csharp/PdfOxide.csproj:$CSHARP_VERSION"; do
+          for LANG_VER in "js/package.json:$JS_VERSION" "wasm-pkg/package.json:$WASM_VERSION" "csharp/PdfOxide.csproj:$CSHARP_VERSION" "java/pom.xml:$JAVA_VERSION"; do
             FILE=$(echo $LANG_VER | cut -d: -f1)
             VER=$(echo $LANG_VER | cut -d: -f2)
             if [ "$VER" != "$VERSION" ]; then
@@ -439,6 +444,250 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: native-out/
           retention-days: 7
+
+  # Java JNI shim — cross-compiled cdylib per supported arch. Mirrors
+  # `build-native-libs` matrix but builds `pdf_oxide_jni` (the JNI
+  # shim crate) instead of `pdf_oxide` (the C ABI lib). The output
+  # gets embedded into the fat JAR by `package-java-jar`.
+  build-java-native:
+    name: Build Java JNI native (${{ matrix.target }})
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: java-native-linux-x86_64
+            lib_name: libpdf_oxide_jni.so
+            jar_arch_dir: Linux/x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: java-native-linux-aarch64
+            lib_name: libpdf_oxide_jni.so
+            jar_arch_dir: Linux/aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: java-native-macos-x86_64
+            lib_name: libpdf_oxide_jni.dylib
+            jar_arch_dir: Mac/x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: java-native-macos-aarch64
+            lib_name: libpdf_oxide_jni.dylib
+            jar_arch_dir: Mac/aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: java-native-windows-x86_64
+            lib_name: pdf_oxide_jni.dll
+            jar_arch_dir: Windows/x86_64
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ matrix.target }}-java-jni-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: contains(matrix.target, 'aarch64-unknown-linux')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build pdf_oxide_jni cdylib
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ contains(matrix.target, 'aarch64-unknown-linux') && 'aarch64-linux-gnu-gcc' || '' }}
+        run: |
+          # Same consumer-facing capabilities as the Node / Go / C#
+          # native cdylib (release.yml:417) and the Python wheel, so OCR
+          # is uniform across bindings. Includes OCR — JAR grows to
+          # ~80 MB but matches v0.3.52's OCR-enabled prebuilt promise.
+          # NOTE: `system-fonts` is NOT listed — the `pdf_oxide_jni`
+          # crate does not re-export it (only `pdf_oxide` does); it is
+          # pulled in transitively by `rendering`, so listing it here
+          # errors with "package does not contain this feature". FIPS
+          # Java builds in ci-fips.yml continue to opt out (no ocr).
+          cargo build --release -p pdf_oxide_jni \
+            --features ocr,rendering,signatures,barcodes,tsa-client \
+            --target ${{ matrix.target }}
+          mkdir -p native-out/${{ matrix.jar_arch_dir }}
+          cp target/${{ matrix.target }}/release/${{ matrix.lib_name }} \
+             native-out/${{ matrix.jar_arch_dir }}/
+          ls -la native-out/${{ matrix.jar_arch_dir }}/
+
+      - name: Upload Java JNI native
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: native-out/
+          retention-days: 7
+
+  # Build the fat JAR with all 5 platform natives embedded. The
+  # JAR is the publishable artifact; consumers
+  # `mvn install fyi.oxide:pdf-oxide:0.3.53` and it just works on
+  # any supported platform via NativeLoader's UUID-suffix extraction.
+  package-java-jar:
+    name: Package Java fat JAR
+    needs: [validate, build-java-native]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Set up JDK 11 (build floor)
+        uses: actions/setup-java@7a6d8a8234af8eb26422e24e3006232cccaa061b # v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+
+      - name: Cache Maven local repository
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ runner.os }}-${{ hashFiles('java/pom.xml') }}
+
+      # Pull each per-arch native into the resource tree the NativeLoader
+      # looks at. Each download-artifact step extracts the artifact's
+      # contents (which already include the {OS}/{ARCH}/ subdirectory
+      # prefix per build-java-native's artifact layout).
+      - name: Download Linux x86_64 native
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: java-native-linux-x86_64
+          path: java/src/main/resources/fyi/oxide/pdf/native/
+
+      - name: Download Linux aarch64 native
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: java-native-linux-aarch64
+          path: java/src/main/resources/fyi/oxide/pdf/native/
+
+      - name: Download macOS x86_64 native
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: java-native-macos-x86_64
+          path: java/src/main/resources/fyi/oxide/pdf/native/
+
+      - name: Download macOS aarch64 native
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: java-native-macos-aarch64
+          path: java/src/main/resources/fyi/oxide/pdf/native/
+
+      - name: Download Windows x86_64 native
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: java-native-windows-x86_64
+          path: java/src/main/resources/fyi/oxide/pdf/native/
+
+      - name: Verify all 5 natives staged
+        shell: bash
+        run: |
+          cd java/src/main/resources/fyi/oxide/pdf/native
+          tree . || find . -type f
+          for path in Linux/x86_64/libpdf_oxide_jni.so \
+                      Linux/aarch64/libpdf_oxide_jni.so \
+                      Mac/x86_64/libpdf_oxide_jni.dylib \
+                      Mac/aarch64/libpdf_oxide_jni.dylib \
+                      Windows/x86_64/pdf_oxide_jni.dll; do
+            [ -f "$path" ] || { echo "::error::missing $path"; exit 1; }
+          done
+
+      - name: mvn package (skip the dev rust-maven-plugin trigger)
+        working-directory: java
+        run: mvn -B -P!dev -DskipTests package
+
+      - name: Verify fat JAR
+        shell: bash
+        working-directory: java
+        run: |
+          JAR=target/pdf-oxide-0.3.53.jar
+          [ -f "$JAR" ] || { echo "::error::JAR not built"; exit 1; }
+          for arch in Linux/x86_64 Linux/aarch64 Mac/x86_64 Mac/aarch64 Windows/x86_64; do
+            jar tf "$JAR" | grep -q "fyi/oxide/pdf/native/$arch/" \
+              || { echo "::error::missing arch in JAR: $arch"; exit 1; }
+          done
+          echo "::notice::Fat JAR validated: $(stat -c%s "$JAR") bytes"
+
+      - name: Upload fat JAR
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: java-jar-fat
+          path: java/target/pdf-oxide-*.jar
+          retention-days: 30
+
+  # Publish to Maven Central via the post-OSSRH central-publishing-
+  # maven-plugin. `autoPublish=false` per pom.xml + the release-gate
+  # convention: the upload reaches VALIDATED state, then a human
+  # flips the Publish button in the Central Portal UI.
+  publish-maven:
+    name: Publish to Maven Central (staged)
+    needs: [package-java-jar, create-release]
+    runs-on: ubuntu-latest
+    # Same convention as publish-npm / publish-pypi / publish-nuget:
+    # gated by the manual workflow_dispatch input + the maintainer
+    # release-gate, and only runs if the tag commit is on main.
+    if: ${{ github.event.inputs.publish == 'true' || github.event_name == 'push' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@7a6d8a8234af8eb26422e24e3006232cccaa061b # v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+          # Configure the Central Portal credentials in settings.xml
+          # — token-based (post-OSSRH); the env vars come from secrets.
+          server-id: central
+          server-username: MAVEN_CENTRAL_USERNAME
+          server-password: MAVEN_CENTRAL_PASSWORD
+          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      - name: Download fat JAR
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: java-jar-fat
+          path: java/target/
+
+      # Re-stage natives so mvn deploy can produce sources/javadoc/JAR
+      # outputs the deployer expects (Central Portal validates the
+      # full bundle: JAR + sources + javadoc + .asc + .md5/.sha1).
+      - name: Re-download all platform natives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: java-native-*
+          path: java/src/main/resources/fyi/oxide/pdf/native/
+          merge-multiple: true
+
+      - name: mvn deploy to Central Portal (autoPublish=false)
+        working-directory: java
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: |
+          # `release` profile turns on GPG signing + central-publishing-
+          # maven-plugin with `autoPublish=false` per pom.xml. The
+          # deployment reaches VALIDATED state in Central Portal; a
+          # maintainer flips "Publish" manually from the UI (matches
+          # feedback_release_gate — human gates the public publish).
+          mvn -B -P!dev -Prelease -DskipTests deploy
+
+      - name: Notice — Central Portal staging done
+        run: |
+          echo "::notice::Java JAR uploaded to Central Portal in VALIDATED state."
+          echo "::notice::Sign in at https://central.sonatype.com/ and flip Publish to release."
 
   # Package per-platform Go FFI tarballs as GitHub Release assets.
   #
@@ -958,21 +1207,13 @@ jobs:
             artifact_name: wheels-windows-aarch64
 
     steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
       - name: Free disk space (Ubuntu)
         if: runner.os == 'Linux'
-        uses: jlumbroso/free-disk-space@main
+        uses: ./.github/actions/free-disk-space
         with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          # Keep swap: removing it causes OOM-induced SIGBUS in the
-          # linker during parallel build/link steps. ~48 GB free after
-          # the reclaims above is enough headroom. See ci.yml.
-          swap-storage: false
-
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+          tool-cache: 'false'
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -1008,18 +1249,27 @@ jobs:
       # Debian 11. Building directly on ubuntu-latest tags wheels with the
       # runner's glibc (2_35+) and locks those distros out — see PR #463
       # comment thread on 0.3.42/0.3.43 install failure on Lambda Python.
+      # Feature set matches python.yml CI exactly: `python,ocr,barcodes`.
+      # Previously the published wheel only carried `python`, so PyPI users
+      # got a Python wheel without OCR even though CI tested the OCR path.
+      # v0.3.52 enabled OCR for Node / Go / C# prebuilts; Python was missed
+      # — this restores parity. OCR users still need the runtime onnxruntime
+      # Python wheel via `pip install pdf_oxide[ocr]`, per the existing
+      # `[project.optional-dependencies] ocr` declaration in pyproject.toml.
+      # FIPS Python builds opt out via release-fips.yml's
+      # `--no-default-features --features python,fips,icc` (no ocr listed).
       - name: Build wheels (linux glibc — manylinux_2_28)
         if: runner.os == 'Linux'
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           target: ${{ matrix.target }}
           manylinux: '2_28'
-          args: --release --features python --out dist
+          args: --release --features python,ocr,barcodes --out dist
 
       - name: Build wheels (macOS / Windows)
         if: runner.os != 'Linux'
         shell: bash
-        run: maturin build --release --features python --target ${{ matrix.target }} --out dist
+        run: maturin build --release --features python,ocr,barcodes --target ${{ matrix.target }} --out dist
 
       - name: Verify manylinux_2_28 tag
         if: runner.os == 'Linux'
@@ -1068,7 +1318,10 @@ jobs:
         with:
           target: ${{ matrix.target }}
           manylinux: musllinux_1_2
-          args: --release --features python --out dist
+          # Mirrors the glibc Python wheel feature set above and python.yml CI:
+          # `python,ocr,barcodes`. Without `ocr`, musl Python users (Alpine,
+          # distroless-musl images) cannot use OCR at all.
+          args: --release --features python,ocr,barcodes --out dist
 
       - name: Upload wheels
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

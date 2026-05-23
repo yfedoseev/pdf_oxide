@@ -1,0 +1,16 @@
+# Maven build output
+target/
+*.class
+
+# Native libraries staged into resources by the rust-maven-plugin
+# (dev profile) — generated, not source. CI matrix per-arch builds
+# regenerate these into the published JAR.
+src/main/resources/fyi/oxide/pdf/native/
+
+# IDE / editor noise
+.idea/
+.vscode/
+*.iml
+.classpath
+.project
+.settings/

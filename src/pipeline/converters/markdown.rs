@@ -17,6 +17,581 @@ static RE_URL: LazyLock<Regex> =
 static RE_EMAIL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})").unwrap());
 
+/// Detect markdown table separator rows like `|---|---|` or
+/// `| :--- | ---: |`. A line qualifies if every `|`-delimited cell is
+/// a sequence of `-` (with optional surrounding `:` for alignment) and
+/// optional spaces. At least two cells required so single-pipe lines
+/// (which are the very pattern we're trying to escape) do not match.
+fn is_table_separator_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('|') || !trimmed.ends_with('|') {
+        return false;
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let cells: Vec<&str> = inner.split('|').collect();
+    if cells.len() < 2 {
+        return false;
+    }
+    cells.iter().all(|cell| {
+        let c = cell.trim();
+        !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':')
+    })
+}
+
+/// Issue #10 band-aid. Walk the rendered markdown line by line; for any
+/// line that starts with `|` but is *not* part of a markdown table block
+/// (defined as the line itself being a separator, or the next line being
+/// a separator, or the previous line already classified as in-table),
+/// escape the leading `|` as `\|`. Without this, stray header/footer
+/// fragments leak into prose and downstream markdown parsers misread
+/// them as malformed table rows, fragmenting subsequent text.
+fn escape_stray_leading_pipes(s: &str) -> String {
+    let lines: Vec<&str> = s.split('\n').collect();
+    let mut in_table = vec![false; lines.len()];
+
+    // First pass: classify separator lines and the lines immediately
+    // above (header) and below (data rows) that are clearly part of
+    // the same table block.
+    for (i, line) in lines.iter().enumerate() {
+        if is_table_separator_line(line) {
+            in_table[i] = true;
+            if i > 0 && lines[i - 1].trim_start().starts_with('|') {
+                in_table[i - 1] = true;
+            }
+            // Mark contiguous downstream data rows that also start with `|`.
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].trim_start().starts_with('|') {
+                in_table[j] = true;
+                j += 1;
+            }
+        }
+    }
+
+    let mut out = String::with_capacity(s.len());
+    for (i, line) in lines.iter().enumerate() {
+        if !in_table[i] {
+            let leading_ws_len = line.len() - line.trim_start().len();
+            let trimmed = &line[leading_ws_len..];
+            if let Some(rest) = trimmed.strip_prefix('|') {
+                out.push_str(&line[..leading_ws_len]);
+                out.push_str("\\|");
+                out.push_str(rest);
+            } else {
+                out.push_str(line);
+            }
+        } else {
+            out.push_str(line);
+        }
+        if i + 1 < lines.len() {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Heuristic for the 2-fragment wrapped-heading case used by
+/// `merge_consecutive_same_level_headings` (issue #4). Returns true
+/// when the two heading fragments visually look like ONE heading split
+/// across two lines (wrap), as opposed to two distinct same-level
+/// sections.
+///
+/// Generic, script-agnostic signals (no English word lists):
+///   1. First fragment does NOT end with a sentence-terminating
+///      punctuation (`.`, `?`, `!`, and their CJK/Arabic equivalents
+///      `。`, `？`, `！`, `؟`). Sentence-end is the strong split
+///      signal across scripts.
+///   2. AND one of:
+///      a) first ends with continuation punctuation (`,`, `;`, `、`,
+///         `；` — comma / semicolon variants), OR
+///      b) second fragment opens with a Unicode-lowercase letter
+///         (`\p{Ll}`). A wrapped heading's continuation is virtually
+///         always lowercase (or non-cased in scripts that lack case)
+///         while a distinct following heading typically begins with a
+///         capitalized word.
+fn looks_like_heading_wrap(first: &str, second: &str) -> bool {
+    let first_trim = first.trim_end();
+    if let Some(last) = first_trim.chars().last() {
+        // Sentence terminators (Latin + CJK + Arabic).
+        if matches!(last, '.' | '?' | '!' | '。' | '？' | '！' | '\u{061F}') {
+            return false;
+        }
+        // Continuation punctuation (Latin comma/semicolon + CJK + middle dot).
+        if matches!(last, ',' | ';' | '、' | '；' | '·') {
+            return true;
+        }
+    }
+    // Lowercase opener on the second fragment, Unicode-aware via
+    // char.is_lowercase() (matches `\p{Ll}`).
+    let second_first = second.trim_start().chars().next();
+    if let Some(c) = second_first {
+        if c.is_lowercase() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Issue #2 fix. Drop consecutive duplicate paragraphs from the final
+/// markdown. Duplicates surface in the reporter's corpus when the
+/// extractor emits the same content twice (once via the structure
+/// pipeline, once via the plaintext fallback). Exact-match only; we
+/// will not touch near-duplicates because legitimate prose can repeat
+/// a short phrase.
+// RETIRED from the active pipeline (see render_spans). Removes legit
+// repeated content (distinct form widgets with identical labels,
+// repeated headings). Kept for reference + unit-test documentation.
+#[allow(dead_code)]
+fn dedup_consecutive_paragraphs(s: &str) -> String {
+    let paras: Vec<&str> = s.split("\n\n").collect();
+    let mut out: Vec<&str> = Vec::with_capacity(paras.len());
+    let mut prev_norm: Option<String> = None;
+    for p in paras {
+        let norm: String = p
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if norm.is_empty() {
+            out.push(p);
+            prev_norm = None;
+            continue;
+        }
+        if prev_norm.as_deref() == Some(norm.as_str()) {
+            // Skip — identical to the immediately-previous content paragraph.
+            continue;
+        }
+        prev_norm = Some(norm);
+        out.push(p);
+    }
+    out.join("\n\n")
+}
+
+/// Issue #5 fix. Some spatial-grouping artifacts produce header rows
+/// where every cell carries the same identifier (e.g. `| Q1'25 |
+/// Q1'25 | Q1'25 | Q1'25 |`). Detect such all-identical header rows
+/// (marker: the row's next line IS a markdown separator `|---|...|`)
+/// and dedup so only the first cell carries the value. Conservative:
+/// only fires when ALL non-empty cells are byte-identical AND there
+/// are >= 3 cells (single duplicates are too ambiguous to touch).
+// RETIRED from the active pipeline (see render_spans). Blanking
+// "duplicate" header cells assumes the duplication is an artifact.
+// Kept for reference + unit-test documentation.
+#[allow(dead_code)]
+fn dedup_identical_header_cells(s: &str) -> String {
+    let lines: Vec<&str> = s.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let next_is_sep = i + 1 < lines.len() && is_table_separator_line(lines[i + 1]);
+        let trimmed = line.trim();
+        let looks_like_header = trimmed.starts_with('|') && trimmed.ends_with('|');
+        if !next_is_sep || !looks_like_header {
+            out.push(line.to_string());
+            i += 1;
+            continue;
+        }
+        let inner = &trimmed[1..trimmed.len() - 1];
+        let cells: Vec<&str> = inner.split('|').collect();
+        let non_empty: Vec<&str> = cells
+            .iter()
+            .map(|c| c.trim())
+            .filter(|c| !c.is_empty())
+            .collect();
+        if non_empty.len() < 3 {
+            out.push(line.to_string());
+            i += 1;
+            continue;
+        }
+        let first = non_empty[0];
+        let all_same = non_empty.iter().all(|c| *c == first);
+        if !all_same {
+            out.push(line.to_string());
+            i += 1;
+            continue;
+        }
+        // Rewrite: keep first cell, blank the rest. Preserve cell count.
+        let mut new_cells: Vec<String> = Vec::with_capacity(cells.len());
+        let mut wrote_first = false;
+        for cell in &cells {
+            if cell.trim().is_empty() {
+                new_cells.push(String::new());
+            } else if !wrote_first {
+                new_cells.push(format!(" {} ", cell.trim()));
+                wrote_first = true;
+            } else {
+                new_cells.push(String::from(" "));
+            }
+        }
+        out.push(format!("|{}|", new_cells.join("|")));
+        i += 1;
+    }
+    out.join("\n")
+}
+
+/// Issue #1 + #4 fix. Merge runs of consecutive same-level markdown
+/// headings into a single heading when the run is unambiguously ONE
+/// logical heading. See `looks_like_heading_wrap` for the 2-fragment
+/// wrapped-heading rule; otherwise require 3+ fragments each <= 2
+/// words (canonical PowerPoint word-per-heading pattern).
+fn merge_consecutive_same_level_headings(s: &str) -> String {
+    let lines: Vec<&str> = s.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+        // Capture leading `#`s, require space after.
+        let level = trimmed.bytes().take_while(|&b| b == b'#').count();
+        let is_heading =
+            (1..=6).contains(&level) && trimmed.as_bytes().get(level).copied() == Some(b' ');
+        if !is_heading {
+            out.push(line.to_string());
+            i += 1;
+            continue;
+        }
+
+        // Accumulate consecutive same-level headings separated only by
+        // blank lines. No word-count gate here — policy decision is
+        // made AFTER collection so the wrapped-2-fragment case (which
+        // tolerates longer fragments) is reachable.
+        let mut texts: Vec<String> = vec![trimmed[level + 1..].trim().to_string()];
+        let mut j = i + 1;
+        loop {
+            // Skip blank lines.
+            while j < lines.len() && lines[j].trim().is_empty() {
+                j += 1;
+            }
+            if j >= lines.len() {
+                break;
+            }
+            let next_trim = lines[j].trim_start();
+            let next_level = next_trim.bytes().take_while(|&b| b == b'#').count();
+            let next_is_heading =
+                next_level == level && next_trim.as_bytes().get(next_level).copied() == Some(b' ');
+            if !next_is_heading {
+                break;
+            }
+            let next_text = next_trim[next_level + 1..].trim().to_string();
+            // Hard guard: refuse to even ATTEMPT merge if any single
+            // fragment is implausibly long for a heading (> 15 words).
+            // That cap is high enough that no real wrapped heading
+            // exceeds it, while still preventing pathological fusion.
+            if next_text.split_whitespace().count() > 15 {
+                break;
+            }
+            texts.push(next_text);
+            j += 1;
+        }
+
+        // Two policies that both prove the run is one logical heading:
+        //   A) 3+ fragments AND each <= 2 words — canonical PowerPoint
+        //      word-per-heading pattern.
+        //   B) Exactly 2 fragments AND the FIRST ends with a
+        //      continuation-strength punctuation (`,` or `;`) or no
+        //      sentence-terminator (`.`, `?`, `!`, `:`). The second
+        //      fragment must visually look like a continuation: start
+        //      lowercase or with a connector word ("and"/"or"/"the"/
+        //      "with"/"of"/...). This matches the reporter's wrapped-
+        //      heading shape `## Despite seasonal slowdown,` +
+        //      `## warehouse operations maintained...` while still
+        //      keeping `# First Heading` / `# Second Heading` apart
+        //      (no trailing comma, second word "Second" is capitalized
+        //      and not a connector).
+        let three_plus_short =
+            texts.len() >= 3 && texts.iter().all(|t| t.split_whitespace().count() <= 2);
+        let wrapped_two = texts.len() == 2 && looks_like_heading_wrap(&texts[0], &texts[1]);
+        if three_plus_short || wrapped_two {
+            let merged = texts.join(" ");
+            let hashes = "#".repeat(level);
+            out.push(format!("{} {}", hashes, merged));
+            i = j;
+        } else {
+            out.push(line.to_string());
+            i += 1;
+        }
+    }
+    out.join("\n")
+}
+
+/// Issue #9 — DELIBERATELY NOT a post-process filter. Initial
+/// implementation regex-matched "Page N" / "N of M" / "— 12 —" at
+/// the markdown stage and dropped those lines from the output. That
+/// was wrong: it discards legitimate text content. If a PDF actually
+/// has "Page 1" in its content stream the correct behavior is to
+/// extract it, not silently delete it.
+///
+/// The proper fix lives upstream and follows the PDF spec
+/// (ISO 32000-1:2008 §14.8.2.2 "Artifacts"). Pagination, headers,
+/// and footers are supposed to be marked as `/Artifact` marked-
+/// content elements; extraction can/should skip artifacts when
+/// producing the document's logical text stream. For untagged PDFs
+/// without artifact metadata, geometric header/footer detection at
+/// extraction time (consistent y-position across pages, repeated
+/// content) is the correct heuristic — not a regex that pattern-
+/// matches the rendered prose.
+///
+/// The function is retained as a no-op stub for backward source
+/// compatibility (the post-process pipeline below no longer invokes
+/// it). Future work: implement the upstream artifact-skip path.
+#[allow(dead_code)]
+fn filter_page_number_lines(s: &str) -> String {
+    s.to_string()
+}
+
+/// Issue #13 — DELIBERATELY NOT a post-process replacement. The
+/// reporter's examples (`•` → `❍`, unexpected `ī`, `Ƅ`, `ώ`) all
+/// trace back to font-encoding / ToUnicode CMap misses in the
+/// extractor (PARSER_WARNINGS report, 25,350 occurrences of
+/// "ToUnicode CMap MISS"). Pattern-replacing codepoints at the
+/// markdown layer would MODIFY the document's actual text — if a
+/// PDF really uses `❍` deliberately, dropping it to `•` is content
+/// corruption, not a fix.
+///
+/// The correct fix is upstream and follows PDF §9.10 (Extraction of
+/// text content): when a Type0 font has no `/ToUnicode` CMap and no
+/// recognizable Encoding, fall back to the `/CIDSystemInfo` or
+/// glyph-name heuristics rather than emitting garbage codepoints.
+/// The bullet symptom disappears for free once the CMap fallback
+/// path is robust.
+///
+/// Function retained as a no-op for backward source compatibility.
+#[allow(dead_code)]
+fn normalize_bullet_glyphs(s: &str) -> String {
+    s.to_string()
+}
+
+/// Issues #3 / #6 / partial #11 band-aid. Detect "degenerate" markdown
+/// table blocks produced by the spatial-table heuristic firing on
+/// multi-column prose, and replace them with a single flowing paragraph.
+///
+/// A table block is considered degenerate when:
+///   - >= 5 columns (typical multi-column prose run width),
+///   - >= 2 data rows after the header/separator,
+///   - >= 60% of non-empty cells contain a single word.
+///
+/// Such blocks are almost never legitimate data tables — real tables in
+/// the test corpus average 2-4 words per cell. The replacement is a
+/// best-effort: concatenate every non-empty cell with a single space, in
+/// row-major order.
+// RETIRED from the active pipeline (see render_spans). Flattened a
+// real country-data table in the 70-PDF regression sweep. A
+// markdown-layer heuristic cannot reliably distinguish a spurious
+// prose "table" from a real sparse one. Kept for reference +
+// unit-test documentation.
+#[allow(dead_code)]
+fn simplify_degenerate_tables(s: &str) -> String {
+    let lines: Vec<&str> = s.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        // Detect a candidate table: header row + separator + at least one data row.
+        let header = lines[i];
+        if !header.trim_start().starts_with('|')
+            || i + 1 >= lines.len()
+            || !is_table_separator_line(lines[i + 1])
+        {
+            out.push(header.to_string());
+            i += 1;
+            continue;
+        }
+
+        // Collect the full table block.
+        let mut block_end = i + 2;
+        while block_end < lines.len() && lines[block_end].trim_start().starts_with('|') {
+            block_end += 1;
+        }
+        let block = &lines[i..block_end];
+
+        // Split each row's cells (drop the outer empty cells from the
+        // leading/trailing pipes).
+        let parse_row = |row: &str| -> Vec<String> {
+            row.trim()
+                .trim_start_matches('|')
+                .trim_end_matches('|')
+                .split('|')
+                .map(|c| c.trim().to_string())
+                .collect()
+        };
+
+        let header_cells = parse_row(header);
+        let data_rows: Vec<Vec<String>> = block.iter().skip(2).map(|r| parse_row(r)).collect();
+
+        let cols = header_cells.len();
+        let data_row_count = data_rows.len();
+
+        if cols < 5 || data_row_count < 2 {
+            out.extend(block.iter().map(|l| l.to_string()));
+            i = block_end;
+            continue;
+        }
+
+        // Compute single-word-cell ratio among non-empty cells.
+        let mut non_empty = 0usize;
+        let mut single_word = 0usize;
+        for cell in header_cells.iter().chain(data_rows.iter().flatten()) {
+            if cell.is_empty() {
+                continue;
+            }
+            non_empty += 1;
+            if cell.split_whitespace().count() == 1 {
+                single_word += 1;
+            }
+        }
+        if non_empty == 0 {
+            // Pure empty block — drop entirely.
+            i = block_end;
+            continue;
+        }
+        let single_ratio = single_word as f32 / non_empty as f32;
+
+        if single_ratio < 0.6 {
+            out.extend(block.iter().map(|l| l.to_string()));
+            i = block_end;
+            continue;
+        }
+
+        // Degenerate: flatten to a single paragraph.
+        let mut words: Vec<String> = Vec::new();
+        for cell in header_cells.iter().chain(data_rows.iter().flatten()) {
+            if !cell.is_empty() {
+                words.push(cell.clone());
+            }
+        }
+        out.push(words.join(" "));
+        i = block_end;
+    }
+    out.join("\n")
+}
+
+/// Issue #11 (partial) band-aid. Detect runs of 2+ consecutive numeric-only
+/// H1/H2 headings (e.g. `# 23,500`, `# 99.2%`, `# 87%`, `# 4.2 days`)
+/// produced when a KPI dashboard's large numbers were spatially read as
+/// stand-alone headings. Convert the run into a bulleted list so the
+/// values render as data instead of as section titles. Conservative:
+/// every heading in the run must match the numeric pattern; if any one
+/// fails, the run is left alone.
+fn collapse_numeric_heading_runs(s: &str) -> String {
+    // Matches a heading line whose body is a short numeric/percentage/
+    // currency/duration value. Allowed: digits, comma/period/colon/dash/
+    // slash, `%`, `$`, `£`, `€`, optional letters for "K"/"M"/"B"/"days"/
+    // "hrs"/"min"/"sec". Capped length keeps real numeric headings
+    // (e.g. "# 2024 Annual Report") from matching by accident.
+    static RE_NUMERIC_HEADING: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(#{1,2})\s+([\$£€]?\d[\d,.:\-/]*\s*(?:%|K|M|B|days|day|hrs|hr|min|sec)?)\s*$")
+            .unwrap()
+    });
+    let lines: Vec<&str> = s.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        // Skip blank lines normally.
+        if !RE_NUMERIC_HEADING.is_match(lines[i]) {
+            out.push(lines[i].to_string());
+            i += 1;
+            continue;
+        }
+        // Found one — look ahead for more numeric headings of the same
+        // level, allowing blank-line separators.
+        let level = lines[i]
+            .trim_start()
+            .bytes()
+            .take_while(|&b| b == b'#')
+            .count();
+        let mut values: Vec<String> = Vec::new();
+        let mut last_match_idx = i;
+        let mut j = i;
+        while j < lines.len() {
+            if lines[j].trim().is_empty() {
+                j += 1;
+                continue;
+            }
+            let trim = lines[j].trim_start();
+            let l = trim.bytes().take_while(|&b| b == b'#').count();
+            if l != level {
+                break;
+            }
+            if let Some(caps) = RE_NUMERIC_HEADING.captures(lines[j]) {
+                let v = caps
+                    .get(2)
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_default();
+                if v.chars().count() > 20 {
+                    break;
+                }
+                values.push(v);
+                last_match_idx = j;
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        if values.len() < 2 {
+            out.push(lines[i].to_string());
+            i += 1;
+            continue;
+        }
+        // Emit as a bulleted list.
+        for v in &values {
+            out.push(format!("- {}", v));
+        }
+        out.push(String::new()); // trailing blank line
+        i = last_match_idx + 1;
+    }
+    out.join("\n")
+}
+
+/// Issue #12 (narrow) band-aid. Within a single bold block `**...**`,
+/// detect the CamelCase fragmentation pattern produced when a word
+/// rendered with mixed fonts (e.g. bold first letter, regular rest) is
+/// emitted as space-separated fragments inside one bold span. The
+/// canonical example from the reporter's corpus is `**S alesF orce**`
+/// (intended: `**SalesForce**`).
+///
+/// Match criteria: a single uppercase ASCII letter followed by a space,
+/// then a lowercase chunk that itself contains a later uppercase letter
+/// (the CamelCase indicator), then a space and another lowercase chunk.
+/// All three pieces must live inside the same `**...**` pair. Replacing
+/// `**A bcD efg**` with `**AbcDefg**`.
+///
+/// Conservative on purpose: matching mid-prose "I am Bob" or "USB Type C"
+/// would corrupt legitimate text, so the regex requires the CamelCase
+/// signal to be unambiguous (lowercase+uppercase within a single inner
+/// fragment).
+fn coalesce_camelcase_bold_fragments(s: &str) -> String {
+    // Unicode-aware (script-agnostic): `\p{Lu}` matches any
+    // uppercase letter in Unicode, `\p{Ll}` matches any lowercase
+    // letter. The CamelCase signal — a lowercase-letter run
+    // containing a later uppercase letter inside one fragment — is
+    // unambiguous across Latin, Cyrillic, Greek, Armenian, Coptic,
+    // and other cased scripts. Non-cased scripts (CJK, Arabic,
+    // Hebrew) lack CamelCase entirely so the pattern can never
+    // match — that's correct behavior.
+    //
+    // Pass 1 — inline form: `**A bcD ef**` (closing `**` after the
+    // lowercase tail). Three fragments inside one bold pair.
+    static RE_CAMELCASE_BOLD_INLINE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\*\*(\p{Lu})\s+(\p{Ll}+\p{Lu}\p{Ll}*)\s+(\p{Ll}+)\*\*").unwrap()
+    });
+    // Pass 2 — bound form: `**A bcD** ef` (closing `**` mid-CamelCase,
+    // lowercase tail outside the bold). Two fragments inside the bold
+    // pair, tail immediately (or after one optional space) after.
+    static RE_CAMELCASE_BOLD_BOUND: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\*\*(\p{Lu})\s+(\p{Ll}+\p{Lu}\p{Ll}*)\*\*\s*(\p{Ll}+)").unwrap()
+    });
+    let pass1 = RE_CAMELCASE_BOLD_INLINE
+        .replace_all(s, |caps: &regex::Captures| {
+            format!("**{}{}{}**", &caps[1], &caps[2], &caps[3])
+        })
+        .to_string();
+    RE_CAMELCASE_BOLD_BOUND
+        .replace_all(&pass1, |caps: &regex::Captures| {
+            format!("**{}{}{}**", &caps[1], &caps[2], &caps[3])
+        })
+        .to_string()
+}
+
 /// Markdown output converter.
 ///
 /// Converts ordered text spans to Markdown format with optional formatting:
@@ -917,8 +1492,28 @@ impl MarkdownOutputConverter {
             // Normalize known mis-extracted bullet glyphs (DEL from Zapf
             // Dingbats mappings, ❍ from ligature remaps) to U+2022 so the
             // bullet-span logic above can recognize them uniformly.
-            if text_str.contains('\x7f') || text_str.contains('❍') {
-                text_str = text_str.replace(['\x7f', '❍'], "•");
+            //
+            // POSITION-AWARE (issue #13 / user-content-preservation
+            // principle): only replace the FIRST occurrence when it
+            // sits at the very start of the span (a bullet position).
+            // Mid-prose `❍` / DEL must survive verbatim — if the
+            // source PDF actually contains those codepoints in body
+            // text, rewriting them is content corruption. Bullet
+            // detection at line start is intact; arbitrary text-stream
+            // codepoints are no longer mutated.
+            let trim_start = text_str.trim_start();
+            if let Some(first) = trim_start.chars().next() {
+                if first == '\x7f' || first == '❍' {
+                    let leading_ws_len = text_str.len() - trim_start.len();
+                    // Replace just this leading char, leave any later
+                    // occurrences inside the same span verbatim.
+                    let bullet_byte_len = first.len_utf8();
+                    text_str = format!(
+                        "{}•{}",
+                        &text_str[..leading_ws_len],
+                        &text_str[leading_ws_len + bullet_byte_len..]
+                    );
+                }
             }
 
             // Pipe characters are only markdown-syntactic inside table
@@ -1118,6 +1713,81 @@ impl MarkdownOutputConverter {
         // Merge key-value pairs that were split across lines due to column-based
         // reading order (e.g. "Grand Total\n$750.00" → "Grand Total $750.00").
         final_result = super::merge_key_value_pairs(&final_result);
+
+        // Band-aid post-processing for known extraction-quality issues
+        // reported against v0.3.51/v0.3.52 markdown output. The deeper
+        // fixes (root-cause changes to the spatial-table detector,
+        // heading-fragmentation prevention upstream, font-CMap recovery)
+        // happen on follow-up branches; these post-process steps remove
+        // the most damaging surface symptoms so downstream consumers
+        // (LLM ingestion, RAG pipelines) get usable text now.
+        //
+        // Step order is deliberate:
+        //   1. Pipe escape — clean up stray pipes BEFORE table-block
+        //      detection runs again in subsequent steps.
+        //   2. Degenerate-table simplification (#3, #6, partial #11).
+        //   3. Heading merge (#1, #4) — only after degenerate tables
+        //      have been collapsed so leftover heading fragments are
+        //      contiguous and visible to the merger.
+        //   4. Page-number filter (#9).
+        //   5. Bullet glyph normalization (#13).
+        //
+        // SPEC-ALIGNMENT GATE (ISO 32000-1:2008 §14.8.4). When the
+        // document carries an explicit structure tree — any span has a
+        // resolved `struct_role` — the heading levels, table cells, and
+        // block boundaries are AUTHORITATIVE per the spec
+        // (§14.8.4.3.2: each H/H1-H6 is a distinct heading element).
+        // In that case we must NOT apply the layout-recovery heuristics
+        // that guess at structure, because they could override correct,
+        // author-specified tagging (e.g. fuse three legitimately-
+        // distinct H1 sections). The heuristic structure recovery is
+        // ONLY valid for UNTAGGED documents, where the markdown
+        // structure was itself derived heuristically (font-size ratios,
+        // spatial grouping) and is therefore fair game to refine.
+        let is_tagged = sorted.iter().any(|s| s.struct_role.is_some());
+
+        // Always-safe steps (no semantic structure change): markdown
+        // escaping, whitespace-only bold-fragment recovery, and
+        // exact-duplicate paragraph dedup. These run for both tagged
+        // and untagged documents.
+        final_result = escape_stray_leading_pipes(&final_result);
+        final_result = coalesce_camelcase_bold_fragments(&final_result);
+
+        // Structure-recovery heuristics — UNTAGGED documents only.
+        // For tagged PDFs the structure tree is authoritative (§14.8.4)
+        // so these are skipped.
+        if !is_tagged {
+            final_result = collapse_numeric_heading_runs(&final_result);
+            final_result = merge_consecutive_same_level_headings(&final_result);
+        }
+        // INTENTIONALLY NOT INVOKED — these would damage legitimate
+        // content and were removed after a 70-PDF baseline-vs-HEAD
+        // regression sweep proved real-world breakage:
+        //
+        //  * simplify_degenerate_tables — flattened a REAL country-
+        //    data table (google_doc_document.pdf: countries × Continent
+        //    / Capital / Currency / Population) into one prose line,
+        //    because legitimate tables can be mostly single-word. A
+        //    markdown-layer heuristic cannot reliably tell a spurious
+        //    multi-column-prose "table" from a real sparse one. The
+        //    correct fix is upstream: stop the spatial-table detector
+        //    from firing on prose columns in the first place.
+        //  * dedup_consecutive_paragraphs — removed DISTINCT form
+        //    widgets that share a label (annotation-button-widget.pdf:
+        //    several real radio buttons all labelled "Radio button,
+        //    unselected") and collapsed legitimately-repeated headings
+        //    (ArabicCIDTrueType.pdf). "Looks duplicated" != "is an
+        //    extraction artifact". The correct fix is upstream: stop
+        //    the structured + plaintext paths from double-emitting.
+        //  * filter_page_number_lines — dropped real "Page N" text;
+        //    correct fix is `/Artifact` handling (§14.8.2.2).
+        //  * normalize_bullet_glyphs — rewrote codepoints; correct fix
+        //    is ToUnicode-CMap fallback (§9.10).
+        //
+        // dedup_identical_header_cells is also retired from the active
+        // path: blanking "duplicate" header cells assumes the
+        // duplication is an artifact, which the same content-
+        // preservation principle rejects without upstream certainty.
 
         // Apply hyphenation reconstruction if enabled
         if config.enable_hyphenation_reconstruction {
@@ -3320,6 +3990,544 @@ mod tests {
         assert!(
             result.ends_with('\n'),
             "trailing newline was dropped by RTL cleanup: {:?}",
+            result
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Regression suite for the v0.3.51/v0.3.52 markdown-extraction
+    // quality issues (external reporter, 54-PDF corpus). Each test
+    // exercises ONE issue with synthetic input — no external PDF
+    // dependency — so the harness stays deterministic and survives
+    // upstream re-extractor changes. Where a fix is post-process only,
+    // the helper function is invoked directly; where the fix is
+    // structural, a full `convert()` pass is used.
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Issue #10 — stray leading `|` outside a table block must be
+    /// escaped so downstream renderers do not misread it as a malformed
+    /// table row.
+    #[test]
+    fn test_issue10_escape_stray_leading_pipes_basic() {
+        let input = "| Finished Goods\n| Internal Use Only\nPage 1 of 12\n";
+        let out = escape_stray_leading_pipes(input);
+        assert!(out.contains("\\| Finished Goods"), "stray pipe must be escaped, got:\n{}", out);
+        assert!(
+            out.contains("\\| Internal Use Only"),
+            "second stray pipe must be escaped, got:\n{}",
+            out
+        );
+    }
+
+    /// Issue #10 — a real markdown table block must NOT be escaped.
+    /// Guards against over-eager pipe escaping that would corrupt
+    /// legitimate tables.
+    #[test]
+    fn test_issue10_preserves_real_tables() {
+        let input = "| Col A | Col B |\n|---|---|\n| 1 | 2 |\n";
+        let out = escape_stray_leading_pipes(input);
+        assert!(!out.contains("\\|"), "real table rows must not be escaped, got:\n{}", out);
+    }
+
+    /// REGRESSION GUARD (70-PDF sweep). A real markdown table with
+    /// mostly single-word cells (e.g. countries × Continent/Capital/
+    /// Currency) must NOT be flattened to prose by the pipeline. The
+    /// simplify_degenerate_tables heuristic that did this is retired
+    /// from the active path; this test pins the table survives a full
+    /// convert_with_tables() pass.
+    #[test]
+    fn test_regression_real_sparse_table_not_flattened() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mut table = Table::new();
+        let mut header = TableRow::new(true);
+        for h in ["", "Indonesia", "Germany", "Austria", "France", "Vatican"] {
+            header.add_cell(TableCell::new(h.to_string(), true));
+        }
+        table.add_row(header);
+        for (label, vals) in [
+            ("Continent", ["Asia", "", "Europe", "", ""]),
+            ("Capital", ["Jakarta", "Berlin", "Vienna", "Paris", "Vatican City"]),
+        ] {
+            let mut row = TableRow::new(false);
+            row.add_cell(TableCell::new(label.to_string(), false));
+            for v in vals {
+                row.add_cell(TableCell::new(v.to_string(), false));
+            }
+            table.add_row(row);
+        }
+        let result = converter
+            .convert_with_tables(&[], &[table], &config)
+            .unwrap();
+        assert!(
+            result.contains("|---|") || result.contains("| Indonesia |"),
+            "real sparse table must survive as a table, got:\n{}",
+            result
+        );
+    }
+
+    /// REGRESSION GUARD (70-PDF sweep). Consecutive paragraphs with
+    /// identical text (e.g. several distinct form widgets that share
+    /// a label) must NOT be deduped away by the pipeline. The
+    /// dedup_consecutive_paragraphs step that did this is retired.
+    #[test]
+    fn test_regression_repeated_identical_paragraphs_preserved() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let spans = vec![
+            make_span("Radio button, unselected", 0.0, 100.0, 12.0, FontWeight::Normal),
+            make_span("Radio button, unselected", 0.0, 80.0, 12.0, FontWeight::Normal),
+            make_span("Radio button, unselected", 0.0, 60.0, 12.0, FontWeight::Normal),
+        ];
+        let result = converter.convert(&spans, &config).unwrap();
+        let count = result.matches("Radio button, unselected").count();
+        assert_eq!(
+            count, 3,
+            "three distinct identical-label widgets must all survive, got {}:\n{}",
+            count, result
+        );
+    }
+
+    /// SPEC-ALIGNMENT (§14.8.4.3.2). When the document is TAGGED —
+    /// spans carry explicit `struct_role = Heading(_)` — three
+    /// distinct short H1 elements are author-specified structure and
+    /// MUST survive as three headings. The untagged word-per-heading
+    /// merge heuristic must NOT override authoritative tagging.
+    #[test]
+    fn test_tagged_distinct_headings_are_not_merged() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mk = |t: &str, y: f32| {
+            let mut s = make_span(t, 0.0, y, 18.0, FontWeight::Bold);
+            s.struct_role = Some(StructRole::Heading(1));
+            s
+        };
+        // Three short headings with large baseline drops → upstream
+        // emits three `# ` lines; the gate must keep them at three.
+        let spans = vec![mk("Alpha", 100.0), mk("Beta", 60.0), mk("Gamma", 20.0)];
+        let result = converter.convert(&spans, &config).unwrap();
+        let h1_count = result.lines().filter(|l| l.starts_with("# ")).count();
+        assert_eq!(
+            h1_count, 3,
+            "tagged distinct H1 elements must NOT be merged (spec §14.8.4.3.2), got:\n{}",
+            result
+        );
+    }
+
+    /// Issue #1 — PowerPoint-exported word-per-heading runs must fuse
+    /// into a single heading line.
+    #[test]
+    fn test_issue1_merge_word_per_heading_runs() {
+        let input = "# Quarterly\n\n# Inventory\n\n# Review\n";
+        let out = merge_consecutive_same_level_headings(input);
+        assert_eq!(
+            out.trim(),
+            "# Quarterly Inventory Review",
+            "three same-level short H1s must merge, got:\n{}",
+            out
+        );
+    }
+
+    /// Issue #4 — wrapped long-heading split across two lines must
+    /// fuse when there is a continuation signal (trailing comma /
+    /// semicolon on the first fragment, or a lowercase / connector-word
+    /// opener on the second). See `looks_like_heading_wrap`.
+    #[test]
+    fn test_issue4_merge_wrapped_heading_trailing_comma() {
+        let input = "## Despite seasonal slowdown,\n## warehouse maintained throughput\n";
+        let out = merge_consecutive_same_level_headings(input);
+        assert!(
+            out.contains("## Despite seasonal slowdown, warehouse maintained throughput"),
+            "wrapped heading with trailing comma must fuse, got:\n{}",
+            out
+        );
+    }
+
+    /// Issue #4 — alternative continuation signal: second fragment
+    /// opens with a connector word ("and" / "with" / ...).
+    #[test]
+    fn test_issue4_merge_wrapped_heading_connector_opener() {
+        let input = "# Architecture\n# and Implementation\n";
+        let out = merge_consecutive_same_level_headings(input);
+        assert!(
+            out.contains("# Architecture and Implementation"),
+            "wrapped heading with connector opener must fuse, got:\n{}",
+            out
+        );
+    }
+
+    /// Issue #4 — without ANY continuation signal (first ends without
+    /// trailing comma; second is capitalized non-connector), the
+    /// 2-fragment run must remain two separate headings. Guards the
+    /// `test_large_baseline_drop_still_splits_heading` invariant.
+    #[test]
+    fn test_issue4_does_not_fuse_ambiguous_two_headings() {
+        let input = "# First Heading\n# Second Heading\n";
+        let out = merge_consecutive_same_level_headings(input);
+        let h_lines = out.lines().filter(|l| l.starts_with("# ")).count();
+        assert_eq!(
+            h_lines, 2,
+            "ambiguous 2-fragment same-level headings must NOT fuse, got:\n{}",
+            out
+        );
+    }
+
+    /// Issue #1/#4 — must NOT fuse two genuinely distinct headings
+    /// when either side is long. Guards against over-eager merging.
+    #[test]
+    fn test_issue1_does_not_fuse_long_distinct_headings() {
+        let h1 = "# Annual Sales Performance Across Every Region in Detail";
+        let h2 = "# Q1 Highlights and Outlook for the Year";
+        let input = format!("{}\n\n{}\n", h1, h2);
+        let out = merge_consecutive_same_level_headings(&input);
+        assert!(
+            out.contains(h1) && out.contains(h2),
+            "two long distinct headings must remain separate, got:\n{}",
+            out
+        );
+    }
+
+    /// Issue #3 — spatial-prose-as-table (>= 5 cols, >= 2 data rows,
+    /// >= 60% single-word non-empty cells) collapses to a paragraph.
+    #[test]
+    fn test_issue3_degenerate_table_collapses_to_paragraph() {
+        let input = "\
+| Q1 | Warehouse | throughput | increased | 15% |
+|---|---|---|---|---|
+| quarter | over | quarter | to | 23,500 |
+| units | per | day | strong | demand |
+";
+        let out = simplify_degenerate_tables(input);
+        assert!(!out.contains("|---|"), "separator row should be gone, got:\n{}", out);
+        assert!(
+            out.contains("Q1 Warehouse throughput increased 15%"),
+            "header words flattened to prose, got:\n{}",
+            out
+        );
+    }
+
+    /// Issue #3 — a normal table with multi-word cells must SURVIVE.
+    /// Guards against over-eager flattening that would corrupt real
+    /// tabular data.
+    #[test]
+    fn test_issue3_preserves_legitimate_multi_word_tables() {
+        let input = "\
+| Region | Revenue Q1 | Revenue Q2 | Revenue Q3 | Revenue Q4 |
+|---|---|---|---|---|
+| North America Sales | 1.2 M | 1.5 M | 1.7 M | 1.9 M |
+| Europe Sales Total | 0.8 M | 0.9 M | 1.1 M | 1.3 M |
+";
+        let out = simplify_degenerate_tables(input);
+        assert!(out.contains("|---|"), "real table must keep separator, got:\n{}", out);
+        assert!(
+            out.contains("| North America Sales |"),
+            "real table cells must remain, got:\n{}",
+            out
+        );
+    }
+
+    /// Issue #9 — page-number-shaped lines (e.g. "Page 1 of 12",
+    /// "— 5 —", "[12]") MUST be preserved in the markdown output if
+    /// they appear in the prose stream. Dropping them at this layer
+    /// would discard legitimate content — the proper fix is upstream
+    /// artifact (`/Artifact` tag) handling per PDF §14.8.2.2. This
+    /// test pins that contract: the post-process pipeline does not
+    /// touch these lines.
+    #[test]
+    fn test_issue9_preserves_page_number_shaped_lines() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let spans = vec![
+            make_span("Some text.", 0.0, 100.0, 12.0, FontWeight::Normal),
+            make_span("Page 1 of 12", 0.0, 80.0, 10.0, FontWeight::Normal),
+            make_span("More text.", 0.0, 60.0, 12.0, FontWeight::Normal),
+        ];
+        let result = converter.convert(&spans, &config).unwrap();
+        assert!(result.contains("Page 1 of 12"), "page-N text must survive, got:\n{}", result);
+        assert!(result.contains("Some text."), "prose must survive, got:\n{}", result);
+        assert!(result.contains("More text."), "prose must survive, got:\n{}", result);
+    }
+
+    /// Issue #9 — in-prose "Page N" references must obviously also
+    /// survive (this was the existing guard).
+    #[test]
+    fn test_issue9_preserves_page_in_prose() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let spans = vec![make_span(
+            "See Page 3 for details about the change.",
+            0.0,
+            100.0,
+            12.0,
+            FontWeight::Normal,
+        )];
+        let result = converter.convert(&spans, &config).unwrap();
+        assert!(
+            result.contains("See Page 3 for details"),
+            "in-prose 'Page N' must not be dropped, got:\n{}",
+            result
+        );
+    }
+
+    /// Issue #13 — wrong-glyph bullets (`❍`, `◦`, ...) at line start
+    /// must NOT be silently dropped. The upstream renderer already
+    /// recognizes these as bullet-glyph variants and emits them as
+    /// idiomatic markdown `- ` bullets — that preserves the semantic
+    /// list structure across all glyph variants. What this test
+    /// pins is content preservation: the text content after the
+    /// glyph (`First item`, `Second item`) must reach the output;
+    /// the bullet symbol itself can be normalized to `-` because
+    /// markdown's bullet semantics are the same.
+    ///
+    /// What is NOT acceptable (the bug we're guarding against): a
+    /// post-process layer pattern-matching codepoints and rewriting
+    /// them in arbitrary text. The pipeline does no such rewriting
+    /// (see `normalize_bullet_glyphs` no-op doc).
+    #[test]
+    fn test_issue13_preserves_bullet_text_content() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let spans = vec![
+            make_span("\u{274D} First item", 0.0, 100.0, 12.0, FontWeight::Normal),
+            make_span("\u{25E6} Second item", 0.0, 80.0, 12.0, FontWeight::Normal),
+        ];
+        let result = converter.convert(&spans, &config).unwrap();
+        assert!(result.contains("First item"), "list-item text must survive: {}", result);
+        assert!(result.contains("Second item"), "list-item text must survive: {}", result);
+    }
+
+    /// Issue #13 (mid-prose codepoint preservation). A `❍` that
+    /// appears in the MIDDLE of body text (not at line start) must
+    /// be preserved verbatim — at that position the upstream does
+    /// not treat it as a bullet, so any rewriting would be content
+    /// corruption.
+    #[test]
+    fn test_issue13_preserves_mid_prose_bullet_codepoint() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let spans = vec![make_span(
+            "The symbol \u{274D} indicates a shadow circle.",
+            0.0,
+            100.0,
+            12.0,
+            FontWeight::Normal,
+        )];
+        let result = converter.convert(&spans, &config).unwrap();
+        assert!(
+            result.contains("\u{274D}"),
+            "mid-prose U+274D must survive verbatim, got:\n{}",
+            result
+        );
+    }
+
+    /// Issue #11 — KPI numeric-only H1 run collapses to bulleted list.
+    #[test]
+    fn test_issue11_collapses_numeric_heading_run() {
+        let input = "# 23,500\n\n# 99.2%\n\n# 87%\n\n# 4.2 days\n";
+        let out = collapse_numeric_heading_runs(input);
+        for v in ["- 23,500", "- 99.2%", "- 87%", "- 4.2 days"] {
+            assert!(out.contains(v), "expected `{}` in output, got:\n{}", v, out);
+        }
+        assert!(!out.contains("# 23,500"), "H1 form must be gone, got:\n{}", out);
+    }
+
+    /// Issue #11 — a numeric heading that LOOKS standalone (single
+    /// occurrence) must NOT collapse. Two-or-more is the trigger.
+    #[test]
+    fn test_issue11_preserves_single_numeric_heading() {
+        let input = "# 2024 Annual Report\n";
+        let out = collapse_numeric_heading_runs(input);
+        assert_eq!(out, input, "single non-numeric heading must be untouched: {}", out);
+    }
+
+    /// Issue #12 — `**S alesF orce**` CamelCase fragmentation inside a
+    /// single bold pair coalesces to `**SalesForce**`.
+    #[test]
+    fn test_issue12_coalesces_inline_camelcase_bold() {
+        let input = "**S alesF orce** is great.\n";
+        let out = coalesce_camelcase_bold_fragments(input);
+        assert!(
+            out.contains("**SalesForce**"),
+            "inline CamelCase bold must coalesce, got:\n{}",
+            out
+        );
+    }
+
+    /// Issue #12 — must NOT touch legitimate two-word bold like
+    /// `**John Smith**` or `**USB Type C**`. The CamelCase signal
+    /// (lowercase-then-uppercase inside one fragment) is required.
+    #[test]
+    fn test_issue12_preserves_normal_multi_word_bold() {
+        let input = "**John Smith** wrote.\n**USB Type C** cable.\n";
+        let out = coalesce_camelcase_bold_fragments(input);
+        assert!(
+            out.contains("**John Smith**"),
+            "two-word person bold must not be merged, got:\n{}",
+            out
+        );
+        assert!(
+            out.contains("**USB Type C**"),
+            "three-word product bold must not be merged, got:\n{}",
+            out
+        );
+    }
+
+    /// Issue #12 (BOUND case) — closing `**` lands mid-CamelCase:
+    /// `**N orthW** ind` (intended `**N**orthWind` or `**NorthWind**`).
+    /// This is the pattern not yet covered by the inline-bold regex.
+    /// Marked `#[ignore]` until the bound coalescer lands.
+    #[test]
+    fn test_issue12_bound_camelcase_bold_coalesces() {
+        let input = "**N orthW** ind";
+        let out = coalesce_camelcase_bold_fragments(input);
+        // Either of these post-coalesce forms is acceptable; both
+        // recover the intended brand name.
+        let acceptable = out.contains("**NorthWind**")
+            || out.contains("**NorthW**ind")
+            || out.contains("**N**orthWind");
+        assert!(
+            acceptable,
+            "bound CamelCase bold (closing ** mid-word) should coalesce, got:\n{}",
+            out
+        );
+    }
+
+    /// Issue #8 — a table cell that carries bold spans must render the
+    /// bold markers in the output. Reporter measured 73% bold-marker
+    /// loss across 53/54 files; this asserts at least the simple case.
+    #[test]
+    fn test_issue8_table_cell_renders_bold_marker() {
+        let bold_span = TextSpan {
+            artifact_type: None,
+            text: "Critical".to_string(),
+            bbox: Rect::new(0.0, 0.0, 50.0, 12.0),
+            font_name: "Test-Bold".to_string(),
+            font_size: 12.0,
+            font_weight: FontWeight::Bold,
+            is_italic: false,
+            is_monospace: false,
+            color: Color::black(),
+            mcid: None,
+            sequence: 0,
+            offset_semantic: false,
+            split_boundary_before: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
+            primary_detected: false,
+            char_widths: vec![],
+            heading_level: None,
+        };
+        let mut cell = TableCell::new("Critical".to_string(), false);
+        cell.spans.push(bold_span.clone());
+        let mut row = TableRow::new(false);
+        row.add_cell(cell);
+        let mut table = Table::new();
+        table.add_row(row);
+
+        let result = MarkdownOutputConverter::new()
+            .render_table_markdown(&table, &TextPipelineConfig::default());
+        assert!(
+            result.contains("**Critical**"),
+            "bold marker must appear in rendered cell, got:\n{}",
+            result
+        );
+    }
+
+    /// Issue #2 — consecutive duplicate paragraphs (structured +
+    /// plaintext echo) must be deduped down to one.
+    #[test]
+    fn test_issue2_dedup_consecutive_duplicate_paragraphs() {
+        let input = "Revenue grew by 15%.\n\nRevenue grew by 15%.\n\nNext paragraph here.\n";
+        let out = dedup_consecutive_paragraphs(input);
+        let occurrences = out.matches("Revenue grew by 15%.").count();
+        assert_eq!(
+            occurrences, 1,
+            "exact-duplicate consecutive paragraph must collapse, got:\n{}",
+            out
+        );
+        assert!(
+            out.contains("Next paragraph here."),
+            "subsequent paragraph must survive, got:\n{}",
+            out
+        );
+    }
+
+    /// Issue #2 — non-consecutive duplicates (separated by other
+    /// content) must NOT be touched: legitimate prose can repeat a
+    /// phrase later in the document.
+    #[test]
+    fn test_issue2_preserves_nonconsecutive_repeats() {
+        let input = "Important note.\n\nOther content.\n\nImportant note.\n";
+        let out = dedup_consecutive_paragraphs(input);
+        let occurrences = out.matches("Important note.").count();
+        assert_eq!(occurrences, 2, "non-consecutive repeat must survive, got:\n{}", out);
+    }
+
+    /// Issue #5 — all-identical header cells (spatial-grouping
+    /// artifact) must be deduped to a single occurrence in the
+    /// rendered output. Operates on the assembled markdown so it
+    /// catches both render paths.
+    #[test]
+    fn test_issue5_dedups_identical_header_cells() {
+        let input = "| Q1'25 | Q1'25 | Q1'25 | Q1'25 |\n|---|---|---|---|\n| Zone A |  |  |  |\n";
+        let out = dedup_identical_header_cells(input);
+        let q1_count = out.matches("Q1'25").count();
+        assert_eq!(
+            q1_count, 1,
+            "all-identical header cells must dedup to one, got {} in:\n{}",
+            q1_count, out
+        );
+        // Cell count preserved (still 4 pipes in the data row).
+        assert!(out.contains("Zone A"), "data row must remain intact, got:\n{}", out);
+    }
+
+    /// Issue #5 — a legitimate header with distinct values must NOT
+    /// be touched.
+    #[test]
+    fn test_issue5_preserves_real_distinct_headers() {
+        let input = "| North | South | East | West |\n|---|---|---|---|\n| 1 | 2 | 3 | 4 |\n";
+        let out = dedup_identical_header_cells(input);
+        for col in ["North", "South", "East", "West"] {
+            assert!(out.contains(col), "distinct header `{}` must survive: {}", col, out);
+        }
+    }
+
+    /// Issue #7 — when side-by-side columns are present, text from
+    /// column 2 must not interleave with column 1's text mid-paragraph.
+    /// The existing `is_column_gap` heuristic (forward gutter > 3×
+    /// font_size OR backward wrap) is what forces the paragraph break
+    /// between columns; this test pins that behavior so future
+    /// reading-order refactors don't silently regress it.
+    #[test]
+    fn test_issue7_no_column_interleaving() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mk = |t: &str, x: f32, y: f32, bid: u32| {
+            let mut s = make_span(t, x, y, 12.0, FontWeight::Normal);
+            s.block_id = Some(bid);
+            s
+        };
+        // Left column at x=0, right column at x=300; baselines stagger.
+        let spans = vec![
+            mk("Left A.", 0.0, 100.0, 1),
+            mk("Right A.", 300.0, 100.0, 2),
+            mk("Left B.", 0.0, 88.0, 1),
+            mk("Right B.", 300.0, 88.0, 2),
+        ];
+        let result = converter.convert(&spans, &config).unwrap();
+        // Left column must surface as a contiguous run.
+        assert!(
+            result.contains("Left A.") && result.contains("Left B."),
+            "left column must surface, got:\n{}",
+            result
+        );
+        // No interleaving: "Left A. Right A." together would prove
+        // interleaving (reading-order put right immediately after left
+        // before left's continuation).
+        assert!(
+            !result.contains("Left A. Right A."),
+            "columns must not interleave at the line level, got:\n{}",
             result
         );
     }

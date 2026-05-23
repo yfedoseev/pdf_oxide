@@ -842,6 +842,43 @@ impl SpanMergingConfig {
 /// ISO 32000-1:2008, Section 9.4.4 NOTE 6:
 /// "The identification of what constitutes a word is unrelated to how the text
 /// happens to be grouped into show strings... text strings should be as long as possible."
+/// Recover an honest inter-glyph gap for the space-insertion decision.
+///
+/// Per ISO 32000-1:2008 §9.4.4, the spacing between two glyphs is the
+/// text-space displacement between their origins; a word space exists when
+/// that displacement reaches the font's space advance. We measure it from
+/// the bounding boxes (`raw_gap = next.x − prev.right_edge`).
+///
+/// When the previous span's font has no explicit `/Widths` array,
+/// `FontInfo` substitutes a fixed fallback advance (~0.55 em) that
+/// systematically OVER-reports proportional Latin glyphs. That inflates
+/// `bbox.width`, pushing `prev.right_edge` past the real glyph end so it can
+/// swallow a true word gap and drive `raw_gap` NEGATIVE — glyphs that do not
+/// actually overlap appear to (issue #328). Only in that overlap case do we
+/// divide out the fallback inflation (0.55 em ÷ 0.45 em ≈ 1.22) to restore a
+/// believable gap.
+///
+/// Crucially, the correction is applied ONLY when `raw_gap < 0`. When the
+/// glyphs do not overlap (`raw_gap ≥ 0`) the layout is already honest and
+/// must not be second-guessed: inflating a non-overlapping gap manufactures
+/// a phantom word space and splits single words that were positioned
+/// edge-to-edge — e.g. a CamelCase brand "SalesForce" emitted as
+/// "SalesF" + "orce" with `raw_gap == 0` would otherwise be torn into
+/// "SalesF orce". (`bbox.width × (1 − 1/1.22)` is the algebraic form of
+/// `next.x − (prev.x + width/1.22)` once `raw_gap` is substituted in.)
+fn corrected_space_gap(
+    raw_gap: f32,
+    reliable_widths: bool,
+    bbox_width: f32,
+    text_empty: bool,
+) -> f32 {
+    if !reliable_widths && raw_gap < 0.0 && bbox_width > 0.0 && !text_empty {
+        raw_gap + bbox_width * (1.0 - 1.0 / 1.22)
+    } else {
+        raw_gap
+    }
+}
+
 fn should_insert_space(
     preceding_text: &str,
     following_text: &str,
@@ -3306,21 +3343,17 @@ impl<'doc> TextExtractor<'doc> {
             // as before on fallback-width fonts, but once we're inside the
             // merge branch we consult a more honest gap to decide whether
             // a space is warranted.
-            let space_gap = {
-                let prev_font = self.fonts.get(&current.font_name);
-                let reliable = prev_font.map(|f| f.has_explicit_widths()).unwrap_or(true);
-                if !reliable && current.bbox.width > 0.0 && !current.text.is_empty() {
-                    // 0.55 / 0.45 ≈ 1.22 matches the per-glyph inflation
-                    // observed on the NASA Apollo corpus (subagent analysis
-                    // in issue #328). Keeping the correction modest avoids
-                    // over-reporting gaps on fonts where 0.55 em is actually
-                    // the correct average advance.
-                    let corrected_end_x = current.bbox.x + current.bbox.width / 1.22;
-                    span.bbox.x - corrected_end_x
-                } else {
-                    gap
-                }
-            };
+            let reliable_widths = self
+                .fonts
+                .get(&current.font_name)
+                .map(|f| f.has_explicit_widths())
+                .unwrap_or(true);
+            let space_gap = corrected_space_gap(
+                gap,
+                reliable_widths,
+                current.bbox.width,
+                current.text.is_empty(),
+            );
 
             // Column-boundary gap, font-size-aware. The same 6pt gap is
             // a column gutter at 11pt body text but normal word kerning
@@ -11492,6 +11525,39 @@ mod tests {
             "word", "next", 0.5, 12.0, "F1", &fonts, false, &config, None, None, 12.0, 12.0,
         );
         // The result depends on font-specific threshold
+    }
+
+    // ── #12 spec-aligned gap correction (§9.4.4): the fallback-width
+    //    inflation that splits "SalesForce" → "SalesF orce" is only applied
+    //    when glyphs actually overlap (raw_gap < 0), per corrected_space_gap ──
+
+    /// Adjacent glyphs (raw_gap == 0) on a fallback-width font must NOT be
+    /// inflated into a phantom gap — this is the "SalesF"+"orce" case. The
+    /// reported gap stays 0 so no spurious word space is inserted.
+    #[test]
+    fn test_corrected_space_gap_no_inflation_when_adjacent() {
+        // raw_gap 0.0, unreliable widths, non-empty: must stay 0.0.
+        assert_eq!(corrected_space_gap(0.0, false, 34.23, false), 0.0);
+        // small positive raw gap (academic "XGBoostX"+"provides") untouched.
+        assert_eq!(corrected_space_gap(0.47, false, 50.0, false), 0.47);
+    }
+
+    /// Overlap (raw_gap < 0) on a fallback-width font IS corrected — this is
+    /// the issue #328 NASA-Apollo case where the 0.55 em fallback over-reports
+    /// width and swallows a real word gap. The correction lifts the gap.
+    #[test]
+    fn test_corrected_space_gap_corrects_overlap() {
+        // raw_gap -2.0, width 30 → -2.0 + 30*(1 - 1/1.22) ≈ -2.0 + 5.41 = 3.41
+        let g = corrected_space_gap(-2.0, false, 30.0, false);
+        assert!(g > 0.0, "overlap on fallback-width font must be lifted positive, got {g}");
+    }
+
+    /// Reliable-width fonts (explicit /Widths) are never corrected — the
+    /// bbox gap is authoritative regardless of sign.
+    #[test]
+    fn test_corrected_space_gap_reliable_widths_untouched() {
+        assert_eq!(corrected_space_gap(-2.0, true, 30.0, false), -2.0);
+        assert_eq!(corrected_space_gap(5.0, true, 30.0, false), 5.0);
     }
 
     // ========================================================================

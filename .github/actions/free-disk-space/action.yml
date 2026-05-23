@@ -1,0 +1,72 @@
+# Composite action: reclaim disk on hosted Ubuntu runners for build-heavy
+# CI jobs (cargo, cargo-llvm-cov, maturin, wasm-bindgen, JNI, etc.).
+#
+# Why this exists
+# ---------------
+# Every workflow that does a Rust release-mode build on `ubuntu-latest`
+# eventually trips "No space left on device" — the runner starts with
+# ~14 GB free on `/`, and a default-features cargo build of pdf_oxide
+# (+ rendering + signatures + OCR-enabled prebuilts) eats >20 GB of
+# target/ artifacts. cargo-llvm-cov's instrumented build is ~3× larger
+# than the normal release build and needs the most headroom.
+#
+# Previously each job copy-pasted its own `jlumbroso/free-disk-space@main`
+# block. That drifted: the v0.3.53 Code Coverage job did not override
+# `swap-storage`, so the action's default of `swap-storage: true` removed
+# the runner's 4 GB swapfile, the linker OOM-killed mid-build, and the
+# job died with a bare "failure" status and no completed step. Every
+# other callsite explicitly set `swap-storage: false` with a comment
+# warning about exactly this failure mode.
+#
+# This composite action is the single source of truth, locks in the
+# swap-storage lesson, and adds `df -h` diagnostics before/after so the
+# next disk-pressure regression is visible in the run log instead of
+# manifesting as a silent OOM.
+
+name: 'Free disk space (Ubuntu)'
+description: 'Reclaim ~25-30 GB on hosted Ubuntu runners for build-heavy Rust/JNI/WASM CI jobs.'
+
+inputs:
+  aggressive:
+    description: >-
+      Remove large APT packages (azure-cli, google-chrome, firefox,
+      powershell, mono-devel, etc.). Adds +5-7 GB but costs ~30s. Set
+      to "false" for fast jobs that already have enough headroom.
+    required: false
+    default: 'true'
+  tool-cache:
+    description: >-
+      Remove the hosted-tool cache at /opt/hostedtoolcache/* (Boost, Go,
+      Ruby, Python, Node, PyPy, etc., ~5-8 GB). Set to "false" when the
+      job needs setup-python / setup-node / setup-go to hit the cached
+      versions rather than re-download.
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: 'df -h before reclaim'
+      shell: bash
+      run: df -h / /mnt 2>/dev/null || df -h /
+
+    - name: 'Reclaim disk'
+      uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main @ 2024-04
+      with:
+        tool-cache: ${{ inputs.tool-cache }}
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: ${{ inputs.aggressive }}
+        docker-images: true
+        # NEVER remove swap. The hosted runner has a 4 GB swapfile that
+        # rust-lld (especially under nightly + parallel link) and the
+        # cargo-llvm-cov instrumented build rely on to avoid OOM-induced
+        # SIGBUS / SIGKILL. Empirically, `swap-storage: true` produced
+        # silent mid-build job kills with no completed step on coverage
+        # runs. The few GB it gives back is not worth the OOM risk.
+        swap-storage: false
+
+    - name: 'df -h after reclaim'
+      shell: bash
+      run: df -h / /mnt 2>/dev/null || df -h /

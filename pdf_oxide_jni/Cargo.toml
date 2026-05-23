@@ -1,0 +1,111 @@
+[package]
+name = "pdf_oxide_jni"
+version = "0.3.53"
+edition = "2021"
+description = "JNI bindings for pdf_oxide — native Java binding, the 8th surface alongside Python/Go/JS/C#/WASM/CLI/MCP. Loaded by the fyi.oxide:pdf-oxide Maven artifact."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yfedoseev/pdf_oxide"
+homepage = "https://oxide.fyi"
+documentation = "https://pdf.oxide.fyi"
+readme = "README.md"
+keywords = ["pdf", "jni", "java", "ffi", "bindings"]
+categories = ["api-bindings", "text-processing"]
+publish = false
+# Not published to crates.io — the artifact users consume is the
+# Maven Central jar (`fyi.oxide:pdf-oxide`) which bundles the native
+# library built from this crate. crates.io publish would just confuse.
+
+[lib]
+# cdylib = the .so / .dylib / .dll that Java loads via System.load().
+# rlib   = enables `cargo test --lib` to link the crate from an
+#          integration test on the host (useful for the panic-barrier
+#          test in Phase 2, which is host-Rust-only — no JVM start-up).
+crate-type = ["cdylib", "rlib"]
+doc = false
+
+[lints]
+workspace = true
+
+[features]
+# Default: text extraction + markdown/HTML + AutoExtractor signals +
+# legacy-crypto for R≤4-encrypted PDFs. Matches the "always compiled"
+# column of the v0.3.53 ocr-feature-gate matrix in
+# `00-common-foundation.md` §6.
+#
+# FIPS builds MUST exclude `legacy-crypto` (MD5 / RC4) per FIPS 140-3.
+# Use `cargo build --no-default-features --features fips,signatures`
+# to disable the default and pick FIPS-approved primitives only.
+default = ["legacy-crypto"]
+
+# Match pdf_oxide's `legacy-crypto` (MD5 KDF + RC4 cipher) so older
+# R≤4-encrypted PDFs decrypt. Default-on. Mutually exclusive with
+# `fips` (pdf_oxide enforces this via compile_error!).
+legacy-crypto = ["pdf_oxide/legacy-crypto"]
+
+# Mirror pdf_oxide's `ocr` feature. Adds region OCR / image-table OCR.
+# Without it, `AutoExtractor.extract*` returns the native text-layer
+# result with `reason=OCR_REQUESTED_BUT_UNAVAILABLE` per the graceful-
+# fallback contract (feedback_extraction_graceful_fallback).
+ocr = ["pdf_oxide/ocr"]
+
+# Mirror pdf_oxide's `signatures` feature for PAdES B-T / B-LT
+# signing + verification (v0.3.50 #235).
+signatures = ["pdf_oxide/signatures"]
+
+# Mirror pdf_oxide's `tsa-client` for time-stamping authority calls
+# during B-T / B-LT signing.
+tsa-client = ["pdf_oxide/tsa-client"]
+
+# Mirror pdf_oxide's `rendering` for page → PNG/PPM raster output.
+rendering = ["pdf_oxide/rendering"]
+
+# Mirror pdf_oxide's `barcodes` feature.
+barcodes = ["pdf_oxide/barcodes"]
+
+# Production fat-jar build: everything ON. The CI `release.yml` job
+# for the Java fat jar must build with `--features full` to match
+# the v0.3.52 ocr-enabled prebuilt convention (v0.3.52 #520).
+full = ["ocr", "signatures", "tsa-client", "rendering", "barcodes"]
+
+# FIPS 140-3 build. Propagates pdf_oxide's `fips` feature (which is
+# mutually exclusive with `legacy-crypto`). Use:
+#   cargo build --no-default-features --features fips,signatures
+# `signatures` is included because PAdES is the principal FIPS use
+# case for the Java binding. `legacy-crypto` is NOT propagated; the
+# Cargo.toml of pdf_oxide enforces fips XOR legacy-crypto via a
+# compile_error!.
+fips = ["pdf_oxide/fips"]
+
+[dependencies]
+# jni 0.22 — the v0.3.53 floor per `00-common-foundation.md` §2.
+# Brings the Env / EnvUnowned lifetime split, automatic catch_unwind
+# panic-barrier via with_env / resolve, and the #[jni_mangle] /
+# native_method! ergonomic macros that cut ~80% of the legacy JNI
+# boilerplate. Pin minor for predictable upgrades during the v0.3.53
+# implementation phases (T5-T18).
+jni = "0.22"
+
+# The library we wrap. Same C ABI surface the other seven bindings
+# sit on (`src/ffi.rs`) — Java just adds an 8th caller.
+#
+# `default-features = false` so we can choose between `legacy-crypto`
+# (the v0.3.53 default for old-PDF compatibility) and `fips` (the
+# opt-in FIPS 140-3 build) — those two are compile-time mutually
+# exclusive (pdf_oxide enforces via compile_error!). We always
+# enable `icc` for ICC-based colour management.
+pdf_oxide = { version = "0.3.53", path = "..", default-features = false, features = ["icc"] }
+
+# JSON envelope for the v0.3.51 AutoExtractor rich-result path. The
+# Java side gets the PageExtraction / DocumentExtraction as a JSON
+# string and parses with whatever JSON library they prefer (we don't
+# impose org.json / jackson on consumers).
+serde_json = "1.0"
+
+# For zero-copy direct-ByteBuffer input handling, we need to do
+# raw pointer arithmetic; documented as `unsafe` per the JVM-FFI
+# contract in `00-common-foundation.md` §2.5.
+# (No extra dep needed — std::slice::from_raw_parts handles it.)
+
+[dev-dependencies]
+# Phase 2 host-side panic-barrier test fixture is deferred to follow-up;
+# real JVM tests live on the Maven side under `java/src/test/java`.
