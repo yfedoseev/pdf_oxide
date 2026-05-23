@@ -94,6 +94,147 @@ pub fn paragraph_is_rtl(text: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Verdict of the geometric visual-vs-logical detector (#537).
+///
+/// Returned by [`detect_visual_order_run`] for a contiguous RTL run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOrder {
+    /// The PDF content stream emitted the run in **visual order** —
+    /// glyphs were drawn left-to-right in user space even though the
+    /// script reads right-to-left. The caller should apply UAX #9
+    /// reordering ([`reorder_visual_to_logical`]) — or the simpler
+    /// per-run `.chars().rev()` reversal — to produce logical-order
+    /// codepoints for downstream RAG / search / display consumers.
+    Visual,
+    /// The PDF content stream emitted the run in **logical order**.
+    /// Chars are placed right-to-left in user space (because the
+    /// producer ran its own bidi pass before drawing), so the
+    /// extracted codepoint sequence already matches reading order.
+    /// The caller must NOT reorder — doing so would invert the run
+    /// and break previously-correct output. The pdfium
+    /// `hebrew_mirrored.pdf` test fixture is the canonical example.
+    Logical,
+    /// Insufficient signal to decide — sparse positions, ties,
+    /// mixed direction, or the run is too short. The caller's safe
+    /// default is to leave the run alone (the v0.3.53 behaviour).
+    Ambiguous,
+}
+
+/// Geometric visual-vs-logical detector for a single RTL run (#537).
+///
+/// Closes the long-standing Hebrew gap captured in
+/// `pipeline/converters/markdown.rs:1798-1812`: the bidi machinery
+/// is already wired (UAX #9 via `unicode-bidi`, [`reorder_visual_to_logical`])
+/// but the markdown converter explicitly does *not* call it because
+/// some PDFs store text in visual order and some in logical order,
+/// and "without a reliable way to detect which order the source uses
+/// we drop the reorder step." This function is that reliable way.
+///
+/// # Inputs
+///
+/// `chars_with_x` — a slice of `(codepoint, x_origin_in_user_space)`
+/// pairs for the characters that make up the run, in **content-stream
+/// order** (i.e. the order the PDF's `Tj`/`TJ` operator emitted them).
+/// The `x_origin` is the *user-space* x-coordinate where each glyph
+/// was drawn — after `Tm` (text matrix) and `CTM` (current
+/// transformation matrix) have been applied. Callers that have only
+/// text-space coordinates must transform first; the detector relies
+/// on monotonicity in the page's visible coordinate system.
+///
+/// Whitespace, diacritics, and presentation forms are filtered out
+/// before the monotonicity check (they're noise for direction
+/// detection).
+///
+/// # Algorithm
+///
+/// 1. Require **≥ 4 RTL letters** in the run. Short runs are noise.
+/// 2. Bail with [`RunOrder::Ambiguous`] if the run contains any
+///    **Arabic Presentation Forms** (U+FB50-U+FDFF, U+FE70-U+FEFF).
+///    Those are already handled by the existing Pass 0 of
+///    `document::PdfDocument::reverse_rtl_visual_order_runs`, and
+///    second-guessing it here would risk double-reversal.
+/// 3. Compare adjacent x-coordinates with a `0.5pt` kerning
+///    tolerance:
+///    - **ascending** (chars placed left-to-right) → visual signal.
+///    - **descending** (chars placed right-to-left) → logical signal.
+///    - **tie** (within 0.5pt) → no signal for this pair.
+/// 4. Require **≥ 90 % monotonicity** (`asc / total > 0.9` or
+///    `desc / total > 0.9`) to return [`RunOrder::Visual`] or
+///    [`RunOrder::Logical`]. Below threshold → [`RunOrder::Ambiguous`].
+///
+/// The 90 % floor is deliberately strict: the cost of an unwarranted
+/// reversal (logical PDF → visual output) is higher than the cost of
+/// a missed reversal (visual PDF → uncorrected output). When in
+/// doubt, leave the run alone.
+///
+/// # Why X-monotonicity is the right signal
+///
+/// PDF content streams emit glyphs in the order they're drawn, with
+/// absolute positions from `Tm` * `CTM` + offset. A visual-order
+/// producer (legacy Acrobat, hand-shaped Arabic, the Magic Palace
+/// Eilat hotel PDF from issue #537) draws Hebrew left-to-right in
+/// user space even though the script reads right-to-left — so the
+/// first codepoint in the stream has the smallest x. A logical-order
+/// producer (modern Word with bidi pass, the pdfium
+/// `hebrew_mirrored.pdf` test fixture) draws Hebrew right-to-left,
+/// so the first codepoint has the largest x. The geometric direction
+/// is observable and unambiguous — see
+/// `docs/releases/plans/v0.3.54/research-bidi-visual-logical-detection.md`
+/// for the W3C / PDFuzz / library-by-library survey.
+pub fn detect_visual_order_run(chars_with_x: &[(char, f32)]) -> RunOrder {
+    // Filter: keep RTL letters/digits only. Whitespace, ASCII
+    // (numerals embedded by Arabic newspapers), and diacritics are
+    // not signal for direction detection.
+    let rtl: Vec<(char, f32)> = chars_with_x
+        .iter()
+        .copied()
+        .filter(|(c, _)| crate::text::rtl_detector::is_rtl_text(*c as u32))
+        .collect();
+
+    if rtl.len() < 4 {
+        return RunOrder::Ambiguous;
+    }
+
+    // Arabic Presentation Forms presence → Pass 0 owns this run.
+    // Bail out so we don't double-reverse.
+    if rtl.iter().any(|(c, _)| {
+        let cp = *c as u32;
+        (0xFB50..=0xFDFF).contains(&cp) || (0xFE70..=0xFEFF).contains(&cp)
+    }) {
+        return RunOrder::Ambiguous;
+    }
+
+    const KERN_TOL: f32 = 0.5; // points
+    let mut asc: usize = 0;
+    let mut desc: usize = 0;
+    for w in rtl.windows(2) {
+        let (_, x0) = w[0];
+        let (_, x1) = w[1];
+        let dx = x1 - x0;
+        if dx > KERN_TOL {
+            asc += 1;
+        } else if dx < -KERN_TOL {
+            desc += 1;
+        }
+        // |dx| <= KERN_TOL → tie, no contribution to either count.
+    }
+    let total = asc + desc;
+    if total == 0 {
+        // All ties — degenerate, no signal.
+        return RunOrder::Ambiguous;
+    }
+    // 90 % monotonicity floor — strict-on-purpose so we never reorder
+    // a logical-order PDF on a noisy signal.
+    // Express as integer math: 10 * asc > 9 * total ↔ asc / total > 0.9.
+    if 10 * asc > 9 * total {
+        return RunOrder::Visual;
+    }
+    if 10 * desc > 9 * total {
+        return RunOrder::Logical;
+    }
+    RunOrder::Ambiguous
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,5 +465,106 @@ mod tests {
         assert!(!paragraph_is_rtl("123 456"));
         // Mixed but RTL-dominated.
         assert!(paragraph_is_rtl("نص with English"));
+    }
+
+    // ==========================================================================
+    // detect_visual_order_run — geometric visual-vs-logical detector (#537)
+    // ==========================================================================
+
+    #[test]
+    fn detect_visual_run_short_run_is_ambiguous() {
+        // < 4 RTL letters → not enough signal.
+        let three_chars = [('ק', 0.0), ('ר', 6.0), ('ח', 12.0)];
+        assert_eq!(detect_visual_order_run(&three_chars), RunOrder::Ambiguous);
+    }
+
+    #[test]
+    fn detect_visual_run_hebrew_visual_order() {
+        // Hebrew word "מקלדת" (keyboard, 5 letters) emitted in visual
+        // order: leftmost glyph first in stream, ascending x.
+        let visual = [
+            ('מ', 0.0),
+            ('ק', 6.0),
+            ('ל', 12.0),
+            ('ד', 18.0),
+            ('ת', 24.0),
+        ];
+        assert_eq!(detect_visual_order_run(&visual), RunOrder::Visual);
+    }
+
+    #[test]
+    fn detect_visual_run_hebrew_logical_order() {
+        // Same letters, logical order: rightmost glyph first in stream
+        // (descending x — the PDF producer ran its own bidi pass before
+        // drawing).
+        let logical = [
+            ('מ', 24.0),
+            ('ק', 18.0),
+            ('ל', 12.0),
+            ('ד', 6.0),
+            ('ת', 0.0),
+        ];
+        assert_eq!(detect_visual_order_run(&logical), RunOrder::Logical);
+    }
+
+    #[test]
+    fn detect_visual_run_arabic_main_block_visual() {
+        // Arabic main block (U+0600-U+06FF), no Presentation Forms.
+        // Ascending x → Visual.
+        let visual = [('ع', 0.0), ('ر', 7.0), ('ب', 14.0), ('ي', 21.0)];
+        assert_eq!(detect_visual_order_run(&visual), RunOrder::Visual);
+    }
+
+    #[test]
+    fn detect_visual_run_presentation_forms_bails_out() {
+        // Arabic Presentation Forms-B in the run — Pass 0 owns this.
+        // The geometric detector must bail rather than double-process.
+        let with_pfs = [
+            ('\u{FE80}', 0.0), // Hamza isolated form
+            ('\u{FE91}', 7.0), // Beh initial form
+            ('\u{FE9A}', 14.0),
+            ('\u{FEAB}', 21.0),
+        ];
+        assert_eq!(detect_visual_order_run(&with_pfs), RunOrder::Ambiguous);
+    }
+
+    #[test]
+    fn detect_visual_run_ties_are_ambiguous() {
+        // All chars at the same x (degenerate). No monotonicity signal.
+        let ties = [('ק', 5.0), ('ר', 5.0), ('ח', 5.0), ('ל', 5.0)];
+        assert_eq!(detect_visual_order_run(&ties), RunOrder::Ambiguous);
+    }
+
+    #[test]
+    fn detect_visual_run_mixed_signal_is_ambiguous() {
+        // 4 RTL letters: 1 ascending pair, 2 descending pairs. With
+        // only 3 monotonic pairs (asc=1, desc=2, total=3), neither
+        // direction reaches the 90 % floor → Ambiguous.
+        let mixed = [('ק', 0.0), ('ר', 6.0), ('ח', 3.0), ('ל', 1.0)];
+        assert_eq!(detect_visual_order_run(&mixed), RunOrder::Ambiguous);
+    }
+
+    #[test]
+    fn detect_visual_run_ignores_non_rtl_chars() {
+        // Embedded LTR digit ("2024") between Hebrew letters — filtered
+        // out before the monotonicity check. Hebrew chars still need
+        // to be ≥4 and monotonic.
+        let with_digit = [
+            ('ק', 0.0),
+            ('ר', 6.0),
+            ('2', 12.0), // ignored
+            ('ח', 18.0),
+            ('ל', 24.0),
+        ];
+        assert_eq!(detect_visual_order_run(&with_digit), RunOrder::Visual);
+    }
+
+    #[test]
+    fn detect_visual_run_kerning_tolerance() {
+        // Tiny x differences within 0.5pt → treated as ties; can't
+        // be the dominant signal on their own. Four pairs where dx
+        // ≈ 0.3pt → all ties → Ambiguous.
+        let kerning_noise = [('ק', 0.0), ('ר', 0.3), ('ח', 0.6), ('ל', 0.9), ('מ', 1.2)];
+        assert_eq!(detect_visual_order_run(&kerning_noise), RunOrder::Ambiguous);
     }
 }

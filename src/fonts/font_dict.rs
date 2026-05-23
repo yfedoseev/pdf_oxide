@@ -45,6 +45,17 @@ pub struct FontInfo {
     /// Initialized on first access via `truetype_cmap()` accessor to avoid
     /// the 10-25ms per-font extraction cost when ToUnicode resolves all chars.
     pub truetype_cmap: std::sync::OnceLock<Option<TrueTypeCMap>>,
+    /// Lazily-extracted embedded TrueType/CFF `post`-table glyph names,
+    /// indexed by GID. `None` element = no name for that GID (post format 3,
+    /// or the glyph name table is absent). Used by §9.10.2 Priority 3c
+    /// fallback in `decode_char_to_unicode`: when `truetype_cmap.get_unicode`
+    /// misses, we try this glyph name via `glyph_name_to_unicode` (AGL +
+    /// `uniXXXX`/`uXXXXX` synth) before falling through to the hardcoded
+    /// `gid_to_standard_glyph_name` ASCII map and CID-as-Unicode last
+    /// resort. Resolves `•` → `❍` substitution and `fi`/`fl` ligature
+    /// corruption on Identity-H subset fonts without `CIDToGIDMap`. See
+    /// `docs/releases/plans/v0.3.54/fix-535-tounicode-fallback.md`.
+    pub embedded_glyph_names: std::sync::OnceLock<Option<Vec<Option<String>>>>,
     /// Whether this font has an embedded TrueType font (FontFile2).
     /// Controls whether lazy truetype_cmap extraction is attempted.
     pub is_truetype_font: bool,
@@ -223,6 +234,76 @@ impl FontInfo {
     /// Check if a TrueType cmap is available (either already extracted or extractable).
     pub fn has_truetype_cmap(&self) -> bool {
         self.truetype_cmap().is_some()
+    }
+
+    /// Look up the embedded font program's `post`-table glyph name for the
+    /// given GID.
+    ///
+    /// Lazily parses the embedded TrueType/OpenType font (via `ttf-parser`)
+    /// on first access, then caches a `Vec<Option<String>>` indexed by GID
+    /// for O(1) subsequent lookups. The parsed font's `Face::glyph_name`
+    /// abstracts over TrueType `post` Format 2 names and CFF `charset` SIDs,
+    /// so this works for both TrueType (FontFile2) and CFF / Type1C
+    /// (FontFile3) subset fonts.
+    ///
+    /// Returns `None` when:
+    /// - the font has no embedded program (`embedded_font_data == None`),
+    /// - the font program is empty or fails to parse,
+    /// - the `post` table is Format 3 (no names) or the GID is out of range,
+    /// - the parsed name is `.notdef` (which AGL doesn't map and isn't
+    ///   useful as text anyway).
+    ///
+    /// Used by §9.10.2 Priority 3c in `decode_char_to_unicode`. Documented
+    /// in `docs/releases/plans/v0.3.54/fix-535-tounicode-fallback.md`.
+    pub fn embedded_glyph_name(&self, gid: u16) -> Option<&str> {
+        let names = self
+            .embedded_glyph_names
+            .get_or_init(|| {
+                let font_data = self.embedded_font_data.as_ref()?;
+                if font_data.is_empty() {
+                    return None;
+                }
+                let face = match ttf_parser::Face::parse(font_data, 0) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        log::debug!(
+                            "Font '{}': ttf-parser Face::parse failed for glyph-name extraction: {:?}",
+                            self.base_font,
+                            e
+                        );
+                        return None;
+                    },
+                };
+                let n = face.number_of_glyphs();
+                // `number_of_glyphs` returns u16; cap the vec at that size.
+                let mut out: Vec<Option<String>> = Vec::with_capacity(n as usize);
+                let mut found_any = false;
+                for g in 0..n {
+                    let name = face
+                        .glyph_name(ttf_parser::GlyphId(g))
+                        .filter(|s| !s.is_empty() && *s != ".notdef")
+                        .map(|s| s.to_string());
+                    if name.is_some() {
+                        found_any = true;
+                    }
+                    out.push(name);
+                }
+                if !found_any {
+                    log::debug!(
+                        "Font '{}': embedded program has no usable glyph names (post Format 3 or stripped)",
+                        self.base_font
+                    );
+                    return None;
+                }
+                log::info!(
+                    "Font '{}': cached {} embedded glyph names (post/charset) for §9.10.2 Priority 3c fallback",
+                    self.base_font,
+                    out.iter().filter(|n| n.is_some()).count(),
+                );
+                Some(out)
+            })
+            .as_ref()?;
+        names.get(gid as usize).and_then(|n| n.as_deref())
     }
 
     /// Parse font information from a font dictionary object.
@@ -732,6 +813,7 @@ impl FontInfo {
             stem_v,
             embedded_font_data,
             truetype_cmap: truetype_cmap_lock,
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font,
             cid_to_gid_map,
             cid_system_info,
@@ -2890,6 +2972,40 @@ impl FontInfo {
                                 }
                             );
                         }
+
+                        // ==========================================================================
+                        // PRIORITY 3c (#535, v0.3.54): embedded post/charset glyph name → AGL+synth
+                        // ==========================================================================
+                        // Per ISO 32000-1:2008 §9.10.2 fallback chain, consult the embedded font
+                        // program's own glyph-name table when the TrueType `cmap` reverse lookup
+                        // misses. Common on PowerPoint/Acrobat-exported Type0 Identity-H subset
+                        // fonts that strip the Unicode `cmap` but keep `post` Format 2 names —
+                        // bullets and `fi`/`fl` ligatures only recover via this path. Mirrors
+                        // pdf.js / MuPDF / PDFBox 3.x behaviour. The earlier `gid_to_standard_
+                        // glyph_name` (P5) only knows hardcoded ASCII-range GID → name; the post
+                        // table is the font's own authoritative source.
+                        if let Some(glyph_name) = self.embedded_glyph_name(gid) {
+                            if let Some(unicode) =
+                                super::character_mapper::glyph_name_to_unicode(glyph_name)
+                            {
+                                log::debug!(
+                                    "Priority 3c (embedded post glyph name): font='{}' CID=0x{:04X} (GID={}) → '{}' → '{}'",
+                                    self.base_font,
+                                    char_code,
+                                    gid,
+                                    glyph_name,
+                                    unicode,
+                                );
+                                return Some(unicode);
+                            } else {
+                                log::debug!(
+                                    "Priority 3c: font='{}' GID={} → name='{}' but AGL/synth lookup failed",
+                                    self.base_font,
+                                    gid,
+                                    glyph_name,
+                                );
+                            }
+                        }
                     }
 
                     // ==================================================================================
@@ -4452,6 +4568,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -4480,6 +4597,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -4511,6 +4629,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -4539,6 +4658,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -4573,6 +4693,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -4608,6 +4729,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -4642,6 +4764,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -4674,6 +4797,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -4804,6 +4928,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -4924,6 +5049,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -4962,6 +5088,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -4993,6 +5120,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5028,6 +5156,7 @@ mod tests {
             stem_v: Some(120.0), // Heavy stem
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5059,6 +5188,7 @@ mod tests {
             stem_v: Some(95.0), // Medium stem
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5090,6 +5220,7 @@ mod tests {
             stem_v: Some(70.0), // Light stem
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5125,6 +5256,7 @@ mod tests {
             stem_v: Some(120.0),    // Heavy stem
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5156,6 +5288,7 @@ mod tests {
             stem_v: Some(70.0),   // Light stem
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5187,6 +5320,7 @@ mod tests {
             stem_v: Some(70.0), // Light stem, but name says Bold
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5222,6 +5356,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5252,6 +5387,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5282,6 +5418,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5312,6 +5449,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5342,6 +5480,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5372,6 +5511,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5402,6 +5542,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5432,6 +5573,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5462,6 +5604,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5740,6 +5883,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5782,6 +5926,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5820,6 +5965,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5864,6 +6010,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -5913,6 +6060,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -7414,6 +7562,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -7453,6 +7602,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -7488,6 +7638,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -7521,6 +7672,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -7560,6 +7712,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,
@@ -7696,6 +7849,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,

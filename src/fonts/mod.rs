@@ -35,7 +35,7 @@ pub mod type1_encoding;
 /// System Unicode font fallback for office round-trip.
 pub mod unicode_fallback;
 
-pub use character_mapper::{CharacterMapper, PredefinedCMapConfig};
+pub use character_mapper::{glyph_name_to_unicode, CharacterMapper, PredefinedCMapConfig};
 pub use cmap::{parse_tounicode_cmap, CMap, LazyCMap};
 pub use encoding::UnicodeEncoder;
 pub use encoding_normalizer::EncodingNormalizer;

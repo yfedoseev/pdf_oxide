@@ -1,6 +1,6 @@
 [package]
 name = "pdf_oxide_jni"
-version = "0.3.53"
+version = "0.3.54"
 edition = "2021"
 description = "JNI bindings for pdf_oxide — native Java binding, the 8th surface alongside Python/Go/JS/C#/WASM/CLI/MCP. Loaded by the fyi.oxide:pdf-oxide Maven artifact."
 license = "MIT OR Apache-2.0"
@@ -93,7 +93,7 @@ jni = "0.22"
 # opt-in FIPS 140-3 build) — those two are compile-time mutually
 # exclusive (pdf_oxide enforces via compile_error!). We always
 # enable `icc` for ICC-based colour management.
-pdf_oxide = { version = "0.3.53", path = "..", default-features = false, features = ["icc"] }
+pdf_oxide = { version = "0.3.54", path = "..", default-features = false, features = ["icc"] }
 
 # JSON envelope for the v0.3.51 AutoExtractor rich-result path. The
 # Java side gets the PageExtraction / DocumentExtraction as a JSON

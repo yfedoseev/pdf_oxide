@@ -35,6 +35,7 @@ fn subset_type0_font() -> FontInfo {
         encoding: Encoding::Standard("Identity-H".to_string()),
         to_unicode: Some(LazyCMap::new(cmap_data.to_vec())),
         truetype_cmap: std::sync::OnceLock::new(),
+        embedded_glyph_names: std::sync::OnceLock::new(),
         is_truetype_font: false,
         embedded_font_data: None,
         cid_to_gid_map: None,

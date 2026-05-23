@@ -186,6 +186,7 @@ fn create_font_with_encoding(encoding: Encoding) -> FontInfo {
         stem_v: Some(100.0),
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
+        embedded_glyph_names: std::sync::OnceLock::new(),
         is_truetype_font: false,
         cid_to_gid_map: None,
         cid_system_info: None,

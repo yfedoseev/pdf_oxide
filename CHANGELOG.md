@@ -2,6 +2,98 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.54] - 2026-05-23
+
+> Text-extraction fidelity pass. Hebrew / RTL reads in correct
+> reading order thanks to a new geometric visual-vs-logical
+> detector that finally fires on Hebrew (Pass 0's
+> Arabic-Presentation-Forms gate never matched Hebrew because
+> Hebrew has no presentation forms in Unicode). Bullets and
+> `fi` / `fl` ligatures decode to their canonical codepoints
+> via a new ISO 32000-1 §9.10.2 fallback level — Type0
+> Identity-H fonts without a `CIDToGIDMap` now consult the
+> embedded TrueType `cmap` + `post` tables before the
+> CID-as-Unicode last resort. Tight two-column prose bodies
+> read column-by-column instead of row-by-row interleave (the
+> known v0.3.53 issue), gated by a new table-vs-prose
+> classifier so the v0.3.53 corpus-revert lesson holds —
+> tables stay byte-identical. Two-column reference PDFs
+> (Bibles / dictionaries / encyclopedias) inherit the same
+> reading-order fix. Four fixes; zero new public surface.
+
+### Fixed
+
+- **Hebrew / RTL visual-vs-logical detection
+  ([#537](https://github.com/yfedoseev/pdf_oxide/issues/537))**
+  — Hebrew PDFs that store text in visual order (the PDF
+  content stream draws glyphs left-to-right even though the
+  script reads right-to-left) now extract in correct logical
+  order. New per-RTL-run X-coordinate-monotonicity detector
+  gates the existing UAX #9 `bidi::reorder_visual_to_logical`
+  pass; logical-order PDFs (the pdfium `hebrew_mirrored.pdf`
+  test fixture and Arabic CID-TrueType samples) stay
+  byte-identical. Pass 0's Arabic-Presentation-Forms trigger
+  was the only Arabic-specific gate; Hebrew has no
+  presentation forms in Unicode, so the geometric gate is
+  what unblocks it. Reported by **alexagr** with the Magic
+  Palace Eilat hotel PDF as the canonical case; reproduced
+  empirically before the fix landed.
+
+- **ToUnicode CMap miss: extended ISO 32000-1 §9.10.2
+  fallback chain
+  ([#535](https://github.com/yfedoseev/pdf_oxide/issues/535))**
+  — Type0 Identity-H fonts without a `CIDToGIDMap` (the
+  PowerPoint / Acrobat-exported subset-font shape that
+  produced ~25,350 "ToUnicode CMap MISS" warnings on the
+  PowerPoint corpus) now consult the embedded TrueType
+  font's `cmap` + `post` tables to recover glyph names,
+  then look up the Adobe Glyph List (including the AGL §6
+  `uniXXXX` / `uXXXXX` synthetic-name patterns). Resolves
+  the bullet → `❍` substitution and the `fi` / `fl`
+  ligature corruption. The post-extraction band-aid
+  `normalize_bullet_glyphs` stays retired (it was wrong for
+  documents that legitimately use `❍`); the fix is in the
+  decoder, where it belongs. Same shape pdf.js / MuPDF /
+  PDFBox 3.x use.
+
+- **Multi-column prose reading order
+  ([#534](https://github.com/yfedoseev/pdf_oxide/issues/534))**
+  — tight two-column PROSE bodies (~12pt gutters) now read
+  column-by-column instead of row-by-row interleave. The
+  v0.3.53 known issue, explicitly documented in that
+  release's notes. New table-vs-prose classifier (region
+  is "prose" when lines are tall stacks of wide content,
+  "table" when lines are short cells; the v0.3.53 revert
+  comment in `xycut.rs:73-101` is the spec) gates a
+  tight-gutter column cut so the same XY-cut recursion no
+  longer corrupts table cells — the v0.3.53 lesson where two
+  prior attempts were reverted by the 70-PDF corpus sweep
+  after the `google_doc_document.pdf` population table
+  ("273.879.7501" → "1273.879.750") regressed. Adds
+  recursive band-separation of full-width header / footer
+  rows BEFORE column detection so the multi-column body
+  gets analyzed as its own region. Same 70-PDF sweep is the
+  acceptance gate.
+
+- **Two-column reference PDFs: column-aware reading order
+  ([#536](https://github.com/yfedoseev/pdf_oxide/issues/536))**
+  — reference-style two-column PDFs (Bibles, dictionaries,
+  encyclopedias, academic editions with marginal section
+  numbers) now extract column-by-column thanks to the #534
+  classifier. The cascade where the spatial-table-detector
+  latched onto the interleaved structure and rendered the
+  whole multi-column body as a Markdown table-with-
+  one-word-per-cell is resolved: clean column reading order
+  produces clean prose, not a degenerate table. Concerns
+  about marginal-label classification, structural heading
+  isolation, cross-page section continuity, and
+  header / footer separation that the reporter usefully
+  called out are captured for the v0.4.0
+  structured-extraction track and acknowledged on the
+  issue. Reported by **lggcs (Luke)** with a 1256-page
+  French Louis Segond Bible as the canonical case;
+  reproduced empirically before the fix landed.
+
 ## [0.3.53] - 2026-05-22
 
 > Java is the 8th binding, plus a markdown-extraction quality pass

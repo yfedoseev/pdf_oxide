@@ -1,6 +1,6 @@
 # PDF Oxide - The Fastest PDF Toolkit for Python, Rust, Go, JS/TS, C#, Java, WASM, CLI & AI
 
-> **New in v0.3.53 — Java is the 8th binding** (`fyi.oxide:pdf-oxide:0.3.53` on Maven Central, JDK 11+, free Kotlin interop via the same JAR). **Ruby, PHP, and Swift are next on the roadmap.** Want another language? [Open an issue](https://github.com/yfedoseev/pdf_oxide/issues/new) and tell us.
+> **New in v0.3.54 — text-extraction fidelity pass** (Hebrew / RTL visual-vs-logical detection, ToUnicode CMap fallback for bullet & ligature decode, multi-column prose reading order, reference-style two-column reading order). **Java is the 8th binding** (`fyi.oxide:pdf-oxide:0.3.54` on Maven Central, JDK 11+, free Kotlin interop via the same JAR). **Ruby, PHP, and Swift are next on the roadmap.** Want another language? [Open an issue](https://github.com/yfedoseev/pdf_oxide/issues/new) and tell us.
 
 The fastest PDF library for text extraction, image extraction, and markdown conversion. Rust core with bindings for Python, Go, JavaScript / TypeScript, C# / .NET, **Java (JDK 11+, Kotlin-compatible)**, and WASM, plus a CLI tool and MCP server for AI assistants. 0.8ms mean per document, 5× faster than PyMuPDF, 15× faster than pypdf. 100% pass rate on 3,830 real-world PDFs. MIT licensed.
 
@@ -284,19 +284,19 @@ cargo install pdf_oxide_mcp             # Cargo
 - **Go** — `go get github.com/yfedoseev/pdf_oxide/go` — see [go/README.md](go/README.md)
 - **JavaScript / TypeScript (Node.js)** — `npm install pdf-oxide` — see [js/README.md](js/README.md)
 - **C# / .NET** — `dotnet add package PdfOxide` — see [csharp/README.md](csharp/README.md)
-- **Java / Kotlin (JDK 11+)** — Maven coords `fyi.oxide:pdf-oxide:0.3.53` — see [java/README.md](java/README.md)
+- **Java / Kotlin (JDK 11+)** — Maven coords `fyi.oxide:pdf-oxide:0.3.54` — see [java/README.md](java/README.md)
 
   ```xml
   <dependency>
     <groupId>fyi.oxide</groupId>
     <artifactId>pdf-oxide</artifactId>
-    <version>0.3.53</version>
+    <version>0.3.54</version>
   </dependency>
   ```
 
   ```gradle
   // Gradle (Kotlin DSL)
-  implementation("fyi.oxide:pdf-oxide:0.3.53")
+  implementation("fyi.oxide:pdf-oxide:0.3.54")
   ```
 
 All four share the same Rust core as the Python and WASM bindings, so everything you read in this README applies to them as well — just with each language's native naming conventions.

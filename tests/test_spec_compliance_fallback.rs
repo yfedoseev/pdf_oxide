@@ -46,6 +46,7 @@ fn test_type0_identity_encoding_no_tounicode_returns_replacement() {
         encoding: Encoding::Identity,
         to_unicode: None,
         truetype_cmap: std::sync::OnceLock::new(),
+        embedded_glyph_names: std::sync::OnceLock::new(),
         is_truetype_font: false,
         embedded_font_data: None, // No embedded data
         cid_to_gid_map: None,
@@ -88,6 +89,7 @@ fn test_type0_zero_byte_embedded_font_returns_replacement() {
         encoding: Encoding::Identity,
         to_unicode: None,
         truetype_cmap: std::sync::OnceLock::new(),
+        embedded_glyph_names: std::sync::OnceLock::new(),
         is_truetype_font: false,
         embedded_font_data: Some(Arc::new(vec![])), // 0 bytes!
         cid_to_gid_map: None,

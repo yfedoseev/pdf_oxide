@@ -28,6 +28,7 @@ fn test_type0_agl_fallback_for_standard_ascii() {
         encoding: Encoding::Identity,
         to_unicode: None,
         truetype_cmap: std::sync::OnceLock::new(),
+        embedded_glyph_names: std::sync::OnceLock::new(),
         is_truetype_font: false,
         embedded_font_data: Some(Arc::new(vec![])), // 0 bytes
         cid_to_gid_map: Some(CIDToGIDMap::Identity), // CID == GID
@@ -75,6 +76,7 @@ fn test_type0_lmroman_agl_fallback() {
         encoding: Encoding::Identity,
         to_unicode: None,
         truetype_cmap: std::sync::OnceLock::new(),
+        embedded_glyph_names: std::sync::OnceLock::new(),
         is_truetype_font: false,
         embedded_font_data: None,
         cid_to_gid_map: Some(CIDToGIDMap::Identity),
@@ -116,6 +118,7 @@ fn test_type0_agl_fallback_then_replacement() {
         encoding: Encoding::Identity,
         to_unicode: None,
         truetype_cmap: std::sync::OnceLock::new(),
+        embedded_glyph_names: std::sync::OnceLock::new(),
         is_truetype_font: false,
         embedded_font_data: None,
         cid_to_gid_map: Some(CIDToGIDMap::Identity),

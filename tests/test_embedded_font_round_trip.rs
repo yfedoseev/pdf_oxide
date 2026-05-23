@@ -91,12 +91,27 @@ fn round_trip_greek() {
 fn round_trip_hebrew() {
     // Hebrew is RTL but at this layer (no shaping) we just round-trip
     // the codepoints as-is. Phase LAYOUT will add proper BiDi.
+    //
+    // v0.3.54 (#537): the extractor now runs a geometric visual-vs-
+    // logical detector over RTL runs. Our writer above draws Hebrew
+    // glyphs in *input-stream order* at increasing x (no shaping),
+    // which the detector correctly classifies as visual-order and
+    // reverses to produce logical-order codepoints. The test
+    // therefore accepts EITHER:
+    //   * the original input (writer eventually implements proper
+    //     RTL shaping → glyphs drawn right-to-left → extractor sees
+    //     descending x → no reversal → byte-for-byte round trip), OR
+    //   * the reversed input (current writer's no-shaping behaviour
+    //     → extractor sees ascending x → reverses to logical order
+    //     → round-trip produces the reversed codepoint sequence).
+    // Both are correct given the writer's documented state.
     let input = "שלום עולם";
+    let reversed: String = input.chars().rev().collect();
     let bytes = build_pdf_with_text(input, 14.0);
     let extracted = extract_text_from_bytes(bytes);
     assert!(
-        extracted.contains(input),
-        "expected Hebrew {input:?} in extracted text, got: {extracted:?}",
+        extracted.contains(input) || extracted.contains(&reversed),
+        "expected Hebrew {input:?} or its reverse {reversed:?} in extracted text, got: {extracted:?}",
     );
 }
 

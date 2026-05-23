@@ -37,6 +37,24 @@ use crate::pipeline::{OrderedTextSpan, ReadingOrderInfo};
 /// allocation that would abort the process via `handle_alloc_error`.
 const MAX_PROJECTION_SIZE: usize = 100_000;
 
+/// Coarse classification of a region for the v0.3.54 #534 multi-column-prose
+/// fix. Used to gate the tight-gutter cut: tight cuts are only accepted on
+/// regions that *positively* identify as prose, so the same XY-cut recursion
+/// no longer corrupts table cells (the v0.3.53 lesson — see lines 73–101).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegionKind {
+    /// Tall stack of wide lines OR tall stack of half-column lines with
+    /// substantial content per line. Safe to apply tight-gutter cuts.
+    Prose,
+    /// Short cells in a grid (mean characters per line < 8). Tight cuts
+    /// here corrupt cell ordering — the canonical google_doc population
+    /// table that reverted v0.3.53's two attempts is the prototype.
+    Table,
+    /// Anything else — too few lines, mixed shapes, decorative regions.
+    /// Default to the v0.3.53 behaviour (no tight cut).
+    Mixed,
+}
+
 /// XY-Cut recursive spatial partitioning strategy.
 ///
 /// Detects columns using projection profiles and white space analysis.
@@ -155,6 +173,63 @@ impl XYCutStrategy {
             return vec![self.sort_indices(all_spans, indices)];
         }
 
+        // v0.3.54 (#534): two-column-prose probe BEFORE the
+        // single-column short-circuit. Tight gutters (~10-15pt) that
+        // sit below `min_valley_width` defeat the standard projection-
+        // valley detector, and the wide+dense heuristic inside
+        // `is_single_column_region` mis-classifies the body as one
+        // column because each line's bbox spans the narrow gutter.
+        // The probe positively identifies the 2-column-prose shape
+        // (gutter-radius left-edge clusters + ≥6 narrow lines +
+        // classify_region_kind == Prose) and only fires when ALL of
+        // those signals agree. Critically, the Prose gate prevents
+        // the false positive that reverted v0.3.53's attempts on a
+        // 2-column sub-region of the google_doc population table
+        // (mean_chars < 8 → Table → bail).
+        //
+        // **Band-separation first**: when the probe would fire AND a
+        // clean vertical band-separation (top header / body / bottom
+        // footer) is available, peel the band off BEFORE the column
+        // cut. Without this step, full-width header / footer rows
+        // get absorbed into one of the two column halves and end up
+        // mid-page in reading order — the failure mode on the
+        // 1256-page French Bible from #536 where the chapter-header
+        // band and page-number footer were full-width and span the
+        // gutter. The signal for "band": a vertical split whose
+        // smaller side has ≤ 25 % of the region's spans (a tight
+        // band relative to the body it sits next to).
+        if let Some(gutter_x) = self.detect_two_column_prose(all_spans, indices) {
+            if let Some((above, below)) = self.find_vertical_split_indexed(all_spans, indices) {
+                let smaller = above.len().min(below.len());
+                let total = above.len() + below.len();
+                if smaller * 4 <= total {
+                    log::debug!(
+                        "XY-cut #534: peeling band before column cut, above={} below={}",
+                        above.len(),
+                        below.len()
+                    );
+                    let mut result = self.partition_indexed(all_spans, &above);
+                    result.extend(self.partition_indexed(all_spans, &below));
+                    return result;
+                }
+            }
+            let (left, right): (Vec<usize>, Vec<usize>) = indices
+                .iter()
+                .copied()
+                .partition(|&i| all_spans[i].bbox.left() < gutter_x);
+            if !left.is_empty() && !right.is_empty() {
+                log::debug!(
+                    "XY-cut #534: two-column-prose detected, gutter_x={:.1}, left={} right={}",
+                    gutter_x,
+                    left.len(),
+                    right.len()
+                );
+                let mut result = self.partition_indexed(all_spans, &left);
+                result.extend(self.partition_indexed(all_spans, &right));
+                return result;
+            }
+        }
+
         // Detect single-column body text up-front and skip all spatial
         // splits. Real body text has density dips (indented code, short
         // last-lines, paragraph breaks) that would otherwise trigger
@@ -195,6 +270,278 @@ impl XYCutStrategy {
 
         // No split found, return as single group
         vec![self.sort_indices(all_spans, indices)]
+    }
+
+    /// Classifier verdict for a region — used to gate the tight-gutter
+    /// column-split path (#534) so the same XY-cut recursion no longer
+    /// corrupts table cells (the v0.3.53 lesson).
+    ///
+    /// See the inline post-mortem at lines 73–101: two prior attempts at
+    /// the multi-column-prose fix were reverted by the 70-PDF sweep when
+    /// they accidentally fired on a 2-column sub-region of a real table
+    /// and reordered digits. The fix has to *positively identify prose*
+    /// before allowing the tight cut — not merely *fail to identify
+    /// table*. This classifier is that positive identification.
+    fn classify_region_kind(&self, all_spans: &[TextSpan], indices: &[usize]) -> RegionKind {
+        // Cheap shape check first.
+        if indices.len() < 6 {
+            return RegionKind::Mixed;
+        }
+
+        let mut x_min = f32::MAX;
+        let mut x_max = f32::MIN;
+        for &i in indices {
+            x_min = x_min.min(all_spans[i].bbox.left());
+            x_max = x_max.max(all_spans[i].bbox.right());
+        }
+        let region_width = x_max - x_min;
+        if region_width <= 10.0 {
+            return RegionKind::Mixed;
+        }
+
+        // Cluster spans into lines by rounded Y.
+        let mut lines: std::collections::BTreeMap<i32, (f32, f32, usize)> =
+            std::collections::BTreeMap::new();
+        for &i in indices {
+            let s = &all_spans[i];
+            let y_key = s.bbox.top().round() as i32;
+            let nonws_chars = s.text.chars().filter(|c| !c.is_whitespace()).count();
+            let entry = lines.entry(y_key).or_insert((f32::MAX, f32::MIN, 0));
+            entry.0 = entry.0.min(s.bbox.left());
+            entry.1 = entry.1.max(s.bbox.right());
+            entry.2 += nonws_chars;
+        }
+
+        let line_count = lines.len();
+        if line_count < 6 {
+            // Too few lines to be a substantial prose body. Headings,
+            // captions, single paragraphs all land here — leave them to
+            // the default XY-cut behaviour.
+            return RegionKind::Mixed;
+        }
+
+        // Per-line statistics: average char count and the count of
+        // "narrow" lines whose extent < 0.6 × region_width (a column-half
+        // line) and "wide" lines whose extent ≥ 0.6 × region_width (a
+        // body-text or table-row line). Table cells are narrow; tables
+        // have many such narrow lines but with very short content.
+        let mut total_chars = 0usize;
+        let mut narrow_lines = 0usize;
+        let mut wide_lines = 0usize;
+        for (left, right, chars) in lines.values() {
+            total_chars += chars;
+            let extent = (*right - *left).max(0.0);
+            if extent < region_width * 0.6 {
+                narrow_lines += 1;
+            } else {
+                wide_lines += 1;
+            }
+        }
+        let mean_chars = total_chars as f32 / line_count as f32;
+
+        // PROSE: tall stack of wide lines OR tall stack of half-column
+        // lines with substantial content per line.
+        //   - mean_chars > 20: real prose, not table cells
+        //   - line_count ≥ 6: substantial column
+        //   - either:
+        //     * majority of lines are wide (single-column body), OR
+        //     * majority of lines are narrow with mean_chars > 20
+        //       (two half-column lines with prose content)
+        let mostly_wide = wide_lines * 2 > line_count;
+        let mostly_narrow = narrow_lines * 2 > line_count;
+        if mean_chars > 20.0 && (mostly_wide || mostly_narrow) {
+            return RegionKind::Prose;
+        }
+
+        // TABLE: lots of narrow lines, short content per line (mean_chars
+        // < 8). The v0.3.53 google_doc_document.pdf population table —
+        // the canonical regression that reverted attempts 1 & 2 — sits
+        // squarely here (digit-only cells, ≤ 7 chars each).
+        if mean_chars < 8.0 {
+            return RegionKind::Table;
+        }
+
+        // Anything in between (e.g. captions with headings, mixed
+        // figure-and-text bands) → don't risk the tight cut.
+        RegionKind::Mixed
+    }
+
+    /// Two-column-prose probe (#534) — does this region look like two
+    /// side-by-side columns of prose with a tight gutter (~10-15pt)?
+    ///
+    /// Called from `is_single_column_region` when the wide+dense
+    /// heuristic would otherwise short-circuit the region as
+    /// single-column. Distinguishing signal: most lines fit inside
+    /// **one** half of the region width (column-half lines), and the
+    /// left edges cluster into exactly **two** groups separated by
+    /// approximately half the region width.
+    ///
+    /// Gated on `classify_region_kind == Prose` so the same machinery
+    /// doesn't fire on a 2-column sub-region of a table (the v0.3.53
+    /// failure mode).
+    ///
+    /// Returns `Some(gutter_x)` when a 2-column prose layout is
+    /// detected — the caller treats that as a non-single-column verdict
+    /// and lets `find_horizontal_split_indexed` cut at the gutter.
+    fn detect_two_column_prose(&self, all_spans: &[TextSpan], indices: &[usize]) -> Option<f32> {
+        // Cheap shape check first.
+        if indices.len() < 8 {
+            return None;
+        }
+
+        let mut x_min = f32::MAX;
+        let mut x_max = f32::MIN;
+        for &i in indices {
+            x_min = x_min.min(all_spans[i].bbox.left());
+            x_max = x_max.max(all_spans[i].bbox.right());
+        }
+        let region_width = x_max - x_min;
+        if region_width < 200.0 {
+            // Real two-column bodies span at least ~200pt (the
+            // narrowest two-column layout in the corpus is ~250pt for a
+            // letter-page body inside ~250pt margins).
+            return None;
+        }
+
+        // Cluster spans into lines by rounded Y. Keep PER-SPAN
+        // (left, right) data so we can detect within-line gaps —
+        // the canonical multi-column interleave on issue_07 puts
+        // a left-col span (left=82) and a right-col span (left=312)
+        // on the same Y baseline. The whole-line bbox.right -
+        // bbox.left = 358 pt looks "wide" (358 > 0.6 × 500 = 300)
+        // even though each side is a narrow column half.
+        let mut lines_spans: std::collections::BTreeMap<i32, Vec<(f32, f32)>> =
+            std::collections::BTreeMap::new();
+        for &i in indices {
+            let s = &all_spans[i];
+            let y_key = s.bbox.top().round() as i32;
+            lines_spans
+                .entry(y_key)
+                .or_default()
+                .push((s.bbox.left(), s.bbox.right()));
+        }
+        if lines_spans.len() < 6 {
+            return None;
+        }
+
+        // For each line, find the largest gap between adjacent spans.
+        // A line is treated as multiple "half-lines" if a gap ≥ 10 pt
+        // splits it; each side of the gap contributes its leftmost-x
+        // to `narrow_lefts`. This is the v0.3.53 lesson: the row-by-
+        // row interleave shape on issue_07 spans the gutter as bbox
+        // but has a clear gap within each line.
+        let narrow_threshold = region_width * 0.6;
+        let intra_line_gap_threshold = 10.0_f32;
+        let mut narrow_lefts: Vec<f32> = Vec::new();
+        // Count "narrow" lines for the majority check — a line with
+        // a within-line gap contributes 1 to this count regardless of
+        // how many half-lines it produces, so the majority threshold
+        // stays comparable to single-column reasoning.
+        let mut narrow_line_count = 0usize;
+        for line_spans in lines_spans.values() {
+            let mut sorted = line_spans.clone();
+            sorted.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
+            // Detect largest within-line gap.
+            let mut largest_gap = 0.0_f32;
+            let mut split_idx: Option<usize> = None;
+            for (i, w) in sorted.windows(2).enumerate() {
+                let gap = w[1].0 - w[0].1;
+                if gap > largest_gap {
+                    largest_gap = gap;
+                    split_idx = Some(i);
+                }
+            }
+            let line_left = sorted.first().map(|(l, _)| *l).unwrap_or(0.0);
+            let line_right = sorted.last().map(|(_, r)| *r).unwrap_or(0.0);
+            let line_extent = (line_right - line_left).max(0.0);
+
+            if let Some(si) = split_idx {
+                if largest_gap >= intra_line_gap_threshold {
+                    // Within-line gap detected — treat each side as
+                    // its own narrow half-line.
+                    narrow_lefts.push(line_left);
+                    // The right-side starts at sorted[si + 1].0
+                    if let Some(&(right_side_left, _)) = sorted.get(si + 1) {
+                        narrow_lefts.push(right_side_left);
+                    }
+                    narrow_line_count += 1;
+                    continue;
+                }
+            }
+
+            if line_extent < narrow_threshold {
+                narrow_lefts.push(line_left);
+                narrow_line_count += 1;
+            }
+        }
+        // Majority of lines must be narrow — otherwise this isn't a
+        // 2-column body, it's a single-column body with a few short
+        // last-lines.
+        if narrow_line_count * 2 < lines_spans.len() {
+            return None;
+        }
+
+        // Cluster the narrow left-edges. Two clusters separated by
+        // approximately half the region width = 2-column prose.
+        let cluster_radius = 30.0_f32;
+        let mut clusters: Vec<(f32, usize)> = Vec::new();
+        for &x in &narrow_lefts {
+            if let Some(c) = clusters
+                .iter_mut()
+                .find(|(c, _)| (*c - x).abs() <= cluster_radius)
+            {
+                // Running mean
+                let count = c.1 as f32;
+                c.0 = (c.0 * count + x) / (count + 1.0);
+                c.1 += 1;
+            } else {
+                clusters.push((x, 1));
+            }
+        }
+
+        // Want exactly 2 substantial clusters separated by ~half-width.
+        // ≥ 3 clusters = either a table or a band-mixed region — bail.
+        if clusters.len() != 2 {
+            return None;
+        }
+        // Sort by x.
+        clusters.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
+        let (c1_x, c1_n) = clusters[0];
+        let (c2_x, c2_n) = clusters[1];
+
+        // Each cluster needs substantial coverage — ≥ 3 lines, or 20 %
+        // of the line count, whichever is larger. Reject lopsided
+        // shapes (header + body-paragraph).
+        let min_cluster = 3usize.max(narrow_lefts.len() / 5);
+        if c1_n < min_cluster || c2_n < min_cluster {
+            return None;
+        }
+
+        // Gap between cluster centres ≥ 30 % of region width (the
+        // gutter + right-column left-margin). For a tight gutter of
+        // ~12pt with two ~250pt columns the gap is ~250pt out of 512pt
+        // → ~49 %, well above the floor.
+        let gap = c2_x - c1_x;
+        if gap < region_width * 0.30 {
+            return None;
+        }
+
+        // Positive identification of prose — required by the
+        // classifier to avoid the v0.3.53 google_doc 2-col table
+        // sub-region false positive.
+        if self.classify_region_kind(all_spans, indices) != RegionKind::Prose {
+            return None;
+        }
+
+        // Gutter midpoint as the cut. The cluster centres are the left
+        // edges of the two columns; the gutter sits between the right
+        // edge of column 1 and the left edge of column 2. We don't
+        // track right edges per cluster, so approximate the gutter
+        // centre as halfway between the two cluster centres — that's
+        // close enough; the actual partition uses `bbox.left()` per
+        // span so individual spans land cleanly on either side.
+        let gutter_x = (c1_x + c2_x) * 0.5;
+        Some(gutter_x)
     }
 
     /// Heuristic: does the region look like a single column of body text?

@@ -239,7 +239,79 @@ impl CharacterMapper {
         // Look up in Adobe Glyph List
         ADOBE_GLYPH_LIST.get(glyph_name).map(|&ch| ch.to_string())
     }
+}
 
+/// Look up a PostScript glyph name and return its Unicode codepoint string.
+///
+/// Per [Adobe Glyph List Specification §6](https://github.com/adobe-type-tools/agl-specification),
+/// the conversion proceeds in three steps:
+///
+/// 1. **AGL exact match** — `"bullet"` → U+2022, `"fi"` → U+FB01, `"space"` → U+0020, etc.
+/// 2. **`uniXXXX` synthetic pattern** — exactly four uppercase hex digits map to U+XXXX.
+/// 3. **`uXXXXX` synthetic pattern** — four to six uppercase hex digits (BMP + SMP) map
+///    to U+XXXXX (0x0000..=0x10FFFF, excluding surrogates).
+///
+/// Used as the §9.10.2 Priority 3c fallback when:
+/// - the PDF's `ToUnicode` CMap doesn't cover a code (Priority 1 miss),
+/// - the font's TrueType `cmap` table doesn't cover the glyph (Priority 4 miss),
+/// - and we have the embedded font program's `post` table glyph name for the GID.
+///
+/// This is what pdf.js, MuPDF, and PDFBox 3.x use as the last name-based step
+/// before falling back to CID-as-Unicode. Documented in
+/// `docs/releases/plans/v0.3.54/research-tounicode-fallback-chain.md`.
+pub fn glyph_name_to_unicode(glyph_name: &str) -> Option<String> {
+    // 1) AGL exact match — covers "bullet", "fi", "fl", "ffi", "ffl", "endash", etc.
+    if let Some(&ch) = ADOBE_GLYPH_LIST.get(glyph_name) {
+        return Some(ch.to_string());
+    }
+
+    // Some font producers append `.altN` / `.sc` / `.001` style variants to the
+    // canonical glyph name to disambiguate stylistic alternates (small caps,
+    // alternative shapes, OpenType feature variants). Strip the suffix and try
+    // again — the base codepoint is what we want for extraction.
+    if let Some(dot_idx) = glyph_name.find('.') {
+        let base = &glyph_name[..dot_idx];
+        if !base.is_empty() {
+            if let Some(&ch) = ADOBE_GLYPH_LIST.get(base) {
+                return Some(ch.to_string());
+            }
+        }
+    }
+
+    // 2) `uniXXXX` synthetic — exactly four hex digits, BMP only.
+    if let Some(hex) = glyph_name.strip_prefix("uni") {
+        if hex.len() == 4 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            if let Ok(cp) = u32::from_str_radix(hex, 16) {
+                if let Some(c) = char::from_u32(cp) {
+                    // Reject surrogates and control chars (unprintable as text).
+                    if !c.is_control() {
+                        return Some(c.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // 3) `uXXXXX` synthetic — 4 to 6 hex digits, BMP + SMP + SIP.
+    if let Some(hex) = glyph_name.strip_prefix('u') {
+        if (4..=6).contains(&hex.len()) && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            if let Ok(cp) = u32::from_str_radix(hex, 16) {
+                // 0x0000..=0x10FFFF and not in the surrogate range.
+                if (cp <= 0x10FFFF) && !(0xD800..=0xDFFF).contains(&cp) {
+                    if let Some(c) = char::from_u32(cp) {
+                        if !c.is_control() {
+                            return Some(c.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+impl CharacterMapper {
     /// Convert a character code to a glyph name using standard mappings.
     ///
     /// For ASCII range (0x20-0x7E), this maps directly to character names.
@@ -492,6 +564,78 @@ mod internal_tests {
         assert_eq!(mapper.code_to_glyph_name(0x20), Some("space".to_string()));
         assert_eq!(mapper.code_to_glyph_name(0x41), Some("A".to_string()));
         assert_eq!(mapper.code_to_glyph_name(0x61), Some("a".to_string()));
+    }
+
+    // ==========================================================================
+    // Adobe Glyph List §6 + synthetic-name patterns (v0.3.54 #535)
+    // ==========================================================================
+    // Covers Priority 3c of the §9.10.2 fallback chain: PostScript glyph names
+    // coming from the embedded font program's `post` (TrueType) or `charset`
+    // (CFF) table get mapped to Unicode via AGL exact match, then `uniXXXX`,
+    // then `uXXXXX`. Used by the new `embedded_glyph_name` lookup in
+    // `font_dict.rs` to recover bullets and `fi`/`fl` ligatures on Identity-H
+    // subset fonts without a `CIDToGIDMap`.
+
+    #[test]
+    fn glyph_name_to_unicode_agl_exact_match() {
+        // Canonical AGL entries — the bullet/ligature cases that motivate #535.
+        assert_eq!(glyph_name_to_unicode("bullet"), Some("\u{2022}".to_string()));
+        assert_eq!(glyph_name_to_unicode("fi"), Some("\u{FB01}".to_string()));
+        assert_eq!(glyph_name_to_unicode("fl"), Some("\u{FB02}".to_string()));
+        // Sanity: ASCII names.
+        assert_eq!(glyph_name_to_unicode("A"), Some("A".to_string()));
+        assert_eq!(glyph_name_to_unicode("space"), Some(" ".to_string()));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn glyph_name_to_unicode_uniXXXX_synth() {
+        // Per AGL §6, `uni` + 4 hex digits = U+XXXX.
+        assert_eq!(glyph_name_to_unicode("uni2022"), Some("\u{2022}".to_string()));
+        assert_eq!(glyph_name_to_unicode("uniFB01"), Some("\u{FB01}".to_string()));
+        assert_eq!(glyph_name_to_unicode("uni00E9"), Some("é".to_string()));
+        // 3 or 5 hex digits → not the uniXXXX pattern, fall through.
+        assert_eq!(glyph_name_to_unicode("uni202"), None);
+        assert_eq!(glyph_name_to_unicode("uni20221"), None);
+        // Non-hex chars → reject.
+        assert_eq!(glyph_name_to_unicode("uniGGGG"), None);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn glyph_name_to_unicode_uXXXXX_synth() {
+        // `u` + 4..6 hex digits = U+XXXXX (BMP + SMP + SIP, no surrogates).
+        assert_eq!(glyph_name_to_unicode("u2022"), Some("\u{2022}".to_string()));
+        assert_eq!(glyph_name_to_unicode("u1F600"), Some("\u{1F600}".to_string())); // 😀 (SMP)
+                                                                                    // Surrogate codepoint → reject.
+        assert_eq!(glyph_name_to_unicode("uD800"), None);
+        // Beyond 0x10FFFF → reject (7 hex digits also out of allowed length).
+        assert_eq!(glyph_name_to_unicode("u110000"), None);
+        // 3 hex digits or 7 hex digits → fall through.
+        assert_eq!(glyph_name_to_unicode("u20"), None);
+        assert_eq!(glyph_name_to_unicode("u1F60000"), None);
+    }
+
+    #[test]
+    fn glyph_name_to_unicode_variant_suffix_stripped() {
+        // Subset fonts often use `.alt`, `.sc`, `.001`, etc. as stylistic variant
+        // markers. The base name before the dot is the canonical glyph; the
+        // codepoint is what we want for extraction.
+        assert_eq!(glyph_name_to_unicode("A.sc"), Some("A".to_string()));
+        assert_eq!(glyph_name_to_unicode("bullet.alt"), Some("\u{2022}".to_string()));
+        assert_eq!(glyph_name_to_unicode("fi.001"), Some("\u{FB01}".to_string()));
+        // Unknown base name → still None.
+        assert_eq!(glyph_name_to_unicode("xyzzy.sc"), None);
+    }
+
+    #[test]
+    fn glyph_name_to_unicode_unknown_or_control() {
+        // Not in AGL, not a synth pattern.
+        assert_eq!(glyph_name_to_unicode(""), None);
+        assert_eq!(glyph_name_to_unicode(".notdef"), None);
+        assert_eq!(glyph_name_to_unicode("xyzzy"), None);
+        // uniXXXX for a control char → reject (not useful as text).
+        assert_eq!(glyph_name_to_unicode("uni0007"), None); // BEL
     }
 
     #[test]

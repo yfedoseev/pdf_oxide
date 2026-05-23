@@ -5852,28 +5852,75 @@ impl<'doc> TextExtractor<'doc> {
         };
 
         // Step 3b: RTL text correction — reverse visual-order characters to logical order.
-        // PDF stores characters in content stream order. For RTL scripts (Arabic/Hebrew),
-        // if characters are positioned left-to-right in user space (increasing x), they
-        // are in visual LTR order, which is reversed from logical RTL reading order.
-        // We reverse them to produce correct logical order.
-        // When combined_matrix.a < 0, characters go right-to-left in user space, meaning
-        // content stream order already matches logical RTL reading order — no reversal.
+        //
+        // PDF stores characters in content-stream order. For RTL scripts
+        // (Arabic / Hebrew), the producer may emit text in either:
+        //   * **visual order** — glyphs drawn left-to-right in user space
+        //     even though the script reads right-to-left (legacy Acrobat
+        //     output, pre-shaped Arabic, the Magic Palace Eilat PDF
+        //     from issue #537), OR
+        //   * **logical order** — glyphs drawn right-to-left in user space
+        //     because the producer ran its own bidi pass before drawing
+        //     (modern Word with bidi, the pdfium `hebrew_mirrored.pdf`
+        //     test fixture).
+        //
+        // We use the confidence-gated geometric detector
+        // [`text::bidi::detect_visual_order_run`] (v0.3.54 #537) when the
+        // cluster has ≥4 RTL letters with clear X-monotonicity. For
+        // shorter clusters (or `Ambiguous` verdict) we fall back to the
+        // pre-v0.3.54 simple `last_x > first_x` heuristic — keeps the
+        // existing 2-3-char RTL run behaviour byte-identical so the
+        // upstream invariants (Arabic CID-TrueType samples, the
+        // `right_to_left_02` fixture) still pass.
         if unicode_text.len() > 1 && cluster.len() >= 2 {
             let has_rtl = unicode_text
                 .chars()
                 .any(|c| crate::text::rtl_detector::is_rtl_text(c as u32));
             if has_rtl {
-                let first_x = {
-                    let p = text_matrix.transform_point(cluster[0].x_position, 0.0);
-                    ctm.transform_point(p.x, p.y).x
-                };
-                let last_x = {
-                    let p = text_matrix.transform_point(last.x_position, 0.0);
-                    ctm.transform_point(p.x, p.y).x
-                };
-                // Characters go left-to-right in user space → visual LTR → reverse for RTL
-                if last_x > first_x {
-                    unicode_text = unicode_text.chars().rev().collect();
+                // Build (char, user_x) pairs for the geometric detector.
+                // One pair per source character — when the decoded
+                // string has more chars than the cluster (e.g. ligature
+                // expansion `fi` → "fi"), use the first decoded char as
+                // a representative since they share the same source x.
+                let font_for_cluster = state.font_name.as_ref().and_then(|n| self.fonts.get(n));
+                let mut chars_with_x: Vec<(char, f32)> = Vec::with_capacity(cluster.len());
+                for ci in cluster {
+                    let decoded_first = font_for_cluster
+                        .and_then(|f| f.char_to_unicode(ci.code))
+                        .and_then(|s| s.chars().next());
+                    if let Some(c) = decoded_first {
+                        let p = text_matrix.transform_point(ci.x_position, 0.0);
+                        let user_x = ctm.transform_point(p.x, p.y).x;
+                        chars_with_x.push((c, user_x));
+                    }
+                }
+                let verdict = crate::text::bidi::detect_visual_order_run(&chars_with_x);
+                match verdict {
+                    crate::text::bidi::RunOrder::Visual => {
+                        // Confidence-gated visual-order detection — reverse.
+                        unicode_text = unicode_text.chars().rev().collect();
+                    },
+                    crate::text::bidi::RunOrder::Logical => {
+                        // Confidence-gated logical-order — leave alone.
+                        // The pdfium `hebrew_mirrored.pdf` test fixture
+                        // and similar lands here.
+                    },
+                    crate::text::bidi::RunOrder::Ambiguous => {
+                        // Short cluster or mixed signal — fall back to
+                        // the pre-v0.3.54 simple heuristic so existing
+                        // 2-3-char RTL runs keep working.
+                        let first_x = {
+                            let p = text_matrix.transform_point(cluster[0].x_position, 0.0);
+                            ctm.transform_point(p.x, p.y).x
+                        };
+                        let last_x = {
+                            let p = text_matrix.transform_point(last.x_position, 0.0);
+                            ctm.transform_point(p.x, p.y).x
+                        };
+                        if last_x > first_x {
+                            unicode_text = unicode_text.chars().rev().collect();
+                        }
+                    },
                 }
             }
         }
@@ -6586,8 +6633,67 @@ impl<'doc> TextExtractor<'doc> {
                     .font_name
                     .take()
                     .unwrap_or_else(|| "Unknown".to_string());
+
+                // v0.3.54 #537: RTL visual-order detection for the Tj-span
+                // path. This was the gap on the Magic Palace Eilat Hebrew
+                // PDF — the Tj-span buffer flush had no RTL correction at
+                // all, so Hebrew came out in content-stream (visual)
+                // order regardless of what the geometric signals said.
+                // Mirrors the existing logic in `flush_tj_buffer` and
+                // `cluster_to_span`: detect RTL content, use the geometric
+                // detector when `char_widths` give us per-char x; fall back
+                // to the `accumulated_width > 0` simple check (text drawn
+                // left-to-right in user space → visual order → reverse).
+                let mut text = std::mem::take(&mut buffer.unicode);
+                if text.len() > 1 {
+                    let has_rtl = text
+                        .chars()
+                        .any(|c| crate::text::rtl_detector::is_rtl_text(c as u32));
+                    if has_rtl {
+                        // Try the geometric detector first when char_widths
+                        // give us per-character X positions. char_widths
+                        // contains text-space relative widths; reconstruct
+                        // absolute user-space x by accumulating, scaling by
+                        // user_h_scale and offsetting by user_pos_x.
+                        let chars: Vec<char> = text.chars().collect();
+                        let verdict = if chars.len() == buffer.char_widths.len()
+                            && !buffer.char_widths.is_empty()
+                        {
+                            let mut chars_with_x: Vec<(char, f32)> =
+                                Vec::with_capacity(chars.len());
+                            let mut cursor_text_space = 0.0_f32;
+                            for (i, c) in chars.iter().enumerate() {
+                                let user_x =
+                                    buffer.user_pos_x + cursor_text_space * buffer.user_h_scale;
+                                chars_with_x.push((*c, user_x));
+                                cursor_text_space += buffer.char_widths[i];
+                            }
+                            crate::text::bidi::detect_visual_order_run(&chars_with_x)
+                        } else {
+                            crate::text::bidi::RunOrder::Ambiguous
+                        };
+                        match verdict {
+                            crate::text::bidi::RunOrder::Visual => {
+                                text = text.chars().rev().collect();
+                            },
+                            crate::text::bidi::RunOrder::Logical => {
+                                // Detected logical order — leave alone.
+                            },
+                            crate::text::bidi::RunOrder::Ambiguous => {
+                                // Fall back to the simple `accumulated_width
+                                // > 0` heuristic used elsewhere — text drawn
+                                // left-to-right in text space implies visual
+                                // order for RTL scripts.
+                                if buffer.accumulated_width > 0.0 {
+                                    text = text.chars().rev().collect();
+                                }
+                            },
+                        }
+                    }
+                }
+
                 let span = TextSpan {
-                    text: std::mem::take(&mut buffer.unicode),
+                    text,
                     bbox: Rect {
                         x: buffer.user_pos_x,
                         y: buffer.user_pos_y,
@@ -6893,6 +6999,7 @@ mod tests {
             stem_v: None,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
+            embedded_glyph_names: std::sync::OnceLock::new(),
             is_truetype_font: false,
             widths: None,
             first_char: None,

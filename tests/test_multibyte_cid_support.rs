@@ -64,6 +64,7 @@ end
         stem_v: None,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
+        embedded_glyph_names: std::sync::OnceLock::new(),
         is_truetype_font: false,
         cid_to_gid_map: None,
         cid_system_info: Some(pdf_oxide::fonts::CIDSystemInfo {
@@ -152,6 +153,7 @@ end
         stem_v: None,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
+        embedded_glyph_names: std::sync::OnceLock::new(),
         is_truetype_font: false,
         cid_to_gid_map: None,
         cid_system_info: Some(pdf_oxide::fonts::CIDSystemInfo {
@@ -242,6 +244,7 @@ end
         stem_v: Some(75.0),
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
+        embedded_glyph_names: std::sync::OnceLock::new(),
         is_truetype_font: false,
         cid_to_gid_map: None,
         cid_system_info: Some(pdf_oxide::fonts::CIDSystemInfo {
@@ -312,6 +315,7 @@ end
         stem_v: Some(85.0),
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
+        embedded_glyph_names: std::sync::OnceLock::new(),
         is_truetype_font: false,
         cid_to_gid_map: None,
         cid_system_info: Some(pdf_oxide::fonts::CIDSystemInfo {
@@ -387,6 +391,7 @@ end
         stem_v: Some(80.0),
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
+        embedded_glyph_names: std::sync::OnceLock::new(),
         is_truetype_font: false,
         cid_to_gid_map: None,
         cid_system_info: Some(pdf_oxide::fonts::CIDSystemInfo {
@@ -476,6 +481,7 @@ end
         stem_v: None,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
+        embedded_glyph_names: std::sync::OnceLock::new(),
         is_truetype_font: false,
         cid_to_gid_map: None,
         cid_system_info: Some(pdf_oxide::fonts::CIDSystemInfo {
@@ -552,6 +558,7 @@ end
         stem_v: None,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
+        embedded_glyph_names: std::sync::OnceLock::new(),
         is_truetype_font: false,
         cid_to_gid_map: None,
         cid_system_info: Some(pdf_oxide::fonts::CIDSystemInfo {
