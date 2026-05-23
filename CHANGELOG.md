@@ -2,6 +2,22 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.55] - 2026-05-23
+
+> Ruby + PHP language bindings + multi-line heading reading-order fix
+
+### Added
+- **Ruby binding (9th language)** — full FFI binding at v0.3.54 API parity, distributed via RubyGems with native gems for linux-x86_64, linux-aarch64, darwin-x86_64, darwin-arm64, windows-x64 plus a source gem (#545).
+- **PHP binding (10th language)** — full PHP FFI binding at v0.3.54 API parity, distributed via Packagist as `oxide/pdf-oxide`, supports PHP 8.1/8.2/8.3/8.4 on Linux/macOS/Windows × x86_64/aarch64 (#546).
+
+### Fixed
+- **#543** — XY-cut multi-line heading split. Long subsection titles wrapping across column boundaries no longer split into orphaned heading fragments. Pre-partition heading lock detects bold/large-font multi-line runs and treats them as atomic blocks before column partitioning.
+- **#537-followup** — Markdown output now emits bidi-isolation markers (U+2066/U+2067/U+2068/U+2069) around RTL runs detected by the v0.3.54 visual-vs-logical detector, preventing surrounding paragraph contamination in markdown viewers.
+- **#535-followup** — Inline-image (`BI...EI`) font streams now go through the same ToUnicode/AGL fallback chain as full-document fonts, resolving U+FFFD replacement characters in inline-image text.
+
+### Internal
+- v0.3.55 is "two new bindings + three internal-pipeline fixes" — no new public C ABI surface; both new bindings and the three fixes inherit from existing extract_text / to_markdown paths.
+
 ## [0.3.54] - 2026-05-23
 
 > Text-extraction fidelity pass. Hebrew / RTL reads in correct
