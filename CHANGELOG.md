@@ -13,7 +13,7 @@ All notable changes to PDFOxide are documented here.
 ### Fixed
 - **#543** — XY-cut multi-line heading split. Long subsection titles wrapping across column boundaries no longer split into orphaned heading fragments. Pre-partition heading lock detects bold/large-font multi-line runs and treats them as atomic blocks before column partitioning.
 - **#537-followup** — Markdown output now emits bidi-isolation markers (U+2066/U+2067/U+2068/U+2069) around RTL runs detected by the v0.3.54 visual-vs-logical detector, preventing surrounding paragraph contamination in markdown viewers.
-- **#535-followup** — Inline-image (`BI...EI`) font streams now go through the same ToUnicode/AGL fallback chain as full-document fonts, resolving U+FFFD replacement characters in inline-image text.
+- **#535-followup** — Glyph-name lookups (Type1 built-in encodings, CFF charset, `/Differences` arrays, and any future inline-image font-resolution callsite per PDF spec §8.9.7) now delegate to the v0.3.54 unified fallback chain (`character_mapper::glyph_name_to_unicode`), gaining variant-suffix stripping (`A.sc`, `bullet.alt`, `fi.001`) and stricter `uniXXXX` / `uXXXXX` synth validation. The chain itself is unchanged; only call sites are unified.
 
 ### Internal
 - v0.3.55 is "two new bindings + three internal-pipeline fixes" — no new public C ABI surface; both new bindings and the three fixes inherit from existing extract_text / to_markdown paths.

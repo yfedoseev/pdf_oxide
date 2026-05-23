@@ -3566,6 +3566,32 @@ pub(crate) fn glyph_name_to_unicode(glyph_name: &str) -> Option<char> {
         }
     }
 
+    // Priority 5 (#535 follow-up): delegate to the unified v0.3.54 fallback chain
+    // in `character_mapper::glyph_name_to_unicode`. The newer chain adds:
+    //   - Variant-suffix stripping (`A.sc`, `bullet.alt`, `fi.001`) — common in
+    //     subset fonts where producers append stylistic-variant tags.
+    //   - Stricter `uniXXXX` (exactly 4 hex, no control chars) and `uXXXXX`
+    //     (4..6 hex, no surrogates, no control chars) validation.
+    // This brings simple-font / Type1 / CFF / Differences-array callers (which
+    // route through this `font_dict::glyph_name_to_unicode` entry) onto the
+    // same fallback chain as the v0.3.54 #535 Type0 Identity-H path. Inline-
+    // image font streams (PDF spec §8.9.7) that resolve glyph names by this
+    // path inherit the same behaviour transparently — no separate inline-image
+    // codepath exists in this crate; inline images per spec carry only image
+    // data, but any future inline-image font-resolution callsite will use this
+    // unified chain by construction.
+    if let Some(unicode_str) = super::character_mapper::glyph_name_to_unicode(glyph_name) {
+        // The newer chain returns `String` (to allow multi-codepoint AGL
+        // entries like ligatures, though current AGL values are all single
+        // BMP codepoints). For the legacy `Option<char>` surface we only
+        // forward if the result is exactly one `char` — multi-codepoint
+        // results are handled by `glyph_name_to_unicode_string` below.
+        let mut chars = unicode_str.chars();
+        if let (Some(c), None) = (chars.next(), chars.next()) {
+            return Some(c);
+        }
+    }
+
     // Unknown glyph name - not in AGL and not a recognized format
     log::debug!("Unknown glyph name not in Adobe Glyph List: '{}'", glyph_name);
     None
@@ -3596,7 +3622,10 @@ pub(crate) fn glyph_name_to_unicode_string(glyph_name: &str) -> Option<String> {
         }
     }
 
-    None
+    // Final fallback (#535 follow-up): unified v0.3.54 chain — variant-suffix
+    // stripping + strict uniXXXX / uXXXXX synth. Returns the full `String` shape
+    // (multi-codepoint AGL entries are forwarded unchanged).
+    super::character_mapper::glyph_name_to_unicode(glyph_name)
 }
 
 // Removed old implementation - replaced with compact AGL lookup above
@@ -6565,6 +6594,58 @@ mod tests {
     #[test]
     fn test_glyph_name_to_unicode_string_unknown() {
         assert_eq!(glyph_name_to_unicode_string("totallyunknown"), None);
+    }
+
+    // =========================================================================
+    // #535 follow-up — unified AGL fallback chain (v0.3.55)
+    //
+    // The v0.3.54 #535 fix added a robust ToUnicode + embedded-cmap + AGL
+    // fallback chain in `src/fonts/character_mapper.rs::glyph_name_to_unicode`,
+    // but the original full-document Type0 / Identity-H call site at
+    // `font_dict.rs::Font::char_code_to_unicode` was the only consumer. Simple
+    // fonts, Type1 / CFF embedded encodings, and `/Differences` arrays still
+    // routed through this `font_dict::glyph_name_to_unicode` entry, which
+    // lacked the newer chain's variant-suffix stripping (`.alt`, `.sc`,
+    // `.001`). v0.3.55 delegates to the unified chain as a final fallback so
+    // all callers — including any future inline-image font-resolution path
+    // (PDF spec §8.9.7) — share the same behaviour.
+    //
+    // Refs #535.
+    // =========================================================================
+
+    #[test]
+    fn glyph_name_with_variant_suffix_resolves_via_unified_chain() {
+        // Subset fonts append stylistic-variant tags (`.sc`, `.alt`, `.001`)
+        // to the canonical glyph name. The v0.3.54 chain strips the suffix and
+        // returns the base codepoint; this entry now picks that up too.
+        assert_eq!(glyph_name_to_unicode("A.sc"), Some('A'));
+        assert_eq!(glyph_name_to_unicode("bullet.alt"), Some('\u{2022}'));
+        assert_eq!(glyph_name_to_unicode("fi.001"), Some('\u{FB01}'));
+        // Unknown base + suffix → still unknown.
+        assert_eq!(glyph_name_to_unicode("xyzzy.sc"), None);
+    }
+
+    #[test]
+    fn glyph_name_string_with_variant_suffix_resolves_via_unified_chain() {
+        // Same as above through the multi-codepoint return surface used by
+        // /Differences-array parsing.
+        assert_eq!(glyph_name_to_unicode_string("A.sc"), Some("A".to_string()));
+        assert_eq!(glyph_name_to_unicode_string("bullet.alt"), Some("\u{2022}".to_string()));
+        assert_eq!(glyph_name_to_unicode_string("fi.001"), Some("\u{FB01}".to_string()));
+    }
+
+    #[test]
+    fn unified_chain_does_not_regress_existing_lookups() {
+        // Belt-and-suspenders: the canonical AGL names and uniXXXX / uXXXXX
+        // synth patterns the old chain handled stay byte-identical.
+        assert_eq!(glyph_name_to_unicode("A"), Some('A'));
+        assert_eq!(glyph_name_to_unicode("space"), Some(' '));
+        assert_eq!(glyph_name_to_unicode("bullet"), Some('\u{2022}'));
+        assert_eq!(glyph_name_to_unicode("fi"), Some('\u{FB01}'));
+        assert_eq!(glyph_name_to_unicode("uni2022"), Some('\u{2022}'));
+        assert_eq!(glyph_name_to_unicode("u1F600"), Some('\u{1F600}'));
+        // Unknown stays unknown.
+        assert_eq!(glyph_name_to_unicode("totallyunknown"), None);
     }
 
     // =========================================================================
