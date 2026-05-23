@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace PdfOxide\Tests\Integration;
+namespace PdfOxide\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
 

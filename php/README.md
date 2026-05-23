@@ -1,336 +1,174 @@
-# PDF Oxide PHP Binding
+# pdf_oxide (PHP)
 
-Complete PDF Toolkit for PHP with 100% Rust API coverage via FFI.
-
-**Extract, create, and edit PDFs with industrial-strength performance.**
-
-## Features
-
-- ✅ **100% Rust API Coverage** (~400+ methods)
-- ✅ **FFI-based** (no PECL extension required)
-- ✅ **PSR-4 Autoloading** (Composer package)
-- ✅ **PHP 8.1+** with strict types
-- ✅ **Full UTF-8 Support** for all operations
-- ✅ **Type-safe** wrappers and data types
-- ✅ **Memory-safe** handle management with automatic cleanup
-
-### Supported Operations
-
-#### Reading & Analysis
-- Text extraction (plain text, Markdown, HTML)
-- Full-text search with positioning
-- Metadata extraction
-- Font and image analysis
-- Annotation parsing
-- Document validation
-
-#### Creation
-- Programmatic PDF generation
-- Text and image insertion
-- Page management (add, remove, rotate)
-- Font and color control
-
-#### Editing
-- Document modification
-- Page manipulation
-- Form field handling
-- Metadata updates
-- Encryption/Decryption
+PHP binding for [pdf_oxide](https://github.com/fyi-oxide/pdf_oxide) — a
+Rust-backed PDF processing toolkit. This package is pure PHP code on top
+of PHP's built-in FFI extension; the heavy lifting happens in the same
+`libpdf_oxide` cdylib used by the Python, Node, Go, C#, Ruby, and Java
+bindings.
 
 ## Installation
 
-### System Requirements
-
-- PHP 8.1 or higher
-- FFI extension enabled: `php -m | grep ffi`
-- Native library (libpdf_oxide.so/.dylib/.dll)
-
-### Step 1: Enable FFI Extension
-
 ```bash
-# Ubuntu/Debian
-sudo apt-get install php-ffi
-
-# macOS (Homebrew)
-brew install php-ffi
-
-# Windows
-# Edit php.ini and uncomment: extension=ffi
+composer require oxide/pdf-oxide
 ```
 
-### Step 2: Install via Composer
+Composer's post-install hook (`scripts/download-native-lib.php`) downloads
+the matching prebuilt `libpdf_oxide` from the GitHub Release tagged
+`v0.3.55` into `vendor/oxide/pdf-oxide/lib/`. Five platforms ship:
 
-```bash
-composer require pdf-oxide/pdf-oxide
-```
+- `linux-x86_64`
+- `linux-aarch64`
+- `darwin-x86_64`
+- `darwin-arm64`
+- `windows-x64`
 
-### Step 3: Verify Installation
+Set `PDF_OXIDE_SKIP_DOWNLOAD=1` to skip the post-install download (CI /
+offline / corp-proxy use case). Set `PDF_OXIDE_NATIVE_VERSION=vX.Y.Z` to
+pin a specific release. The runtime library search order is:
+
+1. The path in `PDF_OXIDE_CDYLIB_PATH` (env var override).
+2. `vendor/oxide/pdf-oxide/lib/<platform>/libpdf_oxide.{so,dylib,dll}`
+3. `/usr/local/lib/libpdf_oxide.{so,dylib}` (Linux/macOS fallback).
+
+## Prerequisites
+
+- **PHP 8.1+** (8.2 / 8.3 / 8.4 also fully supported).
+- **`ext-ffi` enabled.** Confirm with `php -m | grep -i ffi`. Some
+  managed PHP hosts (shared cPanel, Plesk) disable `ext-ffi` at the
+  `php.ini` level for security reasons; consult your host or use a
+  Docker image such as `php:8.3-cli` if unsure.
+- **`ext-mbstring`** (almost always already enabled).
+- A platform with one of the five published native binaries above. If
+  you're on a different platform you can build `libpdf_oxide` yourself
+  from source (`cargo build --release --lib` against the root crate)
+  and point `PDF_OXIDE_CDYLIB_PATH` at it.
+
+## Quickstart
+
+### 1. Open a PDF and read pages
 
 ```php
-<?php
-require 'vendor/autoload.php';
-
-$info = \PdfOxide\FFI\NativeLibrary::getPlatformInfo();
-print_r($info);
-// Output:
-// Array (
-//     [ffi_available] => 1
-//     [library_loaded] =>
-//     [php_version] => 8.1.0
-//     ...
-// )
-```
-
-## Quick Start
-
-### Reading a PDF
-
-```php
-<?php
-require 'vendor/autoload.php';
-
 use PdfOxide\PdfDocument;
 
-// Open a PDF
-$pdf = new PdfDocument('example.pdf');
+$doc = new PdfDocument('report.pdf');
+echo $doc->getPageCount(), " pages\n";
 
-// Get page count
-$pages = $pdf->getPageCount();
-echo "Pages: $pages\n";
+// Extract plain text from page 0:
+echo $doc->extractText(0);
 
-// Extract text from first page
-$text = $pdf->extractText(0);
-echo $text . "\n";
-
-// Search for text
-$results = $pdf->searchAll('keyword');
-foreach ($results as $result) {
-    echo "Found on page " . ($result->pageIndex + 1) . ": " . $result->text . "\n";
-}
-
-// Get metadata
-$metadata = $pdf->getMetadata();
-print_r($metadata);
-
-// Close document (automatic on destruct)
-$pdf->close();
+// Or Markdown for the whole document:
+echo $doc->toMarkdownAll();
 ```
 
-### Converting PDFs
+### 2. Auto-extraction with typed reasons
 
 ```php
-<?php
 use PdfOxide\PdfDocument;
+use PdfOxide\Enums\ExtractReason;
 
-$pdf = new PdfDocument('input.pdf');
+$doc    = new PdfDocument('mixed.pdf');
+$result = $doc->auto()->extractText($doc, 0);
 
-// Convert to Markdown
-$markdown = $pdf->toMarkdown(0);
-file_put_contents('page1.md', $markdown);
-
-// Convert to HTML
-$html = $pdf->toHtml(0);
-file_put_contents('page1.html', $html);
-
-// Extract all pages to Markdown
-$allMarkdown = $pdf->toMarkdownAll();
-file_put_contents('full-doc.md', $allMarkdown);
+echo $result->text;
+if ($result->reason !== ExtractReason::Ok) {
+    error_log("[pdf_oxide] degraded extraction: " . $result->reason->value);
+}
 ```
 
-### Extracting Content
+### 3. Destructive redaction (security operation — fails closed)
 
 ```php
-<?php
+use PdfOxide\Managers\RedactionManager;
+use PdfOxide\Types\Rect;
+
+$redact = RedactionManager::openFile('in.pdf');
+$redact->mark(0, new Rect(100, 700, 200, 20));   // page 0, x,y,w,h in PDF points
+$redact->apply(scrubMetadata: true);
+```
+
+### 4. PAdES B-T signature
+
+```php
 use PdfOxide\PdfDocument;
+use PdfOxide\Enums\PadesLevel;
 
-$pdf = new PdfDocument('document.pdf');
-
-// Get fonts from page
-$fonts = $pdf->getFonts(0);
-foreach ($fonts as $font) {
-    echo $font->name . " (" . ($font->embedded ? "embedded" : "not embedded") . ")\n";
-}
-
-// Get images
-$images = $pdf->getImages(0);
-foreach ($images as $image) {
-    echo "Image: " . $image->width . "x" . $image->height . " (" . $image->format . ")\n";
-}
-
-// Get annotations
-$annotations = $pdf->getAnnotations(0);
-foreach ($annotations as $annotation) {
-    echo "Annotation: " . $annotation->type . " - " . $annotation->content . "\n";
-}
+$doc  = new PdfDocument('contract.pdf');
+$sigs = $doc->signatures();
+$signed = $sigs->signPades(
+    pdfData:           file_get_contents('contract.pdf'),
+    certificateHandle: $certHandle,                        // load via signatures()->loadPkcs12()
+    level:             PadesLevel::BT,
+    tsaUrl:            'https://freetsa.org/tsr',
+    reason:            'Final contract',
+);
+file_put_contents('signed.pdf', $signed);
 ```
 
-## WooCommerce Integration
-
-Generate invoices, packing slips, and shipping labels for WooCommerce orders:
+### 5. Office to PDF + PDF to DOCX
 
 ```php
-<?php
-use PdfOxide\Pdf;
-
-// Generate invoice for WooCommerce order
-function generate_invoice($order_id) {
-    $order = wc_get_order($order_id);
-
-    $pdf = Pdf::create();
-    $pdf->addPage(595, 842); // A4 size
-
-    // Header
-    $pdf->text('INVOICE', 50, 50, 24);
-    $pdf->text('Invoice #' . $order->get_order_number(), 50, 80, 12);
-
-    // Items
-    $y = 120;
-    $pdf->text('Item Description', 50, $y, 11);
-    $pdf->text('Price', 500, $y, 11);
-
-    foreach ($order->get_items() as $item) {
-        $y += 20;
-        $pdf->text($item->get_name(), 50, $y, 11);
-        $pdf->text($item->get_total(), 500, $y, 11);
-    }
-
-    return $pdf->saveToString();
-}
-```
-
-See `examples/woocommerce/` for complete integration examples.
-
-## Error Handling
-
-The library uses specific exceptions for different error types:
-
-```php
-<?php
 use PdfOxide\PdfDocument;
-use PdfOxide\Exceptions\{ParseException, IoException, SearchException};
+use PdfOxide\Managers\OfficeConverter;
 
-try {
-    $pdf = new PdfDocument('invalid.pdf');
-} catch (IoException $e) {
-    echo "File error: " . $e->getMessage();
-} catch (ParseException $e) {
-    echo "PDF parse error: " . $e->getMessage();
-} catch (\PdfOxide\Exceptions\PdfException $e) {
-    echo "PDF error: " . $e->getMessage();
-    echo "Code: " . $e->getErrorCode();
-    print_r($e->getContext());
-}
+// DOCX bytes -> PdfDocument
+$pdfDoc = PdfDocument::fromDocxBytes(file_get_contents('memo.docx'));
+
+// PdfDocument -> DOCX bytes
+$docx = (new OfficeConverter($pdfDoc->getHandle()))->toDocx();
+file_put_contents('memo-pages.docx', $docx);
 ```
 
-## API Reference
+## Capability surface
 
-### PdfDocument (Reading)
+PHP parity with Python / Java for the v0.3.54 FFI surface:
 
-```php
-$pdf = new PdfDocument($path);
+- Reading: text / Markdown / HTML / plain extraction, search,
+  metadata, fonts, images, annotations, outlines.
+- Auto-extraction (`AutoExtractor`) with the typed `ExtractReason`
+  enum (frozen wire format).
+- Region extraction (text / words / lines / tables / images in a
+  rect).
+- Forms: AcroForm + XFA, FDF/XFDF bytes import/export.
+- Outline / bookmarks (incl. split-by-bookmarks planning).
+- Page editing: rotate / delete / move / merge, header/footer
+  erasure, artifact removal.
+- Destructive redaction (`RedactionManager`) + metadata scrub —
+  security-op semantics (fail-closed).
+- PAdES B-B / B-T / B-LT / B-LTA signatures via the v0.3.51 5-arg
+  options shim.
+- Office: DOCX / PPTX / XLSX <-> PDF round-trip.
+- Watermarks, stamps, freetext annotations.
+- OCR (manual + by-default fallback).
+- Barcodes (generate + detect).
+- PDF/A, PDF/UA, PDF/X compliance (validate + convert).
+- Models subsystem (`prefetch_models`, `model_manifest`,
+  `prefetch_available`).
 
-$pdf->getPageCount(): int
-$pdf->getVersion(): array
-$pdf->extractText(pageIndex): string
-$pdf->toMarkdown(pageIndex): string
-$pdf->toHtml(pageIndex): string
-$pdf->toPlainText(pageIndex): string
-$pdf->searchPage(term, pageIndex, caseSensitive): SearchResult[]
-$pdf->searchAll(term, caseSensitive): SearchResult[]
-$pdf->getFonts(pageIndex): Font[]
-$pdf->getImages(pageIndex): Image[]
-$pdf->getAnnotations(pageIndex): Annotation[]
-$pdf->close(): void
-```
+## Testing
 
-### Pdf (Creation)
-
-*Coming soon - see Phase 3 implementation*
-
-### DocumentEditor (Editing)
-
-*Coming soon - see Phase 4 implementation*
-
-## Examples
-
-See the `examples/` directory for:
-
-- `01_basic_reading.php` - Reading PDFs
-- `02_text_extraction.php` - Text extraction and search
-- `03_pdf_creation.php` - Creating PDFs
-- `woocommerce/` - WooCommerce integration examples
-
-## Performance
-
-Benchmarks on modern hardware (Core i7, 16GB RAM):
-
-- Text extraction: ~50-100ms per page
-- Search: ~200-500ms per page
-- Markdown conversion: ~100-200ms per page
-- Memory: ~10MB base + 5-20MB per document
-
-## Platform Support
-
-| OS | Status | Notes |
-|-----|--------|-------|
-| Linux x64 | ✅ Full | Ubuntu, Debian, CentOS |
-| macOS x64/ARM | ✅ Full | Intel and Apple Silicon |
-| Windows x64 | ✅ Full | Windows 10+ |
-
-## Troubleshooting
-
-### FFI Extension Not Loaded
-
-```
-Fatal error: Class 'FFI' not found
-```
-
-Solution:
 ```bash
-php -r "echo extension_loaded('ffi') ? 'FFI loaded' : 'FFI not loaded';"
+composer test                  # full suite
+composer test:unit             # unit suite only (no cdylib required)
+composer test:integration      # integration suite (cdylib required)
+composer lint                  # php -l on every PHP file
 ```
 
-### Library Not Found
+The integration suite reads `PDF_OXIDE_CDYLIB_PATH` if set; otherwise it
+falls back to `target/release/libpdf_oxide.{so,dylib,dll}` relative to
+the repo root. Tests self-skip when the cdylib isn't reachable so the
+unit suite still runs on any box.
 
-```
-RuntimeException: PDF Oxide library not found
-```
+## Links
 
-Solution: Ensure libpdf_oxide is in a searchable path:
-```bash
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/path/to/lib
-php script.php
-```
-
-### UTF-8 Encoding Issues
-
-All strings are automatically converted to UTF-8. If you get encoding errors:
-
-```php
-$text = mb_convert_encoding($text, 'UTF-8', 'ISO-8859-1');
-```
-
-## Contributing
-
-Contributions are welcome! Please see CONTRIBUTING.md for guidelines.
+- Root project: https://github.com/fyi-oxide/pdf_oxide
+- Rust source: https://github.com/fyi-oxide/pdf_oxide/tree/main/src
+- Packagist: https://packagist.org/packages/oxide/pdf-oxide
+- Other bindings: Python (`pip install pdf_oxide`), Node
+  (`npm i pdf_oxide`), Ruby (`gem install pdf_oxide`), Go (`go get
+  github.com/fyi-oxide/pdf-oxide`), C# (`dotnet add package
+  PdfOxide`), Java (`fyi.oxide:pdf-oxide` on Maven Central).
 
 ## License
 
-Dual-licensed under MIT and Apache 2.0. Choose the license that works for your project.
-
-## Support
-
-- 📖 [Full Documentation](https://github.com/anthropics/pdf_oxide/tree/main/php/docs)
-- 🐛 [Issue Tracker](https://github.com/anthropics/pdf_oxide/issues)
-- 💬 [Discussions](https://github.com/anthropics/pdf_oxide/discussions)
-
-## Roadmap
-
-- [x] Phase 1: FFI Foundation
-- [x] Phase 2: PdfDocument (Reading)
-- [ ] Phase 3: Pdf (Creation)
-- [ ] Phase 4: DocumentEditor (Editing)
-- [ ] Phase 5: Managers (Specialized Operations)
-- [ ] Phase 6: Builders & Enums
-- [ ] Phase 7: WooCommerce Examples
-- [ ] Phase 8: Testing & CI/CD
+Dual-licensed under MIT or Apache-2.0 at your option, matching the root
+project.

@@ -1,0 +1,152 @@
+name: PHP Bindings CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'php/**'
+      - 'src/**'
+      - 'include/pdf_oxide_c/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/php.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'php/**'
+      - 'src/**'
+      - 'include/pdf_oxide_c/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/php.yml'
+
+# Cancel any in-progress run on the same branch when a new one starts.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Cached cdylib path that the PHP integration tests pick up
+  # via PDF_OXIDE_CDYLIB_PATH (see php/tests/bootstrap.php).
+  PDF_OXIDE_CDYLIB_DIR: ${{ github.workspace }}/target/release
+
+jobs:
+  # Per-cell test job. Builds the cdylib once and runs Unit + Integration.
+  test:
+    name: PHP ${{ matrix.php-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        # v0.3.55 baseline: PHP 8.1–8.4 × Linux/macOS/Windows = 12 cells.
+        # aarch64 deliberately deferred to v0.3.56 (too-few runners).
+        php-version: ['8.1', '8.2', '8.3', '8.4']
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up PHP ${{ matrix.php-version }}
+        uses: shivammathur/setup-php@7c071dfe9dc99bdf297fa79cb49ea005b9fcadbc # v2.37.1
+        with:
+          php-version: ${{ matrix.php-version }}
+          extensions: ffi, mbstring, json
+          ini-values: ffi.enable=true, memory_limit=512M
+          coverage: none
+          tools: composer:v2
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache Cargo index
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache Cargo build
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-release-
+
+      - name: Build cdylib (release)
+        run: cargo build --release --lib
+
+      - name: Compute cdylib path (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            CDYLIB="$PDF_OXIDE_CDYLIB_DIR/libpdf_oxide.so"
+          else
+            CDYLIB="$PDF_OXIDE_CDYLIB_DIR/libpdf_oxide.dylib"
+          fi
+          test -f "$CDYLIB" || { echo "::error::cdylib not produced at $CDYLIB"; exit 1; }
+          echo "PDF_OXIDE_CDYLIB_PATH=$CDYLIB" >> "$GITHUB_ENV"
+
+      - name: Compute cdylib path (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $candidate = Join-Path $env:PDF_OXIDE_CDYLIB_DIR 'pdf_oxide.dll'
+          if (-not (Test-Path $candidate)) {
+            $candidate = Join-Path $env:PDF_OXIDE_CDYLIB_DIR 'libpdf_oxide.dll'
+          }
+          if (-not (Test-Path $candidate)) {
+            Write-Error "cdylib not produced under $env:PDF_OXIDE_CDYLIB_DIR"
+            exit 1
+          }
+          echo "PDF_OXIDE_CDYLIB_PATH=$candidate" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+
+      - name: Validate composer.json
+        working-directory: php
+        run: composer validate --strict --no-check-publish
+
+      - name: Composer install
+        working-directory: php
+        # post-install download hook is benign here (no v0.3.55 release
+        # yet); PDF_OXIDE_SKIP_DOWNLOAD lets it no-op so CI doesn't
+        # depend on a future artifact.
+        env:
+          PDF_OXIDE_SKIP_DOWNLOAD: '1'
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: PHP -l (lint) all PHP files
+        working-directory: php
+        shell: bash
+        run: |
+          set -e
+          find src tests scripts -name '*.php' -print0 | xargs -0 -n1 php -l > /tmp/php-lint.log 2>&1 || (cat /tmp/php-lint.log; exit 1)
+          echo "All PHP files lint cleanly."
+
+      - name: Run Unit testsuite (no cdylib needed)
+        working-directory: php
+        run: vendor/bin/phpunit --testsuite=Unit
+
+      - name: Run Integration testsuite (cdylib via env var)
+        working-directory: php
+        env:
+          PDF_OXIDE_CDYLIB_PATH: ${{ env.PDF_OXIDE_CDYLIB_PATH }}
+        run: vendor/bin/phpunit --testsuite=Integration
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: php-test-artifacts-${{ matrix.os }}-${{ matrix.php-version }}
+          path: |
+            php/coverage/
+            php/tests/fixtures/
+            /tmp/php-lint.log
+          if-no-files-found: ignore
+          retention-days: 7

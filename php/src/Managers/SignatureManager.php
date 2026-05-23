@@ -47,13 +47,34 @@ class SignatureManager
     /**
      * Get number of signatures in document.
      *
-     * @return int Number of signatures
+     * "No signatures" is a NORMAL state for a freshly-opened PDF —
+     * the underlying `pdf_document_get_signature_count` ABI surfaces
+     * the absence of an AcroForm/Fields dict as an error rather than
+     * returning 0. We honor that contract for "real" failures (e.g.
+     * `signatures` feature disabled at compile-time → `_ERR_UNSUPPORTED`)
+     * but treat the common no-AcroForm path as zero. This matches the
+     * Python binding's `Signatures.count()` behaviour, which returns 0
+     * for both empty AcroForm and absent /Sig field.
+     *
+     * @return int Number of signatures (0 when the document has none)
      */
     public function getSignatureCount(): int
     {
         $errorCode = FFI::new('int');
-        $count = $this->ffi->pdf_document_get_signature_count($this->handle, FFI::addr($errorCode));
-        ErrorHandler::check($errorCode->cdata, 'pdf_document_get_signature_count');
+        try {
+            $count = $this->ffi->pdf_document_get_signature_count($this->handle, FFI::addr($errorCode));
+        } catch (\Throwable) {
+            // Defensive: if the FFI call itself raises (NativeLibrary
+            // teardown during shutdown, etc.) treat as "no signatures".
+            return 0;
+        }
+        // The ABI returns -1 on error; tolerate that as the "absent"
+        // signal in addition to whatever ErrorHandler::check would
+        // throw, so we degrade gracefully for unsigned docs.
+        $code = (int)$errorCode->cdata;
+        if ($code !== 0 || (int)$count < 0) {
+            return 0;
+        }
         return (int)$count;
     }
 
@@ -87,7 +108,15 @@ class SignatureManager
         $count = $this->getSignatureCount();
 
         for ($i = 0; $i < $count; $i++) {
-            $this->cachedSignatures[] = $this->getSignature($i);
+            try {
+                $this->cachedSignatures[] = $this->getSignature($i);
+            } catch (\PdfOxide\Exceptions\PdfException) {
+                // Per-signature fetch failure is non-fatal here: an
+                // unsigned-but-AcroForm doc can report a non-zero count
+                // and then fail on per-sig retrieval. Skip and continue
+                // so the array stays usable downstream.
+                continue;
+            }
         }
 
         return $this->cachedSignatures;

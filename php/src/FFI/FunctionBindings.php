@@ -6133,6 +6133,23 @@ class FunctionBindings
         }
     }
 
+    /**
+     * Real outline accessor — returns the full bookmark tree as a JSON
+     * array of `{title, dest, children}` records.
+     *
+     * Replaces the pre-v0.3.55 scaffold's `pdfDocumentGetOutlineCount`
+     * / `_Title` / `_Page` / `_Level` family, none of which exist in
+     * the real C ABI. Always returns valid JSON (possibly `[]`) — the
+     * native side promotes outline-read errors to an empty array.
+     */
+    public function pdfDocumentGetOutline(CData $handle): string
+    {
+        $errorCode = FFI::new('int');
+        $json = $this->ffi->pdf_document_get_outline($handle, FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_document_get_outline');
+        return StringMarshaller::fromCString($json);
+    }
+
     // -------- Watermark / stamp builder ops --------
 
     /**

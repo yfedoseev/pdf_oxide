@@ -12,20 +12,25 @@ use PdfOxide\PdfDocument;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Smoke test for {@see AutoExtractor} (v0.3.51 #519).
+ * Integration tests for {@see AutoExtractor} (v0.3.51 #519).
  *
- * Skipped automatically when the native library isn't present. Asserts
- * that the typed-reason envelope round-trips successfully and that
- * `prefetchAvailable()` returns a boolean (the build-feature
- * indicator). No assumption is made about whether OCR is compiled in
- * (the build matrix exercises both).
+ * Each test exercises the real C ABI via FFI. The whole class
+ * self-skips when:
+ *  - the `ffi` PHP extension isn't loaded (`@requires extension ffi`)
+ *  - the cdylib isn't found (`PDF_OXIDE_NATIVE_LIB === null`)
+ *  - the tiny test PDF isn't available
+ *
+ * @requires extension ffi
  */
 final class AutoExtractorTest extends TestCase
 {
     protected function setUp(): void
     {
+        if (! extension_loaded('ffi')) {
+            $this->markTestSkipped('ext-ffi not loaded');
+        }
         if (PDF_OXIDE_NATIVE_LIB === null) {
-            $this->markTestSkipped('libpdf_oxide not built; run `cargo build --release` first.');
+            $this->markTestSkipped('libpdf_oxide cdylib not found; build with `cargo build --release`.');
         }
         if (PDF_OXIDE_SAMPLE_PDF === null) {
             $this->markTestSkipped('No sample PDF available for integration tests.');
@@ -34,7 +39,7 @@ final class AutoExtractorTest extends TestCase
 
     public function testEnumsCarryCanonicalWireTokens(): void
     {
-        // These values are FROZEN per the v0.3.51 cross-binding contract.
+        // FROZEN per the v0.3.51 cross-binding contract.
         $this->assertSame('ok', ExtractReason::Ok->value);
         $this->assertSame('ocr_requested_but_unavailable', ExtractReason::OcrRequestedButUnavailable->value);
         $this->assertSame('text_layer', PageKind::TextLayer->value);
@@ -44,7 +49,7 @@ final class AutoExtractorTest extends TestCase
         $this->assertSame(ExtractReason::Ok, ExtractReason::fromWire(null));
     }
 
-    public function testClassifyPageReturnsResult(): void
+    public function testClassifyPageReturnsTypedResult(): void
     {
         $doc = new PdfDocument(PDF_OXIDE_SAMPLE_PDF);
         $auto = $doc->auto();
@@ -54,21 +59,28 @@ final class AutoExtractorTest extends TestCase
         $this->assertInstanceOf(AutoExtractResult::class, $result);
         $this->assertInstanceOf(PageKind::class, $result->kind);
         $this->assertInstanceOf(ExtractReason::class, $result->reason);
+        // The tiny "Hello, world" fixture is a text-layer PDF — assert
+        // the classifier doesn't falsely flag it as scanned.
+        $this->assertNotSame(PageKind::Scanned, $result->kind);
     }
 
-    public function testExtractTextAutoRoundTrips(): void
+    public function testExtractTextAutoReturnsString(): void
     {
         $doc = new PdfDocument(PDF_OXIDE_SAMPLE_PDF);
         $result = $doc->auto()->extractText($doc, 0);
         $this->assertInstanceOf(AutoExtractResult::class, $result);
-        // Text may be empty if the fixture is image-only, but it must be a string.
         $this->assertIsString($result->text);
+        // The simple.pdf fixture has a non-empty text layer; if this
+        // ever fails we want to know about the regression.
+        $this->assertNotSame('', trim($result->text), 'AutoExtractor should return non-empty text for the tiny fixture.');
     }
 
     public function testPrefetchAvailableReturnsBoolean(): void
     {
         $doc = new PdfDocument(PDF_OXIDE_SAMPLE_PDF);
         $auto = $doc->auto();
+        // Whether or not the build has OCR, this MUST be a bool —
+        // callers branch on it to decide graceful fallback paths.
         $this->assertIsBool($auto->prefetchAvailable());
     }
 }

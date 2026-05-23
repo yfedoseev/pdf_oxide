@@ -3,86 +3,112 @@
 declare(strict_types=1);
 
 /**
- * PHPUnit Bootstrap File.
+ * PHPUnit Bootstrap.
  *
- * Loads the autoloader and sets up the test environment for both unit
- * and integration tests. Integration tests need the cdylib + a sample
- * PDF; this file locates both and exposes them via constants.
+ * Loads the autoloader (composer-managed or hand-rolled PSR-4
+ * fallback) and exports two test-shared constants:
  *
- * Behaviour when the cdylib is absent:
- *   - The constant PDF_OXIDE_NATIVE_LIB is set to `null`.
- *   - Integration tests must read that constant and `markTestSkipped()`
- *     when it's null — keeping unit tests runnable on any box.
+ *   PDF_OXIDE_NATIVE_LIB  — absolute path to the cdylib, or null.
+ *                            Resolution order:
+ *                              1. `PDF_OXIDE_CDYLIB_PATH` env var
+ *                              2. `target/release/libpdf_oxide.{so,dylib,dll}`
+ *                                 relative to the repo root
+ *                              3. system locations (`/usr/local/lib/`)
+ *   PDF_OXIDE_SAMPLE_PDF  — absolute path to the smallest test PDF
+ *                            available (preferring `php/tests/fixtures/`
+ *                            then `tests/fixtures/simple.pdf` at the
+ *                            repo root).
+ *
+ * The Integration test suite self-skips whenever PDF_OXIDE_NATIVE_LIB
+ * is null, keeping the Unit suite runnable on any box without the
+ * cdylib being present (CI uploads them as separate jobs).
  */
 
-// Load autoloader
+// ---------- Autoloader ----------
 $autoloader = dirname(__DIR__) . '/vendor/autoload.php';
 if (file_exists($autoloader)) {
     require $autoloader;
 } else {
-    // Fall back to a minimal PSR-4 autoloader so smoke tests can load
-    // src/ without composer. Useful in dev when `composer install`
-    // hasn't been run yet.
+    // PSR-4 fallback so tests can run without `composer install`
+    // (CI does install; local dev sometimes doesn't).
     spl_autoload_register(function (string $class): void {
         $prefix = 'PdfOxide\\';
         if (! str_starts_with($class, $prefix)) {
             return;
         }
         $relative = substr($class, strlen($prefix));
-        $path = dirname(__DIR__) . '/src/' . str_replace('\\', '/', $relative) . '.php';
+        $base = dirname(__DIR__) . '/src/';
+        $path = $base . str_replace('\\', '/', $relative) . '.php';
+        if (is_file($path)) {
+            require $path;
+        }
+    });
+    // Tests namespace fallback (PdfOxide\Tests\…) — only needed when
+    // composer hasn't generated the dev-autoload map.
+    spl_autoload_register(function (string $class): void {
+        $prefix = 'PdfOxide\\Tests\\';
+        if (! str_starts_with($class, $prefix)) {
+            return;
+        }
+        $relative = substr($class, strlen($prefix));
+        $base = __DIR__ . '/';
+        $path = $base . str_replace('\\', '/', $relative) . '.php';
         if (is_file($path)) {
             require $path;
         }
     });
 }
 
-// Standard test environment.
 error_reporting(E_ALL);
 ini_set('display_errors', '1');
 
-// Fixtures directory (we reuse the upstream Rust test fixtures so we
-// don't ship duplicate PDFs in the package).
+// ---------- Native library resolution ----------
 $repoRoot = dirname(__DIR__, 2);
-$upstreamFixtures = $repoRoot . '/tests/fixtures';
-$localFixtures = __DIR__ . '/Fixtures';
-if (! is_dir($localFixtures)) {
-    @mkdir($localFixtures, 0777, true);
-}
 
-// Pick a representative small PDF for the smoke tests.
-$samplePdf = null;
-foreach (['1.pdf'] as $candidate) {
-    $path = $upstreamFixtures . '/' . $candidate;
-    if (is_file($path)) {
-        $samplePdf = $path;
-        break;
-    }
-}
-if ($samplePdf === null) {
-    // Last-ditch: look in tests/Fixtures itself.
-    $candidates = glob($localFixtures . '/*.pdf') ?: [];
-    if (! empty($candidates)) {
-        $samplePdf = $candidates[0];
-    }
-}
-define('PDF_OXIDE_SAMPLE_PDF', $samplePdf);
-define('TEST_FIXTURES_DIR', $localFixtures);
-
-// Locate the native library (best-effort; integration tests should
-// skip themselves if it's null).
 $nativeLib = null;
-foreach (
-    [
-        $repoRoot . '/target/release/libpdf_oxide.so',
-        $repoRoot . '/target/release/libpdf_oxide.dylib',
-        $repoRoot . '/target/release/pdf_oxide.dll',
-        '/usr/local/lib/libpdf_oxide.so',
-        '/usr/local/lib/libpdf_oxide.dylib',
-    ] as $candidate
-) {
-    if (is_file($candidate)) {
-        $nativeLib = $candidate;
-        break;
+$envOverride = getenv('PDF_OXIDE_CDYLIB_PATH');
+if (is_string($envOverride) && $envOverride !== '' && is_file($envOverride)) {
+    $nativeLib = $envOverride;
+}
+if ($nativeLib === null) {
+    foreach (
+        [
+            $repoRoot . '/target/release/libpdf_oxide.so',
+            $repoRoot . '/target/release/libpdf_oxide.dylib',
+            $repoRoot . '/target/release/pdf_oxide.dll',
+            $repoRoot . '/target/release/libpdf_oxide.dll',
+            '/usr/local/lib/libpdf_oxide.so',
+            '/usr/local/lib/libpdf_oxide.dylib',
+        ] as $candidate
+    ) {
+        if (is_file($candidate)) {
+            $nativeLib = $candidate;
+            break;
+        }
     }
 }
 define('PDF_OXIDE_NATIVE_LIB', $nativeLib);
+
+// ---------- Fixture resolution ----------
+$localFixtures = __DIR__ . '/fixtures';
+if (! is_dir($localFixtures)) {
+    @mkdir($localFixtures, 0777, true);
+}
+define('TEST_FIXTURES_DIR', $localFixtures);
+
+$samplePdf = null;
+// Prefer the binding's own fixtures (committed under php/tests/fixtures/);
+// fall back to the upstream repo root.
+$candidates = [
+    $localFixtures . '/tiny.pdf',
+    $localFixtures . '/simple.pdf',
+    $repoRoot . '/tests/fixtures/simple.pdf',
+    $repoRoot . '/tests/fixtures/1.pdf',
+];
+foreach ($candidates as $candidate) {
+    if (is_file($candidate)) {
+        $samplePdf = $candidate;
+        break;
+    }
+}
+define('PDF_OXIDE_SAMPLE_PDF', $samplePdf);

@@ -11,12 +11,19 @@ use PdfOxide\Types\Outline;
 /**
  * Manages PDF document outlines (bookmarks/table of contents).
  *
- * Provides access to bookmarks and navigation structure.
+ * The v0.3.55 C ABI exposes the outline as ONE JSON-returning entry
+ * point — `pdf_document_get_outline()` returns a tree of
+ * `{title, dest, children}` records. The per-record accessor
+ * functions the pre-v0.3.55 scaffold targeted
+ * (`pdf_document_get_outline_count` / `_get_outline_title` etc.) do
+ * not exist in the real C ABI; this class loads + flattens the JSON
+ * tree once and serves all read paths from the flattened cache.
  */
 class OutlineManager
 {
     private FunctionBindings $bindings;
     private CData $handle;
+    /** @var ?array<int,Outline> */
     private ?array $cachedOutlines = null;
 
     public function __construct(CData $handle)
@@ -27,10 +34,14 @@ class OutlineManager
 
     /**
      * Get total number of outlines (bookmarks).
+     *
+     * Counts the flattened depth-first traversal of the outline tree
+     * (i.e. nested children count toward the total). Returns 0 for
+     * documents without bookmarks.
      */
     public function getCount(): int
     {
-        return $this->bindings->pdfDocumentGetOutlineCount($this->handle);
+        return count($this->getAll());
     }
 
     /**
@@ -38,19 +49,17 @@ class OutlineManager
      */
     public function get(int $index): Outline
     {
-        if ($this->cachedOutlines === null) {
-            $this->loadAll();
-        }
-
-        if (!isset($this->cachedOutlines[$index])) {
+        $all = $this->getAll();
+        if (!isset($all[$index])) {
             throw new \OutOfRangeException("Outline index $index out of range");
         }
-
-        return $this->cachedOutlines[$index];
+        return $all[$index];
     }
 
     /**
      * Get all outlines.
+     *
+     * @return array<int,Outline>
      */
     public function getAll(): array
     {
@@ -61,20 +70,65 @@ class OutlineManager
     }
 
     /**
-     * Load all outlines into cache.
+     * Load all outlines into cache by walking the JSON tree returned
+     * from the real C ABI symbol `pdf_document_get_outline()`.
      */
     private function loadAll(): void
     {
         $this->cachedOutlines = [];
-        $count = $this->getCount();
 
-        for ($i = 0; $i < $count; $i++) {
-            $outline = new Outline(
-                $this->bindings->pdfDocumentGetOutlineTitle($this->handle, $i),
-                $this->bindings->pdfDocumentGetOutlinePage($this->handle, $i),
-                $this->bindings->pdfDocumentGetOutlineLevel($this->handle, $i)
-            );
-            $this->cachedOutlines[] = $outline;
+        // Fetch raw JSON from the C ABI. Per `outline_to_json` in
+        // src/ffi.rs, this is ALWAYS a JSON array (possibly empty);
+        // the native side also returns `[]` for error paths so this
+        // method never raises in practice.
+        try {
+            $json = $this->bindings->pdfDocumentGetOutline($this->handle);
+        } catch (\PdfOxide\Exceptions\PdfException) {
+            // Defensive: even if a future C ABI change starts surfacing
+            // errors here, the read-side contract is "empty bookmarks
+            // are a normal case" — fall back to [] rather than raise.
+            return;
+        }
+
+        if ($json === '' || $json === '[]') {
+            return;
+        }
+
+        try {
+            $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            return;
+        }
+        if (!is_array($decoded)) {
+            return;
+        }
+
+        $this->flatten($decoded, 0);
+    }
+
+    /**
+     * Walk the outline tree depth-first, appending {@see Outline}
+     * value objects to the cache. Each node's `dest` field is a
+     * page index (int) or null for named/unresolved destinations;
+     * the binding surfaces it as the page number.
+     *
+     * @param array<int,array<string,mixed>> $items
+     */
+    private function flatten(array $items, int $level): void
+    {
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $title = isset($item['title']) ? (string)$item['title'] : '';
+            $dest = $item['dest'] ?? null;
+            $page = is_int($dest) ? $dest : (is_numeric($dest) ? (int)$dest : 0);
+
+            $this->cachedOutlines[] = new Outline($title, $page, $level);
+
+            if (isset($item['children']) && is_array($item['children']) && !empty($item['children'])) {
+                $this->flatten($item['children'], $level + 1);
+            }
         }
     }
 
@@ -88,6 +142,8 @@ class OutlineManager
 
     /**
      * Get outlines as array.
+     *
+     * @return array<int,array<string,mixed>>
      */
     public function toArray(): array
     {
@@ -123,10 +179,6 @@ class OutlineManager
         // Empty-outline documents are a normal case (most PDFs lack
         // bookmarks); per `feedback_extraction_graceful_fallback`,
         // split-planning is NOT a security op — degrade to [].
-        // We deliberately DO NOT pre-check via hasOutlines() because
-        // the scaffold's outline-count binding targets a function that
-        // doesn't exist in the v0.3.55 C ABI; instead we let the FFI
-        // call below raise, and convert to [] in the catch.
         $optionsJson = $options === null ? null : json_encode($options, JSON_THROW_ON_ERROR);
         try {
             $json = $this->bindings->pdfDocumentPlanSplitByBookmarks($this->handle, $optionsJson);
