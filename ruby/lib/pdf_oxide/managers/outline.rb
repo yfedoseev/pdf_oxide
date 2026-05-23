@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative 'base'
+require 'json'
 
 module PdfOxide
   module Managers
@@ -90,6 +91,46 @@ module PdfOxide
         end
 
         toc
+      end
+
+      # v0.3.50: plan a split-by-bookmarks operation.  Returns the
+      # decoded JSON plan from `pdf_document_plan_split_by_bookmarks`
+      # — typically an array of `{start_page, end_page, title}`
+      # records.  The caller then executes the plan (no destructive
+      # variant ships in v0.3.55; this is the "preview" surface).
+      #
+      # @param options [Hash, nil] e.g. `{level: 1}` (top-level only).
+      # @return [Array<Hash>, Hash] decoded JSON plan (empty Array if
+      #   the document has no bookmarks).
+      def plan_split_by_bookmarks(options = nil)
+        check_document!
+        # The C ABI requires a JSON-shaped string; "{}" is the
+        # accepted "defaults" sentinel.  nil yields an Invalid
+        # argument error from the Rust side.
+        options_json = options.nil? ? '{}' : JSON.generate(options)
+
+        error_ptr = ::FFI::MemoryPointer.new(:int32)
+        ptr = FFI::Bindings.pdf_document_plan_split_by_bookmarks(
+          @document.handle, options_json, error_ptr
+        )
+        error_code = error_ptr.read_int32
+
+        if error_code != 0
+          raise FFI::ErrorHandler.create_error(
+            error_code, 'pdf_document_plan_split_by_bookmarks'
+          )
+        end
+        return [] if ptr.nil? || ptr.null?
+
+        str = FFI::StringMarshaller.from_c_string(ptr)
+        return [] if str.nil? || str.empty?
+
+        begin
+          decoded = JSON.parse(str)
+          decoded.is_a?(Array) || decoded.is_a?(Hash) ? decoded : []
+        rescue JSON::ParserError
+          []
+        end
       end
     end
   end

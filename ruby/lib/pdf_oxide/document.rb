@@ -22,8 +22,12 @@ module PdfOxide
         FFI::Bindings.pdf_document_open(@path, error_ptr)
       end
 
-      # Register cleanup finalizer
-      ObjectSpace.define_finalizer(self, self.class.finalizer(@handle))
+      # Register cleanup finalizer.  Uses a mutable tracker so an
+      # explicit `close` (or the OfficeConverter handle-wrap path)
+      # can defuse the finalizer — `pdf_document_free` is not safe
+      # to call twice on the same pointer.
+      @tracker = [@handle]
+      ObjectSpace.define_finalizer(self, self.class.finalizer(@tracker))
     end
 
     # Open a PDF document with optional block
@@ -193,6 +197,12 @@ module PdfOxide
       @managers[:xfa] ||= Managers::Xfa.new(self)
     end
 
+    # v0.3.51 #519 — auto-extraction with typed reasons.
+    # @return [AutoExtractor]
+    def auto_extractor
+      @managers[:auto_extractor] ||= AutoExtractor.new(self)
+    end
+
     # ============================================================
     # Resource Management
     # ============================================================
@@ -201,7 +211,9 @@ module PdfOxide
     # @return [void]
     def close
       return if @closed
-      FFI::Bindings.pdf_document_free(@handle) unless @handle.nil?
+      FFI::Bindings.pdf_document_free(@handle) unless @handle.nil? || @handle.null?
+      # Defuse the finalizer so the GC pass doesn't double-free.
+      @tracker[0] = nil if @tracker
       @closed = true
       @handle = nil
     end
@@ -212,11 +224,21 @@ module PdfOxide
       @closed
     end
 
-    # Finalizer for GC cleanup
-    # @param handle [FFI::Pointer] Document handle
+    # Finalizer for GC cleanup.  Accepts a mutable single-element
+    # tracker so a prior explicit `close` can null out the handle
+    # and prevent a double-free in the GC pass.
+    # @param tracker [Array<FFI::Pointer>]
     # @return [Proc]
-    def self.finalizer(handle)
-      proc { FFI::Bindings.pdf_document_free(handle) unless handle.nil? || handle.null? }
+    def self.finalizer(tracker)
+      proc do
+        # `tracker` may be a bare pointer for legacy callers (e.g.
+        # OfficeConverter that wires it pre-tracker); accept either.
+        handle = tracker.is_a?(Array) ? tracker[0] : tracker
+        if handle && !handle.null?
+          FFI::Bindings.pdf_document_free(handle)
+          tracker[0] = nil if tracker.is_a?(Array)
+        end
+      end
     end
 
     private

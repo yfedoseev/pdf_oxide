@@ -40,16 +40,21 @@ module PdfOxide
       end
 
       # Free C string allocated by Rust.
-      # The cdylib exports `pdf_free` and `free_string`; both accept a pointer
-      # returned by the C-ABI string helpers.  Prefer `pdf_free` (the general
-      # heap-deallocator) when available; fall back to `free_string`.
+      #
+      # The cdylib exports two distinct deallocators:
+      #   * `free_string(*mut c_char)`     — releases a `CString::into_raw`
+      #     pointer (the allocator backing all malloc'd char* returns).
+      #   * `pdf_free(*mut Pdf)`           — releases a `Box<Pdf>` handle.
+      #
+      # The two allocators are NOT interchangeable; passing a string
+      # pointer to `pdf_free` corrupts the heap (segfaults observed
+      # via the auto-extraction path).  Always prefer `free_string`
+      # for char* returns; the legacy `pdf_free` fallback is dropped.
       # @param c_string_ptr [FFI::Pointer] Pointer to C string
       def self.free_c_string(c_string_ptr)
         return if c_string_ptr.nil? || c_string_ptr.null?
 
-        if Bindings.respond_to?(:pdf_free)
-          Bindings.pdf_free(c_string_ptr)
-        elsif Bindings.respond_to?(:free_string)
+        if Bindings.respond_to?(:free_string)
           Bindings.free_string(c_string_ptr)
         end
       end

@@ -1536,6 +1536,86 @@ module PdfOxide
       # resolves to a real ABI signature.
       attach_function :pdf_free, [:pointer], :void
       attach_function :free_bytes, [:pointer], :void
+
+      # ============================================================
+      # PHASE 3 EXTEND: real signatures for v0.3.50-v0.3.54 features.
+      # Each entry below replaces the placeholder 8-pointer skeleton
+      # earlier in the file (FFI permits later attach_function calls
+      # to override the prior declaration).
+      # ============================================================
+
+      # Auto-extraction (#519, v0.3.51) — JSON-returning classifiers
+      # plus the text-only auto-router.  All return malloc'd char*;
+      # free with pdf_free / free_string.
+      attach_function :pdf_document_classify_page,     [:pointer, :int32, :pointer], :pointer
+      attach_function :pdf_document_classify_document, [:pointer, :pointer],         :pointer
+      attach_function :pdf_document_extract_text_auto, [:pointer, :int32, :pointer], :pointer
+      attach_function :pdf_document_extract_page_auto, [:pointer, :int32, :string, :pointer], :pointer
+
+      # Models subsystem (#519 provisioning trio).
+      attach_function :pdf_oxide_prefetch_models,    [:string, :pointer], :pointer
+      attach_function :pdf_oxide_model_manifest,     [],                  :pointer
+      attach_function :pdf_oxide_prefetch_available, [],                  :int32
+
+      # Office converter (#159, v0.3.48). All three return a PdfDocument*.
+      attach_function :pdf_document_open_from_docx_bytes, [:pointer, :size_t, :pointer], :pointer
+      attach_function :pdf_document_open_from_pptx_bytes, [:pointer, :size_t, :pointer], :pointer
+      attach_function :pdf_document_open_from_xlsx_bytes, [:pointer, :size_t, :pointer], :pointer
+
+      # Split-by-bookmarks plan (v0.3.50).  Returns a JSON plan as
+      # char*; the consumer interprets the segment list and feeds
+      # each {start_page, end_page} pair to extract-page utilities.
+      attach_function :pdf_document_plan_split_by_bookmarks,
+                      [:pointer, :string, :pointer], :pointer
+
+      # Destructive redaction (#231, v0.3.50).  Operates on a
+      # DocumentEditor* handle (NOT a PdfDocument*).
+      attach_function :pdf_redaction_add,
+                      [:pointer, :size_t,
+                       :double, :double, :double, :double,
+                       :double, :double, :double,
+                       :pointer],
+                      :int32
+      attach_function :pdf_redaction_count, [:pointer, :size_t, :pointer], :int32
+      attach_function :pdf_redaction_apply,
+                      [:pointer, :bool, :double, :double, :double, :pointer], :int32
+      attach_function :pdf_redaction_scrub_metadata, [:pointer, :pointer], :int32
+
+      # PAdES signing — the 5-arg shim (v0.3.51 #517 follow-up to
+      # v0.3.50 #235). The 18-arg legacy entry is still available
+      # under pdf_sign_bytes_pades but the shim is canonical for all
+      # bindings (purego cannot register the legacy form).
+      attach_function :pdf_sign_bytes_pades_opts,
+                      [:pointer, :size_t, :pointer, :pointer, :pointer], :pointer
+
+      # PAdES level inspection.
+      attach_function :pdf_signature_get_pades_level, [:pointer, :pointer], :int32
+      attach_function :pdf_document_has_timestamp,    [:pointer, :pointer], :int32
+
+      # PAdES level enum codes (frozen).  These are the int32 values
+      # `pdf_signature_get_pades_level` returns and the `level`
+      # field of `PadesSignOptionsC` takes.  Keep the names mirrored
+      # against the Rust `PadesLevel` enum.
+      PADES_LEVEL_B   = 0
+      PADES_LEVEL_T   = 1
+      PADES_LEVEL_LT  = 2
+      PADES_LEVEL_LTA = 3
+
+      # DocumentEditor lifecycle — needed by RedactionManager so it
+      # can apply redactions destructively to an editor handle and
+      # save the resulting bytes.  The existing skeletons use generic
+      # 8-pointer signatures; these declarations refine them.
+      attach_function :document_editor_open,           [:string, :pointer],          :pointer
+      attach_function :document_editor_open_from_bytes,
+                      [:pointer, :size_t, :pointer], :pointer
+      attach_function :document_editor_free,           [:pointer],                   :void
+      attach_function :document_editor_save,           [:pointer, :string, :pointer], :int32
+      attach_function :document_editor_save_to_bytes,
+                      [:pointer, :pointer, :pointer], :pointer
+      attach_function :document_editor_apply_page_redactions,
+                      [:pointer, :size_t, :pointer], :int32
+      attach_function :document_editor_apply_all_redactions,
+                      [:pointer, :pointer], :int32
     end
   end
 end

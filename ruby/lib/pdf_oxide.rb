@@ -59,6 +59,15 @@ require_relative 'pdf_oxide/managers/xfa'
 require_relative 'pdf_oxide/document'
 require_relative 'pdf_oxide/creator'
 
+# Phase 3 (v0.3.50–v0.3.54 feature surface) — v0.3.55 Ruby workstream.
+require_relative 'pdf_oxide/extract_reason'
+require_relative 'pdf_oxide/auto_extract_result'
+require_relative 'pdf_oxide/auto_extractor'
+require_relative 'pdf_oxide/office_converter'
+require_relative 'pdf_oxide/redaction_manager'
+require_relative 'pdf_oxide/pades_signer'
+require_relative 'pdf_oxide/models'
+
 module PdfOxide
   class << self
     # Open a PDF document
