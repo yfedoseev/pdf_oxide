@@ -24,6 +24,7 @@
 
 use super::{ReadingOrderContext, ReadingOrderStrategy};
 use crate::error::Result;
+use crate::geometry::Rect;
 use crate::layout::TextSpan;
 use crate::pipeline::{OrderedTextSpan, ReadingOrderInfo};
 
@@ -53,6 +54,50 @@ enum RegionKind {
     /// Anything else — too few lines, mixed shapes, decorative regions.
     /// Default to the v0.3.53 behaviour (no tight cut).
     Mixed,
+}
+
+/// Contiguous run of bold-or-larger-font spans spanning ≥ 2 visual lines
+/// that the XY-cut splitter must treat as an atomic block. Built by
+/// `find_heading_runs` (v0.3.55 #543) BEFORE recursive partitioning,
+/// then substituted into the partition input as a single wide synthetic
+/// span so cluster-detection / valley-finding can't drive a vertical
+/// cut THROUGH a wrapped heading.
+///
+/// After partition completes, `expand_blocks` projects the synthetic
+/// placeholder back into its constituent original spans, preserving
+/// each span's per-glyph metadata for downstream consumers
+/// (markdown converter heading-level inference, layout-preserving
+/// DOCX export, etc.).
+#[derive(Debug, Clone)]
+struct HeadingRun {
+    /// Indices into the original `&[TextSpan]` slice, in reading order
+    /// (top-to-bottom, left-to-right within a line).
+    span_indices: Vec<usize>,
+    /// Union of the constituent spans' bboxes. Substituted for each
+    /// individual bbox during partition so the heading appears as one
+    /// wide bbox.
+    combined_bbox: Rect,
+}
+
+/// Union of the bboxes of `spans[indices]`. Empty index list yields a
+/// zero-sized rect at the origin (never built in practice — guarded by
+/// the caller).
+fn union_bboxes(spans: &[TextSpan], indices: &[usize]) -> Rect {
+    let mut x_min = f32::MAX;
+    let mut y_min = f32::MAX;
+    let mut x_max = f32::MIN;
+    let mut y_max = f32::MIN;
+    for &i in indices {
+        let b = spans[i].bbox;
+        x_min = x_min.min(b.left());
+        x_max = x_max.max(b.right());
+        y_min = y_min.min(b.top());
+        y_max = y_max.max(b.bottom());
+    }
+    if x_min == f32::MAX {
+        return Rect::default();
+    }
+    Rect::from_points(x_min, y_min, x_max, y_max)
 }
 
 /// XY-Cut recursive spatial partitioning strategy.
@@ -149,13 +194,293 @@ impl XYCutStrategy {
     /// Core recursive partitioning algorithm.
     ///
     /// Public for use by MarkdownConverter's ColumnAware reading order mode.
+    ///
+    /// v0.3.55 (#543): runs a pre-pass that detects multi-line heading runs
+    /// (bold or larger-than-body font, ≥ 2 wrapped lines with matching
+    /// X-extent) and locks them as atomic blocks the recursive splitter
+    /// cannot split. Without this, a wrapped heading whose tail lines
+    /// Y-overlap with adjacent-column dense content (table caption, table
+    /// row, image label) gets bucketed across columns: line 1 glued to the
+    /// body paragraph, line 2..N orphaned into the wrong block — and the
+    /// markdown converter then promotes the orphan tail to a phantom
+    /// heading (`### …`) in the wrong location.
     pub fn partition_region(&self, spans: &[TextSpan]) -> Vec<Vec<TextSpan>> {
-        let indices: Vec<usize> = (0..spans.len()).collect();
-        let index_groups = self.partition_indexed(spans, &indices);
-        // Clone spans only once at the end (not at every recursion level)
-        index_groups
+        let heading_runs = self.find_heading_runs(spans);
+        if heading_runs.is_empty() {
+            // Hot path: no headings found, skip the synthesize/expand
+            // pair entirely so the cost is bounded to one O(n log n) sort
+            // inside find_heading_runs.
+            let indices: Vec<usize> = (0..spans.len()).collect();
+            let index_groups = self.partition_indexed(spans, &indices);
+            return index_groups
+                .into_iter()
+                .map(|group| group.into_iter().map(|i| spans[i].clone()).collect())
+                .collect();
+        }
+
+        // Build synthetic span list: each heading run collapses to ONE
+        // wide span carrying the union bbox; non-heading spans pass
+        // through unchanged. The synthetic list is shorter than the
+        // original by (sum_of_run_sizes - num_runs).
+        let (synthetic, synthetic_origin) = self.synthesize_for_partition(spans, &heading_runs);
+        let synth_indices: Vec<usize> = (0..synthetic.len()).collect();
+        let synth_groups = self.partition_indexed(&synthetic, &synth_indices);
+
+        // Project synthetic-space groups back into original-span space:
+        // each synthetic span that came from a heading run gets expanded
+        // back into its constituent original spans (in their original
+        // reading-order sequence within the run).
+        self.expand_blocks(synth_groups, spans, &synthetic_origin)
+    }
+
+    /// Detect contiguous bold/large-font runs that span ≥ 2 lines with
+    /// matching X-extent (i.e. wrapped subsection headings).
+    ///
+    /// Per the v0.3.55 fix-543 plan §A.2: two adjacent spans (in reading
+    /// order) are considered to belong to the same heading run when
+    /// ALL of the following hold:
+    ///
+    /// 1. Both are heading-like (bold, OR font_size > median × 1.15).
+    /// 2. Same font_size (within 0.5 pt epsilon).
+    /// 3. Same bold flag.
+    /// 4. Next span's left edge is within `[prev.left, prev.left + 6pt]`
+    ///    (wrapped heading lines often re-indent by up to ~6pt).
+    /// 5. Next span sits ≤ 1.5 × line-height below the previous span
+    ///    (a single-line gap; double-line gaps are paragraph breaks).
+    ///
+    /// `median_font_size` is computed across non-bold spans so heavy
+    /// bold runs don't bias the body-size estimate upward.
+    fn find_heading_runs(&self, spans: &[TextSpan]) -> Vec<HeadingRun> {
+        if spans.len() < 2 {
+            return Vec::new();
+        }
+
+        // Median body font size from NON-bold spans only. Bold spans
+        // typically sit at heading sizes (bigger than body), so including
+        // them biases the median high and we'd miss bold headings whose
+        // size sits between body and the heavier weight tier.
+        let mut non_bold_sizes: Vec<f32> = spans
+            .iter()
+            .filter(|s| !s.font_weight.is_bold())
+            .map(|s| s.font_size)
+            .filter(|&sz| sz > 0.0)
+            .collect();
+        let median_body = if non_bold_sizes.is_empty() {
+            // Fallback: all spans bold (or zero-size). Use overall median.
+            let mut sizes: Vec<f32> = spans
+                .iter()
+                .map(|s| s.font_size)
+                .filter(|&sz| sz > 0.0)
+                .collect();
+            if sizes.is_empty() {
+                return Vec::new();
+            }
+            sizes.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+            sizes[sizes.len() / 2]
+        } else {
+            non_bold_sizes.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+            non_bold_sizes[non_bold_sizes.len() / 2]
+        };
+        let heading_size_floor = median_body * 1.15;
+
+        let is_heading_like =
+            |s: &TextSpan| -> bool { s.font_weight.is_bold() || s.font_size > heading_size_floor };
+
+        // Sort indices by reading order (top of page first; Rect::top()
+        // is the SMALLER Y of the normalized rect — see comment at
+        // line ~885 — so larger Y = higher on page in PDF coords;
+        // we want DESCENDING Y here).
+        let mut order: Vec<usize> = (0..spans.len()).collect();
+        order.sort_by(|&a, &b| {
+            let y_cmp = crate::utils::safe_float_cmp(spans[b].bbox.top(), spans[a].bbox.top());
+            if y_cmp != std::cmp::Ordering::Equal {
+                return y_cmp;
+            }
+            crate::utils::safe_float_cmp(spans[a].bbox.left(), spans[b].bbox.left())
+        });
+
+        // Cluster reading-order-adjacent heading-like spans into runs.
+        // The same line may carry multiple bold spans (one per Tj
+        // segment); we collapse runs across lines, not within a line.
+        let indent_tolerance = 6.0_f32;
+        let font_eps = 0.5_f32;
+        let mut runs: Vec<Vec<usize>> = Vec::new();
+        let mut current: Vec<usize> = Vec::new();
+
+        for &idx in &order {
+            let span = &spans[idx];
+            if !is_heading_like(span) {
+                if !current.is_empty() {
+                    runs.push(std::mem::take(&mut current));
+                }
+                continue;
+            }
+
+            if current.is_empty() {
+                current.push(idx);
+                continue;
+            }
+
+            let last_idx = *current.last().unwrap();
+            let last = &spans[last_idx];
+
+            // (2) same font size, (3) same bold flag.
+            let size_ok = (span.font_size - last.font_size).abs() <= font_eps;
+            let bold_ok = span.font_weight.is_bold() == last.font_weight.is_bold();
+
+            // Same-line: top within 1 pt of last's top — fold without
+            // applying indent/leading checks (both spans belong to the
+            // SAME wrapped-heading line, e.g. two bold Tj segments).
+            let same_line = (span.bbox.top() - last.bbox.top()).abs() <= 1.0;
+
+            if size_ok && bold_ok && same_line {
+                current.push(idx);
+                continue;
+            }
+
+            // Different line: enforce indent (4) + leading (5).
+            // line_height = max of the two spans' bbox heights, plus a
+            // floor of font_size to handle ascender-only / descender-only
+            // glyphs with collapsed bboxes.
+            let line_h = last
+                .bbox
+                .height
+                .max(span.bbox.height)
+                .max(last.font_size)
+                .max(1.0);
+            let leading_tolerance = line_h * 1.5;
+
+            // PDF coords: y grows up, so the wrapped line sits at a
+            // SMALLER bbox.top than the previous line. The gap between
+            // last's bottom and span's top should fit inside the leading
+            // tolerance.
+            let last_bottom = last.bbox.top(); // smaller-Y edge in PDF coords (see find_vertical_split comment)
+            let span_top = span.bbox.top();
+            let vertical_gap = (last_bottom - span_top).abs();
+
+            let indent_ok = span.bbox.left() >= last.bbox.left() - indent_tolerance
+                && span.bbox.left() <= last.bbox.left() + indent_tolerance;
+            let leading_ok = vertical_gap <= leading_tolerance;
+
+            if size_ok && bold_ok && indent_ok && leading_ok {
+                current.push(idx);
+            } else {
+                runs.push(std::mem::take(&mut current));
+                current.push(idx);
+            }
+        }
+        if !current.is_empty() {
+            runs.push(current);
+        }
+
+        // A run becomes a HeadingRun only when it spans ≥ 2 distinct
+        // lines. Single-line bold spans (inline emphasis, lone short
+        // headings) don't need locking — XY-cut handles them correctly
+        // already, and locking them would be a no-op for the splitter
+        // but adds overhead.
+        runs.into_iter()
+            .filter_map(|span_indices| {
+                if span_indices.len() < 2 {
+                    return None;
+                }
+                let mut distinct_lines = std::collections::BTreeSet::new();
+                for &i in &span_indices {
+                    distinct_lines.insert(spans[i].bbox.top().round() as i32);
+                }
+                if distinct_lines.len() < 2 {
+                    return None;
+                }
+                Some(HeadingRun {
+                    combined_bbox: union_bboxes(spans, &span_indices),
+                    span_indices,
+                })
+            })
+            .collect()
+    }
+
+    /// Build a synthetic span list where each detected `HeadingRun`
+    /// collapses to ONE wide synthetic span carrying the union bbox.
+    /// Non-heading spans pass through unchanged.
+    ///
+    /// Returns:
+    /// - `synthetic`: the input to `partition_indexed`.
+    /// - `synthetic_origin[k]`: indices of ORIGINAL spans backing
+    ///   synthetic span `k`. Length 1 for pass-throughs, ≥ 2 for
+    ///   heading-run placeholders. Used by `expand_blocks` to project
+    ///   partition output back into original-span space.
+    fn synthesize_for_partition(
+        &self,
+        spans: &[TextSpan],
+        runs: &[HeadingRun],
+    ) -> (Vec<TextSpan>, Vec<Vec<usize>>) {
+        // Mark each original span with the heading-run it belongs to
+        // (or None for pass-through).
+        let mut in_run: Vec<Option<usize>> = vec![None; spans.len()];
+        for (r_idx, run) in runs.iter().enumerate() {
+            for &i in &run.span_indices {
+                in_run[i] = Some(r_idx);
+            }
+        }
+
+        let mut synthetic: Vec<TextSpan> = Vec::with_capacity(spans.len());
+        let mut origins: Vec<Vec<usize>> = Vec::with_capacity(spans.len());
+        let mut emitted_run = vec![false; runs.len()];
+
+        for (i, span) in spans.iter().enumerate() {
+            match in_run[i] {
+                None => {
+                    synthetic.push(span.clone());
+                    origins.push(vec![i]);
+                },
+                Some(r_idx) if !emitted_run[r_idx] => {
+                    // Emit the run as a synthetic placeholder at the
+                    // position of its first-encountered span.
+                    let run = &runs[r_idx];
+                    let mut placeholder = span.clone();
+                    placeholder.bbox = run.combined_bbox;
+                    // Concatenate the run's text with single spaces so
+                    // is_single_column_region's core-width estimate is
+                    // proportional to the actual heading length, not the
+                    // single first-line fragment.
+                    let mut combined_text = String::new();
+                    for (k, &si) in run.span_indices.iter().enumerate() {
+                        if k > 0 {
+                            combined_text.push(' ');
+                        }
+                        combined_text.push_str(&spans[si].text);
+                    }
+                    placeholder.text = combined_text;
+                    synthetic.push(placeholder);
+                    origins.push(run.span_indices.clone());
+                    emitted_run[r_idx] = true;
+                },
+                Some(_) => { /* already emitted — skip later spans of the run */ },
+            }
+        }
+
+        (synthetic, origins)
+    }
+
+    /// Project partition groups from synthetic-span space back into
+    /// original-span space, expanding each heading-run placeholder into
+    /// its constituent original spans (in their original ordering).
+    fn expand_blocks(
+        &self,
+        synth_groups: Vec<Vec<usize>>,
+        original: &[TextSpan],
+        synthetic_origin: &[Vec<usize>],
+    ) -> Vec<Vec<TextSpan>> {
+        synth_groups
             .into_iter()
-            .map(|group| group.into_iter().map(|i| spans[i].clone()).collect())
+            .map(|group| {
+                let mut out = Vec::with_capacity(group.len());
+                for synth_idx in group {
+                    for &orig_idx in &synthetic_origin[synth_idx] {
+                        out.push(original[orig_idx].clone());
+                    }
+                }
+                out
+            })
             .collect()
     }
 
@@ -1188,9 +1513,34 @@ impl ReadingOrderStrategy for XYCutStrategy {
         spans: Vec<TextSpan>,
         _context: &ReadingOrderContext,
     ) -> Result<Vec<OrderedTextSpan>> {
-        // Use index-based partitioning to avoid cloning during recursion
-        let indices: Vec<usize> = (0..spans.len()).collect();
-        let index_groups = self.partition_indexed(&spans, &indices);
+        // v0.3.55 (#543): detect multi-line heading runs and route the
+        // partition through synthetic-span space so the splitter treats
+        // each wrapped heading as a single atomic block. When no
+        // headings are found we use the original index-only path that
+        // avoids span clones during recursion.
+        let heading_runs = self.find_heading_runs(&spans);
+
+        let index_groups: Vec<Vec<usize>> = if heading_runs.is_empty() {
+            let indices: Vec<usize> = (0..spans.len()).collect();
+            self.partition_indexed(&spans, &indices)
+        } else {
+            let (synthetic, synthetic_origin) =
+                self.synthesize_for_partition(&spans, &heading_runs);
+            let synth_indices: Vec<usize> = (0..synthetic.len()).collect();
+            let synth_groups = self.partition_indexed(&synthetic, &synth_indices);
+            // Project synthetic-space groups back to ORIGINAL-span
+            // indices (so the move-out below works on the input Vec).
+            synth_groups
+                .into_iter()
+                .map(|group| {
+                    let mut out = Vec::with_capacity(group.len());
+                    for synth_idx in group {
+                        out.extend(synthetic_origin[synth_idx].iter().copied());
+                    }
+                    out
+                })
+                .collect()
+        };
 
         // Build result — moves spans out by index (no extra clone)
         let mut ordered = Vec::with_capacity(spans.len());
@@ -1750,6 +2100,220 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Builder for a bold heading span at a given font size. Used by the
+    /// fix-543 tests to construct the "bold/large-font run spanning ≥ 2
+    /// lines" shape the pre-partition heading lock must catch.
+    fn make_bold_span(x: f32, y: f32, width: f32, text: &str, font_size: f32) -> TextSpan {
+        use crate::layout::FontWeight;
+        let mut s = make_span_text(x, y, width, font_size, text, font_size);
+        s.font_weight = FontWeight::Bold;
+        s
+    }
+
+    /// fix-543 unit: `find_heading_runs` must detect a 2-line bold
+    /// heading whose wrapped tail line sits below the first line with
+    /// matching X-extent. Single-line bold spans or paragraph-gap
+    /// shapes must NOT be returned.
+    #[test]
+    fn find_heading_runs_detects_2_line_bold_heading() {
+        let strategy = XYCutStrategy::new();
+
+        // Body baseline (12pt regular) — establishes the median.
+        let mut spans = Vec::new();
+        let body_left = 72.0;
+        let body_width = 200.0;
+        let mut y = 720.0;
+        for _ in 0..10 {
+            spans.push(make_body_span(body_left, y, body_width, 12.0));
+            y -= 14.0;
+        }
+
+        // 2-line bold heading at 14pt, same left margin, adjacent lines.
+        spans.push(make_bold_span(body_left, 500.0, 180.0, "2.3 Performance and", 14.0));
+        spans.push(make_bold_span(
+            body_left,
+            484.0,
+            180.0,
+            "Advantages of Vari-linear Network",
+            14.0,
+        ));
+
+        let runs = strategy.find_heading_runs(&spans);
+        assert_eq!(runs.len(), 1, "expected exactly one heading run, got {runs:?}");
+        assert_eq!(runs[0].span_indices.len(), 2, "expected the run to cover both heading lines");
+
+        // A LONE bold span (no second line) must NOT be locked: that
+        // case is a single-line heading that XY-cut already handles.
+        let mut spans_single = vec![make_body_span(body_left, 720.0, body_width, 12.0); 5];
+        spans_single.push(make_bold_span(body_left, 500.0, 180.0, "Lone Heading", 14.0));
+        let runs_single = strategy.find_heading_runs(&spans_single);
+        assert!(runs_single.is_empty(), "single-line bold runs must not produce a HeadingRun");
+    }
+
+    /// fix-543 unit: the canonical repro shape — left-column 2-line
+    /// bold heading whose wrapped tail line Y-overlaps right-column
+    /// dense content (table caption + rows). Pre-fix, line 2 of the
+    /// heading was bucketed into the RIGHT block; post-fix the lock
+    /// keeps both heading lines in the LEFT block, adjacent to the
+    /// left-column body paragraph.
+    #[test]
+    fn partition_keeps_heading_in_left_block() {
+        let strategy = XYCutStrategy::new();
+
+        // Geometry: two columns, ~260pt each with a ~30pt gutter.
+        // Left col x ∈ [72, 332], right col x ∈ [362, 622].
+        let left_col_x = 72.0_f32;
+        let right_col_x = 362.0_f32;
+        let col_width = 260.0_f32;
+
+        let mut spans = Vec::new();
+
+        // Left column: 2-line bold heading at Y=500/484, then 8 body
+        // lines below at Y=460..360 (so the body paragraph anchors the
+        // left block in reading order).
+        spans.push(make_bold_span(left_col_x, 500.0, 180.0, "2.3 Performance and", 14.0));
+        spans.push(make_bold_span(
+            left_col_x,
+            484.0,
+            220.0,
+            "Advantages of Vari-linear Network",
+            14.0,
+        ));
+        let mut y = 460.0_f32;
+        for _ in 0..8 {
+            spans.push(make_body_span(left_col_x, y, col_width, 12.0));
+            y -= 14.0;
+        }
+
+        // Right column: dense table-caption-style content that
+        // Y-overlaps the heading's second line (Y=484). The
+        // pre-fix block-assignment step pulled the heading's tail
+        // into THIS column because the geometry was alone in
+        // deciding bucket membership.
+        spans.push(make_body_span(right_col_x, 500.0, col_width, 12.0));
+        spans.push(make_body_span(right_col_x, 484.0, col_width, 12.0));
+        spans.push(make_body_span(right_col_x, 468.0, col_width, 12.0));
+        spans.push(make_body_span(right_col_x, 452.0, col_width, 12.0));
+        spans.push(make_body_span(right_col_x, 436.0, col_width, 12.0));
+        spans.push(make_body_span(right_col_x, 420.0, col_width, 12.0));
+        spans.push(make_body_span(right_col_x, 404.0, col_width, 12.0));
+
+        // Tag the heading lines so we can assert they land together.
+        // (Done via the existing text; the bold builder sets distinct
+        // strings.)
+        let groups = strategy.partition_region(&spans);
+
+        // Find the group holding "2.3 Performance and".
+        let heading_first_group = groups
+            .iter()
+            .position(|g| g.iter().any(|s| s.text.contains("2.3 Performance and")))
+            .expect("heading line 1 must land in some group");
+        let heading_second_group = groups
+            .iter()
+            .position(|g| {
+                g.iter()
+                    .any(|s| s.text.contains("Advantages of Vari-linear Network"))
+            })
+            .expect("heading line 2 must land in some group");
+
+        assert_eq!(
+            heading_first_group, heading_second_group,
+            "both heading lines must end up in the SAME block — pre-fix \
+             they split across left/right column blocks"
+        );
+
+        // And that group must also contain left-column body content
+        // (not right-column body content). All bbox.left() in the
+        // group should be in the left-column band.
+        let group = &groups[heading_first_group];
+        for s in group {
+            assert!(
+                s.bbox.left() < right_col_x,
+                "heading + body group must stay in the LEFT column; \
+                 stray span at x={} (right_col starts at {}): {:?}",
+                s.bbox.left(),
+                right_col_x,
+                s.text
+            );
+        }
+    }
+
+    /// fix-543 unit: the markdown converter must not promote an orphan
+    /// heading-tail line to a phantom `### …`. With the pre-partition
+    /// lock in place, the orphan does not exist in the first place,
+    /// so the full heading appears as a single block immediately
+    /// before its body paragraph in the markdown output.
+    #[test]
+    fn markdown_emits_single_heading_no_orphan() {
+        use crate::pipeline::converters::{MarkdownOutputConverter, OutputConverter};
+        use crate::pipeline::reading_order::ReadingOrderContext;
+        use crate::pipeline::TextPipelineConfig;
+
+        let strategy = XYCutStrategy::new();
+
+        // Mini repro: left-column heading + body, right-column body,
+        // Y-overlap on the wrapped heading's tail line.
+        let left_col_x = 72.0_f32;
+        let right_col_x = 362.0_f32;
+        let col_width = 260.0_f32;
+
+        let mut spans = Vec::new();
+        spans.push(make_bold_span(left_col_x, 500.0, 180.0, "Performance and", 14.0));
+        spans.push(make_bold_span(
+            left_col_x,
+            484.0,
+            220.0,
+            "Advantages of Vari-linear Network",
+            14.0,
+        ));
+        let mut y = 460.0_f32;
+        for _ in 0..6 {
+            spans.push(make_body_span(left_col_x, y, col_width, 12.0));
+            y -= 14.0;
+        }
+        for ky in [500.0, 484.0, 468.0, 452.0, 436.0, 420.0] {
+            spans.push(make_body_span(right_col_x, ky, col_width, 12.0));
+        }
+
+        let context = ReadingOrderContext::new();
+        let ordered = strategy.apply(spans, &context).expect("apply");
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let md = converter.convert(&ordered, &config).expect("markdown");
+
+        // Both heading halves must appear, and BOTH must precede any
+        // right-column content. Pre-fix, the wrapped-heading tail was
+        // bucketed into the right-column block and emitted AFTER the
+        // right column's body, then promoted to a fresh heading level
+        // by `heading_level_ratio` (since it lost its body
+        // continuation) — that's the phantom `### …` in the wrong
+        // location. Post-fix the lock keeps both heading lines in the
+        // left block adjacent to each other.
+        let pos_first = md
+            .find("Performance and")
+            .expect("heading line 1 must appear in markdown");
+        let pos_second = md
+            .find("Advantages of Vari-linear Network")
+            .expect("heading line 2 must appear in markdown");
+
+        assert!(pos_first < pos_second, "heading line 1 must precede line 2:\n{md}");
+        // Both heading lines must sit within the FIRST 30% of the
+        // emitted markdown — they belong at the very top of the
+        // left-column block, not floating somewhere after the
+        // right-column body. (Pre-fix: the orphan tail landed deep
+        // into the document after the right-column body — easily past
+        // the 30 % mark.)
+        let cap = (md.len() as f32 * 0.30) as usize;
+        assert!(
+            pos_second < cap.max(40),
+            "heading-line-2 emitted late in the document — likely the \
+             pre-fix orphan-in-wrong-column behaviour. pos_second={}, \
+             cap={}, md=\n{md}",
+            pos_second,
+            cap
+        );
     }
 
     /// End-to-end: partition_region must return all spans (unsplit) rather than aborting
