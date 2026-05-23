@@ -75,7 +75,7 @@ jobs:
     name: Validate Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
@@ -159,7 +159,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: pdf_oxide_fips-python-windows-x86_64
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
@@ -357,7 +357,7 @@ jobs:
             prebuild_dir: win32-x64
             node_arch: x64
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
@@ -466,7 +466,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
@@ -608,7 +608,7 @@ jobs:
             rid: win-x64
             lib_name: pdf_oxide.dll
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
@@ -661,7 +661,7 @@ jobs:
     needs: [build-fips-nuget-libs]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
@@ -776,7 +776,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             go_dir: windows_amd64
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
@@ -834,7 +834,7 @@ jobs:
     needs: [build-fips-go]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
