@@ -1838,8 +1838,77 @@ impl MarkdownOutputConverter {
             }
         }
 
+        // Bidi-isolation markers (UAX #9 §2.4 — #537 follow-up).
+        //
+        // The v0.3.54 #537 detector landed the geometric visual-vs-
+        // logical RTL classifier in `text::bidi::detect_visual_order_run`
+        // and the extractor now reverses content-stream visual-order
+        // runs into logical order. That fixed the *codepoint sequence*
+        // (Hebrew letters appear in correct reading order).
+        //
+        // What it did not fix: bidi-rendering contamination at run
+        // boundaries. When a markdown viewer (Pandoc, GitHub, VS Code
+        // preview, Obsidian) reads a paragraph with mixed LTR + RTL
+        // content and applies the Unicode Bidirectional Algorithm, the
+        // *neutral* characters at run boundaries (parens, commas,
+        // periods, spaces) migrate visually across the boundary
+        // because they inherit direction from surrounding strong
+        // characters. UAX #9 §2.4 fixes this with explicit isolation
+        // markers: U+2067 RLI / U+2069 PDI around an RTL run inside an
+        // LTR paragraph, U+2066 LRI / U+2069 PDI around an LTR run
+        // inside an RTL paragraph.
+        //
+        // Markdown ONLY — `extract_text` and `PlainTextConverter` skip
+        // this step. Plain-text consumers do not honour UAX #9 and
+        // would render the markers as literal garbage. Per the v0.3.55
+        // plan `docs/releases/plans/v0.3.55/fix-537-followup-bidi-isolation-markers.md`.
+        if crate::text::bidi::looks_rtl(&final_result) {
+            final_result = wrap_bidi_isolates_per_line(&final_result);
+        }
+
         Ok(final_result)
     }
+}
+
+/// Walk `text` line by line and wrap each line's RTL runs (or LTR
+/// runs inside RTL-dominant lines) with Unicode bidi-isolation
+/// markers per UAX #9 §2.4. Pure-LTR lines (no RTL chars) are
+/// returned unchanged byte-for-byte.
+///
+/// Block direction is decided per *line* because markdown line
+/// breaks (`\n`) implicitly start a new bidi paragraph in every
+/// viewer that honours UAX #9. We use
+/// [`crate::text::bidi::paragraph_is_rtl`] which follows §3.3.1
+/// (first-strong-character rule).
+///
+/// Trailing newlines are preserved (`str::lines()` would otherwise
+/// drop them) so the document-level newline shape stays intact.
+fn wrap_bidi_isolates_per_line(text: &str) -> String {
+    let trailing_newlines: String = text
+        .chars()
+        .rev()
+        .take_while(|&c| c == '\n')
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = String::with_capacity(text.len() + 16);
+    for (i, line) in lines.iter().enumerate() {
+        if crate::text::bidi::looks_rtl(line) {
+            let block_is_rtl = crate::text::bidi::paragraph_is_rtl(line);
+            out.push_str(&crate::text::bidi::wrap_rtl_isolates(line, block_is_rtl));
+        } else {
+            out.push_str(line);
+        }
+        if i + 1 < lines.len() {
+            out.push('\n');
+        }
+    }
+    if !trailing_newlines.is_empty() {
+        out.push_str(&trailing_newlines);
+    }
+    out
 }
 
 /// Remove markdown `**` and `*` emphasis pairs that surround RTL
@@ -2464,6 +2533,14 @@ mod tests {
     /// preserves Arabic across the no-`*`, single-`*`, paired-`*`,
     /// and paired-`**` cases. Locks the Copilot-found UTF-8
     /// corruption out for good across realistic shapes.
+    ///
+    /// v0.3.55 (#537 follow-up): the markdown converter now also wraps
+    /// LTR runs inside RTL-dominant paragraphs with U+2066/U+2069
+    /// isolation markers. Substring assertions below strip those
+    /// markers before matching so this test continues to cover what
+    /// it was meant to cover — the emphasis-stripper's Arabic /
+    /// Hebrew preservation contract — independently of the new
+    /// bidi-isolation pass.
     #[test]
     fn test_arabic_strip_inline_emphasis_matrix() {
         let converter = MarkdownOutputConverter::new();
@@ -2484,17 +2561,26 @@ mod tests {
         for (input, expected_subs) in cases {
             let span = make_span(input, 0.0, 100.0, 12.0, FontWeight::Normal);
             let result = converter.convert(&[span], &config).unwrap();
+            // Strip the v0.3.55 #537-follow-up bidi-isolation markers
+            // (U+2066/U+2067/U+2068/U+2069) before substring checks —
+            // they are correct, semantically additive, and orthogonal
+            // to what this test exercises.
+            let result_no_iso: String = result
+                .chars()
+                .filter(|c| !matches!(*c, '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}'))
+                .collect();
             for needle in *expected_subs {
                 assert!(
-                    result.contains(needle),
+                    result_no_iso.contains(needle),
                     "input {:?} → expected {:?} in output:\n{}",
                     input,
                     needle,
-                    result
+                    result_no_iso
                 );
             }
             // Ghost-byte check: no Latin-1 control chars from
-            // mis-cast UTF-8 should appear.
+            // mis-cast UTF-8 should appear. Run against the raw
+            // result so any new ghost-byte regression still fires.
             assert!(
                 !result.chars().any(|c| {
                     let n = c as u32;
@@ -4530,5 +4616,93 @@ mod tests {
             "columns must not interleave at the line level, got:\n{}",
             result
         );
+    }
+
+    // ==========================================================================
+    // Bidi-isolation markers in markdown output (#537 follow-up — v0.3.55).
+    // Acceptance tests from
+    // docs/releases/plans/v0.3.55/fix-537-followup-bidi-isolation-markers.md.
+    // ==========================================================================
+
+    /// Hebrew run in an LTR-dominant line — must be wrapped with
+    /// U+2067 (RLI) … U+2069 (PDI) so a UAX #9-aware markdown
+    /// viewer does not let neutrals around the Hebrew bleed across
+    /// the boundary. Pre-fix output had no markers; this test pins
+    /// the post-fix behaviour.
+    #[test]
+    fn markdown_wraps_rtl_run_with_rli_pdi() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let span =
+            make_span("The article שלום עולם is greetings.", 0.0, 100.0, 12.0, FontWeight::Normal);
+        let result = converter.convert(&[span], &config).unwrap();
+        assert!(
+            result.contains('\u{2067}'),
+            "expected U+2067 (RLI) in markdown output, got:\n{:?}",
+            result
+        );
+        assert!(
+            result.contains('\u{2069}'),
+            "expected U+2069 (PDI) in markdown output, got:\n{:?}",
+            result
+        );
+        // Block is LTR-dominant — LTR runs must NOT get LRI.
+        assert!(
+            !result.contains('\u{2066}'),
+            "unexpected U+2066 (LRI) in LTR-block output:\n{:?}",
+            result
+        );
+    }
+
+    /// English brand-name embedded in a Hebrew (RTL-dominant) line
+    /// — the English run must be wrapped with U+2066 (LRI) …
+    /// U+2069 (PDI).
+    #[test]
+    fn markdown_wraps_ltr_run_inside_rtl_block_with_lri_pdi() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let span = make_span("הספר Microsoft חדש", 0.0, 100.0, 12.0, FontWeight::Normal);
+        let result = converter.convert(&[span], &config).unwrap();
+        assert!(
+            result.contains('\u{2066}'),
+            "expected U+2066 (LRI) wrapping the embedded LTR token, got:\n{:?}",
+            result
+        );
+        assert!(
+            result.contains('\u{2069}'),
+            "expected U+2069 (PDI) closing the LRI, got:\n{:?}",
+            result
+        );
+        // Block is RTL-dominant — RTL runs must NOT get RLI.
+        assert!(
+            !result.contains('\u{2067}'),
+            "unexpected U+2067 (RLI) in RTL-block output:\n{:?}",
+            result
+        );
+    }
+
+    /// Regression guard: pure-LTR markdown output must contain
+    /// ZERO bidi-isolation markers anywhere. This is the "no
+    /// markers appear in pure-LTR documents" contract from the
+    /// v0.3.55 plan's acceptance criteria. If this ever fails, the
+    /// isolation pass leaked into LTR-only output.
+    #[test]
+    fn markdown_leaves_pure_ltr_unchanged() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let spans = vec![
+            make_span("The first paragraph.", 0.0, 100.0, 12.0, FontWeight::Normal),
+            make_span("A second sentence.", 0.0, 84.0, 12.0, FontWeight::Normal),
+            make_span("Numbers 123 and (parens) too.", 0.0, 68.0, 12.0, FontWeight::Normal),
+        ];
+        let result = converter.convert(&spans, &config).unwrap();
+        for marker in ['\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}'] {
+            assert!(
+                !result.contains(marker),
+                "pure-LTR output must not contain U+{:04X}, got:\n{:?}",
+                marker as u32,
+                result
+            );
+        }
     }
 }

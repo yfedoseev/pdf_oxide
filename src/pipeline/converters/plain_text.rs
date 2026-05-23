@@ -1467,4 +1467,34 @@ mod tests {
             result,
         );
     }
+
+    /// Bidi-isolation markers (UAX #9 §2.4) are a markdown-only
+    /// concern (#537 follow-up). Plain-text consumers do not honour
+    /// UAX #9 — the markers would appear as literal garbage glyphs
+    /// in terminals, grep output, RAG ingestion. The plain-text
+    /// converter MUST NOT emit U+2066 / U+2067 / U+2068 / U+2069
+    /// even for RTL content. This is the contract that the v0.3.55
+    /// plan's acceptance criterion #2 enshrines.
+    #[test]
+    fn plain_text_omits_all_isolation_markers() {
+        let converter = PlainTextConverter::new();
+        let config = TextPipelineConfig::default();
+
+        // Mix Hebrew with English so both block-direction branches of
+        // the (markdown-only) wrapper would have fired.
+        let mut s0 = make_span("The article שלום עולם is greetings.", 0.0, 200.0);
+        s0.reading_order = 0;
+        let mut s1 = make_span("הספר Microsoft חדש", 0.0, 180.0);
+        s1.reading_order = 1;
+
+        let result = converter.convert(&[s0, s1], &config).unwrap();
+        for marker in ['\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}'] {
+            assert!(
+                !result.contains(marker),
+                "plain-text output must not contain U+{:04X}, got:\n{:?}",
+                marker as u32,
+                result
+            );
+        }
+    }
 }

@@ -242,6 +242,167 @@ pub(crate) fn detect_visual_order_run(chars_with_x: &[(char, f32)]) -> RunOrder 
     RunOrder::Ambiguous
 }
 
+/// Unicode bidi-isolation markers (UAX #9 §2.4).
+///
+/// These four code points isolate a directional run from the
+/// surrounding paragraph, preventing the Unicode Bidirectional
+/// Algorithm from re-ordering neutral characters (parentheses, commas,
+/// spaces) across the boundary.
+pub mod isolation {
+    /// U+2066 LEFT-TO-RIGHT ISOLATE — wraps an LTR run inside an RTL
+    /// paragraph (e.g. an English brand name embedded in Hebrew prose).
+    pub const LRI: char = '\u{2066}';
+    /// U+2067 RIGHT-TO-LEFT ISOLATE — wraps an RTL run inside an LTR
+    /// paragraph (e.g. a Hebrew phrase embedded in English prose).
+    pub const RLI: char = '\u{2067}';
+    /// U+2068 FIRST STRONG ISOLATE — wraps an ambiguous run whose
+    /// direction is inferred from its first strong character (UAX #9
+    /// §2.4.2). Used when neither side is confidently RTL or LTR.
+    pub const FSI: char = '\u{2068}';
+    /// U+2069 POP DIRECTIONAL ISOLATE — closes the innermost open
+    /// isolate (LRI / RLI / FSI).
+    pub const PDI: char = '\u{2069}';
+}
+
+/// Per-char strong-direction classification used by
+/// [`wrap_rtl_isolates`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CharDir {
+    /// Strong RTL letter (Hebrew, Arabic, Arabic Supplement,
+    /// Arabic Extended-A, Arabic Presentation Forms).
+    Rtl,
+    /// Strong LTR letter (Latin, Greek, Cyrillic, CJK, etc.).
+    Ltr,
+    /// Neutral / weak — whitespace, digits, punctuation, ASCII
+    /// numerals. Inherits direction from surrounding strong chars.
+    Neutral,
+}
+
+fn classify(c: char) -> CharDir {
+    let cp = c as u32;
+    if crate::text::rtl_detector::is_rtl_text(cp) {
+        return CharDir::Rtl;
+    }
+    if c.is_alphabetic() {
+        return CharDir::Ltr;
+    }
+    CharDir::Neutral
+}
+
+/// Wrap directional runs in `text` with Unicode bidi-isolation
+/// markers (UAX #9 §2.4) so that surrounding paragraph context cannot
+/// re-order neutral characters across the run boundary.
+///
+/// The function scans `text` once, grouping contiguous chars by their
+/// strong direction (RTL / LTR / Neutral; neutrals are absorbed into
+/// the surrounding strong run). When a run's direction differs from
+/// `block_is_rtl`, the run is wrapped with the appropriate isolate
+/// markers:
+///
+/// - `block_is_rtl == false`: RTL runs wrapped with `U+2067` (RLI) …
+///   `U+2069` (PDI). LTR runs left bare (they match the block
+///   direction).
+/// - `block_is_rtl == true`: LTR runs wrapped with `U+2066` (LRI) …
+///   `U+2069` (PDI). RTL runs left bare.
+///
+/// Pure-direction strings (all chars match the block direction, or
+/// the string has no strong chars at all) are returned untouched. The
+/// caller may safely call this on every markdown span — the cost on a
+/// pure-LTR English string is one strong-char scan with no
+/// allocation.
+///
+/// This is the markdown-emission-side companion to
+/// [`detect_visual_order_run`]. The detector decides which content-
+/// stream runs to re-order at extraction time so the output text is
+/// in logical order; this function decides which logical-order runs
+/// to isolate at markdown-emission time so that downstream UAX #9
+/// renderers (Pandoc, GitHub, VS Code preview, Obsidian) don't
+/// re-shuffle neutrals across the boundary.
+///
+/// Markdown output only — `extract_text` and other plain-text
+/// converters MUST NOT call this. Plain-text consumers do not honour
+/// UAX #9 and would render the markers as literal garbage.
+pub fn wrap_rtl_isolates(text: &str, block_is_rtl: bool) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    // Fast path: no RTL chars at all and block is LTR → no wrapping
+    // possible. Same on the symmetric side. This keeps pure-LTR
+    // documents byte-identical to the pre-fix output.
+    let has_rtl = looks_rtl(text);
+    if !block_is_rtl && !has_rtl {
+        return text.to_string();
+    }
+    let has_ltr = text.chars().any(|c| classify(c) == CharDir::Ltr);
+    if block_is_rtl && !has_ltr {
+        return text.to_string();
+    }
+
+    // Build runs: contiguous chars with same strong direction.
+    // Neutrals attach to the previous strong run; if a neutral leads
+    // the string, it attaches to the first strong run that follows.
+    let chars: Vec<char> = text.chars().collect();
+    let mut runs: Vec<(CharDir, Vec<char>)> = Vec::new();
+    let mut pending_neutrals: Vec<char> = Vec::new();
+    for c in chars {
+        let dir = classify(c);
+        match dir {
+            CharDir::Neutral => {
+                if let Some(last) = runs.last_mut() {
+                    last.1.push(c);
+                } else {
+                    pending_neutrals.push(c);
+                }
+            },
+            CharDir::Rtl | CharDir::Ltr => {
+                if let Some(last) = runs.last_mut() {
+                    if last.0 == dir {
+                        last.1.push(c);
+                        continue;
+                    }
+                }
+                let mut buf = std::mem::take(&mut pending_neutrals);
+                buf.push(c);
+                runs.push((dir, buf));
+            },
+        }
+    }
+    // Trailing-only-neutrals input (no strong chars at all) — return
+    // as-is; nothing to isolate.
+    if runs.is_empty() {
+        return text.to_string();
+    }
+    // If pending_neutrals was never absorbed (only happens when the
+    // text starts with neutrals AND has no strong chars at all, which
+    // is already handled above) — fold them back into the first run
+    // for safety.
+    if !pending_neutrals.is_empty() {
+        let mut tail = pending_neutrals;
+        runs[0].1.append(&mut tail);
+    }
+
+    let mut out = String::with_capacity(text.len() + runs.len() * 6);
+    for (dir, run_chars) in runs {
+        let run_text: String = run_chars.into_iter().collect();
+        match (block_is_rtl, dir) {
+            (false, CharDir::Rtl) => {
+                out.push(isolation::RLI);
+                out.push_str(&run_text);
+                out.push(isolation::PDI);
+            },
+            (true, CharDir::Ltr) => {
+                out.push(isolation::LRI);
+                out.push_str(&run_text);
+                out.push(isolation::PDI);
+            },
+            _ => {
+                out.push_str(&run_text);
+            },
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -573,5 +734,92 @@ mod tests {
         // ≈ 0.3pt → all ties → Ambiguous.
         let kerning_noise = [('ק', 0.0), ('ר', 0.3), ('ח', 0.6), ('ל', 0.9), ('מ', 1.2)];
         assert_eq!(detect_visual_order_run(&kerning_noise), RunOrder::Ambiguous);
+    }
+
+    // ==========================================================================
+    // wrap_rtl_isolates — UAX #9 §2.4 bidi-isolation markers (#537 follow-up).
+    // ==========================================================================
+
+    #[test]
+    fn wrap_rtl_isolates_pure_ltr_is_identity() {
+        // Pure-LTR English in an LTR block — nothing to wrap, byte-
+        // identical output. This is the no-regression contract: LTR-
+        // only documents must not gain any markers anywhere.
+        for s in [
+            "",
+            "Hello, world!",
+            "The article is about greetings, page 42.",
+            "Multiple\nlines\nstay clean",
+            "Numbers 123 and punctuation: !?.,;",
+        ] {
+            assert_eq!(wrap_rtl_isolates(s, false), s, "pure-LTR identity broken on {:?}", s);
+        }
+    }
+
+    #[test]
+    fn wrap_rtl_isolates_rtl_run_in_ltr_block_gets_rli_pdi() {
+        // Hebrew phrase embedded in English — expect U+2067 (RLI)
+        // before the Hebrew run and U+2069 (PDI) after it. The
+        // canonical example from the v0.3.55 plan.
+        let line = "The article שלום עולם is greetings.";
+        let out = wrap_rtl_isolates(line, false);
+        // Markers present.
+        assert!(out.contains('\u{2067}'), "RLI missing in {:?}", out);
+        assert!(out.contains('\u{2069}'), "PDI missing in {:?}", out);
+        // No LRI (we're in an LTR block — LTR runs need no marker).
+        assert!(!out.contains('\u{2066}'), "unexpected LRI in {:?}", out);
+        // Original Hebrew text preserved verbatim between markers.
+        let rli_idx = out.find('\u{2067}').expect("RLI present");
+        let pdi_idx = out.find('\u{2069}').expect("PDI present");
+        assert!(rli_idx < pdi_idx, "RLI must precede PDI in {:?}", out);
+    }
+
+    #[test]
+    fn wrap_rtl_isolates_ltr_run_in_rtl_block_gets_lri_pdi() {
+        // English brand name embedded in a Hebrew sentence — expect
+        // U+2066 (LRI) before the English run and U+2069 (PDI) after.
+        let line = "הספר Microsoft חדש";
+        let out = wrap_rtl_isolates(line, true);
+        assert!(out.contains('\u{2066}'), "LRI missing in {:?}", out);
+        assert!(out.contains('\u{2069}'), "PDI missing in {:?}", out);
+        // RLI must NOT appear — we're in an RTL block, RTL runs are
+        // unmarked.
+        assert!(!out.contains('\u{2067}'), "unexpected RLI in {:?}", out);
+        let lri_idx = out.find('\u{2066}').expect("LRI present");
+        let pdi_idx = out.find('\u{2069}').expect("PDI present");
+        assert!(lri_idx < pdi_idx, "LRI must precede PDI in {:?}", out);
+    }
+
+    #[test]
+    fn wrap_rtl_isolates_pure_rtl_in_rtl_block_is_identity() {
+        // All-Hebrew line in an RTL block — no LTR runs to isolate,
+        // byte-identical output.
+        let line = "שלום עולם";
+        assert_eq!(wrap_rtl_isolates(line, true), line);
+    }
+
+    #[test]
+    fn wrap_rtl_isolates_no_double_wrap_on_repeated_runs() {
+        // Two separate Hebrew runs in one English line — each wrapped
+        // independently with its own RLI/PDI pair.
+        let line = "First שלום middle עולם last";
+        let out = wrap_rtl_isolates(line, false);
+        let rli_count = out.chars().filter(|&c| c == '\u{2067}').count();
+        let pdi_count = out.chars().filter(|&c| c == '\u{2069}').count();
+        assert_eq!(rli_count, 2, "expected 2 RLIs in {:?}", out);
+        assert_eq!(pdi_count, 2, "expected 2 PDIs in {:?}", out);
+    }
+
+    #[test]
+    fn wrap_rtl_isolates_preserves_char_count_modulo_markers() {
+        // The wrapped output must contain every original char exactly
+        // once — markers are additive, never destructive.
+        let line = "abc שלום def";
+        let out = wrap_rtl_isolates(line, false);
+        let stripped: String = out
+            .chars()
+            .filter(|c| !matches!(*c, '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}'))
+            .collect();
+        assert_eq!(stripped, line);
     }
 }
