@@ -255,7 +255,7 @@ impl FontInfo {
     ///
     /// Used by §9.10.2 Priority 3c in `decode_char_to_unicode`. Documented
     /// in `docs/releases/plans/v0.3.54/fix-535-tounicode-fallback.md`.
-    pub fn embedded_glyph_name(&self, gid: u16) -> Option<&str> {
+    pub(crate) fn embedded_glyph_name(&self, gid: u16) -> Option<&str> {
         let names = self
             .embedded_glyph_names
             .get_or_init(|| {

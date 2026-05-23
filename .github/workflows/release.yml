@@ -611,13 +611,18 @@ jobs:
         shell: bash
         working-directory: java
         run: |
-          JAR=target/pdf-oxide-0.3.53.jar
-          [ -f "$JAR" ] || { echo "::error::JAR not built"; exit 1; }
+          # Resolve the built JAR by glob (pom.xml <version> is the single
+          # source of truth — this survives release bumps automatically).
+          shopt -s nullglob
+          jars=(target/pdf-oxide-*.jar)
+          shopt -u nullglob
+          [ "${#jars[@]}" -eq 1 ] || { echo "::error::expected exactly one target/pdf-oxide-*.jar, found: ${jars[*]:-<none>}"; exit 1; }
+          JAR="${jars[0]}"
           for arch in Linux/x86_64 Linux/aarch64 Mac/x86_64 Mac/aarch64 Windows/x86_64; do
             jar tf "$JAR" | grep -q "fyi/oxide/pdf/native/$arch/" \
               || { echo "::error::missing arch in JAR: $arch"; exit 1; }
           done
-          echo "::notice::Fat JAR validated: $(stat -c%s "$JAR") bytes"
+          echo "::notice::Fat JAR validated: $JAR ($(stat -c%s "$JAR") bytes)"
 
       - name: Upload fat JAR
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

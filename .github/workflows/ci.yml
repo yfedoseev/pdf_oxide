@@ -1166,13 +1166,18 @@ jobs:
         shell: bash
         working-directory: java
         run: |
-          JAR=target/pdf-oxide-0.3.53.jar
-          [ -f "$JAR" ] || { echo "::error::JAR not built"; exit 1; }
+          # Resolve the built JAR by glob so this survives version bumps
+          # (pom.xml's <version> is the single source of truth).
+          shopt -s nullglob
+          jars=(target/pdf-oxide-*.jar)
+          shopt -u nullglob
+          [ "${#jars[@]}" -eq 1 ] || { echo "::error::expected exactly one target/pdf-oxide-*.jar, found: ${jars[*]:-<none>}"; exit 1; }
+          JAR="${jars[0]}"
           jar tf "$JAR" | grep -q "fyi/oxide/pdf/native/Linux/x86_64/libpdf_oxide_jni.so" \
             || { echo "::error::Native lib missing from JAR"; exit 1; }
           unzip -p "$JAR" META-INF/MANIFEST.MF | grep -q "Automatic-Module-Name: fyi.oxide.pdf" \
             || { echo "::error::Manifest missing Automatic-Module-Name"; exit 1; }
-          echo "::notice::JAR validated: $(stat -c%s "$JAR") bytes"
+          echo "::notice::JAR validated: $JAR ($(stat -c%s "$JAR") bytes)"
 
       - name: Upload Java JAR artifact
         if: matrix.jdk == '11'

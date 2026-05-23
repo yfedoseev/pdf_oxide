@@ -247,8 +247,8 @@ impl CharacterMapper {
 /// the conversion proceeds in three steps:
 ///
 /// 1. **AGL exact match** — `"bullet"` → U+2022, `"fi"` → U+FB01, `"space"` → U+0020, etc.
-/// 2. **`uniXXXX` synthetic pattern** — exactly four uppercase hex digits map to U+XXXX.
-/// 3. **`uXXXXX` synthetic pattern** — four to six uppercase hex digits (BMP + SMP) map
+/// 2. **`uniXXXX` synthetic pattern** — exactly four ASCII hex digits (any case) map to U+XXXX.
+/// 3. **`uXXXXX` synthetic pattern** — four to six ASCII hex digits (any case, BMP + SMP) map
 ///    to U+XXXXX (0x0000..=0x10FFFF, excluding surrogates).
 ///
 /// Used as the §9.10.2 Priority 3c fallback when:
@@ -259,7 +259,7 @@ impl CharacterMapper {
 /// This is what pdf.js, MuPDF, and PDFBox 3.x use as the last name-based step
 /// before falling back to CID-as-Unicode. Documented in
 /// `docs/releases/plans/v0.3.54/research-tounicode-fallback-chain.md`.
-pub fn glyph_name_to_unicode(glyph_name: &str) -> Option<String> {
+pub(crate) fn glyph_name_to_unicode(glyph_name: &str) -> Option<String> {
     // 1) AGL exact match — covers "bullet", "fi", "fl", "ffi", "ffl", "endash", etc.
     if let Some(&ch) = ADOBE_GLYPH_LIST.get(glyph_name) {
         return Some(ch.to_string());

@@ -98,7 +98,7 @@ pub fn paragraph_is_rtl(text: &str) -> bool {
 ///
 /// Returned by [`detect_visual_order_run`] for a contiguous RTL run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunOrder {
+pub(crate) enum RunOrder {
     /// The PDF content stream emitted the run in **visual order** —
     /// glyphs were drawn left-to-right in user space even though the
     /// script reads right-to-left. The caller should apply UAX #9
@@ -181,26 +181,33 @@ pub enum RunOrder {
 /// is observable and unambiguous — see
 /// `docs/releases/plans/v0.3.54/research-bidi-visual-logical-detection.md`
 /// for the W3C / PDFuzz / library-by-library survey.
-pub fn detect_visual_order_run(chars_with_x: &[(char, f32)]) -> RunOrder {
-    // Filter: keep RTL letters/digits only. Whitespace, ASCII
-    // (numerals embedded by Arabic newspapers), and diacritics are
-    // not signal for direction detection.
-    let rtl: Vec<(char, f32)> = chars_with_x
-        .iter()
-        .copied()
-        .filter(|(c, _)| crate::text::rtl_detector::is_rtl_text(*c as u32))
-        .collect();
-
-    if rtl.len() < 4 {
-        return RunOrder::Ambiguous;
-    }
-
+pub(crate) fn detect_visual_order_run(chars_with_x: &[(char, f32)]) -> RunOrder {
     // Arabic Presentation Forms presence → Pass 0 owns this run.
-    // Bail out so we don't double-reverse.
-    if rtl.iter().any(|(c, _)| {
+    // Check against the *original* input so PF chars block us even
+    // when the letter filter below would strip them.
+    if chars_with_x.iter().any(|(c, _)| {
         let cp = *c as u32;
         (0xFB50..=0xFDFF).contains(&cp) || (0xFE70..=0xFEFF).contains(&cp)
     }) {
+        return RunOrder::Ambiguous;
+    }
+
+    // Filter: keep RTL **letters** only. `is_rtl_text` matches the
+    // whole Arabic/Hebrew script range and so would let diacritics and
+    // presentation forms count toward the ≥4 threshold and skew the
+    // monotonicity numerator — neither is direction signal. Explicit
+    // letter checks match the documented algorithm.
+    use crate::text::rtl_detector::{is_arabic_letter, is_hebrew_letter};
+    let rtl: Vec<(char, f32)> = chars_with_x
+        .iter()
+        .copied()
+        .filter(|(c, _)| {
+            let cp = *c as u32;
+            is_arabic_letter(cp) || is_hebrew_letter(cp)
+        })
+        .collect();
+
+    if rtl.len() < 4 {
         return RunOrder::Ambiguous;
     }
 

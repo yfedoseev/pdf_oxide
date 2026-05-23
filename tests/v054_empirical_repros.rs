@@ -26,6 +26,20 @@ fn read_pdf(path: &str) -> Option<Vec<u8>> {
     std::fs::read(path).ok()
 }
 
+/// Truncate `s` to at most `max_bytes`, rounded down to the nearest
+/// UTF-8 char boundary. `&s[..max_bytes]` panics if `max_bytes` lands
+/// mid-codepoint (very likely with Hebrew / diacritics).
+fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// #537: Hebrew RTL — `U_Magic_Palace_Eilat.pdf` (issue attachment).
 ///
 /// Pre-fix: Hebrew codepoints emitted in visual order
@@ -40,8 +54,8 @@ fn fix_537_hebrew_magic_palace_logical_order() {
     let doc = PdfDocument::from_bytes(bytes).expect("parse hebrew PDF");
     let opts = pdf_oxide::converters::ConversionOptions::default();
     let md = doc.to_markdown_all(&opts).expect("extract markdown");
-    eprintln!("[#537] head of markdown (first 1000 chars):");
-    eprintln!("{}", &md[..md.len().min(1000)]);
+    eprintln!("[#537] head of markdown (first ~1000 bytes):");
+    eprintln!("{}", truncate_at_char_boundary(&md, 1000));
     // Spot-check: Hebrew should NOT appear with the reversed codepoint
     // signature U+05D7 U+05E8 U+05E7 ("חרק" in visual / wrong order).
     // We can't assert the exact correct word without ground-truth
@@ -156,8 +170,8 @@ fn fix_536_bible_no_table_cascade() {
     // Page 10 (Genesis 1) — the canonical bug site.
     let opts = pdf_oxide::converters::ConversionOptions::default();
     let md = doc.to_markdown(9, &opts).expect("extract page 10");
-    eprintln!("[#536] page 10 markdown (first 2000 chars):");
-    eprintln!("{}", &md[..md.len().min(2000)]);
+    eprintln!("[#536] page 10 markdown (first ~2000 bytes):");
+    eprintln!("{}", truncate_at_char_boundary(&md, 2000));
     // The pre-fix output had `| 1 Au | commencement | Dieu | créa | ... |`
     // — a Markdown table with verse 1 spread across cells. The fix is
     // correct if the body extracts as prose paragraphs, not a Markdown
