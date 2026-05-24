@@ -12,6 +12,11 @@
 //! crashes, the bug is in the Rust shim itself.
 #![cfg(feature = "signatures")]
 #![allow(clippy::missing_safety_doc)]
+// The `pdf_oxide::ffi::*` re-exports lose their `unsafe fn` qualifier
+// in some toolchain versions; `unused_unsafe` then fires on every
+// FFI call site that should-by-spec be `unsafe`. Mirrors
+// `test_pkcs12_signing.rs`'s same allow.
+#![allow(unused_unsafe)]
 
 use pdf_oxide::ffi::*;
 use std::ffi::CString;

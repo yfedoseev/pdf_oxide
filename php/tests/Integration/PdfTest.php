@@ -11,7 +11,6 @@ namespace PdfOxide\Tests\Integration;
 
 use PdfOxide\Exceptions\InvalidStateException;
 use PdfOxide\Pdf;
-use PdfOxide\PdfDocument;
 
 /**
  * Smoke tests for the {@see Pdf} factory, mirroring

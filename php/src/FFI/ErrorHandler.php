@@ -5,13 +5,13 @@ declare(strict_types=1);
 namespace PdfOxide\FFI;
 
 use PdfOxide\Exceptions\{
-    PdfException,
-    ParseException,
-    IoException,
-    ValidationException,
     InternalError,
+    IoException,
+    ParseException,
+    PdfException,
     SearchException,
-    UnsupportedException
+    UnsupportedException,
+    ValidationException
 };
 
 /**

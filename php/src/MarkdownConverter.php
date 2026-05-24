@@ -26,9 +26,7 @@ use PdfOxide\FFI\FunctionBindings;
 final class MarkdownConverter
 {
     /** Static-only. */
-    private function __construct()
-    {
-    }
+    private function __construct() {}
 
     /** Convert a single page to Markdown. */
     public static function toMarkdown(PdfDocument $doc, int $pageIndex): string

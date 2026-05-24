@@ -92,7 +92,7 @@ define('PDF_OXIDE_NATIVE_LIB', $nativeLib);
 // ---------- Fixture resolution ----------
 $localFixtures = __DIR__ . '/fixtures';
 if (! is_dir($localFixtures)) {
-    @mkdir($localFixtures, 0777, true);
+    @mkdir($localFixtures, 0o777, true);
 }
 define('TEST_FIXTURES_DIR', $localFixtures);
 

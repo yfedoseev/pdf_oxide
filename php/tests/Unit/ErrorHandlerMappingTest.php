@@ -86,7 +86,7 @@ final class ErrorHandlerMappingTest extends TestCase
         $ex = ErrorHandler::createException(99, 'weird_op');
         $this->assertInstanceOf(PdfException::class, $ex);
         // The fallback uses the generic base class, not a typed subclass.
-        $this->assertSame(PdfException::class, get_class($ex));
+        $this->assertSame(PdfException::class, $ex::class);
         $this->assertStringContainsString('99', $ex->getMessage());
     }
 

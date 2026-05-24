@@ -56,9 +56,7 @@ final class PdfValidator
     public const PDFUA_2 = 2;
 
     /** Static-only. */
-    private function __construct()
-    {
-    }
+    private function __construct() {}
 
     /**
      * Quick PDF/A compliance check. `$level` is one of the

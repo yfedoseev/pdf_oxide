@@ -65,8 +65,8 @@ class FunctionBindings
         $this->ffi->pdf_document_get_version($handle, FFI::addr($major), FFI::addr($minor));
 
         return [
-            'major' => (int)$major->cdata,
-            'minor' => (int)$minor->cdata,
+            'major' => (int) $major->cdata,
+            'minor' => (int) $minor->cdata,
         ];
     }
 
@@ -81,7 +81,7 @@ class FunctionBindings
         $errorCode = FFI::new('int');
         $count = $this->ffi->pdf_document_get_page_count($handle, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_get_page_count');
-        return (int)$count;
+        return (int) $count;
     }
 
     /**
@@ -92,7 +92,7 @@ class FunctionBindings
      */
     public function pdfDocumentHasStructureTree(CData $handle): bool
     {
-        return (bool)$this->ffi->pdf_document_has_structure_tree($handle);
+        return (bool) $this->ffi->pdf_document_has_structure_tree($handle);
     }
 
     /**
@@ -276,7 +276,7 @@ class FunctionBindings
      */
     public function oxideSearchResultCount(CData $resultsHandle): int
     {
-        return (int)$this->ffi->pdf_oxide_search_result_count($resultsHandle);
+        return (int) $this->ffi->pdf_oxide_search_result_count($resultsHandle);
     }
 
     /**
@@ -343,10 +343,10 @@ class FunctionBindings
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_search_result_get_bbox');
 
         return [
-            'x' => (float)$x->cdata,
-            'y' => (float)$y->cdata,
-            'width' => (float)$width->cdata,
-            'height' => (float)$height->cdata,
+            'x' => (float) $x->cdata,
+            'y' => (float) $y->cdata,
+            'width' => (float) $width->cdata,
+            'height' => (float) $height->cdata,
         ];
     }
 
@@ -368,7 +368,7 @@ class FunctionBindings
      */
     public function oxideAnnotationCount(CData $listHandle): int
     {
-        return (int)$this->ffi->pdf_oxide_annotation_count($listHandle);
+        return (int) $this->ffi->pdf_oxide_annotation_count($listHandle);
     }
 
     /**
@@ -420,7 +420,7 @@ class FunctionBindings
      */
     public function oxideFontCount(CData $listHandle): int
     {
-        return (int)$this->ffi->pdf_oxide_font_count($listHandle);
+        return (int) $this->ffi->pdf_oxide_font_count($listHandle);
     }
 
     /**
@@ -486,7 +486,7 @@ class FunctionBindings
      */
     public function oxideImageCount(CData $listHandle): int
     {
-        return (int)$this->ffi->pdf_oxide_image_count($listHandle);
+        return (int) $this->ffi->pdf_oxide_image_count($listHandle);
     }
 
     /**
@@ -920,7 +920,7 @@ class FunctionBindings
      */
     public function pdfPdfAErrorCount(CData $resultHandle): int
     {
-        return (int)$this->ffi->pdf_pdf_a_error_count($resultHandle);
+        return (int) $this->ffi->pdf_pdf_a_error_count($resultHandle);
     }
 
     /**
@@ -931,7 +931,7 @@ class FunctionBindings
      */
     public function pdfPdfAWarningCount(CData $resultHandle): int
     {
-        return (int)$this->ffi->pdf_pdf_a_warning_count($resultHandle);
+        return (int) $this->ffi->pdf_pdf_a_warning_count($resultHandle);
     }
 
     /**
@@ -972,7 +972,7 @@ class FunctionBindings
      */
     public function pdfPdfXErrorCount(CData $resultHandle): int
     {
-        return (int)$this->ffi->pdf_pdf_x_error_count($resultHandle);
+        return (int) $this->ffi->pdf_pdf_x_error_count($resultHandle);
     }
 
 
@@ -1018,7 +1018,7 @@ class FunctionBindings
      */
     public function pdfPdfUaErrorCount(CData $resultHandle): int
     {
-        return (int)$this->ffi->pdf_pdf_ua_error_count($resultHandle);
+        return (int) $this->ffi->pdf_pdf_ua_error_count($resultHandle);
     }
 
 
@@ -1183,7 +1183,7 @@ class FunctionBindings
      */
     public function pdfDocumentIsEncrypted(CData $handle): bool
     {
-        return (bool)$this->ffi->pdf_document_is_encrypted($handle);
+        return (bool) $this->ffi->pdf_document_is_encrypted($handle);
     }
 
 
@@ -1330,7 +1330,7 @@ class FunctionBindings
     {
         $errorCode = FFI::new('int');
         try {
-            $count = (int)$this->ffi->pdf_get_page_count($handle, FFI::addr($errorCode));
+            $count = (int) $this->ffi->pdf_get_page_count($handle, FFI::addr($errorCode));
             ErrorHandler::check($errorCode->cdata, 'pdf_get_page_count');
             return $count;
         } finally {
@@ -1354,7 +1354,7 @@ class FunctionBindings
      */
     public function pdfOxideFontCount(CData $fontList): int
     {
-        return (int)$this->ffi->pdf_oxide_font_count($fontList);
+        return (int) $this->ffi->pdf_oxide_font_count($fontList);
     }
 
     /**
@@ -1451,7 +1451,7 @@ class FunctionBindings
      */
     public function pdfOxideImageCount(CData $imageList): int
     {
-        return (int)$this->ffi->pdf_oxide_image_count($imageList);
+        return (int) $this->ffi->pdf_oxide_image_count($imageList);
     }
 
     /**
@@ -1558,7 +1558,7 @@ class FunctionBindings
      */
     public function pdfOxideSearchResultCount(CData $results): int
     {
-        return (int)$this->ffi->pdf_oxide_search_result_count($results);
+        return (int) $this->ffi->pdf_oxide_search_result_count($results);
     }
 
     /**
@@ -1639,7 +1639,7 @@ class FunctionBindings
      */
     public function pdfDocumentHasXfa(CData $handle): bool
     {
-        return (bool)$this->ffi->pdf_document_has_xfa($handle);
+        return (bool) $this->ffi->pdf_document_has_xfa($handle);
     }
 
 
@@ -1863,7 +1863,7 @@ class FunctionBindings
             FFI::addr($errorCode)
         );
         ErrorHandler::check($errorCode->cdata, 'pdf_redaction_add', ['page' => $page]);
-        return (int)$result;
+        return (int) $result;
     }
 
     /**
@@ -1874,7 +1874,7 @@ class FunctionBindings
         $errorCode = FFI::new('int');
         $n = $this->ffi->pdf_redaction_count($editor, $page, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_redaction_count', ['page' => $page]);
-        return (int)$n;
+        return (int) $n;
     }
 
     /**
@@ -1899,7 +1899,7 @@ class FunctionBindings
             FFI::addr($errorCode)
         );
         ErrorHandler::check($errorCode->cdata, 'pdf_redaction_apply');
-        return (int)$result;
+        return (int) $result;
     }
 
     /**
@@ -1911,7 +1911,7 @@ class FunctionBindings
         $errorCode = FFI::new('int');
         $result = $this->ffi->pdf_redaction_scrub_metadata($editor, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_redaction_scrub_metadata');
-        return (int)$result;
+        return (int) $result;
     }
 
     /**
@@ -1926,7 +1926,7 @@ class FunctionBindings
             FFI::addr($errorCode)
         );
         ErrorHandler::check($errorCode->cdata, 'document_editor_apply_page_redactions', ['page' => $page]);
-        return (int)$result;
+        return (int) $result;
     }
 
     /**
@@ -1937,7 +1937,7 @@ class FunctionBindings
         $errorCode = FFI::new('int');
         $result = $this->ffi->document_editor_apply_all_redactions($editor, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'document_editor_apply_all_redactions');
-        return (int)$result;
+        return (int) $result;
     }
 
     // -------- PAdES signature shim (v0.3.51) --------
@@ -1970,7 +1970,7 @@ class FunctionBindings
         );
         ErrorHandler::check($errorCode->cdata, 'pdf_sign_bytes_pades_opts');
 
-        $length = (int)$outLen->cdata;
+        $length = (int) $outLen->cdata;
         $signed = FFI::string($out, $length);
         // Free native buffer.
         $this->ffi->free_bytes(FFI::cast('uint8_t*', $out));
@@ -1988,7 +1988,7 @@ class FunctionBindings
         $errorCode = FFI::new('int');
         $level = $this->ffi->pdf_signature_get_pades_level($signatureHandle, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_signature_get_pades_level');
-        return (int)$level;
+        return (int) $level;
     }
 
     /**
@@ -2005,7 +2005,7 @@ class FunctionBindings
     {
         $errorCode = FFI::new('int');
         $r = $this->ffi->pdf_document_has_timestamp($documentHandle, FFI::addr($errorCode));
-        $code = (int)$errorCode->cdata;
+        $code = (int) $errorCode->cdata;
         if ($code === ErrorHandler::UNSUPPORTED) {
             // Documents with no signatures: degrade rather than throw.
             // (Pre-v0.3.55 also handled cdylib code 8 here under the
@@ -2094,7 +2094,7 @@ class FunctionBindings
         $outLen = FFI::new('size_t');
         $out = $this->ffi->pdf_document_to_docx($handle, FFI::addr($outLen), FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_to_docx');
-        $length = (int)$outLen->cdata;
+        $length = (int) $outLen->cdata;
         $bytes = FFI::string($out, $length);
         $this->ffi->free_bytes(FFI::cast('uint8_t*', $out));
         return $bytes;
@@ -2106,7 +2106,7 @@ class FunctionBindings
         $outLen = FFI::new('size_t');
         $out = $this->ffi->pdf_document_to_pptx($handle, FFI::addr($outLen), FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_to_pptx');
-        $length = (int)$outLen->cdata;
+        $length = (int) $outLen->cdata;
         $bytes = FFI::string($out, $length);
         $this->ffi->free_bytes(FFI::cast('uint8_t*', $out));
         return $bytes;
@@ -2118,7 +2118,7 @@ class FunctionBindings
         $outLen = FFI::new('size_t');
         $out = $this->ffi->pdf_document_to_xlsx($handle, FFI::addr($outLen), FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_to_xlsx');
-        $length = (int)$outLen->cdata;
+        $length = (int) $outLen->cdata;
         $bytes = FFI::string($out, $length);
         $this->ffi->free_bytes(FFI::cast('uint8_t*', $out));
         return $bytes;
@@ -2181,7 +2181,7 @@ class FunctionBindings
         try {
             $result = $this->ffi->pdf_page_builder_watermark($pageBuilder, $cText, FFI::addr($errorCode));
             ErrorHandler::check($errorCode->cdata, 'pdf_page_builder_watermark');
-            return (int)$result;
+            return (int) $result;
         } finally {
             unset($cText);
         }
@@ -2193,7 +2193,7 @@ class FunctionBindings
         $errorCode = FFI::new('int');
         $result = $this->ffi->pdf_page_builder_watermark_confidential($pageBuilder, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_page_builder_watermark_confidential');
-        return (int)$result;
+        return (int) $result;
     }
 
     /** "DRAFT" preset watermark. */
@@ -2202,6 +2202,6 @@ class FunctionBindings
         $errorCode = FFI::new('int');
         $result = $this->ffi->pdf_page_builder_watermark_draft($pageBuilder, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_page_builder_watermark_draft');
-        return (int)$result;
+        return (int) $result;
     }
 }

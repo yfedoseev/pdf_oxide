@@ -68,8 +68,7 @@ final readonly class AutoExtractResult
         public bool $ocrUsed = false,
         public array $regions = [],
         public array $pagesNeedingOcr = [],
-    ) {
-    }
+    ) {}
 
     /** Whether the extraction succeeded with no degradation. */
     public function isOk(): bool

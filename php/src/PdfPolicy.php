@@ -41,9 +41,7 @@ final class PdfPolicy
     public const FIPS_STRICT = 'fips_strict';
 
     /** Static-only. */
-    private function __construct()
-    {
-    }
+    private function __construct() {}
 
     /**
      * @return string the process-current policy mode (one of
