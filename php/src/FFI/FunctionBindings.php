@@ -966,7 +966,15 @@ class FunctionBindings
         $errorCode = FFI::new('int');
 
         try {
-            $certHandle = $this->ffi->pdf_certificate_load_from_bytes($cData, strlen($certData), $cPassword, FFI::addr($errorCode));
+            // PHP 8.5+ rejects implicit `char[N] -> uint8_t*` conversion; cast
+            // explicitly. (The cert may be raw PKCS#12 binary, so memcpy via
+            // `char[]` is fine — we just need to retype the pointer.)
+            $certHandle = $this->ffi->pdf_certificate_load_from_bytes(
+                FFI::cast('uint8_t*', $cData),
+                strlen($certData),
+                $cPassword,
+                FFI::addr($errorCode)
+            );
             ErrorHandler::check($errorCode->cdata, 'pdf_certificate_load_from_bytes');
             return $certHandle;
         } finally {
