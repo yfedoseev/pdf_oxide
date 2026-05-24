@@ -1,94 +1,58 @@
 # frozen_string_literal: true
 
+# Ruby bindings for pdf_oxide — high-performance PDF processing.
+#
+# Idiomatic 9-class API mirroring the Java binding's shape at
+# `fyi.oxide.pdf.*`.  All native calls route through the FFI layer
+# at `PdfOxide::FFI::Bindings`; UTF-8 marshalling is via
+# `PdfOxide::FFI::StringMarshaller`.
+#
+# Public surface:
+#   - {PdfOxide::PdfDocument}     — read-only entry point.
+#   - {PdfOxide::PdfPage}         — per-page view.
+#   - {PdfOxide::Pdf}             — create + transform (markdown/html/text → PDF).
+#   - {PdfOxide::DocumentEditor}  — write-side: form-fill, redaction, save.
+#   - {PdfOxide::AutoExtractor}   — typed-reason auto-extraction (#519).
+#   - {PdfOxide::MarkdownConverter} — PDF → Markdown / HTML.
+#   - {PdfOxide::PdfValidator}    — PDF/A · PDF/UA compliance.
+#   - {PdfOxide::PdfSigner}       — PAdES B/T/LT/LTA signing.
+#   - {PdfOxide::PdfPolicy}       — process-global crypto-governance.
+
 require 'ffi'
+
 require_relative 'pdf_oxide/version'
 require_relative 'pdf_oxide/errors'
 require_relative 'pdf_oxide/ffi/library'
 require_relative 'pdf_oxide/ffi/bindings'
-require_relative 'pdf_oxide/ffi/types'
 require_relative 'pdf_oxide/ffi/string_marshaller'
-require_relative 'pdf_oxide/ffi/handle_manager'
-require_relative 'pdf_oxide/ffi/error_handler'
 
-# Data types
-require_relative 'pdf_oxide/types/bounding_box'
-require_relative 'pdf_oxide/types/search_result'
-require_relative 'pdf_oxide/types/page_dimensions'
-require_relative 'pdf_oxide/types/render_options'
-require_relative 'pdf_oxide/types/annotation'
-require_relative 'pdf_oxide/types/font_info'
-require_relative 'pdf_oxide/types/image_info'
-require_relative 'pdf_oxide/types/form_field'
-require_relative 'pdf_oxide/types/search_options'
-require_relative 'pdf_oxide/types/conversion_options'
-require_relative 'pdf_oxide/types/ocr_config'
-require_relative 'pdf_oxide/types/signature'
-require_relative 'pdf_oxide/types/signing_credentials'
-require_relative 'pdf_oxide/types/certificate'
+module PdfOxide
+  # Convenience constants reaching into the FFI sub-module.  Keeps
+  # downstream callers free of the `PdfOxide::FFI::` prefix when
+  # accessing the binding layer; matches the Java binding's flat shape.
+  Bindings         = FFI::Bindings
+  StringMarshaller = FFI::StringMarshaller
+end
 
-# Managers
-require_relative 'pdf_oxide/managers/base'
-require_relative 'pdf_oxide/managers/search'
-require_relative 'pdf_oxide/managers/rendering'
-require_relative 'pdf_oxide/managers/annotation'
-require_relative 'pdf_oxide/managers/form'
-require_relative 'pdf_oxide/managers/page'
-require_relative 'pdf_oxide/managers/metadata'
-require_relative 'pdf_oxide/managers/outline'
-require_relative 'pdf_oxide/managers/layer'
-require_relative 'pdf_oxide/managers/cache'
-require_relative 'pdf_oxide/managers/extraction'
-require_relative 'pdf_oxide/managers/ocr'
-require_relative 'pdf_oxide/managers/compliance'
-require_relative 'pdf_oxide/managers/signature'
-require_relative 'pdf_oxide/managers/barcode'
-require_relative 'pdf_oxide/managers/analysis'
-
-# Phase 2 repair: managers that were present on disk but not wired in.
-# Phase 4 retired three phantom-symbol files (editing, optimization,
-# legacy signature_manager) — they referenced C symbols absent from the
-# current cdylib header and would NameError on any call.  The real
-# replacements live at:
-#   - editing/redaction        -> PdfOxide::RedactionManager  (Phase 3)
-#   - signature_manager PAdES  -> PdfOxide::PadesSigner       (Phase 3)
-#   - optimization             -> deferred to v0.4.x (no upstream symbol)
-require_relative 'pdf_oxide/managers/accessibility'
-require_relative 'pdf_oxide/managers/certificate'
-require_relative 'pdf_oxide/managers/document'
-require_relative 'pdf_oxide/managers/enterprise'
-require_relative 'pdf_oxide/managers/extraction_strategy'
-require_relative 'pdf_oxide/managers/xfa'
-
-# Main entry points
-require_relative 'pdf_oxide/document'
-require_relative 'pdf_oxide/creator'
-
-# Phase 3 (v0.3.50–v0.3.54 feature surface) — v0.3.55 Ruby workstream.
-require_relative 'pdf_oxide/extract_reason'
-require_relative 'pdf_oxide/auto_extract_result'
+require_relative 'pdf_oxide/pdf_page'
+require_relative 'pdf_oxide/markdown_converter'
 require_relative 'pdf_oxide/auto_extractor'
-require_relative 'pdf_oxide/office_converter'
-require_relative 'pdf_oxide/redaction_manager'
-require_relative 'pdf_oxide/pades_signer'
-require_relative 'pdf_oxide/models'
+require_relative 'pdf_oxide/pdf_document'
+require_relative 'pdf_oxide/pdf'
+require_relative 'pdf_oxide/document_editor'
+require_relative 'pdf_oxide/pdf_signer'
+require_relative 'pdf_oxide/pdf_validator'
+require_relative 'pdf_oxide/pdf_policy'
 
 module PdfOxide
   class << self
-    # Open a PDF document
-    # @param path [String] Path to PDF file
-    # @return [Document] PDF document instance
-    def open(path, &block)
-      Document.open(path, &block)
+    # Open a PDF for reading.
+    # @return [PdfDocument]
+    def open(source, password: nil, &block)
+      PdfDocument.open(source, password: password, &block)
     end
 
-    # Create a new PDF document
-    # @return [Creator] PDF creator instance
-    def create
-      Creator.new
-    end
-
-    # Get library version
-    # @return [String] Version string
+    # @return [String] library version.
     def version
       VERSION
     end

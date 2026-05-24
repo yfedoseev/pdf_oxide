@@ -5,9 +5,10 @@ the same `libpdf_oxide` cdylib that powers the Python, Java, Node, Go, C#,
 and PHP bindings.
 
 Status: **v0.3.55** — production gem.  The full v0.3.50–v0.3.54 feature
-surface (auto-extraction with reason taxonomy, Office→PDF conversion, PAdES
-B-T / B-LT / B-LTA signing, destructive redaction, bookmark-split, OCR-by-
-default fallback, models prefetch) is reachable through Ruby.
+surface (auto-extraction with typed reasons, PAdES B/T/LT/LTA signing,
+destructive redaction with metadata scrub, PDF/A · PDF/UA validation,
+markdown / html → PDF) is reachable through 9 idiomatic Ruby classes
+mirroring the Java binding shape at `fyi.oxide.pdf.*`.
 
 ## Installation
 
@@ -31,18 +32,21 @@ prebuilt `libpdf_oxide.{so,dylib,dll}` ships inside the gem at
 - `aarch64-linux`
 - `x86_64-darwin` (Intel Mac)
 - `arm64-darwin` (Apple Silicon)
-- `x64-mingw32` (Windows)
+- `x64-mingw-ucrt` (Windows, Ruby 3.1+)
 
-**Source-gem fallback**: if no platform variant matches, `gem install`
-selects the plain `pdf_oxide-0.3.55.gem` which expects a host `cargo` /
-`rustc` to build `libpdf_oxide` from the project's `Cargo.toml` at install
-time.  Requires Rust 1.85+ on PATH.
+## Public API
 
-## Prerequisites
-
-- Ruby >= 3.1
-- `ffi` ~> 1.16 (resolved automatically by Bundler/RubyGems)
-- Source-gem path only: Rust 1.85+ (`rustup default stable`)
+| Class                            | Role                                                       |
+| -------------------------------- | ---------------------------------------------------------- |
+| `PdfOxide::PdfDocument`          | open / extract / search / render / metadata                |
+| `PdfOxide::PdfPage`              | lightweight per-page view                                  |
+| `PdfOxide::Pdf`                  | create + transform (markdown / html / text → PDF)          |
+| `PdfOxide::DocumentEditor`       | form-fill, destructive redaction, save                     |
+| `PdfOxide::AutoExtractor`        | typed-reason auto-extraction (v0.3.51 #519)                |
+| `PdfOxide::MarkdownConverter`    | PDF → Markdown / HTML                                      |
+| `PdfOxide::PdfValidator`         | PDF/A · PDF/UA compliance                                  |
+| `PdfOxide::PdfSigner`            | PAdES B-B / B-T / B-LT / B-LTA signing                     |
+| `PdfOxide::PdfPolicy`            | process-global crypto-governance                           |
 
 ## Quickstart
 
@@ -51,97 +55,68 @@ time.  Requires Rust 1.85+ on PATH.
 ```ruby
 require 'pdf_oxide'
 
-PdfOxide::Document.open('input.pdf') do |doc|
-  puts "Pages: #{doc.page_count}"
-  puts "Page 0 text:"
-  puts doc.extraction.extract_text(0)
+PdfOxide::PdfDocument.open('invoice.pdf') do |doc|
+  puts doc.page_count
+  puts doc.extract_text(0)
+end
+# Block form auto-closes; explicit `doc.close` also works (idempotent).
+```
+
+### 2. Markdown → PDF
+
+```ruby
+PdfOxide::Pdf.from_markdown("# Hello\n\nworld.") do |pdf|
+  pdf.save('hello.pdf')
 end
 ```
 
-### 2. Render a thumbnail
+### 3. Auto-extraction with typed reasons
 
 ```ruby
-require 'pdf_oxide'
-
-PdfOxide::Document.open('input.pdf') do |doc|
-  thumb = doc.rendering.render_thumbnail(0, max_size: 256)
-  File.binwrite('thumb.png', thumb)
+PdfOxide::PdfDocument.open('scan.pdf') do |doc|
+  result = doc.auto_extractor.extract_page(0)
+  puts result[:text]
+  warn "degraded: #{result[:reason]}" unless result[:reason] == :ok
+  # When OCR is needed but the build lacks the `ocr` feature, the reason
+  # is :ocr_requested_but_unavailable — extraction NEVER raises an
+  # "OCR unavailable" error (graceful-fallback contract).
 end
 ```
 
-### 3. Sign with PAdES B-T
+### 4. Destructive redaction (v0.3.50 #231)
 
 ```ruby
-require 'pdf_oxide'
+PdfOxide::DocumentEditor.open('source.pdf') do |ed|
+  ed.add_redaction(page: 0, rect: [100, 200, 300, 250])
+  ed.apply_redactions!(scrub_metadata: true)
+  ed.save_to('redacted.pdf')
+end
+# Security op: any non-zero return from the cdylib fails closed —
+# no silent under-redaction.
+```
 
-credentials = PdfOxide::Types::SigningCredentials.from_pkcs12(
-  'signer.p12',
-  ENV.fetch('PFX_PASSWORD')
-)
+### 5. PAdES signing
 
-signer = PdfOxide::PadesSigner.new('input.pdf')
-signed_bytes = signer.sign_b_t(
-  credentials: credentials,
-  tsa_url:     'https://freetsa.org/tsr',
-  reason:      'Approval',
-  location:    'Remote'
+```ruby
+# certificate_handle comes from your credentials API (PKCS#12 / PEM)
+signer = PdfOxide::PdfSigner.new(certificate_handle)
+signed_bytes = signer.sign(
+  File.binread('source.pdf'),
+  level:    :t,                              # :b, :t, :lt, :lta
+  tsa_url:  'http://timestamp.example.com',  # required for >= :t
+  reason:   'Approved',
+  location: 'Berlin, DE'
 )
 File.binwrite('signed.pdf', signed_bytes)
 ```
 
-### 4. Destructive redaction
+## Cross-binding parity
 
-```ruby
-require 'pdf_oxide'
-
-redactor = PdfOxide::RedactionManager.new('input.pdf')
-redactor.add_redaction(page: 0, rect: [50.0, 700.0, 250.0, 720.0])
-redactor.add_redaction(page: 1, rect: [60.0, 600.0, 300.0, 620.0])
-redactor.apply!                              # in-place, destructive
-redactor.scrub_metadata!                     # remove producer/author trails
-redactor.save('redacted.pdf')
-```
-
-### 5. Auto-extract with OCR fallback
-
-```ruby
-require 'pdf_oxide'
-
-result = PdfOxide::AutoExtractor.extract('scanned-or-digital.pdf')
-
-case result.reason
-when :digital_text
-  puts "Took digital-text path (page text layer present)."
-when :ocr_fallback
-  puts "Page had no text; OCR ran and produced #{result.text.bytesize} bytes."
-when :ocr_skipped_no_engine
-  warn  'OCR engine not bundled in this build; returned page metadata only.'
-end
-
-puts result.text
-```
-
-The `result.reason` taxonomy ([`PdfOxide::ExtractReason`]) is the same one
-Python, Java, Node, Go, and C# expose — v0.3.51 cross-binding parity.
-
-## Surface map
-
-- `PdfOxide::Document` — open, read, dispatch to managers
-- `PdfOxide::Creator` — build PDFs from Markdown / HTML / plain text
-- `PdfOxide::AutoExtractor` — graceful-fallback extraction (v0.3.51)
-- `PdfOxide::OfficeConverter` — Word/Excel/PowerPoint → PDF (v0.3.52)
-- `PdfOxide::RedactionManager` — content + metadata redaction (v0.3.50)
-- `PdfOxide::PadesSigner` — PAdES B-T / B-LT / B-LTA (v0.3.50)
-- `PdfOxide::Document#extraction|rendering|metadata|outline|search|...`
-  — 22 manager classes covering the rest of the public C ABI.
-
-## Project links
-
-- Project root: https://github.com/fyi-oxide/pdf_oxide
-- Rust source: https://github.com/fyi-oxide/pdf_oxide/tree/main/src
-- Issue tracker: https://github.com/fyi-oxide/pdf_oxide/issues
-- CHANGELOG: https://github.com/fyi-oxide/pdf_oxide/blob/main/CHANGELOG.md
+The Ruby surface mirrors the Java binding's 9-class shape one-for-one;
+the underlying `libpdf_oxide` cdylib is the same C ABI exercised by the
+Python, PHP, Node, Go, C#, Java, and WASM bindings.  Bug fixes and new
+features in the upstream cdylib reach Ruby on the next gem release.
 
 ## License
 
-Apache-2.0 — see `LICENSE`.
+Dual-licensed Apache-2.0 OR MIT.  See `LICENSE`.

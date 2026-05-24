@@ -26,6 +26,11 @@ end
 require 'pdf_oxide'
 require 'rspec'
 
+# Resolve the shared fixture set used by every binding's smoke tests.
+# Tests skip silently when the directory isn't reachable (out-of-tree
+# consumers won't have it).
+PDF_OXIDE_FIXTURE_ROOT = File.expand_path('../../tests/fixtures', __dir__).freeze
+
 RSpec.configure do |config|
   config.expect_with :rspec do |expectations|
     expectations.include_chain_clauses_in_custom_matcher_descriptions = true
@@ -34,22 +39,15 @@ RSpec.configure do |config|
   config.mock_with :rspec do |mocks|
     mocks.verify_partial_doubles = true
   end
-
-  config.warnings = true
-
-  # Add fixture path
-  config.add_setting :fixture_path
-  config.fixture_path = File.expand_path(File.join(__dir__, 'fixtures'))
 end
 
-# Test fixtures
-def create_test_pdf_path
-  File.join(RSpec.configuration.fixture_path, 'sample.pdf')
+def fixture(name)
+  File.join(PDF_OXIDE_FIXTURE_ROOT, name)
 end
 
-def create_test_document
-  PdfOxide::Document.open(create_test_pdf_path)
-rescue StandardError
-  # Return nil if file not found during test setup
-  nil
+# Skip a whole example group when the fixture set is absent.
+RSpec.shared_context 'fixtures-present' do
+  before(:all) do
+    skip "fixtures dir not present: #{PDF_OXIDE_FIXTURE_ROOT}" unless Dir.exist?(PDF_OXIDE_FIXTURE_ROOT)
+  end
 end

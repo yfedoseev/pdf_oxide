@@ -2,88 +2,43 @@
 
 module PdfOxide
   module FFI
-    # Handles UTF-8 string conversion between Ruby and C
+    # UTF-8 string round-tripping between Ruby and the C ABI.
+    #
+    # The cdylib's `*char` returns are heap-allocated by Rust and must
+    # be released via `free_string`; passing them to `pdf_free` (the
+    # handle deallocator) corrupts the heap.  StringMarshaller hides
+    # the distinction from callers.
     module StringMarshaller
-      # Convert Ruby string to C-compatible UTF-8 string
-      # @param ruby_string [String, nil] Ruby string to convert
-      # @return [String, nil] UTF-8 encoded string
+      # Encode a Ruby string as UTF-8 for the C ABI.  Returns nil on
+      # nil input so callers can pass `nil` through unchanged.
+      # @param ruby_string [String, nil]
+      # @return [String, nil]
       def self.to_utf8(ruby_string)
         return nil if ruby_string.nil?
 
         ruby_string.to_s.encode('UTF-8', invalid: :replace, undef: :replace)
-      rescue Encoding::Error => e
-        raise ::PdfOxide::Error.new('ENCODING_ERROR', "Failed to encode string to UTF-8: #{e.message}")
       end
 
-      # Convert C string pointer to Ruby UTF-8 string
-      # @param c_string_ptr [FFI::Pointer] Pointer to C string
-      # @param free_after [Boolean] Whether to free the pointer after reading
-      # @return [String, nil] UTF-8 Ruby string
-      def self.from_c_string(c_string_ptr, free_after: true)
-        return nil if c_string_ptr.nil? || c_string_ptr.null?
+      # Read a C string pointer and free the underlying buffer.
+      # @param ptr [FFI::Pointer]
+      # @param free_after [Boolean] free with `free_string` after reading.
+      # @return [String, nil] UTF-8 Ruby string, or nil if the pointer was null.
+      def self.from_c_string(ptr, free_after: true)
+        return nil if ptr.nil? || ptr.null?
 
         begin
-          ruby_string = c_string_ptr.read_string.force_encoding('UTF-8')
-          ruby_string
-        rescue Encoding::Error => e
-          raise ::PdfOxide::Error.new('DECODING_ERROR', "Failed to decode C string: #{e.message}")
+          ptr.read_string.force_encoding('UTF-8')
         ensure
-          free_c_string(c_string_ptr) if free_after && !c_string_ptr.null?
+          free_c_string(ptr) if free_after && !ptr.null?
         end
       end
 
-      # Read string from pointer without freeing
-      # @param c_string_ptr [FFI::Pointer] Pointer to C string
-      # @return [String, nil] UTF-8 Ruby string
-      def self.read_c_string(c_string_ptr)
-        from_c_string(c_string_ptr, free_after: false)
-      end
-
-      # Free C string allocated by Rust.
-      #
-      # The cdylib exports two distinct deallocators:
-      #   * `free_string(*mut c_char)`     — releases a `CString::into_raw`
-      #     pointer (the allocator backing all malloc'd char* returns).
-      #   * `pdf_free(*mut Pdf)`           — releases a `Box<Pdf>` handle.
-      #
-      # The two allocators are NOT interchangeable; passing a string
-      # pointer to `pdf_free` corrupts the heap (segfaults observed
-      # via the auto-extraction path).  Always prefer `free_string`
-      # for char* returns; the legacy `pdf_free` fallback is dropped.
-      # @param c_string_ptr [FFI::Pointer] Pointer to C string
-      def self.free_c_string(c_string_ptr)
-        return if c_string_ptr.nil? || c_string_ptr.null?
-
+      # Free a `*char` returned by the cdylib.  Safe on null.
+      def self.free_c_string(ptr)
+        return if ptr.nil? || ptr.null?
         return unless Bindings.respond_to?(:free_string)
 
-        Bindings.free_string(c_string_ptr)
-      end
-
-      # Validate UTF-8 string
-      # @param string [String] String to validate
-      # @return [Boolean] Whether string is valid UTF-8
-      def self.valid_utf8?(string)
-        string.to_s.valid_encoding?
-      rescue StandardError
-        false
-      end
-
-      # Convert array of C strings to Ruby strings
-      # @param ptr_array [Array<FFI::Pointer>] Array of C string pointers
-      # @param free_after [Boolean] Whether to free pointers after reading
-      # @return [Array<String>] Array of Ruby strings
-      def self.from_c_string_array(ptr_array, free_after: true)
-        ptr_array.map { |ptr| from_c_string(ptr, free_after: free_after) }
-      end
-
-      # Sanitize string for C interop
-      # @param string [String] String to sanitize
-      # @return [String] Sanitized string safe for C
-      def self.sanitize(string)
-        string = string.to_s
-        string.encode('UTF-8', invalid: :replace, undef: :replace)
-      rescue Encoding::Error
-        string.force_encoding('UTF-8')
+        Bindings.free_string(ptr)
       end
     end
   end

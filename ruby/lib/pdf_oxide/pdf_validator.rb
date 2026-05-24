@@ -1,0 +1,76 @@
+# frozen_string_literal: true
+
+module PdfOxide
+  # PDF/A · PDF/X · PDF/UA compliance validation (v0.3.50).
+  #
+  # Mirrors `fyi.oxide.pdf.PdfValidator`.  Stateless façade.
+  #
+  # @example
+  #   PdfOxide::PdfDocument.open('compliant.pdf') do |doc|
+  #     puts PdfOxide::PdfValidator.pdf_a?(doc, level: :a1b)
+  #   end
+  module PdfValidator
+    module_function
+
+    # PDF/A levels (mirrors Java's `PdfALevel` enum).
+    PDF_A_LEVELS = { a1a: 0, a1b: 1, a2a: 2, a2b: 3, a2u: 4, a3a: 5, a3b: 6, a3u: 7 }.freeze
+
+    # PDF/UA levels.
+    PDF_UA_LEVELS = { ua1: 0 }.freeze
+
+    # @return [Boolean] PDF/A compliance for `level`.
+    def pdf_a?(doc, level: :a1b)
+      raise ::PdfOxide::ArgumentError, 'doc cannot be nil' if doc.nil?
+
+      ordinal = PDF_A_LEVELS.fetch(level) do
+        raise ::PdfOxide::ArgumentError, "unknown PDF/A level: #{level.inspect}"
+      end
+      err = ::FFI::MemoryPointer.new(:int32)
+      result_ptr = Bindings.pdf_validate_pdf_a_level(doc.handle, ordinal, err) if Bindings.respond_to?(:pdf_validate_pdf_a_level)
+      code = err.read_int32
+      raise ComplianceError, "pdf_validate_pdf_a_level failed (#{code})" if code != 0
+
+      compliance_verdict(result_ptr, :pdf_pdf_a_is_compliant, :pdf_pdf_a_results_free)
+    rescue ::FFI::NotFoundError
+      false
+    end
+
+    # @return [Boolean] PDF/UA compliance for `level`.
+    def pdf_ua?(doc, level: :ua1)
+      raise ::PdfOxide::ArgumentError, 'doc cannot be nil' if doc.nil?
+
+      ordinal = PDF_UA_LEVELS.fetch(level) do
+        raise ::PdfOxide::ArgumentError, "unknown PDF/UA level: #{level.inspect}"
+      end
+      err = ::FFI::MemoryPointer.new(:int32)
+      result_ptr = Bindings.pdf_validate_pdf_ua(doc.handle, ordinal, err)
+      code = err.read_int32
+      raise ComplianceError, "pdf_validate_pdf_ua failed (#{code})" if code != 0
+
+      compliance_verdict(result_ptr, :pdf_pdf_ua_is_accessible, :pdf_pdf_ua_results_free)
+    rescue ::FFI::NotFoundError
+      false
+    end
+
+    # @return [Hash] simplified PDF/A validation result: { compliant:, violations: }.
+    def validate_pdf_a(doc, level: :a1b)
+      { compliant: pdf_a?(doc, level: level), violations: [] }
+    end
+
+    # @return [Hash] simplified PDF/UA validation result.
+    def validate_pdf_ua(doc, level: :ua1)
+      { compliant: pdf_ua?(doc, level: level), violations: [] }
+    end
+
+    def self.compliance_verdict(result_ptr, accessor_sym, free_sym)
+      return false if result_ptr.nil? || result_ptr.null?
+
+      begin
+        Bindings.send(accessor_sym, result_ptr)
+      ensure
+        Bindings.send(free_sym, result_ptr) if Bindings.respond_to?(free_sym)
+      end
+    end
+    private_class_method :compliance_verdict
+  end
+end
