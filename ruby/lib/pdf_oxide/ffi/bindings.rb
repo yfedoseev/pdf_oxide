@@ -1316,11 +1316,14 @@ module PdfOxide
       attach_function :pdf_document_remove_footers, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_document_remove_headers, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_document_to_docx, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
-      attach_function :pdf_document_to_html_all, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
-      attach_function :pdf_document_to_plain_text_all, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      # Whole-document text conversions: char *fn(PdfDocument*, int32_t*).
+      # Returned char* is owned (free with free_string via StringMarshaller).
+      attach_function :pdf_document_to_html_all, %i[pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_to_plain_text_all, %i[pointer pointer], :pointer, blocking: false
       attach_function :pdf_document_to_pptx, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_document_to_xlsx, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
-      attach_function :pdf_document_verify_all_signatures, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      # int32_t pdf_document_verify_all_signatures(const void *handle, int32_t *error_code)
+      attach_function :pdf_document_verify_all_signatures, %i[pointer pointer], :int32, blocking: false
       attach_function :pdf_dss_cert_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_dss_crl_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_dss_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false

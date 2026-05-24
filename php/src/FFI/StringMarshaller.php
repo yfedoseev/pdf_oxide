@@ -38,11 +38,12 @@ class StringMarshaller
     /**
      * Convert a C string (char*) to a PHP string.
      *
-     * @param CData $cStr The C string pointer
+     * @param CData|null $cStr The C string pointer (may be a null pointer
+     *                          when the native side has nothing to return).
      * @param bool $free Whether to free the C memory after conversion
      * @return string The PHP string
      */
-    public static function fromCString(CData $cStr, bool $free = true): string
+    public static function fromCString(?CData $cStr, bool $free = true): string
     {
         if ($cStr === null) {
             return '';

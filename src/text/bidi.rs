@@ -318,7 +318,7 @@ fn classify(c: char) -> CharDir {
 /// allocation.
 ///
 /// This is the markdown-emission-side companion to
-/// [`detect_visual_order_run`]. The detector decides which content-
+/// `detect_visual_order_run` (private). The detector decides which content-
 /// stream runs to re-order at extraction time so the output text is
 /// in logical order; this function decides which logical-order runs
 /// to isolate at markdown-emission time so that downstream UAX #9

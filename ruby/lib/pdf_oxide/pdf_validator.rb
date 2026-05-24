@@ -25,8 +25,13 @@ module PdfOxide
       ordinal = PDF_A_LEVELS.fetch(level) do
         raise ::PdfOxide::ArgumentError, "unknown PDF/A level: #{level.inspect}"
       end
+      # If the native symbol is absent (older cdylib), surface a clean
+      # "unavailable" verdict instead of reading an uninitialised err
+      # buffer and raising a spurious ComplianceError.
+      return false unless Bindings.respond_to?(:pdf_validate_pdf_a_level)
+
       err = ::FFI::MemoryPointer.new(:int32)
-      result_ptr = Bindings.pdf_validate_pdf_a_level(doc.handle, ordinal, err) if Bindings.respond_to?(:pdf_validate_pdf_a_level)
+      result_ptr = Bindings.pdf_validate_pdf_a_level(doc.handle, ordinal, err)
       code = err.read_int32
       raise ComplianceError, "pdf_validate_pdf_a_level failed (#{code})" if code != 0
 

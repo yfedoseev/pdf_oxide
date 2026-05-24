@@ -45,6 +45,17 @@ class NativeLibrary
     }
 
     /**
+     * Shutdown hook: drop the cached FFI instance so PHP's GC can
+     * unmap the dlopen'd cdylib before request teardown. Idempotent;
+     * safe to call from `register_shutdown_function`.
+     */
+    public static function cleanup(): void
+    {
+        self::$ffi = null;
+        self::$initialized = false;
+    }
+
+    /**
      * Load the native PDF Oxide library.
      *
      * @throws RuntimeException if library cannot be loaded
@@ -87,10 +98,10 @@ class NativeLibrary
     {
         // Try multiple locations
         $candidates = [
-            // Relative to this file
+            // Relative to this file (in-tree dev / composer-installed)
             __DIR__ . '/../../include/pdf_oxide.h',
-            // Composer vendor directory
-            dirname(__DIR__, 3) . '/vendor/pdf-oxide/pdf-oxide/include/pdf_oxide.h',
+            // Composer vendor directory — package name `oxide/pdf-oxide`
+            dirname(__DIR__, 3) . '/vendor/oxide/pdf-oxide/include/pdf_oxide.h',
             // Installed in /usr/include
             '/usr/include/pdf_oxide.h',
             '/usr/local/include/pdf_oxide.h',
@@ -165,6 +176,29 @@ class NativeLibrary
     }
 
     /**
+     * Platform key matching the layout used by
+     * `scripts/download-native-lib.php` (e.g. `linux-x86_64`).
+     * Falls back to the coarse platform name when the architecture is
+     * unknown, which leaves the generic <package-root>/lib search path
+     * as the next-best candidate.
+     */
+    private static function detectPlatformKey(string $platform): string
+    {
+        $arch = strtolower(php_uname('m'));
+        $normArch = match (true) {
+            $arch === 'x86_64' || $arch === 'amd64' => 'x86_64',
+            $arch === 'aarch64' || $arch === 'arm64' => 'aarch64',
+            default => $arch,
+        };
+        return match ($platform) {
+            'linux' => 'linux-' . $normArch,
+            'macos' => 'darwin-' . ($normArch === 'aarch64' ? 'arm64' : $normArch),
+            'windows' => 'windows-x64',
+            default => $platform,
+        };
+    }
+
+    /**
      * Get the library filename for a platform.
      */
     private static function getLibraryName(string $platform): string
@@ -184,10 +218,16 @@ class NativeLibrary
      */
     private static function getSearchPaths(string $platform): array
     {
+        $packageRoot = dirname(__DIR__, 3);
+        $platformKey = self::detectPlatformKey($platform);
         $paths = [
-            // Relative to project root
-            dirname(__DIR__, 3) . '/lib',
-            dirname(__DIR__, 3) . '/bin',
+            // Composer post-install staging:
+            //   <package-root>/lib/<platform-key>/<libname>
+            // (see scripts/download-native-lib.php).
+            $packageRoot . '/lib/' . $platformKey,
+            // Generic project-root fallbacks.
+            $packageRoot . '/lib',
+            $packageRoot . '/bin',
         ];
 
         // Platform-specific paths

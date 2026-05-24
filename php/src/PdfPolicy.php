@@ -80,7 +80,7 @@ final class PdfPolicy
         }
         if ((int) $rc !== 0) {
             throw new PdfException(
-                "pdf_oxide crypto policy already set (set-once); current={$mode} rc={$rc}",
+                "pdf_oxide crypto policy already set (set-once); requested={$mode} rc={$rc}",
                 'POLICY_ALREADY_SET'
             );
         }

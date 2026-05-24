@@ -293,7 +293,7 @@ jobs:
         env:
           # Emit lcov for the Codecov upload (one cell only).
           COVERAGE_LCOV: ${{ matrix.coverage && '1' || '' }}
-        run: bundle exec rspec spec/integration/
+        run: bundle exec rspec spec/
 
       - name: Upload coverage to Codecov
         if: matrix.coverage == true

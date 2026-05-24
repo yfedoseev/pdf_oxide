@@ -28,12 +28,12 @@
         </include>
     </source>
 
-    <coverage>
-        <report>
-            <html outputDirectory="coverage/html"/>
-            <text outputFile="coverage/coverage.txt"/>
-        </report>
-    </coverage>
+    <!--
+         <coverage> block intentionally omitted: when set with no driver
+         installed PHPUnit emits "No code coverage driver available" and
+         failOnWarning trips. Pass coverage flags on the CLI when running
+         locally with Xdebug/PCOV.
+    -->
 
     <php>
         <ini name="error_reporting" value="-1"/>

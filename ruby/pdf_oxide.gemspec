@@ -20,7 +20,8 @@ Gem::Specification.new do |spec|
                      'and generate PDFs through the libpdf_oxide cdylib used by ' \
                      'the Python, Java, Node, Go, and C# bindings.'
   spec.homepage = 'https://github.com/fyi-oxide/pdf_oxide'
-  spec.license = 'Apache-2.0'
+  # Dual-licensed at the repo root (MIT OR Apache-2.0); mirror that here.
+  spec.licenses = ['MIT', 'Apache-2.0']
   spec.required_ruby_version = '>= 3.1.0'
 
   spec.metadata = {
@@ -45,7 +46,7 @@ Gem::Specification.new do |spec|
   spec.files = Dir.glob('lib/**/*.rb') +
                Dir.glob('ext/pdf_oxide/*.{so,dylib,dll}') +
                Dir.glob('ext/pdf_oxide/*.{rb,c,h}') +
-               %w[README.md LICENSE Gemfile]
+               %w[README.md LICENSE LICENSE-MIT LICENSE-APACHE Gemfile]
   spec.require_paths = ['lib']
 
   # Runtime dependency
