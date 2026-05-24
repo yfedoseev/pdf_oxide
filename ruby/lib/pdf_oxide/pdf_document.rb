@@ -341,18 +341,20 @@ module PdfOxide
     def parse_search_results(results_handle)
       return [] if results_handle.nil? || results_handle.null?
 
+      err = ::FFI::MemoryPointer.new(:int32)
       count = Bindings.pdf_oxide_search_result_count(results_handle)
       out = Array.new(count) do |i|
-        page = Bindings.pdf_oxide_search_result_get_page(results_handle, i)
-        text = Bindings.pdf_oxide_search_result_get_text(results_handle, i)
-        # bbox: the cdylib signature is
-        #   (results, index, x*, y*, w*, h*, error_code*) — 7 args —
-        # but the bindings.rb declaration is the legacy 3-arg shape;
-        # to avoid undefined-behaviour register reads we skip the
-        # native bbox call and report a zero-rect placeholder.  The
-        # Java binding's SearchMatch carries bbox via a different
-        # JNI route; the Ruby surface keeps the shape consistent.
-        { page: page, text: text, bbox: { x: 0.0, y: 0.0, width: 0.0, height: 0.0 } }
+        page = Bindings.pdf_oxide_search_result_get_page(results_handle, i, err)
+        text_ptr = Bindings.pdf_oxide_search_result_get_text(results_handle, i, err)
+        text = StringMarshaller.from_c_string(text_ptr) || ''
+        x = ::FFI::MemoryPointer.new(:float)
+        y = ::FFI::MemoryPointer.new(:float)
+        w = ::FFI::MemoryPointer.new(:float)
+        h = ::FFI::MemoryPointer.new(:float)
+        Bindings.pdf_oxide_search_result_get_bbox(results_handle, i, x, y, w, h, err)
+        { page: page,
+          text: text,
+          bbox: { x: x.read_float, y: y.read_float, width: w.read_float, height: h.read_float } }
       end
       Bindings.pdf_oxide_search_result_free(results_handle)
       out

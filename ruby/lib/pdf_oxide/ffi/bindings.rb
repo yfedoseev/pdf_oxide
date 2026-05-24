@@ -77,9 +77,17 @@ module PdfOxide
       attach_function :pdf_document_search_page, %i[pointer string int32 bool pointer], :pointer
       attach_function :pdf_document_search_all, %i[pointer string bool pointer], :pointer
       attach_function :pdf_oxide_search_result_count, [:pointer], :int32
-      attach_function :pdf_oxide_search_result_get_page, %i[pointer int32], :int32
-      attach_function :pdf_oxide_search_result_get_text, %i[pointer int32], :string
-      attach_function :pdf_oxide_search_result_get_bbox, %i[pointer int32 pointer], :void
+      # Each accessor takes the results handle + index + an int32* error
+      # buffer. The trailing pointer is REQUIRED — omitting it caused
+      # the cdylib to dereference register garbage as the err pointer
+      # and segfault on aarch64/macOS-arm64 (issue #547 v0.3.55 CI).
+      attach_function :pdf_oxide_search_result_get_page, %i[pointer int32 pointer], :int32
+      # Returns owned char* — bind as :pointer + StringMarshaller to
+      # free via free_string. Declaring as :string leaked the buffer
+      # AND read past the missing err arg.
+      attach_function :pdf_oxide_search_result_get_text, %i[pointer int32 pointer], :pointer
+      attach_function :pdf_oxide_search_result_get_bbox,
+                      %i[pointer int32 pointer pointer pointer pointer pointer], :void
       attach_function :pdf_oxide_search_result_free, [:pointer], :void
 
       # ============================================================
