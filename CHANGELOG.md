@@ -7,16 +7,39 @@ All notable changes to PDFOxide are documented here.
 > Ruby + PHP language bindings + multi-line heading reading-order fix
 
 ### Added
-- **Ruby binding (9th language)** — full FFI binding at v0.3.54 API parity, distributed via RubyGems with native gems for linux-x86_64, linux-aarch64, darwin-x86_64, darwin-arm64, windows-x64 plus a source gem (#545).
-- **PHP binding (10th language)** — full PHP FFI binding at v0.3.54 API parity, distributed via Packagist as `oxide/pdf-oxide`, supports PHP 8.1/8.2/8.3/8.4 on Linux/macOS/Windows × x86_64/aarch64 (#546).
+- **Ruby binding (9th language)** — full PDF toolkit for Ruby. Install
+  with `gem install pdf_oxide`. Prebuilt native gems for linux-x86_64,
+  linux-aarch64, darwin-x86_64, darwin-arm64, windows-x64 plus a
+  source gem. API mirrors the Java binding's 9-class shape
+  (`PdfDocument`, `Pdf`, `PdfPage`, `PdfPolicy`, `PdfSigner`,
+  `PdfValidator`, `DocumentEditor`, `AutoExtractor`,
+  `MarkdownConverter`) so docs and examples are uniform across
+  languages. Full feature parity with Python / Java including
+  auto-extraction, PAdES B/T/LT signing, destructive redaction,
+  office round-trip, and split-by-bookmarks. (#545)
+- **PHP binding (10th language)** — full PDF toolkit for PHP. Install
+  with `composer require oxide/pdf-oxide`. PHP 8.2 / 8.3 / 8.4 / 8.5
+  on Linux / macOS / Windows. Same 9-class API shape as Ruby and
+  Java. Composer post-install hook fetches the matching prebuilt
+  `libpdf_oxide` per platform with SHA-256 verification. Full feature
+  parity with Python / Java. Requires `ext-ffi`. (#546)
 
 ### Fixed
-- **#543** — XY-cut multi-line heading split. Long subsection titles wrapping across column boundaries no longer split into orphaned heading fragments. Pre-partition heading lock detects bold/large-font multi-line runs and treats them as atomic blocks before column partitioning.
-- **#537-followup** — Markdown output now emits bidi-isolation markers (U+2066/U+2067/U+2068/U+2069) around RTL runs detected by the v0.3.54 visual-vs-logical detector, preventing surrounding paragraph contamination in markdown viewers.
-- **#535-followup** — Glyph-name lookups (Type1 built-in encodings, CFF charset, `/Differences` arrays, and any future inline-image font-resolution callsite per PDF spec §8.9.7) now delegate to the v0.3.54 unified fallback chain (`character_mapper::glyph_name_to_unicode`), gaining variant-suffix stripping (`A.sc`, `bullet.alt`, `fi.001`) and stricter `uniXXXX` / `uXXXXX` synth validation. The chain itself is unchanged; only call sites are unified.
-
-### Internal
-- v0.3.55 is "two new bindings + three internal-pipeline fixes" — no new public C ABI surface; both new bindings and the three fixes inherit from existing extract_text / to_markdown paths.
+- **#543** — Long subsection titles in multi-column academic papers
+  no longer split when they wrap across column boundaries.
+  Discovered while regression-testing v0.3.54 on a 75-PDF corpus.
+- **#537** *(follow-up)* — Markdown output now emits Unicode
+  bidi-isolation markers around RTL runs detected by the v0.3.54
+  Hebrew / RTL detector, so extracted Hebrew / Arabic text renders
+  correctly inside mixed-direction paragraphs. Original report by
+  **alexagr**; this completes the markdown emission half deferred
+  from v0.3.54.
+- **#535** *(follow-up)* — Type 1 built-in encodings, CFF charset,
+  and `/Differences`-array glyph lookups now go through the same
+  Adobe Glyph List fallback chain as v0.3.54's main extractor, with
+  variant-suffix stripping (`A.sc` → `A`, `bullet.alt` → `•`,
+  `fi.001` → `ﬁ`). Resolves replacement-character (`�`) leakage on
+  PDFs using simple-font encodings without a ToUnicode CMap.
 
 ## [0.3.54] - 2026-05-23
 
