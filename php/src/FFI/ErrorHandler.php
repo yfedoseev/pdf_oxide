@@ -9,9 +9,6 @@ use PdfOxide\Exceptions\{
     ParseException,
     IoException,
     EncryptionException,
-    InvalidStateException,
-    RenderingException,
-    SearchException,
     ValidationException,
     ComplianceException,
     NotFoundException,
@@ -119,34 +116,4 @@ class ErrorHandler
         };
     }
 
-    /**
-     * Check if error code indicates success.
-     */
-    public static function isSuccess(int $errorCode): bool
-    {
-        return $errorCode === self::SUCCESS;
-    }
-
-    /**
-     * Get error code name for debugging.
-     */
-    public static function getErrorCodeName(int $errorCode): string
-    {
-        return match ($errorCode) {
-            self::SUCCESS => 'SUCCESS',
-            self::INVALID_ARG => 'INVALID_ARG',
-            self::IO_ERROR => 'IO_ERROR',
-            self::PARSE_ERROR => 'PARSE_ERROR',
-            self::NOT_FOUND => 'NOT_FOUND',
-            self::PERMISSION_DENIED => 'PERMISSION_DENIED',
-            self::UNSUPPORTED => 'UNSUPPORTED',
-            self::INTERNAL => 'INTERNAL',
-            self::SIGNATURE_ERROR => 'SIGNATURE_ERROR',
-            self::REDACTION_ERROR => 'REDACTION_ERROR',
-            self::COMPLIANCE_ERROR => 'COMPLIANCE_ERROR',
-            self::ACCESSIBILITY_ERROR => 'ACCESSIBILITY_ERROR',
-            self::OPTIMIZATION_ERROR => 'OPTIMIZATION_ERROR',
-            default => "UNKNOWN({$errorCode})",
-        };
-    }
 }

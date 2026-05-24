@@ -97,48 +97,10 @@ class StringMarshaller
     }
 
     /**
-     * Free a byte array allocated by the native library.
-     *
-     * @param CData|null $bytes The byte array to free
+     * Check if a string is valid UTF-8. Used internally by toCString.
      */
-    public static function freeBytes(?CData $bytes): void
-    {
-        if ($bytes === null) {
-            return;
-        }
-
-        try {
-            $ffi = NativeLibrary::getInstance();
-            $ffi->free_bytes(FFI::cast('uint8_t*', $bytes));
-        } catch (\Exception $e) {
-            trigger_error('Failed to free bytes: ' . $e->getMessage(), E_USER_WARNING);
-        }
-    }
-
-    /**
-     * Check if a string is valid UTF-8.
-     */
-    public static function isValidUtf8(string $str): bool
+    private static function isValidUtf8(string $str): bool
     {
         return mb_check_encoding($str, 'UTF-8');
-    }
-
-    /**
-     * Ensure a string is UTF-8 encoded.
-     */
-    public static function ensureUtf8(string $str): string
-    {
-        if (!self::isValidUtf8($str)) {
-            // Try to convert from common encodings
-            if (mb_check_encoding($str, 'ISO-8859-1')) {
-                return mb_convert_encoding($str, 'UTF-8', 'ISO-8859-1');
-            }
-            if (mb_check_encoding($str, 'Windows-1252')) {
-                return mb_convert_encoding($str, 'UTF-8', 'Windows-1252');
-            }
-            // Last resort: replace invalid sequences
-            return mb_convert_encoding($str, 'UTF-8', 'UTF-8');
-        }
-        return $str;
     }
 }
