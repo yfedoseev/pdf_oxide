@@ -59,9 +59,11 @@ final class PdfSigner
         if (! is_file($keystorePath)) {
             throw new IoException("Keystore not found: {$keystorePath}");
         }
+        $bytes = (string) file_get_contents($keystorePath);
         $bindings = new FunctionBindings();
-        $creds = $bindings->pdfCredentialsFromPkcs12($keystorePath, $password);
-        return new self($creds);
+        // Real cdylib symbol: pdf_certificate_load_from_bytes(PKCS#12 bytes, password).
+        $cert = $bindings->pdfCertificateLoadFromBytes($bytes, $password);
+        return new self($cert);
     }
 
     /**
@@ -93,14 +95,13 @@ final class PdfSigner
         if ($this->credentials === null) {
             throw new SignatureException('PdfSigner credentials have been freed');
         }
-        return $this->bindings->pdfPadesSign(
-            $pdfBytes,
-            $this->credentials,
-            $level,
-            $tsaUrl,
-            $reason,
-            $location,
-            $contact,
+        // The PHP binding does not yet pack PadesSignOptionsC and route through
+        // `pdf_sign_bytes_pades_opts` (the canonical 5-arg shim). The Ruby
+        // binding does — port in a follow-up. Until then, sign() is a stub
+        // (mirrors Java's "stub until Phase 4 T15" status). Tracked in #546.
+        throw new \BadMethodCallException(
+            'PdfSigner::sign() is not yet wired in the PHP binding; '
+            . 'use the Ruby/Java bindings for now (tracked in #546).'
         );
     }
 
@@ -145,7 +146,8 @@ final class PdfSigner
     public function close(): void
     {
         if ($this->credentials !== null) {
-            $this->bindings->pdfCredentialsFree($this->credentials);
+            // Real cdylib symbol: pdf_certificate_free.
+            $this->bindings->pdfCertificateFree($this->credentials);
             $this->credentials = null;
         }
     }
