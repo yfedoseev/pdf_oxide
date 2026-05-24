@@ -17,6 +17,7 @@ use PdfOxide\Exceptions\SearchException;
 use PdfOxide\Exceptions\UnsupportedException;
 use PdfOxide\Exceptions\ValidationException;
 use PdfOxide\FFI\ErrorHandler;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -54,9 +55,7 @@ final class ErrorHandlerMappingTest extends TestCase
         ErrorHandler::check(0, 'irrelevant');
     }
 
-    /**
-     * @dataProvider codeToExceptionMapProvider
-     */
+    #[DataProvider('codeToExceptionMapProvider')]
     public function testCodeMapsToTypedException(int $code, string $expectedClass): void
     {
         $ex = ErrorHandler::createException($code, "test_op_{$code}");
