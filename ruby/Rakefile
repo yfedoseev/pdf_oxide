@@ -115,14 +115,29 @@ namespace :native do
       # Pass platform via env var because RubyGems 4.x emits a generic
       # 'ruby'-platform gem when --platform is set externally; setting
       # spec.platform inside the gemspec is the reliable path.
-      sh({ 'PDF_OXIDE_GEM_PLATFORM' => plat }, 'gem build pdf_oxide.gemspec')
+      #
+      # `gem build` must run OUTSIDE the surrounding `bundle exec` env:
+      # the gemspec sets `spec.platform` to a single tag (e.g.
+      # aarch64-linux), which causes Bundler 2.6's resolver — invoked
+      # via `bundler/setup` when the gem command boots — to fail with
+      # `Could not find gems matching 'pdf_oxide' valid for all
+      # resolution platforms (aarch64-linux-gnu, aarch64-linux-musl,
+      # arm-linux-gnu, …)`.  `with_unbundled_env` strips BUNDLE_*/
+      # RUBYOPT so `gem build` runs as a plain RubyGems invocation.
+      Bundler.with_unbundled_env do
+        sh({ 'PDF_OXIDE_GEM_PLATFORM' => plat }, 'gem build pdf_oxide.gemspec')
+      end
     end
   end
 
   desc 'Build the platform-less source gem (no bundled cdylib)'
   task :source do
     clean_ext_dir
-    sh 'gem build pdf_oxide.gemspec'
+    # Same Bundler-env escape as the platform-tagged tasks above; harmless
+    # when spec.platform is not set, but keeps both code paths symmetric.
+    Bundler.with_unbundled_env do
+      sh 'gem build pdf_oxide.gemspec'
+    end
   end
 end
 
