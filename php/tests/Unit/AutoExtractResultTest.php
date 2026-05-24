@@ -1,64 +1,72 @@
 <?php
 
+/*
+ * Copyright 2025-2026 Yury Fedoseev and pdf_oxide contributors.
+ * Licensed under MIT OR Apache-2.0.
+ */
+
 declare(strict_types=1);
 
 namespace PdfOxide\Tests\Unit;
 
 use PdfOxide\AutoExtractResult;
-use PdfOxide\Enums\ExtractReason;
-use PdfOxide\Enums\PageKind;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Unit tests for the {@see AutoExtractResult} value object.
- *
- * No FFI / cdylib dependency — runs in the Unit testsuite on every
- * matrix cell regardless of whether the native library is present.
+ * Pure-PHP value-object tests for AutoExtractResult — no native lib
+ * needed, run in the Unit suite.
  */
 final class AutoExtractResultTest extends TestCase
 {
-    public function testConstructorAssignsAllProperties(): void
+    public function testDefaultsAreOkAndConfidentAndNotOcr(): void
     {
-        $r = new AutoExtractResult(
-            text: 'hello',
-            reason: ExtractReason::Ok,
-            kind: PageKind::TextLayer,
-            confidence: 0.98,
-            classification: ['kind' => 'text_layer'],
-        );
-
+        $r = new AutoExtractResult(text: 'hello');
         $this->assertSame('hello', $r->text);
-        $this->assertSame(ExtractReason::Ok, $r->reason);
-        $this->assertSame(PageKind::TextLayer, $r->kind);
-        $this->assertSame(0.98, $r->confidence);
-        $this->assertSame(['kind' => 'text_layer'], $r->classification);
+        $this->assertSame(AutoExtractResult::REASON_OK, $r->reason);
+        $this->assertSame(1.0, $r->confidence);
+        $this->assertFalse($r->ocrUsed);
+        $this->assertSame([], $r->regions);
+        $this->assertSame([], $r->pagesNeedingOcr);
     }
 
-    public function testIsOkAcceptsBothCanonicalOkReasons(): void
+    public function testIsOkForOkAndHighConfidence(): void
     {
-        $r1 = new AutoExtractResult('', ExtractReason::Ok, PageKind::TextLayer, 1.0, null);
-        $r2 = new AutoExtractResult('', ExtractReason::NativeTextHighConfidence, PageKind::TextLayer, 1.0, null);
-        $this->assertTrue($r1->isOk());
-        $this->assertTrue($r2->isOk());
+        $okR = new AutoExtractResult(text: '', reason: AutoExtractResult::REASON_OK);
+        $hi = new AutoExtractResult(
+            text: '',
+            reason: AutoExtractResult::REASON_NATIVE_TEXT_HIGH_CONFIDENCE
+        );
+        $this->assertTrue($okR->isOk());
+        $this->assertTrue($hi->isOk());
     }
 
-    public function testIsOkFalseForDegradedReasons(): void
+    public function testIsOcrFallbackForBothFallbackReasons(): void
     {
-        $r = new AutoExtractResult('', ExtractReason::Empty, PageKind::Empty, 0.0, null);
-        $this->assertFalse($r->isOk());
+        $unavail = new AutoExtractResult(
+            text: '',
+            reason: AutoExtractResult::REASON_OCR_REQUESTED_BUT_UNAVAILABLE
+        );
+        $lowconf = new AutoExtractResult(
+            text: '',
+            reason: AutoExtractResult::REASON_OCR_LOW_CONFIDENCE_FALLBACK
+        );
+        $this->assertTrue($unavail->isOcrFallback());
+        $this->assertTrue($lowconf->isOcrFallback());
     }
 
-    public function testIsOcrFallbackTrueForBothFallbackReasons(): void
+    public function testEmptyIsNotOkAndNotFallback(): void
     {
-        $r1 = new AutoExtractResult('', ExtractReason::OcrRequestedButUnavailable, PageKind::Scanned, 0.0, null);
-        $r2 = new AutoExtractResult('', ExtractReason::OcrLowConfidenceFallback, PageKind::Scanned, 0.3, null);
-        $this->assertTrue($r1->isOcrFallback());
-        $this->assertTrue($r2->isOcrFallback());
+        $empty = new AutoExtractResult(text: '', reason: AutoExtractResult::REASON_EMPTY);
+        $this->assertFalse($empty->isOk());
+        $this->assertFalse($empty->isOcrFallback());
     }
 
-    public function testIsOcrFallbackFalseForNonFallbackReasons(): void
+    public function testKindAndReasonConstantsAreSnakeCaseStrings(): void
     {
-        $r = new AutoExtractResult('', ExtractReason::Ok, PageKind::TextLayer, 1.0, null);
-        $this->assertFalse($r->isOcrFallback());
+        // Wire tokens are frozen — guard rename regressions.
+        $this->assertSame('ok', AutoExtractResult::REASON_OK);
+        $this->assertSame('ocr_requested_but_unavailable', AutoExtractResult::REASON_OCR_REQUESTED_BUT_UNAVAILABLE);
+        $this->assertSame('text_layer', AutoExtractResult::KIND_TEXT_LAYER);
+        $this->assertSame('scanned', AutoExtractResult::KIND_SCANNED);
     }
 }

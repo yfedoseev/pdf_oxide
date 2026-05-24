@@ -1,495 +1,212 @@
 <?php
 
+/*
+ * Copyright 2025-2026 Yury Fedoseev and pdf_oxide contributors.
+ * Licensed under MIT OR Apache-2.0.
+ */
+
 declare(strict_types=1);
 
 namespace PdfOxide;
 
 use FFI\CData;
-use PdfOxide\FFI\{FunctionBindings, HandleManager, StringMarshaller};
 use PdfOxide\Exceptions\InvalidStateException;
-use PdfOxide\Types\{Color, Point, Rect};
-use PdfOxide\Enums\PageSize;
+use PdfOxide\Exceptions\IoException;
+use PdfOxide\Exceptions\ParseException;
+use PdfOxide\FFI\FunctionBindings;
+use PdfOxide\FFI\NativeLibrary;
 
 /**
- * Main class for creating and modifying PDF documents.
+ * PDF creation / transformation factory.
  *
- * Provides fluent interface for building PDFs with text, images, shapes, and styling.
+ * Mirrors `fyi.oxide.pdf.Pdf` from the Java binding. Read-side
+ * concerns live on {@see PdfDocument}; mutate concerns on
+ * {@see DocumentEditor}; creation + transformation (markdown→PDF,
+ * html→PDF) lives here.
+ *
+ * Lifecycle: idempotent {@see close()}; rely on `__destruct()` for
+ * best-effort cleanup. Not thread-safe.
  */
-class Pdf
+final class Pdf
 {
     private ?CData $handle = null;
-    private bool $closed = false;
-    private FunctionBindings $bindings;
-    private bool $isNew = false;
 
-    private Color $currentColor;
-    private string $currentFont = 'Helvetica';
-    private float $currentFontSize = 12.0;
+    private readonly FunctionBindings $bindings;
 
-    /**
-     * Private constructor - use static factory methods.
-     */
-    private function __construct()
+    private function __construct(CData $handle)
     {
         $this->bindings = new FunctionBindings();
-        $this->currentColor = Color::black();
+        $this->handle = $handle;
     }
 
-    /**
-     * Create a new blank PDF document.
-     *
-     * @return self A new Pdf instance
-     */
-    public static function create(): self
-    {
-        $pdf = new self();
-        $pdf->isNew = true;
-        // Document handle would be created here with FFI call
-        // For now, placeholder for phase 3 continuation
-        return $pdf;
-    }
+    // ────────────────────── factories ──────────────────────
 
     /**
-     * Create a PDF from Markdown content.
+     * Create a PDF from a Markdown source. Heading levels,
+     * bold/italic, monospace code, lists, links, and inline images
+     * (data: URIs) are rendered per pdf_oxide's markdown pipeline
+     * (v0.3.52 markdown→PDF styling restored, #525).
      *
-     * @param string $markdown Markdown formatted text
-     * @return self A new Pdf instance
+     * @throws ParseException when markdown cannot be parsed
      */
     public static function fromMarkdown(string $markdown): self
     {
-        $pdf = new self();
-        $pdf->isNew = true;
-        try {
-            $pdf->handle = $pdf->bindings->pdfFromMarkdown($markdown);
-            HandleManager::register($pdf->handle, 'PdfHandle', 'generated-from-markdown');
-        } catch (\Exception $e) {
-            throw new \PdfOxide\Exceptions\ParseException("Failed to create PDF from Markdown: " . $e->getMessage());
+        $bindings = new FunctionBindings();
+        $handle = $bindings->pdfFromMarkdown($markdown);
+        if ($handle === null) {
+            throw new ParseException('Failed to create PDF from Markdown');
         }
-        return $pdf;
+        return new self($handle);
     }
 
     /**
-     * Create a PDF from HTML content.
+     * Create a PDF from an HTML source.
      *
-     * @param string $html HTML formatted text
-     * @return self A new Pdf instance
+     * @throws ParseException when HTML cannot be parsed
      */
     public static function fromHtml(string $html): self
     {
-        $pdf = new self();
-        $pdf->isNew = true;
-        try {
-            $pdf->handle = $pdf->bindings->pdfFromHtml($html);
-            HandleManager::register($pdf->handle, 'PdfHandle', 'generated-from-html');
-        } catch (\Exception $e) {
-            throw new \PdfOxide\Exceptions\ParseException("Failed to create PDF from HTML: " . $e->getMessage());
+        $bindings = new FunctionBindings();
+        $handle = $bindings->pdfFromHtml($html);
+        if ($handle === null) {
+            throw new ParseException('Failed to create PDF from HTML');
         }
-        return $pdf;
+        return new self($handle);
     }
 
     /**
-     * Create a PDF from plain text.
+     * Create a PDF from a plain-text source.
      *
-     * @param string $text Plain text content
-     * @return self A new Pdf instance
+     * @throws ParseException when text cannot be converted
      */
     public static function fromText(string $text): self
     {
-        $pdf = new self();
-        $pdf->isNew = true;
-        try {
-            $pdf->handle = $pdf->bindings->pdfFromText($text);
-            HandleManager::register($pdf->handle, 'PdfHandle', 'generated-from-text');
-        } catch (\Exception $e) {
-            throw new \PdfOxide\Exceptions\ParseException("Failed to create PDF from text: " . $e->getMessage());
+        $bindings = new FunctionBindings();
+        $handle = $bindings->pdfFromText($text);
+        if ($handle === null) {
+            throw new ParseException('Failed to create PDF from text');
         }
-        return $pdf;
+        return new self($handle);
     }
 
+    // ─────────────────────── output ────────────────────────
+
     /**
-     * Open an existing PDF document for editing.
-     *
-     * @param string $filePath Path to the PDF file
-     * @return self The Pdf instance
+     * @return string the generated PDF bytes
+     * @throws InvalidStateException when this object has been closed
      */
-    public static function open(string $filePath): self
+    public function save(): string
     {
-        if (!file_exists($filePath)) {
-            throw new \PdfOxide\Exceptions\IoException(
-                "PDF file not found: {$filePath}",
-                ['file' => $filePath]
+        // Direct FFI call — the C signature is
+        //   uint8_t *pdf_save_to_bytes(Pdf*, int32_t *data_len, int32_t *error_code)
+        // (the FunctionBindings wrapper targets a different signature
+        // and isn't usable for the Pdf* handle path).
+        $ffi = NativeLibrary::getInstance();
+        $dataLen = \FFI::new('int32_t');
+        $errorCode = \FFI::new('int32_t');
+        $ptr = $ffi->pdf_save_to_bytes($this->requireHandle(), \FFI::addr($dataLen), \FFI::addr($errorCode));
+        if ((int) $errorCode->cdata !== 0 || $ptr === null) {
+            throw new \PdfOxide\Exceptions\PdfException(
+                'pdf_save_to_bytes failed',
+                'PDF_SAVE_FAILED',
+                ['error_code' => (int) $errorCode->cdata]
             );
         }
-
-        $pdf = new self();
-        $pdf->isNew = false;
-        // Load document with FFI call
-        // For now, placeholder for phase 3 continuation
-        return $pdf;
+        $len = (int) $dataLen->cdata;
+        $bytes = \FFI::string($ptr, $len);
+        // pdf_oxide hands ownership to the caller — release the buffer.
+        $ffi->free_bytes($ptr);
+        return $bytes;
     }
 
     /**
-     * Add a new page to the document.
+     * Write the generated PDF to a path.
      *
-     * @param float|null $width Page width in points (default: A4 width)
-     * @param float|null $height Page height in points (default: A4 height)
-     * @return self Fluent interface
+     * @throws IoException on filesystem failures
+     * @throws InvalidStateException when this object has been closed
      */
-    public function addPage(?float $width = null, ?float $height = null): self
+    public function saveTo(string $path): void
     {
-        $this->ensureOpen();
-
-        // Default to A4 size
-        if ($width === null || $height === null) {
-            $dims = PageSize::A4->getDimensions();
-            $width ??= $dims['width'];
-            $height ??= $dims['height'];
+        $bytes = $this->save();
+        if (file_put_contents($path, $bytes) === false) {
+            throw new IoException("Failed to write PDF to {$path}");
         }
-
-        // Add page via FFI
-        // Call: this->bindings->pdfAddPage(this->handle, (int)$width, (int)$height);
-
-        return $this;
     }
 
+    // ─────────────────── library helpers ───────────────────
+
     /**
-     * Add a page using a predefined page size.
+     * @return string the pdf_oxide library version (e.g. "0.3.55").
      *
-     * @param PageSize $size The page size enum
-     * @return self Fluent interface
+     * Sourced from {@see VERSION} (release tooling keeps this constant
+     * in sync with `Cargo.toml`'s `version` field). The cdylib doesn't
+     * yet export a runtime `pdf_oxide_version()` symbol; until it does,
+     * this is the canonical accessor.
      */
-    public function addPageWithSize(PageSize $size): self
+    public static function version(): string
     {
-        $dims = $size->getDimensions();
-        return $this->addPage($dims['width'], $dims['height']);
+        return self::VERSION;
     }
 
     /**
-     * Remove a page from the document.
-     *
-     * @param int $pageIndex Zero-based page index
-     * @return self Fluent interface
+     * pdf_oxide library version. Kept in sync with `Cargo.toml` by the
+     * release tooling (see `docs/releases/RELEASE_PROCESS.md`).
      */
-    public function removePage(int $pageIndex): self
+    public const VERSION = '0.3.55';
+
+    /** Whether OCR-model prefetch + cache are available on this build. */
+    public static function prefetchAvailable(): bool
     {
-        $this->ensureOpen();
-        // Call FFI: this->bindings->pdfRemovePage(this->handle, $pageIndex);
-        return $this;
+        $bindings = new FunctionBindings();
+        return $bindings->pdfOxidePrefetchAvailable();
     }
 
     /**
-     * Add text to the current page.
+     * Prefetch OCR models for the supplied IETF language tags
+     * (e.g. `['eng', 'rus']`). Returns the cache directory; empty
+     * string when OCR is not available on this build.
      *
-     * @param string $text The text to add
-     * @param float $x X coordinate in points
-     * @param float $y Y coordinate in points
-     * @param float|null $fontSize Font size (uses current if null)
-     * @return self Fluent interface
+     * @param array<int,string> $languages
      */
-    public function text(
-        string $text,
-        float $x,
-        float $y,
-        ?float $fontSize = null
-    ): self {
-        $this->ensureOpen();
-
-        $fontSize ??= $this->currentFontSize;
-
-        // Convert text to C string
-        $cText = StringMarshaller::toCString($text);
-        $cFont = StringMarshaller::toCString($this->currentFont);
-
-        try {
-            // Call FFI: this->bindings->pdfAddText(
-            //     this->handle, $cText, $x, $y, $fontSize,
-            //     this->currentColor->red, this->currentColor->green,
-            //     this->currentColor->blue, this->currentColor->alpha
-            // );
-        } finally {
-            unset($cText, $cFont);
-        }
-
-        return $this;
-    }
-
-    /**
-     * Add an image to the current page.
-     *
-     * @param string $imagePath Path to image file
-     * @param float $x X coordinate in points
-     * @param float $y Y coordinate in points
-     * @param float $width Image width in points
-     * @param float|null $height Image height in points (maintains aspect ratio if null)
-     * @return self Fluent interface
-     */
-    public function image(
-        string $imagePath,
-        float $x,
-        float $y,
-        float $width,
-        ?float $height = null
-    ): self {
-        $this->ensureOpen();
-
-        if (!file_exists($imagePath)) {
-            throw new \PdfOxide\Exceptions\IoException(
-                "Image file not found: {$imagePath}",
-                ['file' => $imagePath]
-            );
-        }
-
-        $cPath = StringMarshaller::toCString($imagePath);
-
-        try {
-            // Call FFI: this->bindings->pdfAddImage(
-            //     this->handle, $cPath, $x, $y, $width, $height ?? 0
-            // );
-        } finally {
-            unset($cPath);
-        }
-
-        return $this;
-    }
-
-    /**
-     * Draw a line on the current page.
-     *
-     * @param float $x1 Start X coordinate
-     * @param float $y1 Start Y coordinate
-     * @param float $x2 End X coordinate
-     * @param float $y2 End Y coordinate
-     * @param float $lineWidth Line width in points
-     * @return self Fluent interface
-     */
-    public function line(
-        float $x1,
-        float $y1,
-        float $x2,
-        float $y2,
-        float $lineWidth = 1.0
-    ): self {
-        $this->ensureOpen();
-
-        // Call FFI: this->bindings->pdfDrawLine(
-        //     this->handle, $x1, $y1, $x2, $y2, $lineWidth,
-        //     this->currentColor->red, this->currentColor->green,
-        //     this->currentColor->blue, this->currentColor->alpha
-        // );
-
-        return $this;
-    }
-
-    /**
-     * Draw a rectangle on the current page.
-     *
-     * @param float $x Top-left X coordinate
-     * @param float $y Top-left Y coordinate
-     * @param float $width Rectangle width
-     * @param float $height Rectangle height
-     * @param bool $fill Whether to fill the rectangle
-     * @param float|null $lineWidth Line width for outline
-     * @return self Fluent interface
-     */
-    public function rect(
-        float $x,
-        float $y,
-        float $width,
-        float $height,
-        bool $fill = false,
-        ?float $lineWidth = 1.0
-    ): self {
-        $this->ensureOpen();
-
-        // Call FFI: this->bindings->pdfDrawRect(
-        //     this->handle, $x, $y, $width, $height, $fill ? 1 : 0,
-        //     $lineWidth ?? 0,
-        //     this->currentColor->red, this->currentColor->green,
-        //     this->currentColor->blue, this->currentColor->alpha
-        // );
-
-        return $this;
-    }
-
-    /**
-     * Draw a circle on the current page.
-     *
-     * @param float $centerX Center X coordinate
-     * @param float $centerY Center Y coordinate
-     * @param float $radius Circle radius
-     * @param bool $fill Whether to fill the circle
-     * @param float $lineWidth Line width for outline
-     * @return self Fluent interface
-     */
-    public function circle(
-        float $centerX,
-        float $centerY,
-        float $radius,
-        bool $fill = false,
-        float $lineWidth = 1.0
-    ): self {
-        $this->ensureOpen();
-
-        // Call FFI: this->bindings->pdfDrawCircle(
-        //     this->handle, $centerX, $centerY, $radius, $fill ? 1 : 0, $lineWidth,
-        //     this->currentColor->red, this->currentColor->green,
-        //     this->currentColor->blue, this->currentColor->alpha
-        // );
-
-        return $this;
-    }
-
-    /**
-     * Set the current font name and size.
-     *
-     * @param string $fontName Font name (e.g., 'Helvetica', 'Times-Roman')
-     * @param float $fontSize Font size in points
-     * @return self Fluent interface
-     */
-    public function setFont(string $fontName, float $fontSize = 12.0): self
+    public static function prefetchModels(array $languages): string
     {
-        $this->ensureOpen();
-        $this->currentFont = $fontName;
-        $this->currentFontSize = $fontSize;
-
-        // Call FFI: this->bindings->pdfSetFont(this->handle, $fontName, $fontSize);
-
-        return $this;
+        $bindings = new FunctionBindings();
+        return $bindings->pdfOxidePrefetchModels(implode(',', $languages));
     }
 
-    /**
-     * Set the current text color.
-     *
-     * @param Color $color The color to use
-     * @return self Fluent interface
-     */
-    public function setColor(Color $color): self
-    {
-        $this->ensureOpen();
-        $this->currentColor = $color;
+    // ─────────────────────── lifecycle ─────────────────────
 
-        // Call FFI: this->bindings->pdfSetColor(
-        //     this->handle, $color->red, $color->green,
-        //     $color->blue, $color->alpha
-        // );
-
-        return $this;
-    }
-
-    /**
-     * Set the line width for drawing operations.
-     *
-     * @param float $width Line width in points
-     * @return self Fluent interface
-     */
-    public function setLineWidth(float $width): self
-    {
-        $this->ensureOpen();
-
-        // Call FFI: this->bindings->pdfSetLineWidth(this->handle, $width);
-
-        return $this;
-    }
-
-    /**
-     * Save the document to a file.
-     *
-     * @param string $filePath Path where to save the PDF
-     * @throws \PdfOxide\Exceptions\IoException on save error
-     */
-    public function save(string $filePath): void
-    {
-        $this->ensureOpen();
-        $this->bindings->pdfSave($this->handle, $filePath);
-    }
-
-    /**
-     * Save the document to a string (in-memory PDF).
-     *
-     * @return string The PDF document as a string
-     */
-    public function saveToString(): string
-    {
-        $this->ensureOpen();
-        return $this->bindings->pdfSaveToBytes($this->handle);
-    }
-
-    /**
-     * Get the current font name.
-     *
-     * @return string Current font name
-     */
-    public function getCurrentFont(): string
-    {
-        return $this->currentFont;
-    }
-
-    /**
-     * Get the current font size.
-     *
-     * @return float Current font size
-     */
-    public function getCurrentFontSize(): float
-    {
-        return $this->currentFontSize;
-    }
-
-    /**
-     * Get the current drawing color.
-     *
-     * @return Color Current color
-     */
-    public function getCurrentColor(): Color
-    {
-        return $this->currentColor;
-    }
-
-    /**
-     * Check if document is still open.
-     *
-     * @return bool True if document is open
-     */
     public function isOpen(): bool
     {
-        return !$this->closed && $this->handle !== null;
+        return $this->handle !== null;
     }
 
-    /**
-     * Close the document and free resources.
-     *
-     * @return void
-     */
     public function close(): void
     {
-        if ($this->handle !== null && !$this->closed) {
-            HandleManager::unregister($this->handle);
-            // Call FFI: this->bindings->pdfFree(this->handle);
-            $this->closed = true;
+        if ($this->handle !== null) {
+            // Pdf* has its own freer (NOT pdf_document_free, which takes
+            // a PdfDocument*).
+            NativeLibrary::getInstance()->pdf_free($this->handle);
             $this->handle = null;
         }
     }
 
-    /**
-     * Ensure the document is still open.
-     *
-     * @throws InvalidStateException if document is closed
-     * @internal
-     */
-    private function ensureOpen(): void
-    {
-        if (!$this->isOpen()) {
-            throw new InvalidStateException(
-                'PDF document is closed',
-                ['is_new' => $this->isNew]
-            );
-        }
-    }
-
-    /**
-     * Close document on destruct.
-     */
     public function __destruct()
     {
         $this->close();
+    }
+
+    /** @internal */
+    public function getHandle(): CData
+    {
+        return $this->requireHandle();
+    }
+
+    private function requireHandle(): CData
+    {
+        if ($this->handle === null) {
+            throw new InvalidStateException('Pdf has been closed');
+        }
+        return $this->handle;
     }
 }

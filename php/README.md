@@ -32,16 +32,37 @@ pin a specific release. The runtime library search order is:
 
 ## Prerequisites
 
-- **PHP 8.2+** — supported versions: 8.2, 8.3, 8.4, 8.5 (CI matrix). PHP 8.1 is EOL since 2025-11 and is not supported.
+- **PHP 8.2+** — supported versions: 8.2, 8.3, 8.4, 8.5 (CI matrix).
 - **`ext-ffi` enabled.** Confirm with `php -m | grep -i ffi`. Some
   managed PHP hosts (shared cPanel, Plesk) disable `ext-ffi` at the
-  `php.ini` level for security reasons; consult your host or use a
-  Docker image such as `php:8.3-cli` if unsure.
+  `php.ini` level for security reasons; use a Docker image such as
+  `php:8.3-cli` if unsure.
 - **`ext-mbstring`** (almost always already enabled).
 - A platform with one of the five published native binaries above. If
-  you're on a different platform you can build `libpdf_oxide` yourself
-  from source (`cargo build --release --lib` against the root crate)
-  and point `PDF_OXIDE_CDYLIB_PATH` at it.
+  you're on a different platform, build `libpdf_oxide` from source
+  (`cargo build --release --lib` against the root crate) and point
+  `PDF_OXIDE_CDYLIB_PATH` at it.
+
+## API shape
+
+The PHP binding mirrors the Java binding's surface — **9 classes**, all
+under the `PdfOxide\` namespace:
+
+| Class                       | Purpose                                                      |
+| --------------------------- | ------------------------------------------------------------ |
+| `PdfOxide\PdfDocument`      | open/read/extract/page-iterate                               |
+| `PdfOxide\Pdf`              | create PDFs (markdown→PDF, html→PDF), `version()`, prefetch  |
+| `PdfOxide\PdfPage`          | per-page lightweight view                                    |
+| `PdfOxide\MarkdownConverter`| static markdown/HTML conversion                              |
+| `PdfOxide\AutoExtractor`    | v0.3.51 typed-reason extraction + classification             |
+| `PdfOxide\AutoExtractResult`| readonly result value-object for `AutoExtractor`             |
+| `PdfOxide\DocumentEditor`   | edit / form-fill / destructive redaction / save              |
+| `PdfOxide\PdfSigner`        | PAdES B-B / B-T / B-LT / B-LTA signing                       |
+| `PdfOxide\PdfValidator`     | PDF/A and PDF/UA compliance checks                           |
+| `PdfOxide\PdfPolicy`        | set-once process-global crypto-governance policy             |
+
+The FFI / exception infrastructure lives under `PdfOxide\FFI\…` and
+`PdfOxide\Exceptions\…`.
 
 ## Quickstart
 
@@ -50,99 +71,84 @@ pin a specific release. The runtime library search order is:
 ```php
 use PdfOxide\PdfDocument;
 
-$doc = new PdfDocument('report.pdf');
-echo $doc->getPageCount(), " pages\n";
+$doc = PdfDocument::open('report.pdf');
+echo $doc->pageCount(), " pages\n";
 
 // Extract plain text from page 0:
 echo $doc->extractText(0);
 
-// Or Markdown for the whole document:
+// Whole-document Markdown:
 echo $doc->toMarkdownAll();
+
+$doc->close();  // or rely on __destruct()
 ```
 
-### 2. Auto-extraction with typed reasons
+### 2. Auto-extraction with typed reasons (v0.3.51 #517 / #519)
 
 ```php
+use PdfOxide\AutoExtractor;
+use PdfOxide\AutoExtractResult;
 use PdfOxide\PdfDocument;
-use PdfOxide\Enums\ExtractReason;
 
-$doc    = new PdfDocument('mixed.pdf');
-$result = $doc->auto()->extractText($doc, 0);
+$doc = PdfDocument::open('mixed.pdf');
+$ex  = AutoExtractor::of($doc);
 
+$result = $ex->extractAutoPage(0);
 echo $result->text;
-if ($result->reason !== ExtractReason::Ok) {
-    error_log("[pdf_oxide] degraded extraction: " . $result->reason->value);
+if (!$result->isOk()) {
+    error_log("[pdf_oxide] degraded extraction: {$result->reason}");
 }
+
+$doc->close();
 ```
 
-### 3. Destructive redaction (security operation — fails closed)
+### 3. Create a PDF from Markdown
 
 ```php
-use PdfOxide\Managers\RedactionManager;
-use PdfOxide\Types\Rect;
+use PdfOxide\Pdf;
 
-$redact = RedactionManager::openFile('in.pdf');
-$redact->mark(0, new Rect(100, 700, 200, 20));   // page 0, x,y,w,h in PDF points
-$redact->apply(scrubMetadata: true);
+$pdf = Pdf::fromMarkdown("# Invoice\n\n**Total:** $42.00\n");
+file_put_contents('invoice.pdf', $pdf->save());
+$pdf->close();
 ```
 
-### 4. PAdES B-T signature
+### 4. Destructive redaction (security operation — fails closed)
 
 ```php
-use PdfOxide\PdfDocument;
-use PdfOxide\Enums\PadesLevel;
+use PdfOxide\DocumentEditor;
 
-$doc  = new PdfDocument('contract.pdf');
-$sigs = $doc->signatures();
-$signed = $sigs->signPades(
-    pdfData:           file_get_contents('contract.pdf'),
-    certificateHandle: $certHandle,                        // load via signatures()->loadPkcs12()
-    level:             PadesLevel::BT,
-    tsaUrl:            'https://freetsa.org/tsr',
-    reason:            'Final contract',
+$editor = DocumentEditor::open('in.pdf');
+$editor->addRedaction(0, 100.0, 700.0, 300.0, 720.0);  // x1,y1,x2,y2 in points
+$editor->applyRedactionsDestructive();
+$editor->saveTo('redacted.pdf');
+$editor->close();
+```
+
+### 5. PAdES B-T signature
+
+```php
+use PdfOxide\PdfSigner;
+
+$signer = PdfSigner::fromPkcs12('certs/sign.p12', 'p12-password');
+$signed = $signer->sign(
+    pdfBytes: file_get_contents('contract.pdf'),
+    level:    PdfSigner::LEVEL_B_T,
+    tsaUrl:   'https://freetsa.org/tsr',
+    reason:   'Final contract',
 );
 file_put_contents('signed.pdf', $signed);
+$signer->close();
 ```
 
-### 5. Office to PDF + PDF to DOCX
+### 6. Crypto-governance policy (set-once)
 
 ```php
-use PdfOxide\PdfDocument;
-use PdfOxide\Managers\OfficeConverter;
+use PdfOxide\PdfPolicy;
 
-// DOCX bytes -> PdfDocument
-$pdfDoc = PdfDocument::fromDocxBytes(file_get_contents('memo.docx'));
-
-// PdfDocument -> DOCX bytes
-$docx = (new OfficeConverter($pdfDoc->getHandle()))->toDocx();
-file_put_contents('memo-pages.docx', $docx);
+// MUST run before opening any PDF.
+PdfPolicy::set(PdfPolicy::STRICT);
+echo PdfPolicy::current();   // → "strict"
 ```
-
-## Capability surface
-
-PHP parity with Python / Java for the v0.3.54 FFI surface:
-
-- Reading: text / Markdown / HTML / plain extraction, search,
-  metadata, fonts, images, annotations, outlines.
-- Auto-extraction (`AutoExtractor`) with the typed `ExtractReason`
-  enum (frozen wire format).
-- Region extraction (text / words / lines / tables / images in a
-  rect).
-- Forms: AcroForm + XFA, FDF/XFDF bytes import/export.
-- Outline / bookmarks (incl. split-by-bookmarks planning).
-- Page editing: rotate / delete / move / merge, header/footer
-  erasure, artifact removal.
-- Destructive redaction (`RedactionManager`) + metadata scrub —
-  security-op semantics (fail-closed).
-- PAdES B-B / B-T / B-LT / B-LTA signatures via the v0.3.51 5-arg
-  options shim.
-- Office: DOCX / PPTX / XLSX <-> PDF round-trip.
-- Watermarks, stamps, freetext annotations.
-- OCR (manual + by-default fallback).
-- Barcodes (generate + detect).
-- PDF/A, PDF/UA, PDF/X compliance (validate + convert).
-- Models subsystem (`prefetch_models`, `model_manifest`,
-  `prefetch_available`).
 
 ## Testing
 

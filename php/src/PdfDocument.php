@@ -1,757 +1,313 @@
 <?php
 
+/*
+ * Copyright 2025-2026 Yury Fedoseev and pdf_oxide contributors.
+ * Licensed under MIT OR Apache-2.0.
+ */
+
 declare(strict_types=1);
 
 namespace PdfOxide;
 
 use FFI\CData;
-use PdfOxide\FFI\{FunctionBindings, HandleManager, NativeLibrary};
 use PdfOxide\Exceptions\InvalidStateException;
-use PdfOxide\Types\{Rect, Point, Color, SearchResult, Font, Image, Annotation};
-use PdfOxide\Managers\{
-    MetadataManager,
-    OutlineManager,
-    LayerManager,
-    CacheManager,
-    SignatureManager,
-    ComplianceManager,
-    RenderingManager,
-    OcrManager,
-    FormManager,
-    AnnotationManager,
-    BarcodeManager,
-    ExtractionManager,
-    HybridMLManager,
-    XfaFormManager,
-    DocumentEditorManager
-};
-use PdfOxide\Xfa\XfaForm;
+use PdfOxide\Exceptions\IoException;
+use PdfOxide\FFI\FunctionBindings;
 
 /**
- * Main class for reading and analyzing PDF documents.
+ * The primary read-only entry point to a PDF.
  *
- * Provides methods for text extraction, search, and content analysis.
+ * Mirrors `fyi.oxide.pdf.PdfDocument` from the Java binding. Owns a
+ * native handle that MUST be released via {@see close()}. PHP doesn't
+ * have try-with-resources; rely on `__destruct()` cleanup or call
+ * `close()` explicitly.
+ *
+ * Lifecycle:
+ *   - `__destruct()` is best-effort — explicit `close()` is preferred.
+ *   - `close()` is idempotent; calling more than once is a no-op.
+ *
+ * Thread safety: instances are NOT safe to share across threads. PHP
+ * is single-threaded by default; this matters only if you're using
+ * pthreads/parallel.
+ *
+ * Convenience helpers `extractTextOnce()` open + extract + close in a
+ * single call.
  */
-class PdfDocument
+final class PdfDocument
 {
     private ?CData $handle = null;
-    private bool $closed = false;
-    private FunctionBindings $bindings;
-    private string $filePath;
 
-    // Lazy-loaded managers
-    private ?MetadataManager $metadataManager = null;
-    private ?OutlineManager $outlineManager = null;
-    private ?LayerManager $layerManager = null;
-    private ?CacheManager $cacheManager = null;
-    private ?SignatureManager $signatureManager = null;
-    private ?ComplianceManager $complianceManager = null;
-    private ?RenderingManager $renderingManager = null;
-    private ?OcrManager $ocrManager = null;
-    private ?FormManager $formManager = null;
-    private ?AnnotationManager $annotationManager = null;
-    private ?BarcodeManager $barcodeManager = null;
-    private ?ExtractionManager $extractionManager = null;
-    private ?HybridMLManager $hybridMLManager = null;
-    private ?XfaFormManager $xfaFormManager = null;
-    private ?DocumentEditorManager $editorManager = null;
+    private readonly FunctionBindings $bindings;
+
+    /** @var string|null absolute path or `null` when opened from bytes */
+    private readonly ?string $sourcePath;
 
     /**
-     * Open a PDF document for reading.
-     *
-     * @param string $filePath Path to the PDF file
-     * @throws \PdfOxide\Exceptions\PdfException on error
+     * Internal: use one of the static factories.
      */
-    public function __construct(string $filePath)
+    private function __construct(CData $handle, ?string $sourcePath)
     {
-        $this->filePath = $filePath;
         $this->bindings = new FunctionBindings();
-
-        if (!file_exists($filePath)) {
-            throw new \PdfOxide\Exceptions\IoException(
-                "PDF file not found: {$filePath}",
-                ['file' => $filePath]
-            );
-        }
-
-        // Open the document
-        $this->handle = $this->bindings->pdfDocumentOpen($filePath);
-        HandleManager::register($this->handle, 'PdfDocumentHandle', $filePath);
+        $this->handle = $handle;
+        $this->sourcePath = $sourcePath;
     }
 
+    // ────────────────────── factories ──────────────────────
+
     /**
-     * Get the number of pages in the document.
+     * Open a PDF from a filesystem path.
      *
-     * @return int Number of pages
+     * @throws IoException when the file is missing
+     * @throws \PdfOxide\Exceptions\ParseException on malformed PDF bytes
+     * @throws \PdfOxide\Exceptions\EncryptionException on a password-required PDF
      */
-    public function getPageCount(): int
+    public static function open(string $path): self
     {
-        $this->ensureOpen();
-        return $this->bindings->pdfDocumentGetPageCount($this->handle);
-    }
-
-    /**
-     * Get the PDF version.
-     *
-     * @return array Array with 'major' and 'minor' version numbers
-     */
-    public function getVersion(): array
-    {
-        $this->ensureOpen();
-        return $this->bindings->pdfDocumentGetVersion($this->handle);
-    }
-
-    /**
-     * Check if document has a structure tree (for accessibility).
-     *
-     * @return bool True if document has structure tree
-     */
-    public function hasStructureTree(): bool
-    {
-        $this->ensureOpen();
-        return $this->bindings->pdfDocumentHasStructureTree($this->handle);
-    }
-
-    // ==================== MANAGERS ====================
-
-    /**
-     * Get metadata manager for accessing document properties.
-     */
-    public function metadata(): MetadataManager
-    {
-        $this->ensureOpen();
-        if ($this->metadataManager === null) {
-            $this->metadataManager = new MetadataManager($this->handle);
+        if (! is_file($path)) {
+            throw new IoException("PDF file not found: {$path}", ['file' => $path]);
         }
-        return $this->metadataManager;
-    }
-
-    /**
-     * Get outline manager for accessing bookmarks.
-     */
-    public function outlines(): OutlineManager
-    {
-        $this->ensureOpen();
-        if ($this->outlineManager === null) {
-            $this->outlineManager = new OutlineManager($this->handle);
-        }
-        return $this->outlineManager;
-    }
-
-    /**
-     * Get layer manager for accessing OCG/layers.
-     */
-    public function layers(): LayerManager
-    {
-        $this->ensureOpen();
-        if ($this->layerManager === null) {
-            $this->layerManager = new LayerManager($this->handle);
-        }
-        return $this->layerManager;
-    }
-
-    /**
-     * Get cache manager for cache control.
-     */
-    public function cache(): CacheManager
-    {
-        $this->ensureOpen();
-        if ($this->cacheManager === null) {
-            $this->cacheManager = new CacheManager($this->handle);
-        }
-        return $this->cacheManager;
-    }
-
-    /**
-     * Get signature manager for digital signatures.
-     */
-    public function signatures(): SignatureManager
-    {
-        $this->ensureOpen();
-        if ($this->signatureManager === null) {
-            $this->signatureManager = new SignatureManager($this->handle);
-        }
-        return $this->signatureManager;
-    }
-
-    /**
-     * Get compliance manager for PDF standards conversion.
-     */
-    public function compliance(): ComplianceManager
-    {
-        $this->ensureOpen();
-        if ($this->complianceManager === null) {
-            $this->complianceManager = new ComplianceManager($this->handle);
-        }
-        return $this->complianceManager;
-    }
-
-    /**
-     * Get rendering manager for page rendering to images.
-     */
-    public function rendering(): RenderingManager
-    {
-        $this->ensureOpen();
-        if ($this->renderingManager === null) {
-            $this->renderingManager = new RenderingManager($this->handle);
-        }
-        return $this->renderingManager;
-    }
-
-    /**
-     * Get OCR manager for text recognition.
-     */
-    public function ocr(): OcrManager
-    {
-        $this->ensureOpen();
-        if ($this->ocrManager === null) {
-            $this->ocrManager = new OcrManager($this->handle);
-        }
-        return $this->ocrManager;
-    }
-
-    /**
-     * Get form manager for AcroForm operations.
-     */
-    public function forms(): FormManager
-    {
-        $this->ensureOpen();
-        if ($this->formManager === null) {
-            $this->formManager = new FormManager($this->handle);
-        }
-        return $this->formManager;
-    }
-
-    /**
-     * Get annotation manager for annotations.
-     */
-    public function annotations(): AnnotationManager
-    {
-        $this->ensureOpen();
-        if ($this->annotationManager === null) {
-            $this->annotationManager = new AnnotationManager($this->handle);
-        }
-        return $this->annotationManager;
-    }
-
-    /**
-     * Get barcode manager for barcode generation.
-     */
-    public function barcodes(): BarcodeManager
-    {
-        $this->ensureOpen();
-        if ($this->barcodeManager === null) {
-            $this->barcodeManager = new BarcodeManager($this->handle);
-        }
-        return $this->barcodeManager;
-    }
-
-    /**
-     * Get extraction manager for content extraction.
-     */
-    public function extraction(): ExtractionManager
-    {
-        $this->ensureOpen();
-        if ($this->extractionManager === null) {
-            $this->extractionManager = new ExtractionManager($this->handle);
-        }
-        return $this->extractionManager;
-    }
-
-    /**
-     * Get hybrid ML manager for intelligent analysis.
-     */
-    public function hybridML(): HybridMLManager
-    {
-        $this->ensureOpen();
-        if ($this->hybridMLManager === null) {
-            $this->hybridMLManager = new HybridMLManager($this->handle);
-        }
-        return $this->hybridMLManager;
-    }
-
-    /**
-     * Get XFA form manager for XFA operations.
-     */
-    public function xfa(): XfaFormManager
-    {
-        $this->ensureOpen();
-        if ($this->xfaFormManager === null) {
-            $this->xfaFormManager = new XfaFormManager($this->handle);
-        }
-        return $this->xfaFormManager;
-    }
-
-    /**
-     * Get document editor manager for page manipulation.
-     */
-    public function editor(): DocumentEditorManager
-    {
-        $this->ensureOpen();
-        if ($this->editorManager === null) {
-            $this->editorManager = new DocumentEditorManager($this->handle);
-        }
-        return $this->editorManager;
-    }
-
-    /**
-     * Phase 6 / v0.3.55 — return the raw document handle.
-     *
-     * Used by {@see \PdfOxide\AutoExtractor} and other Phase 6
-     * managers that take the document by handle (mirrors Python's
-     * `_handle` accessor pattern). Avoids creating one
-     * `DocumentEditor` per call when only the read-only handle is
-     * needed.
-     *
-     * @internal Plain `CData|null`; callers must not free.
-     */
-    public function getHandle(): ?CData
-    {
-        $this->ensureOpen();
-        return $this->handle;
-    }
-
-    /**
-     * Phase 6.1 / v0.3.51 #519 — auto-extraction accessor.
-     *
-     * Returns a thin wrapper that exposes typed-reason auto-extract
-     * surfaces (classify / extract_text_auto / extract_page_auto).
-     * Cheap to construct (no FFI calls on instantiation); kept
-     * unmemoised so test setup-tear-down is simple.
-     */
-    public function auto(): AutoExtractor
-    {
-        $this->ensureOpen();
-        return new AutoExtractor();
-    }
-
-    // ==================== STATIC OPENERS (Phase 6.2 — #159) ====================
-
-    /**
-     * Open a PDF document from a DOCX byte string. The document is
-     * converted in-memory via the Rust pipeline.
-     */
-    public static function fromDocxBytes(string $data): self
-    {
         $bindings = new FunctionBindings();
-        $handle = $bindings->pdfDocumentOpenFromDocxBytes($data);
-        return self::fromOfficeHandle($handle, 'docx');
-    }
-
-    /** Open a PDF document from a PPTX byte string. */
-    public static function fromPptxBytes(string $data): self
-    {
-        $bindings = new FunctionBindings();
-        $handle = $bindings->pdfDocumentOpenFromPptxBytes($data);
-        return self::fromOfficeHandle($handle, 'pptx');
-    }
-
-    /** Open a PDF document from an XLSX byte string. */
-    public static function fromXlsxBytes(string $data): self
-    {
-        $bindings = new FunctionBindings();
-        $handle = $bindings->pdfDocumentOpenFromXlsxBytes($data);
-        return self::fromOfficeHandle($handle, 'xlsx');
-    }
-
-    /**
-     * Common construction path for the {@see fromDocxBytes()} family.
-     *
-     * @internal
-     */
-    private static function fromOfficeHandle(?CData $handle, string $tag): self
-    {
+        $handle = $bindings->pdfDocumentOpen($path);
         if ($handle === null) {
-            throw new \PdfOxide\Exceptions\ParseException(
-                "Failed to open document from {$tag} bytes",
-                ['source' => $tag]
-            );
+            throw new IoException("Failed to open PDF: {$path}", ['file' => $path]);
         }
-        // Hydrate without re-running the constructor (the file-path
-        // constructor is not appropriate for in-memory documents).
-        $instance = (new \ReflectionClass(self::class))->newInstanceWithoutConstructor();
-        $instance->filePath = "<{$tag}-bytes>";
-        $instance->bindings = new FunctionBindings();
-        $instance->handle = $handle;
-        $instance->closed = false;
-        HandleManager::register($handle, 'PdfDocumentHandle', $instance->filePath);
-        return $instance;
+        return new self($handle, $path);
     }
 
     /**
-     * Check if document has XFA form.
+     * Open a PDF from an in-memory byte string. Writes to a temp file
+     * because pdf_oxide's PHP FFI surface only exposes a path-based
+     * opener.
      *
-     * @return bool True if document contains XFA form
+     * @throws IoException when the temp file can't be written
+     * @throws \PdfOxide\Exceptions\ParseException on malformed PDF bytes
      */
-    public function hasXfa(): bool
+    public static function openBytes(string $bytes): self
     {
-        $this->ensureOpen();
-        return $this->bindings->pdfDocumentHasXfa($this->handle);
-    }
-
-    /**
-     * Get XFA form if document contains one.
-     *
-     * @return ?XfaForm The XFA form, or null if not present
-     */
-    public function getXfaForm(): ?XfaForm
-    {
-        $this->ensureOpen();
-
-        if (!$this->hasXfa()) {
-            return null;
+        $tmp = tempnam(sys_get_temp_dir(), 'pdf_oxide_');
+        if ($tmp === false) {
+            throw new IoException('Failed to allocate temp file for in-memory PDF');
         }
+        if (file_put_contents($tmp, $bytes) === false) {
+            @unlink($tmp);
+            throw new IoException('Failed to write in-memory PDF to temp file');
+        }
+        try {
+            $doc = self::open($tmp);
+        } catch (\Throwable $e) {
+            @unlink($tmp);
+            throw $e;
+        }
+        // Keep the temp file for the document's lifetime — it'll be unlinked on close.
+        $doc->ownedTempPath = $tmp;
+        return $doc;
+    }
 
-        $handle = $this->bindings->pdfParseXfaForm($this->handle);
-        return new XfaForm($handle, $this->bindings);
+    /** @internal temp file the document owns (deleted in close()) */
+    private ?string $ownedTempPath = null;
+
+    // ─────────── static one-shot convenience ───────────────
+
+    /**
+     * Convenience: open + `extractText(0)` + close in a single call.
+     */
+    public static function extractTextOnce(string $path): string
+    {
+        $doc = self::open($path);
+        try {
+            return $doc->extractText(0);
+        } finally {
+            $doc->close();
+        }
+    }
+
+    // ─────────────────────── instance ──────────────────────
+
+    /** @return int the number of pages in the document */
+    public function pageCount(): int
+    {
+        return $this->bindings->pdfDocumentGetPageCount($this->requireHandle());
     }
 
     /**
-     * Extract plain text from a page.
+     * Extract plain text from a single page.
      *
-     * @param int $pageIndex Zero-based page index
-     * @return string Extracted text
+     * @throws \OutOfBoundsException when `$pageIndex` is out of range
+     * @throws InvalidStateException when the document has been closed
      */
     public function extractText(int $pageIndex): string
     {
-        $this->ensureOpen();
-        $this->validatePageIndex($pageIndex);
-        return $this->bindings->pdfDocumentExtractText($this->handle, $pageIndex);
+        return $this->bindings->pdfDocumentExtractText($this->requireHandle(), $pageIndex);
     }
 
     /**
-     * Extract text from all pages.
-     *
-     * @return string Concatenated text from all pages
+     * Auto-routed extraction (v0.3.51 #517). Returns native text when
+     * present, OCR text for scanned regions when the `ocr` feature is
+     * available, and gracefully falls back to native text + a logged
+     * warning when OCR is unavailable — NEVER throws on the
+     * graceful-fallback path.
      */
-    public function extractTextAll(): string
+    public function extractTextAuto(int $pageIndex): string
     {
-        $text = '';
-        for ($i = 0; $i < $this->getPageCount(); $i++) {
-            if ($text) {
-                $text .= "\n\n---PAGE-BREAK---\n\n";
-            }
-            $text .= $this->extractText($i);
+        return $this->bindings->pdfDocumentExtractTextAuto($this->requireHandle(), $pageIndex);
+    }
+
+    /** PDF version as `['major' => int, 'minor' => int]`. */
+    public function version(): array
+    {
+        return $this->bindings->pdfDocumentGetVersion($this->requireHandle());
+    }
+
+    /** Whether the document carries a logical structure tree (PDF/UA prereq). */
+    public function hasStructureTree(): bool
+    {
+        return $this->bindings->pdfDocumentHasStructureTree($this->requireHandle());
+    }
+
+    /**
+     * Whether the document has any AcroForm/XFA form fields. The
+     * C ABI doesn't expose a direct `has_form_fields` predicate; this
+     * counts via `pdf_document_get_form_fields` and reads the list
+     * length (frees the list before returning).
+     */
+    public function hasFormFields(): bool
+    {
+        $ffi = \PdfOxide\FFI\NativeLibrary::getInstance();
+        $errorCode = \FFI::new('int32_t');
+        $list = $ffi->pdf_document_get_form_fields($this->requireHandle(), \FFI::addr($errorCode));
+        if ($list === null) {
+            return false;
         }
-        return $text;
+        try {
+            return ((int) $ffi->pdf_oxide_form_field_count($list)) > 0;
+        } finally {
+            $ffi->pdf_oxide_form_field_list_free($list);
+        }
     }
 
-    /**
-     * Convert a page to Markdown format.
-     *
-     * @param int $pageIndex Zero-based page index
-     * @return string Markdown formatted text
-     */
-    public function toMarkdown(int $pageIndex): string
+    /** Whether the document has any embedded digital signatures. */
+    public function hasSignatures(): bool
     {
-        $this->ensureOpen();
-        $this->validatePageIndex($pageIndex);
-        return $this->bindings->pdfDocumentToMarkdown($this->handle, $pageIndex);
+        $ffi = \PdfOxide\FFI\NativeLibrary::getInstance();
+        $errorCode = \FFI::new('int32_t');
+        $count = (int) $ffi->pdf_document_get_signature_count($this->requireHandle(), \FFI::addr($errorCode));
+        return $count > 0;
     }
 
-    /**
-     * Convert entire document to Markdown format.
-     *
-     * @return string Markdown formatted text
-     */
+    // ──────────────── markdown / html shortcuts ────────────
+
+    /** Per-page Markdown conversion. Equivalent to {@see MarkdownConverter::toMarkdown()}. */
+    public function toMarkdown(int $pageIndex = 0): string
+    {
+        return MarkdownConverter::toMarkdown($this, $pageIndex);
+    }
+
+    /** Whole-document Markdown conversion. */
     public function toMarkdownAll(): string
     {
-        $this->ensureOpen();
-        return $this->bindings->pdfDocumentToMarkdownAll($this->handle);
+        return MarkdownConverter::toMarkdownAll($this);
+    }
+
+    /** Per-page HTML conversion. */
+    public function toHtml(int $pageIndex = 0): string
+    {
+        return MarkdownConverter::toHtml($this, $pageIndex);
+    }
+
+    // ───────────────────── page iteration ──────────────────
+
+    /**
+     * Get a lightweight view of a single page. The {@see PdfPage} is
+     * invalidated when the parent document is closed.
+     *
+     * @throws \OutOfRangeException when `$index` is out of range
+     */
+    public function page(int $index): PdfPage
+    {
+        $n = $this->pageCount();
+        if ($index < 0 || $index >= $n) {
+            throw new \OutOfRangeException("page index {$index} out of range [0, {$n})");
+        }
+        return new PdfPage($this, $index);
     }
 
     /**
-     * Convert a page to HTML format.
-     *
-     * @param int $pageIndex Zero-based page index
-     * @return string HTML content
+     * @return array<int, PdfPage> all pages (eager)
      */
-    public function toHtml(int $pageIndex): string
+    public function pages(): array
     {
-        $this->ensureOpen();
-        $this->validatePageIndex($pageIndex);
-        return $this->bindings->pdfDocumentToHtml($this->handle, $pageIndex);
+        $n = $this->pageCount();
+        $out = [];
+        for ($i = 0; $i < $n; ++$i) {
+            $out[] = new PdfPage($this, $i);
+        }
+        return $out;
     }
 
     /**
-     * Convert a page to plain text (layout-preserving).
+     * Lazy generator over pages. Prefer for large documents.
      *
-     * @param int $pageIndex Zero-based page index
-     * @return string Plain text with layout preserved
+     * @return \Generator<int, PdfPage>
      */
-    public function toPlainText(int $pageIndex): string
+    public function pagesIter(): \Generator
     {
-        $this->ensureOpen();
-        $this->validatePageIndex($pageIndex);
-        return $this->bindings->pdfDocumentToPlainText($this->handle, $pageIndex);
-    }
-
-    /**
-     * Search for text in a specific page.
-     *
-     * @param string $searchTerm The text to search for
-     * @param int $pageIndex Zero-based page index
-     * @param bool $caseSensitive Whether search is case-sensitive
-     * @return SearchResult[] Array of search results
-     */
-    public function searchPage(string $searchTerm, int $pageIndex, bool $caseSensitive = false): array
-    {
-        $this->ensureOpen();
-        $this->validatePageIndex($pageIndex);
-
-        $resultsHandle = $this->bindings->pdfDocumentSearchPage(
-            $this->handle,
-            $searchTerm,
-            $pageIndex,
-            $caseSensitive
-        );
-
-        try {
-            return $this->parseSearchResults($resultsHandle);
-        } finally {
-            $this->bindings->oxideSearchResultFree($resultsHandle);
+        $n = $this->pageCount();
+        for ($i = 0; $i < $n; ++$i) {
+            yield $i => new PdfPage($this, $i);
         }
     }
 
-    /**
-     * Search for text in entire document.
-     *
-     * @param string $searchTerm The text to search for
-     * @param bool $caseSensitive Whether search is case-sensitive
-     * @return SearchResult[] Array of search results
-     */
-    public function searchAll(string $searchTerm, bool $caseSensitive = false): array
-    {
-        $this->ensureOpen();
+    // ────────────────────── lifecycle ──────────────────────
 
-        $resultsHandle = $this->bindings->pdfDocumentSearchAll(
-            $this->handle,
-            $searchTerm,
-            $caseSensitive
-        );
-
-        try {
-            return $this->parseSearchResults($resultsHandle);
-        } finally {
-            $this->bindings->oxideSearchResultFree($resultsHandle);
-        }
-    }
-
-    /**
-     * Get embedded fonts from a page.
-     *
-     * @param int $pageIndex Zero-based page index
-     * @return Font[] Array of fonts
-     */
-    public function getFonts(int $pageIndex): array
-    {
-        $this->ensureOpen();
-        $this->validatePageIndex($pageIndex);
-
-        $fontsHandle = $this->bindings->pdfDocumentGetEmbeddedFonts($this->handle, $pageIndex);
-
-        try {
-            $fonts = [];
-            $count = $this->bindings->oxideFontCount($fontsHandle);
-
-            for ($i = 0; $i < $count; $i++) {
-                $fonts[] = new Font(
-                    $this->bindings->oxideFontGetName($fontsHandle, $i),
-                    $this->bindings->oxideFontGetType($fontsHandle, $i),
-                    $this->bindings->oxideFontIsEmbedded($fontsHandle, $i)
-                );
-            }
-
-            return $fonts;
-        } finally {
-            $this->bindings->oxideFontFree($fontsHandle);
-        }
-    }
-
-    /**
-     * Get embedded images from a page.
-     *
-     * @param int $pageIndex Zero-based page index
-     * @return Image[] Array of images
-     */
-    public function getImages(int $pageIndex): array
-    {
-        $this->ensureOpen();
-        $this->validatePageIndex($pageIndex);
-
-        $imagesHandle = $this->bindings->pdfDocumentGetEmbeddedImages($this->handle, $pageIndex);
-
-        try {
-            $images = [];
-            $count = $this->bindings->oxideImageCount($imagesHandle);
-
-            for ($i = 0; $i < $count; $i++) {
-                $images[] = new Image(
-                    $this->bindings->oxideImageGetFormat($imagesHandle, $i),
-                    $this->bindings->oxideImageGetWidth($imagesHandle, $i),
-                    $this->bindings->oxideImageGetHeight($imagesHandle, $i)
-                );
-            }
-
-            return $images;
-        } finally {
-            $this->bindings->oxideImageFree($imagesHandle);
-        }
-    }
-
-    /**
-     * Get annotations from a page.
-     *
-     * @param int $pageIndex Zero-based page index
-     * @return Annotation[] Array of annotations
-     */
-    public function getAnnotations(int $pageIndex): array
-    {
-        $this->ensureOpen();
-        $this->validatePageIndex($pageIndex);
-
-        $annotationsHandle = $this->bindings->pdfDocumentGetAnnotations($this->handle, $pageIndex);
-
-        try {
-            $annotations = [];
-            $count = $this->bindings->oxideAnnotationCount($annotationsHandle);
-
-            for ($i = 0; $i < $count; $i++) {
-                $annotations[] = new Annotation(
-                    $this->bindings->oxideAnnotationGetType($annotationsHandle, $i),
-                    $this->bindings->oxideAnnotationGetContent($annotationsHandle, $i)
-                );
-            }
-
-            return $annotations;
-        } finally {
-            $this->bindings->oxideAnnotationFree($annotationsHandle);
-        }
-    }
-
-    /**
-     * Get the file path of this document.
-     *
-     * @return string File path
-     */
-    public function getFilePath(): string
-    {
-        return $this->filePath;
-    }
-
-    /**
-     * Check if document is still open.
-     *
-     * @return bool True if document is open
-     */
+    /** @return bool true if the native handle is still live */
     public function isOpen(): bool
     {
-        return !$this->closed && $this->handle !== null;
+        return $this->handle !== null;
     }
 
     /**
-     * Close the document and free resources.
-     *
-     * @return void
+     * Free the native handle. Idempotent — calling more than once is
+     * a no-op.
      */
     public function close(): void
     {
-        if ($this->handle !== null && !$this->closed) {
-            HandleManager::unregister($this->handle);
+        if ($this->handle !== null) {
             $this->bindings->pdfDocumentFree($this->handle);
-            $this->closed = true;
             $this->handle = null;
         }
-    }
-
-    /**
-     * Get document metadata.
-     *
-     * @return array Metadata array
-     */
-    public function getMetadata(): array
-    {
-        $this->ensureOpen();
-
-        return [
-            'file_path' => $this->filePath,
-            'file_size' => filesize($this->filePath),
-            'page_count' => $this->getPageCount(),
-            'version' => $this->getVersion(),
-            'has_structure_tree' => $this->hasStructureTree(),
-        ];
-    }
-
-    /**
-     * Parse search results from handle.
-     *
-     * @param CData $resultsHandle The search results handle
-     * @return SearchResult[] Array of results
-     * @internal
-     */
-    private function parseSearchResults(CData $resultsHandle): array
-    {
-        $results = [];
-        $count = $this->bindings->oxideSearchResultCount($resultsHandle);
-
-        for ($i = 0; $i < $count; $i++) {
-            $bbox = $this->bindings->oxideSearchResultGetBbox($resultsHandle, $i);
-            $results[] = new SearchResult(
-                $this->bindings->oxideSearchResultGetText($resultsHandle, $i),
-                $this->bindings->oxideSearchResultGetPage($resultsHandle, $i),
-                $this->bindings->oxideSearchResultGetPosition($resultsHandle, $i),
-                new Rect(
-                    $bbox['x'],
-                    $bbox['y'],
-                    $bbox['width'],
-                    $bbox['height']
-                )
-            );
-        }
-
-        return $results;
-    }
-
-    /**
-     * Validate that a page index is within bounds.
-     *
-     * @param int $pageIndex The page index to validate
-     * @throws InvalidStateException if page index is invalid
-     * @internal
-     */
-    private function validatePageIndex(int $pageIndex): void
-    {
-        $pageCount = $this->getPageCount();
-        if ($pageIndex < 0 || $pageIndex >= $pageCount) {
-            $maxPage = $pageCount - 1;
-            throw new InvalidStateException(
-                "Page index {$pageIndex} out of bounds (0-{$maxPage})",
-                ['page_index' => $pageIndex, 'page_count' => $pageCount]
-            );
+        if ($this->ownedTempPath !== null) {
+            @unlink($this->ownedTempPath);
+            $this->ownedTempPath = null;
         }
     }
 
-    /**
-     * Ensure the document is still open.
-     *
-     * @throws InvalidStateException if document is closed
-     * @internal
-     */
-    private function ensureOpen(): void
-    {
-        if (!$this->isOpen()) {
-            throw new InvalidStateException(
-                'PDF document is closed',
-                ['file' => $this->filePath]
-            );
-        }
-    }
-
-    /**
-     * Close document on destruct.
-     */
     public function __destruct()
     {
         $this->close();
+    }
+
+    /**
+     * @internal Accessor used by sibling classes (AutoExtractor,
+     *           MarkdownConverter, PdfValidator, PdfPage) that need
+     *           the raw handle to pass to their own FFI calls. Same
+     *           precondition as the private `requireHandle()`.
+     */
+    public function getHandle(): CData
+    {
+        return $this->requireHandle();
+    }
+
+    /** @internal */
+    public function getSourcePath(): ?string
+    {
+        return $this->sourcePath;
+    }
+
+    private function requireHandle(): CData
+    {
+        if ($this->handle === null) {
+            throw new InvalidStateException('PdfDocument has been closed');
+        }
+        return $this->handle;
     }
 }
