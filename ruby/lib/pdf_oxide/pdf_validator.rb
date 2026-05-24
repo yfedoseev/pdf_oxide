@@ -12,11 +12,19 @@ module PdfOxide
   module PdfValidator
     module_function
 
-    # PDF/A levels (mirrors Java's `PdfALevel` enum).
-    PDF_A_LEVELS = { a1a: 0, a1b: 1, a2a: 2, a2b: 3, a2u: 4, a3a: 5, a3b: 6, a3u: 7 }.freeze
+    # PDF/A level → cdylib wire-format integer.
+    #
+    # Matches `src/ffi.rs:1225` (`0=A1b 1=A1a 2=A2b 3=A2a 4=A2u 5=A3b
+    # 6=A3a 7=A3u`). Every binding (Java, Ruby, PHP, C#, Go) sends the
+    # SAME integer for the same PDF/A level — the "B before A"
+    # intra-level order is the cdylib's contract, not a Ruby choice.
+    PDF_A_LEVELS = { a1b: 0, a1a: 1, a2b: 2, a2a: 3, a2u: 4, a3b: 5, a3a: 6, a3u: 7 }.freeze
 
-    # PDF/UA levels.
-    PDF_UA_LEVELS = { ua1: 0 }.freeze
+    # PDF/UA level → cdylib wire-format integer.
+    #
+    # Matches `src/ffi.rs:5538` (`level == 2 → UA-2, else UA-1`).
+    # 1-indexed, not 0-indexed; mirrors the C# `PdfUaLevel` enum.
+    PDF_UA_LEVELS = { ua1: 1, ua2: 2 }.freeze
 
     # @return [Boolean] PDF/A compliance for `level`.
     def pdf_a?(doc, level: :a1b)

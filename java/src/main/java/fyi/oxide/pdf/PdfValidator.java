@@ -49,11 +49,18 @@ public final class PdfValidator {
         return nativeIsPdfA(doc.requireHandleForCallers(), level.ordinal());
     }
 
-    /** Quick PDF/UA compliance check. */
+    /**
+     * Quick PDF/UA compliance check.
+     *
+     * <p>Uses {@link PdfUaLevel#code()} rather than {@code .ordinal()}
+     * because the cdylib wire format is {@code level == 2 ? UA-2 :
+     * UA-1} — i.e. 1-indexed, not 0-indexed. See PdfUaLevel for the
+     * source-of-truth integer encoding.
+     */
     public static boolean isPdfUa(PdfDocument doc, PdfUaLevel level) {
         Objects.requireNonNull(doc, "doc");
         Objects.requireNonNull(level, "level");
-        return nativeIsPdfUa(doc.requireHandleForCallers(), level.ordinal());
+        return nativeIsPdfUa(doc.requireHandleForCallers(), level.code());
     }
 
     /**

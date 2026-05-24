@@ -24,30 +24,36 @@ use PdfOxide\FFI\NativeLibrary;
 final class PdfValidator
 {
     // ─────────────── PDF/A level ordinals ──────────────────
-    // Frozen by the Rust ABI (`PdfALevel` in pdf_oxide core).
-    // Wire format: int32_t. Ordinals match the Rust enum order.
+    // Frozen by the cdylib wire format at src/ffi.rs:1225
+    // (`0=A1b 1=A1a 2=A2b 3=A2a 4=A2u 5=A3b 6=A3a 7=A3u`). Every
+    // pdf_oxide binding (Java, Ruby, PHP, C#, Go) sends the SAME
+    // integer for the same PDF/A level — the "B before A" intra-level
+    // order is the C ABI contract, not a PHP choice.
 
-    public const PDFA_1A = 0;
+    public const PDFA_1B = 0;
 
-    public const PDFA_1B = 1;
+    public const PDFA_1A = 1;
 
-    public const PDFA_2A = 2;
+    public const PDFA_2B = 2;
 
-    public const PDFA_2B = 3;
+    public const PDFA_2A = 3;
 
     public const PDFA_2U = 4;
 
-    public const PDFA_3A = 5;
+    public const PDFA_3B = 5;
 
-    public const PDFA_3B = 6;
+    public const PDFA_3A = 6;
 
     public const PDFA_3U = 7;
 
     // ─────────────── PDF/UA level ordinals ─────────────────
+    // Frozen by the cdylib wire format at src/ffi.rs:5538
+    // (`level == 2 → UA-2, else UA-1`). 1-indexed, not 0-indexed —
+    // mirrors the C# PdfUaLevel and Java's explicit-coded enum.
 
-    public const PDFUA_1 = 0;
+    public const PDFUA_1 = 1;
 
-    public const PDFUA_2 = 1;
+    public const PDFUA_2 = 2;
 
     /** Static-only. */
     private function __construct()

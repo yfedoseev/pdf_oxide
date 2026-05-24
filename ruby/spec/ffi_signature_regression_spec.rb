@@ -133,6 +133,23 @@ RSpec.describe 'FFI signature regressions' do
     end
   end
 
+  describe 'PDF/A + PDF/UA level → cdylib wire-format integer parity' do
+    # Locks in the alignment with the cdylib's documented integer
+    # encoding (src/ffi.rs:1225 + 5538) and with the C# / Java / PHP
+    # bindings. Pre-fix Ruby had `a1a: 0, a1b: 1` — semantically
+    # reversed against the cdylib's actual mapping. Pre-fix users
+    # asking for "validate as A1a" got A1b validation, etc.
+    it 'PDF/A: B before A within each level, matching src/ffi.rs:1225' do
+      expect(PdfOxide::PdfValidator::PDF_A_LEVELS).to eq(
+        a1b: 0, a1a: 1, a2b: 2, a2a: 3, a2u: 4, a3b: 5, a3a: 6, a3u: 7
+      )
+    end
+
+    it 'PDF/UA: 1-indexed, matching src/ffi.rs:5538' do
+      expect(PdfOxide::PdfValidator::PDF_UA_LEVELS).to eq(ua1: 1, ua2: 2)
+    end
+  end
+
   describe 'PadesSignOptions struct layout (Ruby/Rust parity)' do
     # Already covered in pdf_signer_spec, but re-asserted here so the
     # struct-layout invariant lives alongside the other FFI regression
