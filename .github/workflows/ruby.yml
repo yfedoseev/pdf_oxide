@@ -75,10 +75,13 @@ jobs:
 
       # OSV-Scanner picks up Cargo.lock for the Rust cdylib's transitive
       # deps that bundler-audit can't see. Single step covers both.
+      # osv-scanner.toml at repo root documents the (small) set of
+      # known-upstream advisories with no available fix + justifications.
       - name: OSV-Scanner (Gemfile.lock + Cargo.lock)
         uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
         with:
           scan-args: |-
+            --config=osv-scanner.toml
             --lockfile=ruby/Gemfile.lock
             --lockfile=Cargo.lock
 

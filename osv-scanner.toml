@@ -1,0 +1,24 @@
+# OSV-Scanner configuration for pdf_oxide.
+#
+# Documents the (small) set of known-upstream Rust advisories that have no
+# available fix, with explicit per-CVE justifications and a 90-day review
+# horizon. Re-evaluate every release.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+# `paste` crate: "no longer maintained" advisory (informational, not a CVE).
+# Used transitively by build-macro crates we don't directly depend on. No
+# remote-code-execution or memory-safety implication; advisory exists solely
+# to flag the unmaintained status. Re-evaluate when transitive consumers
+# move off paste (community is migrating to `pastey` / `quote`).
+ignoreUntil = 2026-08-23
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+# `rsa` crate: known potential Marvin-attack timing side-channel for RSA
+# decryption keys. NOT exploitable in our usage: pdf_oxide uses RSA only
+# for PAdES signature *verification* of detached signatures (never
+# decryption of attacker-controlled ciphertexts), where the timing channel
+# is not applicable. No fix version released upstream. Re-evaluate when
+# rustcrypto/RSA ships the constant-time rewrite.
+ignoreUntil = 2026-08-23
