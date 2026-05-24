@@ -52,7 +52,6 @@ parameters:
         # in FunctionBindings; the cdef-declared C functions aren't
         # visible to PHPStan via the ffi.stub.php hand-roll.
         - '#^Call to an undefined method FFI::\w+\(\)\.$#'
-        - '#^Call to an undefined method FFI\\CData::\w+\(\)\.$#'
         # PHPStan cannot model FFI\CData::$cdata so it falls back to
         # mixed/0 inference, then trips "always-true/false" on
         # comparisons that are semantically correct at runtime.

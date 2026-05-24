@@ -34,7 +34,7 @@ namespace {
         public static function cdef(string $code = '', ?string $lib = null): \FFI {}
 
         /**
-         * @param string $code Loadable C header content.
+         * @param string $filename Loadable C header path.
          */
         public static function load(string $filename): ?\FFI {}
 
@@ -89,7 +89,7 @@ namespace {
         public static function isNull(\FFI\CData $ptr): bool {}
 
         /**
-         * @param mixed ...$args
+         * @param array<int, mixed> $args
          */
         public function __call(string $name, array $args): mixed {}
 
@@ -106,11 +106,16 @@ namespace FFI {
      *
      * Treat any property access on a CData as `mixed`; the actual
      * layout comes from the cdef() string at runtime.
+     *
+     * @implements \ArrayAccess<int|string, mixed>
      */
     final class CData implements \ArrayAccess
     {
         public function __get(string $name): mixed {}
         public function __set(string $name, mixed $value): void {}
+        /**
+         * @param array<int, mixed> $args
+         */
         public function __call(string $name, array $args): mixed {}
 
         public function offsetExists(mixed $offset): bool {}

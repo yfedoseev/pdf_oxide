@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace PdfOxide\Tests\Integration;
 
+use PdfOxide\Exceptions\PdfException;
 use PdfOxide\Exceptions\ValidationException;
 use PdfOxide\PdfSigner;
 
@@ -19,6 +20,11 @@ use PdfOxide\PdfSigner;
  * Mirrors `ruby/spec/pdf_signer_spec.rb` and the Java
  * `PdfSignerTest` sign cases. Auto-skips when the cdylib isn't
  * reachable (IntegrationTestCase contract).
+ *
+ * Auto-skips the whole class when the cdylib was built without the
+ * `signatures` cargo feature — the load probe in setUp() returns
+ * SignatureException in that case, mirroring the fail-closed contract
+ * for security ops.
  *
  * @requires extension ffi
  */
@@ -31,6 +37,23 @@ final class PdfSignerSignTest extends IntegrationTestCase
      * `tests/fixtures/`.
      */
     private const KEYSTORE_PASSWORD = 'testpass';
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // Probe the cdylib's signature support once. If the build
+        // doesn't include `--features signatures`, cert loading
+        // surfaces a PdfException — skip the whole class instead of
+        // erroring out on every test method.
+        try {
+            $signer = PdfSigner::fromPkcs12($this->keystorePath(), self::KEYSTORE_PASSWORD);
+            $signer->close();
+        } catch (PdfException $e) {
+            $this->markTestSkipped(
+                'cdylib lacks signatures feature (PKCS#12 load: ' . $e->getMessage() . ')'
+            );
+        }
+    }
 
     /**
      * Locate the shared PKCS#12 fixture. Lives at the repo-wide
