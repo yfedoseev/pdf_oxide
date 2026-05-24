@@ -9,6 +9,7 @@ PHP FFI's C parser is restrictive; this script strips:
   guard and keep the body unconditionally (PHP runs on host platforms only).
 - `<stdarg.h>` style preprocessor includes.
 """
+
 from __future__ import annotations
 
 import re
@@ -21,8 +22,10 @@ _REPO = Path(__file__).resolve().parent.parent.parent
 SRC = _REPO / "include" / "pdf_oxide_c" / "pdf_oxide.h"
 DST = _REPO / "php" / "include" / "pdf_oxide.h"
 
+
 def strip_block_comments(text: str) -> str:
     return re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+
 
 def strip_line_comments(text: str) -> str:
     out = []
@@ -34,6 +37,7 @@ def strip_line_comments(text: str) -> str:
         out.append(line)
     return "\n".join(out)
 
+
 def strip_preprocessor(text: str) -> str:
     out = []
     for line in text.splitlines():
@@ -43,14 +47,17 @@ def strip_preprocessor(text: str) -> str:
         out.append(line)
     return "\n".join(out)
 
+
 def strip_extern_c(text: str) -> str:
     # Remove `extern "C" {`  and the matching `}` near EOF.
     # We can't bracket-match in regex; do textual replace.
     text = re.sub(r'extern\s+"C"\s*\{', "", text)
     return text
 
+
 def collapse_blank_lines(text: str) -> str:
     return re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
+
 
 def main():
     raw = SRC.read_text()
@@ -94,7 +101,11 @@ def main():
         ):
             fns += 1
         depth += opens - closes
-    print(f"Wrote {DST} ({len(out)} bytes, {len(out.splitlines())} lines, ~{fns} fn decls)", file=sys.stderr)
+    print(
+        f"Wrote {DST} ({len(out)} bytes, {len(out.splitlines())} lines, ~{fns} fn decls)",
+        file=sys.stderr,
+    )
+
 
 if __name__ == "__main__":
     main()
