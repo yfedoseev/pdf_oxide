@@ -10,9 +10,11 @@ PHP FFI's C parser is restrictive; this script strips:
 - `<stdarg.h>` style preprocessor includes.
 """
 from __future__ import annotations
+
 import re
 import sys
 from pathlib import Path
+
 
 # Repo-relative defaults: php/scripts/preprocess_header.py → repo root is parent-parent.
 _REPO = Path(__file__).resolve().parent.parent.parent
@@ -84,10 +86,13 @@ def main():
     for line in out.splitlines():
         opens = line.count("{")
         closes = line.count("}")
-        if depth == 0 and line.rstrip().endswith(");"):
-            # filter typedef function pointers vs actual decls heuristically
-            if "typedef" not in line and "(*" not in line:
-                fns += 1
+        if (
+            depth == 0
+            and line.rstrip().endswith(");")
+            and "typedef" not in line
+            and "(*" not in line
+        ):
+            fns += 1
         depth += opens - closes
     print(f"Wrote {DST} ({len(out)} bytes, {len(out.splitlines())} lines, ~{fns} fn decls)", file=sys.stderr)
 
