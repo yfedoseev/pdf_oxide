@@ -383,19 +383,30 @@ module PdfOxide
       end
     end
 
+    # Map a cdylib error code (`int32_t *err`) to the matching Ruby
+    # exception. MUST stay byte-for-byte identical to src/ffi.rs:98-106
+    # — the same 9-code surface the PHP, C#, and Go bindings use.
+    #
+    # Pre-v0.3.55 had alphabetical-natural mapping
+    # ({@code 4 => StateError, 5 => PermissionError, 6 =>
+    #  UnsupportedFeatureError, 8 => SignatureError, …}) which silently
+    # mismapped against the cdylib's wire format — cdylib returned 4
+    # (ERR_EXTRACTION) and Ruby raised StateError; returned 8
+    # (ERR_UNSUPPORTED) and Ruby raised SignatureError. Same bug C#
+    # already fixed in an earlier release; this brings Ruby into
+    # line with PHP's ErrorHandler::createException (1-to-1 dispatch).
     def raise_for_code(code, op)
       return if code.zero?
 
       klass = case code
-              when 1 then ::PdfOxide::ArgumentError
-              when 2 then ::PdfOxide::IoError
-              when 3 then ::PdfOxide::ParseError
-              when 4 then ::PdfOxide::StateError
-              when 5 then ::PdfOxide::PermissionError
-              when 6 then ::PdfOxide::UnsupportedFeatureError
-              when 8 then ::PdfOxide::SignatureError
-              when 9 then ::PdfOxide::RedactionError
-              when 10 then ::PdfOxide::ComplianceError
+              when 1 then ::PdfOxide::ArgumentError           # ERR_INVALID_ARG
+              when 2 then ::PdfOxide::IoError                 # ERR_IO
+              when 3 then ::PdfOxide::ParseError              # ERR_PARSE
+              when 4 then ::PdfOxide::ParseError              # ERR_EXTRACTION
+              when 5 then ::PdfOxide::InternalError           # ERR_INTERNAL
+              when 6 then ::PdfOxide::ArgumentError           # ERR_INVALID_PAGE
+              when 7 then ::PdfOxide::SearchError             # ERR_SEARCH
+              when 8 then ::PdfOxide::UnsupportedFeatureError # _ERR_UNSUPPORTED
               else ::PdfOxide::InternalError
               end
       raise klass, "#{op} failed (error code #{code})"

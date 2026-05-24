@@ -48,6 +48,11 @@ module PdfOxide
   # PDF/A · PDF/X · PDF/UA compliance failure.
   class ComplianceError < Error; end
 
+  # Native text-search operation failed (cdylib error code 7 /
+  # `ERR_SEARCH`). Mirrors C#'s `PdfOxide.Exceptions.SearchException`
+  # and Java's `PdfException(SEARCH)`.
+  class SearchError < Error; end
+
   # Generic native-side failure that didn't map to a specific subclass.
   class InternalError < Error; end
 end

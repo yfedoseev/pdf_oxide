@@ -150,6 +150,51 @@ RSpec.describe 'FFI signature regressions' do
     end
   end
 
+  describe 'cdylib error-code → exception mapping (parity with PHP + C#)' do
+    # Locks in src/ffi.rs:98-106 — same 9-code surface every binding
+    # uses. Pre-v0.3.55 had alphabetical-natural mapping (4 =>
+    # StateError, 8 => SignatureError, …); cdylib returning 8
+    # (ERR_UNSUPPORTED) silently raised SignatureError, etc.
+    let(:doc_class) do
+      Class.new do
+        def initialize; end
+
+        def call_raise_for_code(code, op)
+          # Re-expose the private instance method via Module#send.
+          PdfOxide::PdfDocument.allocate.send(:raise_for_code, code, op)
+        end
+      end
+    end
+
+    [
+      [1, PdfOxide::ArgumentError,           'ERR_INVALID_ARG'],
+      [2, PdfOxide::IoError,                 'ERR_IO'],
+      [3, PdfOxide::ParseError,              'ERR_PARSE'],
+      [4, PdfOxide::ParseError,              'ERR_EXTRACTION'],
+      [5, PdfOxide::InternalError,           'ERR_INTERNAL'],
+      [6, PdfOxide::ArgumentError,           'ERR_INVALID_PAGE'],
+      [7, PdfOxide::SearchError,             'ERR_SEARCH'],
+      [8, PdfOxide::UnsupportedFeatureError, '_ERR_UNSUPPORTED']
+    ].each do |code, klass, label|
+      it "code #{code} (#{label}) → #{klass}" do
+        instance = doc_class.new
+        expect { instance.call_raise_for_code(code, "op_#{code}") }
+          .to raise_error(klass, /op_#{code} failed/)
+      end
+    end
+
+    it 'returns silently for code 0 (SUCCESS)' do
+      instance = doc_class.new
+      expect { instance.call_raise_for_code(0, 'noop') }.not_to raise_error
+    end
+
+    it 'falls back to InternalError for unknown codes' do
+      instance = doc_class.new
+      expect { instance.call_raise_for_code(99, 'weird') }
+        .to raise_error(PdfOxide::InternalError, /weird failed/)
+    end
+  end
+
   describe 'PadesSignOptions struct layout (Ruby/Rust parity)' do
     # Already covered in pdf_signer_spec, but re-asserted here so the
     # struct-layout invariant lives alongside the other FFI regression
