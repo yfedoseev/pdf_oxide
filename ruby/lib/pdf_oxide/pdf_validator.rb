@@ -67,11 +67,19 @@ module PdfOxide
       { compliant: pdf_ua?(doc, level: level), violations: [] }
     end
 
+    # The accessor symbols (pdf_pdf_a_is_compliant, pdf_pdf_x_is_compliant,
+    # pdf_pdf_ua_is_accessible) all take (results, int32_t *error_code).
+    # Pre-v0.3.55 Ruby bound them with just (results) — register garbage
+    # was used as the err pointer and the cdylib wrote through it,
+    # producing the same flaky segfault class as the search-result
+    # accessors (#547). Both args are passed here so the new 2-arg
+    # binding is honoured.
     def self.compliance_verdict(result_ptr, accessor_sym, free_sym)
       return false if result_ptr.nil? || result_ptr.null?
 
+      err = ::FFI::MemoryPointer.new(:int32)
       begin
-        Bindings.send(accessor_sym, result_ptr)
+        Bindings.send(accessor_sym, result_ptr, err)
       ensure
         Bindings.send(free_sym, result_ptr) if Bindings.respond_to?(free_sym)
       end

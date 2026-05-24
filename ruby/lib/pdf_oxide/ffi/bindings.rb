@@ -343,7 +343,8 @@ module PdfOxide
       # ============================================================
 
       # REMOVED phantom (no upstream symbol): :pdf_validate_pdf_a (1 line)
-      attach_function :pdf_pdf_a_is_compliant, [:pointer], :bool
+      # bool pdf_pdf_a_is_compliant(const FfiPdfAResults *results, int32_t *error_code)
+      attach_function :pdf_pdf_a_is_compliant, %i[pointer pointer], :bool
       attach_function :pdf_pdf_a_error_count, [:pointer], :int32
       attach_function :pdf_pdf_a_warning_count, [:pointer], :int32
       attach_function :pdf_pdf_a_get_error, %i[pointer int32 pointer], :pointer
@@ -351,7 +352,8 @@ module PdfOxide
       # REMOVED phantom (no upstream symbol): :pdf_pdf_a_get_report (1 line)
       attach_function :pdf_pdf_a_results_free, [:pointer], :void
       # REMOVED phantom (no upstream symbol): :pdf_validate_pdf_x (1 line)
-      attach_function :pdf_pdf_x_is_compliant, [:pointer], :bool
+      # bool pdf_pdf_x_is_compliant(const FfiPdfXResults *results, int32_t *error_code)
+      attach_function :pdf_pdf_x_is_compliant, %i[pointer pointer], :bool
       attach_function :pdf_pdf_x_error_count, [:pointer], :int32
       # REMOVED phantom (no upstream symbol): :pdf_pdf_x_warning_count (1 line)
 
@@ -364,7 +366,8 @@ module PdfOxide
       # REMOVED phantom (no upstream symbol): :pdf_pdf_x_get_report (1 line)
       attach_function :pdf_pdf_x_results_free, [:pointer], :void
       attach_function :pdf_validate_pdf_ua, %i[pointer int32 pointer], :pointer
-      attach_function :pdf_pdf_ua_is_accessible, [:pointer], :bool
+      # bool pdf_pdf_ua_is_accessible(const FfiUaResults *results, int32_t *error_code)
+      attach_function :pdf_pdf_ua_is_accessible, %i[pointer pointer], :bool
 
       # ============================================================
       # PDF/UA RESULT ACCESSORS (4 functions)
@@ -1513,7 +1516,8 @@ module PdfOxide
       attach_function :pdf_timestamp_parse, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       # FfiPdfAResults *pdf_validate_pdf_a_level(PdfDocument *document, int32_t level, int32_t *error_code)
       attach_function :pdf_validate_pdf_a_level, %i[pointer int32 pointer], :pointer, blocking: false
-      attach_function :pdf_validate_pdf_x_level, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      # FfiPdfXResults *pdf_validate_pdf_x_level(PdfDocument *document, int32_t level, int32_t *error_code)
+      attach_function :pdf_validate_pdf_x_level, %i[pointer int32 pointer], :pointer, blocking: false
       attach_function :qcms_enable_iccv4, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :qcms_profile_is_bogus, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :qcms_profile_precache_output_transform, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
