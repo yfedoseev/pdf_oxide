@@ -248,20 +248,26 @@ pub(crate) fn detect_visual_order_run(chars_with_x: &[(char, f32)]) -> RunOrder 
 /// surrounding paragraph, preventing the Unicode Bidirectional
 /// Algorithm from re-ordering neutral characters (parentheses, commas,
 /// spaces) across the boundary.
-pub mod isolation {
+///
+/// Crate-internal only: not part of the public Rust API and explicitly
+/// excluded from the cbindgen-generated C header (`pub(crate)` prevents
+/// cbindgen from re-emitting these as `#define` macros in
+/// `include/pdf_oxide_c/pdf_oxide.h`).
+pub(crate) mod isolation {
     /// U+2066 LEFT-TO-RIGHT ISOLATE — wraps an LTR run inside an RTL
     /// paragraph (e.g. an English brand name embedded in Hebrew prose).
-    pub const LRI: char = '\u{2066}';
+    pub(crate) const LRI: char = '\u{2066}';
     /// U+2067 RIGHT-TO-LEFT ISOLATE — wraps an RTL run inside an LTR
     /// paragraph (e.g. a Hebrew phrase embedded in English prose).
-    pub const RLI: char = '\u{2067}';
+    pub(crate) const RLI: char = '\u{2067}';
     /// U+2068 FIRST STRONG ISOLATE — wraps an ambiguous run whose
     /// direction is inferred from its first strong character (UAX #9
     /// §2.4.2). Used when neither side is confidently RTL or LTR.
-    pub const FSI: char = '\u{2068}';
+    #[allow(dead_code)]
+    pub(crate) const FSI: char = '\u{2068}';
     /// U+2069 POP DIRECTIONAL ISOLATE — closes the innermost open
     /// isolate (LRI / RLI / FSI).
-    pub const PDI: char = '\u{2069}';
+    pub(crate) const PDI: char = '\u{2069}';
 }
 
 /// Per-char strong-direction classification used by
