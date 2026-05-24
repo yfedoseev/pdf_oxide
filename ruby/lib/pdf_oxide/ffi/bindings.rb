@@ -35,7 +35,9 @@ module PdfOxide
       attach_function :document_editor_free, [:pointer], :void
       attach_function :document_editor_save, %i[pointer string pointer], :bool
       attach_function :document_editor_get_page_count, %i[pointer pointer], :int32
-      attach_function :document_editor_get_source_path, %i[pointer pointer], :string
+      # char *document_editor_get_source_path(const DocumentEditor *handle, int32_t *error_code)
+      # Owned-char* — bind as :pointer so the caller can free via StringMarshaller.
+      attach_function :document_editor_get_source_path, %i[pointer pointer], :pointer
       attach_function :document_editor_get_title, %i[pointer pointer], :string
       attach_function :document_editor_get_author, %i[pointer pointer], :string
       attach_function :document_editor_get_subject, %i[pointer pointer], :string
@@ -111,7 +113,8 @@ module PdfOxide
       attach_function :pdf_render_page_fit, %i[pointer int32 int32 int32 int32 pointer], :pointer
       attach_function :pdf_render_page_zoom, %i[pointer int32 float int32 pointer], :pointer
       attach_function :pdf_render_page_region, %i[pointer int32 float float float float int32 pointer], :pointer
-      attach_function :pdf_render_page_thumbnail, %i[pointer int32 int32 pointer], :pointer
+      # FfiRenderedImage *pdf_render_page_thumbnail(PdfDocument *doc, int32_t page_index, int32_t _size, int32_t format, int32_t *error_code)
+      attach_function :pdf_render_page_thumbnail, %i[pointer int32 int32 int32 pointer], :pointer
       # REMOVED phantom (no upstream symbol): :pdf_rendered_image_width (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_rendered_image_height (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_rendered_image_size (1 line)
@@ -125,7 +128,10 @@ module PdfOxide
       # ============================================================
       # REMOVED phantom (no upstream symbol): :pdf_document_get_annotations (1 line)
       attach_function :pdf_oxide_annotation_count, [:pointer], :int32
-      attach_function :pdf_oxide_annotation_get_type, %i[pointer int32], :int32
+      # char *pdf_oxide_annotation_get_type(const FfiAnnotationList *annotations, int32_t index, int32_t *error_code)
+      # Pre-v0.3.55 declared as 2-arg `:int32` — wrong arg count AND wrong
+      # return type (C returns owned char*). Both fixed here.
+      attach_function :pdf_oxide_annotation_get_type, %i[pointer int32 pointer], :pointer
 
       # ============================================================
       # FORM OPERATIONS (20 functions)
@@ -147,9 +153,11 @@ module PdfOxide
 
       attach_function :pdf_document_get_embedded_fonts, %i[pointer int32 pointer], :pointer
       attach_function :pdf_oxide_font_count, [:pointer], :int32
-      attach_function :pdf_oxide_font_get_name, %i[pointer int32], :string
-      attach_function :pdf_oxide_font_get_size, %i[pointer int32], :float
-      attach_function :pdf_oxide_font_is_embedded, %i[pointer int32], :bool
+      # Font accessors all share (fonts, index, int32_t *error_code).
+      # Owned-char* return for `_get_name` — bind as :pointer.
+      attach_function :pdf_oxide_font_get_name, %i[pointer int32 pointer], :pointer
+      attach_function :pdf_oxide_font_get_size, %i[pointer int32 pointer], :float
+      attach_function :pdf_oxide_font_is_embedded, %i[pointer int32 pointer], :int32
       attach_function :pdf_oxide_font_list_free, [:pointer], :void
 
       # ============================================================
@@ -158,9 +166,10 @@ module PdfOxide
 
       attach_function :pdf_document_get_embedded_images, %i[pointer int32 pointer], :pointer
       attach_function :pdf_oxide_image_count, [:pointer], :int32
-      attach_function :pdf_oxide_image_get_width, %i[pointer int32], :int32
-      attach_function :pdf_oxide_image_get_height, %i[pointer int32], :int32
-      attach_function :pdf_oxide_image_get_bits_per_component, %i[pointer int32], :int32
+      # Image accessors: (images, index, int32_t *error_code) → int32.
+      attach_function :pdf_oxide_image_get_width, %i[pointer int32 pointer], :int32
+      attach_function :pdf_oxide_image_get_height, %i[pointer int32 pointer], :int32
+      attach_function :pdf_oxide_image_get_bits_per_component, %i[pointer int32 pointer], :int32
       attach_function :pdf_oxide_image_list_free, [:pointer], :void
 
       # ============================================================
@@ -308,7 +317,9 @@ module PdfOxide
       attach_function :pdf_ocr_page_needs_ocr, %i[pointer int32 pointer], :bool
       # REMOVED phantom (no upstream symbol): :pdf_ocr_detect_page (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_ocr_recognize_page (1 line)
-      attach_function :pdf_ocr_extract_text, %i[pointer int32 pointer bool pointer], :string
+      # char *pdf_ocr_extract_text(PdfDocument *doc, int32_t page_index, const void *engine, int32_t *error_code)
+      # Pre-v0.3.55 had a phantom 5th `bool` arg and a leaky :string return.
+      attach_function :pdf_ocr_extract_text, %i[pointer int32 pointer pointer], :pointer
       # REMOVED phantom (no upstream symbol): :pdf_ocr_extract_spans (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_ocr_extract_pages (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_ocr_results_count (1 line)
@@ -389,10 +400,15 @@ module PdfOxide
       # BARCODE OPERATIONS (7 functions)
       # ============================================================
 
-      attach_function :pdf_generate_qr_code, %i[string int32 pointer], :pointer
-      attach_function :pdf_generate_barcode, %i[int32 string pointer], :pointer
+      # FfiBarcodeImage *pdf_generate_qr_code(const char *data, int32_t error_correction, int32_t size_px, int32_t *error_code)
+      attach_function :pdf_generate_qr_code, %i[string int32 int32 pointer], :pointer
+      # FfiBarcodeImage *pdf_generate_barcode(const char *data, int32_t format, int32_t size_px, int32_t *error_code)
+      # Pre-v0.3.55 had (int32, string, pointer) — args were reordered AND
+      # missing the size_px slot.
+      attach_function :pdf_generate_barcode, %i[string int32 int32 pointer], :pointer
       attach_function :pdf_barcode_get_image_png, %i[pointer int32 pointer pointer], :pointer
-      attach_function :pdf_barcode_get_svg, %i[pointer int32 pointer], :string
+      # char *pdf_barcode_get_svg(const FfiBarcodeImage *handle, int32_t _size_px, int32_t *error_code)
+      attach_function :pdf_barcode_get_svg, %i[pointer int32 pointer], :pointer
       attach_function :pdf_barcode_free, [:pointer], :void
       attach_function :pdf_add_barcode_to_page, %i[pointer int32 pointer float float float float pointer], :bool
       # REMOVED phantom (no upstream symbol): :pdf_ml_model_available (1 line)
@@ -462,7 +478,10 @@ module PdfOxide
       attach_function :pdf_oxide_annotation_get_author, %i[pointer int32 pointer], :pointer
       # REMOVED phantom (no upstream symbol): :pdf_oxide_annotation_get_contents (1 line)
       attach_function :pdf_oxide_annotation_get_creation_date, %i[pointer int32 pointer], :int64
-      attach_function :pdf_oxide_annotation_get_rect, %i[pointer pointer pointer pointer int32 pointer], :pointer
+      # void pdf_oxide_annotation_get_rect(const FfiAnnotationList *annotations, int32_t index, float *x, float *y, float *width, float *height, int32_t *error_code)
+      # Pre-v0.3.55 had reversed pointer/int32 order AND was missing 3 args.
+      attach_function :pdf_oxide_annotation_get_rect,
+                      %i[pointer int32 pointer pointer pointer pointer pointer], :void
       # REMOVED phantom (no upstream symbol): :pdf_page_get_annotations_by_type_count (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_page_get_annotations_count (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_text_annotation_get_icon (1 line)
@@ -625,9 +644,11 @@ module PdfOxide
       # REMOVED phantom (no upstream symbol): :pdf_add_qr_code_with_label (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_detect_barcodes_on_page (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_barcode_get_bounds (1 line)
-      attach_function :pdf_barcode_get_confidence, [:pointer], :float
-      attach_function :pdf_barcode_get_data, [:pointer], :string
-      attach_function :pdf_barcode_get_format, [:pointer], :int32
+      # Barcode accessors: (handle, int32_t *error_code).
+      # pdf_barcode_get_data returns owned char* — bind as :pointer.
+      attach_function :pdf_barcode_get_confidence, %i[pointer pointer], :float
+      attach_function :pdf_barcode_get_data,       %i[pointer pointer], :pointer
+      attach_function :pdf_barcode_get_format,     %i[pointer pointer], :int32
       # REMOVED phantom (no upstream symbol): :pdf_oxide_barcode_count (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_oxide_barcode_get_data (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_oxide_barcode_get_format (1 line)
@@ -642,13 +663,19 @@ module PdfOxide
       # REMOVED phantom (no upstream symbol): :pdf_credentials_add_chain_cert (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_credentials_get_certificate (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_credentials_free (1 line)
-      attach_function :pdf_certificate_get_subject, %i[pointer pointer], :string
+      # Certificate accessors: (cert, int32_t *error_code) returning
+      # owned char* — bind as :pointer so callers can free via
+      # StringMarshaller.
+      attach_function :pdf_certificate_get_subject, %i[pointer pointer], :pointer
       # REMOVED phantom (no upstream symbol): :pdf_certificate_get_cn (1 line)
-      attach_function :pdf_certificate_get_issuer, %i[pointer pointer], :string
-      attach_function :pdf_certificate_get_serial, %i[pointer pointer], :string
+      attach_function :pdf_certificate_get_issuer, %i[pointer pointer], :pointer
+      attach_function :pdf_certificate_get_serial, %i[pointer pointer], :pointer
       # REMOVED phantom (no upstream symbol): :pdf_certificate_get_size (1 line)
       attach_function :pdf_certificate_get_validity, %i[pointer pointer pointer pointer], :void
-      attach_function :pdf_certificate_is_valid, [:pointer], :bool
+      # int32_t pdf_certificate_is_valid(const void *cert, int32_t *error_code)
+      # Pre-v0.3.55 had 1-arg :bool — wrong arg count AND wrong return type
+      # (C returns int32_t; 1 = valid, 0 = invalid, negative = error).
+      attach_function :pdf_certificate_is_valid, %i[pointer pointer], :int32
       # REMOVED phantom (no upstream symbol): :pdf_certificate_is_expired (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_certificate_get_key_size (1 line)
       # REMOVED duplicate declaration: :pdf_certificate_free (1 line)
@@ -682,7 +709,8 @@ module PdfOxide
       attach_function :pdf_signature_get_certificate, %i[pointer pointer], :pointer
       # REMOVED phantom (no upstream symbol): :pdf_signature_get_subfilter (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_signature_get_digest_algorithm (1 line)
-      attach_function :pdf_signature_has_timestamp, [:pointer], :bool
+      # bool pdf_signature_has_timestamp(const void *_sig, int32_t *error_code)
+      attach_function :pdf_signature_has_timestamp, %i[pointer pointer], :bool
       # REMOVED phantom (no upstream symbol): :pdf_signature_to_json (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_signature_info_free (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_remove_signature (1 line)
@@ -895,8 +923,9 @@ module PdfOxide
       # REMOVED phantom (no upstream symbol): :pdf_oxide_link_list_free (1 line)
       attach_function :pdf_oxide_table_count, [:pointer], :int32
       # REMOVED phantom (no upstream symbol): :pdf_oxide_table_get_bbox (1 line)
-      attach_function :pdf_oxide_table_get_row_count, %i[pointer int32], :int32
-      attach_function :pdf_oxide_table_get_col_count, %i[pointer int32], :int32
+      # Table accessors: (tables, index, int32_t *error_code) → int32.
+      attach_function :pdf_oxide_table_get_row_count, %i[pointer int32 pointer], :int32
+      attach_function :pdf_oxide_table_get_col_count, %i[pointer int32 pointer], :int32
       attach_function :pdf_oxide_table_list_free, [:pointer], :void
       # REMOVED phantom (no upstream symbol): :pdf_oxide_ocr_result_get_text (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_oxide_ocr_result_confidence (1 line)
@@ -965,12 +994,16 @@ module PdfOxide
       # Annotation list helper functions
       # REMOVED phantom (no upstream symbol): :pdf_oxide_annotation_get_text (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_oxide_annotation_get_bbox (1 line)
-      attach_function :pdf_oxide_annotation_get_color, %i[pointer int32], :int32
+      # uint32_t pdf_oxide_annotation_get_color(const FfiAnnotationList *annotations, int32_t index, int32_t *error_code)
+      # Pre-v0.3.55 missed the trailing err pointer AND had :int32 return
+      # (C returns uint32_t — packed ARGB color).
+      attach_function :pdf_oxide_annotation_get_color, %i[pointer int32 pointer], :uint32
       attach_function :pdf_oxide_annotation_list_free, [:pointer], :void
 
       # Form field list helper functions
       attach_function :pdf_oxide_form_field_count, [:pointer], :int32
-      attach_function :pdf_oxide_form_field_get_name, %i[pointer int32], :string
+      # char *pdf_oxide_form_field_get_name(const FfiFormFieldList *fields, int32_t index, int32_t *error_code)
+      attach_function :pdf_oxide_form_field_get_name, %i[pointer int32 pointer], :pointer
       attach_function :pdf_oxide_form_field_list_free, [:pointer], :void
 
       # Signature helper functions
@@ -1128,9 +1161,10 @@ module PdfOxide
       attach_function :pdf_tsa_request_timestamp_hash, %i[pointer pointer size_t int32 pointer], :pointer
       attach_function :pdf_timestamp_get_token, %i[pointer pointer pointer], :pointer
       attach_function :pdf_timestamp_get_time, %i[pointer pointer], :int64
-      attach_function :pdf_timestamp_get_serial, %i[pointer pointer], :string
-      attach_function :pdf_timestamp_get_tsa_name, %i[pointer pointer], :string
-      attach_function :pdf_timestamp_get_policy_oid, %i[pointer pointer], :string
+      # Timestamp accessors: (ts, int32_t *error_code) returning owned char*.
+      attach_function :pdf_timestamp_get_serial, %i[pointer pointer], :pointer
+      attach_function :pdf_timestamp_get_tsa_name, %i[pointer pointer], :pointer
+      attach_function :pdf_timestamp_get_policy_oid, %i[pointer pointer], :pointer
       attach_function :pdf_timestamp_get_hash_algorithm, %i[pointer pointer], :int32
       attach_function :pdf_timestamp_get_message_imprint, %i[pointer pointer pointer], :pointer
       attach_function :pdf_timestamp_verify, %i[pointer pointer], :bool
@@ -1437,7 +1471,10 @@ module PdfOxide
       attach_function :pdf_page_builder_field_format, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_page_builder_field_keystroke, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_page_builder_field_validate, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_filled_rect, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      # int32_t pdf_page_builder_filled_rect(FfiPageBuilder *handle, float x, float y, float w, float h, float r, float g, float b, int32_t *error_code)
+      attach_function :pdf_page_builder_filled_rect,
+                      %i[pointer float float float float float float float pointer], :int32,
+                      blocking: false
       attach_function :pdf_page_builder_font, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_page_builder_footnote, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_page_builder_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
@@ -1447,7 +1484,10 @@ module PdfOxide
       attach_function :pdf_page_builder_horizontal_rule, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_page_builder_image, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_page_builder_image_artifact, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_image_with_alt, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      # int32_t pdf_page_builder_image_with_alt(FfiPageBuilder *handle, const uint8_t *bytes, uintptr_t len, float x, float y, float w, float h, const char *alt_text, int32_t *error_code)
+      attach_function :pdf_page_builder_image_with_alt,
+                      %i[pointer pointer size_t float float float float string pointer], :int32,
+                      blocking: false
       attach_function :pdf_page_builder_inline, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_page_builder_inline_bold, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_page_builder_inline_color, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
