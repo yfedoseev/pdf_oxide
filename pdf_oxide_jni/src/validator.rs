@@ -7,7 +7,14 @@
 //! marshalling (with the violations list + detected level) lands in
 //! a follow-up.
 //!
-//! Level encoding across the JNI boundary uses the Java enum ordinal.
+//! Level encoding across the JNI boundary mirrors the cdylib's C ABI
+//! wire format (v0.3.55 #547): {@code PdfALevel.ordinal()} matches
+//! {@code src/ffi.rs:1225} (B before A within each level), and
+//! {@code PdfUaLevel.code()} matches {@code src/ffi.rs:5538}
+//! (1-indexed: UA-1=1, UA-2=2). Every pdf_oxide binding (Java, C#,
+//! Ruby, PHP, Go) sends the same integer for the same level — keeping
+//! the JNI mapping aligned with that wire format is what makes
+//! cross-binding parity tests pass.
 
 use jni::errors::{Error as JniError, ThrowRuntimeExAndDefault};
 use jni::objects::JClass;
@@ -27,15 +34,27 @@ unsafe fn doc_mut<'h>(handle: jlong) -> &'h mut PdfDocument {
     unsafe { &mut *(handle as *mut PdfDocument) }
 }
 
+/// Translate a Java {@code PdfALevel.ordinal()} into the Rust enum.
+///
+/// The JNI wire format mirrors the cdylib C ABI documented at
+/// `src/ffi.rs:1225` (`0=A1b 1=A1a 2=A2b 3=A2a 4=A2u 5=A3b 6=A3a
+/// 7=A3u`). Java's `PdfALevel` is reordered (B before A within each
+/// level — see v0.3.55 #547) so `.ordinal()` matches this mapping
+/// directly. C# / Ruby / PHP / Go all use the same numeric encoding;
+/// the JNI shim aligning here is what makes "feature sets identical
+/// across languages" actually hold.
+///
+/// Higher ordinals (8..=10) are the Java-side `A_4`, `A_4E`, `A_4F`
+/// placeholders — not yet implemented in the cdylib.
 fn map_pdfa_ordinal<'local>(env: &mut jni::Env<'local>, ord: jint) -> Result<PdfALevel, JniError> {
     match ord {
-        0 => Ok(PdfALevel::A1a),
-        1 => Ok(PdfALevel::A1b),
-        2 => Ok(PdfALevel::A2a),
-        3 => Ok(PdfALevel::A2b),
+        0 => Ok(PdfALevel::A1b),
+        1 => Ok(PdfALevel::A1a),
+        2 => Ok(PdfALevel::A2b),
+        3 => Ok(PdfALevel::A2a),
         4 => Ok(PdfALevel::A2u),
-        5 => Ok(PdfALevel::A3a),
-        6 => Ok(PdfALevel::A3b),
+        5 => Ok(PdfALevel::A3b),
+        6 => Ok(PdfALevel::A3a),
         7 => Ok(PdfALevel::A3u),
         8..=10 => {
             let cls =
@@ -54,13 +73,22 @@ fn map_pdfa_ordinal<'local>(env: &mut jni::Env<'local>, ord: jint) -> Result<Pdf
     }
 }
 
+/// Translate a Java {@code PdfUaLevel.code()} into the Rust enum.
+///
+/// Wire format matches `src/ffi.rs:5538` — the cdylib treats `level
+/// == 2` as PDF/UA-2 and anything else as PDF/UA-1. Java's
+/// `PdfUaLevel` is explicit-coded (UA_1=1, UA_2=2) and the public
+/// API now calls `.code()` rather than `.ordinal()` when crossing
+/// the JNI boundary. This brings Java in lock-step with the C#
+/// (`Ua1=1, Ua2=2`), Ruby (`{ua1: 1, ua2: 2}`), and PHP (`PDFUA_1=1,
+/// PDFUA_2=2`) bindings.
 fn map_pdfua_ordinal<'local>(
     env: &mut jni::Env<'local>,
     ord: jint,
 ) -> Result<PdfUaLevel, JniError> {
     match ord {
-        0 => Ok(PdfUaLevel::Ua1),
-        1 => {
+        1 => Ok(PdfUaLevel::Ua1),
+        2 => {
             let cls =
                 jni::strings::JNIString::from("fyi/oxide/pdf/exception/PdfUnsupportedException");
             let msg = jni::strings::JNIString::from("PDF/UA-2 not yet supported by pdf_oxide");
@@ -69,7 +97,7 @@ fn map_pdfua_ordinal<'local>(
         },
         _ => {
             let cls = jni::strings::JNIString::from("java/lang/IllegalArgumentException");
-            let msg = jni::strings::JNIString::from(format!("unknown PdfUaLevel ordinal {}", ord));
+            let msg = jni::strings::JNIString::from(format!("unknown PdfUaLevel code {}", ord));
             env.throw_new(&cls, &msg)?;
             Err(JniError::JavaException)
         },
