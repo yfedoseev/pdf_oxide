@@ -40,9 +40,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        # v0.3.55 baseline: PHP 8.1–8.4 × Linux/macOS/Windows = 12 cells.
+        # v0.3.55 baseline: PHP 8.2–8.5 × Linux/macOS/Windows = 12 cells.
+        # PHP 8.1 dropped — EOL 2025-11.
+        # PHP 8.5 added — GA 2025-11-20.
         # aarch64 deliberately deferred to v0.3.56 (too-few runners).
-        php-version: ['8.1', '8.2', '8.3', '8.4']
+        php-version: ['8.2', '8.3', '8.4', '8.5']
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -150,3 +152,67 @@ jobs:
             /tmp/php-lint.log
           if-no-files-found: ignore
           retention-days: 7
+
+  # Single-runner lint job — PHPStan + PHP-CS-Fixer.
+  # Splits out of `test` so a style nit doesn't cost 12 cells of CI.
+  lint:
+    name: PHP lint (PHPStan + CS-Fixer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up PHP 8.4
+        uses: shivammathur/setup-php@7c071dfe9dc99bdf297fa79cb49ea005b9fcadbc # v2.37.1
+        with:
+          php-version: '8.4'
+          extensions: ffi, mbstring, json
+          ini-values: ffi.enable=true, memory_limit=1G
+          coverage: none
+          tools: composer:v2
+
+      - name: Composer install
+        working-directory: php
+        env:
+          PDF_OXIDE_SKIP_DOWNLOAD: '1'
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: PHPStan analyse
+        working-directory: php
+        run: vendor/bin/phpstan analyse --no-progress --error-format=github
+
+      - name: PHP-CS-Fixer (dry-run + diff)
+        working-directory: php
+        # PHP_CS_FIXER_IGNORE_ENV=1 lets the fixer run against newer
+        # PHP than its declared supported floor (relevant once 8.5
+        # ships rules CS-Fixer hasn't yet whitelisted).
+        env:
+          PHP_CS_FIXER_IGNORE_ENV: '1'
+        run: vendor/bin/php-cs-fixer fix --dry-run --diff --using-cache=no
+
+  # Dedicated security audit job — composer audit against
+  # Packagist advisories + GitHub Advisory DB. Built-in since
+  # Composer 2.4; zero extra dependency.
+  audit:
+    name: Composer security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up PHP 8.4
+        uses: shivammathur/setup-php@7c071dfe9dc99bdf297fa79cb49ea005b9fcadbc # v2.37.1
+        with:
+          php-version: '8.4'
+          extensions: ffi, mbstring, json
+          ini-values: ffi.enable=true
+          coverage: none
+          tools: composer:v2
+
+      - name: Composer install (creates composer.lock if absent)
+        working-directory: php
+        env:
+          PDF_OXIDE_SKIP_DOWNLOAD: '1'
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: composer audit --locked
+        working-directory: php
+        run: composer audit --locked --no-interaction

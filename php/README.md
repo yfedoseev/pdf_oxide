@@ -32,7 +32,7 @@ pin a specific release. The runtime library search order is:
 
 ## Prerequisites
 
-- **PHP 8.1+** (8.2 / 8.3 / 8.4 also fully supported).
+- **PHP 8.2+** — supported versions: 8.2, 8.3, 8.4, 8.5 (CI matrix). PHP 8.1 is EOL since 2025-11 and is not supported.
 - **`ext-ffi` enabled.** Confirm with `php -m | grep -i ffi`. Some
   managed PHP hosts (shared cPanel, Plesk) disable `ext-ffi` at the
   `php.ini` level for security reasons; consult your host or use a

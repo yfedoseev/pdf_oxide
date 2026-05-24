@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/10.0/phpunit.xsd"
+         xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/11.0/phpunit.xsd"
          bootstrap="tests/bootstrap.php"
          colors="true"
          failOnWarning="true"
@@ -10,8 +10,8 @@
         <!--
              Two named suites so CI can run them as separate jobs:
 
-               vendor/bin/phpunit --testsuite=Unit          (no cdylib needed)
-               vendor/bin/phpunit --testsuite=Integration   (cdylib REQUIRED;
+               vendor/bin/phpunit (testsuite Unit)          (no cdylib needed)
+               vendor/bin/phpunit (testsuite Integration)   (cdylib REQUIRED;
                                                               tests self-skip)
          -->
         <testsuite name="Unit">
