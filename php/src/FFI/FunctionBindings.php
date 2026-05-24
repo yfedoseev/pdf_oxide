@@ -1791,10 +1791,10 @@ class FunctionBindings
         $r = $this->ffi->pdf_document_has_timestamp($documentHandle, FFI::addr($errorCode));
         $code = (int)$errorCode->cdata;
         if ($code === ErrorHandler::UNSUPPORTED) {
-            return false;
-        }
-        if ($code === ErrorHandler::SIGNATURE_ERROR) {
             // Documents with no signatures: degrade rather than throw.
+            // (Pre-v0.3.55 also handled cdylib code 8 here under the
+            //  alias SIGNATURE_ERROR — the rename to UNSUPPORTED
+            //  realigns PHP with the C ABI in src/ffi.rs:98.)
             return false;
         }
         ErrorHandler::check($code, 'pdf_document_has_timestamp');

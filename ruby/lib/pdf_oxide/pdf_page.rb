@@ -61,7 +61,8 @@ module PdfOxide
       @parent.extract_text(@index)
     end
 
-    # @return [String] extracted text in BINARY-encoded image bytes.
+    # @return [String] short inspection-style label (`#<PdfOxide::PdfPage index=N>`).
+    #   Use {#text} to get the extracted page text.
     def to_s
       "#<PdfOxide::PdfPage index=#{@index}>"
     end

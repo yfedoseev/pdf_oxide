@@ -49,22 +49,13 @@ class StringMarshaller
             return '';
         }
 
-        $ffi = NativeLibrary::getInstance();
+        // Use FFI::string() to copy the NUL-terminated C string in
+        // O(n) rather than concatenating char-by-char in O(n²) — for
+        // large extracted-text / markdown buffers the quadratic form
+        // dominated wall time. The no-length overload reads until NUL
+        // automatically; ext-ffi handles the strlen in C.
+        $str = FFI::string(FFI::cast('char*', $cStr));
 
-        // Find string length (C string is null-terminated)
-        $len = 0;
-        $ptr = FFI::cast('char*', $cStr);
-        while ($ptr[$len] !== "\0" && $len < 1000000) {  // Safety limit
-            $len++;
-        }
-
-        // Copy to PHP string
-        $str = '';
-        for ($i = 0; $i < $len; $i++) {
-            $str .= $ptr[$i];
-        }
-
-        // Validate UTF-8
         if (!self::isValidUtf8($str)) {
             throw new \RuntimeException('Invalid UTF-8 string from FFI');
         }

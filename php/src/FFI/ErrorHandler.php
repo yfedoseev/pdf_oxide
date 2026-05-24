@@ -8,14 +8,7 @@ use PdfOxide\Exceptions\{
     PdfException,
     ParseException,
     IoException,
-    EncryptionException,
-    ValidationException,
-    ComplianceException,
-    NotFoundException,
-    SignatureException,
-    RedactionException,
-    AccessibilityException,
-    OptimizationException
+    ValidationException
 };
 
 /**
@@ -25,20 +18,21 @@ use PdfOxide\Exceptions\{
  */
 class ErrorHandler
 {
-    // Error code constants (must match pdf_oxide.h)
+    // Error code constants — MUST mirror src/ffi.rs:98 (the cdylib's
+    // canonical error encoding). Previously these were
+    // alphabetical-natural and silently mismapped: e.g. cdylib
+    // returned 4 (ERR_EXTRACTION) but PHP threw NotFoundException.
+    // C# / Ruby / Go all follow the Rust ordering; this brings PHP
+    // into line.
     public const SUCCESS = 0;
     public const INVALID_ARG = 1;
     public const IO_ERROR = 2;
     public const PARSE_ERROR = 3;
-    public const NOT_FOUND = 4;
-    public const PERMISSION_DENIED = 5;
-    public const UNSUPPORTED = 6;
-    public const INTERNAL = 7;
-    public const SIGNATURE_ERROR = 8;
-    public const REDACTION_ERROR = 9;
-    public const COMPLIANCE_ERROR = 10;
-    public const ACCESSIBILITY_ERROR = 11;
-    public const OPTIMIZATION_ERROR = 12;
+    public const EXTRACTION_ERROR = 4;
+    public const INTERNAL = 5;
+    public const INVALID_PAGE = 6;
+    public const SEARCH_ERROR = 7;
+    public const UNSUPPORTED = 8;
 
     /**
      * Check error code and throw appropriate exception if error occurred.
@@ -73,18 +67,18 @@ class ErrorHandler
         }
 
         return match ($errorCode) {
-            self::PARSE_ERROR => new ParseException($message, $context),
-            self::IO_ERROR => new IoException($message, $context),
             self::INVALID_ARG => new ValidationException($message, $context),
-            self::NOT_FOUND => new NotFoundException($message, $context),
-            self::PERMISSION_DENIED => new EncryptionException($message, $context),
-            self::UNSUPPORTED => new ValidationException($message, $context),
+            self::IO_ERROR => new IoException($message, $context),
+            self::PARSE_ERROR => new ParseException($message, $context),
+            // ERR_EXTRACTION (4) — layout-analysis / text-extraction
+            // failure. Per `feedback_extraction_graceful_fallback`,
+            // surfaces as a typed PdfException, not as a Validation
+            // or NotFound miscategorisation.
+            self::EXTRACTION_ERROR => new PdfException($message, 'EXTRACTION_ERROR', $context),
             self::INTERNAL => new PdfException($message, 'INTERNAL_ERROR', $context),
-            self::SIGNATURE_ERROR => new SignatureException($message, $context),
-            self::REDACTION_ERROR => new RedactionException($message, $context),
-            self::COMPLIANCE_ERROR => new ComplianceException($message, $context),
-            self::ACCESSIBILITY_ERROR => new AccessibilityException($message, $context),
-            self::OPTIMIZATION_ERROR => new OptimizationException($message, $context),
+            self::INVALID_PAGE => new ValidationException($message, $context),
+            self::SEARCH_ERROR => new PdfException($message, 'SEARCH_ERROR', $context),
+            self::UNSUPPORTED => new ValidationException($message, $context),
             default => new PdfException(
                 "Unknown error: {$errorCode} {$message}",
                 'UNKNOWN_ERROR',
@@ -103,15 +97,11 @@ class ErrorHandler
             self::INVALID_ARG => 'Invalid argument provided',
             self::IO_ERROR => 'I/O error occurred',
             self::PARSE_ERROR => 'Failed to parse PDF',
-            self::NOT_FOUND => 'Resource not found',
-            self::PERMISSION_DENIED => 'Permission denied',
-            self::UNSUPPORTED => 'Operation not supported',
+            self::EXTRACTION_ERROR => 'Text or layout extraction failed',
             self::INTERNAL => 'Internal error occurred',
-            self::SIGNATURE_ERROR => 'Digital signature operation failed',
-            self::REDACTION_ERROR => 'Redaction operation failed',
-            self::COMPLIANCE_ERROR => 'Compliance operation failed',
-            self::ACCESSIBILITY_ERROR => 'Accessibility operation failed',
-            self::OPTIMIZATION_ERROR => 'Optimization operation failed',
+            self::INVALID_PAGE => 'Invalid page index',
+            self::SEARCH_ERROR => 'Search operation failed',
+            self::UNSUPPORTED => 'Operation not supported',
             default => "Unknown error code: {$errorCode}",
         };
     }

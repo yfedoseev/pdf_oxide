@@ -85,17 +85,13 @@ fn pkcs12_sign_pdf_bytes_via_opts_shim_round_trip() {
     );
 
     let mut signed_len: usize = 0;
-    let signed_ptr = unsafe {
-        pdf_sign_bytes_pades_opts(pdf_ptr, pdf_len, &opts, &mut signed_len, &mut ec)
-    };
+    let signed_ptr =
+        unsafe { pdf_sign_bytes_pades_opts(pdf_ptr, pdf_len, &opts, &mut signed_len, &mut ec) };
     unsafe { free_bytes(pdf_ptr as *mut _) };
 
     assert_eq!(ec, 0, "pdf_sign_bytes_pades_opts returned error {ec}");
     assert!(!signed_ptr.is_null(), "signed PDF must not be null");
-    assert!(
-        signed_len > pdf_len,
-        "signed PDF must be larger than unsigned"
-    );
+    assert!(signed_len > pdf_len, "signed PDF must be larger than unsigned");
 
     let signed_bytes = unsafe { std::slice::from_raw_parts(signed_ptr, signed_len) };
     assert!(
