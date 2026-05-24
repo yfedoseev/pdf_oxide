@@ -121,7 +121,7 @@ module PdfOxide
 
       def validate!
         raise ArgumentError, "DPI must be positive: #{@dpi}" if @dpi <= 0
-        raise ArgumentError, "Quality must be 0-100: #{@quality}" if @quality < 0 || @quality > 100
+        raise ArgumentError, "Quality must be 0-100: #{@quality}" if @quality.negative? || @quality > 100
         raise ArgumentError, "Invalid format: #{@format}" unless %i[png jpeg webp].include?(@format)
       end
     end

@@ -27,8 +27,6 @@ module PdfOxide
         @library_path ||= find_library_path
       end
 
-      private
-
       def self.find_library_path
         # Try to find in standard locations
         find_library.each do |lib_name|
@@ -76,7 +74,7 @@ module PdfOxide
         output = `ldconfig -p 2>/dev/null | grep #{lib_name}`.strip
         return nil if output.empty?
 
-        output.split("\n").first&.split("=>")&.last&.strip
+        output.split("\n").first&.split('=>')&.last&.strip
       rescue StandardError
         nil
       end
@@ -91,7 +89,7 @@ module PdfOxide
         nil
       end
 
-      def self.windows_find(lib_name)
+      def self.windows_find(_lib_name)
         # Windows DLL search path is handled by system
         nil
       end

@@ -36,9 +36,9 @@ RSpec.describe PdfOxide::RedactionManager, :skip_mock do
 
   it 'rejects malformed rects (argument guard)' do
     PdfOxide::RedactionManager.open(source) do |r|
-      expect {
+      expect do
         r.add(page: 0, rect: [1.0, 2.0])
-      }.to raise_error(PdfOxide::ArgumentError, /4 numeric/)
+      end.to raise_error(PdfOxide::ArgumentError, /4 numeric/)
     end
   end
 

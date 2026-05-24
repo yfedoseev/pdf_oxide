@@ -84,10 +84,10 @@ module PdfOxide
       end
 
       AutoExtractResult.new(
-        text:           text,
-        reason:         reason,
-        kind:           kind,
-        confidence:     confidence,
+        text: text,
+        reason: reason,
+        kind: kind,
+        confidence: confidence,
         classification: classification
       )
     end
@@ -127,8 +127,8 @@ module PdfOxide
     # Wrapper for a C call that returns a malloc'd char* JSON blob.
     # Returns a parsed Hash (or [] if JSON is an array, or {} on parse
     # failure).
-    def call_json(operation, *_)
-      json_str = call_text(operation, *_) { |err| yield(err) }
+    def call_json(operation, *args, &block)
+      json_str = call_text(operation, *args, &block)
       return {} if json_str.nil? || json_str.empty?
 
       JSON.parse(json_str)
@@ -139,7 +139,7 @@ module PdfOxide
     # Wrapper for a C call that returns a malloc'd char* string.
     # Frees the returned pointer via the standard StringMarshaller.
     def call_text(operation, *_)
-      raise ::PdfOxide::ArgumentError, "block required" unless block_given?
+      raise ::PdfOxide::ArgumentError, 'block required' unless block_given?
 
       error_ptr = ::FFI::MemoryPointer.new(:int32)
       ptr       = yield(error_ptr)
@@ -156,10 +156,10 @@ module PdfOxide
     def build_result_from_classification(json, text:)
       json = {} unless json.is_a?(Hash)
       AutoExtractResult.new(
-        text:           text,
-        reason:         ExtractReason.from_wire(json['reason']),
-        kind:           PageKind.from_wire(json['kind']),
-        confidence:     (json['confidence'] || 0.0).to_f,
+        text: text,
+        reason: ExtractReason.from_wire(json['reason']),
+        kind: PageKind.from_wire(json['kind']),
+        confidence: (json['confidence'] || 0.0).to_f,
         classification: json
       )
     end

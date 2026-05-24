@@ -77,3 +77,15 @@ updates:
     labels:
       - "dependencies"
       - "wasm"
+
+  # Ruby gem
+  - package-ecosystem: "bundler"
+    directory: "/ruby"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "ruby"
+    open-pull-requests-limit: 5

@@ -96,7 +96,7 @@ module PdfOxide
       # @param max_size [Integer] Maximum thumbnail size
       # @param options [Hash] Rendering options
       # @return [String] Thumbnail image bytes
-      def render_thumbnail(page_index, max_size = 100, options = {})
+      def render_thumbnail(page_index, max_size = 100, _options = {})
         check_document!
         validate_page_index!(page_index)
 

@@ -51,11 +51,11 @@ module PdfOxide
       end
 
       def average_cell_width
-        @columns > 0 ? @width / @columns : 0
+        @columns.positive? ? @width / @columns : 0
       end
 
       def average_cell_height
-        @rows > 0 ? @height / @rows : 0
+        @rows.positive? ? @height / @rows : 0
       end
 
       def ==(other)

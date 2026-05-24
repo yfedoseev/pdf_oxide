@@ -13,7 +13,7 @@ module PdfOxide
         use_gpu: false,
         gpu_device_id: 0,
         languages: ['en'],
-        page_processing_mode: :full  # :full, :text_only, :image_only
+        page_processing_mode: :full # :full, :text_only, :image_only
       }.freeze
 
       attr_reader :detection_threshold, :recognition_threshold, :max_side_len, :use_gpu,
@@ -238,7 +238,7 @@ module PdfOxide
 
       def validate_positive_integer!(value, name)
         value = value.to_i
-        raise ArgumentError, "#{name} must be positive, got #{value}" unless value > 0
+        raise ArgumentError, "#{name} must be positive, got #{value}" unless value.positive?
 
         value
       end

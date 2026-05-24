@@ -72,6 +72,7 @@ module PdfOxide
       # @return [Boolean] Whether equal
       def ==(other)
         return false unless other.is_a?(ImageInfo)
+
         @name == other.name && @width == other.width && @height == other.height
       end
 

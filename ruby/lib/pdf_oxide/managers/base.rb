@@ -10,6 +10,7 @@ module PdfOxide
       # @param document [Document] PDF document instance
       def initialize(document)
         raise ::PdfOxide::ArgumentError, 'Document cannot be nil' if document.nil?
+
         @document = document
         @closed = false
       end
@@ -18,6 +19,7 @@ module PdfOxide
       # @return [void]
       def clear_cache
         return if @closed
+
         check_document!
         FFI::Bindings.pdf_cache_clear(@document.handle)
       end
@@ -27,6 +29,7 @@ module PdfOxide
       # @return [void]
       def invalidate_page(page_index)
         return if @closed
+
         check_document!
         validate_page_index!(page_index)
         FFI::Bindings.pdf_cache_invalidate_page(@document.handle, page_index)
@@ -36,6 +39,7 @@ module PdfOxide
       # @return [Hash] Cache statistics
       def cache_statistics
         return {} if @closed
+
         check_document!
         # Implementation would parse FFI struct
         {}
@@ -47,18 +51,18 @@ module PdfOxide
       # @param page_index [Integer] Page index to validate
       # @raise [ArgumentError] If index invalid
       def validate_page_index!(page_index)
-        raise ::PdfOxide::ArgumentError, 'Page index must be >= 0' if page_index < 0
-        if page_index >= @document.page_count
-          raise ::PdfOxide::ArgumentError, "Page index #{page_index} exceeds page count (#{@document.page_count})"
-        end
+        raise ::PdfOxide::ArgumentError, 'Page index must be >= 0' if page_index.negative?
+        return unless page_index >= @document.page_count
+
+        raise ::PdfOxide::ArgumentError, "Page index #{page_index} exceeds page count (#{@document.page_count})"
       end
 
       # Check that document is still open
       # @raise [StateError] If document closed
       def check_document!
-        if @document.nil? || @document.closed?
-          raise ::PdfOxide::StateError, 'Document has been closed'
-        end
+        return unless @document.nil? || @document.closed?
+
+        raise ::PdfOxide::StateError, 'Document has been closed'
       end
 
       # Convert error code to exception and raise
@@ -73,8 +77,8 @@ module PdfOxide
       # @param operation [String] Operation name
       # @yield [error_ptr] Block to execute with error pointer
       # @return [Object] Result from block
-      def with_error_check(operation = nil, **context)
-        FFI::ErrorHandler.with_error_check(operation, **context) { |error_ptr| yield(error_ptr) }
+      def with_error_check(operation = nil, **context, &block)
+        FFI::ErrorHandler.with_error_check(operation, **context, &block)
       end
 
       # Close manager resources

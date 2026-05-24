@@ -74,7 +74,7 @@ module PdfOxide
 
         parse_search_results(results_handle)
       rescue StandardError => e
-        raise ::PdfOxide::ParseError.new("Invalid regex pattern: #{e.message}")
+        raise ::PdfOxide::ParseError, "Invalid regex pattern: #{e.message}"
       end
 
       # Search within specific area
@@ -91,7 +91,8 @@ module PdfOxide
 
         query_utf8 = FFI::StringMarshaller.to_utf8(query)
 
-        results_handle = with_error_check('search_in_area', query: query, page: page_index, area: { x: x, y: y, width: width, height: height }) do |error_ptr|
+        results_handle = with_error_check('search_in_area', query: query, page: page_index,
+                                                            area: { x: x, y: y, width: width, height: height }) do |error_ptr|
           FFI::Bindings.pdf_document_search_in_area(
             @document.handle,
             query_utf8,

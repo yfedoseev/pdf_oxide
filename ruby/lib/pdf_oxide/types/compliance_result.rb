@@ -37,11 +37,11 @@ module PdfOxide
       end
 
       def has_errors?
-        @error_count > 0
+        @error_count.positive?
       end
 
       def has_warnings?
-        @warning_count > 0
+        @warning_count.positive?
       end
 
       def ==(other)

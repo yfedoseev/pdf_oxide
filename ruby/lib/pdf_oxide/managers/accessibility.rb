@@ -89,7 +89,7 @@ module PdfOxide
     # @param text [String] alt text string
     # @raise [PdfOxide::AccessibilityError] if the operation fails
     def set_alt_text(page, mcid, text)
-      raise ::PdfOxide::ArgumentError.new('text cannot be nil') if text.nil?
+      raise ::PdfOxide::ArgumentError, 'text cannot be nil' if text.nil?
 
       FFI::ErrorHandler.with_bool_check('accessibility_set_alt_text') do |err|
         Bindings.pdf_accessibility_set_alt_text(@document, page, mcid, text, err)
@@ -100,7 +100,7 @@ module PdfOxide
     # @param language [String] BCP 47 language tag (e.g., "en-US")
     # @raise [PdfOxide::AccessibilityError] if the operation fails
     def set_language(language)
-      raise ::PdfOxide::ArgumentError.new('language cannot be nil') if language.nil?
+      raise ::PdfOxide::ArgumentError, 'language cannot be nil' if language.nil?
 
       FFI::ErrorHandler.with_bool_check('accessibility_set_language') do |err|
         Bindings.pdf_accessibility_set_language(@document, language, err)
@@ -111,7 +111,7 @@ module PdfOxide
     # @param title [String] document title
     # @raise [PdfOxide::AccessibilityError] if the operation fails
     def set_title(title)
-      raise ::PdfOxide::ArgumentError.new('title cannot be nil') if title.nil?
+      raise ::PdfOxide::ArgumentError, 'title cannot be nil' if title.nil?
 
       FFI::ErrorHandler.with_bool_check('accessibility_set_title') do |err|
         Bindings.pdf_accessibility_set_title(@document, title, err)

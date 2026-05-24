@@ -71,7 +71,7 @@ module PdfOxide
       # @param format [Symbol, Integer] Barcode format
       # @param options [Hash] Additional options
       # @return [Boolean] Whether operation succeeded
-      def add_barcode(page_index, x, y, width, height, data, format = :code128, options = {})
+      def add_barcode(page_index, x, y, width, height, data, format = :code128, _options = {})
         check_document!
         validate_page_index!(page_index)
 
@@ -122,7 +122,7 @@ module PdfOxide
       # @param height [Float] Height of barcode
       # @param options [Hash] Additional options
       # @return [String] PNG image data
-      def generate_barcode(data, format = :code128, width = 200, height = 100, options = {})
+      def generate_barcode(data, format = :code128, width = 200, height = 100, _options = {})
         data_utf8 = FFI::StringMarshaller.to_utf8(data)
         format_int = format.is_a?(Symbol) ? BARCODE_FORMATS.fetch(format, BARCODE_FORMAT_CODE128) : format
 
@@ -194,7 +194,7 @@ module PdfOxide
       # @param data [String] EAN-13 data (13 digits)
       # @param options [Hash] Additional options
       # @return [String] PNG image data
-      def generate_ean13(data, options = {})
+      def generate_ean13(data, _options = {})
         validate_ean_data!(data, 13)
         data_utf8 = FFI::StringMarshaller.to_utf8(data)
 
@@ -209,7 +209,7 @@ module PdfOxide
       # @param data [String] EAN-8 data (8 digits)
       # @param options [Hash] Additional options
       # @return [String] PNG image data
-      def generate_ean8(data, options = {})
+      def generate_ean8(data, _options = {})
         validate_ean_data!(data, 8)
         data_utf8 = FFI::StringMarshaller.to_utf8(data)
 
@@ -224,7 +224,7 @@ module PdfOxide
       # @param data [String] UPC-A data (12 digits)
       # @param options [Hash] Additional options
       # @return [String] PNG image data
-      def generate_upc_a(data, options = {})
+      def generate_upc_a(data, _options = {})
         validate_upc_data!(data)
         data_utf8 = FFI::StringMarshaller.to_utf8(data)
 
@@ -239,8 +239,9 @@ module PdfOxide
       # @param data [String] Code128 data
       # @param options [Hash] Additional options
       # @return [String] PNG image data
-      def generate_code128(data, options = {})
+      def generate_code128(data, _options = {})
         raise ::PdfOxide::ArgumentError, 'Data cannot be empty' if data.nil? || data.empty?
+
         data_utf8 = FFI::StringMarshaller.to_utf8(data)
 
         result_ptr = with_error_check('generate_code128', data: data) do |error_ptr|
@@ -254,8 +255,9 @@ module PdfOxide
       # @param data [String] Code39 data
       # @param options [Hash] Additional options
       # @return [String] PNG image data
-      def generate_code39(data, options = {})
+      def generate_code39(data, _options = {})
         raise ::PdfOxide::ArgumentError, 'Data cannot be empty' if data.nil? || data.empty?
+
         data_utf8 = FFI::StringMarshaller.to_utf8(data)
 
         result_ptr = with_error_check('generate_code39', data: data) do |error_ptr|
@@ -314,7 +316,7 @@ module PdfOxide
       # @param label [String] Label text below QR code
       # @param options [Hash] Additional options
       # @return [Boolean] Whether operation succeeded
-      def add_qr_with_label(page_index, data, x, y, size, label = '', options = {})
+      def add_qr_with_label(page_index, data, x, y, size, label = '', _options = {})
         check_document!
         validate_page_index!(page_index)
 
@@ -442,7 +444,7 @@ module PdfOxide
         data_ptr = FFI::Bindings.pdf_barcode_get_image_png(result_ptr, size_ptr)
         size = size_ptr.read_int32
 
-        image_data = data_ptr.read_bytes(size) if size > 0 && !data_ptr.null?
+        image_data = data_ptr.read_bytes(size) if size.positive? && !data_ptr.null?
 
         FFI::Bindings.pdf_barcode_free(result_ptr) unless result_ptr.nil?
         image_data

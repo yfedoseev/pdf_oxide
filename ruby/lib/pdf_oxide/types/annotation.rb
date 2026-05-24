@@ -123,6 +123,7 @@ module PdfOxide
       def text_preview
         return '' if @text.nil?
         return @text if @text.length <= 30
+
         "#{@text[0...27]}..."
       end
     end

@@ -60,7 +60,7 @@ module PdfOxide
 
         return 0.0 if total.zero?
 
-        hits.to_f / total.to_f
+        hits.to_f / total
       end
 
       # Get cache miss rate
@@ -125,7 +125,7 @@ module PdfOxide
         info_hash = info
 
         output = "Cache Statistics\n"
-        output += "=" * 40 + "\n\n"
+        output += "#{'=' * 40}\n\n"
         output += "Cached Pages: #{info_hash[:cached_pages]}\n"
         output += "Memory Used: #{format_bytes(info_hash[:memory_used])}\n"
         output += "Cache Hits: #{info_hash[:hits]}\n"
@@ -260,7 +260,7 @@ module PdfOxide
       def format_bytes(bytes)
         return '0 B' if bytes.zero?
 
-        units = ['B', 'KB', 'MB', 'GB']
+        units = %w[B KB MB GB]
         size = bytes.to_f
         unit_index = 0
 

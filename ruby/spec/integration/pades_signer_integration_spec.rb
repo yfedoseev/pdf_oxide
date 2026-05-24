@@ -26,34 +26,34 @@ RSpec.describe PdfOxide::PadesSigner, :skip_mock do
   end
 
   it 'fails closed on a null certificate handle (security op)' do
-    expect {
+    expect do
       PdfOxide::PadesSigner.sign_pades(
-        pdf_bytes:          '%PDF-1.7',
+        pdf_bytes: '%PDF-1.7',
         certificate_handle: nil,
-        level:              :b
+        level: :b
       )
-    }.to raise_error(PdfOxide::ArgumentError, /certificate_handle/)
+    end.to raise_error(PdfOxide::ArgumentError, /certificate_handle/)
   end
 
   it 'rejects unknown PAdES levels' do
     fake_cert = ::FFI::Pointer.new(0xdeadbeef)
-    expect {
+    expect do
       PdfOxide::PadesSigner.sign_pades(
-        pdf_bytes:          '%PDF-1.7',
+        pdf_bytes: '%PDF-1.7',
         certificate_handle: fake_cert,
-        level:              :forged
+        level: :forged
       )
-    }.to raise_error(PdfOxide::ArgumentError, /level must be one of/)
+    end.to raise_error(PdfOxide::ArgumentError, /level must be one of/)
   end
 
   it 'rejects empty pdf_bytes' do
     fake_cert = ::FFI::Pointer.new(0xdeadbeef)
-    expect {
+    expect do
       PdfOxide::PadesSigner.sign_pades(
-        pdf_bytes:          '',
+        pdf_bytes: '',
         certificate_handle: fake_cert,
-        level:              :b
+        level: :b
       )
-    }.to raise_error(PdfOxide::ArgumentError, /pdf_bytes/)
+    end.to raise_error(PdfOxide::ArgumentError, /pdf_bytes/)
   end
 end

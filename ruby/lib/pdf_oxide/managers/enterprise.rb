@@ -77,7 +77,7 @@ module PdfOxide
     # @return [Integer] number of pages stamped
     # @raise [PdfOxide::Error] if the operation fails
     def apply_bates(prefix, start_number: 1, num_digits: 6, position: BatesPosition::BOTTOM_RIGHT)
-      raise ::PdfOxide::ArgumentError.new('prefix cannot be nil') if prefix.nil?
+      raise ::PdfOxide::ArgumentError, 'prefix cannot be nil' if prefix.nil?
 
       FFI::ErrorHandler.with_int_check('bates_apply') do |err|
         Bindings.pdf_bates_apply(
@@ -102,7 +102,7 @@ module PdfOxide
                              position: BatesPosition::BOTTOM_RIGHT,
                              font_size: 10.0, margin: 36.0,
                              color: [0.0, 0.0, 0.0])
-      raise ::PdfOxide::ArgumentError.new('prefix cannot be nil') if prefix.nil?
+      raise ::PdfOxide::ArgumentError, 'prefix cannot be nil' if prefix.nil?
 
       r = color[0] || 0.0
       g = color[1] || 0.0
@@ -188,7 +188,7 @@ module PdfOxide
     # @return [Integer] number of pages stamped
     # @raise [PdfOxide::Error] if the operation fails
     def stamp_header(text, alignment: StampAlignment::CENTER, font_size: 10.0, margin: 36.0)
-      raise ::PdfOxide::ArgumentError.new('text cannot be nil') if text.nil?
+      raise ::PdfOxide::ArgumentError, 'text cannot be nil' if text.nil?
 
       FFI::ErrorHandler.with_int_check('stamp_header') do |err|
         Bindings.pdf_stamp_header(
@@ -208,7 +208,7 @@ module PdfOxide
     # @return [Integer] number of pages stamped
     # @raise [PdfOxide::Error] if the operation fails
     def stamp_footer(text, alignment: StampAlignment::CENTER, font_size: 10.0, margin: 36.0)
-      raise ::PdfOxide::ArgumentError.new('text cannot be nil') if text.nil?
+      raise ::PdfOxide::ArgumentError, 'text cannot be nil' if text.nil?
 
       FFI::ErrorHandler.with_int_check('stamp_footer') do |err|
         Bindings.pdf_stamp_footer(

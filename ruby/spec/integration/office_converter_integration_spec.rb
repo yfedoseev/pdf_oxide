@@ -13,25 +13,25 @@ require 'spec_helper'
 RSpec.describe PdfOxide::OfficeConverter, :skip_mock do
   it 'rejects empty / nil byte inputs' do
     expect { PdfOxide::OfficeConverter.from_docx(nil) }
-      .to raise_error(PdfOxide::ArgumentError, /nil\/empty/)
+      .to raise_error(PdfOxide::ArgumentError, %r{nil/empty})
     expect { PdfOxide::OfficeConverter.from_pptx('') }
-      .to raise_error(PdfOxide::ArgumentError, /nil\/empty/)
+      .to raise_error(PdfOxide::ArgumentError, %r{nil/empty})
     expect { PdfOxide::OfficeConverter.from_xlsx('') }
-      .to raise_error(PdfOxide::ArgumentError, /nil\/empty/)
+      .to raise_error(PdfOxide::ArgumentError, %r{nil/empty})
   end
 
   it 'fails closed on malformed bytes (cdylib reports an error code)' do
     # The C ABI rejects non-zip / unrecognised payloads with a non-
     # zero error code.  Confirm the binding surfaces it as a typed
     # PdfOxide error rather than crashing.
-    expect {
+    expect do
       PdfOxide::OfficeConverter.from_docx('this is not a docx archive')
-    }.to raise_error(PdfOxide::Error)
+    end.to raise_error(PdfOxide::Error)
   end
 
   it 'infers format from a non-existent file path (file-not-found guard)' do
-    expect {
+    expect do
       PdfOxide::OfficeConverter.from_file('/no/such/file.docx')
-    }.to raise_error(PdfOxide::FileNotFoundError)
+    end.to raise_error(PdfOxide::FileNotFoundError)
   end
 end

@@ -53,7 +53,11 @@ NATIVE_GEM_PLATFORMS = {
   'aarch64-linux'   => { triple: 'aarch64-unknown-linux-gnu', cdylib: 'libpdf_oxide.so' },
   'x86_64-darwin'   => { triple: 'x86_64-apple-darwin',       cdylib: 'libpdf_oxide.dylib' },
   'arm64-darwin'    => { triple: 'aarch64-apple-darwin',      cdylib: 'libpdf_oxide.dylib' },
-  'x64-mingw32'     => { triple: 'x86_64-pc-windows-msvc',    cdylib: 'pdf_oxide.dll' }
+  # Ruby 3.1+ switched the Windows toolchain from MSYS2 to UCRT64; the
+  # canonical gem-platform triple is `x64-mingw-ucrt`. The legacy
+  # `x64-mingw32` tag is broken for Ruby >= 3.1 and silently produces
+  # gems that nobody can install — see SOTA-2026 §9.
+  'x64-mingw-ucrt'  => { triple: 'x86_64-pc-windows-msvc',    cdylib: 'pdf_oxide.dll' }
 }.freeze
 
 # Default cargo target directory (parent repo root).

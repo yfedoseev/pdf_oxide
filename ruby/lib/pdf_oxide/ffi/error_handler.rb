@@ -57,8 +57,8 @@ module PdfOxide
       # @yield [error_ptr] Block receiving error pointer
       # @return [Boolean] Result from block
       # @raise [PdfOxide::Error] If operation fails
-      def self.with_bool_check(operation = nil, **context)
-        with_error_check(operation, **context) { |error_ptr| yield(error_ptr) }
+      def self.with_bool_check(operation = nil, **context, &block)
+        with_error_check(operation, **context, &block)
       end
 
       # Execute FFI call returning integer with error checking
@@ -67,8 +67,8 @@ module PdfOxide
       # @yield [error_ptr] Block receiving error pointer
       # @return [Integer] Result from block
       # @raise [PdfOxide::Error] If operation fails
-      def self.with_int_check(operation = nil, **context)
-        with_error_check(operation, **context) { |error_ptr| yield(error_ptr) }
+      def self.with_int_check(operation = nil, **context, &block)
+        with_error_check(operation, **context, &block)
       end
 
       # Get error message for error code

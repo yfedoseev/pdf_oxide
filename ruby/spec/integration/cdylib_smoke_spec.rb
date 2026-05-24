@@ -43,12 +43,12 @@ RSpec.describe 'libpdf_oxide cdylib smoke', :skip_mock do
     # from the current cdylib header.  RedactionManager + PadesSigner
     # (Phase 3) are the real replacements.
     expected = {
-      'PdfOxide::Managers'      => %i[
+      'PdfOxide::Managers' => %i[
         Analysis Annotation Barcode Base Cache Certificate Compliance
         Extraction ExtractionStrategy Form Layer Metadata MetaManager Ocr
         Outline Page Rendering Search Signature Xfa
       ],
-      'PdfOxide'                => %i[
+      'PdfOxide' => %i[
         AccessibilityManager EnterpriseManager
         RedactionManager PadesSigner
       ]
@@ -57,7 +57,7 @@ RSpec.describe 'libpdf_oxide cdylib smoke', :skip_mock do
       mod = ns.split('::').inject(Object) { |o, n| o.const_get(n) }
       classes.each do |c|
         expect(mod.const_defined?(c)).to be(true),
-          "expected #{ns}::#{c} to be defined"
+                                         "expected #{ns}::#{c} to be defined"
       end
     end
   end

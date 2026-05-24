@@ -30,7 +30,7 @@ module PdfOxide
       # @return [String, nil] Layer name
       def get_layer_name(index)
         check_document!
-        raise ::PdfOxide::ArgumentError, 'Layer index must be >= 0' if index < 0
+        raise ::PdfOxide::ArgumentError, 'Layer index must be >= 0' if index.negative?
         raise ::PdfOxide::ArgumentError, "Layer index #{index} exceeds layer count" if index >= layer_count
 
         FFI::StringMarshaller.from_c_string(
@@ -62,7 +62,7 @@ module PdfOxide
       # @return [Types::Layer] Layer at index
       def get_layer(index)
         check_document!
-        raise ::PdfOxide::ArgumentError, 'Layer index must be >= 0' if index < 0
+        raise ::PdfOxide::ArgumentError, 'Layer index must be >= 0' if index.negative?
         raise ::PdfOxide::ArgumentError, "Layer index #{index} exceeds layer count" if index >= layer_count
 
         Types::Layer.new(
@@ -113,7 +113,7 @@ module PdfOxide
         return "No layers found\n" unless has_layers?
 
         output = "Document Layers\n"
-        output += "=" * 40 + "\n\n"
+        output += "#{'=' * 40}\n\n"
 
         get_all.each do |layer|
           vis = layer.visible ? '✓' : '✗'

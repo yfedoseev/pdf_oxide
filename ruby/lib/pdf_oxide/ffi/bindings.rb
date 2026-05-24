@@ -14,10 +14,8 @@ module PdfOxide
       begin
         ffi_lib(Library.library_path)
       rescue LoadError => e
-        raise ::PdfOxide::InternalError.new(
-          "Failed to load PDF Oxide native library: #{e.message}. " \
-          "Make sure libpdf_oxide is installed."
-        )
+        raise ::PdfOxide::InternalError, "Failed to load PDF Oxide native library: #{e.message}. " \
+          'Make sure libpdf_oxide is installed.'
       end
 
       # ============================================================
@@ -33,18 +31,18 @@ module PdfOxide
       attach_function :free_bytes, [:pointer], :void
 
       # Document Editor Operations (13)
-      attach_function :document_editor_open, [:string, :pointer], :pointer
+      attach_function :document_editor_open, %i[string pointer], :pointer
       attach_function :document_editor_free, [:pointer], :void
-      attach_function :document_editor_save, [:pointer, :string, :pointer], :bool
-      attach_function :document_editor_get_page_count, [:pointer, :pointer], :int32
-      attach_function :document_editor_get_source_path, [:pointer, :pointer], :string
-      attach_function :document_editor_get_title, [:pointer, :pointer], :string
-      attach_function :document_editor_get_author, [:pointer, :pointer], :string
-      attach_function :document_editor_get_subject, [:pointer, :pointer], :string
-      attach_function :document_editor_get_version, [:pointer, :pointer], :string
-      attach_function :document_editor_set_title, [:pointer, :string, :pointer], :bool
-      attach_function :document_editor_set_author, [:pointer, :string, :pointer], :bool
-      attach_function :document_editor_set_subject, [:pointer, :string, :pointer], :bool
+      attach_function :document_editor_save, %i[pointer string pointer], :bool
+      attach_function :document_editor_get_page_count, %i[pointer pointer], :int32
+      attach_function :document_editor_get_source_path, %i[pointer pointer], :string
+      attach_function :document_editor_get_title, %i[pointer pointer], :string
+      attach_function :document_editor_get_author, %i[pointer pointer], :string
+      attach_function :document_editor_get_subject, %i[pointer pointer], :string
+      attach_function :document_editor_get_version, %i[pointer pointer], :string
+      attach_function :document_editor_set_title, %i[pointer string pointer], :bool
+      attach_function :document_editor_set_author, %i[pointer string pointer], :bool
+      attach_function :document_editor_set_subject, %i[pointer string pointer], :bool
       attach_function :document_editor_is_modified, [:pointer], :bool
 
       # ============================================================
@@ -52,36 +50,36 @@ module PdfOxide
       # ============================================================
 
       # Core document operations
-      attach_function :pdf_document_open, [:string, :pointer], :pointer
+      attach_function :pdf_document_open, %i[string pointer], :pointer
       attach_function :pdf_document_free, [:pointer], :void
-      attach_function :pdf_document_get_page_count, [:pointer, :pointer], :int32
-      attach_function :pdf_document_is_encrypted, [:pointer, :pointer], :bool
+      attach_function :pdf_document_get_page_count, %i[pointer pointer], :int32
+      attach_function :pdf_document_is_encrypted, %i[pointer pointer], :bool
       # REMOVED phantom (no upstream symbol): :pdf_document_requires_password (1 line)
 
       # Document metadata
-      attach_function :pdf_document_get_version, [:pointer, :pointer], :string
+      attach_function :pdf_document_get_version, %i[pointer pointer], :string
       attach_function :pdf_document_has_structure_tree, [:pointer], :bool
 
       # ============================================================
       # TEXT EXTRACTION
       # ============================================================
 
-      attach_function :pdf_document_extract_text, [:pointer, :int32, :pointer], :string
-      attach_function :pdf_document_to_markdown, [:pointer, :int32, :pointer], :string
-      attach_function :pdf_document_to_markdown_all, [:pointer, :pointer], :string
-      attach_function :pdf_document_to_html, [:pointer, :int32, :pointer], :string
-      attach_function :pdf_document_to_plain_text, [:pointer, :int32, :pointer], :string
+      attach_function :pdf_document_extract_text, %i[pointer int32 pointer], :string
+      attach_function :pdf_document_to_markdown, %i[pointer int32 pointer], :string
+      attach_function :pdf_document_to_markdown_all, %i[pointer pointer], :string
+      attach_function :pdf_document_to_html, %i[pointer int32 pointer], :string
+      attach_function :pdf_document_to_plain_text, %i[pointer int32 pointer], :string
 
       # ============================================================
       # SEARCH OPERATIONS (15 functions)
       # ============================================================
 
-      attach_function :pdf_document_search_page, [:pointer, :string, :int32, :bool, :pointer], :pointer
-      attach_function :pdf_document_search_all, [:pointer, :string, :bool, :pointer], :pointer
+      attach_function :pdf_document_search_page, %i[pointer string int32 bool pointer], :pointer
+      attach_function :pdf_document_search_all, %i[pointer string bool pointer], :pointer
       attach_function :pdf_oxide_search_result_count, [:pointer], :int32
-      attach_function :pdf_oxide_search_result_get_page, [:pointer, :int32], :int32
-      attach_function :pdf_oxide_search_result_get_text, [:pointer, :int32], :string
-      attach_function :pdf_oxide_search_result_get_bbox, [:pointer, :int32, :pointer], :void
+      attach_function :pdf_oxide_search_result_get_page, %i[pointer int32], :int32
+      attach_function :pdf_oxide_search_result_get_text, %i[pointer int32], :string
+      attach_function :pdf_oxide_search_result_get_bbox, %i[pointer int32 pointer], :void
       attach_function :pdf_oxide_search_result_free, [:pointer], :void
 
       # ============================================================
@@ -96,10 +94,10 @@ module PdfOxide
       # REMOVED phantom (no upstream symbol): :pdf_render_page_to_bytes (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_render_page_range (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_render_document (1 line)
-      attach_function :pdf_render_page_fit, [:pointer, :int32, :int32, :int32, :int32, :pointer], :pointer
-      attach_function :pdf_render_page_zoom, [:pointer, :int32, :float, :int32, :pointer], :pointer
-      attach_function :pdf_render_page_region, [:pointer, :int32, :float, :float, :float, :float, :int32, :pointer], :pointer
-      attach_function :pdf_render_page_thumbnail, [:pointer, :int32, :int32, :pointer], :pointer
+      attach_function :pdf_render_page_fit, %i[pointer int32 int32 int32 int32 pointer], :pointer
+      attach_function :pdf_render_page_zoom, %i[pointer int32 float int32 pointer], :pointer
+      attach_function :pdf_render_page_region, %i[pointer int32 float float float float int32 pointer], :pointer
+      attach_function :pdf_render_page_thumbnail, %i[pointer int32 int32 pointer], :pointer
       # REMOVED phantom (no upstream symbol): :pdf_rendered_image_width (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_rendered_image_height (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_rendered_image_size (1 line)
@@ -113,7 +111,7 @@ module PdfOxide
       # ============================================================
       # REMOVED phantom (no upstream symbol): :pdf_document_get_annotations (1 line)
       attach_function :pdf_oxide_annotation_count, [:pointer], :int32
-      attach_function :pdf_oxide_annotation_get_type, [:pointer, :int32], :int32
+      attach_function :pdf_oxide_annotation_get_type, %i[pointer int32], :int32
 
       # ============================================================
       # FORM OPERATIONS (20 functions)
@@ -123,7 +121,7 @@ module PdfOxide
       # REMOVED phantom (no upstream symbol): :pdf_form_export_to_fdf (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_form_export_to_xfdf (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_form_export_to_json (1 line)
-      attach_function :pdf_form_import_from_file, [:pointer, :string, :pointer], :bool
+      attach_function :pdf_form_import_from_file, %i[pointer string pointer], :bool
       # REMOVED phantom (no upstream symbol): :pdf_form_reset_all_fields (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_form_field_find_by_name (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_form_field_set_value_by_name_string (1 line)
@@ -133,22 +131,22 @@ module PdfOxide
       # FONT OPERATIONS (15 functions)
       # ============================================================
 
-      attach_function :pdf_document_get_embedded_fonts, [:pointer, :int32, :pointer], :pointer
+      attach_function :pdf_document_get_embedded_fonts, %i[pointer int32 pointer], :pointer
       attach_function :pdf_oxide_font_count, [:pointer], :int32
-      attach_function :pdf_oxide_font_get_name, [:pointer, :int32], :string
-      attach_function :pdf_oxide_font_get_size, [:pointer, :int32], :float
-      attach_function :pdf_oxide_font_is_embedded, [:pointer, :int32], :bool
+      attach_function :pdf_oxide_font_get_name, %i[pointer int32], :string
+      attach_function :pdf_oxide_font_get_size, %i[pointer int32], :float
+      attach_function :pdf_oxide_font_is_embedded, %i[pointer int32], :bool
       attach_function :pdf_oxide_font_list_free, [:pointer], :void
 
       # ============================================================
       # IMAGE OPERATIONS (20 functions)
       # ============================================================
 
-      attach_function :pdf_document_get_embedded_images, [:pointer, :int32, :pointer], :pointer
+      attach_function :pdf_document_get_embedded_images, %i[pointer int32 pointer], :pointer
       attach_function :pdf_oxide_image_count, [:pointer], :int32
-      attach_function :pdf_oxide_image_get_width, [:pointer, :int32], :int32
-      attach_function :pdf_oxide_image_get_height, [:pointer, :int32], :int32
-      attach_function :pdf_oxide_image_get_bits_per_component, [:pointer, :int32], :int32
+      attach_function :pdf_oxide_image_get_width, %i[pointer int32], :int32
+      attach_function :pdf_oxide_image_get_height, %i[pointer int32], :int32
+      attach_function :pdf_oxide_image_get_bits_per_component, %i[pointer int32], :int32
       attach_function :pdf_oxide_image_list_free, [:pointer], :void
 
       # ============================================================
@@ -247,7 +245,7 @@ module PdfOxide
       # XFA FORM OPERATIONS (12 functions)
       # ============================================================
 
-      attach_function :pdf_document_has_xfa, [:pointer, :pointer], :bool
+      attach_function :pdf_document_has_xfa, %i[pointer pointer], :bool
       # REMOVED phantom (no upstream symbol): :pdf_parse_xfa_form (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_xfa_form_free (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_xfa_form_field_count (1 line)
@@ -290,13 +288,13 @@ module PdfOxide
       # ADDITIONAL OCR OPERATIONS (12 functions)
       # ============================================================
 
-      attach_function :pdf_ocr_engine_create, [:pointer, :pointer], :pointer
+      attach_function :pdf_ocr_engine_create, %i[pointer pointer], :pointer
       # REMOVED phantom (no upstream symbol): :pdf_ocr_engine_get_version (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_ocr_engine_get_status (1 line)
-      attach_function :pdf_ocr_page_needs_ocr, [:pointer, :int32, :pointer], :bool
+      attach_function :pdf_ocr_page_needs_ocr, %i[pointer int32 pointer], :bool
       # REMOVED phantom (no upstream symbol): :pdf_ocr_detect_page (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_ocr_recognize_page (1 line)
-      attach_function :pdf_ocr_extract_text, [:pointer, :int32, :pointer, :bool, :pointer], :string
+      attach_function :pdf_ocr_extract_text, %i[pointer int32 pointer bool pointer], :string
       # REMOVED phantom (no upstream symbol): :pdf_ocr_extract_spans (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_ocr_extract_pages (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_ocr_results_count (1 line)
@@ -317,13 +315,13 @@ module PdfOxide
       # CERTIFICATE AND SIGNATURE OPERATIONS (8 functions)
       # ============================================================
 
-      attach_function :pdf_document_get_signature, [:pointer, :int32, :pointer], :pointer
+      attach_function :pdf_document_get_signature, %i[pointer int32 pointer], :pointer
       attach_function :pdf_signature_free, [:pointer], :void
-      attach_function :pdf_certificate_load_from_bytes, [:pointer, :size_t, :string, :pointer], :pointer
+      attach_function :pdf_certificate_load_from_bytes, %i[pointer size_t string pointer], :pointer
       attach_function :pdf_certificate_free, [:pointer], :void
-      attach_function :pdf_document_sign, [:pointer, :pointer, :string, :string, :pointer], :bool
+      attach_function :pdf_document_sign, %i[pointer pointer string string pointer], :bool
       # REMOVED phantom (no upstream symbol): :pdf_signature_get_signer (1 line)
-      attach_function :pdf_signature_verify, [:pointer, :pointer], :int32
+      attach_function :pdf_signature_verify, %i[pointer pointer], :int32
       # REMOVED phantom (no upstream symbol): :pdf_compliance_issue_free (1 line)
 
       # ============================================================
@@ -334,7 +332,7 @@ module PdfOxide
       attach_function :pdf_pdf_a_is_compliant, [:pointer], :bool
       attach_function :pdf_pdf_a_error_count, [:pointer], :int32
       attach_function :pdf_pdf_a_warning_count, [:pointer], :int32
-      attach_function :pdf_pdf_a_get_error, [:pointer, :int32, :pointer], :pointer
+      attach_function :pdf_pdf_a_get_error, %i[pointer int32 pointer], :pointer
       # REMOVED phantom (no upstream symbol): :pdf_pdf_a_get_warning (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_pdf_a_get_report (1 line)
       attach_function :pdf_pdf_a_results_free, [:pointer], :void
@@ -347,11 +345,11 @@ module PdfOxide
       # PDF/X RESULT ACCESSORS (6 functions)
       # ============================================================
 
-      attach_function :pdf_pdf_x_get_error, [:pointer, :int32, :pointer], :pointer
+      attach_function :pdf_pdf_x_get_error, %i[pointer int32 pointer], :pointer
       # REMOVED phantom (no upstream symbol): :pdf_pdf_x_get_warning (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_pdf_x_get_report (1 line)
       attach_function :pdf_pdf_x_results_free, [:pointer], :void
-      attach_function :pdf_validate_pdf_ua, [:pointer, :int32, :pointer], :pointer
+      attach_function :pdf_validate_pdf_ua, %i[pointer int32 pointer], :pointer
       attach_function :pdf_pdf_ua_is_accessible, [:pointer], :bool
 
       # ============================================================
@@ -359,9 +357,9 @@ module PdfOxide
       # ============================================================
 
       attach_function :pdf_pdf_ua_error_count, [:pointer], :int32
-      attach_function :pdf_pdf_ua_get_error, [:pointer, :int32, :pointer], :pointer
+      attach_function :pdf_pdf_ua_get_error, %i[pointer int32 pointer], :pointer
       attach_function :pdf_pdf_ua_results_free, [:pointer], :void
-      attach_function :pdf_convert_to_pdf_a, [:pointer, :int32, :pointer], :bool
+      attach_function :pdf_convert_to_pdf_a, %i[pointer int32 pointer], :bool
 
       # ============================================================
       # CONVERSION OPERATIONS (4 functions)
@@ -374,12 +372,12 @@ module PdfOxide
       # BARCODE OPERATIONS (7 functions)
       # ============================================================
 
-      attach_function :pdf_generate_qr_code, [:string, :int32, :pointer], :pointer
-      attach_function :pdf_generate_barcode, [:int32, :string, :pointer], :pointer
-      attach_function :pdf_barcode_get_image_png, [:pointer, :int32, :pointer, :pointer], :pointer
-      attach_function :pdf_barcode_get_svg, [:pointer, :int32, :pointer], :string
+      attach_function :pdf_generate_qr_code, %i[string int32 pointer], :pointer
+      attach_function :pdf_generate_barcode, %i[int32 string pointer], :pointer
+      attach_function :pdf_barcode_get_image_png, %i[pointer int32 pointer pointer], :pointer
+      attach_function :pdf_barcode_get_svg, %i[pointer int32 pointer], :string
       attach_function :pdf_barcode_free, [:pointer], :void
-      attach_function :pdf_add_barcode_to_page, [:pointer, :int32, :pointer, :float, :float, :float, :float, :pointer], :bool
+      attach_function :pdf_add_barcode_to_page, %i[pointer int32 pointer float float float float pointer], :bool
       # REMOVED phantom (no upstream symbol): :pdf_ml_model_available (1 line)
 
       # ============================================================
@@ -444,10 +442,10 @@ module PdfOxide
       # REMOVED phantom (no upstream symbol): :pdf_freetext_annotation_get_font_size (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_link_annotation_get_page (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_link_annotation_get_uri (1 line)
-      attach_function :pdf_oxide_annotation_get_author, [:pointer, :int32, :pointer], :pointer
+      attach_function :pdf_oxide_annotation_get_author, %i[pointer int32 pointer], :pointer
       # REMOVED phantom (no upstream symbol): :pdf_oxide_annotation_get_contents (1 line)
-      attach_function :pdf_oxide_annotation_get_creation_date, [:pointer, :int32, :pointer], :int64
-      attach_function :pdf_oxide_annotation_get_rect, [:pointer, :pointer, :pointer, :pointer, :int32, :pointer], :pointer
+      attach_function :pdf_oxide_annotation_get_creation_date, %i[pointer int32 pointer], :int64
+      attach_function :pdf_oxide_annotation_get_rect, %i[pointer pointer pointer pointer int32 pointer], :pointer
       # REMOVED phantom (no upstream symbol): :pdf_page_get_annotations_by_type_count (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_page_get_annotations_count (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_text_annotation_get_icon (1 line)
@@ -467,13 +465,13 @@ module PdfOxide
       # REMOVED phantom (no upstream symbol): :pdf_document_is_layer_visible (1 line)
 
       # PAGE (8)
-      attach_function :pdf_get_page_count, [:pointer, :pointer], :int32
+      attach_function :pdf_get_page_count, %i[pointer pointer], :int32
       # REMOVED phantom (no upstream symbol): :pdf_page_find_elements_count (1 line)
       attach_function :pdf_page_get_height, [:pointer], :float
       # REMOVED phantom (no upstream symbol): :pdf_page_get_index (1 line)
       attach_function :pdf_page_get_width, [:pointer], :float
       # REMOVED phantom (no upstream symbol): :pdf_page_search_text (1 line)
-      attach_function :pdf_render_page, [:pointer, :int32, :pointer, :pointer], :pointer
+      attach_function :pdf_render_page, %i[pointer int32 pointer pointer], :pointer
       # REMOVED phantom (no upstream symbol): :pdf_search_result_get_page (1 line)
 
       # ELEMENT (9)
@@ -501,22 +499,22 @@ module PdfOxide
       # REMOVED phantom (no upstream symbol): :pdf_ocr_span_to_text_span (1 line)
 
       # IMAGE (3)
-      attach_function :pdf_oxide_image_get_colorspace, [:pointer, :int32, :pointer], :pointer
-      attach_function :pdf_oxide_image_get_data, [:pointer, :int32, :pointer, :pointer], :pointer
-      attach_function :pdf_oxide_image_get_format, [:pointer, :int32, :pointer], :pointer
+      attach_function :pdf_oxide_image_get_colorspace, %i[pointer int32 pointer], :pointer
+      attach_function :pdf_oxide_image_get_data, %i[pointer int32 pointer pointer], :pointer
+      attach_function :pdf_oxide_image_get_format, %i[pointer int32 pointer], :pointer
 
       # TEXT (1)
-      attach_function :pdf_from_text, [:string, :pointer], :pointer
+      attach_function :pdf_from_text, %i[string pointer], :pointer
 
       # OTHER (8)
       # REMOVED phantom (no upstream symbol): :pdf_cache_get_statistics_json (1 line)
-      attach_function :pdf_from_html, [:string, :pointer], :pointer
-      attach_function :pdf_from_markdown, [:string, :pointer], :pointer
-      attach_function :pdf_oxide_font_get_encoding, [:pointer, :int32, :pointer], :pointer
-      attach_function :pdf_oxide_font_get_type, [:pointer, :int32, :pointer], :pointer
-      attach_function :pdf_oxide_font_is_subset, [:pointer, :int32, :pointer], :int32
-      attach_function :pdf_save, [:pointer, :string, :pointer], :int32
-      attach_function :pdf_save_to_bytes, [:pointer, :pointer, :pointer, :pointer], :int32
+      attach_function :pdf_from_html, %i[string pointer], :pointer
+      attach_function :pdf_from_markdown, %i[string pointer], :pointer
+      attach_function :pdf_oxide_font_get_encoding, %i[pointer int32 pointer], :pointer
+      attach_function :pdf_oxide_font_get_type, %i[pointer int32 pointer], :pointer
+      attach_function :pdf_oxide_font_is_subset, %i[pointer int32 pointer], :int32
+      attach_function :pdf_save, %i[pointer string pointer], :int32
+      attach_function :pdf_save_to_bytes, %i[pointer pointer pointer pointer], :int32
 
       # FREE/CLEANUP FUNCTIONS (6)
       # REMOVED phantom (no upstream symbol): :pdf_annotation_free (1 line)
@@ -576,7 +574,7 @@ module PdfOxide
       # REMOVED duplicate declaration: :pdf_render_page_zoom (1 line)
       # REMOVED duplicate declaration: :pdf_render_page_fit (1 line)
       # REMOVED duplicate declaration: :pdf_render_page_thumbnail (1 line)
-      attach_function :pdf_estimate_render_time, [:pointer, :int32, :pointer], :int32
+      attach_function :pdf_estimate_render_time, %i[pointer int32 pointer], :int32
       # REMOVED phantom (no upstream symbol): :pdf_renderer_get_statistics (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_renderer_reset_statistics (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_rendered_image_width (1 line)
@@ -627,12 +625,12 @@ module PdfOxide
       # REMOVED phantom (no upstream symbol): :pdf_credentials_add_chain_cert (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_credentials_get_certificate (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_credentials_free (1 line)
-      attach_function :pdf_certificate_get_subject, [:pointer, :pointer], :string
+      attach_function :pdf_certificate_get_subject, %i[pointer pointer], :string
       # REMOVED phantom (no upstream symbol): :pdf_certificate_get_cn (1 line)
-      attach_function :pdf_certificate_get_issuer, [:pointer, :pointer], :string
-      attach_function :pdf_certificate_get_serial, [:pointer, :pointer], :string
+      attach_function :pdf_certificate_get_issuer, %i[pointer pointer], :string
+      attach_function :pdf_certificate_get_serial, %i[pointer pointer], :string
       # REMOVED phantom (no upstream symbol): :pdf_certificate_get_size (1 line)
-      attach_function :pdf_certificate_get_validity, [:pointer, :pointer, :pointer, :pointer], :void
+      attach_function :pdf_certificate_get_validity, %i[pointer pointer pointer pointer], :void
       attach_function :pdf_certificate_is_valid, [:pointer], :bool
       # REMOVED phantom (no upstream symbol): :pdf_certificate_is_expired (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_certificate_get_key_size (1 line)
@@ -664,7 +662,7 @@ module PdfOxide
       # REMOVED phantom (no upstream symbol): :pdf_signature_get_reason (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_signature_get_location (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_signature_get_contact (1 line)
-      attach_function :pdf_signature_get_certificate, [:pointer, :pointer], :pointer
+      attach_function :pdf_signature_get_certificate, %i[pointer pointer], :pointer
       # REMOVED phantom (no upstream symbol): :pdf_signature_get_subfilter (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_signature_get_digest_algorithm (1 line)
       attach_function :pdf_signature_has_timestamp, [:pointer], :bool
@@ -823,7 +821,7 @@ module PdfOxide
 
       # Signature functions
       # REMOVED duplicate declaration: :pdf_document_sign (1 line)
-      attach_function :pdf_document_get_signature_count, [:pointer, :pointer], :int32
+      attach_function :pdf_document_get_signature_count, %i[pointer pointer], :int32
 
       # Save functions
       # REMOVED phantom (no upstream symbol): :pdf_document_save (1 line)
@@ -880,8 +878,8 @@ module PdfOxide
       # REMOVED phantom (no upstream symbol): :pdf_oxide_link_list_free (1 line)
       attach_function :pdf_oxide_table_count, [:pointer], :int32
       # REMOVED phantom (no upstream symbol): :pdf_oxide_table_get_bbox (1 line)
-      attach_function :pdf_oxide_table_get_row_count, [:pointer, :int32], :int32
-      attach_function :pdf_oxide_table_get_col_count, [:pointer, :int32], :int32
+      attach_function :pdf_oxide_table_get_row_count, %i[pointer int32], :int32
+      attach_function :pdf_oxide_table_get_col_count, %i[pointer int32], :int32
       attach_function :pdf_oxide_table_list_free, [:pointer], :void
       # REMOVED phantom (no upstream symbol): :pdf_oxide_ocr_result_get_text (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_oxide_ocr_result_confidence (1 line)
@@ -950,12 +948,12 @@ module PdfOxide
       # Annotation list helper functions
       # REMOVED phantom (no upstream symbol): :pdf_oxide_annotation_get_text (1 line)
       # REMOVED phantom (no upstream symbol): :pdf_oxide_annotation_get_bbox (1 line)
-      attach_function :pdf_oxide_annotation_get_color, [:pointer, :int32], :int32
+      attach_function :pdf_oxide_annotation_get_color, %i[pointer int32], :int32
       attach_function :pdf_oxide_annotation_list_free, [:pointer], :void
 
       # Form field list helper functions
       attach_function :pdf_oxide_form_field_count, [:pointer], :int32
-      attach_function :pdf_oxide_form_field_get_name, [:pointer, :int32], :string
+      attach_function :pdf_oxide_form_field_get_name, %i[pointer int32], :string
       attach_function :pdf_oxide_form_field_list_free, [:pointer], :void
 
       # Signature helper functions
@@ -979,21 +977,21 @@ module PdfOxide
 
       # Add a redaction annotation to a page
       attach_function :pdf_redaction_add,
-                      [:pointer, :int32, :float, :float, :float, :float, :uint8, :uint8, :uint8, :pointer],
+                      %i[pointer int32 float float float float uint8 uint8 uint8 pointer],
                       :bool
 
       # Apply all pending redactions
       attach_function :pdf_redaction_apply,
-                      [:pointer, :bool, :uint8, :uint8, :uint8, :pointer],
+                      %i[pointer bool uint8 uint8 uint8 pointer],
                       :bool
 
       # Scrub document metadata
       attach_function :pdf_redaction_scrub_metadata,
-                      [:pointer, :bool, :bool, :bool, :pointer],
+                      %i[pointer bool bool bool pointer],
                       :bool
 
       # Get count of pending redactions
-      attach_function :pdf_redaction_count, [:pointer, :pointer], :int32
+      attach_function :pdf_redaction_count, %i[pointer pointer], :int32
 
       # ============================================================
       # FLATTENING OPERATIONS
@@ -1107,39 +1105,39 @@ module PdfOxide
       # TSA TIMESTAMP OPERATIONS (17 functions)
       # ============================================================
 
-      attach_function :pdf_tsa_client_create, [:string, :string, :string, :int32, :int32, :bool, :bool, :pointer], :pointer
+      attach_function :pdf_tsa_client_create, %i[string string string int32 int32 bool bool pointer], :pointer
       attach_function :pdf_tsa_client_free, [:pointer], :void
-      attach_function :pdf_tsa_request_timestamp, [:pointer, :pointer, :size_t, :pointer], :pointer
-      attach_function :pdf_tsa_request_timestamp_hash, [:pointer, :pointer, :size_t, :int32, :pointer], :pointer
-      attach_function :pdf_timestamp_get_token, [:pointer, :pointer, :pointer], :pointer
-      attach_function :pdf_timestamp_get_time, [:pointer, :pointer], :int64
-      attach_function :pdf_timestamp_get_serial, [:pointer, :pointer], :string
-      attach_function :pdf_timestamp_get_tsa_name, [:pointer, :pointer], :string
-      attach_function :pdf_timestamp_get_policy_oid, [:pointer, :pointer], :string
-      attach_function :pdf_timestamp_get_hash_algorithm, [:pointer, :pointer], :int32
-      attach_function :pdf_timestamp_get_message_imprint, [:pointer, :pointer, :pointer], :pointer
-      attach_function :pdf_timestamp_verify, [:pointer, :pointer], :bool
+      attach_function :pdf_tsa_request_timestamp, %i[pointer pointer size_t pointer], :pointer
+      attach_function :pdf_tsa_request_timestamp_hash, %i[pointer pointer size_t int32 pointer], :pointer
+      attach_function :pdf_timestamp_get_token, %i[pointer pointer pointer], :pointer
+      attach_function :pdf_timestamp_get_time, %i[pointer pointer], :int64
+      attach_function :pdf_timestamp_get_serial, %i[pointer pointer], :string
+      attach_function :pdf_timestamp_get_tsa_name, %i[pointer pointer], :string
+      attach_function :pdf_timestamp_get_policy_oid, %i[pointer pointer], :string
+      attach_function :pdf_timestamp_get_hash_algorithm, %i[pointer pointer], :int32
+      attach_function :pdf_timestamp_get_message_imprint, %i[pointer pointer pointer], :pointer
+      attach_function :pdf_timestamp_verify, %i[pointer pointer], :bool
       attach_function :pdf_timestamp_free, [:pointer], :void
-      attach_function :pdf_signature_add_timestamp, [:pointer, :pointer, :pointer], :bool
+      attach_function :pdf_signature_add_timestamp, %i[pointer pointer pointer], :bool
       # REMOVED duplicate declaration: :pdf_signature_has_timestamp (1 line)
-      attach_function :pdf_signature_get_timestamp, [:pointer, :pointer], :pointer
+      attach_function :pdf_signature_get_timestamp, %i[pointer pointer], :pointer
 
       # ============================================================
       # PDF/UA EXTENDED VALIDATION (3 functions)
       # ============================================================
 
       attach_function :pdf_pdf_ua_warning_count, [:pointer], :int32
-      attach_function :pdf_pdf_ua_get_warning, [:pointer, :int32, :pointer], :pointer
-      attach_function :pdf_pdf_ua_get_stats, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :bool
+      attach_function :pdf_pdf_ua_get_warning, %i[pointer int32 pointer], :pointer
+      attach_function :pdf_pdf_ua_get_stats, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :bool
 
       # ============================================================
       # FDF/XFDF IN-MEMORY IMPORT/EXPORT (4 functions)
       # ============================================================
 
-      attach_function :pdf_editor_import_fdf_bytes, [:pointer, :pointer, :size_t, :pointer], :int32
-      attach_function :pdf_editor_import_xfdf_bytes, [:pointer, :pointer, :size_t, :pointer], :int32
-      attach_function :pdf_document_import_form_data, [:pointer, :string, :pointer], :int32
-      attach_function :pdf_document_export_form_data_to_bytes, [:pointer, :int32, :pointer, :pointer], :pointer
+      attach_function :pdf_editor_import_fdf_bytes, %i[pointer pointer size_t pointer], :int32
+      attach_function :pdf_editor_import_xfdf_bytes, %i[pointer pointer size_t pointer], :int32
+      attach_function :pdf_document_import_form_data, %i[pointer string pointer], :int32
+      attach_function :pdf_document_export_form_data_to_bytes, %i[pointer int32 pointer pointer], :pointer
 
       # ============================================================
       # TOTAL: 600+ FUNCTIONS DECLARED (100% API Coverage)
@@ -1152,367 +1150,374 @@ module PdfOxide
       # be added by Phase 3 (extend) and Phase 4 (test/CI).
       # ============================================================
 
-      attach_function :AllocString, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :DocumentEditorFree, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :DocumentEditorOpen, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :DocumentEditorSave, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :DocumentEditorSetAuthor, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :DocumentEditorSetTitle, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :FreeBytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :FreeString, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :PdfDocumentExtractText, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :PdfDocumentFree, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :PdfDocumentGetPageCount, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :PdfDocumentOpen, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :PdfDocumentToHtml, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :PdfDocumentToMarkdown, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :PdfDocumentToPlainText, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :PdfFree, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :PdfFromHtml, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :PdfFromMarkdown, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :PdfFromText, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :PdfSave, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :PdfSaveToBytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_apply_all_redactions, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_apply_page_redactions, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_clear_erase_regions, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_convert_to_pdf_a, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_crop_margins, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_delete_page, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_embed_file, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_erase_region, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_erase_regions, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_extract_pages_to_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_flatten_all_annotations, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_flatten_annotations, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_flatten_forms, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_flatten_forms_on_page, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_flatten_warning, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_flatten_warnings_count, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_get_creation_date, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_get_keywords, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_get_page_crop_box, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_get_page_media_box, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_get_page_rotation, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_get_producer, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_is_page_marked_for_flatten, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_is_page_marked_for_redaction, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_merge_from, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_merge_from_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_move_page, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_open_from_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_rotate_all_pages, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_rotate_page_by, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_save_encrypted, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_save_encrypted_to_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_save_to_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_save_to_bytes_with_options, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_set_creation_date, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_set_form_field_value, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_set_keywords, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_set_page_crop_box, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_set_page_media_box, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_set_page_rotation, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_set_producer, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_unmark_page_for_flatten, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :document_editor_unmark_page_for_redaction, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :lut_interp_linear16, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :lut_inverse_interp16, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_create_from_markdown, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_document_format, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_document_free, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_document_open, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_document_open_from_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_document_plain_text, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_document_save_as, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_document_to_html, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_document_to_ir_json, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_document_to_markdown, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_editable_free, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_editable_open, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_editable_open_from_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_editable_replace_text, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_editable_save, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_editable_save_to_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_editable_set_cell, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_extract_text, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_oxide_detect_format, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_oxide_free_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_oxide_free_string, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_oxide_version, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_pptx_slide_add_image, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_pptx_slide_add_text, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_pptx_slide_set_title, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_pptx_writer_add_slide, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_pptx_writer_free, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_pptx_writer_new, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_pptx_writer_save, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_pptx_writer_set_presentation_size, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_pptx_writer_to_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_to_html, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_to_markdown, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_xlsx_sheet_merge_cells, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_xlsx_sheet_set_cell, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_xlsx_sheet_set_cell_styled, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_xlsx_sheet_set_column_width, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_xlsx_writer_add_sheet, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_xlsx_writer_free, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_xlsx_writer_new, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_xlsx_writer_save, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :office_xlsx_writer_to_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_certificate_load_from_pem, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_create_renderer, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_authenticate, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_a4_page, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_build, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_create, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_free, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_language, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_letter_page, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_on_open, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_page, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_register_embedded_font, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_role_map, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_save, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_save_encrypted, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_set_author, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_set_creator, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_set_keywords, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_set_subject, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_set_title, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_tagged_pdf_ua1, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_builder_to_bytes_encrypted, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_classify_document, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_classify_page, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_erase_artifacts, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_erase_footer, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_erase_header, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_extract_all_text, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_extract_chars, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_extract_images_in_rect, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_extract_lines_in_rect, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_extract_page_auto, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_extract_paths, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_extract_tables, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_extract_tables_in_rect, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_extract_text_auto, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_extract_text_in_rect, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_extract_text_lines, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_extract_words, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_extract_words_in_rect, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_get_dss, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_get_form_fields, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_get_outline, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_get_page_annotations, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_get_page_labels, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_get_source_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_get_xmp_metadata, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_has_timestamp, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_open_from_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_open_from_docx_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_open_from_pptx_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_open_from_xlsx_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_open_with_password, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_plan_split_by_bookmarks, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_remove_artifacts, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_remove_footers, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_remove_headers, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_to_docx, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_to_html_all, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_to_plain_text_all, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_to_pptx, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_to_xlsx, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_document_verify_all_signatures, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_dss_cert_count, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_dss_crl_count, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_dss_free, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_dss_get_cert, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_dss_get_crl, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_dss_get_ocsp, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_dss_ocsp_count, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_dss_vri_count, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_embedded_font_free, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_embedded_font_from_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_embedded_font_from_file, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_from_html_css, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_from_html_css_with_fonts, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_from_image, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_from_image_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_get_rendered_image_data, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_get_rendered_image_height, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_get_rendered_image_width, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_merge, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_annotation_get_border_width, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_annotation_get_content, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_annotation_get_modification_date, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_annotation_get_subtype, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_annotation_is_hidden, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_annotation_is_marked_deleted, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_annotation_is_printable, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_annotation_is_read_only, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_annotations_to_json, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_char_count, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_char_get_bbox, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_char_get_char, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_char_get_font_name, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_char_get_font_size, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_char_list_free, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_crypto_active_provider, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_crypto_cbom, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_crypto_fips_available, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_crypto_inventory, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_crypto_policy, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_crypto_set_policy, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_crypto_use_fips, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_element_count, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_element_get_rect, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_element_get_text, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_element_get_type, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_elements_free, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_elements_to_json, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_fonts_to_json, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_form_field_get_type, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_form_field_get_value, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_form_field_is_readonly, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_form_field_is_required, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_get_log_level, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_highlight_annotation_get_quad_point, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_highlight_annotation_get_quad_points_count, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_line_count, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_line_get_bbox, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_line_get_text, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_line_get_word_count, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_line_list_free, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_link_annotation_get_uri, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_model_manifest, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_path_count, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_path_get_bbox, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_path_get_operation_count, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_path_get_stroke_width, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_path_has_fill, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_path_has_stroke, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_path_list_free, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_prefetch_available, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_prefetch_models, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_search_results_to_json, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_set_log_level, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_table_get_cell_text, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_table_has_header, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_text_annotation_get_icon_name, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_word_count, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_word_get_bbox, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_word_get_font_name, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_word_get_font_size, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_word_get_text, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_word_is_bold, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_oxide_word_list_free, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_at, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_barcode_1d, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_barcode_qr, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_checkbox, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_columns, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_combo_box, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_done, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_field_calculate, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_field_format, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_field_keystroke, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_field_validate, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_filled_rect, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_font, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_footnote, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_free, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_freetext, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_heading, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_highlight, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_horizontal_rule, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_image, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_image_artifact, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_image_with_alt, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_inline, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_inline_bold, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_inline_color, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_inline_italic, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_line, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_link_javascript, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_link_named, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_link_page, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_link_url, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_new_page_same_size, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_newline, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_on_close, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_on_open, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_paragraph, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_push_button, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_radio_group, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_rect, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_signature_field, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_space, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_squiggly, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_stamp, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_sticky_note, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_sticky_note_at, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_streaming_table_batch_count, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_streaming_table_begin, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_streaming_table_begin_v2, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_streaming_table_finish, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_streaming_table_flush, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_streaming_table_pending_row_count, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_streaming_table_push_row, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_streaming_table_push_row_v2, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_streaming_table_set_batch_size, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_strikeout, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_stroke_line, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_stroke_line_dashed, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_stroke_rect, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_stroke_rect_dashed, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_table, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_text, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_text_field, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_text_in_rect, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_underline, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_watermark, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_watermark_confidential, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_builder_watermark_draft, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_get_art_box, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_get_bleed_box, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_get_crop_box, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_get_elements, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_get_media_box, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_get_rotation, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_page_get_trim_box, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_render_page_raw, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_render_page_with_options, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_renderer_free, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_save_rendered_image, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_sign_bytes, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_sign_bytes_pades, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_sign_bytes_pades_opts, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_signature_get_pades_level, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_signature_get_signer_name, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_signature_get_signing_location, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_signature_get_signing_reason, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_signature_get_signing_time, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_signature_verify_detached, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_timestamp_parse, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_validate_pdf_a_level, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :pdf_validate_pdf_x_level, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_enable_iccv4, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_profile_is_bogus, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_profile_precache_output_transform, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_transform_data_bgra_out_lut, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_transform_data_bgra_out_lut_avx, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_transform_data_bgra_out_lut_precache, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_transform_data_bgra_out_lut_sse2, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_transform_data_rgb_out_lut, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_transform_data_rgb_out_lut_avx, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_transform_data_rgb_out_lut_precache, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_transform_data_rgb_out_lut_sse2, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_transform_data_rgba_out_lut, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_transform_data_rgba_out_lut_avx, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_transform_data_rgba_out_lut_precache, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_transform_data_rgba_out_lut_sse2, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_transform_release, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
-      attach_function :qcms_white_point_sRGB, [:pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer, :pointer], :pointer, blocking: false
+      attach_function :AllocString, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :DocumentEditorFree, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :DocumentEditorOpen, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :DocumentEditorSave, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :DocumentEditorSetAuthor, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :DocumentEditorSetTitle, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :FreeBytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :FreeString, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :PdfDocumentExtractText, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :PdfDocumentFree, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :PdfDocumentGetPageCount, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :PdfDocumentOpen, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :PdfDocumentToHtml, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :PdfDocumentToMarkdown, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :PdfDocumentToPlainText, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :PdfFree, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :PdfFromHtml, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :PdfFromMarkdown, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :PdfFromText, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :PdfSave, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :PdfSaveToBytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_apply_all_redactions, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_apply_page_redactions, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_clear_erase_regions, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_convert_to_pdf_a, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_crop_margins, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_delete_page, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_embed_file, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_erase_region, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_erase_regions, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_extract_pages_to_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_flatten_all_annotations, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_flatten_annotations, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_flatten_forms, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_flatten_forms_on_page, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_flatten_warning, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_flatten_warnings_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_get_creation_date, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_get_keywords, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_get_page_crop_box, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_get_page_media_box, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_get_page_rotation, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_get_producer, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_is_page_marked_for_flatten, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_is_page_marked_for_redaction, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_merge_from, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_merge_from_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_move_page, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_open_from_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_rotate_all_pages, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_rotate_page_by, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_save_encrypted, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_save_encrypted_to_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_save_to_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_save_to_bytes_with_options, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_set_creation_date, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_set_form_field_value, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_set_keywords, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_set_page_crop_box, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_set_page_media_box, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_set_page_rotation, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_set_producer, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_unmark_page_for_flatten, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :document_editor_unmark_page_for_redaction, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :lut_interp_linear16, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :lut_inverse_interp16, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_create_from_markdown, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_document_format, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_document_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_document_open, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_document_open_from_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_document_plain_text, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_document_save_as, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_document_to_html, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_document_to_ir_json, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_document_to_markdown, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_editable_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_editable_open, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_editable_open_from_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_editable_replace_text, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_editable_save, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_editable_save_to_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_editable_set_cell, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_extract_text, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_oxide_detect_format, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_oxide_free_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_oxide_free_string, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_oxide_version, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_pptx_slide_add_image, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_pptx_slide_add_text, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_pptx_slide_set_title, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_pptx_writer_add_slide, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_pptx_writer_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_pptx_writer_new, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_pptx_writer_save, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_pptx_writer_set_presentation_size, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_pptx_writer_to_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_to_html, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_to_markdown, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_xlsx_sheet_merge_cells, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_xlsx_sheet_set_cell, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_xlsx_sheet_set_cell_styled, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_xlsx_sheet_set_column_width, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_xlsx_writer_add_sheet, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_xlsx_writer_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_xlsx_writer_new, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_xlsx_writer_save, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :office_xlsx_writer_to_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_certificate_load_from_pem, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_create_renderer, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_authenticate, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_a4_page, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_build, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_create, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_language, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_letter_page, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_on_open, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_page, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_register_embedded_font, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_role_map, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_save, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_save_encrypted, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_set_author, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_set_creator, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_set_keywords, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_set_subject, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_set_title, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_tagged_pdf_ua1, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_builder_to_bytes_encrypted, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_classify_document, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_classify_page, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_erase_artifacts, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_erase_footer, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_erase_header, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_extract_all_text, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_extract_chars, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_extract_images_in_rect, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_extract_lines_in_rect, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_extract_page_auto, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_extract_paths, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_extract_tables, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_extract_tables_in_rect, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_extract_text_auto, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_extract_text_in_rect, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_extract_text_lines, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_extract_words, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_extract_words_in_rect, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_get_dss, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_get_form_fields, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_get_outline, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_get_page_annotations, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_get_page_labels, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_get_source_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_get_xmp_metadata, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_has_timestamp, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_open_from_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_open_from_docx_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_open_from_pptx_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_open_from_xlsx_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_open_with_password, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_plan_split_by_bookmarks, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_remove_artifacts, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_remove_footers, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_remove_headers, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_to_docx, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_to_html_all, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_to_plain_text_all, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_to_pptx, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_to_xlsx, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_document_verify_all_signatures, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_dss_cert_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_dss_crl_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_dss_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_dss_get_cert, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_dss_get_crl, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_dss_get_ocsp, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_dss_ocsp_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_dss_vri_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_embedded_font_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_embedded_font_from_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_embedded_font_from_file, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_from_html_css, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_from_html_css_with_fonts, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_from_image, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_from_image_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_get_rendered_image_data, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_get_rendered_image_height, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_get_rendered_image_width, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_merge, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_annotation_get_border_width, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_annotation_get_content, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_annotation_get_modification_date, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_annotation_get_subtype, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_annotation_is_hidden, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_annotation_is_marked_deleted, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_annotation_is_printable, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_annotation_is_read_only, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_annotations_to_json, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_char_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_char_get_bbox, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_char_get_char, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_char_get_font_name, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_char_get_font_size, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_char_list_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_crypto_active_provider, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_crypto_cbom, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_crypto_fips_available, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_crypto_inventory, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_crypto_policy, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_crypto_set_policy, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_crypto_use_fips, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_element_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_element_get_rect, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_element_get_text, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_element_get_type, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_elements_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_elements_to_json, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_fonts_to_json, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_form_field_get_type, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_form_field_get_value, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_form_field_is_readonly, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_form_field_is_required, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_get_log_level, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_highlight_annotation_get_quad_point, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_highlight_annotation_get_quad_points_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_line_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_line_get_bbox, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_line_get_text, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_line_get_word_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_line_list_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_link_annotation_get_uri, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_model_manifest, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_path_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_path_get_bbox, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_path_get_operation_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_path_get_stroke_width, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_path_has_fill, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_path_has_stroke, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_path_list_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_prefetch_available, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_prefetch_models, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_search_results_to_json, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_set_log_level, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_table_get_cell_text, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_table_has_header, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_text_annotation_get_icon_name, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_word_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_word_get_bbox, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_word_get_font_name, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_word_get_font_size, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_word_get_text, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_word_is_bold, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_oxide_word_list_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_at, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_barcode_1d, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_barcode_qr, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_checkbox, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_columns, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_combo_box, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_done, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_field_calculate, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_field_format, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_field_keystroke, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_field_validate, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_filled_rect, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_font, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_footnote, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_freetext, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_heading, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_highlight, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_horizontal_rule, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_image, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_image_artifact, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_image_with_alt, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_inline, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_inline_bold, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_inline_color, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_inline_italic, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_line, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_link_javascript, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_link_named, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_link_page, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_link_url, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_new_page_same_size, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_newline, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_on_close, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_on_open, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_paragraph, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_push_button, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_radio_group, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_rect, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_signature_field, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_space, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_squiggly, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_stamp, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_sticky_note, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_sticky_note_at, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_streaming_table_batch_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_streaming_table_begin, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_streaming_table_begin_v2, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_streaming_table_finish, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_streaming_table_flush, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_streaming_table_pending_row_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_streaming_table_push_row, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_streaming_table_push_row_v2, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_streaming_table_set_batch_size, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_strikeout, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_stroke_line, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_stroke_line_dashed, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_stroke_rect, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_stroke_rect_dashed, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_table, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_text, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_text_field, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_text_in_rect, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_underline, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_watermark, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_watermark_confidential, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_watermark_draft, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_get_art_box, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_get_bleed_box, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_get_crop_box, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_get_elements, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_get_media_box, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_get_rotation, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_get_trim_box, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_render_page_raw, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_render_page_with_options, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_renderer_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_save_rendered_image, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_sign_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_sign_bytes_pades, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_sign_bytes_pades_opts, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_signature_get_pades_level, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_signature_get_signer_name, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_signature_get_signing_location, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_signature_get_signing_reason, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_signature_get_signing_time, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_signature_verify_detached, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_timestamp_parse, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_validate_pdf_a_level, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_validate_pdf_x_level, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :qcms_enable_iccv4, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :qcms_profile_is_bogus, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :qcms_profile_precache_output_transform, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :qcms_transform_data_bgra_out_lut, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :qcms_transform_data_bgra_out_lut_precache, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :qcms_transform_data_rgb_out_lut, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :qcms_transform_data_rgb_out_lut_precache, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :qcms_transform_data_rgba_out_lut, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :qcms_transform_data_rgba_out_lut_precache, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      # The `_avx` and `_sse2` qcms transforms are x86-only intrinsics
+      # builds; they are absent on aarch64-{darwin,linux} cdylibs.
+      # qcms internally selects the right impl, so the Ruby side never
+      # calls these directly — wrap in a tolerant attach so the gem
+      # loads on ARM.  (Public C ABI never exposes these; they leak
+      # from the qcms crate's `#[no_mangle]` symbols.)
+      %i[qcms_transform_data_bgra_out_lut_avx qcms_transform_data_bgra_out_lut_sse2
+         qcms_transform_data_rgb_out_lut_avx qcms_transform_data_rgb_out_lut_sse2
+         qcms_transform_data_rgba_out_lut_avx qcms_transform_data_rgba_out_lut_sse2].each do |sym|
+        attach_function sym, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      rescue ::FFI::NotFoundError
+        # Symbol absent on this arch — never invoked from Ruby, skip silently.
+      end
+      attach_function :qcms_transform_release, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :qcms_white_point_sRGB, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
 
       # ============================================================
       # PHASE 2 REPAIR: real signatures for symbols the Ruby wrappers
@@ -1521,16 +1526,16 @@ module PdfOxide
       # ============================================================
 
       # PDF creation entry points (replace Creator stub) - returns Pdf*.
-      attach_function :pdf_from_markdown, [:string, :pointer], :pointer
-      attach_function :pdf_from_html, [:string, :pointer], :pointer
-      attach_function :pdf_from_text, [:string, :pointer], :pointer
-      attach_function :pdf_from_image, [:string, :pointer], :pointer
-      attach_function :pdf_from_image_bytes, [:pointer, :size_t, :pointer], :pointer
+      attach_function :pdf_from_markdown, %i[string pointer], :pointer
+      attach_function :pdf_from_html, %i[string pointer], :pointer
+      attach_function :pdf_from_text, %i[string pointer], :pointer
+      attach_function :pdf_from_image, %i[string pointer], :pointer
+      attach_function :pdf_from_image_bytes, %i[pointer size_t pointer], :pointer
 
       # PDF handle save / inspect / free.
-      attach_function :pdf_save, [:pointer, :string, :pointer], :int32
-      attach_function :pdf_save_to_bytes, [:pointer, :pointer, :pointer], :pointer
-      attach_function :pdf_get_page_count, [:pointer, :pointer], :int32
+      attach_function :pdf_save, %i[pointer string pointer], :int32
+      attach_function :pdf_save_to_bytes, %i[pointer pointer pointer], :pointer
+      attach_function :pdf_get_page_count, %i[pointer pointer], :int32
 
       # Free helpers — kept explicit so StringMarshaller.free_c_string
       # resolves to a real ABI signature.
@@ -1547,50 +1552,50 @@ module PdfOxide
       # Auto-extraction (#519, v0.3.51) — JSON-returning classifiers
       # plus the text-only auto-router.  All return malloc'd char*;
       # free with pdf_free / free_string.
-      attach_function :pdf_document_classify_page,     [:pointer, :int32, :pointer], :pointer
-      attach_function :pdf_document_classify_document, [:pointer, :pointer],         :pointer
-      attach_function :pdf_document_extract_text_auto, [:pointer, :int32, :pointer], :pointer
-      attach_function :pdf_document_extract_page_auto, [:pointer, :int32, :string, :pointer], :pointer
+      attach_function :pdf_document_classify_page,     %i[pointer int32 pointer], :pointer
+      attach_function :pdf_document_classify_document, %i[pointer pointer], :pointer
+      attach_function :pdf_document_extract_text_auto, %i[pointer int32 pointer], :pointer
+      attach_function :pdf_document_extract_page_auto, %i[pointer int32 string pointer], :pointer
 
       # Models subsystem (#519 provisioning trio).
-      attach_function :pdf_oxide_prefetch_models,    [:string, :pointer], :pointer
+      attach_function :pdf_oxide_prefetch_models,    %i[string pointer], :pointer
       attach_function :pdf_oxide_model_manifest,     [],                  :pointer
       attach_function :pdf_oxide_prefetch_available, [],                  :int32
 
       # Office converter (#159, v0.3.48). All three return a PdfDocument*.
-      attach_function :pdf_document_open_from_docx_bytes, [:pointer, :size_t, :pointer], :pointer
-      attach_function :pdf_document_open_from_pptx_bytes, [:pointer, :size_t, :pointer], :pointer
-      attach_function :pdf_document_open_from_xlsx_bytes, [:pointer, :size_t, :pointer], :pointer
+      attach_function :pdf_document_open_from_docx_bytes, %i[pointer size_t pointer], :pointer
+      attach_function :pdf_document_open_from_pptx_bytes, %i[pointer size_t pointer], :pointer
+      attach_function :pdf_document_open_from_xlsx_bytes, %i[pointer size_t pointer], :pointer
 
       # Split-by-bookmarks plan (v0.3.50).  Returns a JSON plan as
       # char*; the consumer interprets the segment list and feeds
       # each {start_page, end_page} pair to extract-page utilities.
       attach_function :pdf_document_plan_split_by_bookmarks,
-                      [:pointer, :string, :pointer], :pointer
+                      %i[pointer string pointer], :pointer
 
       # Destructive redaction (#231, v0.3.50).  Operates on a
       # DocumentEditor* handle (NOT a PdfDocument*).
       attach_function :pdf_redaction_add,
-                      [:pointer, :size_t,
-                       :double, :double, :double, :double,
-                       :double, :double, :double,
-                       :pointer],
+                      %i[pointer size_t
+                         double double double double
+                         double double double
+                         pointer],
                       :int32
-      attach_function :pdf_redaction_count, [:pointer, :size_t, :pointer], :int32
+      attach_function :pdf_redaction_count, %i[pointer size_t pointer], :int32
       attach_function :pdf_redaction_apply,
-                      [:pointer, :bool, :double, :double, :double, :pointer], :int32
-      attach_function :pdf_redaction_scrub_metadata, [:pointer, :pointer], :int32
+                      %i[pointer bool double double double pointer], :int32
+      attach_function :pdf_redaction_scrub_metadata, %i[pointer pointer], :int32
 
       # PAdES signing — the 5-arg shim (v0.3.51 #517 follow-up to
       # v0.3.50 #235). The 18-arg legacy entry is still available
       # under pdf_sign_bytes_pades but the shim is canonical for all
       # bindings (purego cannot register the legacy form).
       attach_function :pdf_sign_bytes_pades_opts,
-                      [:pointer, :size_t, :pointer, :pointer, :pointer], :pointer
+                      %i[pointer size_t pointer pointer pointer], :pointer
 
       # PAdES level inspection.
-      attach_function :pdf_signature_get_pades_level, [:pointer, :pointer], :int32
-      attach_function :pdf_document_has_timestamp,    [:pointer, :pointer], :int32
+      attach_function :pdf_signature_get_pades_level, %i[pointer pointer], :int32
+      attach_function :pdf_document_has_timestamp,    %i[pointer pointer], :int32
 
       # PAdES level enum codes (frozen).  These are the int32 values
       # `pdf_signature_get_pades_level` returns and the `level`
@@ -1605,17 +1610,17 @@ module PdfOxide
       # can apply redactions destructively to an editor handle and
       # save the resulting bytes.  The existing skeletons use generic
       # 8-pointer signatures; these declarations refine them.
-      attach_function :document_editor_open,           [:string, :pointer],          :pointer
+      attach_function :document_editor_open, %i[string pointer], :pointer
       attach_function :document_editor_open_from_bytes,
-                      [:pointer, :size_t, :pointer], :pointer
-      attach_function :document_editor_free,           [:pointer],                   :void
-      attach_function :document_editor_save,           [:pointer, :string, :pointer], :int32
+                      %i[pointer size_t pointer], :pointer
+      attach_function :document_editor_free,           [:pointer], :void
+      attach_function :document_editor_save,           %i[pointer string pointer], :int32
       attach_function :document_editor_save_to_bytes,
-                      [:pointer, :pointer, :pointer], :pointer
+                      %i[pointer pointer pointer], :pointer
       attach_function :document_editor_apply_page_redactions,
-                      [:pointer, :size_t, :pointer], :int32
+                      %i[pointer size_t pointer], :int32
       attach_function :document_editor_apply_all_redactions,
-                      [:pointer, :pointer], :int32
+                      %i[pointer pointer], :int32
     end
   end
 end

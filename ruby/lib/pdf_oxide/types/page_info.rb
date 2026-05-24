@@ -23,7 +23,7 @@ module PdfOxide
       # Get aspect ratio
       # @return [Float] Width/Height ratio
       def aspect_ratio
-        @height.zero? ? 0.0 : (@width.to_f / @height.to_f)
+        @height.zero? ? 0.0 : (@width.to_f / @height)
       end
 
       # Convert to hash

@@ -1,6 +1,23 @@
 # frozen_string_literal: true
 
 require 'simplecov'
+
+# Optional LCOV emit for Codecov; gated by env so dev/local runs stay
+# fast and we don't hard-require simplecov-lcov in the dev Gemfile.
+if ENV['COVERAGE_LCOV'] == '1'
+  require 'simplecov-lcov'
+  SimpleCov::Formatter::LcovFormatter.config do |c|
+    c.report_with_single_file = true
+    c.single_report_path = 'coverage/lcov.info'
+  end
+  SimpleCov.formatters = SimpleCov::Formatter::MultiFormatter.new(
+    [
+      SimpleCov::Formatter::HTMLFormatter,
+      SimpleCov::Formatter::LcovFormatter
+    ]
+  )
+end
+
 SimpleCov.start do
   add_filter 'spec/'
   add_filter 'lib/pdf_oxide/version'
@@ -23,15 +40,6 @@ RSpec.configure do |config|
   # Add fixture path
   config.add_setting :fixture_path
   config.fixture_path = File.expand_path(File.join(__dir__, 'fixtures'))
-
-  # Skip actual FFI calls by default - use mocks
-  config.around(:each) do |example|
-    if example.metadata[:skip_mock]
-      example.run
-    else
-      example.run
-    end
-  end
 end
 
 # Test fixtures

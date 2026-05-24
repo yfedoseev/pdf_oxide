@@ -36,7 +36,7 @@ module PdfOxide
         @mutex.synchronize do
           handle_id = handle.address
           cleanup_block = @handles.delete(handle_id)
-          cleanup_block.call if cleanup_block
+          cleanup_block&.call
         end
       end
 
@@ -45,6 +45,7 @@ module PdfOxide
       # @return [Boolean] Whether handle is valid
       def valid?(handle)
         return false if handle.nil? || handle.null?
+
         @mutex.synchronize { @handles.key?(handle.address) }
       end
 
@@ -53,6 +54,7 @@ module PdfOxide
       # @return [Proc, nil] Cleanup block or nil
       def cleanup_for(handle)
         return nil if handle.nil? || handle.null?
+
         @mutex.synchronize { @handles[handle.address] }
       end
 
@@ -63,7 +65,7 @@ module PdfOxide
         proc do
           @mutex.synchronize do
             cleanup_block = @handles.delete(handle_address)
-            cleanup_block.call(handle) if cleanup_block
+            cleanup_block&.call(handle)
           end
         end
       end

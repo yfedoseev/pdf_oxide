@@ -41,8 +41,8 @@ module PdfOxide
       # @param certificate [Types::Certificate] Primary certificate information
       # @param chain_certificates [Array<Types::Certificate>] Chain certificates
       def initialize(handle:, credential_type: :unknown, certificate: nil, chain_certificates: [])
-        raise ::PdfOxide::ArgumentError, "Invalid handle for credentials" if handle.nil?
-        raise ::PdfOxide::ArgumentError, "Invalid credential type" unless CREDENTIAL_TYPES.include?(credential_type)
+        raise ::PdfOxide::ArgumentError, 'Invalid handle for credentials' if handle.nil?
+        raise ::PdfOxide::ArgumentError, 'Invalid credential type' unless CREDENTIAL_TYPES.include?(credential_type)
 
         @handle = handle
         @credential_type = credential_type
@@ -56,8 +56,8 @@ module PdfOxide
       # @return [SigningCredentials] Loaded credentials
       # @raise [PdfException] If file cannot be read or decrypted
       def self.from_pkcs12(file_path, password)
-        raise ::PdfOxide::ArgumentError, "File path must be a string" unless file_path.is_a?(String)
-        raise ::PdfOxide::ArgumentError, "Password must be a string" unless password.is_a?(String)
+        raise ::PdfOxide::ArgumentError, 'File path must be a string' unless file_path.is_a?(String)
+        raise ::PdfOxide::ArgumentError, 'Password must be a string' unless password.is_a?(String)
         raise ::PdfOxide::ArgumentError, "File not found: #{file_path}" unless File.exist?(file_path)
 
         path_utf8 = FFI::StringMarshaller.to_utf8(file_path)
@@ -80,9 +80,9 @@ module PdfOxide
       # @return [SigningCredentials] Loaded credentials
       # @raise [PdfException] If files cannot be read
       def self.from_pem(cert_path, key_path, password = '')
-        raise ::PdfOxide::ArgumentError, "Certificate path must be a string" unless cert_path.is_a?(String)
-        raise ::PdfOxide::ArgumentError, "Key path must be a string" unless key_path.is_a?(String)
-        raise ::PdfOxide::ArgumentError, "Password must be a string" unless password.is_a?(String)
+        raise ::PdfOxide::ArgumentError, 'Certificate path must be a string' unless cert_path.is_a?(String)
+        raise ::PdfOxide::ArgumentError, 'Key path must be a string' unless key_path.is_a?(String)
+        raise ::PdfOxide::ArgumentError, 'Password must be a string' unless password.is_a?(String)
         raise ::PdfOxide::ArgumentError, "Certificate file not found: #{cert_path}" unless File.exist?(cert_path)
         raise ::PdfOxide::ArgumentError, "Key file not found: #{key_path}" unless File.exist?(key_path)
 
@@ -106,8 +106,8 @@ module PdfOxide
       # @return [SigningCredentials] Loaded credentials
       # @raise [PdfException] If data is invalid
       def self.from_der(cert_data, key_data)
-        raise ::PdfOxide::ArgumentError, "Certificate data must be a string" unless cert_data.is_a?(String)
-        raise ::PdfOxide::ArgumentError, "Key data must be a string" unless key_data.is_a?(String)
+        raise ::PdfOxide::ArgumentError, 'Certificate data must be a string' unless cert_data.is_a?(String)
+        raise ::PdfOxide::ArgumentError, 'Key data must be a string' unless key_data.is_a?(String)
 
         cert_ptr = ::FFI::MemoryPointer.from_string(cert_data)
         key_ptr = ::FFI::MemoryPointer.from_string(key_data)
@@ -120,7 +120,7 @@ module PdfOxide
         )
 
         if error_ptr.read_pointer.null?
-          raise ::PdfOxide::PdfException, "Failed to load DER credentials"
+          raise ::PdfOxide::PdfException, 'Failed to load DER credentials'
         end
 
         new(handle: credentials_handle, credential_type: CREDENTIAL_TYPE_DER)
@@ -131,7 +131,7 @@ module PdfOxide
       # @return [Boolean] Whether certificate was successfully added
       # @raise [PdfException] If file cannot be read
       def add_chain_certificate(certificate_path)
-        raise ::PdfOxide::ArgumentError, "Certificate path must be a string" unless certificate_path.is_a?(String)
+        raise ::PdfOxide::ArgumentError, 'Certificate path must be a string' unless certificate_path.is_a?(String)
         raise ::PdfOxide::ArgumentError, "File not found: #{certificate_path}" unless File.exist?(certificate_path)
 
         cert_data = File.read(certificate_path)
@@ -140,7 +140,7 @@ module PdfOxide
         error_ptr = ::FFI::MemoryPointer.new(:pointer)
         success = FFI::Bindings.pdf_credentials_add_chain_cert(@handle, cert_ptr, cert_data.bytesize, error_ptr)
 
-        raise ::PdfOxide::PdfException, "Failed to add chain certificate" unless success
+        raise ::PdfOxide::PdfException, 'Failed to add chain certificate' unless success
 
         @chain_certificates = (@chain_certificates + [certificate_path]).freeze
         true

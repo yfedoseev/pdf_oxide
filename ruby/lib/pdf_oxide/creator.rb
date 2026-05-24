@@ -62,14 +62,14 @@ module PdfOxide
     #   creator = PdfOxide::Creator.from_markdown(md)
     #   creator.source_format # => :markdown
     def self.from_markdown(markdown)
-      raise ArgumentError, "Markdown content cannot be empty" if markdown.nil? || markdown.empty?
+      raise ArgumentError, 'Markdown content cannot be empty' if markdown.nil? || markdown.empty?
 
       creator = new
       creator.instance_variable_set(:@source_format, :markdown)
       creator.instance_variable_set(:@source_content, markdown)
 
       # Add metadata about source
-      creator.creator("PdfOxide Markdown Converter")
+      creator.creator('PdfOxide Markdown Converter')
 
       creator
     end
@@ -87,14 +87,14 @@ module PdfOxide
     #   creator = PdfOxide::Creator.from_html(html)
     #   creator.source_format # => :html
     def self.from_html(html)
-      raise ArgumentError, "HTML content cannot be empty" if html.nil? || html.empty?
+      raise ArgumentError, 'HTML content cannot be empty' if html.nil? || html.empty?
 
       creator = new
       creator.instance_variable_set(:@source_format, :html)
       creator.instance_variable_set(:@source_content, html)
 
       # Add metadata about source
-      creator.creator("PdfOxide HTML Converter")
+      creator.creator('PdfOxide HTML Converter')
 
       creator
     end
@@ -112,14 +112,14 @@ module PdfOxide
     #   creator = PdfOxide::Creator.from_text(text)
     #   creator.source_format # => :text
     def self.from_text(text)
-      raise ArgumentError, "Text content cannot be empty" if text.nil? || text.empty?
+      raise ArgumentError, 'Text content cannot be empty' if text.nil? || text.empty?
 
       creator = new
       creator.instance_variable_set(:@source_format, :text)
       creator.instance_variable_set(:@source_content, text)
 
       # Add metadata about source
-      creator.creator("PdfOxide Text Converter")
+      creator.creator('PdfOxide Text Converter')
 
       creator
     end
@@ -130,6 +130,7 @@ module PdfOxide
     # @return [self]
     def add_page_from_template(template_path, page_index = 0)
       raise FileNotFoundError, "Template not found: #{template_path}" unless File.exist?(template_path)
+
       @pages << { type: :template, path: template_path, page: page_index }
       self
     end
@@ -149,6 +150,7 @@ module PdfOxide
     # @return [self]
     def add_page_from_document(doc_path, page_index = 0)
       raise FileNotFoundError, "Document not found: #{doc_path}" unless File.exist?(doc_path)
+
       @pages << { type: :document, path: doc_path, page: page_index }
       self
     end
@@ -204,7 +206,7 @@ module PdfOxide
     # @raise [ArgumentError] if output_path is blank or no source content
     # @raise [PdfOxide::Error] if the cdylib reports a non-zero error code
     def save(output_path)
-      raise ArgumentError, "Output path cannot be empty" if output_path.nil? || output_path.empty?
+      raise ArgumentError, 'Output path cannot be empty' if output_path.nil? || output_path.empty?
 
       handle = build_pdf_handle
       begin
@@ -215,6 +217,7 @@ module PdfOxide
         if rc != 0 || error_code != 0
           raise FFI::ErrorHandler.create_error(error_code, 'creator_save', path: output_path)
         end
+
         true
       ensure
         FFI::Bindings.pdf_free(handle) if handle && !handle.null?
@@ -235,6 +238,7 @@ module PdfOxide
         if error_code != 0 || buf_ptr.nil? || buf_ptr.null?
           raise FFI::ErrorHandler.create_error(error_code, 'creator_to_bytes')
         end
+
         len = len_ptr.read_int32
         bytes = buf_ptr.read_string(len)
         FFI::Bindings.free_bytes(buf_ptr)
@@ -278,6 +282,7 @@ module PdfOxide
     # @return [self]
     def merge(doc_path)
       raise FileNotFoundError, "Document not found: #{doc_path}" unless File.exist?(doc_path)
+
       @pages << { type: :merge, path: doc_path }
       self
     end
@@ -312,9 +317,7 @@ module PdfOxide
     # @example
     #   PdfOxide::Creator.from_markdown("# Title").source_format # => :markdown
     #   PdfOxide::Creator.new_blank.source_format # => nil
-    def source_format
-      @source_format
-    end
+    attr_reader :source_format
 
     # Get source content
     #
@@ -327,9 +330,7 @@ module PdfOxide
     #   md = "# Title"
     #   creator = PdfOxide::Creator.from_markdown(md)
     #   creator.source_content # => "# Title"
-    def source_content
-      @source_content
-    end
+    attr_reader :source_content
 
     # Check if document is empty
     #
@@ -359,7 +360,7 @@ module PdfOxide
     #   metadata[:author] # => "John"
     def metadata
       @metadata.dup
-end
+    end
 
     # Convert creator to hash (JSON compatible)
     #
@@ -419,7 +420,7 @@ end
     #   creator.add_text("Hello, World!")
     #   creator.add_text("Styled text", font_size: 14, color: 'red')
     def add_text(text, options = {})
-      raise ArgumentError, "Text cannot be empty" if text.nil? || text.empty?
+      raise ArgumentError, 'Text cannot be empty' if text.nil? || text.empty?
 
       @content << {
         type: :text,
@@ -446,7 +447,7 @@ end
     # @example
     #   creator.add_image('logo.png', width: 200, height: 100)
     def add_image(image_path, options = {})
-      raise ArgumentError, "Image path cannot be empty" if image_path.nil? || image_path.empty?
+      raise ArgumentError, 'Image path cannot be empty' if image_path.nil? || image_path.empty?
       raise FileNotFoundError, "Image file not found: #{image_path}" unless File.exist?(image_path)
 
       @content << {
@@ -459,8 +460,6 @@ end
 
     # Get creation timestamp
     # @return [Integer] Unix timestamp
-    def creation_timestamp
-      @creation_timestamp
-    end
+    attr_reader :creation_timestamp
   end
 end

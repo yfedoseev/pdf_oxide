@@ -14,7 +14,7 @@ module PdfOxide
         raise ::PdfOxide::ArgumentError, 'Certificate path cannot be empty' if cert_path.nil? || cert_path.empty?
         raise ::PdfOxide::ArgumentError, 'Certificate file not found' unless File.exist?(cert_path)
 
-        cert_path_utf8 = FFI::StringMarshaller.to_utf8(cert_path)
+        FFI::StringMarshaller.to_utf8(cert_path)
 
         # Read file bytes
         cert_bytes = File.read(cert_path)
@@ -41,8 +41,7 @@ module PdfOxide
       def get_certificate_info(cert_path)
         raise ::PdfOxide::ArgumentError, 'Certificate path cannot be empty' if cert_path.nil? || cert_path.empty?
 
-        cert = load_certificate(cert_path)
-        cert
+        load_certificate(cert_path)
       end
 
       # Validate certificate
@@ -95,13 +94,13 @@ module PdfOxide
 
         valid_from_time = begin
           Time.at(cert[:valid_from_timestamp])
-        rescue
+        rescue StandardError
           nil
         end
 
         valid_to_time = begin
           Time.at(cert[:valid_to_timestamp])
-        rescue
+        rescue StandardError
           nil
         end
 

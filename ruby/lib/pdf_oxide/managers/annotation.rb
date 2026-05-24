@@ -47,7 +47,7 @@ module PdfOxide
       def has_annotations?(page_index)
         check_document!
         validate_page_index!(page_index)
-        annotation_count(page_index) > 0
+        annotation_count(page_index).positive?
       end
 
       # List all annotations on page
@@ -71,7 +71,7 @@ module PdfOxide
       def get_annotation(page_index, annotation_index)
         check_document!
         validate_page_index!(page_index)
-        raise ::PdfOxide::ArgumentError, 'Annotation index must be >= 0' if annotation_index < 0
+        raise ::PdfOxide::ArgumentError, 'Annotation index must be >= 0' if annotation_index.negative?
 
         annotations = list_annotations(page_index)
         raise ::PdfOxide::ArgumentError, "Annotation index #{annotation_index} out of range" if annotation_index >= annotations.count
@@ -87,7 +87,7 @@ module PdfOxide
       # @param height [Float] Height
       # @param options [Hash] Additional options
       # @return [Boolean] Whether operation succeeded
-      def add_highlight(page_index, x, y, width, height, options = {})
+      def add_highlight(page_index, x, y, width, height, _options = {})
         check_document!
         validate_page_index!(page_index)
 
@@ -113,7 +113,7 @@ module PdfOxide
       # @param height [Float] Height
       # @param options [Hash] Additional options
       # @return [Boolean] Whether operation succeeded
-      def add_underline(page_index, x, y, width, height, options = {})
+      def add_underline(page_index, x, y, width, height, _options = {})
         check_document!
         validate_page_index!(page_index)
 
@@ -139,7 +139,7 @@ module PdfOxide
       # @param height [Float] Height
       # @param options [Hash] Additional options
       # @return [Boolean] Whether operation succeeded
-      def add_strikeout(page_index, x, y, width, height, options = {})
+      def add_strikeout(page_index, x, y, width, height, _options = {})
         check_document!
         validate_page_index!(page_index)
 
@@ -192,7 +192,7 @@ module PdfOxide
       def delete_annotation(page_index, annotation_index)
         check_document!
         validate_page_index!(page_index)
-        raise ::PdfOxide::ArgumentError, 'Annotation index must be >= 0' if annotation_index < 0
+        raise ::PdfOxide::ArgumentError, 'Annotation index must be >= 0' if annotation_index.negative?
 
         with_error_check('delete_annotation', page: page_index, annotation: annotation_index) do |error_ptr|
           FFI::Bindings.pdf_document_delete_annotation(@document.handle, page_index, annotation_index, error_ptr)
@@ -253,7 +253,7 @@ module PdfOxide
         annotations.select do |annot|
           (criteria[:page].nil? || annot.page == criteria[:page]) &&
             (criteria[:type].nil? || annot.type == criteria[:type]) &&
-            (criteria[:text].nil? || (annot.text && annot.text.include?(criteria[:text])))
+            (criteria[:text].nil? || annot.text&.include?(criteria[:text]))
         end
       end
 
@@ -310,32 +310,30 @@ module PdfOxide
         import_count = 0
 
         annotations.each do |annot|
-          begin
-            case annot[:type]
-            when :highlight, 'highlight', ANNOTATION_TYPE_HIGHLIGHT
-              add_highlight(annot[:page], annot[:bbox][:x], annot[:bbox][:y],
-                            annot[:bbox][:width], annot[:bbox][:height], annot[:options] || {})
-              import_count += 1
-            when :underline, 'underline', ANNOTATION_TYPE_UNDERLINE
-              add_underline(annot[:page], annot[:bbox][:x], annot[:bbox][:y],
-                            annot[:bbox][:width], annot[:bbox][:height], annot[:options] || {})
-              import_count += 1
-            when :strikeout, 'strikeout', ANNOTATION_TYPE_STRIKEOUT
-              add_strikeout(annot[:page], annot[:bbox][:x], annot[:bbox][:y],
-                            annot[:bbox][:width], annot[:bbox][:height], annot[:options] || {})
-              import_count += 1
-            when :text, 'text', ANNOTATION_TYPE_TEXT
-              add_comment(annot[:page], annot[:bbox][:x], annot[:bbox][:y],
-                          annot[:text] || '', annot[:options] || {})
-              import_count += 1
-            else
-              # Skip unsupported annotation types silently
-              next
-            end
-          rescue ::PdfOxide::Error => e
-            # Log error but continue importing other annotations
+          case annot[:type]
+          when :highlight, 'highlight', ANNOTATION_TYPE_HIGHLIGHT
+            add_highlight(annot[:page], annot[:bbox][:x], annot[:bbox][:y],
+                          annot[:bbox][:width], annot[:bbox][:height], annot[:options] || {})
+            import_count += 1
+          when :underline, 'underline', ANNOTATION_TYPE_UNDERLINE
+            add_underline(annot[:page], annot[:bbox][:x], annot[:bbox][:y],
+                          annot[:bbox][:width], annot[:bbox][:height], annot[:options] || {})
+            import_count += 1
+          when :strikeout, 'strikeout', ANNOTATION_TYPE_STRIKEOUT
+            add_strikeout(annot[:page], annot[:bbox][:x], annot[:bbox][:y],
+                          annot[:bbox][:width], annot[:bbox][:height], annot[:options] || {})
+            import_count += 1
+          when :text, 'text', ANNOTATION_TYPE_TEXT
+            add_comment(annot[:page], annot[:bbox][:x], annot[:bbox][:y],
+                        annot[:text] || '', annot[:options] || {})
+            import_count += 1
+          else
+            # Skip unsupported annotation types silently
             next
           end
+        rescue ::PdfOxide::Error
+          # Log error but continue importing other annotations
+          next
         end
 
         import_count
@@ -396,7 +394,7 @@ module PdfOxide
           normalize_annotation_data(annot)
         end
       rescue JSON::ParserError => e
-        raise ::PdfOxide::ParseError.new("Invalid JSON format: #{e.message}")
+        raise ::PdfOxide::ParseError, "Invalid JSON format: #{e.message}"
       end
 
       # Parse XFDF annotation data
@@ -407,7 +405,7 @@ module PdfOxide
 
         # Simple XML parsing without external dependencies
         # Extract highlight annotations
-        xfdf_data.scan(/<highlight([^>]*)>(.*?)<\/highlight>/m) do |attrs, content|
+        xfdf_data.scan(%r{<highlight([^>]*)>(.*?)</highlight>}m) do |attrs, content|
           page = extract_xml_attr(attrs, 'page').to_i
           rect = extract_xml_attr(attrs, 'rect')&.split(',')&.map(&:to_f) || [0, 0, 0, 0]
 
@@ -421,7 +419,7 @@ module PdfOxide
         end
 
         # Extract underline annotations
-        xfdf_data.scan(/<underline([^>]*)>(.*?)<\/underline>/m) do |attrs, content|
+        xfdf_data.scan(%r{<underline([^>]*)>(.*?)</underline>}m) do |attrs, content|
           page = extract_xml_attr(attrs, 'page').to_i
           rect = extract_xml_attr(attrs, 'rect')&.split(',')&.map(&:to_f) || [0, 0, 0, 0]
 
@@ -435,7 +433,7 @@ module PdfOxide
         end
 
         # Extract strikeout annotations
-        xfdf_data.scan(/<strikeout([^>]*)>(.*?)<\/strikeout>/m) do |attrs, content|
+        xfdf_data.scan(%r{<strikeout([^>]*)>(.*?)</strikeout>}m) do |attrs, content|
           page = extract_xml_attr(attrs, 'page').to_i
           rect = extract_xml_attr(attrs, 'rect')&.split(',')&.map(&:to_f) || [0, 0, 0, 0]
 
@@ -449,7 +447,7 @@ module PdfOxide
         end
 
         # Extract text annotations (comments/notes)
-        xfdf_data.scan(/<text([^>]*)>(.*?)<\/text>/m) do |attrs, content|
+        xfdf_data.scan(%r{<text([^>]*)>(.*?)</text>}m) do |attrs, content|
           page = extract_xml_attr(attrs, 'page').to_i
           rect = extract_xml_attr(attrs, 'rect')&.split(',')&.map(&:to_f) || [0, 0, 0, 0]
 
@@ -479,7 +477,7 @@ module PdfOxide
       # @param tag [String] Tag name
       # @return [String, nil] Element content
       def extract_xml_content(xml, tag)
-        match = xml.match(/<#{tag}[^>]*>([^<]*)<\/#{tag}>/)
+        match = xml.match(%r{<#{tag}[^>]*>([^<]*)</#{tag}>})
         match ? match[1] : nil
       end
 
@@ -610,8 +608,8 @@ module PdfOxide
         self
       end
 
-      alias_method :text, :comment
-      alias_method :note, :comment
+      alias text comment
+      alias note comment
     end
   end
 end

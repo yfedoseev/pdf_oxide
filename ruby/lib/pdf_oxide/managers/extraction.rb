@@ -108,7 +108,7 @@ module PdfOxide
       def extract_image(page_index, image_index, output_path)
         check_document!
         validate_page_index!(page_index)
-        raise ::PdfOxide::ArgumentError, 'Image index must be >= 0' if image_index < 0
+        raise ::PdfOxide::ArgumentError, 'Image index must be >= 0' if image_index.negative?
         raise ::PdfOxide::ArgumentError, 'Output path cannot be empty' if output_path.nil? || output_path.empty?
 
         output_path_utf8 = FFI::StringMarshaller.to_utf8(output_path)
@@ -202,7 +202,7 @@ module PdfOxide
         fonts = get_embedded_fonts(page_index)
         {
           total_fonts: fonts.count,
-          embedded_fonts: fonts.count { |f| f.embedded },
+          embedded_fonts: fonts.count(&:embedded),
           fonts: fonts.map { |f| { name: f.name, family: f.family, embedded: f.embedded } }
         }
       end
@@ -287,7 +287,7 @@ module PdfOxide
       def extract_font(page_index, font_index, output_path)
         check_document!
         validate_page_index!(page_index)
-        raise ::PdfOxide::ArgumentError, 'Font index must be >= 0' if font_index < 0
+        raise ::PdfOxide::ArgumentError, 'Font index must be >= 0' if font_index.negative?
         raise ::PdfOxide::ArgumentError, 'Output path cannot be empty' if output_path.nil? || output_path.empty?
 
         output_path_utf8 = FFI::StringMarshaller.to_utf8(output_path)
@@ -439,14 +439,12 @@ module PdfOxide
       def parse_text_statistics(stats_ptr)
         return {} if stats_ptr.nil? || stats_ptr.null?
 
-        begin
-          {
-            character_count: 0,
-            word_count: 0,
-            line_count: 0,
-            paragraph_count: 0
-          }
-        end
+        {
+          character_count: 0,
+          word_count: 0,
+          line_count: 0,
+          paragraph_count: 0
+        }
       end
 
       def parse_embedded_files(handle)

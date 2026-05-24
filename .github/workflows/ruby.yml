@@ -29,6 +29,59 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Lint job — RuboCop 1.86 (FFI-tuned config in ruby/.rubocop.yml).
+  # Cheap (~1 min); runs in parallel with the matrix.
+  lint:
+    name: RuboCop (lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Ruby 3.3
+        uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1.310.0
+        with:
+          ruby-version: '3.3'
+          working-directory: ruby
+          bundler-cache: true
+
+      - name: Run RuboCop
+        working-directory: ruby
+        run: bundle exec rubocop lib/ spec/
+
+  # Security job — bundler-audit (gem CVE) + OSV-Scanner (covers both
+  # Gemfile.lock and the bundled Rust cdylib's Cargo.lock).
+  security:
+    name: Security audit (bundler-audit + OSV-Scanner)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Ruby 3.3
+        uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1.310.0
+        with:
+          ruby-version: '3.3'
+          working-directory: ruby
+          bundler-cache: true
+
+      - name: Install bundler-audit
+        run: gem install bundler-audit -v '~> 0.9.3' --no-document
+
+      - name: bundler-audit (Gemfile.lock CVE scan)
+        working-directory: ruby
+        run: bundle-audit check --update
+
+      # OSV-Scanner picks up Cargo.lock for the Rust cdylib's transitive
+      # deps that bundler-audit can't see. Single step covers both.
+      - name: OSV-Scanner (Gemfile.lock + Cargo.lock)
+        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+        with:
+          scan-args: |-
+            --lockfile=ruby/Gemfile.lock
+            --lockfile=Cargo.lock
+
   # Per-cell test job — builds the cdylib for the matrix target, stages
   # it into ruby/ext/pdf_oxide/, runs the real-FFI integration suite,
   # and packages the platform-tagged gem.  Source-gem cell builds the
@@ -61,6 +114,8 @@ jobs:
             gem_platform: x86_64-linux
             cdylib: libpdf_oxide.so
             ruby-version: '3.4'
+            # SimpleCov->Codecov upload only on one canonical cell.
+            coverage: true
 
           # linux-aarch64 (native ARM runners)
           - os: ubuntu-24.04-arm
@@ -128,25 +183,28 @@ jobs:
             cdylib: libpdf_oxide.dylib
             ruby-version: '3.4'
 
-          # windows-x64 (MSVC)
+          # windows-x64 (MSVC).  Ruby 3.1+ uses UCRT64 — the canonical
+          # gem-platform tag is `x64-mingw-ucrt`; the legacy
+          # `x64-mingw32` tag is broken for Ruby >= 3.1 and silently
+          # produces uninstallable gems.  SOTA-2026 §9.
           - os: windows-latest
             cargo_target: x86_64-pc-windows-msvc
-            gem_platform: x64-mingw32
+            gem_platform: x64-mingw-ucrt
             cdylib: pdf_oxide.dll
             ruby-version: '3.1'
           - os: windows-latest
             cargo_target: x86_64-pc-windows-msvc
-            gem_platform: x64-mingw32
+            gem_platform: x64-mingw-ucrt
             cdylib: pdf_oxide.dll
             ruby-version: '3.2'
           - os: windows-latest
             cargo_target: x86_64-pc-windows-msvc
-            gem_platform: x64-mingw32
+            gem_platform: x64-mingw-ucrt
             cdylib: pdf_oxide.dll
             ruby-version: '3.3'
           - os: windows-latest
             cargo_target: x86_64-pc-windows-msvc
-            gem_platform: x64-mingw32
+            gem_platform: x64-mingw-ucrt
             cdylib: pdf_oxide.dll
             ruby-version: '3.4'
 
@@ -157,6 +215,10 @@ jobs:
         uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1.310.0
         with:
           ruby-version: ${{ matrix.ruby-version }}
+          # Force a recent Bundler — Ruby 3.1.7's stock 2.3.27 has
+          # a known platform-resolution bug that installs the wrong
+          # ffi variant on `x86_64-linux` runners.
+          bundler: '2.6'
           working-directory: ruby
           bundler-cache: true
 
@@ -211,16 +273,34 @@ jobs:
           Copy-Item $src "ruby/ext/pdf_oxide/${{ matrix.cdylib }}"
           Get-ChildItem ruby/ext/pdf_oxide
 
+      # Use `bundle exec ruby -rbundler/setup` to force the bundler
+      # context.  Plain `bundle exec ruby -Ilib` was flaky on Ruby
+      # 3.1.7-Bundler-2.3.27 where `require 'ffi'` from a -e snippet
+      # bypassed bundler activation and failed with LoadError even
+      # though `bundle install` succeeded.
       - name: Verify gem loads against cdylib
         working-directory: ruby
         shell: bash
         run: |
-          bundle exec ruby -Ilib -rpdf_oxide -e 'puts PdfOxide::VERSION'
+          bundle exec ruby -rbundler/setup -Ilib -rpdf_oxide -e 'puts PdfOxide::VERSION'
 
       - name: Run integration spec suite (real cdylib)
         working-directory: ruby
         shell: bash
+        env:
+          # Emit lcov for the Codecov upload (one cell only).
+          COVERAGE_LCOV: ${{ matrix.coverage && '1' || '' }}
         run: bundle exec rspec spec/integration/
+
+      - name: Upload coverage to Codecov
+        if: matrix.coverage == true
+        uses: codecov/codecov-action@aa56896cf108bd10b5eb883cd1d24196da57f695 # v5.5.4
+        with:
+          files: ruby/coverage/lcov.info
+          flags: ruby
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # Coverage is informational on PRs; never block the matrix.
+          fail_ci_if_error: false
 
       - name: Build platform-tagged gem
         working-directory: ruby

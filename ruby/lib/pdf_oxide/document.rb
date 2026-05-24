@@ -10,7 +10,7 @@ module PdfOxide
     # @yield [doc] Block to execute with document (auto-closes)
     # @return [Document, Object] Document instance or block result
     def initialize(path)
-      raise ArgumentError, "Path cannot be nil" if path.nil?
+      raise ArgumentError, 'Path cannot be nil' if path.nil?
       raise FileNotFoundError, "File not found: #{path}" unless File.exist?(path)
 
       @path = File.absolute_path(path)
@@ -211,6 +211,7 @@ module PdfOxide
     # @return [void]
     def close
       return if @closed
+
       FFI::Bindings.pdf_document_free(@handle) unless @handle.nil? || @handle.null?
       # Defuse the finalizer so the GC pass doesn't double-free.
       @tracker[0] = nil if @tracker

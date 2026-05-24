@@ -150,7 +150,7 @@ module PdfOxide
         return '' if form_ptr.nil? || form_ptr.null?
 
         begin
-          field_name_utf8 = FFI::StringMarshaller.to_utf8(field_name)
+          FFI::StringMarshaller.to_utf8(field_name)
           count = FFI::Bindings.pdf_xfa_form_field_count(form_ptr)
 
           field_value = ''
@@ -365,7 +365,7 @@ module PdfOxide
         return field_name if form_ptr.nil? || form_ptr.null?
 
         begin
-          field_name_utf8 = FFI::StringMarshaller.to_utf8(field_name)
+          FFI::StringMarshaller.to_utf8(field_name)
           count = FFI::Bindings.pdf_xfa_form_field_count(form_ptr)
 
           field_label = field_name

@@ -97,7 +97,7 @@ module PdfOxide
         validate_compliance_level(level)
         raise ::PdfOxide::ArgumentError, 'Output path cannot be empty' if output_path.nil? || output_path.empty?
 
-        output_path_utf8 = FFI::StringMarshaller.to_utf8(output_path)
+        FFI::StringMarshaller.to_utf8(output_path)
 
         with_error_check('convert_to_pdf_a', level: level, path: output_path) do |error_ptr|
           FFI::Bindings.pdf_convert_to_pdf_a(@document.handle, level, error_ptr)
@@ -114,7 +114,7 @@ module PdfOxide
         check_document!
         raise ::PdfOxide::ArgumentError, 'Output path cannot be empty' if output_path.nil? || output_path.empty?
 
-        output_path_utf8 = FFI::StringMarshaller.to_utf8(output_path)
+        FFI::StringMarshaller.to_utf8(output_path)
 
         with_error_check('convert_to_pdf_x', standard: standard, path: output_path) do |error_ptr|
           FFI::Bindings.pdf_convert_to_pdf_x(@document.handle, standard, error_ptr)
@@ -130,7 +130,7 @@ module PdfOxide
         check_document!
         raise ::PdfOxide::ArgumentError, 'Output path cannot be empty' if output_path.nil? || output_path.empty?
 
-        output_path_utf8 = FFI::StringMarshaller.to_utf8(output_path)
+        FFI::StringMarshaller.to_utf8(output_path)
 
         with_error_check('convert_to_pdf_ua', path: output_path) do |error_ptr|
           FFI::Bindings.pdf_convert_to_pdf_ua(@document.handle, PDF_UA_1, error_ptr)
@@ -265,7 +265,7 @@ module PdfOxide
           errors = get_validation_errors(:pdf_a)
           if errors.any?
             recommendations << "Document is not PDF/A compliant. Issues found: #{errors.count}"
-            recommendations << "Consider converting to PDF/A-1 for archival purposes"
+            recommendations << 'Consider converting to PDF/A-1 for archival purposes'
           end
         end
 
@@ -274,7 +274,7 @@ module PdfOxide
           errors = get_validation_errors(:pdf_x)
           if errors.any?
             recommendations << "Document is not PDF/X compliant. Issues found: #{errors.count}"
-            recommendations << "Consider converting to PDF/X-1 for print workflows"
+            recommendations << 'Consider converting to PDF/X-1 for print workflows'
           end
         end
 
@@ -283,14 +283,14 @@ module PdfOxide
           errors = get_validation_errors(:pdf_ua)
           if errors.any?
             recommendations << "Document is not PDF/UA compliant (not accessible). Issues found: #{errors.count}"
-            recommendations << "Add structure tags and alt text for accessibility"
+            recommendations << 'Add structure tags and alt text for accessibility'
           end
         end
 
         # If no issues, add positive recommendations
         if recommendations.empty?
-          recommendations << "Document is compliant with all tested standards"
-          recommendations << "Continue to validate periodically for compliance"
+          recommendations << 'Document is compliant with all tested standards'
+          recommendations << 'Continue to validate periodically for compliance'
         end
 
         recommendations

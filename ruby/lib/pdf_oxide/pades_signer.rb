@@ -37,9 +37,9 @@ module PdfOxide
     end
 
     LEVELS = {
-      b:   FFI::Bindings::PADES_LEVEL_B,
-      t:   FFI::Bindings::PADES_LEVEL_T,
-      lt:  FFI::Bindings::PADES_LEVEL_LT,
+      b: FFI::Bindings::PADES_LEVEL_B,
+      t: FFI::Bindings::PADES_LEVEL_T,
+      lt: FFI::Bindings::PADES_LEVEL_LT,
       lta: FFI::Bindings::PADES_LEVEL_LTA
     }.freeze
 
@@ -63,6 +63,7 @@ module PdfOxide
     def sign_pades(pdf_bytes:, certificate_handle:, level:, tsa_url: nil, reason: nil, location: nil)
       raise ::PdfOxide::ArgumentError, 'pdf_bytes cannot be empty' if pdf_bytes.nil? || pdf_bytes.empty?
       raise ::PdfOxide::ArgumentError, 'certificate_handle required' if certificate_handle.nil? || certificate_handle.null?
+
       level_code = LEVELS.fetch(level) do
         raise ::PdfOxide::ArgumentError, "level must be one of #{LEVELS.keys.inspect}, got #{level.inspect}"
       end

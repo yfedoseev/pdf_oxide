@@ -46,6 +46,7 @@ module PdfOxide
       # @return [Boolean] Whether equal
       def ==(other)
         return false unless other.is_a?(FontInfo)
+
         @name == other.name && @family == other.family && @size == other.size
       end
 

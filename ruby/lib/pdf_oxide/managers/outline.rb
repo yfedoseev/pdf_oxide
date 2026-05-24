@@ -31,7 +31,7 @@ module PdfOxide
       # @return [String, nil] Outline title
       def get_outline_title(index)
         check_document!
-        raise ::PdfOxide::ArgumentError, 'Outline index must be >= 0' if index < 0
+        raise ::PdfOxide::ArgumentError, 'Outline index must be >= 0' if index.negative?
         raise ::PdfOxide::ArgumentError, "Outline index #{index} exceeds outline count" if index >= outline_count
 
         FFI::StringMarshaller.from_c_string(
@@ -46,7 +46,7 @@ module PdfOxide
       # @return [Integer] Destination page index
       def get_outline_dest_page(index)
         check_document!
-        raise ::PdfOxide::ArgumentError, 'Outline index must be >= 0' if index < 0
+        raise ::PdfOxide::ArgumentError, 'Outline index must be >= 0' if index.negative?
         raise ::PdfOxide::ArgumentError, "Outline index #{index} exceeds outline count" if index >= outline_count
 
         with_error_check('get_outline_dest_page', index: index) do |error_ptr|
@@ -83,7 +83,7 @@ module PdfOxide
         return '' unless has_outlines?
 
         toc = "Table of Contents\n"
-        toc += "=" * 40 + "\n\n"
+        toc += "#{'=' * 40}\n\n"
 
         get_all.each do |outline|
           indent = '  ' * outline.level

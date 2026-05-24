@@ -102,7 +102,7 @@ module PdfOxide
       # Perform OCR on page
       # @param page_index [Integer] Page index (0-indexed)
       # @return [String] Extracted text
-      def ocr_page(page_index, options = {})
+      def ocr_page(page_index, _options = {})
         check_document!
         validate_page_index!(page_index)
         ensure_engine_initialized
@@ -136,7 +136,7 @@ module PdfOxide
       # @param page_index [Integer] Page index (0-indexed)
       # @param options [Hash] OCR options
       # @return [Boolean] Whether operation succeeded
-      def apply_ocr_to_page(page_index, options = {})
+      def apply_ocr_to_page(page_index, _options = {})
         check_document!
         validate_page_index!(page_index)
         ensure_engine_initialized
@@ -215,7 +215,7 @@ module PdfOxide
       def detect_language(page_index)
         check_document!
         validate_page_index!(page_index)
-        # Note: Language detection would require additional FFI support
+        # NOTE: Language detection would require additional FFI support
         'en' # Default to English
       end
 
@@ -366,18 +366,16 @@ module PdfOxide
         # Process each page in range
         (start_page..end_page).each do |page_idx|
           # Check if page needs OCR if skip_non_scanned is enabled
-          if skip_non_scanned
-            unless page_needs_ocr?(page_idx)
-              skipped_pages += 1
-              next
-            end
+          if skip_non_scanned && !page_needs_ocr?(page_idx)
+            skipped_pages += 1
+            next
           end
 
           # Extract text and confidence for page
           begin
             # Get spans from page
             spans = extract_ocr_spans(page_idx)
-            total_spans += spans.length > 0 ? spans.length : 1
+            total_spans += spans.length.positive? ? spans.length : 1
 
             # Accumulate confidence
             confidence = get_ocr_confidence(page_idx)
@@ -390,7 +388,7 @@ module PdfOxide
 
         # Calculate average confidence
         processed_pages = (end_page - start_page + 1) - skipped_pages
-        avg_confidence = processed_pages > 0 ? confidence_sum / processed_pages : 0.0
+        avg_confidence = processed_pages.positive? ? confidence_sum / processed_pages : 0.0
 
         {
           start_page: start_page,
@@ -461,10 +459,8 @@ module PdfOxide
 
         (start_page..end_page).each do |page_idx|
           # Check if page needs OCR if skip_non_scanned is enabled
-          if skip_non_scanned
-            unless page_needs_ocr?(page_idx)
-              next
-            end
+          if skip_non_scanned && !page_needs_ocr?(page_idx)
+            next
           end
 
           begin
@@ -481,7 +477,7 @@ module PdfOxide
             }
           rescue StandardError => e
             # Log error and continue with next page
-            $stderr.puts "OCR error on page #{page_idx}: #{e.message}"
+            warn "OCR error on page #{page_idx}: #{e.message}"
             next
           end
         end
@@ -549,11 +545,9 @@ module PdfOxide
 
         pages.each do |page_index|
           # Skip non-scanned pages if option enabled
-          if skip_non_scanned
-            unless page_needs_ocr?(page_index)
-              yield(page_index, nil) if block_given?
-              next
-            end
+          if skip_non_scanned && !page_needs_ocr?(page_index)
+            yield(page_index, nil) if block_given?
+            next
           end
 
           begin
@@ -573,7 +567,7 @@ module PdfOxide
             yield(page_index, result) if block_given?
           rescue StandardError => e
             # Log error and continue
-            $stderr.puts "Batch OCR error on page #{page_index}: #{e.message}"
+            warn "Batch OCR error on page #{page_index}: #{e.message}"
             yield(page_index, nil) if block_given?
             next
           end
@@ -761,9 +755,13 @@ module PdfOxide
             # Get average confidence for this span
             avg_confidence = 0.0
             if span_ptr && !span_ptr.null?
-              avg_confidence = text.empty? ? 0.0 : text.length.times.map do |char_idx|
-                FFI::Bindings.pdf_ocr_span_get_char_confidence(span_ptr, char_idx)
-              end.sum / text.length.to_f
+              avg_confidence = if text.empty?
+                                 0.0
+                               else
+                                 text.length.times.map do |char_idx|
+                                   FFI::Bindings.pdf_ocr_span_get_char_confidence(span_ptr, char_idx)
+                                 end.sum / text.length.to_f
+                               end
             end
 
             {

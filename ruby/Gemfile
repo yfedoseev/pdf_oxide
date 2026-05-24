@@ -8,8 +8,9 @@ group :development do
   gem 'bundler', '>= 2.0'
   gem 'rake', '~> 13.0'
   gem 'rspec', '~> 3.12'
-  gem 'rubocop', '~> 1.50'
+  gem 'rubocop', '~> 1.86'
   gem 'rubocop-rspec', '~> 2.20'
   gem 'yard', '~> 0.9'
   gem 'simplecov', '~> 0.22'
+  gem 'simplecov-lcov', '~> 0.8'
 end

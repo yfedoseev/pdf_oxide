@@ -42,8 +42,8 @@ module PdfOxide
         validate_unit_conversion!(target_unit)
 
         # Convert to points first (base unit)
-        width_pt = to_points(@width, @unit)
-        height_pt = to_points(@height, @unit)
+        width_pt = value_to_points(@width, @unit)
+        height_pt = value_to_points(@height, @unit)
 
         # Then convert to target
         new_width = from_points(width_pt, target_unit)
@@ -111,6 +111,7 @@ module PdfOxide
       # @return [Boolean] Whether equal
       def ==(other)
         return false unless other.is_a?(PageDimensions)
+
         # Compare after converting both to points
         to_points.width == other.to_points.width &&
           to_points.height == other.to_points.height
@@ -130,7 +131,9 @@ module PdfOxide
         raise ArgumentError, "Invalid target unit: #{target_unit}" unless valid_units.include?(target_unit)
       end
 
-      def to_points(value, from_unit)
+      # NB: distinct name from the public no-arg #to_points to avoid a
+      # Ruby method redefinition shadowing the public converter.
+      def value_to_points(value, from_unit)
         case from_unit
         when 'pt'
           value

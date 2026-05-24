@@ -58,7 +58,7 @@ module PdfOxide
 
       def from_bytes(bytes, kind)
         if bytes.nil? || bytes.empty?
-          raise ::PdfOxide::ArgumentError, "bytes cannot be nil/empty"
+          raise ::PdfOxide::ArgumentError, 'bytes cannot be nil/empty'
         end
 
         binary = bytes.dup.force_encoding(Encoding::BINARY)

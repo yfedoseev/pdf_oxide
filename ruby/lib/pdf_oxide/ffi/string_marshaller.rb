@@ -54,9 +54,9 @@ module PdfOxide
       def self.free_c_string(c_string_ptr)
         return if c_string_ptr.nil? || c_string_ptr.null?
 
-        if Bindings.respond_to?(:free_string)
-          Bindings.free_string(c_string_ptr)
-        end
+        return unless Bindings.respond_to?(:free_string)
+
+        Bindings.free_string(c_string_ptr)
       end
 
       # Validate UTF-8 string

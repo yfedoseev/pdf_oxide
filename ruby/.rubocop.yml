@@ -1,0 +1,139 @@
+# RuboCop configuration for the pdf_oxide Ruby binding.
+#
+# Tuned for an FFI gem: the boundary file (lib/pdf_oxide/ffi/bindings.rb)
+# is a long flat list of `attach_function` declarations — Metrics/* cops
+# fire false positives all over it.  Wrapper modules around the C ABI
+# tend to expose long methods that mirror the C API 1:1; the cost of
+# refactoring those is not worth the bikeshed.
+
+# rubocop-rspec is intentionally NOT enabled here — its transitive
+# `rubocop-rspec_rails` dep pulls Rails-only cops that fight FFI specs.
+# The lib/ code is the lint target; spec/ uses a small block of
+# overrides below.
+
+AllCops:
+  TargetRubyVersion: 3.1
+  NewCops: disable
+  SuggestExtensions: false
+  Exclude:
+    # Native build staging area — not Ruby we authored.
+    - 'ext/**/*'
+    - 'vendor/**/*'
+    - 'tmp/**/*'
+    - 'coverage/**/*'
+    - 'output/**/*'
+    - 'examples/**/*'
+    - 'tools/**/*'
+    - 'pkg/**/*'
+
+# ---------------------------------------------------------------------
+# Documentation: FFI wrappers don't benefit from a top-of-class comment
+# repeating the class name.  Public API already has YARD tags inline.
+# ---------------------------------------------------------------------
+Style/Documentation:
+  Enabled: false
+
+Style/FrozenStringLiteralComment:
+  Enabled: true
+
+# ---------------------------------------------------------------------
+# Metrics: FFI binding files are inherently long.  bindings.rb is the
+# C ABI surface — 550 attach_function lines in one module — and the
+# manager classes mirror the C-side handle lifecycle.
+# ---------------------------------------------------------------------
+Metrics/MethodLength:
+  Enabled: false
+
+Metrics/ClassLength:
+  Enabled: false
+
+Metrics/ModuleLength:
+  Enabled: false
+
+Metrics/BlockLength:
+  Enabled: false
+
+Metrics/AbcSize:
+  Enabled: false
+
+Metrics/CyclomaticComplexity:
+  Enabled: false
+
+Metrics/PerceivedComplexity:
+  Enabled: false
+
+Metrics/ParameterLists:
+  Enabled: false
+
+# ---------------------------------------------------------------------
+# Layout: tolerate slightly longer lines (FFI declarations + C-style
+# pointer-heavy signatures don't fit in 80 cols cleanly).
+# ---------------------------------------------------------------------
+Layout/LineLength:
+  Max: 140
+  Exclude:
+    - 'lib/pdf_oxide/ffi/bindings.rb'
+
+# `attach_function` declarations align poorly with hash-alignment cop.
+Layout/HashAlignment:
+  EnforcedHashRocketStyle: key
+  EnforcedColonStyle: key
+
+# ---------------------------------------------------------------------
+# Style nits that conflict with the existing FFI idioms.
+# ---------------------------------------------------------------------
+Style/StringLiterals:
+  EnforcedStyle: single_quotes
+  ConsistentQuotesInMultiline: false
+
+Style/StringLiteralsInInterpolation:
+  EnforcedStyle: single_quotes
+
+# Allow `private def foo` and `def self.foo` toggles that the FFI
+# manager files use heavily.
+Style/AccessModifierDeclarations:
+  Enabled: false
+
+# Many FFI handles are returned as raw pointers; nil-safety matters
+# but `if obj.nil?` reads clearer than `unless obj`.
+Style/IfUnlessModifier:
+  Enabled: false
+
+# Changing positional booleans to keywords is a public-API break in a
+# v0.3.x line — keep current signatures; revisit at v1.0.
+Style/OptionalBooleanParameter:
+  Enabled: false
+
+# ---------------------------------------------------------------------
+# Naming: FFI binding names mirror the C symbols (e.g. `pdf_document_*`)
+# and intentionally use snake_case predicates that don't end in `?`.
+# Geometric APIs (`x:`, `y:`, `dx:`, `dy:`) use 1-2 char param names
+# that mirror the upstream C ABI and the equivalent Python/Node/Go
+# bindings; refusing them is gratuitously inconsistent.
+# ---------------------------------------------------------------------
+# Renamed from Naming/PredicateName in RuboCop 1.83.  Using the new
+# name; the dev-Gemfile pins `rubocop ~> 1.86` so the alias isn't
+# needed.
+Naming/PredicatePrefix:
+  Enabled: false
+
+Naming/AccessorMethodName:
+  Enabled: false
+
+Naming/MethodParameterName:
+  Enabled: false
+
+Naming/VariableNumber:
+  Enabled: false
+
+# ---------------------------------------------------------------------
+# Lint: keep these strict; they catch real bugs.
+# ---------------------------------------------------------------------
+Lint/AmbiguousBlockAssociation:
+  Enabled: true
+
+# ---------------------------------------------------------------------
+# Gemspec
+# ---------------------------------------------------------------------
+Gemspec/DevelopmentDependencies:
+  Enabled: false

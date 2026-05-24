@@ -171,7 +171,7 @@ module PdfOxide
         all_analyses = analyze_all_pages
 
         total_complexity = all_analyses.sum { |a| a[:complexity_score] || 0 }
-        avg_complexity = @document.page_count > 0 ? total_complexity / @document.page_count : 0
+        avg_complexity = @document.page_count.positive? ? total_complexity / @document.page_count : 0
 
         content_types = all_analyses.map { |a| a[:content_type] }.tally
         complexity_levels = all_analyses.map { |a| a[:complexity_level] }.tally
@@ -181,8 +181,8 @@ module PdfOxide
           average_complexity: avg_complexity,
           complexity_levels: complexity_levels,
           content_types: content_types,
-          has_tables: all_analyses.any? { |a| (a[:table_count] || 0) > 0 },
-          has_columns: all_analyses.any? { |a| (a[:column_count] || 0) > 0 }
+          has_tables: all_analyses.any? { |a| (a[:table_count] || 0).positive? },
+          has_columns: all_analyses.any? { |a| (a[:column_count] || 0).positive? }
         }
       end
 

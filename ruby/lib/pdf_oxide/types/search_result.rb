@@ -49,6 +49,7 @@ module PdfOxide
       # @return [Boolean] Whether equal
       def ==(other)
         return false unless other.is_a?(SearchResult)
+
         @page == other.page && @text == other.text && @bbox == other.bbox
       end
 
@@ -58,6 +59,7 @@ module PdfOxide
 
       def text_preview
         return @text if @text.length <= 50
+
         "#{@text[0...47]}..."
       end
     end

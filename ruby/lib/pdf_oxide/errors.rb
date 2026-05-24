@@ -41,6 +41,7 @@ module PdfOxide
 
     def error_message
       return message if @code.nil?
+
       "[#{@code}] #{message}"
     end
   end

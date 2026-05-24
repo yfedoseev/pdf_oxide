@@ -38,7 +38,7 @@ module PdfOxide
       # @return [Boolean] Whether document has signatures
       def has_signatures?
         check_document!
-        signature_count > 0
+        signature_count.positive?
       end
 
       # Get signature information
@@ -46,7 +46,7 @@ module PdfOxide
       # @return [Hash] Signature information
       def get_signature(signature_index)
         check_document!
-        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index < 0
+        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index.negative?
         raise ::PdfOxide::ArgumentError, "Signature index #{signature_index} out of range" if signature_index >= signature_count
 
         sig_handle = with_error_check('get_signature', index: signature_index) do |error_ptr|
@@ -61,7 +61,7 @@ module PdfOxide
       # @return [Hash] Verification results
       def verify_signature(signature_index)
         check_document!
-        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index < 0
+        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index.negative?
         raise ::PdfOxide::ArgumentError, "Signature index #{signature_index} out of range" if signature_index >= signature_count
 
         result_handle = with_error_check('verify_signature', index: signature_index) do |error_ptr|
@@ -76,7 +76,7 @@ module PdfOxide
       # @return [String] Signer name
       def get_signer(signature_index)
         check_document!
-        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index < 0
+        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index.negative?
         raise ::PdfOxide::ArgumentError, "Signature index #{signature_index} out of range" if signature_index >= signature_count
 
         FFI::StringMarshaller.from_c_string(
@@ -91,7 +91,7 @@ module PdfOxide
       # @return [Integer, nil] Unix timestamp or nil if no timestamp
       def get_timestamp(signature_index)
         check_document!
-        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index < 0
+        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index.negative?
         raise ::PdfOxide::ArgumentError, "Signature index #{signature_index} out of range" if signature_index >= signature_count
 
         with_error_check('get_timestamp', index: signature_index) do |error_ptr|
@@ -104,7 +104,7 @@ module PdfOxide
       # @return [Symbol] Signature status (:valid, :invalid, :untrusted, :self_signed, :unknown)
       def get_signature_status(signature_index)
         check_document!
-        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index < 0
+        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index.negative?
         raise ::PdfOxide::ArgumentError, "Signature index #{signature_index} out of range" if signature_index >= signature_count
 
         status_int = with_error_check('get_signature_status', index: signature_index) do |error_ptr|
@@ -241,7 +241,7 @@ module PdfOxide
       # @raise [PdfException] If timestamp fails
       def add_timestamp(signature_index, tsa_url)
         check_document!
-        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index < 0
+        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index.negative?
         raise ::PdfOxide::ArgumentError, "Signature index #{signature_index} out of range" if signature_index >= signature_count
         raise ::PdfOxide::ArgumentError, 'TSA URL must be a string' unless tsa_url.is_a?(String)
 
@@ -319,7 +319,7 @@ module PdfOxide
       # @return [Boolean] Whether signature has a timestamp
       def has_timestamp?(signature_index)
         check_document!
-        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index < 0
+        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index.negative?
         raise ::PdfOxide::ArgumentError, "Signature index #{signature_index} out of range" if signature_index >= signature_count
 
         sig_handle = with_error_check('get_signature', index: signature_index) do |error_ptr|
@@ -340,7 +340,7 @@ module PdfOxide
       # @return [Symbol] Digest algorithm (:sha1, :sha256, :sha384, :sha512, :unknown)
       def get_signature_algorithm(signature_index)
         check_document!
-        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index < 0
+        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index.negative?
         raise ::PdfOxide::ArgumentError, "Signature index #{signature_index} out of range" if signature_index >= signature_count
 
         sig_handle = with_error_check('get_signature', index: signature_index) do |error_ptr|
@@ -362,7 +362,7 @@ module PdfOxide
       # @return [Hash] Signature as JSON-compatible hash
       def export_signature_json(signature_index)
         check_document!
-        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index < 0
+        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index.negative?
         raise ::PdfOxide::ArgumentError, "Signature index #{signature_index} out of range" if signature_index >= signature_count
 
         sig_handle = with_error_check('get_signature', index: signature_index) do |error_ptr|
@@ -375,8 +375,8 @@ module PdfOxide
           error_ptr = ::FFI::MemoryPointer.new(:pointer)
           json_str = FFI::Bindings.pdf_signature_to_json(sig_handle, error_ptr)
 
-          return JSON.parse(FFI::StringMarshaller.from_c_string(json_str) || '{}')
-        rescue => e
+          JSON.parse(FFI::StringMarshaller.from_c_string(json_str) || '{}')
+        rescue StandardError => e
           { error: e.message }
         ensure
           FFI::Bindings.pdf_oxide_signature_free(sig_handle) unless sig_handle.nil? || sig_handle.null?
@@ -388,7 +388,7 @@ module PdfOxide
       # @return [Boolean] Whether signature was removed
       def remove_signature(signature_index)
         check_document!
-        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index < 0
+        raise ::PdfOxide::ArgumentError, 'Signature index must be >= 0' if signature_index.negative?
         raise ::PdfOxide::ArgumentError, "Signature index #{signature_index} out of range" if signature_index >= signature_count
 
         with_error_check('remove_signature', signature: signature_index) do |error_ptr|

@@ -202,7 +202,7 @@ module PdfOxide
       # @param output_path [String] Output file path
       # @param options [Hash] Signing options
       # @return [Boolean] Whether signing succeeded
-      def sign(certificate_path, output_path, options = {})
+      def sign(certificate_path, output_path, _options = {})
         check_document!
         raise ::PdfOxide::ArgumentError, 'Certificate path cannot be empty' if certificate_path.nil? || certificate_path.empty?
         raise ::PdfOxide::ArgumentError, 'Output path cannot be empty' if output_path.nil? || output_path.empty?

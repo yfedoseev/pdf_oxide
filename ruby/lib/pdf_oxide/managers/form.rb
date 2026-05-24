@@ -153,7 +153,7 @@ module PdfOxide
       # Reset form fields to default values
       # @param field_names [Array<String>, nil] Specific fields to reset or nil for all
       # @return [Boolean] Whether operation succeeded
-      def reset_form_fields(field_names = nil)
+      def reset_form_fields(_field_names = nil)
         check_document!
 
         with_error_check('reset_form_fields') do |error_ptr|
@@ -242,7 +242,7 @@ module PdfOxide
         set_all_values(json_data)
         true
       rescue JSON::ParserError => e
-        raise ::PdfOxide::ParseError.new("Invalid JSON format: #{e.message}")
+        raise ::PdfOxide::ParseError, "Invalid JSON format: #{e.message}"
       end
 
       # Export form data to FDF (Forms Data Format) file

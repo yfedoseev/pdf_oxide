@@ -34,10 +34,10 @@ module PdfOxide
 
     def to_h
       {
-        text:           @text,
-        reason:         @reason,
-        kind:           @kind,
-        confidence:     @confidence,
+        text: @text,
+        reason: @reason,
+        kind: @kind,
+        confidence: @confidence,
         classification: @classification
       }
     end

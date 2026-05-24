@@ -55,8 +55,10 @@ module PdfOxide
     end
 
     def initialize(path: nil, bytes: nil)
-      raise ::PdfOxide::ArgumentError,
-            'must supply path: or bytes:' if path.nil? && bytes.nil?
+      if path.nil? && bytes.nil?
+        raise ::PdfOxide::ArgumentError,
+              'must supply path: or bytes:'
+      end
 
       error_ptr = ::FFI::MemoryPointer.new(:int32)
       @handle =
@@ -180,6 +182,7 @@ module PdfOxide
     # Release the underlying DocumentEditor handle.
     def close
       return if @closed
+
       if @handle && !@handle.null?
         FFI::Bindings.document_editor_free(@handle)
       end
@@ -210,8 +213,10 @@ module PdfOxide
     end
 
     def check_applied!
+      return if @applied
+
       raise ::PdfOxide::StateError,
-            'no redactions applied; call apply! before save/to_bytes' unless @applied
+            'no redactions applied; call apply! before save/to_bytes'
     end
 
     # Fail-closed: any non-zero rc OR non-zero error_code raises.
@@ -219,11 +224,9 @@ module PdfOxide
       if error_code != 0
         raise FFI::ErrorHandler.create_error(error_code, operation, **context)
       end
-      if rc < 0
-        raise ::PdfOxide::RedactionError.new(
-          "#{operation} returned #{rc} (security operation; failing closed)"
-        )
-      end
+      return unless rc.negative?
+
+      raise ::PdfOxide::RedactionError, "#{operation} returned #{rc} (security operation; failing closed)"
     end
   end
 end

@@ -81,7 +81,7 @@ module PdfOxide
         height = get_page_height(page_index)
         return 0.0 if height.zero?
 
-        get_page_width(page_index).to_f / height.to_f
+        get_page_width(page_index).to_f / height
       end
 
       # Check if page exists
@@ -97,7 +97,7 @@ module PdfOxide
       # @return [Boolean] Whether operation succeeded
       def insert_page(page_index)
         check_document!
-        raise ::PdfOxide::ArgumentError, 'Page index must be >= 0' if page_index < 0
+        raise ::PdfOxide::ArgumentError, 'Page index must be >= 0' if page_index.negative?
         raise ::PdfOxide::ArgumentError, "Page index #{page_index} exceeds page count" if page_index > count
 
         with_error_check('insert_page', page: page_index) do |error_ptr|
@@ -230,7 +230,7 @@ module PdfOxide
         validate_page_index!(page_index)
 
         bbox_ptr = ::FFI::MemoryPointer.new(:float, 4)
-        with_error_check('get_media_box', page: page_index) do |error_ptr|
+        with_error_check('get_media_box', page: page_index) do |_error_ptr|
           FFI::Bindings.pdf_document_get_media_box(@document.handle, page_index, bbox_ptr)
         end
 
@@ -246,7 +246,7 @@ module PdfOxide
         validate_page_index!(page_index)
 
         bbox_ptr = ::FFI::MemoryPointer.new(:float, 4)
-        with_error_check('get_crop_box', page: page_index) do |error_ptr|
+        with_error_check('get_crop_box', page: page_index) do |_error_ptr|
           FFI::Bindings.pdf_document_get_crop_box(@document.handle, page_index, bbox_ptr)
         end
 

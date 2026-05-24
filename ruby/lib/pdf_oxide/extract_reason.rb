@@ -54,7 +54,7 @@ module PdfOxide
 
     # @return [Boolean] whether the reason represents a clean extraction.
     def self.ok?(reason)
-      reason == OK || reason == NATIVE_TEXT_HIGH_CONFIDENCE
+      [OK, NATIVE_TEXT_HIGH_CONFIDENCE].include?(reason)
     end
 
     # @return [Boolean] whether the OCR-unavailable graceful-fallback path
@@ -62,8 +62,7 @@ module PdfOxide
     #   `feedback_extraction_graceful_fallback`; the binding returns the
     #   native text layer and surfaces the reason instead of throwing).
     def self.ocr_fallback?(reason)
-      reason == OCR_REQUESTED_BUT_UNAVAILABLE ||
-        reason == OCR_LOW_CONFIDENCE_FALLBACK
+      [OCR_REQUESTED_BUT_UNAVAILABLE, OCR_LOW_CONFIDENCE_FALLBACK].include?(reason)
     end
   end
 
