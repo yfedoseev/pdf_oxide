@@ -82,7 +82,10 @@ jobs:
             ${{ runner.os }}-cargo-build-release-
 
       - name: Build cdylib (release)
-        run: cargo build --release --lib
+        # `signatures` feature is required by the integration tests'
+        # PKCS#12 signer suite (PdfSignerSignTest). Default features
+        # ship the extraction surface only.
+        run: cargo build --release --lib --features signatures
 
       - name: Compute cdylib path (POSIX)
         if: runner.os != 'Windows'
