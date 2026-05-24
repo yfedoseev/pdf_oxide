@@ -125,10 +125,10 @@ module PdfOxide
 
     # @return [Boolean] whether this PDF carries an encryption dictionary.
     def encrypted?
-      err = ::FFI::MemoryPointer.new(:int32)
-      r = Bindings.pdf_document_is_encrypted(handle, err)
-      raise_for_code(err.read_int32, 'encrypted?')
-      r
+      # bool pdf_document_is_encrypted(const PdfDocument *handle) — no err arg.
+      # The cdylib silently swallowed the extra err pointer pre-v0.3.55, so
+      # encryption-detection failures were never surfaced.
+      Bindings.pdf_document_is_encrypted(handle)
     end
 
     # Extract plain text from a single page.
@@ -137,9 +137,9 @@ module PdfOxide
     def extract_text(page_index)
       validate_page_index(page_index)
       err = ::FFI::MemoryPointer.new(:int32)
-      s = Bindings.pdf_document_extract_text(handle, page_index, err)
+      ptr = Bindings.pdf_document_extract_text(handle, page_index, err)
       raise_for_code(err.read_int32, 'extract_text')
-      s || ''
+      StringMarshaller.from_c_string(ptr) || ''
     end
 
     # Auto-routed extraction for a single page (v0.3.51 #517).

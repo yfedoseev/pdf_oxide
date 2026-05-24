@@ -17,7 +17,7 @@ module PdfOxide
       raise ::PdfOxide::ArgumentError, 'doc cannot be nil' if doc.nil?
 
       err = ::FFI::MemoryPointer.new(:int32)
-      result =
+      ptr =
         if page_index.nil?
           Bindings.pdf_document_to_markdown_all(doc.handle, err)
         else
@@ -26,7 +26,7 @@ module PdfOxide
       code = err.read_int32
       raise InternalError, "to_markdown failed (#{code})" if code != 0
 
-      result || ''
+      StringMarshaller.from_c_string(ptr) || ''
     end
 
     # Convert a page (or the whole document) to HTML.
@@ -37,20 +37,16 @@ module PdfOxide
       raise ::PdfOxide::ArgumentError, 'doc cannot be nil' if doc.nil?
 
       err = ::FFI::MemoryPointer.new(:int32)
-      ptr_or_str =
+      ptr =
         if page_index.nil?
-          # whole-document HTML returns a malloc'd char* via the
-          # 8-pointer skeleton — try the explicit accessor.
-          Bindings.pdf_document_to_html_all(doc.handle, err) if Bindings.respond_to?(:pdf_document_to_html_all)
+          Bindings.pdf_document_to_html_all(doc.handle, err)
         else
           Bindings.pdf_document_to_html(doc.handle, page_index, err)
         end
       code = err.read_int32
       raise InternalError, "to_html failed (#{code})" if code != 0
-      return '' if ptr_or_str.nil?
-      return ptr_or_str if ptr_or_str.is_a?(String)
 
-      StringMarshaller.from_c_string(ptr_or_str) || ''
+      StringMarshaller.from_c_string(ptr) || ''
     end
   end
 end

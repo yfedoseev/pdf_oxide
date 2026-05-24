@@ -251,7 +251,10 @@ jobs:
             ${{ runner.os }}-${{ matrix.cargo_target }}-cargo-build-release-
 
       - name: Build cdylib (release, target ${{ matrix.cargo_target }})
-        run: cargo build --release --target ${{ matrix.cargo_target }} --lib
+        # Match the shipped cdylib feature set from release.yml line 417 so
+        # `bundle exec rspec` exercises the same surface end users hit when
+        # they bundle the platform-tagged gem.
+        run: cargo build --release --target ${{ matrix.cargo_target }} --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
 
       - name: Stage cdylib into ext/pdf_oxide/ (POSIX)
         if: runner.os != 'Windows'

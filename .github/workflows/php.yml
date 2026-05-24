@@ -82,16 +82,12 @@ jobs:
             ${{ runner.os }}-cargo-build-release-
 
       - name: Build cdylib (release)
-        # Default features only (icc + legacy-crypto). The `signatures`
-        # feature is excluded from PHP CI in v0.3.55 because the new
-        # PdfSigner::sign() path (PadesSignOptionsC struct packing)
-        # exposes a crash in the cdylib when the struct arrives via PHP
-        # FFI — Java's binding is unaffected, so the underlying signing
-        # code is exercised there. PdfSignerSignTest self-skips when
-        # the symbol load fails, keeping CI green for release while the
-        # PHP-side struct-marshalling root cause is investigated
-        # post-v0.3.55.
-        run: cargo build --release --lib
+        # PHP CI must build the cdylib with the SAME features that ship
+        # via release.yml (libpdf_oxide-vX.Y.Z-<plat>.tar.gz) so the test
+        # suite exercises the same surface end users will load. The
+        # canonical "shipped binding cdylib" feature set is taken from
+        # release.yml line 417.
+        run: cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
 
       - name: Compute cdylib path (POSIX)
         if: runner.os != 'Windows'

@@ -53,7 +53,8 @@ module PdfOxide
       attach_function :pdf_document_open, %i[string pointer], :pointer
       attach_function :pdf_document_free, [:pointer], :void
       attach_function :pdf_document_get_page_count, %i[pointer pointer], :int32
-      attach_function :pdf_document_is_encrypted, %i[pointer pointer], :bool
+      # bool pdf_document_is_encrypted(const PdfDocument *handle) — no err arg
+      attach_function :pdf_document_is_encrypted, [:pointer], :bool
       # REMOVED phantom (no upstream symbol): :pdf_document_requires_password (1 line)
 
       # Document metadata
@@ -64,11 +65,16 @@ module PdfOxide
       # TEXT EXTRACTION
       # ============================================================
 
-      attach_function :pdf_document_extract_text, %i[pointer int32 pointer], :string
-      attach_function :pdf_document_to_markdown, %i[pointer int32 pointer], :string
-      attach_function :pdf_document_to_markdown_all, %i[pointer pointer], :string
-      attach_function :pdf_document_to_html, %i[pointer int32 pointer], :string
-      attach_function :pdf_document_to_plain_text, %i[pointer int32 pointer], :string
+      # Owned-`char *` extraction APIs. Declared as :pointer (NOT :string)
+      # so callers can free the buffer via StringMarshaller.from_c_string,
+      # which delegates to free_string. Ruby FFI's :string copies the C
+      # bytes but never calls free_string → leaks one full-document buffer
+      # per call.
+      attach_function :pdf_document_extract_text, %i[pointer int32 pointer], :pointer
+      attach_function :pdf_document_to_markdown, %i[pointer int32 pointer], :pointer
+      attach_function :pdf_document_to_markdown_all, %i[pointer pointer], :pointer
+      attach_function :pdf_document_to_html, %i[pointer int32 pointer], :pointer
+      attach_function :pdf_document_to_plain_text, %i[pointer int32 pointer], :pointer
 
       # ============================================================
       # SEARCH OPERATIONS (15 functions)
@@ -1307,14 +1313,16 @@ module PdfOxide
       attach_function :pdf_document_extract_words, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_document_extract_words_in_rect, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_document_get_dss, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
-      attach_function :pdf_document_get_form_fields, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      # FfiFormFieldList *pdf_document_get_form_fields(PdfDocument *handle, int32_t *error_code)
+      attach_function :pdf_document_get_form_fields, %i[pointer pointer], :pointer, blocking: false
       attach_function :pdf_document_get_outline, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_document_get_page_annotations, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_document_get_page_labels, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_document_get_source_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_document_get_xmp_metadata, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_document_has_timestamp, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
-      attach_function :pdf_document_open_from_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      # PdfDocument *pdf_document_open_from_bytes(const uint8_t *data, uintptr_t len, int32_t *error_code)
+      attach_function :pdf_document_open_from_bytes, %i[pointer size_t pointer], :pointer, blocking: false
       attach_function :pdf_document_open_from_docx_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_document_open_from_pptx_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_document_open_from_xlsx_bytes, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
@@ -1503,7 +1511,8 @@ module PdfOxide
       attach_function :pdf_signature_get_signing_time, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_signature_verify_detached, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_timestamp_parse, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
-      attach_function :pdf_validate_pdf_a_level, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      # FfiPdfAResults *pdf_validate_pdf_a_level(PdfDocument *document, int32_t level, int32_t *error_code)
+      attach_function :pdf_validate_pdf_a_level, %i[pointer int32 pointer], :pointer, blocking: false
       attach_function :pdf_validate_pdf_x_level, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :qcms_enable_iccv4, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :qcms_profile_is_bogus, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
