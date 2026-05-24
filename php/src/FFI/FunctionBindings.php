@@ -1114,21 +1114,34 @@ class FunctionBindings
      */
     public function pdfCertificateLoadFromBytes(string $certData, string $password = ''): CData
     {
-        $cData = StringMarshaller::toCString($certData);
-        $cPassword = StringMarshaller::toCString($password);
-        $errorCode = FFI::new('int');
+        // PKCS#12 / PEM cert data is BINARY (contains bytes >= 0x80).
+        // Pre-v0.3.55 this went through StringMarshaller::toCString
+        // which allocates `char[N+1]` and forces a `FFI::cast('uint8_t*', …)`
+        // — on PHP 8.5 with `char` defaulting to signed, that cast
+        // segfaults the moment the cdylib touches a byte with the high
+        // bit set. Allocate the input as `uint8_t[N]` directly so no
+        // sign-aware cast is needed.
+        //
+        // Diagnosis: /tmp/php_signer_repro.php with `char[N+1]` SEGV's
+        // every time; with `uint8_t[N]` (owned or unowned) it returns
+        // err=0 + non-null cert handle. The C ABI doesn't expect NUL
+        // termination on a length-prefixed buffer.
+        $certLen = strlen($certData);
+        $cData = $this->ffi->new('uint8_t[' . ($certLen > 0 ? $certLen : 1) . ']');
+        if ($certLen > 0) {
+            FFI::memcpy($cData, $certData, $certLen);
+        }
+        $cPassword = StringMarshaller::toCString($password); // password is a text string — toCString is correct here.
+        $errorCode = FFI::new('int32_t');
 
         try {
-            // PHP 8.5+ rejects implicit `char[N] -> uint8_t*` conversion; cast
-            // explicitly. (The cert may be raw PKCS#12 binary, so memcpy via
-            // `char[]` is fine — we just need to retype the pointer.)
             $certHandle = $this->ffi->pdf_certificate_load_from_bytes(
-                FFI::cast('uint8_t*', $cData),
-                strlen($certData),
+                $cData,
+                $certLen,
                 $cPassword,
                 FFI::addr($errorCode)
             );
-            ErrorHandler::check($errorCode->cdata, 'pdf_certificate_load_from_bytes');
+            ErrorHandler::check((int) $errorCode->cdata, 'pdf_certificate_load_from_bytes');
             return $certHandle;
         } finally {
             unset($cData, $cPassword);

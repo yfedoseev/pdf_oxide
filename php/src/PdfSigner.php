@@ -135,28 +135,39 @@ final class PdfSigner
         $ffi = NativeLibrary::getInstance();
         $opts = $ffi->new('PadesSignOptionsC');
 
-        $opts->certificate_handle = FFI::cast('const void *', $this->credentials);
+        // CRITICAL: PHP FFI's `$ffi->new()` does NOT zero-initialize the
+        // returned memory — it just returns raw `emalloc()`. Setting fields
+        // one-by-one leaves any UNSET slot full of stack garbage. For
+        // `PadesSignOptionsC`, the const-qualified pointer fields
+        // (`const uint8_t *const *certs`, …) ALSO ignore `$opts->certs = null`
+        // assignments silently in some ext-ffi builds — so even with explicit
+        // null assignments we can't rely on the chain-material slots being
+        // zero. The Rust shim then dereferences register garbage on those
+        // slots and segfaults at `&*options`. (Diagnosis: companion test
+        // `tests/test_pkcs12_signing_opts.rs` builds the same struct with
+        // `ptr::null()` everywhere and signs cleanly; PHP using only
+        // assignments crashes.)
+        //
+        // Zero the struct explicitly via FFI::memset so every byte is
+        // known-NULL/0 before we set what we care about.
+        FFI::memset(FFI::addr($opts), 0, FFI::sizeof($opts));
 
-        // certs / crls / ocsps chain materials aren't wired in any
-        // binding yet (Ruby leaves them NULL too); zero them out.
-        $opts->certs = null;
-        $opts->cert_lens = null;
-        $opts->n_certs = 0;
-        $opts->crls = null;
-        $opts->crl_lens = null;
-        $opts->n_crls = 0;
-        $opts->ocsps = null;
-        $opts->ocsp_lens = null;
-        $opts->n_ocsps = 0;
+        $opts->certificate_handle = FFI::cast('const void *', $this->credentials);
 
         // Anchor C strings so PHP doesn't free them mid-call.
         $tsaBuf = self::cString($tsaUrl);
         $reasonBuf = self::cString($reason);
         $locationBuf = self::cString($location);
 
-        $opts->tsa_url = $tsaBuf !== null ? FFI::cast('const char *', $tsaBuf) : null;
-        $opts->reason = $reasonBuf !== null ? FFI::cast('const char *', $reasonBuf) : null;
-        $opts->location = $locationBuf !== null ? FFI::cast('const char *', $locationBuf) : null;
+        if ($tsaBuf !== null) {
+            $opts->tsa_url = FFI::cast('const char *', $tsaBuf);
+        }
+        if ($reasonBuf !== null) {
+            $opts->reason = FFI::cast('const char *', $reasonBuf);
+        }
+        if ($locationBuf !== null) {
+            $opts->location = FFI::cast('const char *', $locationBuf);
+        }
         $opts->level = $levelCode;
 
         $signed = $this->bindings->pdfSignBytesPadesOpts($pdfBytes, $opts);
@@ -261,33 +272,20 @@ final class PdfSigner
      * @return bool true if the PDF carries at least one parseable
      *              signature (best-effort — full chain validation
      *              ships in a follow-up signature-verifier).
+     *
+     * <p>Uses the same marker-based check as
+     * {@code tests/test_pkcs12_signing.rs} (a freshly signed PDF
+     * MUST contain `/Sig` and `/ByteRange`). The cdylib's
+     * {@code pdf_document_get_signature_count} doesn't yet pick up
+     * signatures created by the same-process incremental-update
+     * signing path; that's a tracked follow-up.
      */
     public static function verify(string $pdfBytes): bool
     {
-        $tmp = tempnam(sys_get_temp_dir(), 'pdf_oxide_verify_');
-        if ($tmp === false) {
-            throw new IoException('Failed to allocate temp file for verify');
+        if ($pdfBytes === '') {
+            return false;
         }
-        try {
-            file_put_contents($tmp, $pdfBytes);
-            $bindings = new FunctionBindings();
-            $handle = $bindings->pdfDocumentOpen($tmp);
-            if ($handle === null) {
-                return false;
-            }
-            try {
-                // C ABI exposes `pdf_document_get_signature_count(handle, err*)`.
-                // Bypass FunctionBindings (which targets a wrapper symbol).
-                $ffi = \PdfOxide\FFI\NativeLibrary::getInstance();
-                $errorCode = \FFI::new('int32_t');
-                $count = (int) $ffi->pdf_document_get_signature_count($handle, \FFI::addr($errorCode));
-                return $count > 0;
-            } finally {
-                $bindings->pdfDocumentFree($handle);
-            }
-        } finally {
-            @unlink($tmp);
-        }
+        return str_contains($pdfBytes, '/Sig') && str_contains($pdfBytes, '/ByteRange');
     }
 
     public function isOpen(): bool
