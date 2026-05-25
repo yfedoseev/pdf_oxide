@@ -39,7 +39,9 @@ declare(strict_types=1);
 
 const PACKAGE_VERSION_DEFAULT = 'v0.3.55';
 const RELEASE_BASE_URL = 'https://github.com/fyi-oxide/pdf_oxide/releases/download';
-const MANIFEST_RELATIVE = 'scripts/native-manifest.json';
+// Path is relative to the package root (parent-of-php in the new
+// root-composer.json layout); see comment on $packageRoot below.
+const MANIFEST_RELATIVE = 'php/scripts/native-manifest.json';
 
 /**
  * Top-level entry point.
@@ -51,7 +53,17 @@ function main(): int
         return 0;
     }
 
-    $packageRoot = dirname(__DIR__);
+    // Two-levels-up so the lib lands at `<package-root>/lib/<platform>/`
+    // where `<package-root>` is the COMPOSER package root (either
+    // `vendor/oxide/pdf-oxide/` for end-user installs, or the repo
+    // root for local dev). One level up would put the lib at
+    // `<package-root>/php/lib/…`, but `NativeLibrary::getSearchPaths()`
+    // resolves the search root via `dirname(__DIR__, 3)` from
+    // `php/src/FFI/NativeLibrary.php` which already lands at
+    // `<package-root>`, not `<package-root>/php`. Keep these two
+    // path computations in sync — they describe the same directory
+    // tree from opposite ends.
+    $packageRoot = dirname(__DIR__, 2);
     $version = getenv('PDF_OXIDE_NATIVE_VERSION') ?: PACKAGE_VERSION_DEFAULT;
 
     try {

@@ -1,0 +1,46 @@
+{
+    "_comment": "Packagist requires composer.json at the REPO ROOT (it doesn't follow subdirectory layouts). The PHP source still lives in php/ — local dev uses php/composer.json. KEEP THIS FILE IN SYNC with php/composer.json (paths just prefixed `php/`).",
+    "name": "oxide/pdf-oxide",
+    "description": "PDF processing toolkit (Rust-backed, FFI-bound) for PHP",
+    "type": "library",
+    "license": ["MIT", "Apache-2.0"],
+    "keywords": [
+        "pdf",
+        "text-extraction",
+        "pdf-creation",
+        "pdf-editing",
+        "ocr",
+        "signatures",
+        "ffi",
+        "rust"
+    ],
+    "authors": [
+        {
+            "name": "pdf_oxide contributors",
+            "email": "releases@oxide.fyi"
+        }
+    ],
+    "homepage": "https://github.com/fyi-oxide/pdf_oxide",
+    "support": {
+        "issues": "https://github.com/fyi-oxide/pdf_oxide/issues",
+        "source": "https://github.com/fyi-oxide/pdf_oxide"
+    },
+    "require": {
+        "php": ">=8.2",
+        "ext-ffi": "*",
+        "ext-mbstring": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "PdfOxide\\": "php/src/"
+        }
+    },
+    "scripts": {
+        "post-install-cmd": "@php php/scripts/download-native-lib.php",
+        "post-update-cmd": "@php php/scripts/download-native-lib.php"
+    },
+    "suggest": {
+        "ext-gd": "Required for advanced image manipulation features",
+        "ext-imagick": "Optional for enhanced rendering capabilities"
+    }
+}
