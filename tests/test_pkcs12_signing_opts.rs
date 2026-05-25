@@ -82,11 +82,16 @@ fn pkcs12_sign_pdf_bytes_via_opts_shim_round_trip() {
         location: ptr::null(),
         level: 0, // B-B
     };
+    // 13 pointer-sized fields + i32 level + tail padding to pointer
+    // alignment. On 64-bit: 13*8 + 4 + 4pad = 112B; on 32-bit: 13*4 + 4 = 56B.
+    let ptr_size = std::mem::size_of::<*const std::ffi::c_void>();
+    let expected = 13 * ptr_size + std::mem::size_of::<i32>();
+    let expected = expected.next_multiple_of(ptr_size);
     assert_eq!(
         std::mem::size_of::<PadesSignOptionsC>(),
-        14 * 8,
-        "PadesSignOptionsC layout must be 13 pointers + i32 + 4B pad = 112B on 64-bit \
-         (Ruby spec asserts this; FFI bindings depend on it)"
+        expected,
+        "PadesSignOptionsC layout must be 13 pointers + i32 + tail-pad-to-pointer \
+         (Ruby/PHP FFI bindings replicate this struct byte-for-byte)"
     );
 
     let mut signed_len: usize = 0;

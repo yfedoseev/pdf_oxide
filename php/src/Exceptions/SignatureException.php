@@ -14,6 +14,10 @@ class SignatureException extends PdfException
         array $context = [],
         ?PdfException $previous = null
     ) {
-        parent::__construct($message, 'SIGNATURE_ERROR', $context, 8, $previous);
+        // -1 puts SignatureException out-of-band of the cdylib wire codes
+        // (0-8): signing failures have no dedicated wire code and would
+        // otherwise collide with UnsupportedException (code 8). Matches
+        // EncryptionException's convention.
+        parent::__construct($message, 'SIGNATURE_ERROR', $context, -1, $previous);
     }
 }

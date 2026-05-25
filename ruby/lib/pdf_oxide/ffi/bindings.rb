@@ -38,10 +38,12 @@ module PdfOxide
       # char *document_editor_get_source_path(const DocumentEditor *handle, int32_t *error_code)
       # Owned-char* — bind as :pointer so the caller can free via StringMarshaller.
       attach_function :document_editor_get_source_path, %i[pointer pointer], :pointer
-      attach_function :document_editor_get_title, %i[pointer pointer], :string
-      attach_function :document_editor_get_author, %i[pointer pointer], :string
-      attach_function :document_editor_get_subject, %i[pointer pointer], :string
-      attach_function :document_editor_get_version, %i[pointer pointer], :string
+      # REMOVED phantom (no upstream symbol): :document_editor_get_title
+      # REMOVED phantom (no upstream symbol): :document_editor_get_author
+      # REMOVED phantom (no upstream symbol): :document_editor_get_subject
+      # void document_editor_get_version(const DocumentEditor *handle,
+      #                                  uint8_t *major, uint8_t *minor)
+      attach_function :document_editor_get_version, %i[pointer pointer pointer], :void
       attach_function :document_editor_set_title, %i[pointer string pointer], :bool
       attach_function :document_editor_set_author, %i[pointer string pointer], :bool
       attach_function :document_editor_set_subject, %i[pointer string pointer], :bool
@@ -60,7 +62,9 @@ module PdfOxide
       # REMOVED phantom (no upstream symbol): :pdf_document_requires_password (1 line)
 
       # Document metadata
-      attach_function :pdf_document_get_version, %i[pointer pointer], :string
+      # void pdf_document_get_version(const PdfDocument *handle,
+      #                               uint8_t *major, uint8_t *minor)
+      attach_function :pdf_document_get_version, %i[pointer pointer pointer], :void
       attach_function :pdf_document_has_structure_tree, [:pointer], :bool
 
       # ============================================================

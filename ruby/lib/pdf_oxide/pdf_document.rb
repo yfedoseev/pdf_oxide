@@ -110,14 +110,10 @@ module PdfOxide
     end
 
     # @return [String] PDF version string (e.g. "1.7").
-    #   Reads the major.minor pair via the cdylib's two-out-pointer
-    #   accessor — the v0.3.55 binding intentionally avoids the
-    #   stringified `pdf_document_get_version` skeleton (the wrong-
-    #   signature 8-pointer placeholder was crashing prior builds).
     def pdf_version
       maj = ::FFI::MemoryPointer.new(:uint8)
       min = ::FFI::MemoryPointer.new(:uint8)
-      Bindings.pdf_document_get_version_pair(handle, maj, min) if Bindings.respond_to?(:pdf_document_get_version_pair)
+      Bindings.pdf_document_get_version(handle, maj, min)
       "#{maj.read_uint8}.#{min.read_uint8}"
     rescue ::FFI::NotFoundError
       'unknown'

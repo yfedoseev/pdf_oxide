@@ -88,13 +88,7 @@ fn map_pdfua_ordinal<'local>(
 ) -> Result<PdfUaLevel, JniError> {
     match ord {
         1 => Ok(PdfUaLevel::Ua1),
-        2 => {
-            let cls =
-                jni::strings::JNIString::from("fyi/oxide/pdf/exception/PdfUnsupportedException");
-            let msg = jni::strings::JNIString::from("PDF/UA-2 not yet supported by pdf_oxide");
-            env.throw_new(&cls, &msg)?;
-            Err(JniError::JavaException)
-        },
+        2 => Ok(PdfUaLevel::Ua2),
         _ => {
             let cls = jni::strings::JNIString::from("java/lang/IllegalArgumentException");
             let msg = jni::strings::JNIString::from(format!("unknown PdfUaLevel code {}", ord));
