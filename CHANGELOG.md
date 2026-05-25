@@ -2,7 +2,7 @@
 
 All notable changes to PDFOxide are documented here.
 
-## [0.3.55] - 2026-05-24
+## [0.3.55] - 2026-05-25
 
 > Ruby + PHP language bindings + multi-line heading reading-order fix
 
