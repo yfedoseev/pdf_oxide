@@ -142,27 +142,41 @@ jobs:
             cdylib: libpdf_oxide.so
             ruby-version: '3.4'
 
-          # darwin-x86_64 (Intel Mac runners)
-          - os: macos-13
+          # darwin-x86_64 (Intel Mac) — cross-compiled from macos-latest
+          # (arm64) because GitHub's macos-13 (Intel) free-tier runner pool
+          # was retired in 2025-12. Every other binding workflow
+          # (release.yml, ci-fips.yml, etc.) already cross-compiles
+          # x86_64-apple-darwin on macos-latest; ruby.yml was the only
+          # outlier asking for a runner that no longer exists. Runtime
+          # rspec is skipped for these cells (an arm64 host can't load
+          # an x86_64 cdylib); the build still produces the platform-
+          # tagged gem so end users on Intel Macs get an installable
+          # artifact. The arm64-darwin cells below cover the runtime
+          # macOS test surface.
+          - os: macos-latest
             cargo_target: x86_64-apple-darwin
             gem_platform: x86_64-darwin
             cdylib: libpdf_oxide.dylib
             ruby-version: '3.1'
-          - os: macos-13
+            cross_compiled: true
+          - os: macos-latest
             cargo_target: x86_64-apple-darwin
             gem_platform: x86_64-darwin
             cdylib: libpdf_oxide.dylib
             ruby-version: '3.2'
-          - os: macos-13
+            cross_compiled: true
+          - os: macos-latest
             cargo_target: x86_64-apple-darwin
             gem_platform: x86_64-darwin
             cdylib: libpdf_oxide.dylib
             ruby-version: '3.3'
-          - os: macos-13
+            cross_compiled: true
+          - os: macos-latest
             cargo_target: x86_64-apple-darwin
             gem_platform: x86_64-darwin
             cdylib: libpdf_oxide.dylib
             ruby-version: '3.4'
+            cross_compiled: true
 
           # darwin-arm64 (Apple Silicon)
           - os: macos-latest
@@ -285,12 +299,17 @@ jobs:
       # bypassed bundler activation and failed with LoadError even
       # though `bundle install` succeeded.
       - name: Verify gem loads against cdylib
+        # Cross-compiled cells (cargo_target != host arch) can't load
+        # the cdylib at runtime — the build alone proves the gem packs
+        # cleanly; runtime coverage comes from the native-arch cells.
+        if: ${{ ! matrix.cross_compiled }}
         working-directory: ruby
         shell: bash
         run: |
           bundle exec ruby -rbundler/setup -Ilib -rpdf_oxide -e 'puts PdfOxide::VERSION'
 
       - name: Run integration spec suite (real cdylib)
+        if: ${{ ! matrix.cross_compiled }}
         working-directory: ruby
         shell: bash
         env:
