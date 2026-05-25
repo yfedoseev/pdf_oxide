@@ -1722,3 +1722,187 @@ jobs:
             --api-key ${{ secrets.NUGET_API_KEY }} \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
+
+  # Build platform-tagged Ruby gems (one cell per platform).  Gems are
+  # platform-tagged, not Ruby-version-tagged — `required_ruby_version`
+  # in the gemspec is the floor — so one cell per platform suffices.
+  build-ruby-gems:
+    name: Build Ruby gem (${{ matrix.gem_platform }})
+    needs: [validate]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            cargo_target: x86_64-unknown-linux-gnu
+            gem_platform: x86_64-linux
+            cdylib: libpdf_oxide.so
+          - os: ubuntu-24.04-arm
+            cargo_target: aarch64-unknown-linux-gnu
+            gem_platform: aarch64-linux
+            cdylib: libpdf_oxide.so
+          # macos-13 (Intel) free-tier runner pool was retired 2025-12;
+          # cross-compile x86_64-apple-darwin from macos-latest (arm64).
+          # The arm64 host can't load the x86_64 cdylib, but the gem
+          # build only needs the artifact present at PDF_OXIDE_CDYLIB_PATH.
+          - os: macos-latest
+            cargo_target: x86_64-apple-darwin
+            gem_platform: x86_64-darwin
+            cdylib: libpdf_oxide.dylib
+          - os: macos-latest
+            cargo_target: aarch64-apple-darwin
+            gem_platform: arm64-darwin
+            cdylib: libpdf_oxide.dylib
+          - os: windows-latest
+            cargo_target: x86_64-pc-windows-msvc
+            gem_platform: x64-mingw-ucrt
+            cdylib: pdf_oxide.dll
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Ruby 3.3
+        uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1.310.0
+        with:
+          ruby-version: '3.3'
+          bundler: '2.6'
+          working-directory: ruby
+          bundler-cache: true
+
+      - name: Set up Rust (target ${{ matrix.cargo_target }})
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: ${{ matrix.cargo_target }}
+
+      - name: Build cdylib (release, target ${{ matrix.cargo_target }})
+        # Mirror ruby.yml's feature set — must match the cdylib that
+        # end users get when they bundle the platform-tagged gem.
+        run: cargo build --release --target ${{ matrix.cargo_target }} --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
+
+      - name: Stage cdylib into ext/pdf_oxide/ (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p ruby/ext/pdf_oxide
+          src="target/${{ matrix.cargo_target }}/release/${{ matrix.cdylib }}"
+          test -f "$src" || { echo "::error::cdylib not produced at $src"; exit 1; }
+          cp "$src" "ruby/ext/pdf_oxide/${{ matrix.cdylib }}"
+
+      - name: Stage cdylib into ext/pdf_oxide/ (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ruby/ext/pdf_oxide | Out-Null
+          $src = "target/${{ matrix.cargo_target }}/release/${{ matrix.cdylib }}"
+          if (-not (Test-Path $src)) {
+            Write-Error "cdylib not produced at $src"
+            exit 1
+          }
+          Copy-Item $src "ruby/ext/pdf_oxide/${{ matrix.cdylib }}"
+
+      - name: Build platform-tagged gem
+        working-directory: ruby
+        shell: bash
+        env:
+          PDF_OXIDE_CDYLIB_PATH: ${{ github.workspace }}/target/${{ matrix.cargo_target }}/release/${{ matrix.cdylib }}
+        run: |
+          bundle exec rake native:${{ matrix.gem_platform }}
+          ls -la *.gem
+
+      - name: Upload platform gem artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ruby-release-gem-${{ matrix.gem_platform }}
+          path: ruby/pdf_oxide-*-${{ matrix.gem_platform }}.gem
+          if-no-files-found: error
+          retention-days: 7
+
+  # Source gem (platform-less): users who want to recompile the cdylib
+  # at install time, or who are on a platform with no prebuilt gem.
+  build-ruby-source-gem:
+    name: Build Ruby source gem
+    needs: [validate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Ruby 3.3
+        uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1.310.0
+        with:
+          ruby-version: '3.3'
+          working-directory: ruby
+          bundler-cache: true
+
+      - name: Build source gem
+        working-directory: ruby
+        run: bundle exec rake native:source
+
+      - name: Upload source gem artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ruby-release-gem-source
+          path: ruby/pdf_oxide-*.gem
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-rubygems:
+    name: Publish to RubyGems
+    needs: [validate, build-ruby-gems, build-ruby-source-gem, create-release]
+    runs-on: ubuntu-latest
+    # #515 hard-gate: a pull_request (PR dry-run) can NEVER publish;
+    # only a real tag push, or workflow_dispatch with publish=true.
+    if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
+    environment:
+      name: rubygems
+      url: https://rubygems.org/gems/pdf_oxide
+    permissions:
+      contents: read
+    steps:
+      - name: Set up Ruby 3.3
+        uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1.310.0
+        with:
+          ruby-version: '3.3'
+
+      - name: Download all Ruby gem artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: gems
+          pattern: ruby-release-gem-*
+          merge-multiple: true
+
+      - name: List gems to publish
+        run: |
+          echo "=== Gems to publish ==="
+          ls -lh gems/
+
+      - name: Configure RubyGems credentials
+        env:
+          RUBYGEMS_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
+        run: |
+          mkdir -p ~/.gem
+          # Credentials file beats `gem push --key` — some gem CLI
+          # versions reject inline keys.  Never echo the token.
+          printf -- "---\n:rubygems_api_key: %s\n" "$RUBYGEMS_API_KEY" > ~/.gem/credentials
+          chmod 600 ~/.gem/credentials
+
+      - name: Publish gems to RubyGems
+        run: |
+          V="${{ needs.validate.outputs.version }}"
+          shopt -s nullglob
+          gems=(gems/pdf_oxide-*.gem)
+          shopt -u nullglob
+          [ "${#gems[@]}" -gt 0 ] || { echo "::error::no gems found in gems/"; exit 1; }
+          for g in "${gems[@]}"; do
+            # Parse the platform tag (or "ruby" for the source gem) so
+            # we can skip-if-already-published — RubyGems rejects a
+            # duplicate version+platform push with a 409.
+            base="$(basename "$g" .gem)"
+            plat="${base#pdf_oxide-${V}-}"
+            [ "$plat" = "$base" ] && plat="ruby"
+            if gem search -re --platform "$plat" pdf_oxide | grep -qE "^pdf_oxide \(${V//./\\.}[ ,]"; then
+              echo "pdf_oxide $V ($plat) already on RubyGems — skipping"
+              continue
+            fi
+            echo "Pushing $g"
+            gem push "$g"
+          done
