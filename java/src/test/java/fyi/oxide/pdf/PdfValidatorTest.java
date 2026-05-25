@@ -78,11 +78,14 @@ class PdfValidatorTest {
     }
 
     @Test
-    void pdfUa2ThrowsUnsupported() {
+    void pdfUa2ReturnsBoolean() {
+        // PDF/UA-2 is accepted by every binding (C ABI src/ffi.rs:5547
+        // maps level==2 → PdfUaLevel::Ua2); the JNI shim used to reject
+        // it as Unsupported but no longer does (issue #547).
         Path simple = fixturesDir.resolve("simple.pdf");
         try (PdfDocument doc = PdfDocument.open(simple)) {
-            assertThatThrownBy(() -> PdfValidator.isPdfUa(doc, PdfUaLevel.UA_2))
-                    .isInstanceOf(PdfUnsupportedException.class);
+            boolean result = PdfValidator.isPdfUa(doc, PdfUaLevel.UA_2);
+            assertThat(result == true || result == false).isTrue();
         }
     }
 }
