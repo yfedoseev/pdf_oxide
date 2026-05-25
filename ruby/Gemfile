@@ -9,7 +9,7 @@ group :development do
   gem 'rake', '~> 13.0'
   gem 'rspec', '~> 3.12'
   gem 'rubocop', '~> 1.86'
-  gem 'rubocop-rspec', '~> 2.20'
+  gem 'rubocop-rspec', '~> 3.9'
   gem 'yard', '~> 0.9'
   gem 'simplecov', '~> 0.22'
   gem 'simplecov-lcov', '~> 0.8'
