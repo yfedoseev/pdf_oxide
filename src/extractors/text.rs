@@ -20,7 +20,50 @@ use crate::object::{Object, ObjectRef};
 use crate::pipeline::config::WordBoundaryMode;
 use crate::text::{BoundaryContext, CharacterInfo, DocumentScript, WordBoundaryDetector};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+/// v0.3.56 (#571): global flag controlling whether glyph-decode sites
+/// emit `U+FFFD` (REPLACEMENT CHARACTER) into `extract_text` /
+/// `extract_words` / `extract_spans` output. v0.3.54 default behaviour
+/// is to silently drop `U+FFFD` chars — preserving that here for
+/// back-compat. Setting `true` makes the high-level accessors
+/// consistent with `extract_chars` (which always preserves FFFD) so
+/// callers can detect unmapped-glyph pages without diffing the two
+/// accessors' outputs.
+///
+/// `Ordering::Relaxed` is sufficient because every read is gated on
+/// `Acquire`-style writes from the setter, and the flag is a single
+/// boolean with no other state dependencies.
+static PRESERVE_UNMAPPED_GLYPHS: AtomicBool = AtomicBool::new(false);
+
+/// Set the global U+FFFD preservation flag. When `true`, the high-level
+/// text accessors (`extract_text` / `extract_words` / `extract_spans`)
+/// emit U+FFFD chars for glyphs that map to the REPLACEMENT
+/// CHARACTER, matching the behaviour of `extract_chars` which has
+/// always preserved them. Returns the previous flag value.
+///
+/// Closes #571's filter-divergence root cause: the v0.3.54 behaviour
+/// silently filters FFFD at the high-level accessors while keeping
+/// them in `extract_chars`, producing empty `extract_text` output on
+/// pages whose visible glyphs all map to FFFD (e.g. the MSAM10 math-
+/// symbol font in mozilla/pdf.js `bug1068432.pdf`).
+///
+/// The default is `false` to preserve v0.3.54 fixture output
+/// byte-identical for the no-FFFD-glyph case; downstream callers
+/// (including the new `ExtractionSignal::UnmappedGlyphs` accessor)
+/// opt in by setting `true`.
+///
+/// See `docs/releases/plans/v0.3.56/cluster-silent-data-loss.md` §4.4.
+pub fn set_preserve_unmapped_glyphs(preserve: bool) -> bool {
+    PRESERVE_UNMAPPED_GLYPHS.swap(preserve, Ordering::SeqCst)
+}
+
+/// True if the high-level accessors should preserve `U+FFFD` glyphs.
+#[inline]
+pub(crate) fn preserve_unmapped_glyphs() -> bool {
+    PRESERVE_UNMAPPED_GLYPHS.load(Ordering::Relaxed)
+}
 
 /// Source of a space decision in the unified pipeline.
 ///
@@ -879,6 +922,40 @@ fn corrected_space_gap(
     }
 }
 
+/// v0.3.56 (#560 root-cause): detect monospace fonts by name.
+/// Monospace fonts emit one show-text op per glyph with one-em
+/// advance positioning, which triggers the proportional-font space-
+/// emission heuristic to fire inside ordinary tokens. Bumping the
+/// threshold for these fonts closes the `function add (a , b )` repro
+/// from `code_and_formula.pdf` (issue #560). Used by
+/// [`should_insert_space`] to switch its `word_margin_ratio` to
+/// `1.2` for monospace.
+///
+/// Names matched case-insensitively. Covers the major monospace
+/// families on macOS / Linux / Windows + the pdfTeX-emitted
+/// Computer Modern Typewriter (CMTT*) and Latin Modern Mono
+/// (LMMono*) families that frequently appear in academic PDFs.
+pub(crate) fn is_monospace_font(font_name: &str) -> bool {
+    let lower = font_name.to_lowercase();
+    const MONO_MARKERS: &[&str] = &[
+        "mono",
+        "courier",
+        "consolas",
+        "menlo",
+        "fira code",
+        "fira mono",
+        "source code",
+        "inconsolata",
+        "cmtt",   // pdfTeX Computer Modern Typewriter
+        "lmmono", // Latin Modern Mono (pdfTeX)
+        "letter gothic",
+        "ocr ", // OCR-A, OCR-B
+        "fixedsys",
+        "terminal",
+    ];
+    MONO_MARKERS.iter().any(|m| lower.contains(m))
+}
+
 fn should_insert_space(
     preceding_text: &str,
     following_text: &str,
@@ -1031,15 +1108,26 @@ fn should_insert_space(
         // Font found: use space glyph width for calculation
         let space_width_units = font_info.get_space_glyph_width(); // in 1000ths of em
         let space_width_pt = (space_width_units / 1000.0) * font_size;
-        let word_margin_ratio = 0.5; // 50% of space width
+        // v0.3.56 (#560 root-cause): monospace fonts emit one show-text
+        // op per glyph at one-em-advance positioning, so the gap
+        // between glyphs in normal tokens briefly exceeds the
+        // proportional-font threshold. Use a 1.2× ratio for monospace
+        // so spurious spaces around punctuation in code listings
+        // (`function add (a , b )` → `function add(a, b)`) don't fire.
+        let word_margin_ratio = if is_monospace_font(font_name) {
+            1.2
+        } else {
+            0.5 // 50% of space width (proportional default)
+        };
         let threshold = space_width_pt * word_margin_ratio;
 
         log::debug!(
-            "Font-aware spacing for '{}' @ {:.1}pt: space_width={:.1}pt, threshold={:.1}pt",
+            "Font-aware spacing for '{}' @ {:.1}pt: space_width={:.1}pt, threshold={:.1}pt (mono={})",
             font_name,
             font_size,
             space_width_pt,
-            threshold
+            threshold,
+            is_monospace_font(font_name),
         );
 
         threshold
@@ -1597,7 +1685,7 @@ impl TjBuffer {
                     } else {
                         // Rare: multi-char mapping or unmapped byte
                         if let Some(s) = font.char_to_unicode(byte as u32) {
-                            if s != "\u{FFFD}" {
+                            if s != "\u{FFFD}" || preserve_unmapped_glyphs() {
                                 for ch in s.chars() {
                                     if ch >= '\x20' || ch == '\t' || ch == '\n' || ch == '\r' {
                                         self.unicode.push(ch);
@@ -1606,7 +1694,7 @@ impl TjBuffer {
                             }
                         } else {
                             let fb = fallback_char_to_unicode(byte as u32);
-                            if fb != "\u{FFFD}" {
+                            if fb != "\u{FFFD}" || preserve_unmapped_glyphs() {
                                 for ch in fb.chars() {
                                     if ch >= '\x20' || ch == '\t' || ch == '\n' || ch == '\r' {
                                         self.unicode.push(ch);
@@ -1909,7 +1997,7 @@ fn decode_text_to_unicode(bytes: &[u8], font: Option<&FontInfo>) -> String {
                     let char_str = font
                         .char_to_unicode(byte as u32)
                         .unwrap_or_else(|| fallback_char_to_unicode(byte as u32));
-                    if char_str != "\u{FFFD}" {
+                    if char_str != "\u{FFFD}" || preserve_unmapped_glyphs() {
                         result.push_str(&char_str);
                     }
                 }
@@ -1921,7 +2009,7 @@ fn decode_text_to_unicode(bytes: &[u8], font: Option<&FontInfo>) -> String {
                     .char_to_unicode(char_code as u32)
                     .unwrap_or_else(|| fallback_char_to_unicode(char_code as u32));
 
-                if char_str != "\u{FFFD}" {
+                if char_str != "\u{FFFD}" || preserve_unmapped_glyphs() {
                     result.push_str(&char_str);
                 }
             }
@@ -6256,7 +6344,7 @@ impl<'doc> TextExtractor<'doc> {
                     } else {
                         // Rare: multi-char mapping or unmapped byte
                         if let Some(s) = font.char_to_unicode(byte as u32) {
-                            if s != "\u{FFFD}" {
+                            if s != "\u{FFFD}" || preserve_unmapped_glyphs() {
                                 for ch in s.chars() {
                                     if ch >= '\x20' || ch == '\t' || ch == '\n' || ch == '\r' {
                                         buffer.unicode.push(ch);
@@ -6265,7 +6353,7 @@ impl<'doc> TextExtractor<'doc> {
                             }
                         } else {
                             let fb = fallback_char_to_unicode(byte as u32);
-                            if fb != "\u{FFFD}" {
+                            if fb != "\u{FFFD}" || preserve_unmapped_glyphs() {
                                 for ch in fb.chars() {
                                     if ch >= '\x20' || ch == '\t' || ch == '\n' || ch == '\r' {
                                         buffer.unicode.push(ch);
@@ -6436,7 +6524,7 @@ impl<'doc> TextExtractor<'doc> {
                     if c != '\0' {
                         buffer.unicode.push(c);
                     } else if let Some(s) = font.char_to_unicode(byte as u32) {
-                        if s != "\u{FFFD}" {
+                        if s != "\u{FFFD}" || preserve_unmapped_glyphs() {
                             for ch in s.chars() {
                                 if ch >= '\x20' || ch == '\t' || ch == '\n' || ch == '\r' {
                                     buffer.unicode.push(ch);
@@ -6445,7 +6533,7 @@ impl<'doc> TextExtractor<'doc> {
                         }
                     } else {
                         let fb = fallback_char_to_unicode(byte as u32);
-                        if fb != "\u{FFFD}" {
+                        if fb != "\u{FFFD}" || preserve_unmapped_glyphs() {
                             for ch in fb.chars() {
                                 if ch >= '\x20' || ch == '\t' || ch == '\n' || ch == '\r' {
                                     buffer.unicode.push(ch);

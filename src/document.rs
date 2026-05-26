@@ -436,6 +436,14 @@ pub struct PdfDocument {
     /// Populated when silent fallbacks occur (font not found, CMap absent, etc.).
     /// Retrieve with [`PdfDocument::warnings`]; drain with [`PdfDocument::take_warnings`].
     accumulated_warnings: Mutex<Vec<String>>,
+    /// v0.3.56 (#558 half-2): structured warnings accumulator. Each
+    /// internal warning site that previously only called `log::warn!`
+    /// can additionally push a typed [`crate::extractors::warnings::Warning`]
+    /// here, letting callers retrieve diagnostics as structured data
+    /// (via [`PdfDocument::flatten_warnings`]) instead of parsing
+    /// stderr text. The existing String-list `accumulated_warnings`
+    /// stays for back-compat.
+    structured_warnings: Mutex<Vec<crate::extractors::warnings::Warning>>,
 }
 
 // Compile-time verification that PdfDocument is Send + Sync.
@@ -810,6 +818,7 @@ impl PdfDocument {
             page_content_cache: Mutex::new(BoundedEntryCache::new(64)),
             running_artifact_signatures: Mutex::new(None),
             accumulated_warnings: Mutex::new(Vec::new()),
+            structured_warnings: Mutex::new(Vec::new()),
         };
 
         // Initialize encryption immediately
@@ -8259,6 +8268,48 @@ impl PdfDocument {
     /// Record an extraction warning. Called internally when a silent fallback occurs.
     pub(crate) fn push_warning(&self, msg: impl Into<String>) {
         self.accumulated_warnings.lock_or_recover().push(msg.into());
+    }
+
+    /// v0.3.56 (#558 half-2): return the document's accumulated
+    /// structured warnings as a snapshot. Each entry carries the
+    /// warning's [`WarningCategory`](crate::extractors::warnings::WarningCategory),
+    /// page (if applicable), human-readable message, and PDF spec
+    /// section reference (when applicable).
+    ///
+    /// Unlike [`Self::warnings`] which returns plain strings, this
+    /// accessor returns structured records callers can filter,
+    /// route to observability dashboards, or assert on in tests
+    /// without parsing message text. Companion to the v0.3.56
+    /// `pyo3_log` per-target default-level downgrade — together they
+    /// give Python users a clean default-stderr experience plus an
+    /// opt-in structured surface.
+    ///
+    /// Returns the warnings in insertion order. The vector is
+    /// non-destructive: subsequent calls return the same entries
+    /// plus any new ones pushed since the last call. Use
+    /// [`Self::take_structured_warnings`] to drain.
+    ///
+    /// See `docs/releases/plans/v0.3.56/cluster-diagnostics-noise.md`.
+    pub fn flatten_warnings(&self) -> Vec<crate::extractors::warnings::Warning> {
+        self.structured_warnings.lock_or_recover().clone()
+    }
+
+    /// Drain and return all accumulated structured warnings.
+    /// Companion to [`Self::flatten_warnings`].
+    pub fn take_structured_warnings(&self) -> Vec<crate::extractors::warnings::Warning> {
+        std::mem::take(&mut *self.structured_warnings.lock_or_recover())
+    }
+
+    /// Record a structured warning. Hook called from migrated
+    /// `log::warn!` sites that also want to surface the warning as
+    /// structured data. The seven highest-frequency sites listed in
+    /// `cluster-diagnostics-noise.md` §4 are the migration targets.
+    ///
+    /// Exposed as `pub` so external diagnostic sources (custom
+    /// extractors, FFI hooks) can also push warnings into the same
+    /// sink that [`Self::flatten_warnings`] surfaces.
+    pub fn push_structured_warning(&self, warning: crate::extractors::warnings::Warning) {
+        self.structured_warnings.lock_or_recover().push(warning);
     }
 
     /// Heuristic: does this page have two or more vertical text columns?

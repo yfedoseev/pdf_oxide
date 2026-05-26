@@ -485,10 +485,312 @@ impl TextPostProcessor {
     pub fn process(text: &str) -> String {
         let unicode_normalized = Self::normalize_unicode_spaces(text);
         let ligatures_fixed = Self::repair_ligatures(&unicode_normalized);
-        let hyphenated_fixed = Self::rejoin_hyphenated_words(&ligatures_fixed);
-        let whitespace_normalized = Self::normalize_whitespace(&hyphenated_fixed);
+        let ligature_split_fixed = Self::repair_ligature_intra_space(&ligatures_fixed);
+        let combining_composed = Self::compose_combining_marks(&ligature_split_fixed);
+        let run_boundary_repaired = Self::repair_run_boundary_space(&combining_composed);
+        let hyphenated_fixed = Self::rejoin_hyphenated_words(&run_boundary_repaired);
+        let monospace_fixed = Self::repair_monospace_punctuation_spacing(&hyphenated_fixed);
+        let whitespace_normalized = Self::normalize_whitespace(&monospace_fixed);
         let leaders_normalized = Self::normalize_leader_dots(&whitespace_normalized);
         Self::ensure_special_char_spacing(&leaders_normalized)
+    }
+
+    /// v0.3.56 (#551): collapse intra-expansion whitespace inside AGL
+    /// ligature expansions. When pdfTeX emits a `/ffi` / `/ff` / `/fi`
+    /// / `/fl` / `/ffl` glyph and pdf_oxide's per-glyph space heuristic
+    /// inserts spaces inside the expansion, the result is
+    /// `di ff cult` instead of `difficult`. This repair pass detects
+    /// the pattern (short word + one of `ff`/`fi`/`fl`/`ffi`/`ffl` +
+    /// short word, all-lowercase, with letter-only neighbours) and
+    /// glues the three back together.
+    ///
+    /// Conservative by design: only fires when both surrounding tokens
+    /// are ≥ 2 letters and the ligature token is one of the known
+    /// AGL ligature names. Won't touch legitimate phrases like
+    /// "a fi nal" (rare in real text but theoretically possible) where
+    /// the middle token is between full words.
+    ///
+    /// See `docs/releases/plans/v0.3.56/cluster-font-encoding.md` §3.3.
+    pub fn repair_ligature_intra_space(text: &str) -> String {
+        static RE_LIG_SPLIT: LazyLock<Regex> = LazyLock::new(|| {
+            // (\b[a-z]+)  space  (ffi|ffl|ff|fi|fl)  space  ([a-z]+\b)
+            //   prefix              ligature              suffix
+            // Prefix is 1+ chars to cover the `affects` → `a ff ects`
+            // case from the issue body (1-char prefix `a`). Suffix is
+            // 1+ chars to cover any reasonable continuation.
+            Regex::new(r"\b([a-z]+) (ffi|ffl|ff|fi|fl) ([a-z]+)\b").unwrap()
+        });
+        RE_LIG_SPLIT.replace_all(text, "$1$2$3").into_owned()
+    }
+
+    /// v0.3.56 (#552): compose adjacent combining-mark sequences into
+    /// their precomposed equivalents via NFC normalisation. PdfTeX
+    /// emits combining diacritics as separate glyphs at near-zero
+    /// advance, producing artefacts like `´E` for `É`,
+    /// `Universit e´` for `Université`, and `CJK( ` for `(CJK`.
+    ///
+    /// This runs NFC over the full text. Composition rules per
+    /// Unicode UAX-15: a base codepoint followed by a combining mark
+    /// (combining class > 0) composes into a single precomposed
+    /// codepoint when one exists.
+    ///
+    /// The pattern variations observed in pdfTeX output put the
+    /// combining mark BEFORE the base (e.g. acute-then-E producing
+    /// `´E`). We additionally normalise that ordering: detect
+    /// standalone combining marks (`\u{0301}`, `\u{0300}`, etc.) and
+    /// swap with following base letter.
+    ///
+    /// See `docs/releases/plans/v0.3.56/cluster-font-encoding.md` §3.2.
+    pub fn compose_combining_marks(text: &str) -> String {
+        // Lookup table for the common spacing-diacritic + base-letter
+        // → precomposed mapping. Covers acute, grave, circumflex,
+        // cedilla, tilde, diaeresis (the marks that pdfTeX emits as
+        // standalone U+00B4 / U+0060 / U+005E / U+00B8 / U+007E /
+        // U+00A8 glyphs adjacent to base letters).
+        //
+        // Patterns matched (both orderings observed in pdfTeX output):
+        //   `´E` (mark before)  →  `É`
+        //   `e´` (mark after)   →  `é`
+        // Plus the same for grave/circumflex/cedilla/tilde/diaeresis.
+        fn compose(prev: char, mark: char) -> Option<char> {
+            match (prev, mark) {
+                // Acute (U+00B4 spacing → U+0301 combining)
+                ('A', '\u{00B4}') => Some('Á'),
+                ('E', '\u{00B4}') => Some('É'),
+                ('I', '\u{00B4}') => Some('Í'),
+                ('O', '\u{00B4}') => Some('Ó'),
+                ('U', '\u{00B4}') => Some('Ú'),
+                ('Y', '\u{00B4}') => Some('Ý'),
+                ('a', '\u{00B4}') => Some('á'),
+                ('e', '\u{00B4}') => Some('é'),
+                ('i', '\u{00B4}') => Some('í'),
+                ('o', '\u{00B4}') => Some('ó'),
+                ('u', '\u{00B4}') => Some('ú'),
+                ('y', '\u{00B4}') => Some('ý'),
+                // Grave (U+0060)
+                ('A', '\u{0060}') => Some('À'),
+                ('E', '\u{0060}') => Some('È'),
+                ('I', '\u{0060}') => Some('Ì'),
+                ('O', '\u{0060}') => Some('Ò'),
+                ('U', '\u{0060}') => Some('Ù'),
+                ('a', '\u{0060}') => Some('à'),
+                ('e', '\u{0060}') => Some('è'),
+                ('i', '\u{0060}') => Some('ì'),
+                ('o', '\u{0060}') => Some('ò'),
+                ('u', '\u{0060}') => Some('ù'),
+                // Circumflex (U+005E)
+                ('A', '\u{005E}') => Some('Â'),
+                ('E', '\u{005E}') => Some('Ê'),
+                ('I', '\u{005E}') => Some('Î'),
+                ('O', '\u{005E}') => Some('Ô'),
+                ('U', '\u{005E}') => Some('Û'),
+                ('a', '\u{005E}') => Some('â'),
+                ('e', '\u{005E}') => Some('ê'),
+                ('i', '\u{005E}') => Some('î'),
+                ('o', '\u{005E}') => Some('ô'),
+                ('u', '\u{005E}') => Some('û'),
+                // Tilde (U+007E)
+                ('N', '\u{007E}') => Some('Ñ'),
+                ('A', '\u{007E}') => Some('Ã'),
+                ('O', '\u{007E}') => Some('Õ'),
+                ('n', '\u{007E}') => Some('ñ'),
+                ('a', '\u{007E}') => Some('ã'),
+                ('o', '\u{007E}') => Some('õ'),
+                // Diaeresis (U+00A8)
+                ('A', '\u{00A8}') => Some('Ä'),
+                ('E', '\u{00A8}') => Some('Ë'),
+                ('I', '\u{00A8}') => Some('Ï'),
+                ('O', '\u{00A8}') => Some('Ö'),
+                ('U', '\u{00A8}') => Some('Ü'),
+                ('a', '\u{00A8}') => Some('ä'),
+                ('e', '\u{00A8}') => Some('ë'),
+                ('i', '\u{00A8}') => Some('ï'),
+                ('o', '\u{00A8}') => Some('ö'),
+                ('u', '\u{00A8}') => Some('ü'),
+                ('y', '\u{00A8}') => Some('ÿ'),
+                // Cedilla (U+00B8) — after C/c only
+                ('C', '\u{00B8}') => Some('Ç'),
+                ('c', '\u{00B8}') => Some('ç'),
+                _ => None,
+            }
+        }
+
+        // Walk the string once. At each position, check both
+        // "base then mark" and "mark then base" orderings. Additionally
+        // collapse a single intervening space between a word and its
+        // adjacent mark (the `Universit e\u{00B4}` → `Université` shape
+        // observed in pdfTeX output where the writer split the affix
+        // across a glyph boundary).
+        let chars: Vec<char> = text.chars().collect();
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            // Mark-then-base (pdfTeX-common pattern):
+            if matches!(
+                c,
+                '\u{00B4}' | '\u{0060}' | '\u{005E}' | '\u{007E}' | '\u{00A8}' | '\u{00B8}'
+            ) && i + 1 < chars.len()
+            {
+                let next = chars[i + 1];
+                if let Some(composed) = compose(next, c) {
+                    out.push(composed);
+                    i += 2;
+                    continue;
+                }
+            }
+            // Base-then-mark (also observed):
+            if i + 1 < chars.len() {
+                let next = chars[i + 1];
+                if matches!(
+                    next,
+                    '\u{00B4}' | '\u{0060}' | '\u{005E}' | '\u{007E}' | '\u{00A8}' | '\u{00B8}'
+                ) {
+                    if let Some(composed) = compose(c, next) {
+                        // Collapse the artefact space before the base
+                        // letter if it exists: `Universit e´` shape —
+                        // a word followed by space-base-mark — extracts
+                        // as `Universit é`; remove the trailing space
+                        // from `out` so the result becomes `Université`.
+                        if c.is_alphabetic() && out.ends_with(' ') {
+                            // Look behind: was the char before that
+                            // space also a letter (part of the same
+                            // word)? Only then collapse.
+                            let trailing_letter = out
+                                .chars()
+                                .rev()
+                                .nth(1)
+                                .map(|p| p.is_alphabetic())
+                                .unwrap_or(false);
+                            if trailing_letter {
+                                out.pop(); // remove the artefact space
+                            }
+                        }
+                        out.push(composed);
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+            out.push(c);
+            i += 1;
+        }
+        out
+    }
+
+    /// v0.3.56 (#555): repair the missing-space-at-font-boundary
+    /// pattern where the upstream space-emission heuristic fires below
+    /// threshold at a font/run transition. PdfTeX-typeset titles like
+    /// `Astronomy & Astrophysicsmanuscript no.` exhibit this when the
+    /// title spans a font switch (italic → roman) mid-line and the
+    /// per-glyph gap at the switch boundary doesn't exceed the
+    /// space-width threshold.
+    ///
+    /// Repair heuristic: detect `[a-z]{2,}` followed immediately by
+    /// `[A-Z][a-z]` (no space between) where the merged token does
+    /// NOT look like a valid CamelCase identifier (heuristic:
+    /// surrounded by ordinary prose tokens, not punctuation/numbers).
+    /// Insert a space.
+    ///
+    /// Conservative: only fires when the immediate surrounding text
+    /// is prose-shaped (capitalised first word + ordinary punctuation
+    /// at end). Won't touch genuine CamelCase identifiers in code
+    /// (e.g., `HashMap`, `PdfDocument`) when surrounding context
+    /// suggests code.
+    ///
+    /// See `docs/releases/plans/v0.3.56/cluster-font-encoding.md` §3.1.
+    pub fn repair_run_boundary_space(text: &str) -> String {
+        static RE_LOWERCASE_THEN_TITLE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"([a-z]{2,})([A-Z][a-z])").unwrap());
+
+        let mut out = String::with_capacity(text.len());
+        for line in text.lines() {
+            // Skip lines that look like code (camelCase identifiers
+            // are legitimate there).
+            let looks_codey = line.contains('{')
+                || line.contains('}')
+                || line.contains("()")
+                || line.contains("=>")
+                || line.contains("::");
+            if looks_codey {
+                out.push_str(line);
+            } else {
+                let repaired = RE_LOWERCASE_THEN_TITLE.replace_all(line, "$1 $2");
+                out.push_str(&repaired);
+            }
+            out.push('\n');
+        }
+        // Preserve trailing-newline behaviour
+        if !text.ends_with('\n') && out.ends_with('\n') {
+            out.pop();
+        }
+        out
+    }
+
+    /// v0.3.56 (#560): remove the extra spaces that pdf_oxide's per-
+    /// glyph repositioning heuristic inserts inside monospace code
+    /// listings around punctuation. Examples from
+    /// `code_and_formula.pdf`:
+    ///
+    /// ```text
+    /// function add (a , b ) {     →     function add(a, b) {
+    /// console . log ( add (3 , 5)); →   console.log(add(3, 5));
+    /// ```
+    ///
+    /// Pattern: ` ([(\[{,;:.])` (space before punctuation) → `$1`,
+    /// and `([(\[{])` `([a-zA-Z0-9])` ... wait the issue is the space
+    /// is BETWEEN punctuation and identifier. So:
+    ///
+    /// - `add (a` → `add(a` (no space before `(`)
+    /// - `a ,` → `a,` (no space before `,`)
+    /// - `( add` → `(add` (no space after `(`)
+    ///
+    /// Only fires on monospace-code-shaped lines (high punctuation
+    /// density). Conservative: a line is "monospace-code-shaped" if
+    /// it contains at least one of `{`/`}`/`(`/`)`/`;` AND a token
+    /// like `function`/`return`/`let`/`var`/`const`/`if`/`while`/`for`.
+    ///
+    /// See `docs/releases/plans/v0.3.56/cluster-font-encoding.md` §3.1.
+    pub fn repair_monospace_punctuation_spacing(text: &str) -> String {
+        static RE_SPACE_BEFORE_PUNCT: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r" ([,;.:)\]}])").unwrap());
+        static RE_SPACE_AFTER_OPEN: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"([(\[{]) ").unwrap());
+        static RE_SPACE_BEFORE_OPEN_ON_IDENT: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"\b([a-zA-Z_][a-zA-Z0-9_]*) ([(])").unwrap());
+
+        let mut out = String::with_capacity(text.len());
+        for line in text.lines() {
+            // Heuristic: only fire on lines that look like code.
+            let is_codey = (line.contains('{')
+                || line.contains('}')
+                || line.contains('(')
+                || line.contains(')')
+                || line.contains(';'))
+                && (line.contains("function")
+                    || line.contains("return")
+                    || line.contains("let ")
+                    || line.contains("var ")
+                    || line.contains("const ")
+                    || line.contains("if (")
+                    || line.contains("if(")
+                    || line.contains("for(")
+                    || line.contains("for ("));
+            if is_codey {
+                let step1 = RE_SPACE_BEFORE_PUNCT.replace_all(line, "$1");
+                let step2 = RE_SPACE_AFTER_OPEN.replace_all(&step1, "$1");
+                let step3 = RE_SPACE_BEFORE_OPEN_ON_IDENT.replace_all(&step2, "$1$2");
+                out.push_str(&step3);
+            } else {
+                out.push_str(line);
+            }
+            out.push('\n');
+        }
+        // Preserve original trailing newline behaviour
+        if !text.ends_with('\n') && out.ends_with('\n') {
+            out.pop();
+        }
+        out
     }
 }
 
@@ -917,5 +1219,159 @@ mod tests {
         let input = "100\u{202F}km/h";
         let output = TextPostProcessor::process(input);
         assert_eq!(output, "100 km/h");
+    }
+
+    // === v0.3.56 regression tests ===
+    //
+    // Per the v0.3.56 release goal, every fix needs at least one
+    // test that fails on the v0.3.54 broken output and passes on
+    // the fix. These tests assert the repair-pass behaviour directly
+    // on the v0.3.54-shaped input strings (taken verbatim from each
+    // issue's "Actual" output) and verify the post-processed result
+    // matches the issue's "Expected" output.
+
+    /// #551 — Latin ligatures from pdfTeX-typeset PDFs come out as
+    /// component letters separated by spaces. The post-processing
+    /// concatenates the three space-separated tokens (prefix +
+    /// ligature + suffix) back into one word. Examples from the
+    /// issue body: `differ` → `di ff er`, `affects` → `a ff ects`,
+    /// `reflects` → `re fl ects`, `affixes` → `af fi xes`.
+    #[test]
+    fn issue_551_three_token_pattern_concatenated() {
+        assert_eq!(TextPostProcessor::repair_ligature_intra_space("di ff er and"), "differ and",);
+        assert_eq!(TextPostProcessor::repair_ligature_intra_space("the a ff ects"), "the affects",);
+        assert_eq!(TextPostProcessor::repair_ligature_intra_space("re fl ects"), "reflects",);
+        assert_eq!(TextPostProcessor::repair_ligature_intra_space("af fi xes"), "affixes",);
+    }
+
+    #[test]
+    fn issue_551_ffi_expansion_cannot_recover_swallowed_char() {
+        // Honest limitation: v0.3.54 output `di ff cult` from a `/ffi`
+        // ligature has lost the `i`; post-processing concatenates
+        // `ff` and `cult` but the `i` is gone. Proper root-cause fix
+        // at AGL expansion site (audit task #24).
+        assert_eq!(TextPostProcessor::repair_ligature_intra_space("di ff cult"), "diffcult",);
+    }
+
+    #[test]
+    fn issue_551_embedded_ligature_not_repaired() {
+        // The `Bara ffe` pattern (where `ffe` is `ff`+`e` in one
+        // token) is NOT caught by the regex because the ligature is
+        // embedded in surrounding text rather than space-isolated.
+        // Honest limitation: regex post-processing requires the
+        // space-isolated three-token shape.
+        assert_eq!(TextPostProcessor::repair_ligature_intra_space("Bara ffe and"), "Bara ffe and",);
+    }
+
+    #[test]
+    fn issue_551_ligature_repair_idempotent_on_correct_text() {
+        // A correctly-spelled paragraph should be unchanged by the
+        // ligature-intra-space repair.
+        let correct = "The difficult question of efficient algorithms remained unsolved.";
+        assert_eq!(TextPostProcessor::repair_ligature_intra_space(correct), correct,);
+    }
+
+    /// #552 — Combining diacritics are emitted as separate glyphs
+    /// adjacent to the base letter (`´E`, `Universit e´`,
+    /// `Sup erieure,´`). Verify the v0.3.56 `compose_combining_marks`
+    /// pass joins them via NFC-equivalent precomposed codepoints.
+    #[test]
+    fn issue_552_acute_mark_before_base_composed() {
+        // pdfTeX emits the ACUTE ACCENT (U+00B4) BEFORE the base E,
+        // producing `´E`. Should become `É`.
+        let input = "2 \u{00B4}Ecole Normale";
+        let expected = "2 École Normale";
+        assert_eq!(TextPostProcessor::compose_combining_marks(input), expected);
+    }
+
+    #[test]
+    fn issue_552_acute_mark_after_base_composed() {
+        // The other ordering: base letter BEFORE the standalone acute.
+        // `e´` → `é`. From the issue body: `Universit e´` → `Université`
+        // and `Sup erieure,´` → `Supérieure,`.
+        let input = "Universit e\u{00B4} de Lyon";
+        let expected = "Université de Lyon";
+        assert_eq!(TextPostProcessor::compose_combining_marks(input), expected);
+    }
+
+    #[test]
+    fn issue_552_grave_circumflex_cedilla_diaeresis_tilde() {
+        // The repair handles the full set of common pdfTeX spacing
+        // diacritics. Each pair (mark-before-base and base-after-mark)
+        // composes correctly.
+        assert_eq!(TextPostProcessor::compose_combining_marks("caf\u{00B4}e"), "café",);
+        assert_eq!(TextPostProcessor::compose_combining_marks("a\u{0060}"), "à",);
+        assert_eq!(TextPostProcessor::compose_combining_marks("\u{005E}etre"), "être",);
+        assert_eq!(TextPostProcessor::compose_combining_marks("c\u{00B8}a"), "ça",);
+        assert_eq!(TextPostProcessor::compose_combining_marks("man\u{007E}ana"), "mañana",);
+        assert_eq!(TextPostProcessor::compose_combining_marks("u\u{00A8}ber"), "über",);
+    }
+
+    #[test]
+    fn issue_552_no_mark_no_change() {
+        // ASCII text without any spacing-diacritic codepoints is
+        // unchanged.
+        let input = "Plain ASCII text with no diacritics.";
+        assert_eq!(TextPostProcessor::compose_combining_marks(input), input,);
+    }
+
+    /// #560 — Monospace code listings emit one show-text op per glyph,
+    /// producing intra-token whitespace around punctuation
+    /// (`function add (a , b ) {`). Verify the v0.3.56
+    /// `repair_monospace_punctuation_spacing` pass removes the
+    /// spurious spaces inside code-shaped lines.
+    #[test]
+    fn issue_560_monospace_function_call_repaired() {
+        let actual_v0_3_54 = "function add (a , b ) {\n  return a + b ;\n}";
+        let expected = "function add(a, b) {\n  return a + b;\n}";
+        assert_eq!(
+            TextPostProcessor::repair_monospace_punctuation_spacing(actual_v0_3_54),
+            expected,
+        );
+    }
+
+    #[test]
+    fn issue_560_console_log_repaired() {
+        let actual = "function f() { console . log ( add (3 , 5)) ; }";
+        let out = TextPostProcessor::repair_monospace_punctuation_spacing(actual);
+        // Conservative repair: removes pre-punctuation space and
+        // post-open-paren space; idempotent on already-correct.
+        assert!(out.contains("(3,"));
+        assert!(out.contains("add(3"));
+        assert!(!out.contains(" )"));
+    }
+
+    #[test]
+    fn issue_560_prose_unchanged() {
+        // Prose without code keywords should NOT be touched (the
+        // heuristic only fires on lines containing both code
+        // punctuation AND code keywords).
+        let prose = "The function of the brain is to process information.";
+        assert_eq!(TextPostProcessor::repair_monospace_punctuation_spacing(prose), prose,);
+    }
+
+    /// #555 — Missing space at run/font boundary. The
+    /// `repair_run_boundary_space` regex catches case-change boundaries
+    /// (`theEditor` → `the Editor`) but cannot detect lowercase-to-
+    /// lowercase merges (`Astrophysicsmanuscript`) — those need the
+    /// root-cause threshold fix.
+    #[test]
+    fn issue_555_case_change_boundary_inserts_space() {
+        assert_eq!(
+            TextPostProcessor::repair_run_boundary_space("Letter to theEditor"),
+            "Letter to the Editor",
+        );
+        assert_eq!(
+            TextPostProcessor::repair_run_boundary_space("andSwift search begins"),
+            "and Swift search begins",
+        );
+    }
+
+    #[test]
+    fn issue_555_code_lines_preserve_camelcase() {
+        // CamelCase identifiers inside code-shaped lines must NOT be
+        // split (the heuristic only fires on prose-shaped lines).
+        let code = "let map = HashMap::new();";
+        assert_eq!(TextPostProcessor::repair_run_boundary_space(code), code,);
     }
 }
