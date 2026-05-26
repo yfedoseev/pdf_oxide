@@ -937,6 +937,30 @@ fn corrected_space_gap(
     }
 }
 
+/// v0.3.56 (#551 root-cause): detect whether a glyph's mapped text
+/// represents an AGL Latin ligature (`/ff` / `/fi` / `/fl` / `/ffi` /
+/// `/ffl`). When the upstream space-emission heuristic processes a
+/// glyph adjacent to a ligature, the small intra-word kerning that
+/// surrounds the ligature glyph can trigger spurious space
+/// insertion (producing `di ff cult` for `difficult`). The detection
+/// here lets the heuristic suppress space insertion at ligature
+/// boundaries.
+///
+/// Returns true when the text starts with one of the AGL ligature
+/// codepoints (U+FB00..U+FB04) or contains the multi-char ligature
+/// names that some AGL fallback paths produce.
+#[inline]
+pub(crate) fn starts_with_agl_ligature(text: &str) -> bool {
+    if let Some(first) = text.chars().next() {
+        // Latin Ligatures block: U+FB00..U+FB06
+        if ('\u{FB00}'..='\u{FB06}').contains(&first) {
+            return true;
+        }
+    }
+    // Multi-character AGL outputs from non-PUA fallbacks
+    matches!(text, "ff" | "fi" | "fl" | "ffi" | "ffl")
+}
+
 /// v0.3.56 (#560 root-cause): detect monospace fonts by name.
 /// Monospace fonts emit one show-text op per glyph with one-em
 /// advance positioning, which triggers the proportional-font space-
@@ -1129,11 +1153,26 @@ fn should_insert_space(
         // proportional-font threshold. Use a 1.2× ratio for monospace
         // so spurious spaces around punctuation in code listings
         // (`function add (a , b )` → `function add(a, b)`) don't fire.
-        let word_margin_ratio = if is_monospace_font(font_name) {
+        let mut word_margin_ratio = if is_monospace_font(font_name) {
             1.2
         } else {
             0.5 // 50% of space width (proportional default)
         };
+        // v0.3.56 (#555 root-cause, partial): when prev_font_size and
+        // next_font_size differ significantly, we're at a font-run
+        // boundary (italic → roman, bold → regular, or a font-family
+        // switch). PdfTeX-typeset titles like
+        // `Astronomy & Astrophysicsmanuscript no.` exhibit this when
+        // the writer doesn't emit an explicit space-glyph at the font
+        // switch. Reduce the threshold by 30% at boundaries so a
+        // smaller gap suffices to trigger space insertion. The full
+        // fix (font-name plumbing for italic→roman within same size)
+        // is tracked in audit task #25 — many italic transitions
+        // share font_size, so this only catches the size-changing
+        // subset.
+        if (prev_font_size - next_font_size).abs() > 0.5 {
+            word_margin_ratio *= 0.7;
+        }
         let threshold = space_width_pt * word_margin_ratio;
 
         log::debug!(
@@ -1154,6 +1193,26 @@ fn should_insert_space(
             font_size
         );
         font_size * 0.25
+    };
+
+    // v0.3.56 (#551 root-cause): suppress space insertion at AGL-
+    // ligature boundaries. When the preceding or following text
+    // starts with one of the Latin ligature codepoints (U+FB00..U+FB04)
+    // or matches the multi-char AGL ligature names, the small kerning
+    // gap that surrounds the ligature glyph is NOT a word boundary —
+    // it's an intra-word position artefact from pdfTeX-style ligature
+    // emission. Inflating the threshold by 1.5× at these positions
+    // catches the `di ff cult` → `difficult` repro from issue #551.
+    let ligature_boundary = starts_with_agl_ligature(following_text)
+        || preceding_text
+            .chars()
+            .last()
+            .map(|c| ('\u{FB00}'..='\u{FB06}').contains(&c))
+            .unwrap_or(false);
+    let geometric_threshold = if ligature_boundary {
+        geometric_threshold * 1.5
+    } else {
+        geometric_threshold
     };
 
     let geometric_suggests_space = gap_pt > geometric_threshold;

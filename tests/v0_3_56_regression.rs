@@ -40,7 +40,7 @@ use pdf_oxide::pipeline::reading_order::{
 /// `__index__`). The v0.3.54 `TypeError` on `range(doc.page_count)`
 /// no longer reproduces.
 #[test]
-fn issue_550_page_count_supports_both_shapes() {
+fn page_count_dual_shape_present_in_pyclass() {
     // The PyO3 PyClass landed in src/python.rs; this test verifies
     // the source carries the fix by inspection (Python-side
     // verification requires running the wheel).
@@ -65,7 +65,7 @@ fn issue_550_page_count_supports_both_shapes() {
 /// actual fix for the symptom (stderr noise under default Python
 /// logger config). Genuine `ERROR`-level events still propagate.
 #[test]
-fn issue_558_python_log_targets_downgraded() {
+fn python_log_targets_downgraded_at_import() {
     let source = include_str!("../python/pdf_oxide/__init__.py");
     assert!(
         source.contains("_setup_default_log_levels"),
@@ -86,7 +86,7 @@ fn issue_558_python_log_targets_downgraded() {
 /// `MAX_OPERATORS = 1_000_000` cap via `AtomicUsize`. All 6 runtime
 /// cap-check sites route through `effective_max_operators()`.
 #[test]
-fn issue_559_set_max_ops_per_stream_round_trips() {
+fn max_ops_per_stream_setter_round_trips() {
     let prev = pdf_oxide::content::parser::set_max_ops_per_stream(Some(2_000_000));
     let returned = pdf_oxide::content::parser::set_max_ops_per_stream(None);
     assert_eq!(returned, Some(2_000_000), "round-trip: setter returns the override we set",);
@@ -94,7 +94,7 @@ fn issue_559_set_max_ops_per_stream_round_trips() {
 }
 
 #[test]
-fn issue_559_truncation_signal_carries_at_op() {
+fn extraction_signal_truncated_carries_at_op() {
     let s = ExtractionSignal::Truncated { at_op: 1_000_000 };
     if let ExtractionSignal::Truncated { at_op } = s {
         assert_eq!(at_op, 1_000_000);
@@ -109,7 +109,7 @@ fn issue_559_truncation_signal_carries_at_op() {
 /// The fix exposes the `/P` flags per PDF spec §7.6.3.2 to callers
 /// who want to enforce them.
 #[test]
-fn issue_562_pdf_permissions_decode_correctly() {
+fn pdf_permissions_decode_p_flag_bits() {
     let mut p: i32 = -1;
     p &= !(1 << 2); // clear print
     p &= !(1 << 4); // clear copy
@@ -122,7 +122,7 @@ fn issue_562_pdf_permissions_decode_correctly() {
 }
 
 #[test]
-fn issue_562_existing_extract_text_gates_on_auth() {
+fn extract_text_gates_on_authentication() {
     let source = include_str!("../src/document.rs");
     assert!(
         source.contains("self.require_authenticated()?;"),
@@ -143,7 +143,7 @@ fn issue_562_existing_extract_text_gates_on_auth() {
 /// content-stream scan. Callers can now distinguish image-only pages
 /// from genuinely-empty pages and route to OCR.
 #[test]
-fn issue_563_has_text_layer_method_exists() {
+fn has_text_layer_predicate_present() {
     let source = include_str!("../src/document.rs");
     assert!(
         source.contains("pub fn has_text_layer"),
@@ -161,7 +161,7 @@ fn issue_563_has_text_layer_method_exists() {
 /// `OcrError::ModelLoadError` that bindings translate to typed
 /// `OcrUnavailable` exceptions.
 #[test]
-fn issue_569_ort_backend_wraps_init_in_catch_unwind() {
+fn ort_backend_wraps_init_in_catch_unwind() {
     let source = include_str!("../src/ocr/backend.rs");
     assert!(
         source.contains("std::panic::catch_unwind"),
@@ -174,7 +174,7 @@ fn issue_569_ort_backend_wraps_init_in_catch_unwind() {
 }
 
 #[test]
-fn issue_569_ocr_unavailable_dylib_missing_typed_reason() {
+fn ocr_unavailable_dylib_missing_kind_str() {
     let reason = OcrUnavailableReason::DylibMissing;
     assert_eq!(reason.kind_str(), "dylib_missing");
 }
@@ -183,7 +183,7 @@ fn issue_569_ocr_unavailable_dylib_missing_typed_reason() {
 /// fields with `/T` even when `/FT` is absent, matching pypdf's
 /// AcroForm traversal. IRS f1040 field count now matches pypdf ±2.
 #[test]
-fn issue_570_acroform_extract_includes_parent_fields() {
+fn acroform_extraction_includes_parent_fields() {
     let source = include_str!("../src/extractors/forms.rs");
     assert!(
         source.contains("v0.3.56 (#570)"),
@@ -200,7 +200,7 @@ fn issue_570_acroform_extract_includes_parent_fields() {
 /// `extract_text_ocr`). The reason variants distinguish the failure
 /// mode for caller diagnostics.
 #[test]
-fn issue_573_ocr_unavailable_all_reason_variants() {
+fn ocr_unavailable_reason_kind_str_complete() {
     for reason in &[
         OcrUnavailableReason::DylibMissing,
         OcrUnavailableReason::FeatureDisabled,
@@ -220,7 +220,7 @@ fn issue_573_ocr_unavailable_all_reason_variants() {
 /// companion always invokes OCR unconditionally (no text-layer peek),
 /// closing the contract gap reported in #574.
 #[test]
-fn issue_574_extract_text_ocr_only_method_exists() {
+fn extract_text_ocr_only_companion_present() {
     let source = include_str!("../src/document.rs");
     assert!(
         source.contains("pub fn extract_text_ocr_only"),
@@ -238,7 +238,7 @@ fn issue_574_extract_text_ocr_only_method_exists() {
 /// `extract_spans` preserve U+FFFD chars, matching `extract_chars`
 /// behaviour. Default is false (back-compat); callers opt in.
 #[test]
-fn issue_571_preserve_unmapped_glyphs_setter_works() {
+fn preserve_unmapped_glyphs_setter_round_trips() {
     use pdf_oxide::extractors::text::set_preserve_unmapped_glyphs;
     let prev = set_preserve_unmapped_glyphs(true);
     // Round-trip: set back to false, verify we get true (our just-set value)
@@ -249,7 +249,7 @@ fn issue_571_preserve_unmapped_glyphs_setter_works() {
 }
 
 #[test]
-fn issue_571_filter_sites_all_gated() {
+fn preserve_unmapped_glyphs_gates_all_filter_sites() {
     let source = include_str!("../src/extractors/text.rs");
     // Verify the gate is applied at every FFFD filter site. Each
     // filter must read the flag; otherwise the issue is only partly
@@ -272,7 +272,7 @@ fn issue_571_filter_sites_all_gated() {
 /// also push into the structured sink (follow-up commit), but the
 /// API surface is in place and callable.
 #[test]
-fn issue_558_flatten_warnings_accessor_exists_on_pdf_document() {
+fn structured_warnings_accessors_present() {
     let source = include_str!("../src/document.rs");
     assert!(
         source.contains("pub fn flatten_warnings"),
@@ -314,14 +314,14 @@ fn issue_558_flatten_warnings_accessor_exists_on_pdf_document() {
 /// AGL expansion site in `src/fonts/character_mapper.rs`. Tracked in
 /// audit task #24.
 #[test]
-fn issue_551_three_token_ligature_concatenated() {
+fn ligature_repair_handles_three_token_split() {
     assert_eq!(TextPostProcessor::repair_ligature_intra_space("di ff er today"), "differ today",);
     assert_eq!(TextPostProcessor::repair_ligature_intra_space("the a ff ects"), "the affects",);
     assert_eq!(TextPostProcessor::repair_ligature_intra_space("re fl ects"), "reflects",);
 }
 
 #[test]
-fn issue_551_ffi_swallowed_char_not_recoverable() {
+fn ligature_repair_documents_ffi_limitation() {
     // Honest: `/ffi` expansion in v0.3.54 produces `ff` + missing
     // `i` + `cult`. Post-processing can collapse the visible `ff`
     // and `cult` tokens but the `i` is gone.
@@ -341,7 +341,7 @@ fn issue_551_ffi_swallowed_char_not_recoverable() {
 /// to run NFC at the glyph-decode stage instead of at the final
 /// text-assembly stage.
 #[test]
-fn issue_552_combining_diacritics_composed() {
+fn combining_diacritics_compose_to_precomposed() {
     assert_eq!(
         TextPostProcessor::compose_combining_marks("2 \u{00B4}Ecole Normale"),
         "2 École Normale",
@@ -366,7 +366,7 @@ fn issue_552_combining_diacritics_composed() {
 /// `prev_font.space_width` and `next_font.space_width`. Tracked in
 /// audit task #25.
 #[test]
-fn issue_555_case_change_boundary_repaired() {
+fn run_boundary_repair_inserts_space_at_case_change() {
     // Case-change boundary IS caught by the regex:
     let out = TextPostProcessor::repair_run_boundary_space("Letter to theEditor today");
     assert!(out.contains("the Editor"), "got: {}", out);
@@ -375,7 +375,7 @@ fn issue_555_case_change_boundary_repaired() {
 }
 
 #[test]
-fn issue_555_lowercase_to_lowercase_merge_not_detected() {
+fn run_boundary_repair_documents_lowercase_limitation() {
     // Acknowledged limitation: the v0.3.54 actual output
     // `Astrophysicsmanuscript` has no case-change boundary, so the
     // post-processing heuristic cannot detect the merge. The fix
@@ -391,7 +391,7 @@ fn issue_555_lowercase_to_lowercase_merge_not_detected() {
 }
 
 #[test]
-fn issue_555_camelcase_in_code_preserved() {
+fn run_boundary_repair_skips_code_camelcase() {
     // Heuristic should not split CamelCase in code-shaped lines.
     let code = "let map = HashMap::new();";
     assert_eq!(TextPostProcessor::repair_run_boundary_space(code), code,);
@@ -405,14 +405,14 @@ fn issue_555_camelcase_in_code_preserved() {
 /// `should_insert_space` to account for the per-glyph em-width
 /// repositioning that monospace listings use.
 #[test]
-fn issue_560_monospace_code_spaces_repaired() {
+fn monospace_code_punctuation_spacing_repaired() {
     let actual = "function add (a , b ) {\n  return a + b ;\n}";
     let expected = "function add(a, b) {\n  return a + b;\n}";
     assert_eq!(TextPostProcessor::repair_monospace_punctuation_spacing(actual), expected,);
 }
 
 #[test]
-fn issue_560_prose_unchanged_by_monospace_repair() {
+fn monospace_repair_does_not_touch_prose() {
     let prose = "The function of the brain is to process information.";
     assert_eq!(TextPostProcessor::repair_monospace_punctuation_spacing(prose), prose,);
 }
@@ -430,7 +430,7 @@ fn issue_560_prose_unchanged_by_monospace_repair() {
 // The PR description explicitly labels these as foundation-only.
 
 #[test]
-fn foundation_extraction_signal_variants_construct() {
+fn extraction_signal_variants_construct() {
     // Just verify every variant constructs and round-trips through
     // is_ok / should_ocr. This is the foundation for the deferred
     // upstream fixes.
@@ -446,7 +446,7 @@ fn foundation_extraction_signal_variants_construct() {
 }
 
 #[test]
-fn foundation_warning_sink_thread_safe() {
+fn warning_sink_thread_safe_round_trip() {
     let sink = WarningSink::new();
     sink.push(Warning {
         category: WarningCategory::SpecViolation,
@@ -458,7 +458,7 @@ fn foundation_warning_sink_thread_safe() {
 }
 
 #[test]
-fn foundation_pdf_permissions_round_trip() {
+fn pdf_permissions_round_trip() {
     let p = PdfPermissions::all_allowed();
     assert!(p.print_low_res);
     assert!(p.copy);
@@ -480,7 +480,7 @@ fn foundation_pdf_permissions_round_trip() {
 /// 14A 8pt-body interleave shape (single-Y glyph cluster that the
 /// downstream assembler would split into two output rows).
 #[test]
-fn issue_568_dense_single_line_detector_fires_on_sec_proxy_shape() {
+fn dense_single_line_detector_fires_on_bimodal_x() {
     // 12 glyphs all at y=584.39 (the exact value from #568's repro
     // on Visa DEF 14A page 3); x clusters into two bands [100,125]
     // and [170,195] with a 45pt gap — bimodal X distribution.
@@ -513,7 +513,7 @@ fn issue_568_dense_single_line_detector_fires_on_sec_proxy_shape() {
 /// #561 — SubSuperBaselineReattach detector fires on chemical-
 /// formula subscript / superscript displacement.
 #[test]
-fn issue_561_sub_super_detector_fires_on_chemistry_shape() {
+fn sub_super_detector_fires_on_baseline_offset() {
     // Baseline glyphs at y=100, plus one subscript at y=104 (40% of
     // 10pt font size displacement — within the (0.2..0.8)×fs range).
     let glyphs = vec![
@@ -561,7 +561,7 @@ fn issue_561_sub_super_detector_fires_on_chemistry_shape() {
 /// justified columns where per-glyph gaps exceed proportional-font
 /// thresholds.
 #[test]
-fn issue_565_narrow_tracked_detector_fires_on_stretched_column() {
+fn narrow_tracked_detector_fires_on_stretched_spacing() {
     // 10 glyphs at 10pt with ~3pt gaps (stretched justification).
     // Expected intra-word gap @ 10pt is ~0.8pt; 3pt is 3.75× that.
     let mut glyphs = Vec::new();
@@ -582,7 +582,7 @@ fn issue_565_narrow_tracked_detector_fires_on_stretched_column() {
 /// tag layout (≥3 rows with short-token-ending-in-`.` at consistent
 /// left X).
 #[test]
-fn issue_576_dramatic_script_detector_fires_on_speaker_tags() {
+fn dramatic_script_detector_fires_on_speaker_tags() {
     let glyphs = vec![
         DetectorGlyph {
             x: 50.0,
@@ -628,7 +628,7 @@ fn issue_576_dramatic_script_detector_fires_on_speaker_tags() {
 /// detector fires. The XY-cut block partitioning continues to
 /// operate as the column-detection layer.
 #[test]
-fn issue_549_default_layout_falls_through_to_default_class() {
+fn default_layout_falls_through_to_default_class() {
     // Two glyphs at the same baseline — too few to trigger any
     // specific detector.
     let glyphs = vec![
@@ -661,7 +661,7 @@ fn issue_549_default_layout_falls_through_to_default_class() {
 /// via `TextExtractionConfig::with_profile(TJ_HEAVY)`. This is
 /// additive — no existing fixture's output changes.
 #[test]
-fn issue_564_tj_heavy_profile_exists() {
+fn tj_heavy_extraction_profile_available() {
     use pdf_oxide::config::ExtractionProfile;
     let profile = ExtractionProfile::TJ_HEAVY;
     assert_eq!(
@@ -684,7 +684,7 @@ fn issue_564_tj_heavy_profile_exists() {
 /// Unicode codepoints. This handles the common case where Persian
 /// fonts use sequential Arabic-block CIDs.
 #[test]
-fn issue_566_persian_arabic_block_cid_mapping_works() {
+fn arabic_block_cid_identity_lookup() {
     use pdf_oxide::fonts::cid_mappings::lookup_adobe_arabic;
     // Alef (ا) — U+0627
     assert_eq!(lookup_adobe_arabic(0x0627), Some(0x0627));
@@ -704,7 +704,7 @@ fn issue_566_persian_arabic_block_cid_mapping_works() {
 /// Persian/Farsi PDFs from older XeTeX/pdfTeX writers). v0.3.54
 /// rejected this with "DescendantFonts[0] is not a reference".
 #[test]
-fn issue_566_descendant_fonts_inline_dict_accepted() {
+fn descendant_fonts_inline_dict_accepted() {
     let source = include_str!("../src/fonts/font_dict.rs");
     assert!(
         source.contains("v0.3.56 (#566 root-cause, partial)"),
@@ -713,6 +713,47 @@ fn issue_566_descendant_fonts_inline_dict_accepted() {
     assert!(
         source.contains("Inline-dict path"),
         "the fix must explicitly handle the inline-dict case",
+    );
+}
+
+/// #551 — ROOT-CAUSE FIX at `should_insert_space`. The
+/// `starts_with_agl_ligature` helper detects AGL ligature codepoints
+/// (U+FB00-U+FB06) and multi-char ligature names. The space-emission
+/// heuristic inflates its threshold 1.5× at ligature boundaries,
+/// suppressing the spurious space insertion that produced
+/// `di ff cult` for `difficult`.
+#[test]
+fn agl_ligature_codepoint_detection_present() {
+    let source = include_str!("../src/extractors/text.rs");
+    assert!(
+        source.contains("pub(crate) fn starts_with_agl_ligature"),
+        "starts_with_agl_ligature helper must be defined",
+    );
+    assert!(
+        source.contains("v0.3.56 (#551 root-cause)"),
+        "the ligature-boundary suppression must reference #551",
+    );
+    assert!(
+        source.contains("U+FB00..U+FB06"),
+        "the helper must cover the full Latin Ligatures block",
+    );
+}
+
+/// #555 — ROOT-CAUSE FIX (partial) at `should_insert_space`. When
+/// the font size changes across a run boundary (>0.5pt delta), the
+/// word_margin_ratio is reduced 30% so smaller gaps trigger space
+/// insertion. Same-size italic→roman transitions still need full
+/// font-name plumbing.
+#[test]
+fn font_size_boundary_lowers_space_threshold() {
+    let source = include_str!("../src/extractors/text.rs");
+    assert!(
+        source.contains("v0.3.56 (#555 root-cause, partial)"),
+        "size-boundary threshold reduction must be documented as a #555 fix",
+    );
+    assert!(
+        source.contains("word_margin_ratio *= 0.7"),
+        "the size-boundary detector must reduce the threshold by 30%",
     );
 }
 
@@ -730,7 +771,7 @@ fn issue_566_descendant_fonts_inline_dict_accepted() {
 /// real PDF that has text. `simple.pdf` is a single-page PDF with
 /// `"Hello World"`-class content; it must report `true`.
 #[test]
-fn issue_563_behaviour_has_text_layer_on_simple_pdf() {
+fn has_text_layer_returns_true_for_text_pdf() {
     let path = "tests/fixtures/1008.3918v2.pdf";
     if !std::path::Path::new(path).exists() {
         return; // fixture not available; skip
@@ -748,7 +789,7 @@ fn issue_563_behaviour_has_text_layer_on_simple_pdf() {
 /// that `extract_text` proceeds in both cases (the override is read
 /// at parse time).
 #[test]
-fn issue_559_behaviour_max_ops_setter_affects_parse() {
+fn max_ops_setter_affects_parse_runtime() {
     let path = "tests/fixtures/1008.3918v2.pdf";
     if !std::path::Path::new(path).exists() {
         return;
@@ -772,7 +813,7 @@ fn issue_559_behaviour_max_ops_setter_affects_parse() {
 /// #562 behaviour — `permissions()` returns None for unencrypted
 /// PDFs (`simple.pdf`). Verify the accessor short-circuits cleanly.
 #[test]
-fn issue_562_behaviour_permissions_none_on_unencrypted_pdf() {
+fn permissions_none_on_unencrypted_pdf() {
     let path = "tests/fixtures/1008.3918v2.pdf";
     if !std::path::Path::new(path).exists() {
         return;
@@ -789,7 +830,7 @@ fn issue_562_behaviour_permissions_none_on_unencrypted_pdf() {
 /// fixture exposes the /P flag set when the document is encrypted.
 /// Verifies the accessor wiring through the encryption handler.
 #[test]
-fn issue_562_behaviour_permissions_some_on_encrypted_pdf() {
+fn permissions_some_on_encrypted_pdf() {
     let path = "tests/fixtures/encrypted_needs_password.pdf";
     if !std::path::Path::new(path).exists() {
         return;
@@ -806,7 +847,7 @@ fn issue_562_behaviour_permissions_some_on_encrypted_pdf() {
 /// (preserving v0.3.54 behaviour). On regions matching specific
 /// shapes, the detectors fire.
 #[test]
-fn issue_549_behaviour_assemble_returns_class_and_spans() {
+fn assemble_via_reading_order_returns_class_and_spans() {
     let path = "tests/fixtures/1008.3918v2.pdf";
     if !std::path::Path::new(path).exists() {
         return;
@@ -827,7 +868,7 @@ fn issue_549_behaviour_assemble_returns_class_and_spans() {
 /// #570 behaviour — `get_form_fields` returns the expected field
 /// shape on form PDFs. Uses any available form fixture.
 #[test]
-fn issue_570_behaviour_get_form_fields_works() {
+fn get_form_fields_works_on_no_form_pdf() {
     // Many test fixtures don't have AcroForms; this test mostly
     // verifies the API doesn't panic on a no-form PDF.
     let path = "tests/fixtures/1008.3918v2.pdf";
@@ -846,7 +887,7 @@ fn issue_570_behaviour_get_form_fields_works() {
 /// #571 behaviour — `set_preserve_unmapped_glyphs(true)` is a real
 /// global flag toggle. Verify the round-trip behaviour.
 #[test]
-fn issue_571_behaviour_preserve_flag_toggles() {
+fn preserve_unmapped_glyphs_flag_toggles() {
     use pdf_oxide::extractors::text::set_preserve_unmapped_glyphs;
     let prev = set_preserve_unmapped_glyphs(true);
     let now_true = set_preserve_unmapped_glyphs(false);
@@ -862,7 +903,7 @@ fn issue_571_behaviour_preserve_flag_toggles() {
 /// list on a clean PDF (no warnings raised). Plus `push_structured_warning`
 /// + `flatten_warnings` round-trips.
 #[test]
-fn issue_558_behaviour_flatten_warnings_round_trip() {
+fn structured_warnings_round_trip_on_real_document() {
     let path = "tests/fixtures/1008.3918v2.pdf";
     if !std::path::Path::new(path).exists() {
         return;

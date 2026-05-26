@@ -1237,7 +1237,7 @@ mod tests {
     /// issue body: `differ` → `di ff er`, `affects` → `a ff ects`,
     /// `reflects` → `re fl ects`, `affixes` → `af fi xes`.
     #[test]
-    fn issue_551_three_token_pattern_concatenated() {
+    fn ligature_three_token_split_concatenated() {
         assert_eq!(TextPostProcessor::repair_ligature_intra_space("di ff er and"), "differ and",);
         assert_eq!(TextPostProcessor::repair_ligature_intra_space("the a ff ects"), "the affects",);
         assert_eq!(TextPostProcessor::repair_ligature_intra_space("re fl ects"), "reflects",);
@@ -1245,7 +1245,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_551_ffi_expansion_cannot_recover_swallowed_char() {
+    fn ligature_ffi_swallowed_char_not_recoverable() {
         // Honest limitation: v0.3.54 output `di ff cult` from a `/ffi`
         // ligature has lost the `i`; post-processing concatenates
         // `ff` and `cult` but the `i` is gone. Proper root-cause fix
@@ -1254,7 +1254,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_551_embedded_ligature_not_repaired() {
+    fn ligature_embedded_in_token_not_repaired() {
         // The `Bara ffe` pattern (where `ffe` is `ff`+`e` in one
         // token) is NOT caught by the regex because the ligature is
         // embedded in surrounding text rather than space-isolated.
@@ -1264,7 +1264,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_551_ligature_repair_idempotent_on_correct_text() {
+    fn ligature_repair_idempotent_on_correct_text() {
         // A correctly-spelled paragraph should be unchanged by the
         // ligature-intra-space repair.
         let correct = "The difficult question of efficient algorithms remained unsolved.";
@@ -1276,7 +1276,7 @@ mod tests {
     /// `Sup erieure,´`). Verify the v0.3.56 `compose_combining_marks`
     /// pass joins them via NFC-equivalent precomposed codepoints.
     #[test]
-    fn issue_552_acute_mark_before_base_composed() {
+    fn combining_acute_mark_before_base_composes() {
         // pdfTeX emits the ACUTE ACCENT (U+00B4) BEFORE the base E,
         // producing `´E`. Should become `É`.
         let input = "2 \u{00B4}Ecole Normale";
@@ -1285,7 +1285,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_552_acute_mark_after_base_composed() {
+    fn combining_acute_mark_after_base_composes() {
         // The other ordering: base letter BEFORE the standalone acute.
         // `e´` → `é`. From the issue body: `Universit e´` → `Université`
         // and `Sup erieure,´` → `Supérieure,`.
@@ -1295,7 +1295,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_552_grave_circumflex_cedilla_diaeresis_tilde() {
+    fn combining_full_diacritic_set_composes() {
         // The repair handles the full set of common pdfTeX spacing
         // diacritics. Each pair (mark-before-base and base-after-mark)
         // composes correctly.
@@ -1308,7 +1308,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_552_no_mark_no_change() {
+    fn combining_marks_no_op_on_plain_ascii() {
         // ASCII text without any spacing-diacritic codepoints is
         // unchanged.
         let input = "Plain ASCII text with no diacritics.";
@@ -1321,7 +1321,7 @@ mod tests {
     /// `repair_monospace_punctuation_spacing` pass removes the
     /// spurious spaces inside code-shaped lines.
     #[test]
-    fn issue_560_monospace_function_call_repaired() {
+    fn monospace_function_call_spacing_repaired() {
         let actual_v0_3_54 = "function add (a , b ) {\n  return a + b ;\n}";
         let expected = "function add(a, b) {\n  return a + b;\n}";
         assert_eq!(
@@ -1331,7 +1331,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_560_console_log_repaired() {
+    fn monospace_method_chain_spacing_repaired() {
         let actual = "function f() { console . log ( add (3 , 5)) ; }";
         let out = TextPostProcessor::repair_monospace_punctuation_spacing(actual);
         // Conservative repair: removes pre-punctuation space and
@@ -1342,7 +1342,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_560_prose_unchanged() {
+    fn monospace_repair_skips_prose_lines() {
         // Prose without code keywords should NOT be touched (the
         // heuristic only fires on lines containing both code
         // punctuation AND code keywords).
@@ -1356,7 +1356,7 @@ mod tests {
     /// lowercase merges (`Astrophysicsmanuscript`) — those need the
     /// root-cause threshold fix.
     #[test]
-    fn issue_555_case_change_boundary_inserts_space() {
+    fn run_boundary_case_change_inserts_space() {
         assert_eq!(
             TextPostProcessor::repair_run_boundary_space("Letter to theEditor"),
             "Letter to the Editor",
@@ -1368,7 +1368,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_555_code_lines_preserve_camelcase() {
+    fn run_boundary_repair_skips_camelcase_in_code() {
         // CamelCase identifiers inside code-shaped lines must NOT be
         // split (the heuristic only fires on prose-shaped lines).
         let code = "let map = HashMap::new();";
