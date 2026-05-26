@@ -2739,7 +2739,16 @@ impl PdfDocument {
             let bytes_read = reader.read_until(b'\n', &mut header_bytes)?;
 
             if bytes_read == 0 {
-                log::warn!("Unexpected EOF while reading object {} header", obj_ref.id);
+                let msg = format!("Unexpected EOF while reading object {} header", obj_ref.id);
+                log::warn!("{}", msg);
+                // v0.3.56 (#558 h2): also push into structured sink so
+                // callers can retrieve as data via flatten_warnings.
+                self.push_structured_warning(crate::extractors::warnings::Warning {
+                    category: crate::extractors::warnings::WarningCategory::EofPremature,
+                    page: None,
+                    message: msg,
+                    spec_section: Some("7.5"),
+                });
                 return Err(Error::UnexpectedEof);
             }
 
@@ -2907,11 +2916,19 @@ impl PdfDocument {
                 }
 
                 if bytes_read == 0 {
-                    log::warn!(
+                    let msg = format!(
                         "Unexpected EOF while reading object {} (no endobj found after {} bytes)",
                         obj_ref.id,
                         data.len()
                     );
+                    log::warn!("{}", msg);
+                    // v0.3.56 (#558 h2): structured-warnings sink.
+                    self.push_structured_warning(crate::extractors::warnings::Warning {
+                        category: crate::extractors::warnings::WarningCategory::EofPremature,
+                        page: None,
+                        message: msg,
+                        spec_section: Some("7.5"),
+                    });
                     // Don't fail - try to parse what we have
                     break;
                 }
