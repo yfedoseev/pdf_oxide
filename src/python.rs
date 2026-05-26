@@ -141,17 +141,26 @@ impl PyPdfDocument {
     }
 
     /// Get number of pages.
-    fn page_count(&mut self) -> PyResult<usize> {
-        if let Some(ref mut editor) = self.editor {
+    ///
+    /// **v0.3.56 (#550)**: works as both an attribute (the v0.3.6 shape)
+    /// AND as a method call (the v0.3.54 shape). Returns a `_PageCount`
+    /// wrapper that is callable (`doc.page_count()` returns the int),
+    /// indexable (`range(doc.page_count)` works via `__index__`), and
+    /// comparable with ints (`doc.page_count == 5`). The method-call
+    /// form is deprecated; new code should use the attribute form.
+    #[getter(page_count)]
+    fn page_count(&mut self) -> PyResult<PyPageCount> {
+        let value = if let Some(ref mut editor) = self.editor {
             use crate::editor::EditableDocument;
             editor
                 .page_count()
-                .map_err(|e| PyRuntimeError::new_err(format!("Failed to get page count: {}", e)))
+                .map_err(|e| PyRuntimeError::new_err(format!("Failed to get page count: {}", e)))?
         } else {
             self.inner
                 .page_count()
-                .map_err(|e| PyRuntimeError::new_err(format!("Failed to get page count: {}", e)))
-        }
+                .map_err(|e| PyRuntimeError::new_err(format!("Failed to get page count: {}", e)))?
+        };
+        Ok(PyPageCount { value })
     }
 
     /// Enumerate existing PDF signatures. Returns a list of
@@ -2548,11 +2557,21 @@ impl PyPdfDocument {
     }
 
     fn __len__(&mut self) -> PyResult<usize> {
-        self.page_count()
+        // #550: `page_count` is now a #[getter] returning PyPageCount,
+        // so call the inner Rust method directly here for the unsigned
+        // int we need.
+        self.inner
+            .page_count()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to get page count: {}", e)))
     }
 
     fn __getitem__(slf: Py<Self>, py: Python<'_>, index: isize) -> PyResult<PyDocPage> {
-        let count = slf.borrow_mut(py).page_count()? as isize;
+        let count = slf
+            .borrow_mut(py)
+            .inner
+            .page_count()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to get page count: {}", e)))?
+            as isize;
         let idx = if index < 0 { count + index } else { index };
         if idx < 0 || idx >= count {
             return Err(pyo3::exceptions::PyIndexError::new_err("page index out of range"));
@@ -2564,7 +2583,11 @@ impl PyPdfDocument {
     }
 
     fn __iter__(slf: Py<Self>, py: Python<'_>) -> PyResult<PyDocPageIter> {
-        let count = slf.borrow_mut(py).page_count()?;
+        let count = slf
+            .borrow_mut(py)
+            .inner
+            .page_count()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to get page count: {}", e)))?;
         Ok(PyDocPageIter {
             doc: slf,
             index: 0,
@@ -2583,7 +2606,11 @@ impl PyPdfDocument {
     ///         print(page.text[:80])
     #[getter]
     fn pages(slf: Py<Self>, py: Python<'_>) -> PyResult<PyDocPageIter> {
-        let count = slf.borrow_mut(py).page_count()?;
+        let count = slf
+            .borrow_mut(py)
+            .inner
+            .page_count()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to get page count: {}", e)))?;
         Ok(PyDocPageIter {
             doc: slf,
             index: 0,
@@ -2593,6 +2620,97 @@ impl PyPdfDocument {
 
     fn __repr__(&self) -> String {
         format!("PdfDocument(version={}.{})", self.inner.version().0, self.inner.version().1)
+    }
+}
+
+/// Int-like callable wrapper returned by `PdfDocument.page_count` for
+/// backward-compatibility (#550). Behaves as an int via `__int__` /
+/// `__index__` / comparison protocols. Also callable via `__call__` so
+/// the v0.3.54 method-call shape (`doc.page_count()`) still works.
+///
+/// New code should use the attribute form (`doc.page_count`); the
+/// method-call form is deprecated and will be removed in v0.4.0
+/// (#414). See `docs/releases/plans/v0.3.56/cluster-api-regressions.md`.
+#[pyclass(module = "pdf_oxide.pdf_oxide", name = "_PageCount")]
+pub struct PyPageCount {
+    value: usize,
+}
+
+#[pymethods]
+impl PyPageCount {
+    /// Method-call form (v0.3.54 shape): `doc.page_count()` returns
+    /// the int. Deprecated; use the attribute form.
+    fn __call__(&self) -> usize {
+        self.value
+    }
+
+    /// `int(doc.page_count)` returns the int.
+    fn __int__(&self) -> usize {
+        self.value
+    }
+
+    /// `range(doc.page_count)` works via the index protocol. This is
+    /// the v0.3.6 shape that broke in v0.3.54.
+    fn __index__(&self) -> usize {
+        self.value
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{}", self.value)
+    }
+
+    fn __str__(&self) -> String {
+        format!("{}", self.value)
+    }
+
+    /// `doc.page_count == 5` works against `int`. Also compares with
+    /// another `_PageCount` instance.
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        if let Ok(n) = other.extract::<usize>() {
+            return Ok(self.value == n);
+        }
+        if let Ok(n) = other.extract::<i64>() {
+            return Ok(n >= 0 && self.value == n as usize);
+        }
+        if let Ok(other_pc) = other.extract::<PyRef<PyPageCount>>() {
+            return Ok(self.value == other_pc.value);
+        }
+        Ok(false)
+    }
+
+    fn __ne__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        Ok(!self.__eq__(other)?)
+    }
+
+    fn __lt__(&self, other: usize) -> bool {
+        self.value < other
+    }
+    fn __le__(&self, other: usize) -> bool {
+        self.value <= other
+    }
+    fn __gt__(&self, other: usize) -> bool {
+        self.value > other
+    }
+    fn __ge__(&self, other: usize) -> bool {
+        self.value >= other
+    }
+
+    fn __hash__(&self) -> usize {
+        self.value
+    }
+
+    /// Arithmetic compatibility — callers may write
+    /// `doc.page_count - 1` to get the last page index.
+    fn __sub__(&self, other: usize) -> usize {
+        self.value.saturating_sub(other)
+    }
+
+    fn __add__(&self, other: usize) -> usize {
+        self.value + other
+    }
+
+    fn __bool__(&self) -> bool {
+        self.value != 0
     }
 }
 
@@ -7416,6 +7534,7 @@ fn pdf_oxide(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_log_level, m)?)?;
     m.add_function(wrap_pyfunction!(disable_logging, m)?)?;
     m.add_class::<PyPdfDocument>()?;
+    m.add_class::<PyPageCount>()?;
     m.add_class::<PyPdf>()?;
     m.add_class::<PyPdfPage>()?;
     m.add_class::<PyPdfText>()?;

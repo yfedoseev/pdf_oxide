@@ -2,6 +2,38 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.56] - 2026-05-26
+
+> Text-extraction fidelity sweep — XY-cut routing, typed extraction status, OCR API repair, Persian font support, encryption authentication enforcement
+
+### Added
+
+(Populated during Phase 1–9 implementation. See
+`docs/releases/plans/v0.3.56/api-design.md` and the
+per-cluster docs.)
+
+### Changed
+
+(Populated during Phase 2 / Phase 8 implementation.
+See `docs/releases/plans/v0.3.56/cluster-reading-order.md`
+and `cluster-security-policy.md`.)
+
+### Fixed
+
+(Closes #549, #550, #551, #552, #555, #556, #558, #559,
+#560, #561, #562, #563, #564, #565, #566, #568, #569,
+#570, #571, #573, #574, #576. Per-issue summaries
+populated during cluster implementation. See
+`docs/releases/plans/v0.3.56/README.md` for the cluster
+mapping.)
+
+### Deprecated
+
+- `PdfDocument.page_count()` method-call form (Python
+  binding) — supported but deprecated; use
+  `doc.page_count` attribute form instead. Removal
+  scheduled for v0.4.0 (#414). Closes #550.
+
 ## [0.3.55] - 2026-05-25
 
 > Ruby + PHP language bindings + multi-line heading reading-order fix

@@ -134,6 +134,17 @@ pub enum Error {
     /// `PdfDocument::open_with_password()` before extracting content.
     #[error("PDF is encrypted and requires a password. Call authenticate(password) before extracting content.")]
     EncryptedPdf,
+
+    /// OCR backend is unavailable. v0.3.56 additive variant for the
+    /// OCR API cluster (#569 / #573 / #574). Typed reason lets the
+    /// binding map to the right language-native exception
+    /// (`OcrUnavailable` in Python / Java / Ruby / PHP / Go / C# /
+    /// Node / WASM per `research-typed-signals-cross-lang.md` §13).
+    #[error("OCR unavailable: {reason:?}")]
+    OcrUnavailable {
+        /// Why OCR couldn't be initialised or invoked.
+        reason: crate::extractors::status::OcrUnavailableReason,
+    },
 }
 
 #[cfg(test)]

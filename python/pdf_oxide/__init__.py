@@ -94,6 +94,49 @@ def _setup_ort_dylib_path() -> None:
 _setup_ort_dylib_path()
 
 
+def _setup_default_log_levels() -> None:
+    """Quiet stderr-spam from internal pdf_oxide warnings under default
+    Python logging config (#558).
+
+    pdf_oxide routes every internal ``log::warn!`` through the ``pyo3_log``
+    bridge, which forwards records to Python's ``logging`` module. Python's
+    default root-logger config emits ``WARNING``-level records to stderr,
+    so every quirky-but-recoverable PDF produces noise like
+    ``SPEC VIOLATION: No newline after stream keyword``,
+    ``Type0 font 'X' has no ToUnicode entry!``, etc. — observed at ~150
+    lines per PDF in `pdfa_001.pdf`.
+
+    v0.3.56 raises the effective level on the four highest-frequency
+    internal targets to ``ERROR`` so the default Python config no longer
+    captures them. Callers who want the warnings back can:
+
+    - Use ``pdf_oxide.setup_logging(level="WARNING")`` to globally restore.
+    - Use ``logging.getLogger("pdf_oxide.parser").setLevel(logging.WARNING)``
+      to target a single category.
+    - Use ``doc.flatten_warnings()`` (v0.3.56) to receive the warnings
+      as structured data instead of stderr text.
+
+    The downgrade is idempotent: repeated calls are harmless. Genuine
+    ERROR-level events bubble through the ``Result`` chain into Python
+    exceptions, not through ``log::warn!``, so this does not hide real
+    errors.
+
+    See ``docs/releases/plans/v0.3.56/cluster-diagnostics-noise.md``.
+    """
+    import logging as _logging
+    _QUIET_TARGETS = (
+        "pdf_oxide.parser",
+        "pdf_oxide.content",
+        "pdf_oxide.fonts",
+        "pdf_oxide.document",
+    )
+    for _target in _QUIET_TARGETS:
+        _logging.getLogger(_target).setLevel(_logging.ERROR)
+
+
+_setup_default_log_levels()
+
+
 class RenderedPixmap(NamedTuple):
     """Raw premultiplied RGBA8888 pixel buffer from :meth:`PdfDocument.render_pixmap`.
 

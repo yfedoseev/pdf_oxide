@@ -36,6 +36,7 @@ mod aes;
 mod algorithms;
 mod certificate;
 mod handler;
+pub mod permissions;
 // `pub(crate)` so the `crypto::RustCryptoProvider::SymmetricCipher`
 // impl in `src/crypto/rust_provider.rs` can call
 // `rc4::rc4_crypt_impl` (the cipher-only entry point that does NOT
@@ -53,6 +54,7 @@ pub use certificate::{
     KeyTransportAlgorithm, RecipientInfo, RecipientPermissions,
 };
 pub use handler::EncryptionHandler;
+pub use permissions::PdfPermissions;
 pub use write_handler::EncryptionWriteHandler;
 
 /// A fresh MD5 hasher for the ISO 32000-1 §7.6.3 Standard-Security-
