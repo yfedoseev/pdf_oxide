@@ -117,6 +117,22 @@ pub fn parse_content_stream(data: &[u8]) -> Result<Vec<Operator>> {
 
                 if operators.len() >= effective_max_operators() {
                     log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
+                    // v0.3.56 (#558 h2 + #559): structured-sink push.
+                    // PDF Spec Annex C documents implementation limits;
+                    // the MAX_OPERATORS cap exists to bound parser
+                    // cost on adversarial inputs (see #559).
+                    crate::extractors::warnings::push_global_warning(
+                        crate::extractors::warnings::Warning {
+                            category:
+                                crate::extractors::warnings::WarningCategory::OperatorCapExceeded,
+                            page: None,
+                            message: format!(
+                                "Content stream exceeded {} operators, truncating",
+                                MAX_OPERATORS
+                            ),
+                            spec_section: Some("Annex C"),
+                        },
+                    );
                     break;
                 }
             },
@@ -177,6 +193,21 @@ pub fn parse_content_stream_paths_only(data: &[u8]) -> Result<Vec<Operator>> {
         }
         if operators.len() >= effective_max_operators() {
             log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
+            // v0.3.56 (#558 h2 + #559): structured-sink push.
+            // PDF Spec Annex C documents implementation limits;
+            // the MAX_OPERATORS cap exists to bound parser
+            // cost on adversarial inputs (see #559).
+            crate::extractors::warnings::push_global_warning(
+                crate::extractors::warnings::Warning {
+                    category: crate::extractors::warnings::WarningCategory::OperatorCapExceeded,
+                    page: None,
+                    message: format!(
+                        "Content stream exceeded {} operators, truncating",
+                        MAX_OPERATORS
+                    ),
+                    spec_section: Some("Annex C"),
+                },
+            );
             break;
         }
 
@@ -477,6 +508,21 @@ pub fn parse_content_stream_text_only(data: &[u8]) -> Result<Vec<Operator>> {
 
         if operators.len() >= effective_max_operators() {
             log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
+            // v0.3.56 (#558 h2 + #559): structured-sink push.
+            // PDF Spec Annex C documents implementation limits;
+            // the MAX_OPERATORS cap exists to bound parser
+            // cost on adversarial inputs (see #559).
+            crate::extractors::warnings::push_global_warning(
+                crate::extractors::warnings::Warning {
+                    category: crate::extractors::warnings::WarningCategory::OperatorCapExceeded,
+                    page: None,
+                    message: format!(
+                        "Content stream exceeded {} operators, truncating",
+                        MAX_OPERATORS
+                    ),
+                    spec_section: Some("Annex C"),
+                },
+            );
             break;
         }
 
@@ -1272,6 +1318,21 @@ where
 
         if op_count >= effective_max_operators() {
             log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
+            // v0.3.56 (#558 h2 + #559): structured-sink push.
+            // PDF Spec Annex C documents implementation limits;
+            // the MAX_OPERATORS cap exists to bound parser
+            // cost on adversarial inputs (see #559).
+            crate::extractors::warnings::push_global_warning(
+                crate::extractors::warnings::Warning {
+                    category: crate::extractors::warnings::WarningCategory::OperatorCapExceeded,
+                    page: None,
+                    message: format!(
+                        "Content stream exceeded {} operators, truncating",
+                        MAX_OPERATORS
+                    ),
+                    spec_section: Some("Annex C"),
+                },
+            );
             break;
         }
 

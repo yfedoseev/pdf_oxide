@@ -726,6 +726,84 @@ fn descendant_fonts_inline_dict_accepted() {
     );
 }
 
+/// #558 second half — global warning sink wired into five
+/// log::warn sites in src/parser.rs (SPEC VIOLATION + Stream
+/// /Length mismatch) and src/fonts/font_dict.rs (Type 3 detected +
+/// Type0 ToUnicode missing) and src/content/parser.rs (4 operator-
+/// cap sites). Verify by source inspection that the wire-ups are
+/// in place.
+#[test]
+fn global_warning_sink_wired_into_log_warn_sites() {
+    let parser_src = include_str!("../src/parser.rs");
+    assert!(
+        parser_src.contains("push_global_warning") && parser_src.contains("v0.3.56 (#558 h2)"),
+        "src/parser.rs SPEC VIOLATION sites must push to global sink",
+    );
+    let fonts_src = include_str!("../src/fonts/font_dict.rs");
+    assert!(
+        fonts_src.contains("push_global_warning") && fonts_src.contains("Type3Font"),
+        "src/fonts/font_dict.rs Type3 site must push to global sink",
+    );
+    assert!(
+        fonts_src.contains("ToUnicodeMissing"),
+        "src/fonts/font_dict.rs Type0-ToUnicode-missing site must push",
+    );
+    let content_src = include_str!("../src/content/parser.rs");
+    assert!(
+        content_src.contains("OperatorCapExceeded"),
+        "src/content/parser.rs op-cap sites must push to global sink",
+    );
+    // All 4 op-cap sites must be wired (search for the category in
+    // multiple distinct positions).
+    let cap_pushes = content_src.matches("OperatorCapExceeded").count();
+    assert!(
+        cap_pushes >= 4,
+        "all 4 content-parser op-cap sites must push (found {})",
+        cap_pushes,
+    );
+}
+
+#[test]
+fn global_warning_sink_drain_round_trips() {
+    use pdf_oxide::extractors::warnings::{
+        drain_global_warnings, push_global_warning, snapshot_global_warnings, Warning,
+        WarningCategory,
+    };
+    // Drain any pre-existing warnings from earlier tests.
+    let _ = drain_global_warnings();
+    push_global_warning(Warning {
+        category: WarningCategory::SpecViolation,
+        page: None,
+        message: "test_v0356".into(),
+        spec_section: Some("7.3.8.1"),
+    });
+    let snap = snapshot_global_warnings();
+    assert!(snap.iter().any(|w| w.message == "test_v0356"));
+    let drained = drain_global_warnings();
+    assert!(drained.iter().any(|w| w.message == "test_v0356"));
+    let after = snapshot_global_warnings();
+    assert!(!after.iter().any(|w| w.message == "test_v0356"));
+}
+
+/// #559/#571 cross-binding (Phase 10) — verify the C-ABI symbols
+/// `pdf_oxide_set_max_ops_per_stream` and
+/// `pdf_oxide_set_preserve_unmapped_glyphs` are exported via
+/// `src/ffi.rs`. Java/Ruby/PHP/Go/C#/Node/WASM bindings consume
+/// these via the cdylib's exported symbol table.
+#[test]
+fn cross_binding_c_abi_setters_exported() {
+    let ffi_src = include_str!("../src/ffi.rs");
+    assert!(
+        ffi_src.contains("pdf_oxide_set_max_ops_per_stream"),
+        "C-ABI setter for max_ops_per_stream must be exported via FFI",
+    );
+    assert!(
+        ffi_src.contains("pdf_oxide_set_preserve_unmapped_glyphs"),
+        "C-ABI setter for preserve_unmapped_glyphs must be exported via FFI",
+    );
+    assert!(ffi_src.contains("#[no_mangle]"), "C-ABI exports must use #[no_mangle]",);
+}
+
 /// #551 — ROOT-CAUSE FIX at `should_insert_space`. The
 /// `starts_with_agl_ligature` helper detects AGL ligature codepoints
 /// (U+FB00-U+FB06) and multi-char ligature names. The space-emission

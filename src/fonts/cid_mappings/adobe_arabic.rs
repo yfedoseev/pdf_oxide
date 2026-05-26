@@ -14,11 +14,29 @@
 //! correct Arabic block (U+0600-U+06FF) where bidi-aware viewers
 //! can shape them.
 //!
+//! ## PDF spec basis
+//!
+//! Per `docs/spec/pdf.md` §9.7 "Composite Fonts" + §9.7.5 "CMaps":
+//! CID-keyed fonts use a CMap to map character codes to CIDs, and
+//! a registered character collection (`CIDSystemInfo` →
+//! `Registry`/`Ordering`/`Supplement`) plus a UCS2-suffixed CMap
+//! (e.g. `UniArabicBookman-UCS2`) to map CIDs to Unicode. v0.3.56
+//! does NOT ship the full registered Adobe-Persian-1/Adobe-Arabic-1
+//! UCS2 tables (Adobe deprecated and no longer publishes these
+//! collections; their adobe-type-tools repo ships CJK + Manga
+//! only). The identity mapping here is the §9.10.3 "Mapping
+//! Character Codes to Unicode Values" fallback step 3 — when the
+//! CMap chain runs out, the conforming reader emits "the actual
+//! character code as the Unicode value." For Persian fonts with
+//! sequential Arabic-block CIDs this produces correct output;
+//! for fonts with non-sequential CID encodings it produces
+//! best-effort output in the correct Unicode block.
+//!
 //! **Limitations**: this is NOT the official Adobe-Arabic-1-UCS2
-//! CMap (~30 KB of data per Adobe Technical Note #5100). It is a
-//! heuristic identity mapping that works for the common case where
-//! Persian fonts use sequential Arabic-block CIDs. Audit task #30
-//! tracks bundling the official Adobe CMap data.
+//! CMap. It is a heuristic identity mapping that works for the
+//! common case where Persian fonts use sequential Arabic-block
+//! CIDs. The full official CMap data is no longer publicly
+//! distributed by Adobe.
 //!
 //! See `docs/releases/plans/v0.3.56/cluster-font-encoding.md` §3.3.
 

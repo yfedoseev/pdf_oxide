@@ -253,6 +253,38 @@ pub extern "C" fn pdf_oxide_get_log_level() -> i32 {
     }
 }
 
+/// v0.3.56 (#559): Set the global content-stream operator cap.
+/// `limit < 0` restores the default (1,000,000); any non-negative
+/// value (including 0) is used as the explicit cap. Returns the
+/// previous cap (or -1 if the default was active).
+///
+/// Bindings (Java JNI, Ruby FFI, PHP FFI, Go cgo / purego, C# P/Invoke,
+/// Node N-API, WASM) call this via the cdylib's exported symbol.
+#[no_mangle]
+pub extern "C" fn pdf_oxide_set_max_ops_per_stream(limit: i64) -> i64 {
+    let new_limit = if limit < 0 {
+        None
+    } else {
+        Some(limit as usize)
+    };
+    let prev = crate::content::parser::set_max_ops_per_stream(new_limit);
+    prev.map(|v| v as i64).unwrap_or(-1)
+}
+
+/// v0.3.56 (#571): Toggle the global U+FFFD preservation flag for
+/// the high-level extract_text / extract_words / extract_spans
+/// accessors. `1` = preserve FFFD chars; `0` = filter (v0.3.54
+/// default). Returns the previous value as `0` or `1`.
+#[no_mangle]
+pub extern "C" fn pdf_oxide_set_preserve_unmapped_glyphs(preserve: i32) -> i32 {
+    let prev = crate::extractors::text::set_preserve_unmapped_glyphs(preserve != 0);
+    if prev {
+        1
+    } else {
+        0
+    }
+}
+
 // ─── Crypto provider (issue #236) ──────────────────────────────────────────
 
 /// Returns the name of the active cryptographic provider as a

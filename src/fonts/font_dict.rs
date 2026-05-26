@@ -360,7 +360,22 @@ impl FontInfo {
 
         // Log Type 3 fonts - may require special glyph name mapping
         if subtype == "Type3" {
-            log::warn!("Font '{}' is Type 3 - may require special glyph name mapping", base_font);
+            let msg =
+                format!("Font '{}' is Type 3 - may require special glyph name mapping", base_font);
+            log::warn!("{}", msg);
+            // v0.3.56 (#558 h2): push into the structured warning
+            // sink. PDF Spec §9.6.4 "Type 3 Fonts" describes the
+            // user-defined CharProcs glyph-program model; the
+            // standard glyph name registry doesn't apply, so
+            // extraction may fall back to glyph-name heuristics.
+            crate::extractors::warnings::push_global_warning(
+                crate::extractors::warnings::Warning {
+                    category: crate::extractors::warnings::WarningCategory::Type3Font,
+                    page: None,
+                    message: msg,
+                    spec_section: Some("9.6.4"),
+                },
+            );
         }
 
         // Parse FontDescriptor FIRST to get font flags (needed for encoding decision)
@@ -659,7 +674,20 @@ impl FontInfo {
             }
         } else {
             if subtype == "Type0" {
-                log::warn!("Type0 font '{}' has no ToUnicode entry!", base_font);
+                let msg = format!("Type0 font '{}' has no ToUnicode entry!", base_font);
+                log::warn!("{}", msg);
+                // v0.3.56 (#558 h2): push to the structured sink. PDF
+                // Spec §9.10.2 "ToUnicode CMaps" describes the
+                // mapping; absent ToUnicode triggers the fallback
+                // chain (Encoding → AGL → CID-as-Unicode) per §9.10.3.
+                crate::extractors::warnings::push_global_warning(
+                    crate::extractors::warnings::Warning {
+                        category: crate::extractors::warnings::WarningCategory::ToUnicodeMissing,
+                        page: None,
+                        message: msg,
+                        spec_section: Some("9.10.2"),
+                    },
+                );
             }
             None
         };
