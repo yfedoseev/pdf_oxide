@@ -90,6 +90,55 @@ pub struct WarningSink {
     warnings: Mutex<Vec<Warning>>,
 }
 
+/// v0.3.56 (#558 h2): global process-wide structured-warning sink for
+/// the seven highest-frequency `log::warn!` sites that live in free
+/// functions (where `&PdfDocument` is not available to push to a
+/// per-document sink). Sites currently routed through this global
+/// sink:
+///
+/// - `src/parser.rs::read_stream_data` (SPEC VIOLATION / Stream
+///   /Length mismatch)
+/// - `src/content/parser.rs::*` (operator-cap exceeded)
+/// - `src/fonts/font_dict.rs::*` (Type0 ToUnicode missing, Type 3
+///   font detected)
+///
+/// Callers retrieve via [`drain_global_warnings`] OR through
+/// `PdfDocument::flatten_warnings()` which merges global +
+/// per-document warnings.
+///
+/// Process-wide scope means warnings from concurrent extractions on
+/// different `PdfDocument` instances appear together in the snapshot.
+/// For per-document isolation, use the per-document sink directly
+/// via `PdfDocument::push_structured_warning`.
+static GLOBAL_WARNING_SINK: Mutex<Vec<Warning>> = Mutex::new(Vec::new());
+
+/// Push a structured warning into the process-wide sink. Called by
+/// free-function log sites that can't access a `&PdfDocument`.
+pub fn push_global_warning(warning: Warning) {
+    if let Ok(mut v) = GLOBAL_WARNING_SINK.lock() {
+        v.push(warning);
+    }
+}
+
+/// Drain the process-wide structured-warning sink, returning a snapshot
+/// and clearing the underlying storage. Used by
+/// `PdfDocument::flatten_warnings` to surface free-function warnings
+/// alongside per-document ones.
+pub fn drain_global_warnings() -> Vec<Warning> {
+    GLOBAL_WARNING_SINK
+        .lock()
+        .map(|mut v| std::mem::take(&mut *v))
+        .unwrap_or_default()
+}
+
+/// Snapshot the global sink without draining (for tests / observability).
+pub fn snapshot_global_warnings() -> Vec<Warning> {
+    GLOBAL_WARNING_SINK
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_default()
+}
+
 impl WarningSink {
     /// Create an empty sink.
     pub fn new() -> Self {
