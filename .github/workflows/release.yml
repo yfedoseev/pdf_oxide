@@ -435,7 +435,12 @@ jobs:
         if: matrix.staticlib_name == 'libpdf_oxide.a'
         shell: bash
         run: |
-          bash scripts/shrink-staticlib.sh "native-out/${{ matrix.staticlib_name }}"
+          # Pass the matrix target so the script picks the right arch-specific
+          # objcopy on cross-compile (host objcopy silently no-ops on the
+          # ARM64 archive, leaving ~100 MB of .llvmbc shipped — the bug that
+          # bit v0.3.55's pdf_oxide-go-ffi-linux-arm64.tar.gz at 73 MB
+          # compressed vs. the expected ~22 MB).
+          bash scripts/shrink-staticlib.sh "native-out/${{ matrix.staticlib_name }}" "${{ matrix.target }}"
           ls -la native-out/
 
       - name: Upload native lib
@@ -996,18 +1001,30 @@ jobs:
           - os: ubuntu-22.04
             triple: linux-x64-gnu
             native_artifact: native-linux-x86_64
+            expected_arch: x86_64
           - os: ubuntu-22.04-arm
             triple: linux-arm64-gnu
             native_artifact: native-linux-aarch64
-          - os: macos-latest
+            expected_arch: arm64
+          # darwin-x64 MUST run on macos-13 (last x86_64 Mac runner).
+          # `macos-latest` flipped to Apple Silicon in mid-2024; node-gyp
+          # there builds an arm64 .node regardless of the `darwin-x64`
+          # label, which got published to npm as a wrong-arch binary
+          # that Intel Mac users could not load. Verified via Mach-O
+          # CPU type 0x0100000c (ARM64) vs expected 0x01000007 (x86_64).
+          # See the post-build arch verification step below.
+          - os: macos-13
             triple: darwin-x64
             native_artifact: native-macos-x86_64
+            expected_arch: x86_64
           - os: macos-latest
             triple: darwin-arm64
             native_artifact: native-macos-aarch64
+            expected_arch: arm64
           - os: windows-latest
             triple: win32-x64-msvc
             native_artifact: native-windows-x86_64
+            expected_arch: x86_64
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -1051,6 +1068,30 @@ jobs:
           esac
           AFTER=$(wc -c < build/Release/pdf_oxide.node)
           echo "pdf_oxide.node: ${BEFORE} -> ${AFTER} bytes"
+
+      # Hard-gate against the wrong-arch publish that bit v0.3.55's
+      # darwin-x64 — Mach-O CPU type 0x0100000c (ARM64) shipped as if
+      # it were x86_64 (0x01000007). `file` prints the architecture
+      # for ELF / Mach-O / PE32+; grep for the expected token and
+      # fail the build if it's missing.
+      - name: Verify .node architecture matches matrix triple
+        if: matrix.expected_arch != ''
+        working-directory: js
+        shell: bash
+        run: |
+          NODE_FILE=build/Release/pdf_oxide.node
+          ARCH_LINE=$(file "$NODE_FILE")
+          echo "file: $ARCH_LINE"
+          case "${{ matrix.expected_arch }}" in
+            x86_64)   GREP_RE='x86[_-]64|x86-64' ;;
+            arm64)    GREP_RE='arm64|aarch64'    ;;
+            *) echo "::error::unknown expected_arch '${{ matrix.expected_arch }}'"; exit 1 ;;
+          esac
+          if ! echo "$ARCH_LINE" | grep -Eq "$GREP_RE"; then
+            echo "::error::Built .node is the WRONG architecture for triple '${{ matrix.triple }}': expected ${{ matrix.expected_arch }}, file reported '$ARCH_LINE'" >&2
+            exit 1
+          fi
+          echo "OK — .node architecture matches expected '${{ matrix.expected_arch }}'"
 
       - name: Upload .node artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
