@@ -173,7 +173,7 @@ final class PdfDocument
     public function hasFormFields(): bool
     {
         $ffi = \PdfOxide\FFI\NativeLibrary::getInstance();
-        $errorCode = \FFI::new('int32_t');
+        $errorCode = $ffi->new('int32_t');
         $list = $ffi->pdf_document_get_form_fields($this->requireHandle(), \FFI::addr($errorCode));
         if ($list === null) {
             return false;
@@ -189,7 +189,7 @@ final class PdfDocument
     public function hasSignatures(): bool
     {
         $ffi = \PdfOxide\FFI\NativeLibrary::getInstance();
-        $errorCode = \FFI::new('int32_t');
+        $errorCode = $ffi->new('int32_t');
         $count = (int) $ffi->pdf_document_get_signature_count($this->requireHandle(), \FFI::addr($errorCode));
         return $count > 0;
     }

@@ -37,8 +37,8 @@ declare(strict_types=1);
  *   - Set `PDF_OXIDE_NATIVE_VERSION=vX.Y.Z` to pin a specific release.
  */
 
-const PACKAGE_VERSION_DEFAULT = 'v0.3.55';
-const RELEASE_BASE_URL = 'https://github.com/fyi-oxide/pdf_oxide/releases/download';
+const PACKAGE_VERSION_DEFAULT = 'v0.3.56';
+const RELEASE_BASE_URL = 'https://github.com/yfedoseev/pdf_oxide/releases/download';
 // Path is relative to the package root (parent-of-php in the new
 // root-composer.json layout); see comment on $packageRoot below.
 const MANIFEST_RELATIVE = 'php/scripts/native-manifest.json';
@@ -253,12 +253,12 @@ function downloadFile(string $url, string $dest): bool
         'http' => [
             'follow_location' => 1,
             'timeout' => 60,
-            'user_agent' => 'pdf_oxide-php-installer/0.3.55',
+            'user_agent' => 'pdf_oxide-php-installer/0.3.56',
         ],
         'https' => [
             'follow_location' => 1,
             'timeout' => 60,
-            'user_agent' => 'pdf_oxide-php-installer/0.3.55',
+            'user_agent' => 'pdf_oxide-php-installer/0.3.56',
         ],
     ]);
     $data = @file_get_contents($url, false, $ctx);
@@ -336,7 +336,7 @@ function printManualInstall(string $version): void
 {
     fwrite(STDERR, "\n[pdf_oxide] Manual install instructions:\n");
     fwrite(STDERR, "  1. Download libpdf_oxide for your platform:\n");
-    fwrite(STDERR, "       https://github.com/fyi-oxide/pdf_oxide/releases/tag/{$version}\n");
+    fwrite(STDERR, "       https://github.com/yfedoseev/pdf_oxide/releases/tag/{$version}\n");
     fwrite(STDERR, "  2. Extract the cdylib (libpdf_oxide.so / .dylib / pdf_oxide.dll)\n");
     fwrite(STDERR, "     into one of:\n");
     fwrite(STDERR, "       vendor/oxide/pdf-oxide/lib/<platform>/\n");

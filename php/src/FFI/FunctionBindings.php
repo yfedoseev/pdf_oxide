@@ -30,7 +30,7 @@ class FunctionBindings
     public function pdfDocumentOpen(string $path): ?CData
     {
         $cPath = StringMarshaller::toCString($path);
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
 
         try {
             $handle = $this->ffi->pdf_document_open($cPath, FFI::addr($errorCode));
@@ -59,8 +59,8 @@ class FunctionBindings
      */
     public function pdfDocumentGetVersion(CData $handle): array
     {
-        $major = FFI::new('uint8_t');
-        $minor = FFI::new('uint8_t');
+        $major = $this->ffi->new('uint8_t');
+        $minor = $this->ffi->new('uint8_t');
 
         $this->ffi->pdf_document_get_version($handle, FFI::addr($major), FFI::addr($minor));
 
@@ -78,7 +78,7 @@ class FunctionBindings
      */
     public function pdfDocumentGetPageCount(CData $handle): int
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $count = $this->ffi->pdf_document_get_page_count($handle, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_get_page_count');
         return (int) $count;
@@ -104,7 +104,7 @@ class FunctionBindings
      */
     public function pdfDocumentExtractText(CData $handle, int $pageIndex): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $text = $this->ffi->pdf_document_extract_text($handle, $pageIndex, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_extract_text', ['page' => $pageIndex]);
         return StringMarshaller::fromCString($text);
@@ -119,7 +119,7 @@ class FunctionBindings
      */
     public function pdfDocumentToMarkdown(CData $handle, int $pageIndex): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $markdown = $this->ffi->pdf_document_to_markdown($handle, $pageIndex, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_to_markdown', ['page' => $pageIndex]);
         return StringMarshaller::fromCString($markdown);
@@ -133,7 +133,7 @@ class FunctionBindings
      */
     public function pdfDocumentToMarkdownAll(CData $handle): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $markdown = $this->ffi->pdf_document_to_markdown_all($handle, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_to_markdown_all');
         return StringMarshaller::fromCString($markdown);
@@ -148,7 +148,7 @@ class FunctionBindings
      */
     public function pdfDocumentToHtml(CData $handle, int $pageIndex): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $html = $this->ffi->pdf_document_to_html($handle, $pageIndex, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_to_html', ['page' => $pageIndex]);
         return StringMarshaller::fromCString($html);
@@ -163,7 +163,7 @@ class FunctionBindings
      */
     public function pdfDocumentToPlainText(CData $handle, int $pageIndex): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $text = $this->ffi->pdf_document_to_plain_text($handle, $pageIndex, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_to_plain_text', ['page' => $pageIndex]);
         return StringMarshaller::fromCString($text);
@@ -185,7 +185,7 @@ class FunctionBindings
         bool $caseSensitive = false
     ): CData {
         $cTerm = StringMarshaller::toCString($searchTerm);
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
 
         try {
             $results = $this->ffi->pdf_document_search_page(
@@ -219,7 +219,7 @@ class FunctionBindings
         bool $caseSensitive = false
     ): CData {
         $cTerm = StringMarshaller::toCString($searchTerm);
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
 
         try {
             $results = $this->ffi->pdf_document_search_all(
@@ -246,7 +246,7 @@ class FunctionBindings
      */
     public function pdfDocumentGetEmbeddedFonts(CData $handle, int $pageIndex): CData
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $fonts = $this->ffi->pdf_document_get_embedded_fonts($handle, $pageIndex, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_get_embedded_fonts', ['page' => $pageIndex]);
         return $fonts;
@@ -261,7 +261,7 @@ class FunctionBindings
      */
     public function pdfDocumentGetEmbeddedImages(CData $handle, int $pageIndex): CData
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $images = $this->ffi->pdf_document_get_embedded_images($handle, $pageIndex, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_get_embedded_images', ['page' => $pageIndex]);
         return $images;
@@ -288,7 +288,7 @@ class FunctionBindings
      */
     public function oxideSearchResultGetText(CData $resultsHandle, int $index): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $text = $this->ffi->pdf_oxide_search_result_get_text($resultsHandle, $index, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_oxide_search_result_get_text', ['index' => $index]);
         return StringMarshaller::fromCString($text);
@@ -307,7 +307,7 @@ class FunctionBindings
         // Pre-fix omitted the err pointer → cdylib wrote through register
         // garbage; same root cause as the v0.3.55 Ruby aarch64 segfaults
         // (#547, commit a9cff143).
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $page = $this->ffi->pdf_oxide_search_result_get_page($resultsHandle, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_search_result_get_page');
         return (int) $page;
@@ -323,11 +323,11 @@ class FunctionBindings
      */
     public function oxideSearchResultGetBbox(CData $resultsHandle, int $index): array
     {
-        $x = FFI::new('float');
-        $y = FFI::new('float');
-        $width = FFI::new('float');
-        $height = FFI::new('float');
-        $errorCode = FFI::new('int32_t');
+        $x = $this->ffi->new('float');
+        $y = $this->ffi->new('float');
+        $width = $this->ffi->new('float');
+        $height = $this->ffi->new('float');
+        $errorCode = $this->ffi->new('int32_t');
 
         // C: void pdf_oxide_search_result_get_bbox(results, index,
         //                                          *x, *y, *w, *h, *err)
@@ -381,7 +381,7 @@ class FunctionBindings
     public function oxideAnnotationGetType(CData $listHandle, int $index): string
     {
         // C: char *pdf_oxide_annotation_get_type(annotations, index, *err)
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $type = $this->ffi->pdf_oxide_annotation_get_type($listHandle, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_annotation_get_type');
         return StringMarshaller::fromCString($type);
@@ -396,7 +396,7 @@ class FunctionBindings
      */
     public function oxideAnnotationGetContent(CData $listHandle, int $index): string
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $content = $this->ffi->pdf_oxide_annotation_get_content($listHandle, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_annotation_get_content');
         return StringMarshaller::fromCString($content);
@@ -432,7 +432,7 @@ class FunctionBindings
      */
     public function oxideFontGetName(CData $listHandle, int $index): string
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $name = $this->ffi->pdf_oxide_font_get_name($listHandle, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_font_get_name');
         return StringMarshaller::fromCString($name);
@@ -447,7 +447,7 @@ class FunctionBindings
      */
     public function oxideFontGetType(CData $listHandle, int $index): string
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $type = $this->ffi->pdf_oxide_font_get_type($listHandle, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_font_get_type');
         return StringMarshaller::fromCString($type);
@@ -462,7 +462,7 @@ class FunctionBindings
      */
     public function oxideFontIsEmbedded(CData $listHandle, int $index): bool
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $embedded = $this->ffi->pdf_oxide_font_is_embedded($listHandle, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_font_is_embedded');
         return ((int) $embedded) !== 0;
@@ -498,7 +498,7 @@ class FunctionBindings
      */
     public function oxideImageGetWidth(CData $listHandle, int $index): int
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $w = $this->ffi->pdf_oxide_image_get_width($listHandle, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_image_get_width');
         return (int) $w;
@@ -513,7 +513,7 @@ class FunctionBindings
      */
     public function oxideImageGetHeight(CData $listHandle, int $index): int
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $h = $this->ffi->pdf_oxide_image_get_height($listHandle, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_image_get_height');
         return (int) $h;
@@ -528,7 +528,7 @@ class FunctionBindings
      */
     public function oxideImageGetFormat(CData $listHandle, int $index): string
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $format = $this->ffi->pdf_oxide_image_get_format($listHandle, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_image_get_format');
         return StringMarshaller::fromCString($format);
@@ -554,7 +554,7 @@ class FunctionBindings
      */
     public function pdfRenderPage(CData $handle, int $pageIndex, ?CData $options = null): CData
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $imageHandle = $this->ffi->pdf_render_page($handle, $pageIndex, $options, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_render_page');
         return $imageHandle;
@@ -575,7 +575,7 @@ class FunctionBindings
      */
     public function pdfRenderPageRegion(CData $handle, int $pageIndex, float $x, float $y, float $width, float $height, ?CData $options = null): CData
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $imageHandle = $this->ffi->pdf_render_page_region($handle, $pageIndex, $x, $y, $width, $height, $options, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_render_page_region');
         return $imageHandle;
@@ -592,7 +592,7 @@ class FunctionBindings
      */
     public function pdfRenderPageZoom(CData $handle, int $pageIndex, float $zoomLevel, ?CData $options = null): CData
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $imageHandle = $this->ffi->pdf_render_page_zoom($handle, $pageIndex, $zoomLevel, $options, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_render_page_zoom');
         return $imageHandle;
@@ -610,7 +610,7 @@ class FunctionBindings
      */
     public function pdfRenderPageFit(CData $handle, int $pageIndex, int $fitWidth, int $fitHeight, ?CData $options = null): CData
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $imageHandle = $this->ffi->pdf_render_page_fit($handle, $pageIndex, $fitWidth, $fitHeight, $options, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_render_page_fit');
         return $imageHandle;
@@ -627,7 +627,7 @@ class FunctionBindings
      */
     public function pdfRenderPageThumbnail(CData $handle, int $pageIndex, int $maxSize, ?CData $options = null): CData
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $imageHandle = $this->ffi->pdf_render_page_thumbnail($handle, $pageIndex, $maxSize, $options, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_render_page_thumbnail');
         return $imageHandle;
@@ -663,7 +663,7 @@ class FunctionBindings
         // code through wherever `$options` pointed. Pass a proper
         // err buffer here; `$options` retained on the wrapper API for
         // forward-compat once the cdylib implementation lands.
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         unset($options);
         $estimate = $this->ffi->pdf_estimate_render_time($handle, $pageIndex, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_estimate_render_time');
@@ -687,7 +687,7 @@ class FunctionBindings
         // landed in the EC slot, `*err` landed in `size_px`, and the
         // cdylib wrote to whatever was in the actual `*err` register.
         $cData = StringMarshaller::toCString($data);
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
 
         try {
             $barcodeHandle = $this->ffi->pdf_generate_qr_code(
@@ -718,7 +718,7 @@ class FunctionBindings
         // Pre-fix omitted `size_px` AND the format was passed as a
         // string instead of the int32 ordinal.
         $cData = StringMarshaller::toCString($data);
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
 
         try {
             $barcodeHandle = $this->ffi->pdf_generate_barcode(
@@ -747,8 +747,8 @@ class FunctionBindings
         //                                       uintptr_t *out_len, int32_t *err)
         // Pre-fix passed only `(handle, FFI::addr($sizePtr))` — `*out_len`
         // landed in `_size_px` slot, `*err` slot was register garbage.
-        $outLen = FFI::new('size_t');
-        $errorCode = FFI::new('int32_t');
+        $outLen = $this->ffi->new('size_t');
+        $errorCode = $this->ffi->new('int32_t');
         $dataPtr = $this->ffi->pdf_barcode_get_image_png(
             $barcodeHandle,
             $sizePx,
@@ -759,7 +759,7 @@ class FunctionBindings
         $size = (int) $outLen->cdata;
         $bytes = FFI::string($dataPtr, $size);
         // PNG buffer is heap-allocated by the cdylib — must free.
-        $this->ffi->free_bytes(FFI::cast('uint8_t*', $dataPtr));
+        $this->ffi->free_bytes($this->ffi->cast('uint8_t*', $dataPtr));
         return $bytes;
     }
 
@@ -773,7 +773,7 @@ class FunctionBindings
     public function pdfBarcodeGetSvg(CData $barcodeHandle, int $sizePx = 256): string
     {
         // C: char *pdf_barcode_get_svg(handle, int32_t _size_px, int32_t *err)
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $svg = $this->ffi->pdf_barcode_get_svg($barcodeHandle, $sizePx, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_barcode_get_svg');
         return StringMarshaller::fromCString($svg);
@@ -792,7 +792,7 @@ class FunctionBindings
      */
     public function pdfAddBarcodeToPage(CData $handle, int $pageIndex, CData $barcodeHandle, float $x, float $y, float $width, float $height): void
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $this->ffi->pdf_add_barcode_to_page($handle, $pageIndex, $barcodeHandle, $x, $y, $width, $height, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_add_barcode_to_page');
     }
@@ -829,7 +829,7 @@ class FunctionBindings
         $cDet = StringMarshaller::toCString($detectionModelPath);
         $cRec = StringMarshaller::toCString($recognitionModelPath);
         $cDict = StringMarshaller::toCString($dictionaryPath);
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         try {
             $engine = $this->ffi->pdf_ocr_engine_create(
                 $cDet,
@@ -864,7 +864,7 @@ class FunctionBindings
      */
     public function pdfOcrPageNeedsOcr(CData $handle, int $pageIndex): bool
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $needs = $this->ffi->pdf_ocr_page_needs_ocr($handle, $pageIndex, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_ocr_page_needs_ocr');
         return (bool) $needs;
@@ -885,7 +885,7 @@ class FunctionBindings
         //     int32_t page_index, const void *engine, int32_t *err)
         // Pre-fix passed only `(results)` — treated as `doc`,
         // remaining 3 slots were register garbage.
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $text = $this->ffi->pdf_ocr_extract_text(
             $docHandle,
             $pageIndex,
@@ -906,7 +906,7 @@ class FunctionBindings
     public function pdfPdfAIsCompliant(CData $resultHandle): bool
     {
         // C: bool pdf_pdf_a_is_compliant(const FfiPdfAResults *results, int32_t *err)
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $compliant = $this->ffi->pdf_pdf_a_is_compliant($resultHandle, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_pdf_a_is_compliant');
         return (bool) $compliant;
@@ -943,7 +943,7 @@ class FunctionBindings
      */
     public function pdfPdfAGetError(CData $resultHandle, int $index): string
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $error = $this->ffi->pdf_pdf_a_get_error($resultHandle, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_pdf_a_get_error');
         return StringMarshaller::fromCString($error);
@@ -958,7 +958,7 @@ class FunctionBindings
      */
     public function pdfPdfXIsCompliant(CData $resultHandle): bool
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $compliant = $this->ffi->pdf_pdf_x_is_compliant($resultHandle, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_pdf_x_is_compliant');
         return (bool) $compliant;
@@ -990,7 +990,7 @@ class FunctionBindings
         // Pre-fix omitted `level` — `*err` landed in the level slot
         // and *err slot was register garbage. The cdylib defaults
         // level == 2 → UA-2, else UA-1.
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $resultHandle = $this->ffi->pdf_validate_pdf_ua($handle, $level, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_validate_pdf_ua');
         return $resultHandle;
@@ -1004,7 +1004,7 @@ class FunctionBindings
      */
     public function pdfPdfUaIsAccessible(CData $resultHandle): bool
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $accessible = $this->ffi->pdf_pdf_ua_is_accessible($resultHandle, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_pdf_ua_is_accessible');
         return (bool) $accessible;
@@ -1031,7 +1031,7 @@ class FunctionBindings
     public function pdfConvertToPdfA(CData $handle, string $level): void
     {
         $cLevel = StringMarshaller::toCString($level);
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
 
         try {
             $this->ffi->pdf_convert_to_pdf_a($handle, $cLevel, FFI::addr($errorCode));
@@ -1051,7 +1051,7 @@ class FunctionBindings
     public function pdfDocumentGetSignatureCount(CData $handle): int
     {
         // C: int32_t pdf_document_get_signature_count(const PdfDocument *handle, int32_t *err)
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $count = $this->ffi->pdf_document_get_signature_count($handle, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_document_get_signature_count');
         return (int) $count;
@@ -1066,7 +1066,7 @@ class FunctionBindings
      */
     public function pdfDocumentGetSignature(CData $handle, int $index): CData
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $signatureHandle = $this->ffi->pdf_document_get_signature($handle, $index, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_get_signature');
         return $signatureHandle;
@@ -1089,7 +1089,7 @@ class FunctionBindings
     public function pdfSignatureVerify(CData $signatureHandle): bool
     {
         // C: bool pdf_signature_verify(const void *signature_handle, int32_t *err)
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $valid = $this->ffi->pdf_signature_verify($signatureHandle, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_signature_verify');
         return (bool) $valid;
@@ -1116,7 +1116,7 @@ class FunctionBindings
     {
         // PKCS#12 / PEM cert data is BINARY (contains bytes >= 0x80).
         // Pre-v0.3.55 this went through StringMarshaller::toCString
-        // which allocates `char[N+1]` and forces a `FFI::cast('uint8_t*', …)`
+        // which allocates `char[N+1]` and forces a `$this->ffi->cast('uint8_t*', …)`
         // — on PHP 8.5 with `char` defaulting to signed, that cast
         // segfaults the moment the cdylib touches a byte with the high
         // bit set. Allocate the input as `uint8_t[N]` directly so no
@@ -1132,7 +1132,7 @@ class FunctionBindings
             FFI::memcpy($cData, $certData, $certLen);
         }
         $cPassword = StringMarshaller::toCString($password); // password is a text string — toCString is correct here.
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
 
         try {
             $certHandle = $this->ffi->pdf_certificate_load_from_bytes(
@@ -1158,7 +1158,7 @@ class FunctionBindings
     public function pdfCertificateGetSubject(CData $certificateHandle): string
     {
         // C: char *pdf_certificate_get_subject(const void *cert, int32_t *err)
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $subject = $this->ffi->pdf_certificate_get_subject($certificateHandle, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_certificate_get_subject');
         return StringMarshaller::fromCString($subject);
@@ -1172,7 +1172,7 @@ class FunctionBindings
      */
     public function pdfCertificateGetIssuer(CData $certificateHandle): string
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $issuer = $this->ffi->pdf_certificate_get_issuer($certificateHandle, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_certificate_get_issuer');
         return StringMarshaller::fromCString($issuer);
@@ -1214,7 +1214,7 @@ class FunctionBindings
     public function pdfPageGetWidth(CData $docHandle, int $pageIndex): float
     {
         // C: float pdf_page_get_width(const PdfDocument *handle, int32_t page_index, int32_t *err)
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $width = $this->ffi->pdf_page_get_width($docHandle, $pageIndex, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_page_get_width');
         return (float) $width;
@@ -1225,7 +1225,7 @@ class FunctionBindings
      */
     public function pdfPageGetHeight(CData $docHandle, int $pageIndex): float
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $height = $this->ffi->pdf_page_get_height($docHandle, $pageIndex, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_page_get_height');
         return (float) $height;
@@ -1240,7 +1240,7 @@ class FunctionBindings
     public function pdfFromMarkdown(string $markdown): ?CData
     {
         $cMarkdown = StringMarshaller::toCString($markdown);
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
 
         try {
             $handle = $this->ffi->pdf_from_markdown($cMarkdown, FFI::addr($errorCode));
@@ -1257,7 +1257,7 @@ class FunctionBindings
     public function pdfFromHtml(string $html): ?CData
     {
         $cHtml = StringMarshaller::toCString($html);
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
 
         try {
             $handle = $this->ffi->pdf_from_html($cHtml, FFI::addr($errorCode));
@@ -1274,7 +1274,7 @@ class FunctionBindings
     public function pdfFromText(string $text): ?CData
     {
         $cText = StringMarshaller::toCString($text);
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
 
         try {
             $handle = $this->ffi->pdf_from_text($cText, FFI::addr($errorCode));
@@ -1291,7 +1291,7 @@ class FunctionBindings
     public function pdfSave(CData $handle, string $path): void
     {
         $cPath = StringMarshaller::toCString($path);
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
 
         try {
             $this->ffi->pdf_save($handle, $cPath, FFI::addr($errorCode));
@@ -1316,8 +1316,8 @@ class FunctionBindings
      */
     public function pdfSaveToBytes(CData $handle): string
     {
-        $outputLen = FFI::new('size_t');
-        $errorCode = FFI::new('int32_t');
+        $outputLen = $this->ffi->new('size_t');
+        $errorCode = $this->ffi->new('int32_t');
 
         $ptr = $this->ffi->pdf_save_to_bytes(
             $handle,
@@ -1332,7 +1332,7 @@ class FunctionBindings
         }
         $bytes = FFI::string($ptr, $len);
         // Owned uint8_t* — free via the cdylib's free_bytes.
-        $this->ffi->free_bytes(FFI::cast('uint8_t*', $ptr));
+        $this->ffi->free_bytes($this->ffi->cast('uint8_t*', $ptr));
         return $bytes;
     }
 
@@ -1341,7 +1341,7 @@ class FunctionBindings
      */
     public function pdfGetPageCount(CData $handle): int
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         try {
             $count = (int) $this->ffi->pdf_get_page_count($handle, FFI::addr($errorCode));
             ErrorHandler::check($errorCode->cdata, 'pdf_get_page_count');
@@ -1375,7 +1375,7 @@ class FunctionBindings
      */
     public function pdfOxideFontGetName(CData $fontList, int $index): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         try {
             $cStr = $this->ffi->pdf_oxide_font_get_name($fontList, $index, FFI::addr($errorCode));
             ErrorHandler::check($errorCode->cdata, 'pdf_oxide_font_get_name');
@@ -1390,7 +1390,7 @@ class FunctionBindings
      */
     public function pdfOxideFontGetType(CData $fontList, int $index): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         try {
             $cStr = $this->ffi->pdf_oxide_font_get_type($fontList, $index, FFI::addr($errorCode));
             ErrorHandler::check($errorCode->cdata, 'pdf_oxide_font_get_type');
@@ -1405,7 +1405,7 @@ class FunctionBindings
      */
     public function pdfOxideFontGetEncoding(CData $fontList, int $index): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         try {
             $cStr = $this->ffi->pdf_oxide_font_get_encoding($fontList, $index, FFI::addr($errorCode));
             ErrorHandler::check($errorCode->cdata, 'pdf_oxide_font_get_encoding');
@@ -1421,7 +1421,7 @@ class FunctionBindings
     public function pdfOxideFontIsEmbedded(CData $fontList, int $index): bool
     {
         // C: int32_t pdf_oxide_font_is_embedded(const FfiFontList *fonts, int32_t index, int32_t *err)
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $embedded = $this->ffi->pdf_oxide_font_is_embedded($fontList, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_font_is_embedded');
         return ((int) $embedded) !== 0;
@@ -1432,7 +1432,7 @@ class FunctionBindings
      */
     public function pdfOxideFontIsSubset(CData $fontList, int $index): bool
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $subset = $this->ffi->pdf_oxide_font_is_subset($fontList, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_font_is_subset');
         return ((int) $subset) !== 0;
@@ -1443,7 +1443,7 @@ class FunctionBindings
      */
     public function pdfOxideFontGetSize(CData $fontList, int $index): float
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $size = $this->ffi->pdf_oxide_font_get_size($fontList, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_font_get_size');
         return (float) $size;
@@ -1472,7 +1472,7 @@ class FunctionBindings
      */
     public function pdfOxideImageGetWidth(CData $imageList, int $index): int
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $w = $this->ffi->pdf_oxide_image_get_width($imageList, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_image_get_width');
         return (int) $w;
@@ -1483,7 +1483,7 @@ class FunctionBindings
      */
     public function pdfOxideImageGetHeight(CData $imageList, int $index): int
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $h = $this->ffi->pdf_oxide_image_get_height($imageList, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_image_get_height');
         return (int) $h;
@@ -1494,7 +1494,7 @@ class FunctionBindings
      */
     public function pdfOxideImageGetFormat(CData $imageList, int $index): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         try {
             $cStr = $this->ffi->pdf_oxide_image_get_format($imageList, $index, FFI::addr($errorCode));
             ErrorHandler::check($errorCode->cdata, 'pdf_oxide_image_get_format');
@@ -1509,7 +1509,7 @@ class FunctionBindings
      */
     public function pdfOxideImageGetColorspace(CData $imageList, int $index): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         try {
             $cStr = $this->ffi->pdf_oxide_image_get_colorspace($imageList, $index, FFI::addr($errorCode));
             ErrorHandler::check($errorCode->cdata, 'pdf_oxide_image_get_colorspace');
@@ -1524,7 +1524,7 @@ class FunctionBindings
      */
     public function pdfOxideImageGetBitsPerComponent(CData $imageList, int $index): int
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $bpc = $this->ffi->pdf_oxide_image_get_bits_per_component($imageList, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_image_get_bits_per_component');
         return (int) $bpc;
@@ -1535,8 +1535,8 @@ class FunctionBindings
      */
     public function pdfOxideImageGetData(CData $imageList, int $index): string
     {
-        $outSize = FFI::new('size_t');
-        $errorCode = FFI::new('int32_t');
+        $outSize = $this->ffi->new('size_t');
+        $errorCode = $this->ffi->new('int32_t');
 
         $dataPtr = $this->ffi->pdf_oxide_image_get_data(
             $imageList,
@@ -1552,7 +1552,7 @@ class FunctionBindings
         }
         $bytes = FFI::string($dataPtr, $size);
         // Owned uint8_t* — free via the cdylib's free_bytes.
-        $this->ffi->free_bytes(FFI::cast('uint8_t*', $dataPtr));
+        $this->ffi->free_bytes($this->ffi->cast('uint8_t*', $dataPtr));
         return $bytes;
     }
 
@@ -1579,7 +1579,7 @@ class FunctionBindings
      */
     public function pdfOxideSearchResultGetText(CData $results, int $index): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         try {
             $cStr = $this->ffi->pdf_oxide_search_result_get_text($results, $index, FFI::addr($errorCode));
             ErrorHandler::check($errorCode->cdata, 'pdf_oxide_search_result_get_text');
@@ -1596,7 +1596,7 @@ class FunctionBindings
     {
         // C: int32_t pdf_oxide_search_result_get_page(results, index, *err)
         // Same off-by-one trailing-err bug class as #547 round 3.
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $page = $this->ffi->pdf_oxide_search_result_get_page($results, $index, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_search_result_get_page');
         return (int) $page;
@@ -1608,11 +1608,11 @@ class FunctionBindings
      */
     public function pdfOxideSearchResultGetBbox(CData $results, int $index): array
     {
-        $x = FFI::new('float');
-        $y = FFI::new('float');
-        $width = FFI::new('float');
-        $height = FFI::new('float');
-        $errorCode = FFI::new('int');
+        $x = $this->ffi->new('float');
+        $y = $this->ffi->new('float');
+        $width = $this->ffi->new('float');
+        $height = $this->ffi->new('float');
+        $errorCode = $this->ffi->new('int');
 
         try {
             $this->ffi->pdf_oxide_search_result_get_bbox(
@@ -1665,7 +1665,7 @@ class FunctionBindings
     public function pdfCertificateGetSerial(CData $cert): string
     {
         // C: char *pdf_certificate_get_serial(const void *cert, int32_t *err)
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $serial = $this->ffi->pdf_certificate_get_serial($cert, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_certificate_get_serial');
         return StringMarshaller::fromCString($serial);
@@ -1677,7 +1677,7 @@ class FunctionBindings
      */
     public function pdfSignatureGetSigningTime(CData $sig): string
     {
-        $errorCode = FFI::new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
         $time = $this->ffi->pdf_signature_get_signing_time($sig, FFI::addr($errorCode));
         ErrorHandler::check((int) $errorCode->cdata, 'pdf_signature_get_signing_time');
         return StringMarshaller::fromCString($time);
@@ -1721,7 +1721,7 @@ class FunctionBindings
      */
     public function pdfDocumentClassifyPage(CData $handle, int $pageIndex): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $json = $this->ffi->pdf_document_classify_page($handle, $pageIndex, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_classify_page', ['page' => $pageIndex]);
         return StringMarshaller::fromCString($json);
@@ -1733,7 +1733,7 @@ class FunctionBindings
      */
     public function pdfDocumentClassifyDocument(CData $handle): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $json = $this->ffi->pdf_document_classify_document($handle, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_classify_document');
         return StringMarshaller::fromCString($json);
@@ -1747,7 +1747,7 @@ class FunctionBindings
      */
     public function pdfDocumentExtractTextAuto(CData $handle, int $pageIndex): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $text = $this->ffi->pdf_document_extract_text_auto($handle, $pageIndex, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_extract_text_auto', ['page' => $pageIndex]);
         return StringMarshaller::fromCString($text);
@@ -1760,7 +1760,7 @@ class FunctionBindings
      */
     public function pdfDocumentExtractPageAuto(CData $handle, int $pageIndex, ?string $optionsJson = null): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $cOpts = StringMarshaller::toCString($optionsJson ?? '{}');
         try {
             $json = $this->ffi->pdf_document_extract_page_auto(
@@ -1784,7 +1784,7 @@ class FunctionBindings
      */
     public function pdfOxidePrefetchModels(string $languagesCsv): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $cCsv = StringMarshaller::toCString($languagesCsv);
         try {
             $path = $this->ffi->pdf_oxide_prefetch_models($cCsv, FFI::addr($errorCode));
@@ -1828,7 +1828,7 @@ class FunctionBindings
     public function documentEditorOpen(string $path): ?CData
     {
         $cPath = StringMarshaller::toCString($path);
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         try {
             $handle = $this->ffi->document_editor_open($cPath, FFI::addr($errorCode));
             ErrorHandler::check($errorCode->cdata, 'document_editor_open', ['path' => $path]);
@@ -1862,7 +1862,7 @@ class FunctionBindings
         float $g = 0.0,
         float $b = 0.0
     ): int {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $result = $this->ffi->pdf_redaction_add(
             $editor,
             $page,
@@ -1884,7 +1884,7 @@ class FunctionBindings
      */
     public function pdfRedactionCount(CData $editor, int $page): int
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $n = $this->ffi->pdf_redaction_count($editor, $page, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_redaction_count', ['page' => $page]);
         return (int) $n;
@@ -1902,7 +1902,7 @@ class FunctionBindings
         float $g = 0.0,
         float $b = 0.0
     ): int {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $result = $this->ffi->pdf_redaction_apply(
             $editor,
             $scrubMetadata,
@@ -1921,7 +1921,7 @@ class FunctionBindings
      */
     public function pdfRedactionScrubMetadata(CData $editor): int
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $result = $this->ffi->pdf_redaction_scrub_metadata($editor, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_redaction_scrub_metadata');
         return (int) $result;
@@ -1932,7 +1932,7 @@ class FunctionBindings
      */
     public function documentEditorApplyPageRedactions(CData $editor, int $page): int
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $result = $this->ffi->document_editor_apply_page_redactions(
             $editor,
             $page,
@@ -1947,7 +1947,7 @@ class FunctionBindings
      */
     public function documentEditorApplyAllRedactions(CData $editor): int
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $result = $this->ffi->document_editor_apply_all_redactions($editor, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'document_editor_apply_all_redactions');
         return (int) $result;
@@ -1965,17 +1965,17 @@ class FunctionBindings
      */
     public function pdfSignBytesPadesOpts(string $pdfData, CData $optionsBlob): string
     {
-        $errorCode = FFI::new('int');
-        $outLen = FFI::new('size_t');
+        $errorCode = $this->ffi->new('int');
+        $outLen = $this->ffi->new('size_t');
         $pdfLen = strlen($pdfData);
 
-        $pdfBuf = FFI::new('uint8_t[' . ($pdfLen > 0 ? $pdfLen : 1) . ']', false);
+        $pdfBuf = $this->ffi->new('uint8_t[' . ($pdfLen > 0 ? $pdfLen : 1) . ']', false);
         if ($pdfLen > 0) {
             FFI::memcpy($pdfBuf, $pdfData, $pdfLen);
         }
 
         $out = $this->ffi->pdf_sign_bytes_pades_opts(
-            FFI::cast('uint8_t*', $pdfBuf),
+            $this->ffi->cast('uint8_t*', $pdfBuf),
             $pdfLen,
             FFI::addr($optionsBlob),
             FFI::addr($outLen),
@@ -1986,7 +1986,7 @@ class FunctionBindings
         $length = (int) $outLen->cdata;
         $signed = FFI::string($out, $length);
         // Free native buffer.
-        $this->ffi->free_bytes(FFI::cast('uint8_t*', $out));
+        $this->ffi->free_bytes($this->ffi->cast('uint8_t*', $out));
         FFI::free($pdfBuf);
 
         return $signed;
@@ -1998,7 +1998,7 @@ class FunctionBindings
      */
     public function pdfSignatureGetPadesLevel(CData $signatureHandle): int
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $level = $this->ffi->pdf_signature_get_pades_level($signatureHandle, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_signature_get_pades_level');
         return (int) $level;
@@ -2016,7 +2016,7 @@ class FunctionBindings
      */
     public function pdfDocumentHasTimestamp(CData $documentHandle): bool
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $r = $this->ffi->pdf_document_has_timestamp($documentHandle, FFI::addr($errorCode));
         $code = (int) $errorCode->cdata;
         if ($code === ErrorHandler::UNSUPPORTED) {
@@ -2037,15 +2037,15 @@ class FunctionBindings
      */
     public function pdfDocumentOpenFromDocxBytes(string $data): ?CData
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $len = strlen($data);
-        $buf = FFI::new('uint8_t[' . ($len > 0 ? $len : 1) . ']', false);
+        $buf = $this->ffi->new('uint8_t[' . ($len > 0 ? $len : 1) . ']', false);
         if ($len > 0) {
             FFI::memcpy($buf, $data, $len);
         }
         try {
             $handle = $this->ffi->pdf_document_open_from_docx_bytes(
-                FFI::cast('uint8_t*', $buf),
+                $this->ffi->cast('uint8_t*', $buf),
                 $len,
                 FFI::addr($errorCode)
             );
@@ -2058,15 +2058,15 @@ class FunctionBindings
 
     public function pdfDocumentOpenFromPptxBytes(string $data): ?CData
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $len = strlen($data);
-        $buf = FFI::new('uint8_t[' . ($len > 0 ? $len : 1) . ']', false);
+        $buf = $this->ffi->new('uint8_t[' . ($len > 0 ? $len : 1) . ']', false);
         if ($len > 0) {
             FFI::memcpy($buf, $data, $len);
         }
         try {
             $handle = $this->ffi->pdf_document_open_from_pptx_bytes(
-                FFI::cast('uint8_t*', $buf),
+                $this->ffi->cast('uint8_t*', $buf),
                 $len,
                 FFI::addr($errorCode)
             );
@@ -2079,15 +2079,15 @@ class FunctionBindings
 
     public function pdfDocumentOpenFromXlsxBytes(string $data): ?CData
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $len = strlen($data);
-        $buf = FFI::new('uint8_t[' . ($len > 0 ? $len : 1) . ']', false);
+        $buf = $this->ffi->new('uint8_t[' . ($len > 0 ? $len : 1) . ']', false);
         if ($len > 0) {
             FFI::memcpy($buf, $data, $len);
         }
         try {
             $handle = $this->ffi->pdf_document_open_from_xlsx_bytes(
-                FFI::cast('uint8_t*', $buf),
+                $this->ffi->cast('uint8_t*', $buf),
                 $len,
                 FFI::addr($errorCode)
             );
@@ -2103,37 +2103,37 @@ class FunctionBindings
      */
     public function pdfDocumentToDocxBytes(CData $handle): string
     {
-        $errorCode = FFI::new('int');
-        $outLen = FFI::new('size_t');
+        $errorCode = $this->ffi->new('int');
+        $outLen = $this->ffi->new('size_t');
         $out = $this->ffi->pdf_document_to_docx($handle, FFI::addr($outLen), FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_to_docx');
         $length = (int) $outLen->cdata;
         $bytes = FFI::string($out, $length);
-        $this->ffi->free_bytes(FFI::cast('uint8_t*', $out));
+        $this->ffi->free_bytes($this->ffi->cast('uint8_t*', $out));
         return $bytes;
     }
 
     public function pdfDocumentToPptxBytes(CData $handle): string
     {
-        $errorCode = FFI::new('int');
-        $outLen = FFI::new('size_t');
+        $errorCode = $this->ffi->new('int');
+        $outLen = $this->ffi->new('size_t');
         $out = $this->ffi->pdf_document_to_pptx($handle, FFI::addr($outLen), FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_to_pptx');
         $length = (int) $outLen->cdata;
         $bytes = FFI::string($out, $length);
-        $this->ffi->free_bytes(FFI::cast('uint8_t*', $out));
+        $this->ffi->free_bytes($this->ffi->cast('uint8_t*', $out));
         return $bytes;
     }
 
     public function pdfDocumentToXlsxBytes(CData $handle): string
     {
-        $errorCode = FFI::new('int');
-        $outLen = FFI::new('size_t');
+        $errorCode = $this->ffi->new('int');
+        $outLen = $this->ffi->new('size_t');
         $out = $this->ffi->pdf_document_to_xlsx($handle, FFI::addr($outLen), FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_to_xlsx');
         $length = (int) $outLen->cdata;
         $bytes = FFI::string($out, $length);
-        $this->ffi->free_bytes(FFI::cast('uint8_t*', $out));
+        $this->ffi->free_bytes($this->ffi->cast('uint8_t*', $out));
         return $bytes;
     }
 
@@ -2150,7 +2150,7 @@ class FunctionBindings
      */
     public function pdfDocumentPlanSplitByBookmarks(CData $handle, ?string $optionsJson = null): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $cOpts = StringMarshaller::toCString($optionsJson ?? '{}');
         try {
             $json = $this->ffi->pdf_document_plan_split_by_bookmarks(
@@ -2176,7 +2176,7 @@ class FunctionBindings
      */
     public function pdfDocumentGetOutline(CData $handle): string
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $json = $this->ffi->pdf_document_get_outline($handle, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_document_get_outline');
         return StringMarshaller::fromCString($json);
@@ -2189,7 +2189,7 @@ class FunctionBindings
      */
     public function pdfPageBuilderWatermark(CData $pageBuilder, string $text): int
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $cText = StringMarshaller::toCString($text);
         try {
             $result = $this->ffi->pdf_page_builder_watermark($pageBuilder, $cText, FFI::addr($errorCode));
@@ -2203,7 +2203,7 @@ class FunctionBindings
     /** "CONFIDENTIAL" preset watermark. */
     public function pdfPageBuilderWatermarkConfidential(CData $pageBuilder): int
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $result = $this->ffi->pdf_page_builder_watermark_confidential($pageBuilder, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_page_builder_watermark_confidential');
         return (int) $result;
@@ -2212,7 +2212,7 @@ class FunctionBindings
     /** "DRAFT" preset watermark. */
     public function pdfPageBuilderWatermarkDraft(CData $pageBuilder): int
     {
-        $errorCode = FFI::new('int');
+        $errorCode = $this->ffi->new('int');
         $result = $this->ffi->pdf_page_builder_watermark_draft($pageBuilder, FFI::addr($errorCode));
         ErrorHandler::check($errorCode->cdata, 'pdf_page_builder_watermark_draft');
         return (int) $result;

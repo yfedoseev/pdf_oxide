@@ -26,3 +26,61 @@ Makefile text eol=lf
 *.bat   text eol=crlf
 *.cmd   text eol=crlf
 *.ps1   text eol=crlf
+
+# Packagist dist slimming (git-archive honors export-ignore).
+# `composer require oxide/pdf-oxide` only needs the PHP source, the
+# cdef header, composer.json, README, and LICENSE-*. Without these
+# rules the dist tarball was ~36 MB (the whole monorepo).
+/bench                 export-ignore
+/benches               export-ignore
+/csharp                export-ignore
+/docs                  export-ignore
+/examples              export-ignore
+/go                    export-ignore
+/hooks                 export-ignore
+/java                  export-ignore
+/js                    export-ignore
+/lib                   export-ignore
+/models                export-ignore
+/pdf_oxide_cli         export-ignore
+/pdf_oxide_jni         export-ignore
+/pdf_oxide_mcp         export-ignore
+/python                export-ignore
+/ruby                  export-ignore
+/scripts               export-ignore
+/src                   export-ignore
+/target                export-ignore
+/tests                 export-ignore
+/tools                 export-ignore
+/training              export-ignore
+/wasm-pkg              export-ignore
+/.github               export-ignore
+# Top-level config that only matters to the Rust/Python/Node toolchains
+/Cargo.toml            export-ignore
+/Cargo.lock            export-ignore
+/build.rs              export-ignore
+/cbindgen.toml         export-ignore
+/pyproject.toml        export-ignore
+/uv.lock               export-ignore
+/Makefile              export-ignore
+/codecov.yml           export-ignore
+/deny.toml             export-ignore
+/rustfmt.toml          export-ignore
+/clippy.toml           export-ignore
+/osv-scanner.toml      export-ignore
+/rylai.toml            export-ignore
+/install.ps1           export-ignore
+/install.sh            export-ignore
+/llms.txt              export-ignore
+/AGENTS.md             export-ignore
+/CHANGELOG.md          export-ignore
+/CONTRIBUTING.md       export-ignore
+/CODE_OF_CONDUCT.md    export-ignore
+/SECURITY.md           export-ignore
+/.editorconfig         export-ignore
+/.cargo                export-ignore
+/.devin                export-ignore
+/.githooks             export-ignore
+/.models               export-ignore
+/.pre-commit-config.yaml export-ignore
+/.taplo.toml           export-ignore

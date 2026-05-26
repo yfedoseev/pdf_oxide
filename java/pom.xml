@@ -20,8 +20,8 @@
 
   Publishing:  Central Portal (post-OSSRH, June 2025) via
                central-publishing-maven-plugin 0.9.0 with
-               autoPublish=false — matches feedback_release_gate:
-               human flips publish at Central Portal after VALIDATED.
+               autoPublish=true — the release gate fires at PR-merge,
+               same as PyPI / npm / crates.io / RubyGems / NuGet.
 
   Plan:        docs/releases/plans/v0.3.53/  (gitignored workspace)
 -->
@@ -374,9 +374,8 @@
              pdf/native/{OS}/{ARCH}/ by the GitHub Actions job
              (per feature-NNN-java-binding.md T21). GPG-signs all
              artifacts; uploads to Central Portal via the central-
-             publishing-maven-plugin with autoPublish=false (matches
-             feedback_release_gate: human flips publish after
-             VALIDATED). -->
+             publishing-maven-plugin with autoPublish=true (release
+             gate fires at PR-merge, in line with other registries). -->
         <profile>
             <id>release</id>
             <build>
@@ -411,12 +410,12 @@
                         <extensions>true</extensions>
                         <configuration>
                             <publishingServerId>central</publishingServerId>
-                            <!-- Stop at VALIDATED state — human flips
-                                 publish manually from the Central
-                                 Portal UI. Matches our release-gate
-                                 pattern across all bindings. -->
-                            <autoPublish>false</autoPublish>
-                            <waitUntil>validated</waitUntil>
+                            <!-- Auto-promote to Maven Central without
+                                 UI step. The release gate already
+                                 happens at the PR-merge step, matching
+                                 the other 9 registries. -->
+                            <autoPublish>true</autoPublish>
+                            <waitUntil>published</waitUntil>
                         </configuration>
                     </plugin>
                 </plugins>

@@ -144,13 +144,53 @@ class NativeLibrary
             return realpath($compiledPath);
         }
 
+        // Lazy fallback: Composer does NOT fire dependency-level
+        // post-install-cmd hooks, so end users of
+        // `composer require oxide/pdf-oxide` never trigger
+        // scripts/download-native-lib.php automatically. Detect the
+        // miss on first use and invoke the downloader once. Opt out
+        // with PDF_OXIDE_AUTO_DOWNLOAD=0 (e.g. air-gapped envs).
+        if (getenv('PDF_OXIDE_AUTO_DOWNLOAD') !== '0' && self::attemptLazyDownload()) {
+            $platformKey = self::detectPlatformKey($platform);
+            $stagedPath = dirname(__DIR__, 3) . '/lib/' . $platformKey . '/' . $libName;
+            if (file_exists($stagedPath) && is_readable($stagedPath)) {
+                return realpath($stagedPath);
+            }
+        }
+
         throw new RuntimeException(
             sprintf(
-                'PDF Oxide library not found for %s. Searched paths: %s',
+                'PDF Oxide library not found for %s. Searched paths: %s. '
+                . 'Run `php vendor/oxide/pdf-oxide/php/scripts/download-native-lib.php` '
+                . 'to fetch the prebuilt cdylib for your platform.',
                 $platform,
                 implode(', ', $searchPaths)
             )
         );
+    }
+
+    /**
+     * Run the bundled downloader script in-process. Returns true if
+     * the script exited 0 (download succeeded), false otherwise.
+     * Output is suppressed unless PDF_OXIDE_DEBUG=1 is set.
+     */
+    private static function attemptLazyDownload(): bool
+    {
+        $script = dirname(__DIR__, 2) . '/scripts/download-native-lib.php';
+        if (!is_file($script)) {
+            return false;
+        }
+        $verbose = getenv('PDF_OXIDE_DEBUG') === '1';
+        if (!$verbose) {
+            fwrite(STDERR, "[pdf_oxide] Fetching native library on first use (set PDF_OXIDE_AUTO_DOWNLOAD=0 to disable)...\n");
+        }
+        $cmd = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($script);
+        if (!$verbose) {
+            $cmd .= ' >/dev/null 2>&1';
+        }
+        $rc = 0;
+        passthru($cmd, $rc);
+        return $rc === 0;
     }
 
     /**

@@ -445,6 +445,38 @@ jobs:
           path: native-out/
           retention-days: 7
 
+      # PHP-binding consumable: a per-platform tarball containing JUST
+      # the cdylib, named `libpdf_oxide-vX.Y.Z-<php_key>.tar.gz`. The
+      # Composer post-install / lazy-loader hook in php/scripts/
+      # download-native-lib.php fetches these directly off the GitHub
+      # Release. Only generated for the 5 platforms PHP supports —
+      # windows-aarch64 + windows-gnu have no PHP downloader entry.
+      - name: Package PHP native asset
+        shell: bash
+        run: |
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-gnu)  php_key=linux-x86_64  ;;
+            aarch64-unknown-linux-gnu) php_key=linux-aarch64 ;;
+            x86_64-apple-darwin)       php_key=darwin-x86_64 ;;
+            aarch64-apple-darwin)      php_key=darwin-arm64  ;;
+            x86_64-pc-windows-msvc)    php_key=windows-x64   ;;
+            *) echo "skipping PHP asset for ${{ matrix.target }}"; exit 0 ;;
+          esac
+          version="v${{ needs.validate.outputs.version }}"
+          outfile="libpdf_oxide-${version}-${php_key}.tar.gz"
+          tar -czf "${outfile}" -C native-out "${{ matrix.lib_name }}"
+          ls -la "${outfile}"
+          echo "PHP_ASSET=${outfile}" >> "$GITHUB_ENV"
+          echo "PHP_KEY=${php_key}" >> "$GITHUB_ENV"
+
+      - name: Upload PHP native asset
+        if: env.PHP_ASSET != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: php-native-${{ env.PHP_KEY }}
+          path: ${{ env.PHP_ASSET }}
+          retention-days: 7
+
   # Java JNI shim — cross-compiled cdylib per supported arch. Mirrors
   # `build-native-libs` matrix but builds `pdf_oxide_jni` (the JNI
   # shim crate) instead of `pdf_oxide` (the C ABI lib). The output
@@ -1343,7 +1375,7 @@ jobs:
     # publish the release, so a broken .a or a stale cgo_dev.go can't leak
     # into a tagged release. For prereleases (`-rc.1` etc.) verify-go-install
     # is skipped; `always() && result != failure` lets the release proceed.
-    needs: [validate, build-binaries, build-python-wheels, build-python-wheels-musl, build-wasm, build-nodejs, build-csharp, package-go-ffi, verify-go-install]
+    needs: [validate, build-binaries, build-python-wheels, build-python-wheels-musl, build-wasm, build-native-libs, build-nodejs, build-csharp, package-go-ffi, verify-go-install]
     # #515 hard-gate: create-release publishes a GitHub Release (mutating)
     # — never on a pull_request dry-run; only a real tag / dispatch+publish.
     if: ${{ always() && needs.verify-go-install.result != 'failure' && needs.package-go-ffi.result == 'success' && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}

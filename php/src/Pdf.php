@@ -102,8 +102,8 @@ final class Pdf
         // (the FunctionBindings wrapper targets a different signature
         // and isn't usable for the Pdf* handle path).
         $ffi = NativeLibrary::getInstance();
-        $dataLen = \FFI::new('int32_t');
-        $errorCode = \FFI::new('int32_t');
+        $dataLen = $ffi->new('int32_t');
+        $errorCode = $ffi->new('int32_t');
         $ptr = $ffi->pdf_save_to_bytes($this->requireHandle(), \FFI::addr($dataLen), \FFI::addr($errorCode));
         if ((int) $errorCode->cdata !== 0 || $ptr === null) {
             throw new \PdfOxide\Exceptions\PdfException(

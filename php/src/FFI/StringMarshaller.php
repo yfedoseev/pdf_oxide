@@ -26,7 +26,7 @@ class StringMarshaller
         $bytes = strlen($str) + 1;
 
         // Allocate C string
-        $cStr = FFI::new('char[' . $bytes . ']');
+        $cStr = $ffi->new('char[' . $bytes . ']');
 
         // Copy bytes
         FFI::memcpy($cStr, $str, strlen($str));
@@ -49,12 +49,13 @@ class StringMarshaller
             return '';
         }
 
+        $ffi = NativeLibrary::getInstance();
         // Use FFI::string() to copy the NUL-terminated C string in
         // O(n) rather than concatenating char-by-char in O(n²) — for
         // large extracted-text / markdown buffers the quadratic form
         // dominated wall time. The no-length overload reads until NUL
         // automatically; ext-ffi handles the strlen in C.
-        $str = FFI::string(FFI::cast('char*', $cStr));
+        $str = FFI::string($ffi->cast('char*', $cStr));
 
         if (!self::isValidUtf8($str)) {
             throw new \RuntimeException('Invalid UTF-8 string from FFI');
@@ -81,7 +82,7 @@ class StringMarshaller
 
         try {
             $ffi = NativeLibrary::getInstance();
-            $ffi->free_string(FFI::cast('char*', $cStr));
+            $ffi->free_string($ffi->cast('char*', $cStr));
         } catch (\Exception $e) {
             // Log but don't throw - we're in cleanup
             trigger_error('Failed to free C string: ' . $e->getMessage(), E_USER_WARNING);
