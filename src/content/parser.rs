@@ -24,11 +24,58 @@ use nom::Parser;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 
-/// Maximum number of operators to parse from a single content stream.
+/// Default maximum number of operators to parse from a single content
+/// stream. Prevents pathological inputs (e.g., Isartor 6.1.12) from
+/// consuming unbounded time and memory.
 ///
-/// Prevents pathological inputs (e.g., Isartor 6.1.12) from consuming
-/// unbounded time and memory.
+/// v0.3.56 (#559): this is the default for the global override; callers
+/// can override via [`set_max_ops_per_stream`] to raise the cap (or set
+/// `usize::MAX` for effectively unbounded — use with caution on
+/// adversarial PDFs).
 const MAX_OPERATORS: usize = 1_000_000;
+
+/// Global cap override for content-stream operator count (#559). `0`
+/// means "use [`MAX_OPERATORS`] default"; any other value is the
+/// effective cap. Atomic so it's safe to set from one thread while
+/// extraction runs on another (e.g. parallel-page extraction).
+static MAX_OPERATORS_OVERRIDE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Set the global content-stream operator cap (#559). `None` keeps the
+/// default ([`MAX_OPERATORS`] = 1,000,000). `Some(n)` overrides to `n`
+/// — pass `Some(usize::MAX)` for effectively unbounded.
+///
+/// Returns the previous override (or `None` if the default was active).
+/// The override is process-global; setting it on one thread affects all
+/// concurrent extractions.
+///
+/// **Use case**: large technical PDFs (textbooks, ISO standards) that
+/// have legitimate content streams exceeding 1,000,000 operators. The
+/// default cap exists to bound the cost of adversarial inputs; raise
+/// it when you know the inputs are trusted.
+///
+/// See `docs/releases/plans/v0.3.56/cluster-silent-data-loss.md`.
+pub fn set_max_ops_per_stream(limit: Option<usize>) -> Option<usize> {
+    let new = limit.unwrap_or(0);
+    let prev = MAX_OPERATORS_OVERRIDE.swap(new, std::sync::atomic::Ordering::SeqCst);
+    if prev == 0 {
+        None
+    } else {
+        Some(prev)
+    }
+}
+
+/// Current effective operator cap. Reads the override if set; otherwise
+/// returns [`MAX_OPERATORS`]. Internal hot-path helper.
+#[inline]
+fn effective_max_operators() -> usize {
+    let override_val = MAX_OPERATORS_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+    if override_val == 0 {
+        MAX_OPERATORS
+    } else {
+        override_val
+    }
+}
 
 /// Maximum consecutive parse errors (byte skips) before bailing out.
 ///
@@ -68,7 +115,7 @@ pub fn parse_content_stream(data: &[u8]) -> Result<Vec<Operator>> {
                 input = rest;
                 consecutive_errors = 0;
 
-                if operators.len() >= MAX_OPERATORS {
+                if operators.len() >= effective_max_operators() {
                     log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
                     break;
                 }
@@ -128,7 +175,7 @@ pub fn parse_content_stream_paths_only(data: &[u8]) -> Result<Vec<Operator>> {
         if i >= len {
             break;
         }
-        if operators.len() >= MAX_OPERATORS {
+        if operators.len() >= effective_max_operators() {
             log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
             break;
         }
@@ -428,7 +475,7 @@ pub fn parse_content_stream_text_only(data: &[u8]) -> Result<Vec<Operator>> {
             break;
         }
 
-        if operators.len() >= MAX_OPERATORS {
+        if operators.len() >= effective_max_operators() {
             log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
             break;
         }
@@ -1223,7 +1270,7 @@ where
             break;
         }
 
-        if op_count >= MAX_OPERATORS {
+        if op_count >= effective_max_operators() {
             log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
             break;
         }
@@ -1355,7 +1402,7 @@ where
             break;
         }
 
-        if op_count >= MAX_OPERATORS {
+        if op_count >= effective_max_operators() {
             break;
         }
 
@@ -1472,7 +1519,7 @@ pub fn parse_content_stream_images_only(data: &[u8]) -> Result<Vec<Operator>> {
             break;
         }
 
-        if operators.len() >= MAX_OPERATORS {
+        if operators.len() >= effective_max_operators() {
             break;
         }
 

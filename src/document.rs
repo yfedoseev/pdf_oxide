@@ -5601,6 +5601,43 @@ impl PdfDocument {
         crate::ocr::extract_text_with_ocr(self, page_index, ocr_engine, ocr_options)
     }
 
+    /// Always rasterise the page and run the supplied OCR engine,
+    /// regardless of the embedded text layer. v0.3.56 additive companion
+    /// for #574 — the existing [`extract_text_with_ocr`] is
+    /// text-layer-first (OCR only when no native text), which the
+    /// reporter found misleading because the name implies OCR-always.
+    ///
+    /// `extract_text_ocr_only` makes the OCR-always contract explicit:
+    /// the engine is invoked unconditionally and its output is returned
+    /// even when an embedded text layer is present (useful for scanned-
+    /// then-machine-OCR'd PDFs where the embedded layer is poor quality
+    /// auto-OCR from the scanner).
+    ///
+    /// Returns `Err(Error::OcrUnavailable { reason: EngineNotProvided })`
+    /// if no engine is supplied — unlike [`extract_text_with_ocr`] which
+    /// silently degrades. This makes the OCR-required contract loud.
+    ///
+    /// See `docs/releases/plans/v0.3.56/cluster-ocr-api.md`.
+    #[cfg(feature = "ocr")]
+    pub fn extract_text_ocr_only(
+        &self,
+        page_index: usize,
+        ocr_engine: &crate::ocr::OcrEngine,
+        ocr_options: crate::ocr::OcrExtractOptions,
+    ) -> Result<String> {
+        // Run OCR unconditionally via the existing `ocr_page` helper.
+        // If ORT's init has previously panicked (missing libonnxruntime),
+        // the catch_unwind in `OrtBackend::from_bytes` (v0.3.56 #569 fix)
+        // ensures we get an OcrError instead of a panic.
+        crate::ocr::ocr_page(self, page_index, ocr_engine, &ocr_options).map_err(|e| {
+            Error::OcrUnavailable {
+                reason: crate::extractors::status::OcrUnavailableReason::ModelLoadFailed {
+                    detail: e.to_string(),
+                },
+            }
+        })
+    }
+
     /// Extract TextSpans with automatic OCR fallback for scanned pages.
     ///
     /// This method extracts text spans using native PDF text extraction, but falls back
@@ -7600,6 +7637,63 @@ impl PdfDocument {
 
         // No fonts and no Form XObjects → page is image-only
         true
+    }
+
+    /// Returns `true` if the page has any text-bearing content (fonts in
+    /// resources + at least one `BT`/`Do` operator in the content stream),
+    /// `false` if the page is image-only or genuinely empty.
+    ///
+    /// v0.3.56 additive accessor for #563. Callers route image-only pages
+    /// to OCR (`extract_text_ocr_only(page, engine)`) instead of receiving
+    /// an empty string with no signal.
+    ///
+    /// Conservative: returns `true` when the page resources can't be
+    /// inspected (load error, encrypted-not-authenticated, etc.) so the
+    /// caller still attempts extraction.
+    ///
+    /// # PDF spec basis
+    ///
+    /// §8.8 (Image XObjects): image-only pages have `/Resources` whose
+    /// only `/XObject` entries are `/Subtype /Image` with no `/Font`
+    /// resources. See `docs/releases/plans/v0.3.56/cluster-silent-data-loss.md`.
+    pub fn has_text_layer(&self, page_index: usize) -> Result<bool> {
+        let page = self.get_page(page_index)?;
+        let page_dict = page.as_dict().ok_or_else(|| Error::ParseError {
+            offset: 0,
+            reason: "Page is not a dictionary".to_string(),
+        })?;
+        if self.page_cannot_have_text(page_dict) {
+            return Ok(false);
+        }
+        // Probe content stream for text-showing operators. If we can't
+        // read the content stream, be conservative and say yes (let
+        // extraction try).
+        match self.get_page_content_data(page_index) {
+            Ok(content_data) => Ok(Self::may_contain_text(&content_data)),
+            Err(_) => Ok(true),
+        }
+    }
+
+    /// Returns the document's `/P` permission flags as a `PdfPermissions`
+    /// struct if the document is encrypted; `None` otherwise.
+    ///
+    /// v0.3.56 additive accessor for #562. Per PDF spec §7.6.3.2 the `/P`
+    /// flag is advisory — pdf_oxide does not enforce restrictions — but
+    /// callers who want to enforce them (e.g., refuse copy-protected PDF
+    /// extraction) can do so themselves by checking the returned
+    /// permissions.
+    ///
+    /// # PDF spec basis
+    ///
+    /// §7.6.3.2 Table 22 (`/P` Standard Encryption Dictionary entry).
+    /// Decoding is implemented in `encryption::permissions::PdfPermissions::from_p_flag`.
+    pub fn permissions(&self) -> Option<crate::encryption::PdfPermissions> {
+        // ensure_encryption_initialized may fail on malformed Encrypt
+        // dicts — that's fine, no permissions surface for those.
+        let _ = self.ensure_encryption_initialized();
+        let handler = self.encryption_handler.lock_or_recover();
+        let handler = handler.as_ref()?;
+        Some(crate::encryption::PdfPermissions::from_p_flag(handler.raw_permissions()))
     }
 
     /// Extract text using structure tree for Tagged PDFs.
