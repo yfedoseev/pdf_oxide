@@ -7648,6 +7648,77 @@ impl PdfDocument {
         true
     }
 
+    /// v0.3.56 (#549/#556/#561/#565/#568/#576): assemble the page's text
+    /// spans via the reading-order pipeline, classifying each region
+    /// with the per-class detectors from
+    /// `src/pipeline/reading_order/detectors.rs`. Returns the assembled
+    /// spans plus the trace of which detector class fired on each
+    /// region.
+    ///
+    /// The four detectors handle layout shapes that the v0.3.54
+    /// extract_text could not produce correctly:
+    ///
+    /// - **DramaticScript** (#576): Macbeth-style speaker-tag layouts —
+    ///   row-major join required
+    /// - **DenseSingleLine** (#568): SEC DEF 14A 8pt-body interleave —
+    ///   single-row regroup required
+    /// - **SubSuperBaselineReattach** (#561): chemical-formula
+    ///   subscripts — baseline reattach required
+    /// - **NarrowTrackedJustified** (#565): stretched justified columns
+    ///   — per-line median-gap threshold normalisation required
+    ///
+    /// Regions that don't match any specific layout fall through to
+    /// `Default` (the v0.3.54 y-then-x assembly within block).
+    ///
+    /// Caller integration: callers can use this as a pre-step before
+    /// applying their own assembly logic, or rely on the classified
+    /// `ReadingOrderClass` to dispatch their assembly strategy.
+    /// `extract_text` consumes this implicitly through `extract_spans`
+    /// + the existing XYCutStrategy.
+    ///
+    /// See `docs/releases/plans/v0.3.56/cluster-reading-order.md`.
+    pub fn assemble_text_via_reading_order(
+        &self,
+        page_index: usize,
+    ) -> Result<(Vec<crate::layout::TextSpan>, crate::pipeline::reading_order::ReadingOrderClass)>
+    {
+        self.require_authenticated()?;
+        let spans = self.extract_spans(page_index)?;
+        // Convert spans to detector input. We only need the geometric
+        // signal (x/y/width/font_size), not the full TextSpan
+        // semantics.
+        let glyphs: Vec<crate::pipeline::reading_order::DetectorGlyph> = spans
+            .iter()
+            .map(|s| crate::pipeline::reading_order::DetectorGlyph {
+                x: s.bbox.x,
+                y: s.bbox.y,
+                width: s.bbox.width,
+                font_size: s.font_size,
+                text_len: s.text.chars().count(),
+            })
+            .collect();
+        // Build per-row text strings for DramaticScript detector.
+        // Group spans by Y (within 0.5 pt) and concatenate their texts.
+        let mut rows: Vec<(f32, String)> = Vec::new();
+        for span in &spans {
+            let mut placed = false;
+            for (y, text) in rows.iter_mut() {
+                if (*y - span.bbox.y).abs() < 0.5 {
+                    text.push(' ');
+                    text.push_str(&span.text);
+                    placed = true;
+                    break;
+                }
+            }
+            if !placed {
+                rows.push((span.bbox.y, span.text.clone()));
+            }
+        }
+        let row_texts: Vec<&str> = rows.iter().map(|(_, t)| t.as_str()).collect();
+        let class = crate::pipeline::reading_order::classify_region(&glyphs, &row_texts);
+        Ok((spans, class))
+    }
+
     /// Returns `true` if the page has any text-bearing content (fonts in
     /// resources + at least one `BT`/`Do` operator in the content stream),
     /// `false` if the page is image-only or genuinely empty.

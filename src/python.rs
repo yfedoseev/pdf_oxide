@@ -2096,6 +2096,61 @@ impl PyPdfDocument {
         }
     }
 
+    /// v0.3.56 (#563) Python wrapper: returns True if the page has a
+    /// text layer; False for image-only / genuinely-empty pages.
+    /// Callers route image-only pages to OCR.
+    fn has_text_layer(&self, page: usize) -> PyResult<bool> {
+        self.inner
+            .has_text_layer(page)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// v0.3.56 (#562) Python wrapper: returns the document's /P
+    /// permission flags as a dict (None for unencrypted PDFs). Keys
+    /// match the PdfPermissions struct fields. Per PDF spec §7.6.3.2
+    /// the flags are advisory; pdf_oxide does not enforce them.
+    fn permissions(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self.inner.permissions() {
+            None => Ok(py.None()),
+            Some(p) => {
+                let dict = pyo3::types::PyDict::new(py);
+                dict.set_item("print_low_res", p.print_low_res)?;
+                dict.set_item("modify", p.modify)?;
+                dict.set_item("copy", p.copy)?;
+                dict.set_item("annotate", p.annotate)?;
+                dict.set_item("fill_forms", p.fill_forms)?;
+                dict.set_item("accessibility", p.accessibility)?;
+                dict.set_item("assemble", p.assemble)?;
+                dict.set_item("print_high_res", p.print_high_res)?;
+                dict.set_item("raw_p", p.raw_p)?;
+                Ok(dict.into_any().unbind())
+            },
+        }
+    }
+
+    /// v0.3.56 (#558 second half) Python wrapper: returns the
+    /// document's accumulated structured warnings as a list of dicts.
+    /// Each entry has `category`, `page`, `message`, `spec_section`.
+    /// Companion to the Python per-target log-level downgrade — gives
+    /// callers a structured opt-in surface instead of stderr text.
+    ///
+    /// Named `structured_warnings` (not `flatten_warnings`) to avoid
+    /// collision with the existing PyEditor `flatten_warnings`
+    /// accessor for form-flattening warnings.
+    fn structured_warnings(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let warnings = self.inner.flatten_warnings();
+        let list = pyo3::types::PyList::empty(py);
+        for w in warnings {
+            let entry = pyo3::types::PyDict::new(py);
+            entry.set_item("category", w.category.as_str())?;
+            entry.set_item("page", w.page)?;
+            entry.set_item("message", &w.message)?;
+            entry.set_item("spec_section", w.spec_section)?;
+            list.append(entry)?;
+        }
+        Ok(list.into_any().unbind())
+    }
+
     /// Get form fields.
     fn get_form_fields(&mut self) -> PyResult<Vec<PyFormField>> {
         use crate::extractors::forms::FormExtractor;
@@ -6756,8 +6811,29 @@ fn reset_pyo3_log_cache() {
 /// ```python
 /// import logging
 /// logging.basicConfig(level=logging.WARNING)
-/// ```
+/// v0.3.56 (#559) Python wrapper: set the global content-stream
+/// operator cap. `None` restores the default (1,000,000). Returns the
+/// previous override value or None if default was active.
 ///
+/// Use case: large technical PDFs (textbooks, ISO standards) with
+/// legitimate content streams exceeding 1,000,000 operators. Set to
+/// `None` (the default) for adversarial-input protection; set to a
+/// large value when the inputs are trusted.
+#[pyfunction]
+fn set_max_ops_per_stream(limit: Option<usize>) -> Option<usize> {
+    crate::content::parser::set_max_ops_per_stream(limit)
+}
+
+/// v0.3.56 (#571) Python wrapper: toggle the global U+FFFD
+/// preservation flag. When `True`, `extract_text` / `extract_words` /
+/// `extract_spans` emit U+FFFD chars for unmapped glyphs (matching
+/// `extract_chars` behaviour). When `False` (the v0.3.54 default),
+/// the high-level accessors filter them. Returns the previous value.
+#[pyfunction]
+fn set_preserve_unmapped_glyphs(preserve: bool) -> bool {
+    crate::extractors::text::set_preserve_unmapped_glyphs(preserve)
+}
+
 /// Generate a 1D barcode as an SVG string.
 ///
 /// `barcode_type`: 0=Code128, 1=Code39, 2=EAN13, 3=EAN8, 4=UPCA, 5=ITF, 6=Code93, 7=Codabar.
@@ -7531,6 +7607,8 @@ fn pdf_oxide(m: &Bound<'_, PyModule>) -> PyResult<()> {
     init_pyo3_log_handle();
     m.add_function(wrap_pyfunction!(setup_logging, m)?)?;
     m.add_function(wrap_pyfunction!(set_log_level, m)?)?;
+    m.add_function(wrap_pyfunction!(set_max_ops_per_stream, m)?)?;
+    m.add_function(wrap_pyfunction!(set_preserve_unmapped_glyphs, m)?)?;
     m.add_function(wrap_pyfunction!(get_log_level, m)?)?;
     m.add_function(wrap_pyfunction!(disable_logging, m)?)?;
     m.add_class::<PyPdfDocument>()?;
