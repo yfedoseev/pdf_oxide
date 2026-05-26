@@ -10,11 +10,16 @@
 //! - [`XYCutStrategy`]: Recursive XY-Cut spatial partitioning (newspapers, academic papers)
 //! - [`SimpleStrategy`]: Simple top-to-bottom, left-to-right ordering
 
+pub mod detectors;
 pub mod geometric;
 pub mod simple;
 pub mod structure_tree;
 pub mod xycut;
 
+pub use detectors::{
+    classify_region, detect_dense_single_line, detect_dramatic_script, detect_narrow_tracked,
+    detect_sub_super_glyphs, DetectorGlyph, ReadingOrderClass,
+};
 pub use geometric::GeometricStrategy;
 pub use simple::SimpleStrategy;
 pub use structure_tree::StructureTreeStrategy;

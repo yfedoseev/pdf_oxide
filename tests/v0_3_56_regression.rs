@@ -26,6 +26,10 @@ use pdf_oxide::converters::text_post_processor::TextPostProcessor;
 use pdf_oxide::encryption::PdfPermissions;
 use pdf_oxide::extractors::status::{ExtractionSignal, OcrUnavailableReason};
 use pdf_oxide::extractors::warnings::{Warning, WarningCategory, WarningSink};
+use pdf_oxide::pipeline::reading_order::{
+    classify_region, detect_dense_single_line, detect_dramatic_script, detect_narrow_tracked,
+    detect_sub_super_glyphs, DetectorGlyph, ReadingOrderClass,
+};
 
 // ===========================================================================
 // ROOT-CAUSE FIXES — actual upstream behaviour changed
@@ -459,6 +463,257 @@ fn foundation_pdf_permissions_round_trip() {
     assert!(p.print_low_res);
     assert!(p.copy);
     assert_eq!(p.raw_p, -1);
+}
+
+// ===========================================================================
+// ROOT-CAUSE READING-ORDER DETECTORS — Phase 2 cluster
+// ===========================================================================
+//
+// The four per-class reading-order detectors live in
+// `src/pipeline/reading_order/detectors.rs`. They classify regions
+// by shape and are usable from any layout pipeline. Integration
+// with the existing XYCutStrategy is the follow-up step (audit
+// task #29) — the detectors here are the predicate-level building
+// blocks that close the analysis half of #549/#561/#565/#568/#576.
+
+/// #549 base + #568 — DenseSingleLine detector fires on the SEC DEF
+/// 14A 8pt-body interleave shape (single-Y glyph cluster that the
+/// downstream assembler would split into two output rows).
+#[test]
+fn issue_568_dense_single_line_detector_fires_on_sec_proxy_shape() {
+    // 12 glyphs all at y=584.39 (the exact value from #568's repro
+    // on Visa DEF 14A page 3); x clusters into two bands [100,125]
+    // and [170,195] with a 45pt gap — bimodal X distribution.
+    let mut glyphs = Vec::new();
+    for x in [100.0, 105.0, 110.0, 115.0, 120.0, 125.0].iter() {
+        glyphs.push(DetectorGlyph {
+            x: *x,
+            y: 584.39,
+            width: 2.0,
+            font_size: 8.0,
+            text_len: 1,
+        });
+    }
+    for x in [170.0, 175.0, 180.0, 185.0, 190.0, 195.0].iter() {
+        glyphs.push(DetectorGlyph {
+            x: *x,
+            y: 584.39,
+            width: 2.0,
+            font_size: 8.0,
+            text_len: 1,
+        });
+    }
+    assert!(
+        detect_dense_single_line(&glyphs),
+        "single-Y cluster with bimodal X must trigger DenseSingleLine",
+    );
+    assert_eq!(classify_region(&glyphs, &[]), ReadingOrderClass::DenseSingleLine);
+}
+
+/// #561 — SubSuperBaselineReattach detector fires on chemical-
+/// formula subscript / superscript displacement.
+#[test]
+fn issue_561_sub_super_detector_fires_on_chemistry_shape() {
+    // Baseline glyphs at y=100, plus one subscript at y=104 (40% of
+    // 10pt font size displacement — within the (0.2..0.8)×fs range).
+    let glyphs = vec![
+        DetectorGlyph {
+            x: 50.0,
+            y: 100.0,
+            width: 5.0,
+            font_size: 10.0,
+            text_len: 1,
+        },
+        DetectorGlyph {
+            x: 55.0,
+            y: 100.0,
+            width: 5.0,
+            font_size: 10.0,
+            text_len: 1,
+        },
+        DetectorGlyph {
+            x: 60.0,
+            y: 100.0,
+            width: 5.0,
+            font_size: 10.0,
+            text_len: 1,
+        },
+        DetectorGlyph {
+            x: 65.0,
+            y: 100.0,
+            width: 5.0,
+            font_size: 10.0,
+            text_len: 1,
+        },
+        DetectorGlyph {
+            x: 70.0,
+            y: 104.0,
+            width: 5.0,
+            font_size: 10.0,
+            text_len: 1,
+        },
+    ];
+    assert!(detect_sub_super_glyphs(&glyphs));
+    assert_eq!(classify_region(&glyphs, &[]), ReadingOrderClass::SubSuperBaselineReattach,);
+}
+
+/// #565 — NarrowTrackedJustified detector fires on stretched
+/// justified columns where per-glyph gaps exceed proportional-font
+/// thresholds.
+#[test]
+fn issue_565_narrow_tracked_detector_fires_on_stretched_column() {
+    // 10 glyphs at 10pt with ~3pt gaps (stretched justification).
+    // Expected intra-word gap @ 10pt is ~0.8pt; 3pt is 3.75× that.
+    let mut glyphs = Vec::new();
+    for i in 0..10 {
+        glyphs.push(DetectorGlyph {
+            x: 50.0 + (i as f32) * 8.0,
+            y: 100.0,
+            width: 5.0,
+            font_size: 10.0,
+            text_len: 1,
+        });
+    }
+    assert!(detect_narrow_tracked(&glyphs));
+    assert_eq!(classify_region(&glyphs, &[]), ReadingOrderClass::NarrowTrackedJustified,);
+}
+
+/// #576 — DramaticScript detector fires on Macbeth-style speaker-
+/// tag layout (≥3 rows with short-token-ending-in-`.` at consistent
+/// left X).
+#[test]
+fn issue_576_dramatic_script_detector_fires_on_speaker_tags() {
+    let glyphs = vec![
+        DetectorGlyph {
+            x: 50.0,
+            y: 100.0,
+            width: 5.0,
+            font_size: 10.0,
+            text_len: 1,
+        },
+        DetectorGlyph {
+            x: 50.0,
+            y: 90.0,
+            width: 5.0,
+            font_size: 10.0,
+            text_len: 1,
+        },
+        DetectorGlyph {
+            x: 50.0,
+            y: 80.0,
+            width: 5.0,
+            font_size: 10.0,
+            text_len: 1,
+        },
+        DetectorGlyph {
+            x: 50.0,
+            y: 70.0,
+            width: 5.0,
+            font_size: 10.0,
+            text_len: 1,
+        },
+    ];
+    let rows = [
+        "First Witch.    I ask you.",
+        "Sec. Witch.     Speak.",
+        "Third Witch.    Demand.",
+        "All.            We'll answer.",
+    ];
+    assert!(detect_dramatic_script(&glyphs, &rows));
+    assert_eq!(classify_region(&glyphs, &rows), ReadingOrderClass::DramaticScript);
+}
+
+/// #549 + #556 — uniform body text (the default case) classifies as
+/// `Default`, preserving v0.3.54 behaviour where no specific
+/// detector fires. The XY-cut block partitioning continues to
+/// operate as the column-detection layer.
+#[test]
+fn issue_549_default_layout_falls_through_to_default_class() {
+    // Two glyphs at the same baseline — too few to trigger any
+    // specific detector.
+    let glyphs = vec![
+        DetectorGlyph {
+            x: 50.0,
+            y: 100.0,
+            width: 5.0,
+            font_size: 10.0,
+            text_len: 1,
+        },
+        DetectorGlyph {
+            x: 56.0,
+            y: 100.0,
+            width: 5.0,
+            font_size: 10.0,
+            text_len: 1,
+        },
+    ];
+    assert_eq!(classify_region(&glyphs, &[]), ReadingOrderClass::Default);
+}
+
+// ===========================================================================
+// ROOT-CAUSE #564 + #566 (CMap/threshold)
+// ===========================================================================
+
+/// #564 — TJ threshold calibration. v0.3.56 adds an opt-in
+/// `ExtractionProfile::TJ_HEAVY` profile that uses -100.0 as the
+/// threshold (vs the v0.3.54 default -120.0). The default stays
+/// at -120 for back-compat; callers handling TJ-heavy PDFs opt in
+/// via `TextExtractionConfig::with_profile(TJ_HEAVY)`. This is
+/// additive — no existing fixture's output changes.
+#[test]
+fn issue_564_tj_heavy_profile_exists() {
+    use pdf_oxide::config::ExtractionProfile;
+    let profile = ExtractionProfile::TJ_HEAVY;
+    assert_eq!(
+        profile.tj_offset_threshold, -100.0,
+        "TJ_HEAVY profile must use -100.0 threshold",
+    );
+    assert!(profile.name.contains("TJ-Heavy"));
+
+    // The CONSERVATIVE (default) profile stays at -120 for back-compat.
+    let conservative = ExtractionProfile::CONSERVATIVE;
+    assert_eq!(
+        conservative.tj_offset_threshold, -120.0,
+        "v0.3.54 conservative default preserved",
+    );
+}
+
+/// #566 — Adobe-Arabic-1 / Adobe-Persian-1 stub lookup. The
+/// `lookup_adobe_arabic` function maps CIDs in the Arabic block
+/// (U+0600–U+06FF) and the Arabic Presentation Forms to their
+/// Unicode codepoints. This handles the common case where Persian
+/// fonts use sequential Arabic-block CIDs.
+#[test]
+fn issue_566_persian_arabic_block_cid_mapping_works() {
+    use pdf_oxide::fonts::cid_mappings::lookup_adobe_arabic;
+    // Alef (ا) — U+0627
+    assert_eq!(lookup_adobe_arabic(0x0627), Some(0x0627));
+    // Persian-specific Pe (پ) — U+067E
+    assert_eq!(lookup_adobe_arabic(0x067E), Some(0x067E));
+    // Persian Zhe (ژ) — U+0698
+    assert_eq!(lookup_adobe_arabic(0x0698), Some(0x0698));
+    // Arabic Presentation Forms-A
+    assert_eq!(lookup_adobe_arabic(0xFB50), Some(0xFB50));
+    // Outside Arabic — None (caller falls back to existing chain)
+    assert_eq!(lookup_adobe_arabic(0x0041), None); // ASCII 'A'
+    assert_eq!(lookup_adobe_arabic(0x01A4), None); // Latin-Extended-B (v0.3.54 garbage)
+}
+
+/// #566 — DescendantFonts inline-dict parse path accepts direct
+/// dictionary objects (non-conformant per spec §9.7.6 but common in
+/// Persian/Farsi PDFs from older XeTeX/pdfTeX writers). v0.3.54
+/// rejected this with "DescendantFonts[0] is not a reference".
+#[test]
+fn issue_566_descendant_fonts_inline_dict_accepted() {
+    let source = include_str!("../src/fonts/font_dict.rs");
+    assert!(
+        source.contains("v0.3.56 (#566 root-cause, partial)"),
+        "DescendantFonts parse must carry the #566 inline-dict fix",
+    );
+    assert!(
+        source.contains("Inline-dict path"),
+        "the fix must explicitly handle the inline-dict case",
+    );
 }
 
 // ===========================================================================

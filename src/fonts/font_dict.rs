@@ -951,16 +951,47 @@ impl FontInfo {
             );
         }
 
-        let cidfont_ref = array[0].as_reference().ok_or_else(|| Error::ParseError {
-            offset: 0,
-            reason: format!("Type0 font '{}': DescendantFonts[0] is not a reference", base_font),
-        })?;
-
-        let cidfont_obj = doc.load_object(cidfont_ref)?;
-        let cidfont_dict = cidfont_obj.as_dict().ok_or_else(|| Error::ParseError {
-            offset: 0,
-            reason: format!("Type0 font '{}': CIDFont is not a dictionary", base_font),
-        })?;
+        // v0.3.56 (#566 root-cause, partial): accept both indirect
+        // references AND direct dictionary objects in DescendantFonts.
+        // PDF spec §9.7.6 mandates indirect refs, but Persian / Farsi
+        // PDFs from older XeTeX / pdfTeX writers (Nazanin, Yagut,
+        // Mitra, Lotus fonts) commonly inline the CIDFont dict
+        // directly. v0.3.54 rejected the inline form with "DescendantFonts[0]
+        // is not a reference" and fell back to Identity-H, which
+        // emits CIDs as Latin-Extended-B garbage instead of mapping
+        // through the CIDSystemInfo collection. Accepting the inline
+        // form gets the parser past this gate; the second half of
+        // #566 (bundled Adobe-Persian-1-UCS2 + Adobe-Arabic-1-UCS2
+        // CMap data) is tracked in audit task #30.
+        let cidfont_obj_owned;
+        let cidfont_dict = match array[0].as_reference() {
+            Some(cidfont_ref) => {
+                cidfont_obj_owned = doc.load_object(cidfont_ref)?;
+                cidfont_obj_owned
+                    .as_dict()
+                    .ok_or_else(|| Error::ParseError {
+                        offset: 0,
+                        reason: format!("Type0 font '{}': CIDFont is not a dictionary", base_font),
+                    })?
+            },
+            None => {
+                // Inline-dict path — accept it per §9.7.6 lenient
+                // reader posture.
+                log::info!(
+                    "Type0 font '{}': DescendantFonts[0] is a direct dictionary \
+                     (non-conformant per §9.7.6 but recoverable); parsing inline",
+                    base_font,
+                );
+                array[0].as_dict().ok_or_else(|| Error::ParseError {
+                    offset: 0,
+                    reason: format!(
+                        "Type0 font '{}': DescendantFonts[0] is neither a reference \
+                         nor a dictionary",
+                        base_font
+                    ),
+                })?
+            },
+        };
 
         // Get CIDFont subtype (required: CIDFontType0 or CIDFontType2)
         let cid_font_type = cidfont_dict

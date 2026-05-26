@@ -244,6 +244,21 @@ impl Default for TextExtractionConfig {
     fn default() -> Self {
         Self {
             profile: None,
+            // v0.3.54 default: -120.0 (conservative; matches existing
+            // ExtractionProfile::CONSERVATIVE for byte-identical
+            // back-compat). v0.3.56 (#564): callers handling TJ-heavy
+            // PDFs that produce `Loremipsumdolorsitamet`-style merged
+            // paragraphs can override via the existing
+            // `TextExtractionConfig::with_space_threshold(-100.0)`
+            // builder method or via the new `TJ_HEAVY` extraction
+            // profile (see config/extraction_profiles.rs). The default
+            // stays at -120 to preserve v0.3.54 fixture output
+            // byte-identical for the 75-PDF regression sweep.
+            //
+            // Per-document calibration via gap_statistics is the
+            // ideal root-cause fix (audit task #27); it requires the
+            // tiny.pdf fixture to validate threshold against without
+            // regressing other corpora.
             space_insertion_threshold: -120.0,
             word_margin_ratio: 0.1,
             use_adaptive_tj_threshold: false,
