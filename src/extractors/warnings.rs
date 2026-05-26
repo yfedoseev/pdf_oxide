@@ -1,14 +1,11 @@
-//! Structured warning surface — v0.3.56 additive accessor for #558.
+//! Structured warning surface.
 //!
 //! `PdfDocument::flatten_warnings()` returns the warnings raised since
 //! the document was opened, as a list of structured `Warning` records.
 //! Callers who want diagnostics as data (rather than stderr text from
 //! `log::warn!`) opt in to this surface. The existing `log::warn!`
-//! calls continue to fire so the v0.3.54 `setup_logging(level="WARNING")`
+//! calls continue to fire so the `setup_logging(level="WARNING")`
 //! shape keeps working.
-//!
-//! See `docs/releases/plans/v0.3.56/cluster-diagnostics-noise.md` and
-//! `docs/releases/plans/v0.3.56/api-design.md` §3.
 
 #![forbid(unsafe_code)]
 
@@ -48,7 +45,6 @@ pub enum WarningCategory {
     /// Xref table corrupt; reconstructing from `obj`/`endobj` scan.
     XrefRecovery,
     /// Content stream exceeded `MAX_OPERATORS` cap; truncating.
-    /// Closes #559's diagnostic half.
     OperatorCapExceeded,
     /// Type 3 font detected — may require special glyph name mapping.
     Type3Font,
@@ -90,7 +86,7 @@ pub struct WarningSink {
     warnings: Mutex<Vec<Warning>>,
 }
 
-/// v0.3.56 (#558 h2): global process-wide structured-warning sink for
+/// global process-wide structured-warning sink for
 /// the seven highest-frequency `log::warn!` sites that live in free
 /// functions (where `&PdfDocument` is not available to push to a
 /// per-document sink). Sites currently routed through this global

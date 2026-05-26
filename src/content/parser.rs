@@ -28,20 +28,19 @@ use std::collections::HashMap;
 /// stream. Prevents pathological inputs (e.g., Isartor 6.1.12) from
 /// consuming unbounded time and memory.
 ///
-/// v0.3.56 (#559): this is the default for the global override; callers
-/// can override via [`set_max_ops_per_stream`] to raise the cap (or set
-/// `usize::MAX` for effectively unbounded — use with caution on
-/// adversarial PDFs).
+/// Callers can override via [`set_max_ops_per_stream`] to raise the
+/// cap (or set `usize::MAX` for effectively unbounded — use with
+/// caution on adversarial PDFs).
 const MAX_OPERATORS: usize = 1_000_000;
 
-/// Global cap override for content-stream operator count (#559). `0`
+/// Global cap override for content-stream operator count. `0`
 /// means "use [`MAX_OPERATORS`] default"; any other value is the
 /// effective cap. Atomic so it's safe to set from one thread while
 /// extraction runs on another (e.g. parallel-page extraction).
 static MAX_OPERATORS_OVERRIDE: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-/// Set the global content-stream operator cap (#559). `None` keeps the
+/// Set the global content-stream operator cap. `None` keeps the
 /// default ([`MAX_OPERATORS`] = 1,000,000). `Some(n)` overrides to `n`
 /// — pass `Some(usize::MAX)` for effectively unbounded.
 ///
@@ -53,8 +52,6 @@ static MAX_OPERATORS_OVERRIDE: std::sync::atomic::AtomicUsize =
 /// have legitimate content streams exceeding 1,000,000 operators. The
 /// default cap exists to bound the cost of adversarial inputs; raise
 /// it when you know the inputs are trusted.
-///
-/// See `docs/releases/plans/v0.3.56/cluster-silent-data-loss.md`.
 pub fn set_max_ops_per_stream(limit: Option<usize>) -> Option<usize> {
     let new = limit.unwrap_or(0);
     let prev = MAX_OPERATORS_OVERRIDE.swap(new, std::sync::atomic::Ordering::SeqCst);
@@ -117,10 +114,10 @@ pub fn parse_content_stream(data: &[u8]) -> Result<Vec<Operator>> {
 
                 if operators.len() >= effective_max_operators() {
                     log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
-                    // v0.3.56 (#558 h2 + #559): structured-sink push.
+                    // structured-sink push.
                     // PDF Spec Annex C documents implementation limits;
                     // the MAX_OPERATORS cap exists to bound parser
-                    // cost on adversarial inputs (see #559).
+                    // cost on adversarial inputs (see ).
                     crate::extractors::warnings::push_global_warning(
                         crate::extractors::warnings::Warning {
                             category:
@@ -193,10 +190,10 @@ pub fn parse_content_stream_paths_only(data: &[u8]) -> Result<Vec<Operator>> {
         }
         if operators.len() >= effective_max_operators() {
             log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
-            // v0.3.56 (#558 h2 + #559): structured-sink push.
+            // structured-sink push.
             // PDF Spec Annex C documents implementation limits;
             // the MAX_OPERATORS cap exists to bound parser
-            // cost on adversarial inputs (see #559).
+            // cost on adversarial inputs (see ).
             crate::extractors::warnings::push_global_warning(
                 crate::extractors::warnings::Warning {
                     category: crate::extractors::warnings::WarningCategory::OperatorCapExceeded,
@@ -508,10 +505,10 @@ pub fn parse_content_stream_text_only(data: &[u8]) -> Result<Vec<Operator>> {
 
         if operators.len() >= effective_max_operators() {
             log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
-            // v0.3.56 (#558 h2 + #559): structured-sink push.
+            // structured-sink push.
             // PDF Spec Annex C documents implementation limits;
             // the MAX_OPERATORS cap exists to bound parser
-            // cost on adversarial inputs (see #559).
+            // cost on adversarial inputs (see ).
             crate::extractors::warnings::push_global_warning(
                 crate::extractors::warnings::Warning {
                     category: crate::extractors::warnings::WarningCategory::OperatorCapExceeded,
@@ -1318,10 +1315,10 @@ where
 
         if op_count >= effective_max_operators() {
             log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
-            // v0.3.56 (#558 h2 + #559): structured-sink push.
+            // structured-sink push.
             // PDF Spec Annex C documents implementation limits;
             // the MAX_OPERATORS cap exists to bound parser
-            // cost on adversarial inputs (see #559).
+            // cost on adversarial inputs (see ).
             crate::extractors::warnings::push_global_warning(
                 crate::extractors::warnings::Warning {
                     category: crate::extractors::warnings::WarningCategory::OperatorCapExceeded,

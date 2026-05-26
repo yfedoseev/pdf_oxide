@@ -53,8 +53,8 @@ pub struct FontInfo {
     /// `uniXXXX`/`uXXXXX` synth) before falling through to the hardcoded
     /// `gid_to_standard_glyph_name` ASCII map and CID-as-Unicode last
     /// resort. Resolves `•` → `❍` substitution and `fi`/`fl` ligature
-    /// corruption on Identity-H subset fonts without `CIDToGIDMap`. See
-    /// `docs/releases/plans/v0.3.54/fix-535-tounicode-fallback.md`.
+    /// corruption on Identity-H subset fonts without `CIDToGIDMap`.
+    ///
     pub embedded_glyph_names: std::sync::OnceLock<Option<Vec<Option<String>>>>,
     /// Whether this font has an embedded TrueType font (FontFile2).
     /// Controls whether lazy truetype_cmap extraction is attempted.
@@ -253,8 +253,7 @@ impl FontInfo {
     /// - the parsed name is `.notdef` (which AGL doesn't map and isn't
     ///   useful as text anyway).
     ///
-    /// Used by §9.10.2 Priority 3c in `decode_char_to_unicode`. Documented
-    /// in `docs/releases/plans/v0.3.54/fix-535-tounicode-fallback.md`.
+    /// Used by §9.10.2 Priority 3c in `decode_char_to_unicode`.
     pub(crate) fn embedded_glyph_name(&self, gid: u16) -> Option<&str> {
         let names = self
             .embedded_glyph_names
@@ -363,7 +362,7 @@ impl FontInfo {
             let msg =
                 format!("Font '{}' is Type 3 - may require special glyph name mapping", base_font);
             log::warn!("{}", msg);
-            // v0.3.56 (#558 h2): push into the structured warning
+            // push into the structured warning
             // sink. PDF Spec §9.6.4 "Type 3 Fonts" describes the
             // user-defined CharProcs glyph-program model; the
             // standard glyph name registry doesn't apply, so
@@ -676,7 +675,7 @@ impl FontInfo {
             if subtype == "Type0" {
                 let msg = format!("Type0 font '{}' has no ToUnicode entry!", base_font);
                 log::warn!("{}", msg);
-                // v0.3.56 (#558 h2): push to the structured sink. PDF
+                // push to the structured sink. PDF
                 // Spec §9.10.2 "ToUnicode CMaps" describes the
                 // mapping; absent ToUnicode triggers the fallback
                 // chain (Encoding → AGL → CID-as-Unicode) per §9.10.3.
@@ -979,18 +978,18 @@ impl FontInfo {
             );
         }
 
-        // v0.3.56 (#566 root-cause, partial): accept both indirect
+        // accept both indirect
         // references AND direct dictionary objects in DescendantFonts.
         // PDF spec §9.7.6 mandates indirect refs, but Persian / Farsi
         // PDFs from older XeTeX / pdfTeX writers (Nazanin, Yagut,
         // Mitra, Lotus fonts) commonly inline the CIDFont dict
-        // directly. v0.3.54 rejected the inline form with "DescendantFonts[0]
-        // is not a reference" and fell back to Identity-H, which
-        // emits CIDs as Latin-Extended-B garbage instead of mapping
-        // through the CIDSystemInfo collection. Accepting the inline
-        // form gets the parser past this gate; the second half of
-        // #566 (bundled Adobe-Persian-1-UCS2 + Adobe-Arabic-1-UCS2
-        // CMap data) is tracked in audit task #30.
+        // directly. Older versions rejected the inline form with
+        // "DescendantFonts[0] is not a reference" and fell back to
+        // Identity-H, which emits CIDs as Latin-Extended-B garbage
+        // instead of mapping through the CIDSystemInfo collection.
+        // Accepting the inline form gets the parser past this gate;
+        // bundling the official Adobe-Persian-1-UCS2 /
+        // Adobe-Arabic-1-UCS2 CMap data is a separate follow-up.
         let cidfont_obj_owned;
         let cidfont_dict = match array[0].as_reference() {
             Some(cidfont_ref) => {
@@ -4461,7 +4460,7 @@ fn standard_encoding_lookup(encoding: &str, code: u8) -> Option<String> {
 /// "ETen-B5-H", "EUC-H", "KSC-EUC-H"), the 2-byte value read from the content
 /// stream is NOT an Adobe CID — it is a raw multi-byte encoding value (GBK,
 /// EUC-CN, Big5, EUC-JP, or EUC-KR).  Adobe-GB1 CIDs cap at ~30 553, so
-/// `lookup_predefined_cmap` always returns None for GBK values ≥ 0xA1A1, and
+/// `lookup_predefined_cmap` always returns None for GBK values ≥ 0xA1A1,
 /// the caller falls through to a broken `char::from_u32` path that maps them
 /// to Korean Hangul (same code-point range).
 ///
@@ -6675,7 +6674,7 @@ mod tests {
     #[test]
     fn glyph_name_with_variant_suffix_resolves_via_unified_chain() {
         // Subset fonts append stylistic-variant tags (`.sc`, `.alt`, `.001`)
-        // to the canonical glyph name. The v0.3.54 chain strips the suffix and
+        // to the canonical glyph name. The v0.3.54 chain strips the suffix
         // returns the base codepoint; this entry now picks that up too.
         assert_eq!(glyph_name_to_unicode("A.sc"), Some('A'));
         assert_eq!(glyph_name_to_unicode("bullet.alt"), Some('\u{2022}'));
@@ -8013,7 +8012,7 @@ mod tests {
     /// A Type0 font with Adobe-GB1 ordering, a *non-Identity* predefined-CMap
     /// encoding (`UniGB-UCS2-H` → `Encoding::Standard`), and a ToUnicode CMap
     /// covering only A–Z.  The Fix-A guard is deliberately scoped to
-    /// non-Identity Type0 fonts (Identity fonts map CID→Unicode directly and
+    /// non-Identity Type0 fonts (Identity fonts map CID→Unicode directly
     /// have a valid CMap-miss fallback), so the encoding here must be a real
     /// predefined CMap — not Identity-H — for this guard to apply in
     /// production.  Querying code 0x0061 (not in the ToUnicode CMap) must

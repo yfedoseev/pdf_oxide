@@ -12,7 +12,7 @@
 //!   between words.
 //!
 //! - **Special character spacing**:
-//!   Ensures proper spacing around Greek letters, mathematical symbols, and
+//!  Ensures proper spacing around Greek letters, mathematical symbols,
 //!   other special characters that require boundary detection.
 
 use regex::Regex;
@@ -495,13 +495,13 @@ impl TextPostProcessor {
         Self::ensure_special_char_spacing(&leaders_normalized)
     }
 
-    /// v0.3.56 (#551): collapse intra-expansion whitespace inside AGL
+    /// collapse intra-expansion whitespace inside AGL
     /// ligature expansions. When pdfTeX emits a `/ffi` / `/ff` / `/fi`
     /// / `/fl` / `/ffl` glyph and pdf_oxide's per-glyph space heuristic
     /// inserts spaces inside the expansion, the result is
     /// `di ff cult` instead of `difficult`. This repair pass detects
     /// the pattern (short word + one of `ff`/`fi`/`fl`/`ffi`/`ffl` +
-    /// short word, all-lowercase, with letter-only neighbours) and
+    /// short word, all-lowercase, with letter-only neighbours)
     /// glues the three back together.
     ///
     /// Conservative by design: only fires when both surrounding tokens
@@ -510,7 +510,6 @@ impl TextPostProcessor {
     /// "a fi nal" (rare in real text but theoretically possible) where
     /// the middle token is between full words.
     ///
-    /// See `docs/releases/plans/v0.3.56/cluster-font-encoding.md` §3.3.
     pub fn repair_ligature_intra_space(text: &str) -> String {
         static RE_LIG_SPLIT: LazyLock<Regex> = LazyLock::new(|| {
             // (\b[a-z]+)  space  (ffi|ffl|ff|fi|fl)  space  ([a-z]+\b)
@@ -523,7 +522,7 @@ impl TextPostProcessor {
         RE_LIG_SPLIT.replace_all(text, "$1$2$3").into_owned()
     }
 
-    /// v0.3.56 (#552): compose adjacent combining-mark sequences into
+    /// compose adjacent combining-mark sequences into
     /// their precomposed equivalents via NFC normalisation. PdfTeX
     /// emits combining diacritics as separate glyphs at near-zero
     /// advance, producing artefacts like `´E` for `É`,
@@ -537,10 +536,9 @@ impl TextPostProcessor {
     /// The pattern variations observed in pdfTeX output put the
     /// combining mark BEFORE the base (e.g. acute-then-E producing
     /// `´E`). We additionally normalise that ordering: detect
-    /// standalone combining marks (`\u{0301}`, `\u{0300}`, etc.) and
+    /// standalone combining marks (`\u{0301}`, `\u{0300}`, etc.)
     /// swap with following base letter.
     ///
-    /// See `docs/releases/plans/v0.3.56/cluster-font-encoding.md` §3.2.
     pub fn compose_combining_marks(text: &str) -> String {
         // Lookup table for the common spacing-diacritic + base-letter
         // → precomposed mapping. Covers acute, grave, circumflex,
@@ -678,7 +676,7 @@ impl TextPostProcessor {
         out
     }
 
-    /// v0.3.56 (#555): repair the missing-space-at-font-boundary
+    /// repair the missing-space-at-font-boundary
     /// pattern where the upstream space-emission heuristic fires below
     /// threshold at a font/run transition. PdfTeX-typeset titles like
     /// `Astronomy & Astrophysicsmanuscript no.` exhibit this when the
@@ -698,7 +696,6 @@ impl TextPostProcessor {
     /// (e.g., `HashMap`, `PdfDocument`) when surrounding context
     /// suggests code.
     ///
-    /// See `docs/releases/plans/v0.3.56/cluster-font-encoding.md` §3.1.
     pub fn repair_run_boundary_space(text: &str) -> String {
         static RE_LOWERCASE_THEN_TITLE: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"([a-z]{2,})([A-Z][a-z])").unwrap());
@@ -727,7 +724,7 @@ impl TextPostProcessor {
         out
     }
 
-    /// v0.3.56 (#560): remove the extra spaces that pdf_oxide's per-
+    /// remove the extra spaces that pdf_oxide's per-
     /// glyph repositioning heuristic inserts inside monospace code
     /// listings around punctuation. Examples from
     /// `code_and_formula.pdf`:
@@ -750,7 +747,6 @@ impl TextPostProcessor {
     /// it contains at least one of `{`/`}`/`(`/`)`/`;` AND a token
     /// like `function`/`return`/`let`/`var`/`const`/`if`/`while`/`for`.
     ///
-    /// See `docs/releases/plans/v0.3.56/cluster-font-encoding.md` §3.1.
     pub fn repair_monospace_punctuation_spacing(text: &str) -> String {
         static RE_SPACE_BEFORE_PUNCT: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r" ([,;.:)\]}])").unwrap());
@@ -1221,16 +1217,16 @@ mod tests {
         assert_eq!(output, "100 km/h");
     }
 
-    // === v0.3.56 regression tests ===
+    // === regression tests ===
     //
-    // Per the v0.3.56 release goal, every fix needs at least one
+    // Per the release goal, every fix needs at least one
     // test that fails on the v0.3.54 broken output and passes on
     // the fix. These tests assert the repair-pass behaviour directly
     // on the v0.3.54-shaped input strings (taken verbatim from each
     // issue's "Actual" output) and verify the post-processed result
     // matches the issue's "Expected" output.
 
-    /// #551 — Latin ligatures from pdfTeX-typeset PDFs come out as
+    /// Latin ligatures from pdfTeX-typeset PDFs come out as
     /// component letters separated by spaces. The post-processing
     /// concatenates the three space-separated tokens (prefix +
     /// ligature + suffix) back into one word. Examples from the
@@ -1249,7 +1245,7 @@ mod tests {
         // Honest limitation: v0.3.54 output `di ff cult` from a `/ffi`
         // ligature has lost the `i`; post-processing concatenates
         // `ff` and `cult` but the `i` is gone. Proper root-cause fix
-        // at AGL expansion site (audit task #24).
+        // at AGL expansion site.
         assert_eq!(TextPostProcessor::repair_ligature_intra_space("di ff cult"), "diffcult",);
     }
 
@@ -1271,9 +1267,9 @@ mod tests {
         assert_eq!(TextPostProcessor::repair_ligature_intra_space(correct), correct,);
     }
 
-    /// #552 — Combining diacritics are emitted as separate glyphs
+    /// Combining diacritics are emitted as separate glyphs
     /// adjacent to the base letter (`´E`, `Universit e´`,
-    /// `Sup erieure,´`). Verify the v0.3.56 `compose_combining_marks`
+    /// `Sup erieure,´`). Verify the `compose_combining_marks`
     /// pass joins them via NFC-equivalent precomposed codepoints.
     #[test]
     fn combining_acute_mark_before_base_composes() {
@@ -1315,9 +1311,9 @@ mod tests {
         assert_eq!(TextPostProcessor::compose_combining_marks(input), input,);
     }
 
-    /// #560 — Monospace code listings emit one show-text op per glyph,
+    /// Monospace code listings emit one show-text op per glyph,
     /// producing intra-token whitespace around punctuation
-    /// (`function add (a , b ) {`). Verify the v0.3.56
+    /// (`function add (a , b ) {`). Verify the
     /// `repair_monospace_punctuation_spacing` pass removes the
     /// spurious spaces inside code-shaped lines.
     #[test]
@@ -1334,7 +1330,7 @@ mod tests {
     fn monospace_method_chain_spacing_repaired() {
         let actual = "function f() { console . log ( add (3 , 5)) ; }";
         let out = TextPostProcessor::repair_monospace_punctuation_spacing(actual);
-        // Conservative repair: removes pre-punctuation space and
+        // Conservative repair: removes pre-punctuation space
         // post-open-paren space; idempotent on already-correct.
         assert!(out.contains("(3,"));
         assert!(out.contains("add(3"));
@@ -1350,7 +1346,7 @@ mod tests {
         assert_eq!(TextPostProcessor::repair_monospace_punctuation_spacing(prose), prose,);
     }
 
-    /// #555 — Missing space at run/font boundary. The
+    /// Missing space at run/font boundary. The
     /// `repair_run_boundary_space` regex catches case-change boundaries
     /// (`theEditor` → `the Editor`) but cannot detect lowercase-to-
     /// lowercase merges (`Astrophysicsmanuscript`) — those need the

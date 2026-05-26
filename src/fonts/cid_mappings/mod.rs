@@ -95,14 +95,14 @@ pub fn lookup_adobe_korea1(cid: u16) -> Option<u32> {
     adobe_korea1::lookup(cid)
 }
 
-/// v0.3.56 (#566): look up Unicode code point for a CID in
+/// look up Unicode code point for a CID in
 /// Adobe-Arabic-1 / Adobe-Persian-1 (used by Persian / Farsi /
 /// Pashto / Urdu fonts that ship without ToUnicode CMaps).
 ///
 /// Stub implementation: identity mapping for the Arabic block
 /// (U+0600–U+06FF) and Arabic Presentation Forms (U+FB50–U+FDFF +
 /// U+FE70–U+FEFF). The official Adobe-Arabic-1-UCS2 CMap is
-/// follow-up work (audit task #30).
+/// follow-up work.
 ///
 /// Returns the Unicode code point, or `None` if the CID isn't in
 /// the supported range (caller falls back to the existing chain).

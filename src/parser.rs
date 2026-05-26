@@ -287,7 +287,7 @@ fn parse_stream_data<'a>(
             Accepting in lenient mode for compatibility. \
             PDF Spec: ISO 32000-1:2008, Section 7.3.8.1";
         log::warn!("{}", msg);
-        // v0.3.56 (#558 h2): push into the process-wide structured sink
+        // push into the process-wide structured sink
         // so callers can retrieve via `flatten_warnings()` instead of
         // parsing stderr from `log::warn`.
         crate::extractors::warnings::push_global_warning(crate::extractors::warnings::Warning {

@@ -71,7 +71,7 @@ pub(crate) struct OrtBackend {
 #[cfg(feature = "ocr")]
 impl OrtBackend {
     pub(crate) fn from_bytes(model_bytes: &[u8], num_threads: usize) -> OcrResult<Self> {
-        // v0.3.56 (#569, #573): wrap `ort::Session::builder()` (and the
+        // wrap `ort::Session::builder()` (and the
         // builder chain) in `std::panic::catch_unwind` so a missing
         // `libonnxruntime.so` / `.dylib` / `.dll` (the default-wheel
         // case where ORT is not bundled) does NOT propagate as an

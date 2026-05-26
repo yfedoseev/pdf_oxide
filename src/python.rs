@@ -142,10 +142,10 @@ impl PyPdfDocument {
 
     /// Get number of pages.
     ///
-    /// **v0.3.56 (#550)**: works as both an attribute (the v0.3.6 shape)
+    /// works as both an attribute (the v0.3.6 shape)
     /// AND as a method call (the v0.3.54 shape). Returns a `_PageCount`
     /// wrapper that is callable (`doc.page_count()` returns the int),
-    /// indexable (`range(doc.page_count)` works via `__index__`), and
+    /// indexable (`range(doc.page_count)` works via `__index__`),
     /// comparable with ints (`doc.page_count == 5`). The method-call
     /// form is deprecated; new code should use the attribute form.
     #[getter(page_count)]
@@ -2096,7 +2096,7 @@ impl PyPdfDocument {
         }
     }
 
-    /// v0.3.56 (#563) Python wrapper: returns True if the page has a
+    /// Python wrapper: returns True if the page has a
     /// text layer; False for image-only / genuinely-empty pages.
     /// Callers route image-only pages to OCR.
     fn has_text_layer(&self, page: usize) -> PyResult<bool> {
@@ -2105,7 +2105,7 @@ impl PyPdfDocument {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
-    /// v0.3.56 (#562) Python wrapper: returns the document's /P
+    /// Python wrapper: returns the document's /P
     /// permission flags as a dict (None for unencrypted PDFs). Keys
     /// match the PdfPermissions struct fields. Per PDF spec §7.6.3.2
     /// the flags are advisory; pdf_oxide does not enforce them.
@@ -2128,7 +2128,7 @@ impl PyPdfDocument {
         }
     }
 
-    /// v0.3.56 (#558 second half) Python wrapper: returns the
+    /// Python wrapper: returns the
     /// document's accumulated structured warnings as a list of dicts.
     /// Each entry has `category`, `page`, `message`, `spec_section`.
     /// Companion to the Python per-target log-level downgrade — gives
@@ -2425,7 +2425,7 @@ impl PyPdfDocument {
         };
         let result = convert_to_pdf_a(&mut self.inner, pdf_level)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        // Sync raw_bytes so that to_bytes() sees the updated document, and
+        // Sync raw_bytes so that to_bytes() sees the updated document,
         // drop any stale editor that was opened from the original bytes.
         self.raw_bytes = Some(self.inner.source_bytes.to_vec());
         self.path = None;
@@ -2612,7 +2612,7 @@ impl PyPdfDocument {
     }
 
     fn __len__(&mut self) -> PyResult<usize> {
-        // #550: `page_count` is now a #[getter] returning PyPageCount,
+        // : `page_count` is now a #[getter] returning PyPageCount,
         // so call the inner Rust method directly here for the unsigned
         // int we need.
         self.inner
@@ -2679,13 +2679,13 @@ impl PyPdfDocument {
 }
 
 /// Int-like callable wrapper returned by `PdfDocument.page_count` for
-/// backward-compatibility (#550). Behaves as an int via `__int__` /
+/// backward-compatibility. Behaves as an int via `__int__` /
 /// `__index__` / comparison protocols. Also callable via `__call__` so
 /// the v0.3.54 method-call shape (`doc.page_count()`) still works.
 ///
 /// New code should use the attribute form (`doc.page_count`); the
 /// method-call form is deprecated and will be removed in v0.4.0
-/// (#414). See `docs/releases/plans/v0.3.56/cluster-api-regressions.md`.
+/// (#414).
 #[pyclass(module = "pdf_oxide.pdf_oxide", name = "_PageCount")]
 pub struct PyPageCount {
     value: usize,
@@ -5112,7 +5112,7 @@ impl PyAlign {
     }
 }
 
-/// Python-side column descriptor used by `Table` and
+/// Python-side column descriptor used by `Table`
 /// `FluentPageBuilder.streaming_table`. Constructor matches the research
 /// C shape: `Column(header, width=100.0, align=Align.LEFT)`.
 #[pyclass(module = "pdf_oxide.pdf_oxide", name = "Column", skip_from_py_object)]
@@ -5278,7 +5278,7 @@ impl PyEmbeddedFont {
 /// )
 /// ```
 ///
-/// `build()`, `save()`, `save_encrypted()`, `to_bytes_encrypted()`, and
+/// `build()`, `save()`, `save_encrypted()`, `to_bytes_encrypted()`,
 /// `save_with_encryption()` **consume** the builder — subsequent calls
 /// on the same instance raise `RuntimeError`.
 #[pyclass(module = "pdf_oxide.pdf_oxide", name = "DocumentBuilder")]
@@ -6072,7 +6072,7 @@ impl PyFluentPageBuilder {
         Ok(fm.text_width(text, &self.current_font, self.current_size))
     }
 
-    /// Best-effort vertical space between the last known cursor y and
+    /// Best-effort vertical space between the last known cursor y
     /// the bottom margin (72 pt). Because `PyFluentPageBuilder` buffers
     /// ops until `done()`, this is a client-side estimate: it returns
     /// `last_at_y - 72` when `at()` has been called, else `page_height
@@ -6728,7 +6728,7 @@ impl PyStreamingTable {
 // =============================================================================
 //
 // `Pdf.from_html_css[_with_fonts]` exposes the HTML+CSS → PDF pipeline
-// to Python. The Rust side is `crate::api::Pdf::from_html_css` and
+// to Python. The Rust side is `crate::api::Pdf::from_html_css`
 // `from_html_css_with_fonts`.
 
 #[pyclass(
@@ -6811,7 +6811,7 @@ fn reset_pyo3_log_cache() {
 /// ```python
 /// import logging
 /// logging.basicConfig(level=logging.WARNING)
-/// v0.3.56 (#559) Python wrapper: set the global content-stream
+/// Python wrapper: set the global content-stream
 /// operator cap. `None` restores the default (1,000,000). Returns the
 /// previous override value or None if default was active.
 ///
@@ -6824,7 +6824,7 @@ fn set_max_ops_per_stream(limit: Option<usize>) -> Option<usize> {
     crate::content::parser::set_max_ops_per_stream(limit)
 }
 
-/// v0.3.56 (#571) Python wrapper: toggle the global U+FFFD
+/// Python wrapper: toggle the global U+FFFD
 /// preservation flag. When `True`, `extract_text` / `extract_words` /
 /// `extract_spans` emit U+FFFD chars for unmapped glyphs (matching
 /// `extract_chars` behaviour). When `False` (the v0.3.54 default),
@@ -7424,7 +7424,7 @@ impl PyTimestamp {
 
     /// Cryptographically verify this TimeStampToken.
     ///
-    /// Parses the outer CMS SignedData and verifies the TSA's signature and
+    /// Parses the outer CMS SignedData and verifies the TSA's signature
     /// `messageDigest` attribute (RSA-PKCS#1 v1.5, RSA-PSS, ECDSA P-256/P-384).
     ///
     /// Returns `True` when the token is cryptographically valid, `False` when
@@ -7886,7 +7886,7 @@ fn crypto_use_fips() -> pyo3::PyResult<()> {
 /// Install the process-wide runtime crypto-governance policy (#230).
 ///
 /// ``spec`` grammar: ``mode[;clause]*`` where
-/// ``mode ∈ {compat, strict, fips-strict}`` and
+/// ``mode ∈ {compat, strict, fips-strict}``
 /// ``clause = (allow|deny):<alg>@<read|write>`` — e.g.
 /// ``"compat;deny:rc4@write;deny:md5@write"`` or ``"fips-strict"``.
 ///

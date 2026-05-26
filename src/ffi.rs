@@ -253,7 +253,7 @@ pub extern "C" fn pdf_oxide_get_log_level() -> i32 {
     }
 }
 
-/// v0.3.56 (#559): Set the global content-stream operator cap.
+/// Set the global content-stream operator cap.
 /// `limit < 0` restores the default (1,000,000); any non-negative
 /// value (including 0) is used as the explicit cap. Returns the
 /// previous cap (or -1 if the default was active).
@@ -271,7 +271,7 @@ pub extern "C" fn pdf_oxide_set_max_ops_per_stream(limit: i64) -> i64 {
     prev.map(|v| v as i64).unwrap_or(-1)
 }
 
-/// v0.3.56 (#571): Toggle the global U+FFFD preservation flag for
+/// Toggle the global U+FFFD preservation flag for
 /// the high-level extract_text / extract_words / extract_spans
 /// accessors. `1` = preserve FFFD chars; `0` = filter (v0.3.54
 /// default). Returns the previous value as `0` or `1`.
@@ -1546,7 +1546,7 @@ pub extern "C" fn pdf_redaction_apply(
 
 /// Standalone document sanitization without geometric redaction
 /// (#231 T10): strips `/Info`, catalog XMP `/Metadata`, document
-/// JavaScript (`/OpenAction`, `/AA`, `/Names/JavaScript`) and
+/// JavaScript (`/OpenAction`, `/AA`, `/Names/JavaScript`)
 /// `/Names/EmbeddedFiles`; the removed subtrees are hard-excluded from
 /// the output (G6). Returns the number of top-level constructs removed,
 /// or -1 on error.
@@ -4948,7 +4948,7 @@ pub extern "C" fn pdf_render_page_thumbnail(
 
 /// Render a page and return the raw premultiplied RGBA8888 pixel buffer.
 ///
-/// The caller retrieves the pixel bytes via `pdf_get_rendered_image_data` and
+/// The caller retrieves the pixel bytes via `pdf_get_rendered_image_data`
 /// the dimensions via `out_width`/`out_height` (set on success). Pixels are
 /// row-major, top-left origin; `data_len == *out_width * *out_height * 4`.
 /// Free the returned handle with `pdf_rendered_image_free`.
@@ -7976,7 +7976,7 @@ pub extern "C" fn pdf_document_plan_split_by_bookmarks(
 // ─── Comprehensive auto extraction (#517) ──────────────────────────────────
 //
 // JSON-string result at the C-ABI (matches the shipped split-by-bookmarks
-// idiom — api-design.md §4; the frozen parity contract for all bindings).
+// idiom —; the frozen parity contract for all bindings).
 // Enums serialise as stable snake_case tokens. Read-only inspection;
 // encrypted-unauthenticated fails closed (case L) via `classify_error`.
 
@@ -8955,7 +8955,7 @@ pub extern "C" fn pdf_ocr_extract_text(
 //      `pdf_document_builder_*_page` call on the same builder before
 //      the prior `pdf_page_builder_done` returns `ERR_INVALID_ARG (1)`.
 //
-//   3. `pdf_page_builder_done` commits the buffered operations and
+//  3. `pdf_page_builder_done` commits the buffered operations
 //      clears the parent's open-page slot. The page handle becomes
 //      invalid. `pdf_page_builder_free` drops without committing
 //      (error recovery only).
@@ -10856,7 +10856,7 @@ pub extern "C" fn pdf_page_builder_new_page_same_size(
 /// real FluentPageBuilder.
 ///
 /// Cell array is row-major: `cell_strings[row * n_columns + col]`. Each
-/// pointer must be a valid null-terminated UTF-8 C string. `widths` and
+/// pointer must be a valid null-terminated UTF-8 C string. `widths`
 /// `aligns` are both length `n_columns`; `aligns` encodes 0/1/2 (see
 /// `pdf_page_builder_text_in_rect`). `has_header != 0` promotes the
 /// first row to a header (bold + default background).
@@ -11101,7 +11101,7 @@ pub extern "C" fn pdf_page_builder_streaming_table_batch_count(
     handle_ref(handle).st_batch_count
 }
 
-/// Explicitly mark a batch boundary: increment the batch counter and
+/// Explicitly mark a batch boundary: increment the batch counter
 /// reset the pending-row counter. A no-op if there are no pending rows.
 #[no_mangle]
 pub extern "C" fn pdf_page_builder_streaming_table_flush(
@@ -11213,7 +11213,7 @@ pub extern "C" fn pdf_page_builder_streaming_table_finish(
     push_page_op(handle, error_code, FfiPageOp::StreamingTableFinish)
 }
 
-/// Commit this page's buffered operations to its parent builder and
+/// Commit this page's buffered operations to its parent builder
 /// **consume** the page handle. After a successful call the handle is
 /// invalid; do not call `_free`.
 #[no_mangle]

@@ -1,7 +1,7 @@
 //! Text extraction from PDF content streams.
 //!
 //! This module executes content stream operators to extract positioned
-//! text characters with their Unicode mappings, font information, and
+//! text characters with their Unicode mappings, font information,
 //! bounding boxes.
 
 #![forbid(unsafe_code)]
@@ -23,14 +23,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// v0.3.56 (#571): global flag controlling whether glyph-decode sites
-/// emit `U+FFFD` (REPLACEMENT CHARACTER) into `extract_text` /
-/// `extract_words` / `extract_spans` output. v0.3.54 default behaviour
-/// is to silently drop `U+FFFD` chars — preserving that here for
-/// back-compat. Setting `true` makes the high-level accessors
-/// consistent with `extract_chars` (which always preserves FFFD) so
-/// callers can detect unmapped-glyph pages without diffing the two
-/// accessors' outputs.
+/// Global flag controlling whether glyph-decode sites emit `U+FFFD`
+/// (REPLACEMENT CHARACTER) into `extract_text` / `extract_words` /
+/// `extract_spans` output.
+///
+/// The historical default is to silently drop `U+FFFD` chars, which
+/// is preserved here for back-compat. Setting `true` makes the
+/// high-level accessors consistent with `extract_chars` (which
+/// always preserves FFFD) so callers can detect unmapped-glyph
+/// pages without diffing the two accessors' outputs.
 ///
 /// `Ordering::Relaxed` is sufficient because every read is gated on
 /// `Acquire`-style writes from the setter, and the flag is a single
@@ -43,18 +44,15 @@ static PRESERVE_UNMAPPED_GLYPHS: AtomicBool = AtomicBool::new(false);
 /// CHARACTER, matching the behaviour of `extract_chars` which has
 /// always preserved them. Returns the previous flag value.
 ///
-/// Closes #571's filter-divergence root cause: the v0.3.54 behaviour
-/// silently filters FFFD at the high-level accessors while keeping
-/// them in `extract_chars`, producing empty `extract_text` output on
-/// pages whose visible glyphs all map to FFFD (e.g. the MSAM10 math-
-/// symbol font in mozilla/pdf.js `bug1068432.pdf`).
+/// Resolves the filter divergence where the high-level accessors
+/// silently drop FFFD while `extract_chars` keeps them, producing
+/// empty `extract_text` output on pages whose visible glyphs all
+/// map to FFFD (e.g. the MSAM10 math-symbol font).
 ///
-/// The default is `false` to preserve v0.3.54 fixture output
+/// The default is `false` to preserve historical fixture output
 /// byte-identical for the no-FFFD-glyph case; downstream callers
 /// (including the new `ExtractionSignal::UnmappedGlyphs` accessor)
 /// opt in by setting `true`.
-///
-/// See `docs/releases/plans/v0.3.56/cluster-silent-data-loss.md` §4.4.
 pub fn set_preserve_unmapped_glyphs(preserve: bool) -> bool {
     PRESERVE_UNMAPPED_GLYPHS.swap(preserve, Ordering::SeqCst)
 }
@@ -244,21 +242,21 @@ impl Default for TextExtractionConfig {
     fn default() -> Self {
         Self {
             profile: None,
-            // v0.3.54 default: -120.0 (conservative; matches existing
+            // Default -120.0 (conservative; matches existing
             // ExtractionProfile::CONSERVATIVE for byte-identical
-            // back-compat). v0.3.56 (#564): callers handling TJ-heavy
-            // PDFs that produce `Loremipsumdolorsitamet`-style merged
-            // paragraphs can override via the existing
-            // `TextExtractionConfig::with_space_threshold(-100.0)`
-            // builder method or via the new `TJ_HEAVY` extraction
-            // profile (see config/extraction_profiles.rs). The default
-            // stays at -120 to preserve v0.3.54 fixture output
-            // byte-identical for the 75-PDF regression sweep.
+            // back-compat). Callers handling TJ-heavy PDFs that
+            // produce `Loremipsumdolorsitamet`-style merged
+            // paragraphs can override via
+            // `TextExtractionConfig::with_space_threshold(-100.0)` or
+            // via the `TJ_HEAVY` extraction profile (see
+            // config/extraction_profiles.rs). The default stays at
+            // -120 to preserve byte-identical fixture output for the
+            // 75-PDF regression sweep.
             //
             // Per-document calibration via gap_statistics is the
-            // ideal root-cause fix (audit task #27); it requires the
-            // tiny.pdf fixture to validate threshold against without
-            // regressing other corpora.
+            // ideal root-cause fix; it requires a calibration corpus
+            // to validate the threshold against without regressing
+            // other inputs.
             space_insertion_threshold: -120.0,
             word_margin_ratio: 0.1,
             use_adaptive_tj_threshold: false,
@@ -851,7 +849,7 @@ impl SpanMergingConfig {
 /// Unified space decision function - SINGLE SOURCE OF TRUTH for space insertion.
 ///
 /// This function consolidates all space insertion logic into one place per the
-/// design principle in the comprehensive plan. It evaluates multiple signals and
+/// design principle in the comprehensive plan. It evaluates multiple signals
 /// returns a definitive decision about whether to insert a space between spans.
 ///
 /// # Rules (in priority order)
@@ -917,7 +915,7 @@ impl SpanMergingConfig {
 /// believable gap.
 ///
 /// Crucially, the correction is applied ONLY when `raw_gap < 0`. When the
-/// glyphs do not overlap (`raw_gap ≥ 0`) the layout is already honest and
+/// glyphs do not overlap (`raw_gap ≥ 0`) the layout is already honest
 /// must not be second-guessed: inflating a non-overlapping gap manufactures
 /// a phantom word space and splits single words that were positioned
 /// edge-to-edge — e.g. a CamelCase brand "SalesForce" emitted as
@@ -937,7 +935,7 @@ fn corrected_space_gap(
     }
 }
 
-/// v0.3.56 (#551 root-cause): detect whether a glyph's mapped text
+/// detect whether a glyph's mapped text
 /// represents an AGL Latin ligature (`/ff` / `/fi` / `/fl` / `/ffi` /
 /// `/ffl`). When the upstream space-emission heuristic processes a
 /// glyph adjacent to a ligature, the small intra-word kerning that
@@ -961,12 +959,12 @@ pub(crate) fn starts_with_agl_ligature(text: &str) -> bool {
     matches!(text, "ff" | "fi" | "fl" | "ffi" | "ffl")
 }
 
-/// v0.3.56 (#560 root-cause): detect monospace fonts by name.
+/// detect monospace fonts by name.
 /// Monospace fonts emit one show-text op per glyph with one-em
 /// advance positioning, which triggers the proportional-font space-
 /// emission heuristic to fire inside ordinary tokens. Bumping the
 /// threshold for these fonts closes the `function add (a , b )` repro
-/// from `code_and_formula.pdf` (issue #560). Used by
+/// from `code_and_formula.pdf` (issue ). Used by
 /// [`should_insert_space`] to switch its `word_margin_ratio` to
 /// `1.2` for monospace.
 ///
@@ -1147,7 +1145,7 @@ fn should_insert_space(
         // Font found: use space glyph width for calculation
         let space_width_units = font_info.get_space_glyph_width(); // in 1000ths of em
         let space_width_pt = (space_width_units / 1000.0) * font_size;
-        // v0.3.56 (#560 root-cause): monospace fonts emit one show-text
+        // monospace fonts emit one show-text
         // op per glyph at one-em-advance positioning, so the gap
         // between glyphs in normal tokens briefly exceeds the
         // proportional-font threshold. Use a 1.2× ratio for monospace
@@ -1158,7 +1156,7 @@ fn should_insert_space(
         } else {
             0.5 // 50% of space width (proportional default)
         };
-        // v0.3.56 (#555 root-cause, partial): when prev_font_size and
+        // when prev_font_size
         // next_font_size differ significantly, we're at a font-run
         // boundary (italic → roman, bold → regular, or a font-family
         // switch). PdfTeX-typeset titles like
@@ -1167,7 +1165,7 @@ fn should_insert_space(
         // switch. Reduce the threshold by 30% at boundaries so a
         // smaller gap suffices to trigger space insertion. The full
         // fix (font-name plumbing for italic→roman within same size)
-        // is tracked in audit task #25 — many italic transitions
+        // is tracked in — many italic transitions
         // share font_size, so this only catches the size-changing
         // subset.
         if (prev_font_size - next_font_size).abs() > 0.5 {
@@ -1195,14 +1193,14 @@ fn should_insert_space(
         font_size * 0.25
     };
 
-    // v0.3.56 (#551 root-cause): suppress space insertion at AGL-
+    // suppress space insertion at AGL-
     // ligature boundaries. When the preceding or following text
     // starts with one of the Latin ligature codepoints (U+FB00..U+FB04)
     // or matches the multi-char AGL ligature names, the small kerning
     // gap that surrounds the ligature glyph is NOT a word boundary —
     // it's an intra-word position artefact from pdfTeX-style ligature
     // emission. Inflating the threshold by 1.5× at these positions
-    // catches the `di ff cult` → `difficult` repro from issue #551.
+    // catches the `di ff cult` → `difficult` repro from issue .
     let ligature_boundary = starts_with_agl_ligature(following_text)
         || preceding_text
             .chars()
@@ -1334,7 +1332,7 @@ fn should_insert_space(
     // `geometric_threshold` is already `space_width_pt * 0.5`. A gap that
     // clears this threshold is >= 50 % of the font's own space-glyph
     // advance, which is what pdfium (Chrome/pypdfium2) uses as the
-    // word-break heuristic in its default text-extraction path — and
+    // word-break heuristic in its default text-extraction path —
     // the reason pdf_oxide was glueing adjacent words like
     // "atBirmingham", "LIFESCIENCESRESEARCH", "STATIONFREEDOM",
     // "proteincrystals" before this change. The previous 2× multiplier
@@ -2625,7 +2623,7 @@ impl<'doc> TextExtractor<'doc> {
     /// Per ISO 32000 §7.9.2, strings without a UTF-16 BOM are PDFDocEncoding.
     /// We try UTF-8 first as a lenient path for non-spec-compliant PDFs that
     /// embed raw UTF-8 without a BOM; if that fails we fall back to the correct
-    /// PDFDocEncoding lookup (which handles the 0x80–0x9E special-char zone and
+    /// PDFDocEncoding lookup (which handles the 0x80–0x9E special-char zone
     /// maps 0xA0–0xFF as ISO Latin-1, unlike from_utf8_lossy which substitutes
     /// U+FFFD for any byte that is not valid UTF-8).
     fn decode_pdf_text_string(bytes: &[u8]) -> String {
@@ -3491,7 +3489,7 @@ impl<'doc> TextExtractor<'doc> {
             // `bbox.width` is systematically inflated and `current_end_x`
             // overshoots the actual end of the rendered text — often by
             // enough to swallow the real inter-word gap entirely, turning
-            // the visible word boundary into a negative `gap` value and
+            // the visible word boundary into a negative `gap` value
             // tripping merge logic that then glues the words without a
             // space.
             //
@@ -3557,7 +3555,7 @@ impl<'doc> TextExtractor<'doc> {
             // leading Latin/digit token.  Skip cross-font glue when the
             // boundary crosses CJK / non-CJK scripts.
             //
-            // EXCLUDES fullwidth ASCII (U+FF01..FF5E) and CJK Symbols and
+            // EXCLUDES fullwidth ASCII (U+FF01..FF5E) and CJK Symbols
             // Punctuation (U+3000..303F) — those operator-style glyphs sit
             // inline with adjacent Latin/digit in CJK technical writing
             // (e.g. "60000≤Q＜80000" in issue-336).  Treating them as a CJK
@@ -4018,7 +4016,7 @@ impl<'doc> TextExtractor<'doc> {
                 // line's own height is the SAME visual line — only a
                 // delta on the order of the font size is a real line
                 // break (body leading ≳ 1.0× font size). The previous
-                // `f.round() as i32 ==` check tolerated only ±0.5pt and
+                // `f.round() as i32 ==` check tolerated only ±0.5pt
                 // split jittered glyphs into separate Y-banded spans that
                 // the reading-order sort then scrambled. Tolerance is
                 // scale-relative (0.5× the text-space glyph height, ≥0.5pt
@@ -5220,7 +5218,7 @@ impl<'doc> TextExtractor<'doc> {
         let current_ctm = self.state_stack.current().ctm;
         // Round to nearest millipoint instead of truncating with `as i64`,
         // so floating-point noise in the same logical CTM produces a
-        // stable hash key (truncation alone could send 0.99999... and
+        // stable hash key (truncation alone could send 0.99999...
         // 1.00001... to different buckets).
         let ctm_key = [
             (current_ctm.a * 1000.0).round() as i64,
@@ -6801,7 +6799,7 @@ impl<'doc> TextExtractor<'doc> {
                 // PDF — the Tj-span buffer flush had no RTL correction at
                 // all, so Hebrew came out in content-stream (visual)
                 // order regardless of what the geometric signals said.
-                // Mirrors the existing logic in `flush_tj_buffer` and
+                // Mirrors the existing logic in `flush_tj_buffer`
                 // `cluster_to_span`: detect RTL content, use the geometric
                 // detector when `char_widths` give us per-char x; fall back
                 // to the `accumulated_width > 0` simple check (text drawn

@@ -1,44 +1,41 @@
 //! Adobe-Arabic-1 / Adobe-Persian-1 CID-to-Unicode mapping.
 //!
-//! v0.3.56 (#566 root-cause, partial): stub implementation that
-//! provides identity mapping over the Unicode Arabic block
-//! (U+0600–U+06FF) for the common case where Persian / Farsi /
-//! Pashto / Urdu fonts (Nazanin, Yagut, Mitra, Lotus) declare
+//! Identity mapping over the Unicode Arabic block (U+0600–U+06FF)
+//! for the common case where Persian / Farsi / Pashto / Urdu fonts
+//! (Nazanin, Yagut, Mitra, Lotus) declare
 //! `CIDSystemInfo /Registry (Adobe) /Ordering (Persian|Arabic)` but
 //! the font's actual CID-to-glyph mapping is sequential in the
 //! Arabic Unicode range.
 //!
-//! Without this stub, v0.3.54 falls back to Identity-H mapping
-//! which emits CIDs as Latin-Extended-B codepoints (U+01xx-U+07xx
-//! garbage). The stub here at least gets characters into the
-//! correct Arabic block (U+0600-U+06FF) where bidi-aware viewers
+//! Without this mapping, the engine falls back to Identity-H, which
+//! emits CIDs as Latin-Extended-B codepoints (U+01xx–U+07xx
+//! garbage). This mapping at least lands the characters in the
+//! correct Arabic block (U+0600–U+06FF) where bidi-aware viewers
 //! can shape them.
 //!
 //! ## PDF spec basis
 //!
 //! Per `docs/spec/pdf.md` §9.7 "Composite Fonts" + §9.7.5 "CMaps":
-//! CID-keyed fonts use a CMap to map character codes to CIDs, and
-//! a registered character collection (`CIDSystemInfo` →
+//! CID-keyed fonts use a CMap to map character codes to CIDs and a
+//! registered character collection (`CIDSystemInfo` →
 //! `Registry`/`Ordering`/`Supplement`) plus a UCS2-suffixed CMap
-//! (e.g. `UniArabicBookman-UCS2`) to map CIDs to Unicode. v0.3.56
-//! does NOT ship the full registered Adobe-Persian-1/Adobe-Arabic-1
-//! UCS2 tables (Adobe deprecated and no longer publishes these
-//! collections; their adobe-type-tools repo ships CJK + Manga
+//! (e.g. `UniArabicBookman-UCS2`) to map CIDs to Unicode. The full
+//! registered Adobe-Persian-1 / Adobe-Arabic-1 UCS2 tables are not
+//! shipped: Adobe deprecated and no longer publishes these
+//! collections (their adobe-type-tools repo ships CJK + Manga
 //! only). The identity mapping here is the §9.10.3 "Mapping
 //! Character Codes to Unicode Values" fallback step 3 — when the
-//! CMap chain runs out, the conforming reader emits "the actual
+//! CMap chain runs out, a conforming reader emits "the actual
 //! character code as the Unicode value." For Persian fonts with
-//! sequential Arabic-block CIDs this produces correct output;
-//! for fonts with non-sequential CID encodings it produces
-//! best-effort output in the correct Unicode block.
+//! sequential Arabic-block CIDs this produces correct output; for
+//! fonts with non-sequential CID encodings it produces best-effort
+//! output in the correct Unicode block.
 //!
 //! **Limitations**: this is NOT the official Adobe-Arabic-1-UCS2
 //! CMap. It is a heuristic identity mapping that works for the
 //! common case where Persian fonts use sequential Arabic-block
 //! CIDs. The full official CMap data is no longer publicly
 //! distributed by Adobe.
-//!
-//! See `docs/releases/plans/v0.3.56/cluster-font-encoding.md` §3.3.
 
 #![forbid(unsafe_code)]
 
@@ -53,7 +50,7 @@
 /// CID 2=isolated be, etc.), many Persian fonts ship with simpler
 /// CIDs that already align with Unicode codepoints. The identity
 /// mapping handles those; the official CMap support is follow-up
-/// work (audit task #30).
+/// work.
 #[inline]
 pub fn lookup(cid: u16) -> Option<u32> {
     // Arabic block: U+0600..=U+06FF

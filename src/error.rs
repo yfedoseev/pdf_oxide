@@ -135,8 +135,8 @@ pub enum Error {
     #[error("PDF is encrypted and requires a password. Call authenticate(password) before extracting content.")]
     EncryptedPdf,
 
-    /// OCR backend is unavailable. v0.3.56 additive variant for the
-    /// OCR API cluster (#569 / #573 / #574). Typed reason lets the
+    /// OCR backend is unavailable. Additive variant for the
+    /// OCR API cluster. Typed reason lets the
     /// binding map to the right language-native exception
     /// (`OcrUnavailable` in Python / Java / Ruby / PHP / Go / C# /
     /// Node / WASM per `research-typed-signals-cross-lang.md` §13).

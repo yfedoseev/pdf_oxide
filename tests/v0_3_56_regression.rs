@@ -159,8 +159,8 @@ fn has_text_layer_predicate_present() {
         "has_text_layer method must be defined on PdfDocument",
     );
     assert!(
-        source.contains("v0.3.56 additive accessor for #563"),
-        "method must reference #563 in its docstring",
+        source.contains("may_contain_text"),
+        "predicate must consult the content-stream probe (may_contain_text)",
     );
 }
 
@@ -177,8 +177,8 @@ fn ort_backend_wraps_init_in_catch_unwind() {
         "OrtBackend::from_bytes must wrap Session::builder in catch_unwind",
     );
     assert!(
-        source.contains("v0.3.56 (#569, #573)"),
-        "fix must reference #569/#573 in inline docstring",
+        source.contains("Session::builder"),
+        "OrtBackend::from_bytes must call Session::builder inside the catch_unwind",
     );
 }
 
@@ -195,8 +195,8 @@ fn ocr_unavailable_dylib_missing_kind_str() {
 fn acroform_extraction_includes_parent_fields() {
     let source = include_str!("../src/extractors/forms.rs");
     assert!(
-        source.contains("v0.3.56 (#570)"),
-        "extract_field_recursive must carry the v0.3.56 #570 fix",
+        source.contains("extract_field_recursive"),
+        "extract_field_recursive helper must be defined",
     );
     assert!(
         source.contains("matching pypdf's traversal"),
@@ -236,8 +236,9 @@ fn extract_text_ocr_only_companion_present() {
         "extract_text_ocr_only companion method must be defined",
     );
     assert!(
-        source.contains("v0.3.56 additive companion\n    /// for #574"),
-        "method must reference #574 in its docstring",
+        source.contains("OCR-always contract")
+            || source.contains("invoked unconditionally"),
+        "method must document the OCR-always (no text-layer peek) contract",
     );
 }
 
@@ -717,12 +718,12 @@ fn arabic_block_cid_identity_lookup() {
 fn descendant_fonts_inline_dict_accepted() {
     let source = include_str!("../src/fonts/font_dict.rs");
     assert!(
-        source.contains("v0.3.56 (#566 root-cause, partial)"),
-        "DescendantFonts parse must carry the #566 inline-dict fix",
+        source.contains("Inline-dict path") || source.contains("inline the CIDFont dict"),
+        "DescendantFonts parse must explicitly handle the inline-dict case",
     );
     assert!(
-        source.contains("Inline-dict path"),
-        "the fix must explicitly handle the inline-dict case",
+        source.contains("DescendantFonts"),
+        "DescendantFonts parse path must be present",
     );
 }
 
@@ -736,7 +737,7 @@ fn descendant_fonts_inline_dict_accepted() {
 fn global_warning_sink_wired_into_log_warn_sites() {
     let parser_src = include_str!("../src/parser.rs");
     assert!(
-        parser_src.contains("push_global_warning") && parser_src.contains("v0.3.56 (#558 h2)"),
+        parser_src.contains("push_global_warning"),
         "src/parser.rs SPEC VIOLATION sites must push to global sink",
     );
     let fonts_src = include_str!("../src/fonts/font_dict.rs");
@@ -818,11 +819,7 @@ fn agl_ligature_codepoint_detection_present() {
         "starts_with_agl_ligature helper must be defined",
     );
     assert!(
-        source.contains("v0.3.56 (#551 root-cause)"),
-        "the ligature-boundary suppression must reference #551",
-    );
-    assert!(
-        source.contains("U+FB00..U+FB06"),
+        source.contains("U+FB00..U+FB06") || source.contains("'\\u{FB00}'..='\\u{FB06}'"),
         "the helper must cover the full Latin Ligatures block",
     );
 }
@@ -835,10 +832,6 @@ fn agl_ligature_codepoint_detection_present() {
 #[test]
 fn font_size_boundary_lowers_space_threshold() {
     let source = include_str!("../src/extractors/text.rs");
-    assert!(
-        source.contains("v0.3.56 (#555 root-cause, partial)"),
-        "size-boundary threshold reduction must be documented as a #555 fix",
-    );
     assert!(
         source.contains("word_margin_ratio *= 0.7"),
         "the size-boundary detector must reduce the threshold by 30%",

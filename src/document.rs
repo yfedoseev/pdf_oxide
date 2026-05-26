@@ -293,7 +293,7 @@ thread_local! {
 /// # Memory management
 ///
 /// The document maintains several internal caches for performance. The main
-/// object cache is bounded at 64 MB (see `DEFAULT_OBJECT_CACHE_MAX_BYTES`) and
+/// object cache is bounded at 64 MB (see `DEFAULT_OBJECT_CACHE_MAX_BYTES`)
 /// uses FIFO eviction to prevent unbounded heap growth when processing
 /// many pages sequentially.
 pub struct PdfDocument {
@@ -313,7 +313,7 @@ pub struct PdfDocument {
     /// `BufReader` and read each other's bytes, surfacing as a spurious
     /// `[1000] invalid PDF structure or content stream`. Acquired only at
     /// the top-level entry of `load_object` (recursion depth 0) with a
-    /// double-checked cache, so warm cache hits stay fully parallel and
+    /// double-checked cache, so warm cache hits stay fully parallel
     /// same-thread recursion never re-acquires (no self-deadlock). #507.
     load_lock: Mutex<()>,
     /// Raw bytes of the document (kept for duplication/editing)
@@ -421,7 +421,7 @@ pub struct PdfDocument {
     /// LRU cache of decompressed page content streams, keyed by page index.
     page_content_cache: Mutex<BoundedEntryCache<usize, std::sync::Arc<Vec<u8>>>>,
     /// Cached signatures of running headers/footers detected via cross-page
-    /// repetition. A span whose normalized text matches a signature and
+    /// repetition. A span whose normalized text matches a signature
     /// sits near the top/bottom of the page is treated as an artifact.
     /// Populated lazily on first access; `Some(set)` with an empty set
     /// means detection ran and found nothing (vs `None` = not yet run).
@@ -436,7 +436,7 @@ pub struct PdfDocument {
     /// Populated when silent fallbacks occur (font not found, CMap absent, etc.).
     /// Retrieve with [`PdfDocument::warnings`]; drain with [`PdfDocument::take_warnings`].
     accumulated_warnings: Mutex<Vec<String>>,
-    /// v0.3.56 (#558 half-2): structured warnings accumulator. Each
+    /// structured warnings accumulator. Each
     /// internal warning site that previously only called `log::warn!`
     /// can additionally push a typed [`crate::extractors::warnings::Warning`]
     /// here, letting callers retrieve diagnostics as structured data
@@ -528,7 +528,7 @@ pub enum PageArea {
 /// each object header so that the caller can then `load_uncompressed_object`
 /// at exactly that offset without parsing the whole file body.
 ///
-/// The scan is intentionally tolerant: it doesn't require `/Type` and
+/// The scan is intentionally tolerant: it doesn't require `/Type`
 /// `/ObjStm` to be separated by whitespace (many producers write
 /// `/Type/ObjStm`), doesn't anchor on any particular position within the
 /// header, and doesn't rely on xref entries being correct — which is the
@@ -684,7 +684,7 @@ impl PdfDocument {
         // skip this lose access to APIs that re-read the bytes
         // (notably `compliance::convert_to_pdf_a`, which constructs a
         // `DocumentEditor` from `source_bytes` — an empty Vec breaks
-        // it with `"Invalid PDF header: ... File is empty"`). See
+        // it with `"Invalid PDF header: ... File is empty"`).
         // issue #456.
         //
         // The doc comment on this function already promised "Reads the
@@ -1779,7 +1779,7 @@ impl PdfDocument {
         // Find ObjStm candidates by raw pattern search in the file body.
         //
         // Why not iterate xref entries here: the xref is precisely what we
-        // don't trust in this recovery path — its offsets may be wrong and
+        // don't trust in this recovery path — its offsets may be wrong
         // its type tags may be lying about what each slot contains. A raw
         // search for `N G obj ... /Type /ObjStm` finds every object stream
         // the producer actually wrote, independent of how the xref
@@ -2018,7 +2018,7 @@ impl PdfDocument {
             // uniformly for all object ids (critical low-numbered catalog
             // objects and page objects in the thousands); previously low
             // ids took a separate "fall through to loading logic" path
-            // that silently hit the Free arm of the entry_type match and
+            // that silently hit the Free arm of the entry_type match
             // still ended up Null.
             //
             // Recovery path 1 — standalone `N G obj` marker in the file
@@ -2250,7 +2250,7 @@ impl PdfDocument {
             return true; // conservative fallback
         }
 
-        // Seek + read under a SINGLE lock guard. Splitting the seek and
+        // Seek + read under a SINGLE lock guard. Splitting the seek
         // the read across two `self.reader.lock_or_recover()` acquisitions
         // is the #398 Race A split-lock bug (same one already fixed in
         // `load_uncompressed_object_impl`): a concurrent thread can
@@ -2741,7 +2741,7 @@ impl PdfDocument {
             if bytes_read == 0 {
                 let msg = format!("Unexpected EOF while reading object {} header", obj_ref.id);
                 log::warn!("{}", msg);
-                // v0.3.56 (#558 h2): also push into structured sink so
+                // also push into structured sink so
                 // callers can retrieve as data via flatten_warnings.
                 self.push_structured_warning(crate::extractors::warnings::Warning {
                     category: crate::extractors::warnings::WarningCategory::EofPremature,
@@ -2922,7 +2922,7 @@ impl PdfDocument {
                         data.len()
                     );
                     log::warn!("{}", msg);
-                    // v0.3.56 (#558 h2): structured-warnings sink.
+                    // structured-warnings sink.
                     self.push_structured_warning(crate::extractors::warnings::Warning {
                         category: crate::extractors::warnings::WarningCategory::EofPremature,
                         page: None,
@@ -3075,7 +3075,7 @@ impl PdfDocument {
 
         // Parse all objects from the stream.
         //
-        // Per ISO 32000-2:2020 Section 7.6.3, object streams (/Type /ObjStm) and
+        // Per ISO 32000-2:2020 Section 7.6.3, object streams (/Type /ObjStm)
         // cross-reference streams (/Type /XRef) shall NOT be individually encrypted.
         // The stream data is only compressed, not encrypted.  Many PDF producers
         // (including many real-world producers) follow this rule even under
@@ -3836,7 +3836,7 @@ impl PdfDocument {
     /// Get page count as u32 (legacy API).
     ///
     /// This is a convenience method that returns the page count as a u32.
-    /// It calls `page_count()` internally but converts the result and
+    /// It calls `page_count()` internally but converts the result
     /// returns 0 if an error occurs (for backward compatibility).
     #[deprecated(
         since = "0.1.0",
@@ -4826,7 +4826,7 @@ impl PdfDocument {
             // block (common on CJK lab-report reference tables like
             // WS/T 779). Those labels would otherwise be dropped
             // entirely from the output: the retain below would remove
-            // them because their bbox is inside the table, and
+            // them because their bbox is inside the table,
             // `table.render_text()` would not re-emit them because the
             // extractor never captured them as cells. Before running
             // the retain filter we identify these rowspan labels (same
@@ -5176,7 +5176,7 @@ impl PdfDocument {
                         {
                             // Inflated-width overlap recovery (issue #328).
                             // A negative raw gap here usually comes from a
-                            // font whose `/Widths` array is missing and
+                            // font whose `/Widths` array is missing
                             // `FontInfo::new` fell back to the 550/1000-em
                             // constant, which over-reports each glyph's
                             // advance and drags `prev_end_x` past the real
@@ -5186,7 +5186,7 @@ impl PdfDocument {
                             // the same word — the overlap is a width-table
                             // artifact, not real kerning — so insert a
                             // space to preserve the word boundary. This
-                            // rescues cases like "STATION" + "FREEDOM" and
+                            // rescues cases like "STATION" + "FREEDOM"
                             // "UTILIZATION" + "CONFERENCE" in the NASA
                             // Apollo report header where raw gaps of
                             // -1.75 pt and -12.75 pt sit alongside
@@ -5198,7 +5198,7 @@ impl PdfDocument {
                     {
                         // Forward-gap guard: pairs newly admitted to same-line
                         // handling by the widened threshold get a column/field-
-                        // boundary check against FORWARD_GAP_K * max(fs). See
+                        // boundary check against FORWARD_GAP_K * max(fs).
                         // the constant's doc comment for calibration notes.
                         if !text.ends_with('\n') {
                             text.push('\n');
@@ -5628,22 +5628,21 @@ impl PdfDocument {
     }
 
     /// Always rasterise the page and run the supplied OCR engine,
-    /// regardless of the embedded text layer. v0.3.56 additive companion
-    /// for #574 — the existing [`extract_text_with_ocr`] is
-    /// text-layer-first (OCR only when no native text), which the
-    /// reporter found misleading because the name implies OCR-always.
+    /// regardless of the embedded text layer.
     ///
-    /// `extract_text_ocr_only` makes the OCR-always contract explicit:
-    /// the engine is invoked unconditionally and its output is returned
-    /// even when an embedded text layer is present (useful for scanned-
-    /// then-machine-OCR'd PDFs where the embedded layer is poor quality
+    /// The existing [`extract_text_with_ocr`] is text-layer-first
+    /// (OCR only when no native text), which can be misleading
+    /// because the name implies OCR-always. This method makes the
+    /// OCR-always contract explicit: the engine is invoked
+    /// unconditionally and its output is returned even when an
+    /// embedded text layer is present (useful for scanned-then-
+    /// machine-OCR'd PDFs where the embedded layer is poor-quality
     /// auto-OCR from the scanner).
     ///
     /// Returns `Err(Error::OcrUnavailable { reason: EngineNotProvided })`
-    /// if no engine is supplied — unlike [`extract_text_with_ocr`] which
-    /// silently degrades. This makes the OCR-required contract loud.
-    ///
-    /// See `docs/releases/plans/v0.3.56/cluster-ocr-api.md`.
+    /// if no engine is supplied — unlike [`extract_text_with_ocr`]
+    /// which silently degrades. This makes the OCR-required contract
+    /// loud.
     #[cfg(feature = "ocr")]
     pub fn extract_text_ocr_only(
         &self,
@@ -5653,7 +5652,7 @@ impl PdfDocument {
     ) -> Result<String> {
         // Run OCR unconditionally via the existing `ocr_page` helper.
         // If ORT's init has previously panicked (missing libonnxruntime),
-        // the catch_unwind in `OrtBackend::from_bytes` (v0.3.56 #569 fix)
+        // the catch_unwind in `OrtBackend::from_bytes`
         // ensures we get an OcrError instead of a panic.
         crate::ocr::ocr_page(self, page_index, ocr_engine, &ocr_options).map_err(|e| {
             Error::OcrUnavailable {
@@ -6231,14 +6230,14 @@ impl PdfDocument {
         // hangul) meets a Latin/digit character on the same line, regardless
         // of how tightly the two were typeset.  Without this, mixed-script
         // content like "神鹰集团" + "2015" collapses into one token
-        // "神鹰集团2015", which never matches GT's separate "神鹰集团" and
+        // "神鹰集团2015", which never matches GT's separate "神鹰集团"
         // "2015" tokens (issue 484, pr-136).
         //
         // IMPORTANT: this MUST exclude fullwidth ASCII variants (U+FF01..FF5E
         // — ＜＞＝＠ etc.) and CJK Symbols and Punctuation (U+3000..303F) even
         // though they are technically "CJK characters".  Those are *operator*
         // glyphs that sit inline with adjacent digits and Latin in CJK
-        // technical documents — pdftotext keeps "60000≤Q＜80000" and
+        // technical documents — pdftotext keeps "60000≤Q＜80000"
         // "20＜μ≤30" as compound tokens (issue 484, issue-336).  Forcing a
         // boundary space there destroys the compound and regresses Jaccard.
         let is_cjk_script = |c: char| {
@@ -6398,7 +6397,7 @@ impl PdfDocument {
     ///  - The vertical offset between base and sub is in [8 %, 85 %] of base_fs
     ///    (distinguishes true sub/superscripts from same-line small caps)
     ///
-    /// Matched subscript/superscript spans have their text appended to the base and
+    /// Matched subscript/superscript spans have their text appended to the base
     /// are removed from `spans`.
     fn merge_sub_superscript_spans(spans: &mut Vec<TextSpan>) {
         let n = spans.len();
@@ -6765,7 +6764,7 @@ impl PdfDocument {
                     if ff & field_flags::PUSH_BUTTON != 0 {
                         // Push button: caption is in /MK /CA per PDF Spec
                         // ISO 32000-1:2008 §12.5.6.19 (Appearance Characteristics
-                        // Dictionary). Extracting it lets screen readers and
+                        // Dictionary). Extracting it lets screen readers
                         // text-extraction consumers see the button label.
                         dict.get("MK")
                             .and_then(|mk| mk.as_dict())
@@ -7665,35 +7664,32 @@ impl PdfDocument {
         true
     }
 
-    /// v0.3.56 (#549/#556/#561/#565/#568/#576): assemble the page's text
-    /// spans via the reading-order pipeline, classifying each region
-    /// with the per-class detectors from
-    /// `src/pipeline/reading_order/detectors.rs`. Returns the assembled
-    /// spans plus the trace of which detector class fired on each
-    /// region.
+    /// Assemble the page's text spans via the reading-order
+    /// pipeline, classifying each region with the per-class
+    /// detectors in [`crate::pipeline::reading_order::detectors`].
+    /// Returns the assembled spans plus the detector class that
+    /// fired on each region.
     ///
-    /// The four detectors handle layout shapes that the v0.3.54
-    /// extract_text could not produce correctly:
+    /// The four detectors handle layout shapes that the plain
+    /// y-then-x assembly cannot produce correctly:
     ///
-    /// - **DramaticScript** (#576): Macbeth-style speaker-tag layouts —
-    ///   row-major join required
-    /// - **DenseSingleLine** (#568): SEC DEF 14A 8pt-body interleave —
-    ///   single-row regroup required
-    /// - **SubSuperBaselineReattach** (#561): chemical-formula
-    ///   subscripts — baseline reattach required
-    /// - **NarrowTrackedJustified** (#565): stretched justified columns
-    ///   — per-line median-gap threshold normalisation required
+    /// - **DramaticScript**: Macbeth-style speaker-tag layouts —
+    ///   row-major join required.
+    /// - **DenseSingleLine**: SEC DEF 14A 8pt-body interleave —
+    ///   single-row regroup required.
+    /// - **SubSuperBaselineReattach**: chemical-formula
+    ///   subscripts — baseline reattach required.
+    /// - **NarrowTrackedJustified**: stretched justified columns —
+    ///   per-line median-gap threshold normalisation required.
     ///
     /// Regions that don't match any specific layout fall through to
-    /// `Default` (the v0.3.54 y-then-x assembly within block).
+    /// `Default` (plain y-then-x assembly within the block).
     ///
-    /// Caller integration: callers can use this as a pre-step before
-    /// applying their own assembly logic, or rely on the classified
-    /// `ReadingOrderClass` to dispatch their assembly strategy.
-    /// `extract_text` consumes this implicitly through `extract_spans`
-    /// + the existing XYCutStrategy.
-    ///
-    /// See `docs/releases/plans/v0.3.56/cluster-reading-order.md`.
+    /// Callers can use this as a pre-step before applying their own
+    /// assembly logic, or rely on the classified `ReadingOrderClass`
+    /// to dispatch their assembly strategy. `extract_text` consumes
+    /// this implicitly through `extract_spans` + the existing
+    /// `XYCutStrategy`.
     pub fn assemble_text_via_reading_order(
         &self,
         page_index: usize,
@@ -7740,8 +7736,8 @@ impl PdfDocument {
     /// resources + at least one `BT`/`Do` operator in the content stream),
     /// `false` if the page is image-only or genuinely empty.
     ///
-    /// v0.3.56 additive accessor for #563. Callers route image-only pages
-    /// to OCR (`extract_text_ocr_only(page, engine)`) instead of receiving
+    /// Callers can route image-only pages to OCR
+    /// (`extract_text_ocr_only(page, engine)`) instead of receiving
     /// an empty string with no signal.
     ///
     /// Conservative: returns `true` when the page resources can't be
@@ -7752,7 +7748,7 @@ impl PdfDocument {
     ///
     /// §8.8 (Image XObjects): image-only pages have `/Resources` whose
     /// only `/XObject` entries are `/Subtype /Image` with no `/Font`
-    /// resources. See `docs/releases/plans/v0.3.56/cluster-silent-data-loss.md`.
+    /// resources.
     pub fn has_text_layer(&self, page_index: usize) -> Result<bool> {
         let page = self.get_page(page_index)?;
         let page_dict = page.as_dict().ok_or_else(|| Error::ParseError {
@@ -7774,11 +7770,10 @@ impl PdfDocument {
     /// Returns the document's `/P` permission flags as a `PdfPermissions`
     /// struct if the document is encrypted; `None` otherwise.
     ///
-    /// v0.3.56 additive accessor for #562. Per PDF spec §7.6.3.2 the `/P`
-    /// flag is advisory — pdf_oxide does not enforce restrictions — but
-    /// callers who want to enforce them (e.g., refuse copy-protected PDF
-    /// extraction) can do so themselves by checking the returned
-    /// permissions.
+    /// Per PDF spec §7.6.3.2 the `/P` flag is advisory — pdf_oxide
+    /// does not enforce restrictions — but callers who want to
+    /// enforce them (e.g., refuse copy-protected PDF extraction) can
+    /// do so themselves by checking the returned permissions.
     ///
     /// # PDF spec basis
     ///
@@ -8183,7 +8178,7 @@ impl PdfDocument {
         let mut spans = self.extract_spans_raw(page_index)?;
 
         // Drop spans whose bbox lies entirely outside the page's MediaBox.
-        // PDFs that reuse one big Form XObject across pages (ExpertPdf and
+        // PDFs that reuse one big Form XObject across pages (ExpertPdf
         // similar tools — see issue B1 / nougat_005.pdf) rely on the
         // content stream's `W n` clip rectangle to hide the off-page
         // portion. Our text extractor doesn't honour `W n` yet, so
@@ -8211,7 +8206,7 @@ impl PdfDocument {
         // Reading order: XY-cut when the page has multiple columns (B4);
         // otherwise the cheap row-aware sort. XY-cut is spatial recursion
         // that correctly orders multi-column layouts (newspapers, academic
-        // papers, dashboards) but is overkill for single-column pages and
+        // papers, dashboards) but is overkill for single-column pages
         // doesn't handle tabular rowspan labels specifically. Heuristic:
         // count distinct X-center clusters with vertical overlap; ≥2
         // clusters → multi-column.
@@ -8290,7 +8285,7 @@ impl PdfDocument {
         // Apply char_widths boundary splits directly to span.text so that every
         // downstream consumer (to_markdown, to_html, extract_text) sees the same
         // word boundaries.  extract_text applies the same logic through push_span_text;
-        // after this normalization push_span_text sees a space at the boundary and
+        // after this normalization push_span_text sees a space at the boundary
         // becomes a no-op, so there is no double-application risk.
         for span in &mut spans {
             if let Some(split) = Self::char_widths_boundary_split(span) {
@@ -8358,26 +8353,23 @@ impl PdfDocument {
         self.accumulated_warnings.lock_or_recover().push(msg.into());
     }
 
-    /// v0.3.56 (#558 half-2): return the document's accumulated
-    /// structured warnings as a snapshot. Each entry carries the
-    /// warning's [`WarningCategory`](crate::extractors::warnings::WarningCategory),
+    /// Return the document's accumulated structured warnings as a
+    /// snapshot. Each entry carries the warning's
+    /// [`WarningCategory`](crate::extractors::warnings::WarningCategory),
     /// page (if applicable), human-readable message, and PDF spec
     /// section reference (when applicable).
     ///
     /// Unlike [`Self::warnings`] which returns plain strings, this
-    /// accessor returns structured records callers can filter,
-    /// route to observability dashboards, or assert on in tests
-    /// without parsing message text. Companion to the v0.3.56
-    /// `pyo3_log` per-target default-level downgrade — together they
-    /// give Python users a clean default-stderr experience plus an
-    /// opt-in structured surface.
+    /// accessor returns structured records callers can filter, route
+    /// to observability dashboards, or assert on in tests without
+    /// parsing message text. Pairs with the `pyo3_log` per-target
+    /// default-level downgrade to give Python users a clean stderr
+    /// experience plus an opt-in structured surface.
     ///
     /// Returns the warnings in insertion order. The vector is
     /// non-destructive: subsequent calls return the same entries
     /// plus any new ones pushed since the last call. Use
     /// [`Self::take_structured_warnings`] to drain.
-    ///
-    /// See `docs/releases/plans/v0.3.56/cluster-diagnostics-noise.md`.
     pub fn flatten_warnings(&self) -> Vec<crate::extractors::warnings::Warning> {
         self.structured_warnings.lock_or_recover().clone()
     }
@@ -8390,8 +8382,7 @@ impl PdfDocument {
 
     /// Record a structured warning. Hook called from migrated
     /// `log::warn!` sites that also want to surface the warning as
-    /// structured data. The seven highest-frequency sites listed in
-    /// `cluster-diagnostics-noise.md` §4 are the migration targets.
+    /// structured data.
     ///
     /// Exposed as `pub` so external diagnostic sources (custom
     /// extractors, FFI hooks) can also push warnings into the same
@@ -8788,7 +8779,7 @@ impl PdfDocument {
 
     /// Internal helper: extract raw (unsorted) text spans from a page.
     ///
-    /// This is the common extraction logic shared by `extract_spans` and
+    /// This is the common extraction logic shared by `extract_spans`
     /// `extract_spans_with_reading_order`. Spans are returned without any
     /// sorting or erase-region filtering applied.
     fn extract_spans_raw(&self, page_index: usize) -> Result<Vec<crate::layout::TextSpan>> {
@@ -11095,7 +11086,7 @@ impl PdfDocument {
                     // over ALL reference fonts in the current Resources dict (sorted by
                     // name). This prevents false cache hits when pages reuse the same
                     // font key names but embed different per-page subsets — a single-font
-                    // spot-check is insufficient because it only guards one entry and
+                    // spot-check is insufficient because it only guards one entry
                     // lets differing sibling fonts (F2, F3 …) slip through unchecked.
                     // Fixes the regression described in issue #408.
                     let current_combined = {
@@ -11857,7 +11848,7 @@ impl PdfDocument {
         // Step 7: Process through pipeline (applies reading order strategy)
         let mut ordered_spans = pipeline.process(spans, context)?;
 
-        // Annotate ordered spans with the per-MCID structural role and
+        // Annotate ordered spans with the per-MCID structural role
         // paragraph block-id so the markdown converter can emit headings
         // and bullets directly from the source PDF's `/StructTreeRoot`
         // and respect tagged paragraph boundaries even when the
@@ -11926,7 +11917,7 @@ impl PdfDocument {
         // megabytes (issue #377 corpus-comparison observation: a
         // 17-page arxiv paper produced 11 MB of markdown, ~600 KB
         // per page of base64 PNG data, swamping any text-content
-        // signal). 200 KB per image keeps small thumbnails and
+        // signal). 200 KB per image keeps small thumbnails
         // diagrams while skipping full-page renders.
         const MAX_BASE64_DATA_URI: usize = 200 * 1024;
         for (i, image) in images.iter().enumerate() {
@@ -12586,7 +12577,7 @@ impl PdfDocument {
     /// second section onward. `ir_to_docx` writes one `<w:sectPr>` per
     /// section (each non-final sectPr lives inside a synthetic empty
     /// paragraph's `<w:pPr>`, the final one at body level), so a
-    /// PDF→DOCX→PDF round-trip preserves the source page count and
+    /// PDF→DOCX→PDF round-trip preserves the source page count
     /// dimensions instead of overflowing onto Letter-sized pages at
     /// the OfficeConfig default. Source-PDF fonts are embedded under
     /// `word/fonts/` for typeface preservation across the round-trip.
@@ -12640,7 +12631,7 @@ impl PdfDocument {
         // table (widths live in the document's `/W` array, not the
         // font program). `cmap_injector` patches both: it synthesises
         // a format-4 Unicode cmap from `/ToUnicode` so the font
-        // registers via `EmbeddedFont::has_usable_unicode_cmap`, and
+        // registers via `EmbeddedFont::has_usable_unicode_cmap`,
         // it stamps a real `hmtx` populated from the source PDF's
         // `/W` widths so ttf-parser's `glyph_hor_advance` returns
         // non-zero values when the round-trip writer rebuilds its
@@ -12682,7 +12673,7 @@ impl PdfDocument {
     }
 
     /// Build a `DocumentIR` from the entire PDF, tagged for the target
-    /// office format. Shared by `to_docx_bytes`, `to_pptx_bytes`, and
+    /// office format. Shared by `to_docx_bytes`, `to_pptx_bytes`,
     /// `to_xlsx_bytes`. Thin wrapper around `pdf_to_ir::pdf_to_ir`
     /// that applies default options.
     fn pdf_to_office_ir(
@@ -13928,7 +13919,7 @@ fn first_in_use_uncompressed(xref: &crate::xref::CrossRefTable) -> Option<Object
 ///
 /// Cell contents in real data tables are atomic units (numbers, codes,
 /// names, short labels): they almost always start with an uppercase
-/// letter, a digit, or a symbol (currency, +/-, punctuation marker) and
+/// letter, a digit, or a symbol (currency, +/-, punctuation marker)
 /// rarely end with a mid-sentence comma or semicolon.  Prose-as-table
 /// cells, by contrast, are fragments of running sentences — they
 /// frequently start with a lowercase stopword ("and", "the", "to") because
@@ -16083,7 +16074,7 @@ mod tests {
     #[test]
     fn test_check_for_circular_references_runs() {
         // Minimal PDFs naturally have Page <-> Pages parent references,
-        // so we just verify the function runs without panicking and
+        // so we just verify the function runs without panicking
         // returns a list (which may include the Page<->Pages backreference).
         let pdf = build_minimal_pdf(b"");
         let doc = PdfDocument::from_bytes(pdf).unwrap();
@@ -18200,7 +18191,7 @@ mod tests {
 
     /// Regression test: validate_object_at_offset must return true for
     /// compressed (type 2) xref entries.  Previously, it treated the object
-    /// stream number as a byte offset, sought to a random location, and
+    /// stream number as a byte offset, sought to a random location,
     /// returned false — triggering a full-file xref reconstruction that took
     /// 35+ seconds on large PDFs.
     #[test]

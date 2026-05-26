@@ -176,7 +176,7 @@ impl EncryptionHandler {
 
     /// Get the raw `/P` permission flag integer per PDF spec §7.6.3.2
     /// Table 22. Used by [`PdfDocument::permissions`] to construct the
-    /// v0.3.56 [`PdfPermissions`] struct.
+    /// [`PdfPermissions`] struct.
     ///
     /// PDF spec uses two's-complement int32 with bits 13-32 reserved.
     pub fn raw_permissions(&self) -> i32 {

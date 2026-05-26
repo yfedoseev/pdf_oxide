@@ -117,7 +117,7 @@ impl ExtractionProfile {
         enable_citation_detection: false,
     };
 
-    /// v0.3.56 (#564): TJ-heavy profile — calibrated for documents
+    /// TJ-heavy profile — calibrated for documents
     /// that emit entire paragraphs as one `TJ` array with kerning
     /// between every glyph (the kreuzberg `tiny.pdf` /
     /// `Loremipsumdolorsitamet` shape). The threshold of -100.0

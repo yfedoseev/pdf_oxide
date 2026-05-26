@@ -362,13 +362,13 @@ impl FormExtractor {
             format!("{}.{}", parent_name, partial_name)
         };
 
-        // Check if this field has children. v0.3.56 (#570): we now
-        // recurse into Kids AND also emit a row for parent fields that
-        // carry a /T name, matching pypdf's traversal. Previously we
-        // recursed into Kids and dropped any parent without an explicit
-        // /FT, which under-counted IRS AcroForms by 15-30% (parent
-        // dictionaries for grouped fields like multi-digit SSN boxes
-        // have /T but no /FT — pypdf surfaces them, we did not).
+        // Recurse into Kids and also emit a row for parent fields
+        // that carry a /T name, matching pypdf's traversal. The
+        // previous behaviour recursed into Kids and dropped any
+        // parent without an explicit /FT, which under-counted IRS
+        // AcroForms by 15–30% (parent dictionaries for grouped
+        // fields like multi-digit SSN boxes have /T but no /FT —
+        // pypdf surfaces them, we did not).
         let has_kids = if let Some(kids_ref) = field_dict.get("Kids") {
             let kids = Self::resolve_object(doc, kids_ref)?;
             if let Some(kids_array) = kids.as_array() {
@@ -391,7 +391,7 @@ impl FormExtractor {
             .map(|name| Self::parse_field_type(&name))
             .unwrap_or(FieldType::Unknown("".to_string()));
 
-        // v0.3.56 (#570): only skip the parent when it has NEITHER /FT
+        // only skip the parent when it has NEITHER /FT
         // NOR /T. A parent with /T but no /FT (logical grouping like
         // `topmostSubform[0].Page1[0].FilingStatus[0]`) IS surfaced in
         // results, matching pypdf's behaviour. The terminal kids that

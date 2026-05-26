@@ -1,5 +1,4 @@
-//! PDF §7.6.3.2 `/P` permission flag set — v0.3.56 additive accessor
-//! for #562.
+//! PDF §7.6.3.2 `/P` permission flag set.
 //!
 //! `PdfDocument::permissions()` returns this struct when the document
 //! is encrypted. Per PDF spec §7.6.3.2 Table 22:
@@ -18,9 +17,6 @@
 //! Per PDF spec language, `/P` permissions are **advisory** — readers
 //! shall not enforce them. pdf_oxide surfaces them so callers who want
 //! to enforce can do so themselves.
-//!
-//! See `docs/releases/plans/v0.3.56/cluster-security-policy.md` §4.4
-//! and `docs/releases/plans/v0.3.56/api-design.md` §3.
 
 #![forbid(unsafe_code)]
 

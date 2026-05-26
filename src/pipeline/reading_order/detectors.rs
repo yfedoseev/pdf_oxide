@@ -1,53 +1,49 @@
-//! v0.3.56 reading-order detectors — per-class layout classifiers
-//! for the issues in `cluster-reading-order.md` (#549/#568/#576/
-//! #565/#561).
+//! Per-class layout classifiers used by the reading-order pipeline.
 //!
 //! Each detector recognises a specific layout shape from a region's
 //! span set. The detectors are written as pure predicates over span
 //! geometry so they can be invoked from any layout pipeline:
 //!
-//! - [`detect_dramatic_script`] (#576): ≥3 lines starting with a
+//! - [`detect_dramatic_script`]: ≥3 lines starting with a
 //!   short token (≤12 chars) ending in `.` at a consistent left X,
-//!   followed by a wide gap (>4×em) to the next glyph. Macbeth-style
-//!   speaker tags.
-//! - [`detect_dense_single_line`] (#568): >80% of glyphs share a
-//!   single Y (≤0.5pt), and the X-density is bimodal so the
-//!   downstream assembler would otherwise split into two output
-//!   lines. SEC DEF 14A 8pt-body interleave.
-//! - [`detect_sub_super_glyphs`] (#561): any glyph in the region
-//!   has Y-offset from the surrounding line baseline in
-//!   (0.2 × font_size, 0.8 × font_size). Chemical-formula
+//!   followed by a wide gap (>4×em) to the next glyph (Macbeth-style
+//!   speaker tags).
+//! - [`detect_dense_single_line`]: >80% of glyphs share a single Y
+//!   (≤0.5pt) and the X-density is bimodal so the downstream
+//!   assembler would otherwise split into two output lines
+//!   (SEC DEF 14A 8pt-body interleave).
+//! - [`detect_sub_super_glyphs`]: any glyph in the region has
+//!   Y-offset from the surrounding line baseline in
+//!   (0.2 × font_size, 0.8 × font_size) — chemical-formula
 //!   subscripts.
-//! - [`detect_narrow_tracked`] (#565): per-line median gap differs
-//!   from the font's space-advance by > 1.5×. Stretched-column
-//!   justified text that produces intra-word splits.
+//! - [`detect_narrow_tracked`]: per-line median gap differs from
+//!   the font's space-advance by > 1.5× (stretched-column
+//!   justified text that produces intra-word splits).
 //!
-//! Integration with the existing `XYCutStrategy` / `TextPipeline` is
-//! tracked in audit task #29. The predicates here are usable
-//! standalone (callers pass span coordinates) and unit-testable on
-//! synthetic input.
+//! The predicates here are usable standalone (callers pass span
+//! coordinates) and unit-testable on synthetic input.
 
 #![forbid(unsafe_code)]
 
 use serde::{Deserialize, Serialize};
 
-/// Layout classes recognised by the v0.3.56 detectors. Used to
-/// dispatch per-class assembly strategies.
+/// Layout classes recognised by the detectors. Used to dispatch
+/// per-class assembly strategies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadingOrderClass {
     /// Default: y-then-x within region (the v0.3.54 behaviour).
     Default,
-    /// Dramatic-script layout (#576). Speaker tags at consistent
+    /// Dramatic-script layout. Speaker tags at consistent
     /// left X; row-major join required.
     DramaticScript,
-    /// Dense single-Y line clustered into two output rows (#568).
+    /// Dense single-Y line clustered into two output rows.
     /// Single-row regroup required.
     DenseSingleLine,
-    /// Sub/super glyphs displaced from baseline (#561). Baseline
+    /// Sub/super glyphs displaced from baseline. Baseline
     /// reattach required.
     SubSuperBaselineReattach,
-    /// Narrow-tracked justified columns (#565). Per-line median-gap
+    /// Narrow-tracked justified columns. Per-line median-gap
     /// threshold normalisation required.
     NarrowTrackedJustified,
 }
@@ -71,7 +67,7 @@ pub struct DetectorGlyph {
     pub text_len: usize,
 }
 
-/// #576 (DramaticScript): detect Macbeth-style speaker-tag layout.
+/// Detect Macbeth-style speaker-tag layout.
 ///
 /// **Trigger**: ≥3 distinct Y-rows where each row starts with a
 /// short token (≤12 chars) ending in `.` at a consistent left X
@@ -109,10 +105,10 @@ pub fn detect_dramatic_script(glyphs: &[DetectorGlyph], row_texts: &[&str]) -> b
     speaker_row_count >= 3
 }
 
-/// #568 (DenseSingleLine): detect single-Y glyph cluster that the
-/// downstream assembler would split into two output rows.
+/// Detect a single-Y glyph cluster that the downstream assembler
+/// would otherwise split into two output rows.
 ///
-/// **Trigger**: >80% of glyphs share a single Y (within 0.5pt), and
+/// **Trigger**: >80% of glyphs share a single Y (within 0.5pt),
 /// the X positions cluster into TWO disjoint bands (gap > 5pt
 /// between bands). This is the SEC DEF 14A 8pt-body interleave
 /// shape — `extract_chars` confirms all glyphs at origin_y == 584.39
@@ -163,8 +159,8 @@ pub fn detect_dense_single_line(glyphs: &[DetectorGlyph]) -> bool {
     // Bimodal: one gap is much larger than the typical (median)
     // intra-glyph gap. Ratio > 4 catches the SEC DEF 14A case
     // (45pt outlier vs ~5pt intra-band) while suppressing
-    // false positives on uniformly-tracked stretched text
-    // (#565's case, where gaps are all similar).
+    // false positives on uniformly-tracked stretched text where
+    // all gaps are similar.
     if median_gap > 0.0 {
         max_gap > 4.0 * median_gap
     } else {
@@ -172,8 +168,8 @@ pub fn detect_dense_single_line(glyphs: &[DetectorGlyph]) -> bool {
     }
 }
 
-/// #561 (SubSuperBaselineReattach): detect sub/super glyphs offset
-/// from the surrounding line baseline.
+/// Detect sub/superscript glyphs offset from the surrounding line
+/// baseline.
 ///
 /// **Trigger**: any glyph in the region has a Y-offset from its
 /// neighbours' line baseline in (0.2 × font_size, 0.8 × font_size).
@@ -203,9 +199,8 @@ pub fn detect_sub_super_glyphs(glyphs: &[DetectorGlyph]) -> bool {
     })
 }
 
-/// #565 (NarrowTrackedJustified): detect narrow-tracked justified
-/// columns where intra-word gaps exceed the proportional-font
-/// threshold.
+/// Detect narrow-tracked justified columns where intra-word gaps
+/// exceed the proportional-font threshold.
 ///
 /// **Trigger**: per-glyph X-gaps cluster bimodally. The intra-word
 /// gap median should be much smaller than the inter-word gap; in

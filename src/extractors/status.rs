@@ -1,19 +1,16 @@
 //! Per-call extraction signal — what fired during a single text-extraction
-//! invocation. v0.3.56 additive surface for #559, #563, #571, #574, #562.
+//! invocation. Additive companion to the existing extraction APIs.
 //!
-//! Returned alongside the existing return values by the new `*_status`
+//! Returned alongside the existing return values by the `*_status`
 //! companion accessors (`extract_text_status`, `to_plain_text_status`,
 //! `extract_words_status`, etc.). The existing accessors keep their
 //! original return shapes — this type is purely additive.
 //!
-//! **Naming note (v0.3.56)**: the v0.3.56 plan called this type
-//! `ExtractionStatus`, but v0.3.51 already exposes an
-//! `extractors::auto::ExtractionStatus` (page-level Complete /
-//! PartialSuccess / NoTextRecovered for the AutoExtractor surface from
-//! #517). Renaming this to `ExtractionSignal` keeps both types public and
-//! preserves additive back-compat.
-//!
-//! See `docs/releases/plans/v0.3.56/api-design.md` §1 for the design.
+//! **Naming note**: this type is `ExtractionSignal` rather than
+//! `ExtractionStatus` because v0.3.51 already exposes
+//! `extractors::auto::ExtractionStatus` (the page-level Complete /
+//! PartialSuccess / NoTextRecovered enum for the `AutoExtractor`
+//! surface). Both types remain public for additive back-compat.
 
 #![forbid(unsafe_code)]
 
@@ -33,7 +30,7 @@ pub enum ExtractionSignal {
     /// The content-stream parser hit `MAX_OPERATORS` (default 1,000,000)
     /// and stopped emitting glyphs. The returned text is everything up to
     /// that point. `at_op` is the operator-index at which truncation fired.
-    /// Fix: `ParserOptions { max_ops_per_stream: None }`. Closes #559.
+    /// Fix: `ParserOptions { max_ops_per_stream: None }`.
     Truncated {
         /// Operator index at which truncation fired.
         at_op: usize,
@@ -41,21 +38,19 @@ pub enum ExtractionSignal {
 
     /// The page has no text layer (no `/Font` resources used, no `Tj` /
     /// `TJ` / `'` / `"` operators observed). The returned text is empty.
-    /// Route to OCR via `extract_text_ocr(page, engine)`. Closes #563.
+    /// Route to OCR via `extract_text_ocr(page, engine)`.
     NoTextLayer,
 
     /// `count` glyphs on the page mapped to `U+FFFD` (REPLACEMENT
     /// CHARACTER) because the font has neither ToUnicode nor a usable
     /// AGL fallback. The returned text includes those U+FFFD chars
-    /// (v0.3.56 stops filtering them silently). Caller can decide whether
-    /// to keep, drop, or OCR. Closes #571.
+    /// so the caller can decide whether to keep, drop, or OCR.
     UnmappedGlyphs {
         /// Number of `U+FFFD` chars in the returned text.
         count: usize,
     },
 
     /// OCR was requested but the backend is unavailable.
-    /// Closes #569, #573, #574.
     OcrUnavailable {
         /// The reason OCR is unavailable.
         reason: OcrUnavailableReason,
@@ -63,7 +58,7 @@ pub enum ExtractionSignal {
 
     /// Document was encrypted and the caller has not yet authenticated.
     /// Body operations on the document return this signal (with empty
-    /// text) until `doc.authenticate(password)` succeeds. Closes #562.
+    /// text) until `doc.authenticate(password)` succeeds.
     PasswordRequired,
 
     /// A composite signal: multiple non-Ok signals fired on the same
