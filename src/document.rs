@@ -6771,16 +6771,37 @@ impl PdfDocument {
                         let value = Self::parse_string_value_static(dict.get("V"))
                             .or_else(|| self.resolve_inherited_field_value(&dict));
                         match value {
-                            Some(v) if !v.trim().is_empty() => Some(v.trim().to_string()),
+                            Some(v) if !v.trim().is_empty() => {
+                                // Bound the value to the widget's visual
+                                // capacity. Multi-line text-area fields
+                                // can hold scrollable content (e.g. the
+                                // pdfbox LongRichTextField fixture's /V
+                                // is 145 000 chars) but only a fraction
+                                // renders on the page; per spec §12.7.4.3
+                                // the value is the field's data, but
+                                // extract_text semantics target visible
+                                // text. Truncate keeps the rendered
+                                // portion and drops the rest.
+                                Some(Self::truncate_to_widget_capacity(
+                                    v.trim().to_string(),
+                                    &rect,
+                                ))
+                            },
                             _ => {
-                                // Fallback: try AP stream text
+                                // Fallback: try AP stream text. Truncate
+                                // to bbox capacity — some PDFs reuse a
+                                // single Form XObject for many widgets'
+                                // /AP /N (e.g. pdfbox AcroForms fixtures
+                                // point every widget's appearance at the
+                                // page-background prose), and without
+                                // the cap each widget extracts that
+                                // prose once.
                                 self.extract_text_from_ap_stream(&dict).and_then(|t| {
                                     let t = t.trim().to_string();
                                     if t.is_empty() {
-                                        None
-                                    } else {
-                                        Some(t)
+                                        return None;
                                     }
+                                    Some(Self::truncate_to_widget_capacity(t, &rect))
                                 })
                             },
                         }
@@ -7433,6 +7454,40 @@ impl PdfDocument {
             return None;
         }
         Some(text)
+    }
+
+    /// Char-count capacity for what physically fits inside a widget
+    /// bbox at body font sizes. Per PDF spec §12.7.4.3 the field's
+    /// value is `/V`; the appearance stream is visual rendering
+    /// only. When we fall back to AP extraction, the result must
+    /// be bounded by what the widget could visually show — some
+    /// PDFs reuse one Form XObject for many widgets' /AP /N (e.g.
+    /// pdfbox AcroForms fixtures point every widget's appearance
+    /// at the page-background Lorem-ipsum prose), and scrollable
+    /// multi-line text fields' /V can hold many more characters
+    /// than ever render at once.
+    ///
+    /// Heuristic: ~14 chars per cm² at body font sizes. At PDF
+    /// 72 dpi (1 pt = 0.0353 cm), `capacity ≈ 0.0175 * w_pt * h_pt
+    /// + 64`; the +64 constant absorbs short labels where the
+    /// area estimate is too tight to even hold the field's name.
+    fn widget_text_capacity(bbox: &crate::geometry::Rect) -> usize {
+        let area = bbox.width.max(0.0) * bbox.height.max(0.0);
+        (0.0175 * area) as usize + 64
+    }
+
+    /// Truncate `text` to the widget's visual capacity. If `text`
+    /// already fits, returns it unchanged. Used to bound AP-fallback
+    /// extraction (and other content paths) so a single widget can't
+    /// dump page-background prose or scrollable field internals into
+    /// the page text.
+    fn truncate_to_widget_capacity(text: String, bbox: &crate::geometry::Rect) -> String {
+        let cap = Self::widget_text_capacity(bbox);
+        let n = text.chars().count();
+        if n <= cap {
+            return text;
+        }
+        text.chars().take(cap).collect()
     }
 
     /// Walk /Parent chain to find inherited /FT (field type) value.
