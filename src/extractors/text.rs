@@ -944,18 +944,30 @@ fn corrected_space_gap(
 /// here lets the heuristic suppress space insertion at ligature
 /// boundaries.
 ///
-/// Returns true when the text starts with one of the AGL ligature
-/// codepoints (U+FB00..U+FB04) or contains the multi-char ligature
-/// names that some AGL fallback paths produce.
+/// Returns true when the text *is* a bare AGL ligature glyph — a
+/// single codepoint in the Latin Ligatures block (U+FB00..U+FB06) or
+/// the multi-char ASCII fallback ("ff"/"fi"/"fl"/"ffi"/"ffl"). The
+/// suppression at the call site targets the pdfTeX-style emission
+/// pattern where the ligature is its own cluster between two
+/// intra-word fragments (e.g. "di"→"ﬃ"→"cult" or "di"→"ffi"→"cult").
+/// A multi-char cluster that merely starts with a ligature
+/// (e.g. "ﬂuid" or "ffective") is a full word whose boundary with the
+/// previous span is a legitimate space, so we return false in that
+/// case.
 #[inline]
 pub(crate) fn starts_with_agl_ligature(text: &str) -> bool {
-    if let Some(first) = text.chars().next() {
-        // Latin Ligatures block: U+FB00..U+FB06
-        if ('\u{FB00}'..='\u{FB06}').contains(&first) {
-            return true;
-        }
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    // Bare single-codepoint ligature glyph from the Latin Ligatures
+    // block.
+    if ('\u{FB00}'..='\u{FB06}').contains(&first) && chars.next().is_none() {
+        return true;
     }
-    // Multi-character AGL outputs from non-PUA fallbacks
+    // Multi-character AGL outputs from non-PUA fallbacks — match only
+    // when the cluster IS the ligature, never when it just begins
+    // with one.
     matches!(text, "ff" | "fi" | "fl" | "ffi" | "ffl")
 }
 
