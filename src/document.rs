@@ -8410,6 +8410,21 @@ impl PdfDocument {
             return false; // too few to confidently split into columns
         }
 
+        // Primary detector: line-start-X bimodality.
+        //
+        // The span-center histogram further down is noisy for word-level
+        // spans (every X position has many word starts on multi-word
+        // body-text lines). The reliable signal is the X position at
+        // which each *line* begins — a two-column body has a strong
+        // peak at the left-column-start X plus a strong peak at the
+        // right-column-start X, with a clear empty gutter between
+        // them. We cluster spans into lines by Y (1pt tolerance), pick
+        // the leftmost X per line, and look for ≥ 2 peaks separated by
+        // a gutter of ≥ 30pt with zero line-starts in it.
+        if Self::has_bimodal_line_starts(spans) {
+            return true;
+        }
+
         let mut x_centers: Vec<f32> = spans
             .iter()
             .map(|s| s.bbox.x + s.bbox.width * 0.5)
@@ -8562,6 +8577,123 @@ impl PdfDocument {
         let left_frac = dominant_cluster_fraction(&|cx| cx < mid_x);
         let right_frac = dominant_cluster_fraction(&|cx| cx >= mid_x);
         left_frac >= MIN_DOMINANT_FRACTION && right_frac >= MIN_DOMINANT_FRACTION
+    }
+
+    /// True if the spans cluster into lines whose leftmost X positions
+    /// form ≥ 2 distinct peaks separated by a clear gutter.
+    ///
+    /// Body-level word spans fill the X axis continuously, so the
+    /// span-center histogram cannot tell two-column body text apart
+    /// from a single-column page with varied line lengths. The line-
+    /// start histogram does: in two-column body text most lines start
+    /// at one of two X positions (left-column-start or right-column-
+    /// start), and the wide gutter between the columns produces a
+    /// long zero-count stretch.
+    fn has_bimodal_line_starts(spans: &[crate::layout::TextSpan]) -> bool {
+        const Y_BAND: f32 = 2.0;
+        const BIN_PT: f32 = 5.0;
+        const MIN_PEAK_COUNT: usize = 4;
+        const MIN_GUTTER_PT: f32 = 30.0;
+
+        if spans.len() < 24 {
+            return false;
+        }
+
+        // Cluster spans into lines by Y (descending so top-of-page first).
+        let mut lines: Vec<(f32, f32)> = Vec::new(); // (y, line_x_min)
+        let mut sorted = spans.to_vec();
+        sorted.sort_by(|a, b| {
+            crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y)
+                .then_with(|| crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x))
+        });
+
+        let mut current_y: Option<f32> = None;
+        let mut current_xmin: f32 = f32::INFINITY;
+        for s in &sorted {
+            match current_y {
+                Some(y) if (y - s.bbox.y).abs() <= Y_BAND => {
+                    current_xmin = current_xmin.min(s.bbox.x);
+                },
+                _ => {
+                    if let Some(y) = current_y {
+                        if current_xmin.is_finite() {
+                            lines.push((y, current_xmin));
+                        }
+                    }
+                    current_y = Some(s.bbox.y);
+                    current_xmin = s.bbox.x;
+                },
+            }
+        }
+        if let Some(y) = current_y {
+            if current_xmin.is_finite() {
+                lines.push((y, current_xmin));
+            }
+        }
+        if lines.len() < 16 {
+            return false;
+        }
+
+        // Bin line-start X positions.
+        let xmin = lines
+            .iter()
+            .map(|(_, x)| *x)
+            .fold(f32::INFINITY, f32::min);
+        let xmax = lines
+            .iter()
+            .map(|(_, x)| *x)
+            .fold(f32::NEG_INFINITY, f32::max);
+        if !(xmin.is_finite() && xmax.is_finite()) || xmax - xmin < MIN_GUTTER_PT {
+            return false;
+        }
+        let bin_count = (((xmax - xmin) / BIN_PT).ceil() as usize).max(1);
+        if bin_count > 4096 {
+            return false; // degenerate CTM
+        }
+        let mut hist = vec![0usize; bin_count];
+        for (_, x) in &lines {
+            let idx = (((x - xmin) / BIN_PT) as usize).min(bin_count - 1);
+            hist[idx] += 1;
+        }
+
+        // Scan for ≥ 2 peaks (count ≥ MIN_PEAK_COUNT) with a long
+        // zero-count run between them.
+        let mut peaks: Vec<usize> = Vec::new(); // bin indices (peak center)
+        let mut in_peak = false;
+        let mut peak_start = 0usize;
+        for (i, &c) in hist.iter().enumerate() {
+            if c >= MIN_PEAK_COUNT {
+                if !in_peak {
+                    peak_start = i;
+                    in_peak = true;
+                }
+            } else if c == 0 && in_peak {
+                peaks.push((peak_start + i.saturating_sub(1)) / 2);
+                in_peak = false;
+            }
+        }
+        if in_peak {
+            peaks.push((peak_start + hist.len() - 1) / 2);
+        }
+        if peaks.len() < 2 {
+            return false;
+        }
+
+        // Check gutter: at least one pair of consecutive peaks must
+        // have ≥ MIN_GUTTER_PT zero-count between them.
+        let gutter_bins = (MIN_GUTTER_PT / BIN_PT) as usize;
+        for w in peaks.windows(2) {
+            let a = w[0];
+            let b = w[1];
+            if b <= a {
+                continue;
+            }
+            let zeros = hist[a + 1..b].iter().filter(|&&c| c == 0).count();
+            if zeros >= gutter_bins {
+                return true;
+            }
+        }
+        false
     }
 
     /// Normalize a span's text for cross-page signature matching.

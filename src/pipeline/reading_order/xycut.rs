@@ -525,18 +525,26 @@ impl XYCutStrategy {
         // band relative to the body it sits next to).
         if let Some(gutter_x) = self.detect_two_column_prose(all_spans, indices) {
             if let Some((above, below)) = self.find_vertical_split_indexed(all_spans, indices) {
-                let smaller = above.len().min(below.len());
-                let total = above.len() + below.len();
-                if smaller * 4 <= total {
-                    log::debug!(
-                        "XY-cut #534: peeling band before column cut, above={} below={}",
-                        above.len(),
-                        below.len()
-                    );
-                    let mut result = self.partition_indexed(all_spans, &above);
-                    result.extend(self.partition_indexed(all_spans, &below));
-                    return result;
-                }
+                // When detect_two_column_prose has identified a real
+                // gutter, any clean Y-band that find_vertical_split
+                // accepts is worth peeling FIRST so wide bands at the
+                // top (title / authors / abstract — common on
+                // academic papers) and the bottom (full-width footer
+                // or affiliation block) don't get split by the
+                // column cut. Each half is independently re-
+                // classified inside the recursive call: a Y-band
+                // that is itself single-column flows back through
+                // `is_single_column_region` and skips the column
+                // cut, while a half that is still multi-column is
+                // re-detected and cut on the next recursion.
+                log::debug!(
+                    "XY-cut: peeling Y-band before column cut, above={} below={}",
+                    above.len(),
+                    below.len()
+                );
+                let mut result = self.partition_indexed(all_spans, &above);
+                result.extend(self.partition_indexed(all_spans, &below));
+                return result;
             }
             let (left, right): (Vec<usize>, Vec<usize>) = indices
                 .iter()
