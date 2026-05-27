@@ -4439,26 +4439,23 @@ impl<'doc> TextExtractor<'doc> {
                     .cloned();
             },
             Operator::Cm { a, b, c, d, e, f } => {
-                // Flush the Tj span buffer before changing CTM. The buffer
-                // captured `user_pos_x`/`user_pos_y` and `user_h_scale`
-                // from the CTM that was in effect when the buffer was
-                // created (TjBuffer::new at the first Tj after BT). If
-                // cm appears inside an active text object (non-standard
-                // but observed e.g. on arXiv 2201.00151 p2 figure axis
-                // labels, where each label run uses cm to position
-                // itself in user space at large coordinates while the
-                // glyphs themselves are drawn through a Form XObject
-                // whose own /Matrix scales them back down), subsequent
-                // Tj chars get a transformed position from the new CTM
-                // while the buffer still reports the OLD user_pos.
-                // Flushing emits the current cluster at its true
-                // captured position; the next Tj creates a fresh
-                // buffer with the new CTM.
-                //
-                // Spec basis: PDF §9.4 lists cm as a "general graphics
-                // state" operator not formally allowed inside BT/ET,
-                // but conforming readers must still process it
-                // correctly when encountered.
+                // Flush the Tj span buffer before changing the CTM.
+                // The buffer captured `user_pos_x`/`user_pos_y` and
+                // `user_h_scale` from the CTM in effect when it was
+                // created (TjBuffer::new at the first Tj after BT).
+                // Non-conforming PDFs can issue cm operators inside
+                // a text object — typically when figure / chart text
+                // runs alternate `cm` for position with text
+                // operators in the same BT/ET block. Without a
+                // flush, subsequent Tj chars get a position derived
+                // from the new CTM while the buffer still reports
+                // the stale `user_pos`, dropping the cluster off
+                // the page in the worst case. Flushing here emits
+                // the current cluster at its captured position and
+                // the next Tj creates a fresh buffer under the new
+                // CTM. Spec basis: §9.4 lists cm as general
+                // graphics state, not formally allowed inside
+                // BT/ET, but conforming readers must process it.
                 self.flush_tj_span_buffer()?;
                 let state = self.state_stack.current_mut();
                 let new_ctm = Matrix { a, b, c, d, e, f };

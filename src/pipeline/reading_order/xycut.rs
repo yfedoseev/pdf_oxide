@@ -523,12 +523,12 @@ impl XYCutStrategy {
         // gutter. The signal for "band": a vertical split whose
         // smaller side has ≤ 25 % of the region's spans (a tight
         // band relative to the body it sits next to).
-        // Original two-column-prose detector (#534 line-start
-        // clustering). When it fires, peel any wide Y-band first
-        // (title / authors / abstract / footer often span the
-        // gutter) before the column cut, so they don't get
-        // fragmented across columns. Each peeled band is
-        // re-classified inside the recursive call.
+        // Two-column-prose detector based on line-start clustering.
+        // When it fires, peel any wide Y-band first (title / authors
+        // / abstract / footer often span the gutter) before the
+        // column cut, so they don't get fragmented across columns.
+        // Each peeled band is re-classified inside the recursive
+        // call.
         if let Some(gutter_x) = self.detect_two_column_prose(all_spans, indices) {
             if let Some((above, below)) = self.find_vertical_split_indexed(all_spans, indices) {
                 log::debug!(
@@ -559,12 +559,14 @@ impl XYCutStrategy {
 
         // Narrow-gutter prose detector — second pass for layouts
         // where the line-start cluster shape is masked by outlier
-        // singletons (arXiv 2201.00151 pattern). Cuts directly at
-        // the gap-cluster centre WITHOUT peeling a Y-band first:
-        // for these pages, find_vertical_split tends to fire on
-        // mid-body paragraph gaps and bisect the body across the
-        // peel — both halves then lose enough gutter signal that
-        // the column cut never reaches them on recursion.
+        // singletons (title / caption / equation rows scattering
+        // extra clusters that block the primary detector). Cuts
+        // directly at the gap-cluster centre WITHOUT peeling a
+        // Y-band first: for these pages `find_vertical_split`
+        // tends to fire on mid-body paragraph gaps and bisect
+        // the body across the peel — both halves then lose
+        // enough gutter signal that the column cut never reaches
+        // them on recursion.
         if let Some(gutter_x) = self.detect_narrow_gutter_prose(all_spans, indices) {
             let (left, right): (Vec<usize>, Vec<usize>) = indices
                 .iter()
@@ -901,14 +903,14 @@ impl XYCutStrategy {
     /// that `detect_two_column_prose` (the line-start-cluster detector)
     /// misses.
     ///
-    /// Some academic 2-column papers (arXiv 2201.00151) emit body text
-    /// at character-cluster granularity (each glyph is its own span) so
-    /// the line-start-cluster detector sees outlier singletons from
-    /// titles / captions / equation labels in addition to the 2 body
-    /// columns and rejects on `clusters.len() != 2`. The gutter itself
-    /// is only ~11 pt wide — below `min_valley_width = 15` — so
-    /// `find_horizontal_split_indexed`'s primary projection valley path
-    /// also rejects.
+    /// Two-column papers that emit body text at character-cluster
+    /// granularity (each glyph its own span) confuse the line-start
+    /// detector: titles, captions, and equation labels contribute
+    /// outlier singleton clusters in addition to the two body
+    /// columns, so the `clusters.len() != 2` gate rejects. Their
+    /// gutters are also often narrower than `min_valley_width` so
+    /// the primary projection-valley path in
+    /// `find_horizontal_split_indexed` rejects as well.
     ///
     /// Distinguishing signal that works regardless of outlier rows:
     /// the **largest within-line gap** on each body line lives at
@@ -921,10 +923,9 @@ impl XYCutStrategy {
     /// Returns the gutter X coordinate (an actual gap position, not
     /// a midpoint estimate) when the pattern is detected.
     ///
-    /// The Prose-classifier gate retains the v0.3.53 google-doc table
-    /// safety: table rows have their largest gap at variable X across
-    /// rows (different cell widths), so the gap-position cluster
-    /// doesn't dominate.
+    /// The Prose-classifier gate keeps tables out: table rows have
+    /// their largest gap at variable X across rows (different cell
+    /// widths), so the gap-position cluster never dominates.
     fn detect_narrow_gutter_prose(
         &self,
         all_spans: &[TextSpan],
@@ -1032,9 +1033,10 @@ impl XYCutStrategy {
             return None;
         }
 
-        // Prose gate — same safety as detect_two_column_prose. Tables
-        // with narrow cell gaps fail this (mean_chars < 8 → Table) so
-        // the v0.3.53 google_doc regression cannot resurface.
+        // Prose gate — same safety as `detect_two_column_prose`.
+        // Tables with narrow cell gaps fail the classifier
+        // (`mean_chars < 8` → `Table`), preventing the gap-cluster
+        // signal from misfiring on tabular content.
         if self.classify_region_kind(all_spans, indices) != RegionKind::Prose {
             return None;
         }
@@ -1258,17 +1260,15 @@ impl XYCutStrategy {
         };
 
         // Reject splits where either resulting sub-column would be
-        // narrower than ~60 pt (about 6 body-text characters wide at
-        // 10 pt). XY-cut recursion otherwise sub-splits a single body
-        // column into many sliver sub-blocks at internal whitespace
-        // valleys (paragraph indentation, justified-line trailing
-        // gaps, isolated short words). The output then becomes
-        // band-chunked even when the page is cleanly 2-column: e.g.
-        // arXiv-magazine layouts where each column is ~400 pt wide
-        // get re-split at narrow internal valleys producing slivers
-        // 50 pt wide. PDF spec §10.5 reading order doesn't mandate
-        // a minimum column width; this is descriptive of body text
-        // sizes (a real column is at least ~6 characters wide).
+        // narrower than ~60 pt (about 6 body-text characters at
+        // 10 pt). Without this check, XY-cut recursion sub-splits
+        // a single body column into sliver sub-blocks at internal
+        // whitespace valleys (paragraph indentation, justified-line
+        // trailing gaps, isolated short words), turning what should
+        // be a clean column-major emit of a multi-column page into
+        // a band-chunked stream. PDF spec §10.5 doesn't mandate a
+        // minimum column width; this is a descriptive heuristic —
+        // a real body column holds at least ~6 characters.
         const MIN_RESULT_WIDTH_PT: f32 = 60.0;
         let mut left_x_min = f32::MAX;
         let mut left_x_max = f32::MIN;
@@ -2521,14 +2521,12 @@ mod tests {
         );
     }
 
-    /// End-to-end: partition_region must return all spans (unsplit) rather than aborting
-    /// when the page contains a degenerate-CTM span.
-    /// Regression for arXiv 2201.00151: 2-column body where the
-    /// gutter is ~11 pt (below `min_valley_width = 15`) AND the
-    /// line-start cluster shape has outlier singletons (title /
-    /// caption / equation labels) so `detect_two_column_prose`
-    /// bails on `clusters.len() != 2`. The narrow-gutter prose
-    /// detector should catch this via gap-position clustering.
+    /// A 2-column body where the gutter is narrower than
+    /// `min_valley_width` AND the line-start cluster shape carries
+    /// outlier singletons (title / caption / equation labels) so
+    /// `detect_two_column_prose` bails on `clusters.len() != 2`.
+    /// The narrow-gutter prose detector should catch this via
+    /// gap-position clustering.
     #[test]
     fn test_narrow_gutter_prose_with_outlier_singletons() {
         let strategy = XYCutStrategy::new();

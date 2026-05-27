@@ -6774,14 +6774,13 @@ impl PdfDocument {
                             Some(v) if !v.trim().is_empty() => {
                                 // Bound the value to the widget's visual
                                 // capacity. Multi-line text-area fields
-                                // can hold scrollable content (e.g. the
-                                // pdfbox LongRichTextField fixture's /V
-                                // is 145 000 chars) but only a fraction
-                                // renders on the page; per spec §12.7.4.3
-                                // the value is the field's data, but
-                                // extract_text semantics target visible
-                                // text. Truncate keeps the rendered
-                                // portion and drops the rest.
+                                // can hold scrollable content far larger
+                                // than the bbox visually renders; per
+                                // spec §12.7.4.3 `/V` is the field's
+                                // data, but `extract_text` semantics
+                                // target what would be visible on the
+                                // page. Truncate keeps the rendered
+                                // portion and drops the overflow.
                                 Some(Self::truncate_to_widget_capacity(
                                     v.trim().to_string(),
                                     &rect,
@@ -6791,11 +6790,10 @@ impl PdfDocument {
                                 // Fallback: try AP stream text. Truncate
                                 // to bbox capacity — some PDFs reuse a
                                 // single Form XObject for many widgets'
-                                // /AP /N (e.g. pdfbox AcroForms fixtures
-                                // point every widget's appearance at the
-                                // page-background prose), and without
-                                // the cap each widget extracts that
-                                // prose once.
+                                // `/AP /N`, pointing every widget's
+                                // appearance at the page-background
+                                // content; without the cap each widget
+                                // would extract that content once.
                                 self.extract_text_from_ap_stream(&dict).and_then(|t| {
                                     let t = t.trim().to_string();
                                     if t.is_empty() {
@@ -7459,13 +7457,12 @@ impl PdfDocument {
     /// Char-count capacity for what physically fits inside a widget
     /// bbox at body font sizes. Per PDF spec §12.7.4.3 the field's
     /// value is `/V`; the appearance stream is visual rendering
-    /// only. When we fall back to AP extraction, the result must
-    /// be bounded by what the widget could visually show — some
-    /// PDFs reuse one Form XObject for many widgets' /AP /N (e.g.
-    /// pdfbox AcroForms fixtures point every widget's appearance
-    /// at the page-background Lorem-ipsum prose), and scrollable
-    /// multi-line text fields' /V can hold many more characters
-    /// than ever render at once.
+    /// only. When we fall back to AP extraction the result must be
+    /// bounded by what the widget could visually show — PDFs that
+    /// reuse a single Form XObject for many widgets' `/AP /N` would
+    /// otherwise dump the shared content once per widget, and
+    /// scrollable multi-line text fields hold far more characters
+    /// in `/V` than ever render at once.
     ///
     /// Heuristic: ~14 chars per cm² at body font sizes. At PDF
     /// 72 dpi (1 pt = 0.0353 cm), `capacity ≈ 0.0175 * w_pt * h_pt
