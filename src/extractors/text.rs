@@ -3601,6 +3601,33 @@ impl<'doc> TextExtractor<'doc> {
                 && curr_head_char.is_some_and(|c| c.is_alphabetic())
                 && (current.text.chars().count() == 1 || span.text.chars().count() == 1);
 
+            // Small-caps / drop-cap glue: same base font and same
+            // weight/italic flags but different font_size, adjacent
+            // on the same baseline, both alphabetic. PDFs simulate
+            // small-caps by rendering the capital initial at body
+            // font size and the remaining letters at a reduced
+            // size in the same font, emitted as separate Tj runs
+            // with zero gap between them. The strict `is_same_font`
+            // gate rejects the merge because of the size mismatch,
+            // and the single-character drop-cap glue above doesn't
+            // help when both runs are multi-character (an initial
+            // run of several full-size capitals followed by a
+            // reduced-size remainder). Spec basis: PDF §9.3.1
+            // treats font_size as a graphics-state parameter that
+            // may change between Tj operators; nothing in §9.4
+            // makes such a change a word boundary.
+            let small_caps_glue = !is_same_font
+                && current.font_name == span.font_name
+                && current.font_weight == span.font_weight
+                && current.is_italic == span.is_italic
+                && same_line
+                && gap.abs() < 1.0
+                && !current.text.is_empty()
+                && !span.text.is_empty()
+                && !crosses_cjk_boundary
+                && prev_tail_char.is_some_and(|c| c.is_alphabetic())
+                && curr_head_char.is_some_and(|c| c.is_alphabetic());
+
             // Merge threshold: Use configured values
             // Negative gaps: use severe_overlap_threshold_pt (default -0.5pt)
             // Positive gaps: use a threshold that allows for justified text but
@@ -3620,7 +3647,8 @@ impl<'doc> TextExtractor<'doc> {
                     .contains(&gap)
                 && !large_gap_indicates_column
                 || (same_line && has_split_boundary)
-                || cross_font_word_glue;
+                || cross_font_word_glue
+                || small_caps_glue;
 
             // DECIMAL VALUE MERGE: Some forms place integer and decimal parts
             // of dollar amounts in separate fixed-width boxes.
