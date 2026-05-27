@@ -2963,16 +2963,15 @@ impl<'doc> TextExtractor<'doc> {
             );
         }
 
-        // Snap superscript / subscript glyph spans onto the baseline
-        // of their underlying base span BEFORE row-aware sorting. PDFs
-        // raise/lower the text matrix via the `Ts` (text-rise) operator
-        // for super/subscripts (§9.3.2); the rendered glyphs end up at
-        // a Y offset of typically 0.3–0.5 × font_size from the baseline.
-        // Row-aware sorting then puts them in a separate Y-band above
-        // the body, producing output like `"1,2 ★ 3,4 5 / Chibueze, …"`
-        // instead of `"Chibueze,1,2★ Caleb,3,4† …"`. Snapping their Y
-        // to the base's Y keeps them inline with the author name (or
-        // whatever they annotate).
+        // Snap super/subscript glyph spans onto the baseline of an
+        // adjacent base span BEFORE row-aware sorting. PDFs raise
+        // or lower the text matrix via the `Ts` (text-rise) operator
+        // for super/subscripts (§9.3.7); the rendered glyphs end up
+        // at a Y offset of typically 0.3–0.5 × font_size from the
+        // baseline. Without the snap, sorting groups all raised
+        // glyphs into a separate Y-band above the body, producing
+        // output like `"1,2 ★ 3,4 5 / Chibueze, …"` instead of
+        // `"Chibueze,1,2★ Caleb,3,4† …"`.
         self.snap_superscript_baselines();
 
         self.sort_spans_by_reading_order();
@@ -3111,7 +3110,7 @@ impl<'doc> TextExtractor<'doc> {
     /// adjacent base span so downstream row-aware sorting keeps
     /// them inline.
     ///
-    /// PDF §9.3.2 defines text rise (`Ts`) as a per-text-state
+    /// PDF §9.3.7 defines text rise (`Ts`) as a per-text-state
     /// vertical offset added to the rendering position; the
     /// resulting glyphs sit above (super) or below (sub) the
     /// surrounding baseline. The raw extracted bbox preserves

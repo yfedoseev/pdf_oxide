@@ -1266,7 +1266,8 @@ impl XYCutStrategy {
         // whitespace valleys (paragraph indentation, justified-line
         // trailing gaps, isolated short words), turning what should
         // be a clean column-major emit of a multi-column page into
-        // a band-chunked stream. PDF spec §10.5 doesn't mandate a
+        // a band-chunked stream. PDF spec §9.4.4 mentions "natural
+        // reading order" but does not mandate a
         // minimum column width; this is a descriptive heuristic —
         // a real body column holds at least ~6 characters.
         const MIN_RESULT_WIDTH_PT: f32 = 60.0;
