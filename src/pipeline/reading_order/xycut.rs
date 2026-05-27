@@ -1254,13 +1254,42 @@ impl XYCutStrategy {
             }
             profile.x_min + (vs + ve) as f32 / 2.0
         } else {
-            // Fallback: when narrow table-cell spans fill the column gutter
-            // and prevent zero-density valley detection, find the relative
-            // minimum between the two strongest density peaks. Only use
-            // this when the minimum is ≤ 50% of the weaker peak (genuine
-            // trough) so we don't split single-column pages on shallow dips.
             self.find_split_between_peaks(&profile)?
         };
+
+        // Reject splits where either resulting sub-column would be
+        // narrower than ~60 pt (about 6 body-text characters wide at
+        // 10 pt). XY-cut recursion otherwise sub-splits a single body
+        // column into many sliver sub-blocks at internal whitespace
+        // valleys (paragraph indentation, justified-line trailing
+        // gaps, isolated short words). The output then becomes
+        // band-chunked even when the page is cleanly 2-column: e.g.
+        // arXiv-magazine layouts where each column is ~400 pt wide
+        // get re-split at narrow internal valleys producing slivers
+        // 50 pt wide. PDF spec §10.5 reading order doesn't mandate
+        // a minimum column width; this is descriptive of body text
+        // sizes (a real column is at least ~6 characters wide).
+        const MIN_RESULT_WIDTH_PT: f32 = 60.0;
+        let mut left_x_min = f32::MAX;
+        let mut left_x_max = f32::MIN;
+        let mut right_x_min = f32::MAX;
+        let mut right_x_max = f32::MIN;
+        for &i in indices {
+            let l = all_spans[i].bbox.left();
+            let r = all_spans[i].bbox.right();
+            if l < split_x {
+                left_x_min = left_x_min.min(l);
+                left_x_max = left_x_max.max(r);
+            } else {
+                right_x_min = right_x_min.min(l);
+                right_x_max = right_x_max.max(r);
+            }
+        }
+        let left_w = left_x_max - left_x_min;
+        let right_w = right_x_max - right_x_min;
+        if left_w < MIN_RESULT_WIDTH_PT || right_w < MIN_RESULT_WIDTH_PT {
+            return None;
+        }
 
         // Partition by span LEFT EDGE (where the glyphs actually start),
         // not bbox.right() and not center. Extractor bboxes overreach to
@@ -1953,16 +1982,19 @@ mod tests {
     #[test]
     fn test_three_column_layout() {
         let strategy = XYCutStrategy::new();
+        // Realistic column widths (≥ 60 pt per column, ≥ 6 body chars at
+        // 10 pt — find_horizontal_split rejects narrower splits since
+        // body columns are never sliver-wide).
         let spans = vec![
-            // Column 1 (x: 10-40)
-            make_span(10.0, 100.0, 30.0, 10.0),
-            make_span(10.0, 85.0, 30.0, 10.0),
-            // Column 2 (x: 70-100)
-            make_span(70.0, 100.0, 30.0, 10.0),
-            make_span(70.0, 85.0, 30.0, 10.0),
-            // Column 3 (x: 130-160)
-            make_span(130.0, 100.0, 30.0, 10.0),
-            make_span(130.0, 85.0, 30.0, 10.0),
+            // Column 1 (x: 10-110, 100pt wide)
+            make_span(10.0, 100.0, 100.0, 10.0),
+            make_span(10.0, 85.0, 100.0, 10.0),
+            // Column 2 (x: 180-280, 100pt wide; 70pt gutter)
+            make_span(180.0, 100.0, 100.0, 10.0),
+            make_span(180.0, 85.0, 100.0, 10.0),
+            // Column 3 (x: 350-450, 100pt wide; 70pt gutter)
+            make_span(350.0, 100.0, 100.0, 10.0),
+            make_span(350.0, 85.0, 100.0, 10.0),
         ];
 
         let groups = strategy.partition_region(&spans);
