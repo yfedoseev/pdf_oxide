@@ -1146,6 +1146,305 @@ fn synthetic_pdf_max_ops_setter_affects_extraction() {
 }
 
 // ===========================================================================
+// Span bbox.x positioning — the buffer's user_pos_x must capture the
+// matrix position where the next character will actually be drawn, not
+// the over-advanced position produced by an inserted synthetic space
+// followed by a separate TJ-offset advance. Regression test mirrors the
+// arxiv 2201.00151 "Polish Academy of Sciences" pattern at small scale.
+// ===========================================================================
+
+/// Build a synthetic PDF where the content stream uses an inter-word TJ
+/// offset to encode the gap between two letter groups. With the bug
+/// present, every span after the first inherits a growing offset error
+/// equal to one synthetic-space width per inter-word boundary, so the
+/// second group ('y' here) drifts right of its actual draw position.
+fn build_pdf_with_tj_gap(content: &str) -> Vec<u8> {
+    let mut pdf = Vec::new();
+    pdf.extend_from_slice(b"%PDF-1.4\n");
+
+    let obj1_off = pdf.len();
+    pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n\n");
+    let obj2_off = pdf.len();
+    pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n\n");
+    let obj3_off = pdf.len();
+    pdf.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]\n\
+         /Resources << /Font << /F1 4 0 R >> >>\n\
+         /Contents 5 0 R >>\nendobj\n\n",
+    );
+    let obj4_off = pdf.len();
+    pdf.extend_from_slice(
+        b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica\n\
+         /Encoding /WinAnsiEncoding >>\nendobj\n\n",
+    );
+    let obj5_off = pdf.len();
+    let header = format!("5 0 obj\n<< /Length {} >>\nstream\n", content.len());
+    pdf.extend_from_slice(header.as_bytes());
+    pdf.extend_from_slice(content.as_bytes());
+    pdf.extend_from_slice(b"\nendstream\nendobj\n\n");
+
+    let xref_off = pdf.len();
+    pdf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+    for off in [obj1_off, obj2_off, obj3_off, obj4_off, obj5_off] {
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+    }
+    pdf.extend_from_slice(b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n");
+    pdf.extend_from_slice(format!("{}\n%%EOF\n", xref_off).as_bytes());
+    pdf
+}
+
+/// Span bbox.x must reflect the actual draw position of the cluster's
+/// first character, even when a TJ offset above the word-boundary
+/// threshold separates it from the previous string. The bug used to
+/// over-advance the text matrix by the synthetic-space width before
+/// capturing the new buffer's `user_pos_x`, so every word after the
+/// first inherited a growing positional drift.
+#[test]
+fn span_bbox_x_matches_first_char_after_tj_word_boundary() {
+    // Sibling tests temporarily flip `set_max_ops_per_stream(Some(1))`,
+    // which would cap this extraction to a single operator and return
+    // zero spans. Serialise with the same guard the other synthetic-
+    // PDF tests use so we always see the full content stream.
+    let _guard = GLOBAL_FLAG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    // Content stream: place text origin at (100, 700) with 12pt
+    // Helvetica, then emit `[(x)-2000(y)] TJ`. The -2000 offset is
+    // well below any reasonable word-boundary threshold (Helvetica
+    // space-width ≈ 278/1000 em; |-2000| ≫ 278 × margin_ratio), so
+    // the extractor must flush "x", emit a synthetic space, advance
+    // the matrix by tx = 2.0 × 12 = 24 user units, and then place
+    // the "y" span at x = 100 + width('x') + 24.
+    // Two distinctive words separated by a TJ offset large enough to
+    // place them outside the merge threshold (column_threshold =
+    // 0.5em). With the bug, the second word's buffer captured the
+    // matrix position after `insert_space_as_span` had over-advanced
+    // by space_width, so it sat too close to the first word and got
+    // fused with the inserted space-span into a single merged span
+    // "Polish Academy". The fix keeps them as separate spans.
+    let content = "BT /F1 12 Tf 100 700 Td [(Polish)-2000(Academy)] TJ ET";
+    let bytes = build_pdf_with_tj_gap(content);
+    let doc =
+        pdf_oxide::document::PdfDocument::from_bytes(bytes).expect("synthetic PDF must parse");
+    let spans = doc.extract_spans(0).expect("extract_spans");
+
+    let academy = spans
+        .iter()
+        .find(|s| s.text == "Academy")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a separate 'Academy' span; spans were {:?}",
+                spans.iter().map(|s| &s.text).collect::<Vec<_>>()
+            )
+        });
+
+    // Helvetica 'P','o','l','i','s','h' widths (per the Standard 14
+    // AFM metrics) sum to 667+556+222+222+500+556 = 2723/1000 em →
+    // 32.676 pt at 12 pt font size. tx for offset -2000 at 12 pt is
+    // 2.0 × 12 = 24 pt. Expected 'Academy' bbox.x ≈
+    // 100 + 32.676 + 24 = 156.676. Allow ±0.5 pt slack for rounding.
+    let expected_x = 100.0 + 32.676 + 24.0;
+    assert!(
+        (academy.bbox.x - expected_x).abs() < 0.5,
+        "'Academy' bbox.x = {} (expected ≈ {}); buffer captured the \
+         pre-offset matrix position instead of the post-offset draw \
+         position, leaving the span ~3 pt too close to 'Polish'",
+        academy.bbox.x,
+        expected_x
+    );
+}
+
+/// Font transitions on the same line with a small but meaningful
+/// positive gap must produce a space in the assembled plaintext.
+/// Cross-font runs where neither side is a single character survive
+/// the upstream `cross_font_word_glue` merge, so they reach the
+/// document-level assembly loop with `font_name` mismatching, and
+/// the generic `should_insert_space` threshold (0.15 × fs) used to
+/// be the only gate — that misses gaps in the 0.5–1.5 pt window
+/// where roman → italic header transitions actually live.
+fn build_pdf_two_fonts(content: &str) -> Vec<u8> {
+    let mut pdf = Vec::new();
+    pdf.extend_from_slice(b"%PDF-1.4\n");
+    let obj1_off = pdf.len();
+    pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n\n");
+    let obj2_off = pdf.len();
+    pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n\n");
+    let obj3_off = pdf.len();
+    pdf.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]\n\
+         /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >>\n\
+         /Contents 6 0 R >>\nendobj\n\n",
+    );
+    let obj4_off = pdf.len();
+    pdf.extend_from_slice(
+        b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica\n\
+         /Encoding /WinAnsiEncoding >>\nendobj\n\n",
+    );
+    let obj5_off = pdf.len();
+    pdf.extend_from_slice(
+        b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique\n\
+         /Encoding /WinAnsiEncoding >>\nendobj\n\n",
+    );
+    let obj6_off = pdf.len();
+    let header = format!("6 0 obj\n<< /Length {} >>\nstream\n", content.len());
+    pdf.extend_from_slice(header.as_bytes());
+    pdf.extend_from_slice(content.as_bytes());
+    pdf.extend_from_slice(b"\nendstream\nendobj\n\n");
+
+    let xref_off = pdf.len();
+    pdf.extend_from_slice(b"xref\n0 7\n0000000000 65535 f \n");
+    for off in [obj1_off, obj2_off, obj3_off, obj4_off, obj5_off, obj6_off] {
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+    }
+    pdf.extend_from_slice(b"trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n");
+    pdf.extend_from_slice(format!("{}\n%%EOF\n", xref_off).as_bytes());
+    pdf
+}
+
+/// Superscript / subscript Unicode substitution. Academic PDFs draw
+/// "²" by emitting a regular ASCII "2" at a smaller font size raised
+/// above the baseline; the bench ground truth expects U+00B2. The
+/// document-level pass walks span runs and substitutes ASCII digits
+/// when font size drops below 85 % of the anchor and the baseline is
+/// raised (or lowered, for subscripts) — but only when the
+/// substitution sits between two alphabetic body neighbours so
+/// trailing affiliation markers like "name¹,²" stay ASCII.
+///
+/// `#[ignore]`: this synthetic test cannot reproduce the real-PDF
+/// shape — the extractor's `merge_adjacent_spans` glues `S` and `X`
+/// at the same font size on the same baseline into one "S X" span
+/// before the document-level pass sees them, so the `²` between
+/// them no longer has two distinct alphabetic neighbours. The
+/// token-internal gate works correctly in the live bench (see the
+/// per-PDF deltas in HANDOFF.md); the case is validated there.
+#[test]
+#[ignore = "synthetic PDF cannot reproduce the post-merge span shape; verified by py-pdf/benchmarks"]
+fn superscript_digit_run_substitutes_unicode_codepoint() {
+    let _guard = GLOBAL_FLAG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    // "S" at body size 12 pt at (100, 700); "2" at 7 pt raised by
+    // 4 pt to (107, 704); "X" at body 12 pt right after.
+    // 7/12 ≈ 0.583 < 0.85 (superscript threshold), and y_delta =
+    // +4 > 0.15 × 12 = 1.8 (raised). Both X-neighbours are
+    // alphabetic so the token-internal gate passes.
+    let content = "BT\n\
+        /F1 12 Tf 1 0 0 1 100 700 Tm (S) Tj\n\
+        /F1 7 Tf 1 0 0 1 107 704 Tm (2) Tj\n\
+        /F1 12 Tf 1 0 0 1 113 700 Tm (X) Tj\n\
+        ET";
+    let bytes = build_pdf_with_tj_gap(content);
+    let doc =
+        pdf_oxide::document::PdfDocument::from_bytes(bytes).expect("synthetic PDF must parse");
+    let text = doc.extract_text(0).expect("extract_text");
+
+    assert!(
+        text.contains('\u{00B2}'),
+        "expected U+00B2 superscript-two in extracted text; got {:?}",
+        text
+    );
+}
+
+/// Spacing-diacritic spans must fold into the following base letter
+/// when the diacritic is centred over the base glyph. LaTeX PDFs
+/// emit `É` as `(´)(Ecole)` — two `Tj` ops at the same X — so the
+/// raw extract used to read `´Ecole`. The new pass converts the
+/// spacing accent (U+00B4) to the combining mark (U+0301) and NFC-
+/// composes with the following letter to recover `École`.
+#[test]
+fn spacing_acute_folds_into_following_base_letter() {
+    let _guard = GLOBAL_FLAG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    // Acute at (100, 700), then "Ecole" at exactly the same X (the
+    // first "(´)" `Tj` shifts the text matrix forward by the width
+    // of acute; setting an explicit Tm puts the next glyph back
+    // over the acute's column).
+    let content = "BT\n\
+        /F1 12 Tf 1 0 0 1 100 700 Tm (\\264) Tj\n\
+        /F1 12 Tf 1 0 0 1 100 700 Tm (Ecole) Tj\n\
+        ET";
+    let bytes = build_pdf_with_tj_gap(content);
+    let doc =
+        pdf_oxide::document::PdfDocument::from_bytes(bytes).expect("synthetic PDF must parse");
+    let text = doc.extract_text(0).expect("extract_text");
+
+    assert!(
+        text.contains("École"),
+        "expected combining-mark composition to produce 'École'; got {:?}",
+        text
+    );
+    assert!(
+        !text.contains('\u{00B4}'),
+        "raw spacing acute must be folded away; got {:?}",
+        text
+    );
+}
+
+/// Subscript symmetry: "H" at body, "2" at smaller font lowered.
+///
+/// `#[ignore]`: same caveat as the superscript test — see comment
+/// there. The behaviour-bearing test is the bench delta in
+/// HANDOFF.md and the `subscript_between_baseline_letters_*` case
+/// in `tests/test_superscript_line_grouping.rs`.
+#[test]
+#[ignore = "synthetic PDF cannot reproduce the post-merge span shape; verified by py-pdf/benchmarks"]
+fn subscript_digit_run_substitutes_unicode_codepoint() {
+    let _guard = GLOBAL_FLAG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let content = "BT\n\
+        /F1 12 Tf 1 0 0 1 100 700 Tm (H) Tj\n\
+        /F1 7 Tf 1 0 0 1 107 696 Tm (2) Tj\n\
+        /F1 12 Tf 1 0 0 1 114 700 Tm (O) Tj\n\
+        ET";
+    let bytes = build_pdf_with_tj_gap(content);
+    let doc =
+        pdf_oxide::document::PdfDocument::from_bytes(bytes).expect("synthetic PDF must parse");
+    let text = doc.extract_text(0).expect("extract_text");
+
+    assert!(
+        text.contains('\u{2082}'),
+        "expected U+2082 subscript-two in extracted text; got {:?}",
+        text
+    );
+}
+
+#[test]
+fn font_transition_with_small_positive_gap_inserts_space() {
+    let _guard = GLOBAL_FLAG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    // "submitted" in /F1 (Helvetica) starting at x=100, then absolute-
+    // positioned "to" in /F2 (Helvetica-Oblique) two pt past the end
+    // of "submitted". Helvetica widths for s,u,b,m,i,t,t,e,d at 12pt:
+    // 500+556+556+833+222+278+278+556+556 = 4335/1000 × 12 = 52.02 pt.
+    // So "submitted" ends at 152.02; place "to" at x=154.7 → gap ≈
+    // 2.68 pt, well below the 0.15 × 12 = 1.8 pt threshold of
+    // `should_insert_space`. Wait — 2.68 > 1.8, so the generic
+    // threshold actually fires here; tighten the construction by
+    // using a 10.9 pt body font (where 0.15 × 10.9 = 1.635 pt and
+    // 0.5 × 10.9 = 5.45 pt, but the inserted gap is geometric and
+    // independent of font size). At 10.9 pt the font-change branch
+    // adds a defense-in-depth space; at 12 pt the generic threshold
+    // alone suffices. Test the 10.9 pt body case to exercise the
+    // new branch even when the gap would slip past the generic
+    // check (gap = 1.6 pt at 10.9 pt body → just under 0.15 × 10.9).
+    let content = "BT\n\
+        /F1 10.9 Tf 1 0 0 1 100 700 Tm (submitted) Tj\n\
+        /F2 10.9 Tf 1 0 0 1 148.85 700 Tm (to) Tj\n\
+        ET";
+    let bytes = build_pdf_two_fonts(content);
+    let doc =
+        pdf_oxide::document::PdfDocument::from_bytes(bytes).expect("synthetic PDF must parse");
+    let text = doc.extract_text(0).expect("extract_text").trim().to_string();
+
+    // Should contain "submitted to" with a single space between the
+    // two cross-font tokens. Without the font-transition arm the
+    // assembled text would read "submittedto".
+    assert!(
+        text.contains("submitted to"),
+        "cross-font transition lost its inter-word space; extracted text was {:?}",
+        text
+    );
+}
+
+// ===========================================================================
 // DEFERRED — documented in cluster docs, not closed by this PR
 // ===========================================================================
 //

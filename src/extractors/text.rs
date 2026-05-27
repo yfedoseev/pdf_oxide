@@ -5833,16 +5833,26 @@ impl<'doc> TextExtractor<'doc> {
                             self.insert_space_as_span()?;
                         }
 
+                        // Apply the TJ offset to the text matrix BEFORE
+                        // creating the new buffer so its `user_pos_x`
+                        // captures the actual draw position of the next
+                        // string. Otherwise the buffer anchors at the
+                        // pre-offset position and every subsequent span
+                        // on the line inherits the missing tx.
+                        self.advance_position_for_offset(*offset)?;
+
                         // Start new buffer with current state
                         buffer = TjBuffer::new(
                             self.state_stack.current(),
                             self.current_mcid,
                             self.cached_current_font.clone(),
                         );
+                    } else {
+                        // Sub-threshold offset: matrix advances but the
+                        // current buffer keeps accumulating, so apply
+                        // the offset unconditionally here as well.
+                        self.advance_position_for_offset(*offset)?;
                     }
-
-                    // Advance position for offset (updates text matrix)
-                    self.advance_position_for_offset(*offset)?;
                 },
             }
         }
@@ -6756,10 +6766,13 @@ impl<'doc> TextExtractor<'doc> {
 
         self.spans.push(span);
 
-        // Advance position per ISO 32000-1:2008 §9.4.4
-        let state = self.state_stack.current_mut();
-        state.text_matrix.e += space_width * text_matrix.a;
-        state.text_matrix.f += space_width * text_matrix.b;
+        // Do NOT advance the text matrix here. The caller drives the
+        // matrix forward by the *actual* TJ offset via
+        // `advance_position_for_offset` immediately after; advancing
+        // by `space_width` on top of that would double-count the gap
+        // and capture the wrong `user_pos_x` when the next buffer is
+        // created, producing spans whose bbox.x sits ~one synthetic
+        // space-width to the right of the character actually drawn.
 
         Ok(())
     }
