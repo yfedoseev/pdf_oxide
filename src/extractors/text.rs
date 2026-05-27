@@ -2963,6 +2963,18 @@ impl<'doc> TextExtractor<'doc> {
             );
         }
 
+        // Snap superscript / subscript glyph spans onto the baseline
+        // of their underlying base span BEFORE row-aware sorting. PDFs
+        // raise/lower the text matrix via the `Ts` (text-rise) operator
+        // for super/subscripts (§9.3.2); the rendered glyphs end up at
+        // a Y offset of typically 0.3–0.5 × font_size from the baseline.
+        // Row-aware sorting then puts them in a separate Y-band above
+        // the body, producing output like `"1,2 ★ 3,4 5 / Chibueze, …"`
+        // instead of `"Chibueze,1,2★ Caleb,3,4† …"`. Snapping their Y
+        // to the base's Y keeps them inline with the author name (or
+        // whatever they annotate).
+        self.snap_superscript_baselines();
+
         self.sort_spans_by_reading_order();
 
         // Deduplicate overlapping spans
@@ -3093,6 +3105,89 @@ impl<'doc> TextExtractor<'doc> {
         );
 
         self.chars = deduplicated;
+    }
+
+    /// Snap super/subscript glyph spans onto the baseline of an
+    /// adjacent base span so downstream row-aware sorting keeps
+    /// them inline.
+    ///
+    /// PDF §9.3.2 defines text rise (`Ts`) as a per-text-state
+    /// vertical offset added to the rendering position; the
+    /// resulting glyphs sit above (super) or below (sub) the
+    /// surrounding baseline. The raw extracted bbox preserves
+    /// that offset, so sorting by Y descending interprets a
+    /// superscript line of affiliation markers (`1,2 ★ 3,4 …`)
+    /// as a row that precedes the author names that they actually
+    /// annotate. Snapping each candidate's Y to the matched base
+    /// puts them back in the same Y-band.
+    ///
+    /// A span is a snap candidate when:
+    /// - its font_size is < 85 % of a nearby larger-font span,
+    /// - its Y is above that base by ≤ 50 % of the base's font_size
+    ///   (or below it by the same — covers subscript too), and
+    /// - its X falls between the base's right edge and one base
+    ///   font_size beyond (the position a superscript would
+    ///   appear when typeset directly after the base).
+    fn snap_superscript_baselines(&mut self) {
+        let n = self.spans.len();
+        if n < 2 {
+            return;
+        }
+
+        // Snapshot the read-side fields we need so the borrow checker
+        // lets us mutate `self.spans[i].bbox.y` inside the loop.
+        let snapshot: Vec<(f32, f32, f32, f32)> = self
+            .spans
+            .iter()
+            .map(|s| (s.bbox.x, s.bbox.y, s.bbox.width, s.font_size))
+            .collect();
+
+        for i in 0..n {
+            let (sx, sy, _sw, sfs) = snapshot[i];
+            if sfs <= 0.0 {
+                continue;
+            }
+            // Find the closest base candidate (in Y) that satisfies
+            // the super/subscript geometry. Pick the smallest |y_offset|
+            // tie-breaker so a candidate sandwiched between two body
+            // lines snaps onto the nearer one.
+            let mut best_base_y: Option<f32> = None;
+            let mut best_abs_offset = f32::MAX;
+            for j in 0..n {
+                if i == j {
+                    continue;
+                }
+                let (bx, by, bw, bfs) = snapshot[j];
+                if bfs <= sfs * 1.15 {
+                    continue;
+                }
+                let y_offset = sy - by;
+                let half_em = bfs * 0.5;
+                if y_offset.abs() > half_em {
+                    continue;
+                }
+                // X adjacency: the candidate's left edge must sit
+                // near the base's right edge — within one base
+                // font_size to the right and a small slack to the
+                // left for kerning. Combining diacritics are
+                // excluded by the size-ratio gate above (they
+                // typically share font_size with their base
+                // letter, failing `bfs > sfs * 1.15`).
+                let base_right = bx + bw;
+                let dx = sx - base_right;
+                if dx < -bfs * 0.25 || dx > bfs {
+                    continue;
+                }
+                let abs_off = y_offset.abs();
+                if abs_off < best_abs_offset {
+                    best_abs_offset = abs_off;
+                    best_base_y = Some(by);
+                }
+            }
+            if let Some(by) = best_base_y {
+                self.spans[i].bbox.y = by;
+            }
+        }
     }
 
     /// Sort extracted text spans by reading order (top-to-bottom, left-to-right).
