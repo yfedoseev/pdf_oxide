@@ -752,6 +752,45 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
             let op = &data[op_start..i];
 
             match op {
+                b"BI" => {
+                    // Inline image (§8.9.7): BI key/val pairs ID <binary data> EI.
+                    // The binary image bytes can contain stray q/Q/cm-shaped
+                    // ASCII sequences that would corrupt the CTM stack if
+                    // parsed as operators. Skip past EI to treat the entire
+                    // inline image as opaque.
+                    //
+                    // Standard ID terminator is `\nID\n` followed by raw bytes
+                    // until `\nEI` (per spec §8.9.7). We accept any whitespace
+                    // around ID and EI, and we tolerate EI appearing in the
+                    // middle of a byte word boundary by requiring EI to be
+                    // followed by a whitespace / operator boundary.
+                    //
+                    // Scan forward to the first occurrence of "EI" preceded
+                    // by whitespace and followed by whitespace / EOF — a
+                    // conservative match that won't trip over `EI` embedded
+                    // inside image bytes between non-whitespace context.
+                    num_count = 0;
+                    let mut j = i;
+                    while j + 1 < len {
+                        // Match "EI" with whitespace on both sides (or EOF).
+                        if data[j] == b'E' && data[j + 1] == b'I' {
+                            let before_ok = j == 0 || data[j - 1].is_ascii_whitespace();
+                            let after_ok = j + 2 >= len
+                                || data[j + 2].is_ascii_whitespace()
+                                || matches!(
+                                    data[j + 2],
+                                    b'(' | b'<' | b'[' | b'/' | b'%'
+                                );
+                            if before_ok && after_ok {
+                                j += 2;
+                                break;
+                            }
+                        }
+                        j += 1;
+                    }
+                    i = j;
+                    continue;
+                },
                 b"q" => {
                     ctm_stack.push((ctm, current_font_idx));
                     num_count = 0;

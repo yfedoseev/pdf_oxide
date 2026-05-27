@@ -4417,9 +4417,17 @@ impl<'doc> TextExtractor<'doc> {
 
             // Graphics state operators
             Operator::SaveState => {
+                // Flush the Tj span buffer before pushing graphics state.
+                // q/Q wraps a graphics-state block; restoring after Q can
+                // re-set the CTM to an earlier value, leaving the
+                // captured user_pos inside the buffer out of sync with
+                // the active CTM. Flush so each q/Q block emits its
+                // own clean cluster.
+                self.flush_tj_span_buffer()?;
                 self.state_stack.save();
             },
             Operator::RestoreState => {
+                self.flush_tj_span_buffer()?;
                 self.state_stack.restore();
                 // Sync cached font with restored state
                 self.cached_current_font = self
@@ -4431,6 +4439,27 @@ impl<'doc> TextExtractor<'doc> {
                     .cloned();
             },
             Operator::Cm { a, b, c, d, e, f } => {
+                // Flush the Tj span buffer before changing CTM. The buffer
+                // captured `user_pos_x`/`user_pos_y` and `user_h_scale`
+                // from the CTM that was in effect when the buffer was
+                // created (TjBuffer::new at the first Tj after BT). If
+                // cm appears inside an active text object (non-standard
+                // but observed e.g. on arXiv 2201.00151 p2 figure axis
+                // labels, where each label run uses cm to position
+                // itself in user space at large coordinates while the
+                // glyphs themselves are drawn through a Form XObject
+                // whose own /Matrix scales them back down), subsequent
+                // Tj chars get a transformed position from the new CTM
+                // while the buffer still reports the OLD user_pos.
+                // Flushing emits the current cluster at its true
+                // captured position; the next Tj creates a fresh
+                // buffer with the new CTM.
+                //
+                // Spec basis: PDF §9.4 lists cm as a "general graphics
+                // state" operator not formally allowed inside BT/ET,
+                // but conforming readers must still process it
+                // correctly when encountered.
+                self.flush_tj_span_buffer()?;
                 let state = self.state_stack.current_mut();
                 let new_ctm = Matrix { a, b, c, d, e, f };
                 // PDF spec ISO 32000-1:2008 §8.3.4: cm concatenates as M_cm × CTM
@@ -5117,6 +5146,15 @@ impl<'doc> TextExtractor<'doc> {
 
             // XObject operator - Process Form XObjects for text extraction
             Operator::Do { name } => {
+                // Flush the Tj span buffer before invoking a Form XObject.
+                // `process_xobject` applies the form's /Matrix to the CTM
+                // (§8.10.1) and may execute cm/Tm operators inside the
+                // form's content stream. The buffer's captured user_pos
+                // would no longer correspond to the CTM in effect when
+                // the form's text is emitted, so subsequent Tj chars
+                // would be stitched into the wrong cluster.
+                self.flush_tj_span_buffer()?;
+
                 // Process Form XObjects to extract text from reusable content.
                 // Form XObjects can contain text that is not duplicated in the main stream.
                 // We track processed XObjects to avoid infinite loops and duplicates.
