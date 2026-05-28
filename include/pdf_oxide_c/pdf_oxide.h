@@ -695,7 +695,7 @@ uint8_t *pdf_document_to_xlsx(PdfDocument *handle, uintptr_t *out_len, int32_t *
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
 /**
- * Open a PDF document from DOCX bytes.  Returns an opaque PdfDocument handle.
+ * Open a PDF document from DOCX bytes. Returns an opaque PdfDocument handle.
  */
 PdfDocument *pdf_document_open_from_docx_bytes(const uint8_t *data,
                                                uintptr_t len,
@@ -704,7 +704,7 @@ PdfDocument *pdf_document_open_from_docx_bytes(const uint8_t *data,
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
 /**
- * Open a PDF document from PPTX bytes.  Returns an opaque PdfDocument handle.
+ * Open a PDF document from PPTX bytes. Returns an opaque PdfDocument handle.
  */
 PdfDocument *pdf_document_open_from_pptx_bytes(const uint8_t *data,
                                                uintptr_t len,
@@ -713,7 +713,7 @@ PdfDocument *pdf_document_open_from_pptx_bytes(const uint8_t *data,
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
 /**
- * Open a PDF document from XLSX bytes.  Returns an opaque PdfDocument handle.
+ * Open a PDF document from XLSX bytes. Returns an opaque PdfDocument handle.
  */
 PdfDocument *pdf_document_open_from_xlsx_bytes(const uint8_t *data,
                                                uintptr_t len,
@@ -1542,12 +1542,12 @@ void *pdf_document_get_signature(const void *document_handle, int32_t index, int
  * `signed_attrs`) on the CMS blob carried by a signature handle.
  *
  * Returns:
- * - `1`  — Valid: signer held the private key matching the embedded
+ * - `1` — Valid: signer held the private key matching the embedded
  *           certificate. Callers still need to verify the
  *           `messageDigest` attribute against their document content
  *           hash for a full detached-signature claim — use
  *           `pdf_signature_verify_detached` which runs both checks.
- * - `0`  — Invalid: CMS parsed but the RSA check failed (tampered
+ * - `0` — Invalid: CMS parsed but the RSA check failed (tampered
  *           attributes or wrong key).
  * - `-1` — Unknown or not supported: PSS / ECDSA / unrecognised
  *           digest OID / missing signed_attrs / structurally
@@ -1565,10 +1565,10 @@ int32_t pdf_signature_verify(const void *signature_handle, int32_t *error_code);
  * the segments that were actually signed.
  *
  * Returns:
- * - `1`  — Valid: both the RSA-PKCS#1 v1.5 check and the messageDigest
+ * - `1` — Valid: both the RSA-PKCS#1 v1.5 check and the messageDigest
  *           check passed. The signer is authentic and the document has
  *           not been tampered with since signing.
- * - `0`  — Invalid: either the signer check or the messageDigest check
+ * - `0` — Invalid: either the signer check or the messageDigest check
  *           failed. Callers can't distinguish "wrong signer" from
  *           "document tampered after signing" from this code alone.
  * - `-1` — Unknown or not supported: signer uses PSS / ECDSA / unknown
