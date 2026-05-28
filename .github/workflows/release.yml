@@ -1006,17 +1006,21 @@ jobs:
             triple: linux-arm64-gnu
             native_artifact: native-linux-aarch64
             expected_arch: arm64
-          # darwin-x64 MUST run on macos-13 (last x86_64 Mac runner).
-          # `macos-latest` flipped to Apple Silicon in mid-2024; node-gyp
-          # there builds an arm64 .node regardless of the `darwin-x64`
-          # label, which got published to npm as a wrong-arch binary
-          # that Intel Mac users could not load. Verified via Mach-O
-          # CPU type 0x0100000c (ARM64) vs expected 0x01000007 (x86_64).
-          # See the post-build arch verification step below.
-          - os: macos-13
+          # darwin-x64 — cross-compiled from macos-latest (arm64). The
+          # macos-13 (Intel) runner pool was retired 2025-12, so we build
+          # x86_64 on the arm64 host with `node-gyp --arch=x64` (gyp_arch
+          # below), matching how the Rust staticlib / ruby gem / fips
+          # workflows already cross-compile x86_64-apple-darwin. node-gyp
+          # otherwise emits an arm64 .node under the darwin-x64 label —
+          # the wrong-arch binary that bit v0.3.55 (Mach-O CPU type
+          # 0x0100000c ARM64 vs expected 0x01000007 x86_64). The
+          # post-build arch verification step below hard-gates against
+          # that regression.
+          - os: macos-latest
             triple: darwin-x64
             native_artifact: native-macos-x86_64
             expected_arch: x86_64
+            gyp_arch: x64
           - os: macos-latest
             triple: darwin-arm64
             native_artifact: native-macos-aarch64
@@ -1049,7 +1053,14 @@ jobs:
         shell: bash
         run: |
           ls -la ../lib/
-          npx node-gyp rebuild
+          # Cross-compile target arch when the matrix asks for one (e.g.
+          # darwin-x64 built on the arm64 macos-latest host). Native
+          # builds leave gyp_arch empty and node-gyp picks the host arch.
+          ARCH_FLAG=""
+          if [ -n "${{ matrix.gyp_arch }}" ]; then
+            ARCH_FLAG="--arch=${{ matrix.gyp_arch }}"
+          fi
+          npx node-gyp rebuild $ARCH_FLAG
           ls -la build/Release/
 
       # node-gyp links release mode but doesn't strip the final .node. On
