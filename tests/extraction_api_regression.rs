@@ -917,7 +917,15 @@ fn permissions_none_on_unencrypted_pdf() {
 /// `permissions()` on the encrypted `encrypted_needs_password.pdf`
 /// fixture exposes the /P flag set when the document is encrypted.
 /// Verifies the accessor wiring through the encryption handler.
+///
+/// FIPS gate: the test fixture uses PDF Standard Security R=4 with
+/// AESV2 / MD5 key derivation. MD5 is forbidden under FIPS 140-3,
+/// so the encryption handler rejects R≤4 when the FIPS crypto
+/// provider is active. The accessor wiring is exercised against an
+/// R=6 (AES-256) fixture in the FIPS-targeted test suite, so this
+/// assertion is gated to non-FIPS builds.
 #[test]
+#[cfg(not(feature = "fips"))]
 fn permissions_some_on_encrypted_pdf() {
     let path = "tests/fixtures/encrypted_needs_password.pdf";
     if !std::path::Path::new(path).exists() {
