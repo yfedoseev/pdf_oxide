@@ -97,20 +97,36 @@ case "$(uname -s)" in
     ;;
   Darwin)
     # macOS staticlibs from Rust w/ `lto = true` carry per-object
-    # `__LLVM,__bitcode` segments — multi-MB each, unused by CGo, node-gyp,
-    # or NuGet. Xcode does NOT ship `llvm-objcopy` under any `xcrun`-
-    # resolvable name (and `strip -S` only touches DWARF), so use Apple's
-    # purpose-built `bitcode_strip`, which is part of Xcode + the Command
-    # Line Tools and is always present on macos-latest runners.
+    # `__LLVM,__bitcode` (+ `__cmdline`) segments — multi-MB each, unused by
+    # CGo, node-gyp, or NuGet.
     #
-    # `bitcode_strip` operates per-Mach-O, not on archives, so the standard
-    # pattern is: explode the .a, strip each member, reassemble via libtool,
-    # then `strip -S` for DWARF cleanup.
-    if ! command -v xcrun >/dev/null 2>&1; then
-      echo "shrink-staticlib: xcrun not available on Darwin; running strip -S only (bitcode will survive)" >&2
+    # We deliberately do NOT use Apple's `bitcode_strip -r`: for MH_OBJECT (.o)
+    # inputs it does not strip the segment itself, it shells out to
+    #   ld -keep_private_externs -r -bitcode_process_mode strip <in> -o <out>
+    # (cctools/misc/bitcode_strip.c). Apple's default linker since Xcode 15
+    # (`ld-prime`) dropped `-bitcode_process_mode`, so `ld` misreads the mode
+    # token `strip` as an input file and dies with
+    #   "ld: file cannot be open()ed, errno=2 path=strip"
+    # → "bitcode_strip: internal link edit command failed". No invocation tweak
+    # fixes this; the failure is inside ld. (dotnet/macios#22806, #22591.)
+    #
+    # Instead use `llvm-objcopy` from the Rust toolchain's `llvm-tools`
+    # component — the same LLVM that produced these objects, with native Mach-O
+    # `SEGNAME,SECTNAME` section removal. (This is the approach the tweag
+    # "shrinking static libs" guide lands on for macOS.) llvm-objcopy operates
+    # per-Mach-O, not on archives, so explode the .a, strip each member, then
+    # reassemble via libtool.
+    llvm_bin="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
+    OBJCOPY="$llvm_bin/llvm-objcopy"
+    if [[ ! -x "$OBJCOPY" ]]; then
+      rustup component add llvm-tools-preview >/dev/null 2>&1 \
+        || rustup component add llvm-tools >/dev/null 2>&1 || true
+    fi
+    if [[ ! -x "$OBJCOPY" ]]; then
+      echo "shrink-staticlib: llvm-objcopy not available ($OBJCOPY); running strip -S only (bitcode will survive)" >&2
       strip -S "$LIB"
     else
-      echo "shrink-staticlib: using xcrun bitcode_strip -r (Mach-O __LLVM,__bitcode strip)"
+      echo "shrink-staticlib: using $OBJCOPY (Mach-O __LLVM,__bitcode strip)"
       abs_lib=$(cd "$(dirname "$LIB")" && pwd)/$(basename "$LIB")
       workdir=$(mktemp -d)
       (
@@ -118,7 +134,12 @@ case "$(uname -s)" in
         ar x "$abs_lib"
         for obj in *.o; do
           [[ -f "$obj" ]] || continue
-          xcrun bitcode_strip -r "$obj" -o "$obj"
+          "$OBJCOPY" \
+            --remove-section=__LLVM,__bitcode \
+            --remove-section=__LLVM,__cmdline \
+            --strip-debug \
+            "$obj" "$obj.stripped"
+          mv "$obj.stripped" "$obj"
         done
         xcrun libtool -static -o "$abs_lib" *.o
       )
