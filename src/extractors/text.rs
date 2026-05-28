@@ -51,8 +51,8 @@ static PRESERVE_UNMAPPED_GLYPHS: AtomicBool = AtomicBool::new(false);
 ///
 /// The default is `false` to preserve historical fixture output
 /// byte-identical for the no-FFFD-glyph case; downstream callers
-/// (including the new `ExtractionSignal::UnmappedGlyphs` accessor)
-/// opt in by setting `true`.
+/// that want to surface unmapped glyphs to the user opt in by
+/// setting `true`.
 pub fn set_preserve_unmapped_glyphs(preserve: bool) -> bool {
     PRESERVE_UNMAPPED_GLYPHS.swap(preserve, Ordering::SeqCst)
 }

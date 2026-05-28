@@ -106,23 +106,32 @@ def _setup_default_log_levels() -> None:
     ``Type0 font 'X' has no ToUnicode entry!``, etc. — observed at ~150
     lines per PDF in `pdfa_001.pdf`.
 
-    v0.3.56 raises the effective level on the four highest-frequency
-    internal targets to ``ERROR`` so the default Python config no longer
-    captures them. Callers who want the warnings back can:
+    v0.3.56 attaches a ``NullHandler`` to each of the four highest-
+    frequency internal targets and disables propagation, so records
+    stop at the pdf_oxide logger boundary instead of bubbling up to
+    the root logger's default stderr handler.
 
-    - Use ``pdf_oxide.setup_logging(level="WARNING")`` to globally restore.
-    - Use ``logging.getLogger("pdf_oxide.parser").setLevel(logging.WARNING)``
-      to target a single category.
+    This is the standard Python library convention (see PEP 282 + the
+    ``logging`` HOWTO): a library never owns the user's logger level
+    or root handler config; it provides a NullHandler so records have
+    somewhere to land, and ``propagate = False`` so its own records
+    don't surface unless the caller explicitly opts in.
+
+    Callers who want the warnings back can:
+
+    - Use ``logging.getLogger("pdf_oxide.parser").propagate = True``
+      to re-enable bubbling for a single category, OR add a handler
+      to that logger directly.
     - Use ``doc.structured_warnings()`` (v0.3.56) to receive the
       warnings as structured ``Warning`` dicts (category, page,
       message, spec_section) instead of stderr text.
       (``doc.flatten_warnings()`` is the pre-existing form-flattening
       surface returning ``list[str]`` — different feature.)
 
-    The downgrade is idempotent: repeated calls are harmless. Genuine
-    ERROR-level events bubble through the ``Result`` chain into Python
-    exceptions, not through ``log::warn!``, so this does not hide real
-    errors.
+    The setup is idempotent: repeated calls are harmless (NullHandler
+    is added at most once via instance check). Genuine ERROR-level
+    events bubble through the ``Result`` chain into Python exceptions,
+    not through ``log::warn!``, so this does not hide real errors.
 
     See ``docs/releases/plans/v0.3.56/cluster-diagnostics-noise.md``.
     """
@@ -134,7 +143,10 @@ def _setup_default_log_levels() -> None:
         "pdf_oxide.document",
     )
     for _target in _QUIET_TARGETS:
-        _logging.getLogger(_target).setLevel(_logging.ERROR)
+        _logger = _logging.getLogger(_target)
+        if not any(isinstance(h, _logging.NullHandler) for h in _logger.handlers):
+            _logger.addHandler(_logging.NullHandler())
+        _logger.propagate = False
 
 
 _setup_default_log_levels()

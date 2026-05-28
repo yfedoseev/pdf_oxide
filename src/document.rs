@@ -440,10 +440,10 @@ pub struct PdfDocument {
     /// internal warning site that previously only called `log::warn!`
     /// can additionally push a typed [`crate::extractors::warnings::Warning`]
     /// here, letting callers retrieve diagnostics as structured data
-    /// (via [`PdfDocument::flatten_warnings`]) instead of parsing
+    /// (via [`PdfDocument::structured_warnings`]) instead of parsing
     /// stderr text. The existing String-list `accumulated_warnings`
     /// stays for back-compat.
-    structured_warnings: Mutex<Vec<crate::extractors::warnings::Warning>>,
+    warning_sink: crate::extractors::warnings::WarningSink,
 }
 
 // Compile-time verification that PdfDocument is Send + Sync.
@@ -818,7 +818,7 @@ impl PdfDocument {
             page_content_cache: Mutex::new(BoundedEntryCache::new(64)),
             running_artifact_signatures: Mutex::new(None),
             accumulated_warnings: Mutex::new(Vec::new()),
-            structured_warnings: Mutex::new(Vec::new()),
+            warning_sink: crate::extractors::warnings::WarningSink::new(),
         };
 
         // Initialize encryption immediately
@@ -8595,17 +8595,45 @@ impl PdfDocument {
         }
         const LINE_BAND_PT: f32 = 4.0;
         // band_anchor[i] = (body_font_size, body_y) of the line
-        // band that span `i` belongs to.
+        // band that span `i` belongs to. Sorting span indices by Y
+        // once + sliding a two-pointer window over the sorted view
+        // reduces the per-span band-anchor scan from O(n) to amortised
+        // O(window_size), bringing the whole pass from O(n²) down to
+        // O(n log n) on thesis-style pages with thousands of spans.
+        let mut sorted_by_y: Vec<usize> = (0..n).collect();
+        sorted_by_y
+            .sort_by(|&a, &b| crate::utils::safe_float_cmp(spans[a].bbox.y, spans[b].bbox.y));
         let mut band_anchor: Vec<(f32, f32)> = vec![(0.0, 0.0); n];
-        for i in 0..n {
+        for (pos, &i) in sorted_by_y.iter().enumerate() {
             let cy = spans[i].bbox.y;
             let mut max_fs = spans[i].font_size;
             let mut anchor_y = spans[i].bbox.y;
-            for j in 0..n {
-                if (spans[j].bbox.y - cy).abs() <= LINE_BAND_PT && spans[j].font_size > max_fs {
+            // Walk backwards through the sorted view while y stays
+            // within LINE_BAND_PT of cy.
+            let mut k = pos;
+            while k > 0 {
+                let j = sorted_by_y[k - 1];
+                if (spans[j].bbox.y - cy).abs() > LINE_BAND_PT {
+                    break;
+                }
+                if spans[j].font_size > max_fs {
                     max_fs = spans[j].font_size;
                     anchor_y = spans[j].bbox.y;
                 }
+                k -= 1;
+            }
+            // Walk forwards similarly.
+            let mut k = pos + 1;
+            while k < n {
+                let j = sorted_by_y[k];
+                if (spans[j].bbox.y - cy).abs() > LINE_BAND_PT {
+                    break;
+                }
+                if spans[j].font_size > max_fs {
+                    max_fs = spans[j].font_size;
+                    anchor_y = spans[j].bbox.y;
+                }
+                k += 1;
             }
             band_anchor[i] = (max_fs, anchor_y);
         }
@@ -8782,21 +8810,26 @@ impl PdfDocument {
     /// their structured records) into the per-document sink on each
     /// call. The drain attribution follows the "first caller wins"
     /// rule documented at the global sink — process-wide scope means
-    /// the first document to call `flatten_warnings` collects the
-    /// global tail that accumulated since the last drain.
-    pub fn flatten_warnings(&self) -> Vec<crate::extractors::warnings::Warning> {
+    /// the first document to call `structured_warnings` collects
+    /// the global tail that accumulated since the last drain.
+    ///
+    /// Renamed from `flatten_warnings` in v0.3.56 to avoid colliding
+    /// with the pre-existing `DocumentEditor::flatten_warnings`
+    /// (which returns the form-flattening side-effect log, a
+    /// `&[String]` — different feature). Both the Rust and Python
+    /// (`PyDocument`) surfaces now agree on `structured_warnings`.
+    pub fn structured_warnings(&self) -> Vec<crate::extractors::warnings::Warning> {
         let global = crate::extractors::warnings::drain_global_warnings();
-        let mut local = self.structured_warnings.lock_or_recover();
         if !global.is_empty() {
-            local.extend(global);
+            self.warning_sink.extend(global);
         }
-        local.clone()
+        self.warning_sink.snapshot()
     }
 
     /// Drain and return all accumulated structured warnings.
-    /// Companion to [`Self::flatten_warnings`].
+    /// Companion to [`Self::structured_warnings`].
     pub fn take_structured_warnings(&self) -> Vec<crate::extractors::warnings::Warning> {
-        std::mem::take(&mut *self.structured_warnings.lock_or_recover())
+        self.warning_sink.take()
     }
 
     /// Record a structured warning. Hook called from migrated
@@ -8805,9 +8838,9 @@ impl PdfDocument {
     ///
     /// Exposed as `pub` so external diagnostic sources (custom
     /// extractors, FFI hooks) can also push warnings into the same
-    /// sink that [`Self::flatten_warnings`] surfaces.
+    /// sink that [`Self::structured_warnings`] surfaces.
     pub fn push_structured_warning(&self, warning: crate::extractors::warnings::Warning) {
-        self.structured_warnings.lock_or_recover().push(warning);
+        self.warning_sink.push(warning);
     }
 
     /// Heuristic: does this page have two or more vertical text columns?

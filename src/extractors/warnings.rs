@@ -174,6 +174,24 @@ impl WarningSink {
             v.clear();
         }
     }
+
+    /// Push multiple warnings at once. Used by callers that merge a
+    /// drained external sink (e.g. the process-wide global sink) into
+    /// the per-document sink under a single lock acquisition.
+    pub fn extend(&self, warnings: impl IntoIterator<Item = Warning>) {
+        if let Ok(mut v) = self.warnings.lock() {
+            v.extend(warnings);
+        }
+    }
+
+    /// Drain and return all accumulated warnings.
+    pub fn take(&self) -> Vec<Warning> {
+        if let Ok(mut v) = self.warnings.lock() {
+            std::mem::take(&mut *v)
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 #[cfg(test)]

@@ -87,7 +87,11 @@ impl OrtBackend {
         // `ort::api()` inside `Session::builder()` and panics at
         // `.../ort-2.0.0-rc.11/src/lib.rs:191:41` with
         // "Failed to load ONNX Runtime dylib".
-        let model_bytes_local = model_bytes.to_vec();
+        // `&[u8]` is already `UnwindSafe`, and `AssertUnwindSafe`
+        // additionally allows borrowing it through the closure without
+        // an owned copy. A previous revision called `.to_vec()` first,
+        // which copied the full 50-100 MB PaddleOCR detection model on
+        // the OCR hot path for no safety benefit.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             ort::session::Session::builder()
                 .map_err(|e| {
@@ -95,7 +99,7 @@ impl OrtBackend {
                 })?
                 .with_intra_threads(num_threads)
                 .map_err(|e| OcrError::ModelLoadError(format!("Failed to set threads: {}", e)))?
-                .commit_from_memory(&model_bytes_local)
+                .commit_from_memory(model_bytes)
                 .map_err(|e| OcrError::ModelLoadError(format!("Failed to load model: {}", e)))
         }));
         let session = match result {

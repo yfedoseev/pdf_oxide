@@ -989,20 +989,33 @@ impl XYCutStrategy {
 
         // Cluster the gap positions with a 10 pt radius (tight; the
         // gutter is at one specific X with minor line-to-line drift).
+        // Sliding-window two-pointer scan over the sorted positions —
+        // both `left` and `right` only advance forward, so total
+        // work is O(n) instead of the previous O(n²) pivot scan
+        // (thesis-style PDFs with hundreds of gap-bearing rows pay
+        // visibly in that nested loop).
         const CLUSTER_RADIUS_PT: f32 = 10.0;
         let mut sorted_gaps = gap_positions.clone();
         sorted_gaps.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+        // Prefix sums let us read window-sum in O(1) given (left, right).
+        let mut prefix: Vec<f32> = Vec::with_capacity(sorted_gaps.len() + 1);
+        prefix.push(0.0);
+        for &x in &sorted_gaps {
+            prefix.push(prefix.last().unwrap() + x);
+        }
         let mut best_size = 0usize;
         let mut best_center = 0.0_f32;
+        let mut left = 0usize;
+        let mut right = 0usize;
         for &pivot in &sorted_gaps {
-            let mut count = 0usize;
-            let mut sum = 0.0_f32;
-            for &x in &sorted_gaps {
-                if (x - pivot).abs() <= CLUSTER_RADIUS_PT {
-                    count += 1;
-                    sum += x;
-                }
+            while left < sorted_gaps.len() && sorted_gaps[left] < pivot - CLUSTER_RADIUS_PT {
+                left += 1;
             }
+            while right < sorted_gaps.len() && sorted_gaps[right] <= pivot + CLUSTER_RADIUS_PT {
+                right += 1;
+            }
+            let count = right - left;
+            let sum = prefix[right] - prefix[left];
             if count > best_size {
                 best_size = count;
                 best_center = sum / count as f32;

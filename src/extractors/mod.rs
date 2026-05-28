@@ -42,7 +42,7 @@ pub use images::{
 pub use page_labels::{PageLabelExtractor, PageLabelRange, PageLabelStyle};
 pub use paths::{FillRule, PathExtractor};
 pub use pattern_detector::{PatternDetector, PatternPreservationConfig};
-pub use status::{ExtractionSignal, OcrUnavailableReason};
+pub use status::OcrUnavailableReason;
 pub use structured::{
     BoundingBox, DocumentElement, DocumentMetadata, ExtractorConfig, ListItem, StructuredDocument,
     StructuredExtractor, TextAlignment, TextStyle,

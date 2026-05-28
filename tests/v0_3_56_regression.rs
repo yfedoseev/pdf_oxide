@@ -19,12 +19,29 @@
 //!
 //! Each test names its category in the docstring so readers can
 //! assess the actual completion state.
+//!
+//! **Note on `include_str!(...).contains(...)` tests** (PR #601
+//! review finding #17): a handful of tests in this file are
+//! deliberately *presence checks* — they confirm a public function
+//! / accessor / cross-binding C-ABI symbol is wired through the
+//! relevant module, not that it produces correct behaviour. Behaviour
+//! is verified by the companion tests in the same module (e.g.,
+//! `preserve_unmapped_glyphs_setter_round_trips` exercises the flag,
+//! while `preserve_unmapped_glyphs_gates_all_filter_sites` checks
+//! the wire-up). Presence checks fire if a future refactor renames
+//! or removes the symbol without updating the wire-up, which is the
+//! contract they exist to enforce. Tracked as a follow-up to migrate
+//! the wire-up checks to real-fixture behaviour assertions where
+//! synthetic input can reproduce the shape (e.g.,
+//! `subscript_between_baseline_letters_stays_in_reading_order` in
+//! `tests/test_superscript_line_grouping.rs` already covers
+//! `detect_dramatic_script`'s sibling, `detect_sub_super_glyphs`).
 
 #![allow(clippy::needless_return)]
 
 use pdf_oxide::converters::text_post_processor::TextPostProcessor;
 use pdf_oxide::encryption::PdfPermissions;
-use pdf_oxide::extractors::status::{ExtractionSignal, OcrUnavailableReason};
+use pdf_oxide::extractors::status::OcrUnavailableReason;
 use pdf_oxide::extractors::warnings::{Warning, WarningCategory, WarningSink};
 use pdf_oxide::pipeline::reading_order::{
     classify_region, detect_dense_single_line, detect_dramatic_script, detect_narrow_tracked,
@@ -83,9 +100,19 @@ fn python_log_targets_downgraded_at_import() {
     assert!(source.contains("pdf_oxide.content"), "content target must be downgraded",);
     assert!(source.contains("pdf_oxide.fonts"), "fonts target must be downgraded",);
     assert!(source.contains("pdf_oxide.document"), "document target must be downgraded",);
+    // v0.3.56 originally raised the level via `setLevel(ERROR)`;
+    // PR #601 review #6 replaced that with the standard Python
+    // library convention of attaching a `NullHandler` + setting
+    // `propagate = False`. Either approach interrupts default-config
+    // stderr noise; we accept either to keep the test resilient to
+    // a later swap back if needed.
+    let downgrades_via_set_level =
+        source.contains("logging.ERROR") || source.contains("_logging.ERROR");
+    let downgrades_via_null_handler =
+        source.contains("NullHandler()") && source.contains("propagate = False");
     assert!(
-        source.contains("logging.ERROR") || source.contains("_logging.ERROR"),
-        "downgrade target level must be ERROR (above default WARNING handler)",
+        downgrades_via_set_level || downgrades_via_null_handler,
+        "noise gate must be implemented either via setLevel(ERROR) or NullHandler + propagate=False",
     );
 }
 
@@ -100,16 +127,6 @@ fn max_ops_per_stream_setter_round_trips() {
     let returned = pdf_oxide::content::parser::set_max_ops_per_stream(None);
     assert_eq!(returned, Some(2_000_000), "round-trip: setter returns the override we set",);
     pdf_oxide::content::parser::set_max_ops_per_stream(prev);
-}
-
-#[test]
-fn extraction_signal_truncated_carries_at_op() {
-    let s = ExtractionSignal::Truncated { at_op: 1_000_000 };
-    if let ExtractionSignal::Truncated { at_op } = s {
-        assert_eq!(at_op, 1_000_000);
-    } else {
-        panic!("expected Truncated variant");
-    }
 }
 
 /// #562 — ROOT-CAUSE FIX (`permissions()` accessor) + verification
@@ -286,8 +303,8 @@ fn preserve_unmapped_glyphs_gates_all_filter_sites() {
 fn structured_warnings_accessors_present() {
     let source = include_str!("../src/document.rs");
     assert!(
-        source.contains("pub fn flatten_warnings"),
-        "PdfDocument::flatten_warnings must be defined",
+        source.contains("pub fn structured_warnings"),
+        "PdfDocument::structured_warnings must be defined",
     );
     assert!(
         source.contains("pub fn take_structured_warnings"),
@@ -297,9 +314,15 @@ fn structured_warnings_accessors_present() {
         source.contains("pub fn push_structured_warning"),
         "PdfDocument::push_structured_warning (hook for diagnostic sources) must be defined",
     );
+    // PR #601 review #7 wired the per-document sink through
+    // `WarningSink` (which itself wraps `Mutex<Vec<Warning>>`) instead
+    // of an inline `Mutex<Vec<Warning>>` field. Either representation
+    // satisfies the contract: the document owns a thread-safe sink
+    // that the structured_warnings accessors can drain through.
     assert!(
-        source.contains("structured_warnings: Mutex"),
-        "PdfDocument must own a Mutex<Vec<Warning>> field",
+        source.contains("warning_sink: crate::extractors::warnings::WarningSink")
+            || source.contains("structured_warnings: Mutex"),
+        "PdfDocument must own a WarningSink (or compatible Mutex<Vec<Warning>>) field",
     );
 }
 
@@ -432,29 +455,13 @@ fn monospace_repair_does_not_touch_prose() {
 // FOUNDATION ONLY — typed signal landed, upstream behaviour unchanged
 // ===========================================================================
 //
-// These tests verify the v0.3.56 typed-signal foundation (ExtractionSignal /
-// Warning / PdfPermissions) compiles and behaves correctly. They do
-// NOT prove the upstream bug is fixed — that requires the cluster
-// implementation work documented in cluster-reading-order.md and
-// cluster-font-encoding.md.
+// These tests verify the v0.3.56 typed-signal foundation
+// (`OcrUnavailableReason` / `Warning` / `PdfPermissions`) compiles
+// and behaves correctly. They do NOT prove the upstream bug is fixed
+// — that requires the cluster implementation work documented in
+// cluster-reading-order.md and cluster-font-encoding.md.
 //
 // The PR description explicitly labels these as foundation-only.
-
-#[test]
-fn extraction_signal_variants_construct() {
-    // Just verify every variant constructs and round-trips through
-    // is_ok / should_ocr. This is the foundation for the deferred
-    // upstream fixes.
-    assert!(ExtractionSignal::Ok.is_ok());
-    assert!(!ExtractionSignal::NoTextLayer.is_ok());
-    assert!(ExtractionSignal::NoTextLayer.should_ocr());
-    let _ = ExtractionSignal::Truncated { at_op: 1000 };
-    let _ = ExtractionSignal::UnmappedGlyphs { count: 3 };
-    let _ = ExtractionSignal::OcrUnavailable {
-        reason: OcrUnavailableReason::DylibMissing,
-    };
-    let _ = ExtractionSignal::PasswordRequired;
-}
 
 #[test]
 fn warning_sink_thread_safe_round_trip() {
@@ -997,7 +1004,7 @@ fn structured_warnings_round_trip_on_real_document() {
         return;
     }
     let doc = pdf_oxide::document::PdfDocument::open(path).expect("open simple.pdf");
-    let initial = doc.flatten_warnings();
+    let initial = doc.structured_warnings();
     // Push a synthetic warning
     doc.push_structured_warning(Warning {
         category: WarningCategory::SpecViolation,
@@ -1005,7 +1012,7 @@ fn structured_warnings_round_trip_on_real_document() {
         message: "synthetic test warning".into(),
         spec_section: Some("7.3.8.1"),
     });
-    let after_push = doc.flatten_warnings();
+    let after_push = doc.structured_warnings();
     assert_eq!(
         after_push.len(),
         initial.len() + 1,
@@ -1014,7 +1021,7 @@ fn structured_warnings_round_trip_on_real_document() {
     // Drain
     let drained = doc.take_structured_warnings();
     assert_eq!(drained.len(), after_push.len());
-    let after_drain = doc.flatten_warnings();
+    let after_drain = doc.structured_warnings();
     assert_eq!(after_drain.len(), 0, "take must drain the sink");
 }
 

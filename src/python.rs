@@ -2135,10 +2135,11 @@ impl PyPdfDocument {
     /// callers a structured opt-in surface instead of stderr text.
     ///
     /// Named `structured_warnings` (not `flatten_warnings`) to avoid
-    /// collision with the existing PyEditor `flatten_warnings`
-    /// accessor for form-flattening warnings.
+    /// collision with the existing `DocumentEditor::flatten_warnings`
+    /// accessor for form-flattening warnings; the Rust side was
+    /// renamed in v0.3.56 for the same reason.
     fn structured_warnings(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let warnings = self.inner.flatten_warnings();
+        let warnings = self.inner.structured_warnings();
         let list = pyo3::types::PyList::empty(py);
         for w in warnings {
             let entry = pyo3::types::PyDict::new(py);

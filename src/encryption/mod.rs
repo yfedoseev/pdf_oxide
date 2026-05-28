@@ -626,44 +626,52 @@ impl Permissions {
         Self { bits }
     }
 
+    /// Decoded view per [`PdfPermissions`]. The bit decoding lives
+    /// in one place; this method-style API delegates so the two
+    /// decoders cannot drift apart.
+    #[inline]
+    fn decoded(&self) -> PdfPermissions {
+        PdfPermissions::from_p_flag(self.bits)
+    }
+
     /// Check if printing is allowed.
     pub fn can_print(&self) -> bool {
-        (self.bits & (1 << 2)) != 0
+        self.decoded().print_low_res
     }
 
     /// Check if modifying the document is allowed.
     pub fn can_modify(&self) -> bool {
-        (self.bits & (1 << 3)) != 0
+        self.decoded().modify
     }
 
     /// Check if copying text/graphics is allowed.
     pub fn can_copy(&self) -> bool {
-        (self.bits & (1 << 4)) != 0
+        self.decoded().copy
     }
 
     /// Check if adding/modifying annotations is allowed.
     pub fn can_annotate(&self) -> bool {
-        (self.bits & (1 << 5)) != 0
+        self.decoded().annotate
     }
 
     /// Check if filling form fields is allowed (R>=3).
     pub fn can_fill_forms(&self) -> bool {
-        (self.bits & (1 << 8)) != 0
+        self.decoded().fill_forms
     }
 
     /// Check if content extraction for accessibility is allowed (R>=3).
     pub fn can_extract_accessibility(&self) -> bool {
-        (self.bits & (1 << 9)) != 0
+        self.decoded().accessibility
     }
 
     /// Check if assembling the document is allowed (R>=3).
     pub fn can_assemble(&self) -> bool {
-        (self.bits & (1 << 10)) != 0
+        self.decoded().assemble
     }
 
     /// Check if high-quality printing is allowed (R>=3).
     pub fn can_print_high_quality(&self) -> bool {
-        (self.bits & (1 << 11)) != 0
+        self.decoded().print_high_res
     }
 }
 
