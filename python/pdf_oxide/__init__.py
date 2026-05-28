@@ -136,13 +136,13 @@ def _setup_default_log_levels() -> None:
     See ``docs/releases/plans/v0.3.56/cluster-diagnostics-noise.md``.
     """
     import logging as _logging
-    _QUIET_TARGETS = (
+    _quiet_targets = (
         "pdf_oxide.parser",
         "pdf_oxide.content",
         "pdf_oxide.fonts",
         "pdf_oxide.document",
     )
-    for _target in _QUIET_TARGETS:
+    for _target in _quiet_targets:
         _logger = _logging.getLogger(_target)
         if not any(isinstance(h, _logging.NullHandler) for h in _logger.handlers):
             _logger.addHandler(_logging.NullHandler())
