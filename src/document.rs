@@ -5642,22 +5642,32 @@ impl PdfDocument {
         crate::ocr::extract_text_with_ocr(self, page_index, ocr_engine, ocr_options)
     }
 
-    /// Always rasterise the page and run the supplied OCR engine,
-    /// regardless of the embedded text layer.
+    /// Run the supplied OCR engine against the largest embedded image
+    /// on the page, regardless of whether the page has a native text
+    /// layer.
     ///
     /// The existing [`extract_text_with_ocr`] is text-layer-first
-    /// (OCR only when no native text), which can be misleading
-    /// because the name implies OCR-always. This method makes the
-    /// OCR-always contract explicit: the engine is invoked
-    /// unconditionally and its output is returned even when an
-    /// embedded text layer is present (useful for scanned-then-
-    /// machine-OCR'd PDFs where the embedded layer is poor-quality
-    /// auto-OCR from the scanner).
+    /// (OCR only when no native text), which can mask poor-quality
+    /// auto-OCR'd layers from scanner pipelines. This companion
+    /// always invokes the engine via [`crate::ocr::ocr_page`] —
+    /// useful when callers know the embedded layer is unreliable and
+    /// want the OCR pass for cross-checking.
     ///
-    /// Returns `Err(Error::OcrUnavailable { reason: EngineNotProvided })`
-    /// if no engine is supplied — unlike [`extract_text_with_ocr`]
-    /// which silently degrades. This makes the OCR-required contract
-    /// loud.
+    /// **Limitation**: the OCR target is the largest embedded
+    /// `/XObject Image` on the page (see [`crate::ocr::ocr_page`]).
+    /// For born-digital PDFs with no embedded raster, the underlying
+    /// helper falls back to native [`Self::extract_text`] when
+    /// `ocr_options.fallback_to_native` is set, otherwise returns an
+    /// empty string. Full-page rasterization (render → image → OCR)
+    /// is **not** performed here; callers that need it should drive
+    /// it directly via [`crate::rendering::render_page`] (requires
+    /// the `rendering` feature) and feed the result through their
+    /// own engine.
+    ///
+    /// Errors: returns `Error::OcrUnavailable { reason: ModelLoadFailed }`
+    /// when the OCR backend fails to initialise (e.g. missing
+    /// `libonnxruntime.so`) — the [`catch_unwind`](std::panic::catch_unwind)
+    /// in `OrtBackend::from_bytes` keeps that path panic-free.
     #[cfg(feature = "ocr")]
     pub fn extract_text_ocr_only(
         &self,
@@ -5665,10 +5675,6 @@ impl PdfDocument {
         ocr_engine: &crate::ocr::OcrEngine,
         ocr_options: crate::ocr::OcrExtractOptions,
     ) -> Result<String> {
-        // Run OCR unconditionally via the existing `ocr_page` helper.
-        // If ORT's init has previously panicked (missing libonnxruntime),
-        // the catch_unwind in `OrtBackend::from_bytes`
-        // ensures we get an OcrError instead of a panic.
         crate::ocr::ocr_page(self, page_index, ocr_engine, &ocr_options).map_err(|e| {
             Error::OcrUnavailable {
                 reason: crate::extractors::status::OcrUnavailableReason::ModelLoadFailed {
@@ -6430,7 +6436,11 @@ impl PdfDocument {
 
         for i in 0..n {
             let sub = &spans[i];
-            if sub.text.is_empty() || sub.text.len() > 6 {
+            // Char-count gate (not byte-count): U+00B2/B3/B9 are 2-byte
+            // UTF-8 sequences and U+2070..U+209F are 3-byte, so the
+            // earlier byte-length check would have dropped a legitimate
+            // 3-digit Unicode subscript like "₁₂₃" (9 bytes).
+            if sub.text.is_empty() || sub.text.chars().count() > 3 {
                 continue;
             }
             // Accept the raw ASCII the extractor produces AND the
@@ -7786,25 +7796,42 @@ impl PdfDocument {
                 text_len: s.text.chars().count(),
             })
             .collect();
-        // Build per-row text strings for DramaticScript detector.
-        // Group spans by Y (within 0.5 pt) and concatenate their texts.
-        let mut rows: Vec<(f32, String)> = Vec::new();
+        // Build per-row text strings for DramaticScript detector,
+        // together with the leftmost glyph of each row (for the X-
+        // consistency check). Group spans by Y (within 0.5 pt),
+        // concatenating their texts in the order they appear in
+        // `spans` and tracking the smallest X seen per row.
+        let mut rows: Vec<(f32, String, crate::pipeline::reading_order::DetectorGlyph)> =
+            Vec::new();
         for span in &spans {
+            let span_glyph = crate::pipeline::reading_order::DetectorGlyph {
+                x: span.bbox.x,
+                y: span.bbox.y,
+                width: span.bbox.width,
+                font_size: span.font_size,
+                text_len: span.text.chars().count(),
+            };
             let mut placed = false;
-            for (y, text) in rows.iter_mut() {
+            for (y, text, first) in rows.iter_mut() {
                 if (*y - span.bbox.y).abs() < 0.5 {
                     text.push(' ');
                     text.push_str(&span.text);
+                    if span_glyph.x < first.x {
+                        *first = span_glyph;
+                    }
                     placed = true;
                     break;
                 }
             }
             if !placed {
-                rows.push((span.bbox.y, span.text.clone()));
+                rows.push((span.bbox.y, span.text.clone(), span_glyph));
             }
         }
-        let row_texts: Vec<&str> = rows.iter().map(|(_, t)| t.as_str()).collect();
-        let class = crate::pipeline::reading_order::classify_region(&glyphs, &row_texts);
+        let row_texts: Vec<&str> = rows.iter().map(|(_, t, _)| t.as_str()).collect();
+        let row_first_glyphs: Vec<crate::pipeline::reading_order::DetectorGlyph> =
+            rows.iter().map(|(_, _, g)| *g).collect();
+        let class =
+            crate::pipeline::reading_order::classify_region(&glyphs, &row_first_glyphs, &row_texts);
         Ok((spans, class))
     }
 
@@ -8748,8 +8775,22 @@ impl PdfDocument {
     /// non-destructive: subsequent calls return the same entries
     /// plus any new ones pushed since the last call. Use
     /// [`Self::take_structured_warnings`] to drain.
+    ///
+    /// Merges the process-wide `GLOBAL_WARNING_SINK` (where
+    /// free-function log sites like `SPEC VIOLATION`,
+    /// operator-cap-exceeded, and Type0/Type3 font fallbacks push
+    /// their structured records) into the per-document sink on each
+    /// call. The drain attribution follows the "first caller wins"
+    /// rule documented at the global sink — process-wide scope means
+    /// the first document to call `flatten_warnings` collects the
+    /// global tail that accumulated since the last drain.
     pub fn flatten_warnings(&self) -> Vec<crate::extractors::warnings::Warning> {
-        self.structured_warnings.lock_or_recover().clone()
+        let global = crate::extractors::warnings::drain_global_warnings();
+        let mut local = self.structured_warnings.lock_or_recover();
+        if !global.is_empty() {
+            local.extend(global);
+        }
+        local.clone()
     }
 
     /// Drain and return all accumulated structured warnings.

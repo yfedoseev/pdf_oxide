@@ -113,8 +113,11 @@ def _setup_default_log_levels() -> None:
     - Use ``pdf_oxide.setup_logging(level="WARNING")`` to globally restore.
     - Use ``logging.getLogger("pdf_oxide.parser").setLevel(logging.WARNING)``
       to target a single category.
-    - Use ``doc.flatten_warnings()`` (v0.3.56) to receive the warnings
-      as structured data instead of stderr text.
+    - Use ``doc.structured_warnings()`` (v0.3.56) to receive the
+      warnings as structured ``Warning`` dicts (category, page,
+      message, spec_section) instead of stderr text.
+      (``doc.flatten_warnings()`` is the pre-existing form-flattening
+      surface returning ``list[str]`` — different feature.)
 
     The downgrade is idempotent: repeated calls are harmless. Genuine
     ERROR-level events bubble through the ``Result`` chain into Python

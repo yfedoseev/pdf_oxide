@@ -73,31 +73,29 @@ pub struct DetectorGlyph {
 /// short token (≤12 chars) ending in `.` at a consistent left X
 /// (within 2pt), followed by a wide gap (>4×em) to the next glyph.
 ///
-/// **Heuristic input shape**: the caller passes the glyphs in y-
-/// then-x order. We bin into rows by Y (tolerance 0.3 × font_size),
-/// inspect each row's leftmost token, and count rows that match.
-pub fn detect_dramatic_script(glyphs: &[DetectorGlyph], row_texts: &[&str]) -> bool {
-    if row_texts.len() < 3 {
+/// **Input shape**: `row_first_glyphs[i]` MUST be the leftmost
+/// glyph of `row_texts[i]` (parallel arrays of equal length). The
+/// detector reads only the `.x` field, so the geometry of all
+/// other glyphs in the row is irrelevant here.
+pub fn detect_dramatic_script(row_first_glyphs: &[DetectorGlyph], row_texts: &[&str]) -> bool {
+    if row_texts.len() < 3 || row_first_glyphs.len() != row_texts.len() {
         return false;
     }
     let mut speaker_row_count = 0;
     let mut leftmost_x: Option<f32> = None;
     for (row_idx, row) in row_texts.iter().enumerate() {
         let trimmed = row.trim_start();
-        // Find the first whitespace after a non-empty prefix.
         if let Some(dot_pos) = trimmed.find('.') {
             let token = &trimmed[..=dot_pos];
             if token.len() <= 12 && !token.is_empty() {
-                // Check left X is consistent across speaker rows.
-                if let Some(first_glyph) = glyphs.get(row_idx) {
-                    match leftmost_x {
-                        None => leftmost_x = Some(first_glyph.x),
-                        Some(prev_x) => {
-                            if (prev_x - first_glyph.x).abs() < 2.0 {
-                                speaker_row_count += 1;
-                            }
-                        },
-                    }
+                let first_glyph = &row_first_glyphs[row_idx];
+                match leftmost_x {
+                    None => leftmost_x = Some(first_glyph.x),
+                    Some(prev_x) => {
+                        if (prev_x - first_glyph.x).abs() < 2.0 {
+                            speaker_row_count += 1;
+                        }
+                    },
                 }
             }
         }
@@ -235,11 +233,18 @@ pub fn detect_narrow_tracked(glyphs: &[DetectorGlyph]) -> bool {
 /// detectors in priority order. Most-specific detectors fire first;
 /// regions that don't match any specific shape return `Default`.
 ///
-/// Caller-supplied `row_texts` is needed for the DramaticScript
-/// detector only; pass `&[]` if not available (DramaticScript will
-/// then never fire).
-pub fn classify_region(glyphs: &[DetectorGlyph], row_texts: &[&str]) -> ReadingOrderClass {
-    if detect_dramatic_script(glyphs, row_texts) {
+/// `glyphs` is the page's per-span geometry (used by Dense /
+/// Sub-Super / Narrow-Tracked). `row_first_glyphs` is parallel to
+/// `row_texts` and supplies the leftmost glyph of each row for the
+/// DramaticScript X-consistency check; pass `&[]` / `&[]` for both
+/// if row-level data is unavailable (DramaticScript will then
+/// never fire).
+pub fn classify_region(
+    glyphs: &[DetectorGlyph],
+    row_first_glyphs: &[DetectorGlyph],
+    row_texts: &[&str],
+) -> ReadingOrderClass {
+    if detect_dramatic_script(row_first_glyphs, row_texts) {
         return ReadingOrderClass::DramaticScript;
     }
     if detect_dense_single_line(glyphs) {
@@ -272,7 +277,8 @@ mod tests {
     fn dramatic_script_fires_on_macbeth_shape() {
         // 4 speaker rows, all starting at left X=50, with the
         // `First Witch.` / `Sec. Witch.` / etc. pattern.
-        let glyphs = vec![
+        // `row_first_glyphs[i]` is the leftmost glyph of `rows[i]`.
+        let row_first_glyphs = vec![
             glyph(50.0, 100.0, 5.0, 10.0),
             glyph(50.0, 90.0, 5.0, 10.0),
             glyph(50.0, 80.0, 5.0, 10.0),
@@ -284,23 +290,30 @@ mod tests {
             "Third Witch.    Demand.",
             "All.            We'll answer.",
         ];
-        assert!(detect_dramatic_script(&glyphs, &rows));
-        assert_eq!(classify_region(&glyphs, &rows), ReadingOrderClass::DramaticScript,);
+        assert!(detect_dramatic_script(&row_first_glyphs, &rows));
+        // For classify_region the per-glyph signal (Dense / SubSuper /
+        // NarrowTracked) is fed by the full-page glyph list; reuse
+        // row_first_glyphs as both here since the synthetic shape
+        // doesn't exercise those.
+        assert_eq!(
+            classify_region(&row_first_glyphs, &row_first_glyphs, &rows),
+            ReadingOrderClass::DramaticScript,
+        );
     }
 
     #[test]
     fn dramatic_script_skips_prose() {
-        let glyphs = vec![
+        let row_first_glyphs = vec![
             glyph(50.0, 100.0, 5.0, 10.0),
-            glyph(60.0, 100.0, 5.0, 10.0),
-            glyph(70.0, 100.0, 5.0, 10.0),
+            glyph(50.0, 90.0, 5.0, 10.0),
+            glyph(50.0, 80.0, 5.0, 10.0),
         ];
         let rows = vec![
             "The first paragraph of a novel begins here.",
             "And continues with more text.",
             "This is plain prose, no speaker tags.",
         ];
-        assert!(!detect_dramatic_script(&glyphs, &rows));
+        assert!(!detect_dramatic_script(&row_first_glyphs, &rows));
     }
 
     #[test]
@@ -382,6 +395,6 @@ mod tests {
     #[test]
     fn classify_default_when_no_pattern_matches() {
         let glyphs = vec![glyph(50.0, 100.0, 5.0, 10.0), glyph(56.0, 100.0, 5.0, 10.0)];
-        assert_eq!(classify_region(&glyphs, &[]), ReadingOrderClass::Default,);
+        assert_eq!(classify_region(&glyphs, &[], &[]), ReadingOrderClass::Default,);
     }
 }

@@ -80,6 +80,23 @@ fn effective_max_operators() -> usize {
 /// remaining data is likely junk, not a parseable content stream.
 const MAX_CONSECUTIVE_ERRORS: usize = 1024;
 
+/// Emit the operator-cap-exceeded warning at the actual *effective* cap
+/// (which may have been overridden via `set_max_ops_per_stream`). PDF
+/// Spec Annex C documents implementation limits; the cap exists to
+/// bound parser cost on adversarial inputs.
+#[inline]
+fn push_operator_cap_warning() {
+    let cap = effective_max_operators();
+    let msg = format!("Content stream exceeded {cap} operators, truncating");
+    log::warn!("{msg}");
+    crate::extractors::warnings::push_global_warning(crate::extractors::warnings::Warning {
+        category: crate::extractors::warnings::WarningCategory::OperatorCapExceeded,
+        page: None,
+        message: msg,
+        spec_section: Some("Annex C"),
+    });
+}
+
 /// Parse a content stream into a sequence of operators.
 ///
 /// Content streams use postfix notation where operands precede the operator.
@@ -113,23 +130,7 @@ pub fn parse_content_stream(data: &[u8]) -> Result<Vec<Operator>> {
                 consecutive_errors = 0;
 
                 if operators.len() >= effective_max_operators() {
-                    log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
-                    // structured-sink push.
-                    // PDF Spec Annex C documents implementation limits;
-                    // the MAX_OPERATORS cap exists to bound parser
-                    // cost on adversarial inputs (see ).
-                    crate::extractors::warnings::push_global_warning(
-                        crate::extractors::warnings::Warning {
-                            category:
-                                crate::extractors::warnings::WarningCategory::OperatorCapExceeded,
-                            page: None,
-                            message: format!(
-                                "Content stream exceeded {} operators, truncating",
-                                MAX_OPERATORS
-                            ),
-                            spec_section: Some("Annex C"),
-                        },
-                    );
+                    push_operator_cap_warning();
                     break;
                 }
             },
@@ -189,22 +190,7 @@ pub fn parse_content_stream_paths_only(data: &[u8]) -> Result<Vec<Operator>> {
             break;
         }
         if operators.len() >= effective_max_operators() {
-            log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
-            // structured-sink push.
-            // PDF Spec Annex C documents implementation limits;
-            // the MAX_OPERATORS cap exists to bound parser
-            // cost on adversarial inputs (see ).
-            crate::extractors::warnings::push_global_warning(
-                crate::extractors::warnings::Warning {
-                    category: crate::extractors::warnings::WarningCategory::OperatorCapExceeded,
-                    page: None,
-                    message: format!(
-                        "Content stream exceeded {} operators, truncating",
-                        MAX_OPERATORS
-                    ),
-                    spec_section: Some("Annex C"),
-                },
-            );
+            push_operator_cap_warning();
             break;
         }
 
@@ -504,22 +490,7 @@ pub fn parse_content_stream_text_only(data: &[u8]) -> Result<Vec<Operator>> {
         }
 
         if operators.len() >= effective_max_operators() {
-            log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
-            // structured-sink push.
-            // PDF Spec Annex C documents implementation limits;
-            // the MAX_OPERATORS cap exists to bound parser
-            // cost on adversarial inputs (see ).
-            crate::extractors::warnings::push_global_warning(
-                crate::extractors::warnings::Warning {
-                    category: crate::extractors::warnings::WarningCategory::OperatorCapExceeded,
-                    page: None,
-                    message: format!(
-                        "Content stream exceeded {} operators, truncating",
-                        MAX_OPERATORS
-                    ),
-                    spec_section: Some("Annex C"),
-                },
-            );
+            push_operator_cap_warning();
             break;
         }
 
@@ -1342,22 +1313,7 @@ where
         }
 
         if op_count >= effective_max_operators() {
-            log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
-            // structured-sink push.
-            // PDF Spec Annex C documents implementation limits;
-            // the MAX_OPERATORS cap exists to bound parser
-            // cost on adversarial inputs (see ).
-            crate::extractors::warnings::push_global_warning(
-                crate::extractors::warnings::Warning {
-                    category: crate::extractors::warnings::WarningCategory::OperatorCapExceeded,
-                    page: None,
-                    message: format!(
-                        "Content stream exceeded {} operators, truncating",
-                        MAX_OPERATORS
-                    ),
-                    spec_section: Some("Annex C"),
-                },
-            );
+            push_operator_cap_warning();
             break;
         }
 

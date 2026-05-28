@@ -236,7 +236,8 @@ fn extract_text_ocr_only_companion_present() {
         "extract_text_ocr_only companion method must be defined",
     );
     assert!(
-        source.contains("OCR-always contract") || source.contains("invoked unconditionally"),
+        source.contains("always invokes the engine")
+            || source.contains("regardless of whether the page has a native text layer"),
         "method must document the OCR-always (no text-layer peek) contract",
     );
 }
@@ -517,7 +518,7 @@ fn dense_single_line_detector_fires_on_bimodal_x() {
         detect_dense_single_line(&glyphs),
         "single-Y cluster with bimodal X must trigger DenseSingleLine",
     );
-    assert_eq!(classify_region(&glyphs, &[]), ReadingOrderClass::DenseSingleLine);
+    assert_eq!(classify_region(&glyphs, &[], &[]), ReadingOrderClass::DenseSingleLine);
 }
 
 /// #561 — SubSuperBaselineReattach detector fires on chemical-
@@ -564,7 +565,7 @@ fn sub_super_detector_fires_on_baseline_offset() {
         },
     ];
     assert!(detect_sub_super_glyphs(&glyphs));
-    assert_eq!(classify_region(&glyphs, &[]), ReadingOrderClass::SubSuperBaselineReattach,);
+    assert_eq!(classify_region(&glyphs, &[], &[]), ReadingOrderClass::SubSuperBaselineReattach,);
 }
 
 /// #565 — NarrowTrackedJustified detector fires on stretched
@@ -585,7 +586,7 @@ fn narrow_tracked_detector_fires_on_stretched_spacing() {
         });
     }
     assert!(detect_narrow_tracked(&glyphs));
-    assert_eq!(classify_region(&glyphs, &[]), ReadingOrderClass::NarrowTrackedJustified,);
+    assert_eq!(classify_region(&glyphs, &[], &[]), ReadingOrderClass::NarrowTrackedJustified,);
 }
 
 /// #576 — DramaticScript detector fires on Macbeth-style speaker-
@@ -629,8 +630,12 @@ fn dramatic_script_detector_fires_on_speaker_tags() {
         "Third Witch.    Demand.",
         "All.            We'll answer.",
     ];
+    // `glyphs[i]` is the leftmost glyph of `rows[i]` — that's the
+    // detector contract. We reuse the same array as both the
+    // full-page glyph list and the per-row first-glyph list since
+    // the synthetic shape has exactly one glyph per row.
     assert!(detect_dramatic_script(&glyphs, &rows));
-    assert_eq!(classify_region(&glyphs, &rows), ReadingOrderClass::DramaticScript);
+    assert_eq!(classify_region(&glyphs, &glyphs, &rows), ReadingOrderClass::DramaticScript);
 }
 
 /// #549 + #556 — uniform body text (the default case) classifies as
@@ -657,7 +662,7 @@ fn default_layout_falls_through_to_default_class() {
             text_len: 1,
         },
     ];
-    assert_eq!(classify_region(&glyphs, &[]), ReadingOrderClass::Default);
+    assert_eq!(classify_region(&glyphs, &[], &[]), ReadingOrderClass::Default);
 }
 
 // ===========================================================================
@@ -748,15 +753,19 @@ fn global_warning_sink_wired_into_log_warn_sites() {
     let content_src = include_str!("../src/content/parser.rs");
     assert!(
         content_src.contains("OperatorCapExceeded"),
-        "src/content/parser.rs op-cap sites must push to global sink",
+        "src/content/parser.rs op-cap site must push to global sink",
     );
-    // All 4 op-cap sites must be wired (search for the category in
-    // multiple distinct positions).
-    let cap_pushes = content_src.matches("OperatorCapExceeded").count();
+    // The 4 op-cap call sites are now wired through the shared
+    // `push_operator_cap_warning()` helper (refactored 2026-05-28 to
+    // close PR #601 finding #2/#11 — eliminate the
+    // exceeded-N-operators message divergence when the cap is
+    // overridden). Verify the helper exists and is invoked at least
+    // 4× across the module.
+    let helper_calls = content_src.matches("push_operator_cap_warning()").count();
     assert!(
-        cap_pushes >= 4,
-        "all 4 content-parser op-cap sites must push (found {})",
-        cap_pushes,
+        helper_calls >= 4,
+        "all 4 content-parser op-cap sites must call push_operator_cap_warning() (found {})",
+        helper_calls,
     );
 }
 
