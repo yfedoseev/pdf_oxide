@@ -2,7 +2,7 @@
 
 All notable changes to PDFOxide are documented here.
 
-## [0.3.56] - 2026-05-27
+## [0.3.56] - 2026-05-28
 
 > Text-extraction fidelity sweep — XY-cut routing, typed extraction status, OCR API repair, Persian font support, encryption authentication enforcement
 
