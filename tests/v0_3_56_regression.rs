@@ -236,8 +236,7 @@ fn extract_text_ocr_only_companion_present() {
         "extract_text_ocr_only companion method must be defined",
     );
     assert!(
-        source.contains("OCR-always contract")
-            || source.contains("invoked unconditionally"),
+        source.contains("OCR-always contract") || source.contains("invoked unconditionally"),
         "method must document the OCR-always (no text-layer peek) contract",
     );
 }
@@ -721,10 +720,7 @@ fn descendant_fonts_inline_dict_accepted() {
         source.contains("Inline-dict path") || source.contains("inline the CIDFont dict"),
         "DescendantFonts parse must explicitly handle the inline-dict case",
     );
-    assert!(
-        source.contains("DescendantFonts"),
-        "DescendantFonts parse path must be present",
-    );
+    assert!(source.contains("DescendantFonts"), "DescendantFonts parse path must be present",);
 }
 
 /// #558 second half — global warning sink wired into five
@@ -1432,7 +1428,11 @@ fn font_transition_with_small_positive_gap_inserts_space() {
     let bytes = build_pdf_two_fonts(content);
     let doc =
         pdf_oxide::document::PdfDocument::from_bytes(bytes).expect("synthetic PDF must parse");
-    let text = doc.extract_text(0).expect("extract_text").trim().to_string();
+    let text = doc
+        .extract_text(0)
+        .expect("extract_text")
+        .trim()
+        .to_string();
 
     // Should contain "submitted to" with a single space between the
     // two cross-font tokens. Without the font-transition arm the

@@ -926,11 +926,7 @@ impl XYCutStrategy {
     /// The Prose-classifier gate keeps tables out: table rows have
     /// their largest gap at variable X across rows (different cell
     /// widths), so the gap-position cluster never dominates.
-    fn detect_narrow_gutter_prose(
-        &self,
-        all_spans: &[TextSpan],
-        indices: &[usize],
-    ) -> Option<f32> {
+    fn detect_narrow_gutter_prose(&self, all_spans: &[TextSpan], indices: &[usize]) -> Option<f32> {
         if indices.len() < 24 {
             return None;
         }
@@ -2545,7 +2541,14 @@ mod tests {
         for i in 0..14 {
             let y = 600.0 - (i as f32) * 14.0;
             let left_words = [
-                "Dwarf", "spheroidal", "galaxies", "of", "the", "Local", "Group", "are",
+                "Dwarf",
+                "spheroidal",
+                "galaxies",
+                "of",
+                "the",
+                "Local",
+                "Group",
+                "are",
             ];
             let mut x = 40.0;
             for w in left_words {
@@ -2553,8 +2556,14 @@ mod tests {
                 x += (w.chars().count() as f32 * 5.4) + 2.5; // word + small space
             }
             let right_words = [
-                "The", "Schwarzschild", "modeling", "technique", "offers", "another",
-                "approach", "to",
+                "The",
+                "Schwarzschild",
+                "modeling",
+                "technique",
+                "offers",
+                "another",
+                "approach",
+                "to",
             ];
             let mut x = 305.0;
             for w in right_words {
@@ -2615,8 +2624,21 @@ mod tests {
         for i in 0..14 {
             let y = 600.0 - (i as f32) * 14.0;
             let words = [
-                "This", "is", "an", "ordinary", "single", "column", "body", "paragraph",
-                "with", "no", "interior", "gutter", "or", "wide", "gap",
+                "This",
+                "is",
+                "an",
+                "ordinary",
+                "single",
+                "column",
+                "body",
+                "paragraph",
+                "with",
+                "no",
+                "interior",
+                "gutter",
+                "or",
+                "wide",
+                "gap",
             ];
             let mut x = 40.0;
             for w in words {
@@ -2639,7 +2661,10 @@ mod tests {
         // Count groups that contain at least one body span (x < 100):
         let body_groups = groups
             .iter()
-            .filter(|g| g.iter().any(|s| s.bbox.left() < 100.0 && s.text != "Figure"))
+            .filter(|g| {
+                g.iter()
+                    .any(|s| s.bbox.left() < 100.0 && s.text != "Figure")
+            })
             .count();
         assert!(
             body_groups <= 1,

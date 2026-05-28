@@ -769,10 +769,7 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
                             let before_ok = j == 0 || data[j - 1].is_ascii_whitespace();
                             let after_ok = j + 2 >= len
                                 || data[j + 2].is_ascii_whitespace()
-                                || matches!(
-                                    data[j + 2],
-                                    b'(' | b'<' | b'[' | b'/' | b'%'
-                                );
+                                || matches!(data[j + 2], b'(' | b'<' | b'[' | b'/' | b'%');
                             if before_ok && after_ok {
                                 j += 2;
                                 break;

@@ -2,37 +2,63 @@
 
 All notable changes to PDFOxide are documented here.
 
-## [0.3.56] - 2026-05-26
+## [0.3.56] - 2026-05-27
 
 > Text-extraction fidelity sweep — XY-cut routing, typed extraction status, OCR API repair, Persian font support, encryption authentication enforcement
 
 ### Added
 
-(Populated during Phase 1–9 implementation. See
-`docs/releases/plans/v0.3.56/api-design.md` and the
-per-cluster docs.)
+- **`ExtractionSignal` enum + `Warning` / `WarningSink` types** (`src/extractors/status.rs`, `src/extractors/warnings.rs`) — typed signal surface so callers can distinguish "no text" from "extraction failure" (`Ok` / `Truncated{at_op}` / `NoTextLayer` / `UnmappedGlyphs{count}` / `OcrUnavailable{reason}` / `PasswordRequired` / `Multiple`). Foundation for `flatten_warnings()` and per-call status accessors.
+- **`PdfPermissions` accessor** (`src/encryption/permissions.rs`) — decodes `/P` flags per PDF spec §7.6.3.2 Table 22; surfaces `print`, `modify`, `copy`, `annotate`, `form_fill`, `extract_for_accessibility`, `assemble`, `print_high_quality`. Closes #562 API gap.
+- **`PdfDocument::has_text_layer(page) -> Result<bool>`** — predicate wrapping `page_cannot_have_text` + `may_contain_text` so callers know whether to fall back to OCR. Closes #563.
+- **`PdfDocument::extract_text_ocr_only(page, engine, options)`** — additive companion that always invokes OCR (no text-layer peek). Closes #574.
+- **`set_max_ops_per_stream(Option<usize>)`** (`src/content/parser.rs`) — global `AtomicUsize` override for the 1,000,000-operator cap; all 6 runtime check-sites gated through `effective_max_operators()`. Closes #559.
+- **`set_preserve_unmapped_glyphs(bool)`** (`src/extractors/text.rs`) — global atomic + 8 filter-site gating so U+FFFD glyphs from glyph-name-only fonts (MSAM10, dingbats) can be preserved for downstream repair. Closes #571.
+- **`assemble_text_via_reading_order(spans)`** helper + Python wrappers + 4 per-class detectors (`DenseSingleLine`, `SubSuperBaselineReattach`, `NarrowTrackedJustified`, `DramaticScript`) in `src/pipeline/reading_order/detectors.rs`. Closes #549, #556, #561, #565, #568, #576.
+- **`ExtractionProfile::TJ_HEAVY`** (`src/config/extraction_profiles.rs`) — opt-in profile for TJ-kerned word-boundary recovery (threshold -100 vs CONSERVATIVE -120). Closes #564.
+- **Adobe-Persian-1 / Adobe-Arabic-1 stub CMaps** (`src/fonts/cid_mappings/adobe_arabic.rs`) + DescendantFonts inline-dict parse path in `src/fonts/font_dict.rs`. Closes #566.
+- **`PyPageCount` dual-shape** — Python `doc.page_count` works as both attribute and method (`__call__` + `__index__`) so `range(doc.page_count)` works again post-v0.3.54 regression. Closes #550.
+- **`flatten_warnings()` accessor** wired into `PdfDocument` via 5 `log::warn!` migration sites. Closes #558 (second half).
 
 ### Changed
 
-(Populated during Phase 2 / Phase 8 implementation.
-See `docs/releases/plans/v0.3.56/cluster-reading-order.md`
-and `cluster-security-policy.md`.)
+- **`extract_text` / `extract_text_auto` / `extract_page_auto` no longer panic** when ONNX Runtime fails to dlopen — `std::panic::catch_unwind` around the full `ort::Session::builder()` chain converts the dylib-load panic to a typed `OcrError::ModelLoadError`. Closes #569, #573.
+- **`extract_text_ocr` honours its contract** — was previously a passthrough that returned the empty text layer of scanned PDFs; now invokes the supplied engine when `text_layer_empty` is true. Closes #574.
+- **`get_form_fields` walks parent fields with `/T` even without `/FT`** — matches pypdf's traversal of IRS AcroForm logical-group dictionaries (~15-30% of checkbox `/Off` values were silently dropped). Closes #570.
+- **Default Python logger no longer captures `pdf_oxide.{parser,content,fonts,document}` WARN records** — `_setup_default_log_levels` raises those four high-frequency targets to `ERROR` at module import; users opt in via `setup_logging(level="WARNING")`. Closes #558 (first half).
+- **Span-boundary spacing tightened** — bucket-1/2/3/4 fixes: span `bbox.x` matches first char after TJ word boundary; font-transition with small positive gap inserts a space; super/sub digit runs substituted to U+2070–2089/U+00B2/B3/B9; spacing diacritics (U+00B4, U+0060) folded into following base letter via NFC.
+- **`merge_adjacent_spans` joins same-font multi-char small-caps / drop-cap runs** so "SUBTITLE A—OFFICE OF THE" is no longer split mid-word; bench small-caps clusters now read cleanly. Closes #555 root-cause path; complements #560.
+- **Super/subscript glyphs snap onto base baseline pre-sort** so arxiv affiliation markers ("name¹,²") stay inline with the author run instead of being lifted into a stray top-of-page band. Improves bench by lifting 6 papers in the py-pdf 14-PDF set.
+- **AcroForm widget text-capacity bound** — `truncate_to_widget_capacity` caps `/V` to `0.0175 * w * h + 64` chars so scrollable fields with embedded Lorem-ipsum (pdfbox AcroFormsBasicFields) no longer dump 90 KB of phantom text per widget.
+- **Forward-scan CTM tracker skips inline image data (BI…EI)** so the marker bytes inside JPX/JBIG2 streams stop being parsed as text operators (2201.00151 p2: 758 of 789 garbage spans → 0).
+- **XY-cut `find_horizontal_split_indexed` rejects sliver sub-splits** (`MIN_RESULT_WIDTH_PT = 60.0 pt`) so 8 pt monospaced columns no longer fragment into 48 pt strips.
+- **Narrow-gutter prose detector** (`detect_narrow_gutter_prose`) uses gap-position clustering to recover 2-column body text where the legacy detector saw outlier singleton clusters and bailed — fixes arXiv 2201.00151-class column interleave. Bench: py-pdf 14-PDF mean 89.4% → **90.2%**.
 
 ### Fixed
 
-(Closes #549, #550, #551, #552, #555, #556, #558, #559,
-#560, #561, #562, #563, #564, #565, #566, #568, #569,
-#570, #571, #573, #574, #576. Per-issue summaries
-populated during cluster implementation. See
-`docs/releases/plans/v0.3.56/README.md` for the cluster
-mapping.)
+- **#549** — `extract_text` and `to_plain_text` now route through XY-cut on multi-column / dramatic-script layouts (parity with `to_markdown_all`). Largest single bench improvement of the cycle.
+- **#551** — Latin ligatures (fi/fl/ff/ffi) preserved at `should_insert_space` threshold + post-processing repair pass for the merged-cluster cases not visible at extractor time.
+- **#552** — Combining diacritics (`´`, `` ` ``, `^`, etc.) NFC-composed into the following base letter at `apply_combining_mark_composition` instead of being emitted as a separate token before the letter.
+- **#555** — Missing space at run/font boundary repaired at `should_insert_space` (root-cause) + `repair_run_boundary_space` (post-processing for case-change boundaries like `theEditor`).
+- **#556** — Figure-region math glyphs (subscripts/superscripts) no longer interleave captions; same reading-order plumbing as #549.
+- **#558** — `SPEC VIOLATION` / xref-reconstruction / font-warn log noise gated behind opt-in `setup_logging()`; structured `flatten_warnings()` accessor available for programmatic consumers.
+- **#560** — Monospace code blocks no longer emit intra-token whitespace at every glyph boundary; `is_monospace_font` helper bumps the space-insertion threshold from 0.5× to 1.2× space-width.
+- **#561** — Subscript/superscript glyphs no longer reordered into wrong inline position; `SubSuperBaselineReattach` detector + pre-sort baseline snap.
+- **#562** — `password_protected.pdf` and `copy_protected.pdf` no longer extract text without authentication; `permissions()` accessor + existing `require_authenticated()` guard verified end-to-end.
+- **#563** — Image-only / rasterized PDFs surface `has_text_layer() == false` so callers can dispatch to OCR instead of receiving silent empty strings.
+- **#564** — Word boundaries no longer lost on TJ-kerned text; opt-in `ExtractionProfile::TJ_HEAVY` calibration.
+- **#565** — Narrow-tracked / justified column intra-word spaces eliminated via per-line median-gap normalisation in `NarrowTrackedJustified` detector.
+- **#566** — Persian/Farsi Type0 fonts (NazaninNormal, YagutBold) without bundled CMap now resolve via Adobe-Persian-1 / Adobe-Arabic-1 stub lookup; DescendantFonts inline-dict parse path accepted.
+- **#568** — Dense 8 pt body lines no longer split into two interleaved character streams; `DenseSingleLine` detector + min-result-width filter.
+- **#576** — Dramatic-script layouts (centered speaker tags + indented dialogue) read in performance order; `DramaticScript` detector.
+
+### Security
+
+- **#562** — Verified no text extraction path bypasses authentication on encrypted PDFs. `EncryptionHandler::raw_permissions()` accessor for cross-binding `/P` consumption; spec-aligned audit at `docs/releases/issues/password-bypass-audit.md`.
 
 ### Deprecated
 
-- `PdfDocument.page_count()` method-call form (Python
-  binding) — supported but deprecated; use
-  `doc.page_count` attribute form instead. Removal
-  scheduled for v0.4.0 (#414). Closes #550.
+- `PdfDocument.page_count()` method-call form (Python binding) — supported but deprecated; use `doc.page_count` attribute form instead. Removal scheduled for v0.4.0 (#414). Closes #550.
 
 ## [0.3.55] - 2026-05-25
 

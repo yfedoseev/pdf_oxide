@@ -6781,10 +6781,7 @@ impl PdfDocument {
                                 // target what would be visible on the
                                 // page. Truncate keeps the rendered
                                 // portion and drops the overflow.
-                                Some(Self::truncate_to_widget_capacity(
-                                    v.trim().to_string(),
-                                    &rect,
-                                ))
+                                Some(Self::truncate_to_widget_capacity(v.trim().to_string(), &rect))
                             },
                             _ => {
                                 // Fallback: try AP stream text. Truncate
@@ -8434,7 +8431,9 @@ impl PdfDocument {
             let mut iter = span.text.chars();
             let Some(d) = iter.next() else { continue };
             let Some(base) = iter.next() else { continue };
-            let Some(combining) = combining_for(d) else { continue };
+            let Some(combining) = combining_for(d) else {
+                continue;
+            };
             if !base.is_alphabetic() {
                 continue;
             }
@@ -8595,11 +8594,7 @@ impl PdfDocument {
             if !raised && !lowered {
                 continue;
             }
-            let map: fn(char) -> Option<char> = if raised {
-                super_for_char
-            } else {
-                sub_for_char
-            };
+            let map: fn(char) -> Option<char> = if raised { super_for_char } else { sub_for_char };
             if spans[i].text.is_empty() || !spans[i].text.chars().all(|c| map(c).is_some()) {
                 continue;
             }
@@ -8661,7 +8656,11 @@ impl PdfDocument {
             // under the body letter's bounding box).
             let dx_left = curr_x - s_right;
             if s_right < curr_right && dx_left <= max_em && dx_left >= -max_em * 0.5 {
-                if s.text.chars().next_back().is_some_and(|c| c.is_alphabetic()) {
+                if s.text
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphabetic())
+                {
                     has_left = true;
                 }
             }
@@ -9010,10 +9009,7 @@ impl PdfDocument {
         }
 
         // Bin line-start X positions.
-        let xmin = lines
-            .iter()
-            .map(|(_, x)| *x)
-            .fold(f32::INFINITY, f32::min);
+        let xmin = lines.iter().map(|(_, x)| *x).fold(f32::INFINITY, f32::min);
         let xmax = lines
             .iter()
             .map(|(_, x)| *x)
