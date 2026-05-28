@@ -166,7 +166,7 @@ encoding_rs = "0.8"                               # Shift-JIS, EUC-JP, and other
 # inline formatter (Phase LAYOUT-3) and the markdown converter's RTL
 # emphasis cleanup (#377 D7).
 unicode-bidi = { version = "0.3", default-features = false }
-unicode-normalization = "0.1" # NFC composition of overlapping combining marks emitted as separate glyph runs (e.g. "´" + "E" → "É")
+unicode-normalization = "0.1"                                # NFC composition of overlapping combining marks emitted as separate glyph runs (e.g. "´" + "E" → "É")
 
 # Image processing
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"] }
