@@ -3,11 +3,11 @@
 //!
 //! Re-exported from `crate::extractors::OcrUnavailableReason`.
 //!
-//! A wider `ExtractionSignal` enum was prototyped in v0.3.56 to back
-//! per-call `*_status` companion accessors, but the accessors never
-//! shipped. The speculative enum was removed per PR review #601 —
-//! `OcrUnavailableReason` is the only part of this module with a
-//! production consumer (`Error::OcrUnavailable { reason }`).
+//! `OcrUnavailableReason` is the only production-consumed type in
+//! this module (used as the payload of `Error::OcrUnavailable`).
+//! A broader `ExtractionSignal` enum was prototyped to back per-call
+//! `*_status` companion accessors; those accessors never shipped and
+//! the speculative enum was removed.
 
 #![forbid(unsafe_code)]
 

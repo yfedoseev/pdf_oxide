@@ -96,7 +96,7 @@ _setup_ort_dylib_path()
 
 def _setup_default_log_levels() -> None:
     """Quiet stderr-spam from internal pdf_oxide warnings under default
-    Python logging config (#558).
+    Python logging config.
 
     pdf_oxide routes every internal ``log::warn!`` through the ``pyo3_log``
     bridge, which forwards records to Python's ``logging`` module. Python's
@@ -106,10 +106,10 @@ def _setup_default_log_levels() -> None:
     ``Type0 font 'X' has no ToUnicode entry!``, etc. — observed at ~150
     lines per PDF in `pdfa_001.pdf`.
 
-    v0.3.56 attaches a ``NullHandler`` to each of the four highest-
-    frequency internal targets and disables propagation, so records
-    stop at the pdf_oxide logger boundary instead of bubbling up to
-    the root logger's default stderr handler.
+    This function attaches a ``NullHandler`` to each of the four
+    highest-frequency internal targets and disables propagation, so
+    records stop at the pdf_oxide logger boundary instead of bubbling
+    up to the root logger's default stderr handler.
 
     This is the standard Python library convention (see PEP 282 + the
     ``logging`` HOWTO): a library never owns the user's logger level
@@ -122,9 +122,9 @@ def _setup_default_log_levels() -> None:
     - Use ``logging.getLogger("pdf_oxide.parser").propagate = True``
       to re-enable bubbling for a single category, OR add a handler
       to that logger directly.
-    - Use ``doc.structured_warnings()`` (v0.3.56) to receive the
-      warnings as structured ``Warning`` dicts (category, page,
-      message, spec_section) instead of stderr text.
+    - Use ``doc.structured_warnings()`` to receive the warnings as
+      structured ``Warning`` dicts (category, page, message,
+      spec_section) instead of stderr text.
       (``doc.flatten_warnings()`` is the pre-existing form-flattening
       surface returning ``list[str]`` — different feature.)
 

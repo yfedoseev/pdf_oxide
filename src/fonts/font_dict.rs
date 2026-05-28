@@ -1512,8 +1512,8 @@ impl FontInfo {
     /// # Example /W array
     /// ```pdf
     /// /W [
-    ///   1 [500 600 700]     % CID 1=500, CID 2=600, CID 3=700
-    ///   100 200 300         % CIDs 100-200 all have width 300
+    ///   1 [500 600 700] % CID 1=500, CID 2=600, CID 3=700
+    ///   100 200 300 % CIDs 100-200 all have width 300
     /// ]
     /// ```
     fn parse_cid_widths(
@@ -2561,9 +2561,9 @@ impl FontInfo {
         //
         // Per §9.10.2: if a ToUnicode CMap is PRESENT it is the authoritative source.
         // For composite (Type0) fonts a present-but-incomplete ToUnicode means the
-        // unmapped codes genuinely have no Unicode equivalent.  Falling through to the
+        // unmapped codes genuinely have no Unicode equivalent. Falling through to the
         // predefined-CMap path (Priority 3 §9.10.2) for Type0 would guess wrong CJK
-        // characters and score near zero versus ground truth.  Therefore:
+        // characters and score near zero versus ground truth. Therefore:
         //
         //   • ToUnicode hit → return the mapped string (or U+FFFD if it maps to FFFD
         //     or a bare C0 control character).
@@ -2579,7 +2579,7 @@ impl FontInfo {
 
                 // For Identity-encoded fonts, a U+FFFD result coming from a notdefrange
                 // entry is NOT a definitive mapping — the CID-as-Unicode path gives the
-                // correct character (CID == Unicode codepoint).  Treat it as a CMap miss
+                // correct character (CID == Unicode codepoint). Treat it as a CMap miss
                 // so we fall through to the Identity fallback below.
                 let effective_hit = raw_unicode
                     .filter(|u| *u != "\u{FFFD}" || !matches!(self.encoding, Encoding::Identity));
@@ -2588,7 +2588,7 @@ impl FontInfo {
                     // Fix B: filter bare C0 control characters (U+0000–U+001F except
                     // tab/LF/CR which are legitimate whitespace in extracted text).
                     // These are never valid visible text and typically indicate a
-                    // broken ToUnicode entry.  Return U+FFFD and do NOT fall through
+                    // broken ToUnicode entry. Return U+FFFD and do NOT fall through
                     // even for simple fonts — the CMap explicitly mapped this code.
                     let is_c0_control = unicode
                         .chars()
@@ -2624,7 +2624,7 @@ impl FontInfo {
                     }
 
                     // Fix A (§9.10.2): for composite (Type0) fonts a present ToUnicode
-                    // CMap is the authoritative mapping.  A miss means the glyph has no
+                    // CMap is the authoritative mapping. A miss means the glyph has no
                     // Unicode equivalent — do NOT fall through to the predefined-CMap
                     // path which would produce plausible-looking but wrong CJK chars.
                     // Exception: Identity-encoded fonts map CID directly to Unicode, so
@@ -2794,15 +2794,15 @@ impl FontInfo {
         //
         //   (a) Byte-encoding CMaps (GBpc-EUC-H, GB-EUC-H, B5pc-H, EUC-H, KSC-EUC-H,
         //       etc.): the value in the content stream is a raw multi-byte code in a
-        //       legacy encoding (GBK, EUC-CN, Big5, EUC-JP, EUC-KR).  §9.10.2 says to
+        //       legacy encoding (GBK, EUC-CN, Big5, EUC-JP, EUC-KR). §9.10.2 says to
         //       map char code → CID first, but those encoding CMap tables are not
-        //       embedded here.  Decoding the raw bytes directly with encoding_rs is
+        //       embedded here. Decoding the raw bytes directly with encoding_rs is
         //       equivalent (same Unicode output) and is permitted by the spec's fallback
         //       clause: "there is no way to determine … a conforming reader may choose a
         //       character code of their choosing."
         //
         //   (b) Identity / UCS2 CMaps (Identity-H, UniGB-UCS2-H, etc.): the value in
-        //       the content stream IS (or approximates) a CID.  Use the Adobe-XX CID →
+        //       the content stream IS (or approximates) a CID. Use the Adobe-XX CID →
         //       Unicode table directly (§9.10.2 step b).
         //
         // `decode_cjk_raw_charcode` returns None for non-byte-encoding CMaps, so
@@ -2816,7 +2816,7 @@ impl FontInfo {
 
             // Step (a): try direct byte decode for legacy CJK byte-encoding CMaps.
             // This is the correct primary path for GBpc-EUC-H, GB-EUC-H, B5pc-H,
-            // EUC-H, KSC-EUC-H, etc.  Returns None for Identity/UCS2 CMaps, in
+            // EUC-H, KSC-EUC-H, etc. Returns None for Identity/UCS2 CMaps, in
             // which case we fall through to the CID lookup below.
             if let Some(result) =
                 decode_cjk_raw_charcode(char_code, &enc_name, &self.cid_system_info)
@@ -3032,7 +3032,7 @@ impl FontInfo {
                         }
 
                         // ==========================================================================
-                        // PRIORITY 3c (#535, v0.3.54): embedded post/charset glyph name → AGL+synth
+                        // PRIORITY 3c (#535,): embedded post/charset glyph name → AGL+synth
                         // ==========================================================================
                         // Per ISO 32000-1:2008 §9.10.2 fallback chain, consult the embedded font
                         // program's own glyph-name table when the TrueType `cmap` reverse lookup
@@ -3624,7 +3624,7 @@ pub(crate) fn glyph_name_to_unicode(glyph_name: &str) -> Option<char> {
         }
     }
 
-    // Priority 5 (#535 follow-up): delegate to the unified v0.3.54 fallback chain
+    // Priority 5 (#535 follow-up): delegate to the unified fallback chain
     // in `character_mapper::glyph_name_to_unicode`. The newer chain adds:
     //   - Variant-suffix stripping (`A.sc`, `bullet.alt`, `fi.001`) — common in
     //     subset fonts where producers append stylistic-variant tags.
@@ -3632,7 +3632,7 @@ pub(crate) fn glyph_name_to_unicode(glyph_name: &str) -> Option<char> {
     //     (4..6 hex, no surrogates, no control chars) validation.
     // This brings simple-font / Type1 / CFF / Differences-array callers (which
     // route through this `font_dict::glyph_name_to_unicode` entry) onto the
-    // same fallback chain as the v0.3.54 #535 Type0 Identity-H path. Inline-
+    // same fallback chain as the #535 Type0 Identity-H path. Inline-
     // image font streams (PDF spec §8.9.7) that resolve glyph names by this
     // path inherit the same behaviour transparently — no separate inline-image
     // codepath exists in this crate; inline images per spec carry only image
@@ -3680,7 +3680,7 @@ pub(crate) fn glyph_name_to_unicode_string(glyph_name: &str) -> Option<String> {
         }
     }
 
-    // Final fallback (#535 follow-up): unified v0.3.54 chain — variant-suffix
+    // Final fallback (#535 follow-up): unified chain — variant-suffix
     // stripping + strict uniXXXX / uXXXXX synth. Returns the full `String` shape
     // (multi-codepoint AGL entries are forwarded unchanged).
     super::character_mapper::glyph_name_to_unicode(glyph_name)
@@ -3717,8 +3717,8 @@ fn _old_glyph_name_to_unicode_removed() {
 ///
 /// ```ignore
 /// # use pdf_oxide::fonts::font_dict::is_ligature_char;
-/// assert_eq!(is_ligature_char('ﬁ'), true);  // U+FB01
-/// assert_eq!(is_ligature_char('ﬂ'), true);  // U+FB02
+/// assert_eq!(is_ligature_char('ﬁ'), true); // U+FB01
+/// assert_eq!(is_ligature_char('ﬂ'), true); // U+FB02
 /// assert_eq!(is_ligature_char('A'), false);
 /// ```ignore
 fn is_ligature_char(c: char) -> bool {
@@ -4459,7 +4459,7 @@ fn standard_encoding_lookup(encoding: &str, code: u8) -> Option<String> {
 /// For Type0 fonts using named CJK CMaps (e.g., "GBK-EUC-H", "GB-EUC-H",
 /// "ETen-B5-H", "EUC-H", "KSC-EUC-H"), the 2-byte value read from the content
 /// stream is NOT an Adobe CID — it is a raw multi-byte encoding value (GBK,
-/// EUC-CN, Big5, EUC-JP, or EUC-KR).  Adobe-GB1 CIDs cap at ~30 553, so
+/// EUC-CN, Big5, EUC-JP, or EUC-KR). Adobe-GB1 CIDs cap at ~30 553, so
 /// `lookup_predefined_cmap` always returns None for GBK values ≥ 0xA1A1,
 /// the caller falls through to a broken `char::from_u32` path that maps them
 /// to Korean Hangul (same code-point range).
@@ -4520,9 +4520,9 @@ fn decode_cjk_raw_charcode(
 // to avoid accidental wrap-around in future table expansions.
 //
 // Sources:
-//   Adobe-GB1-5    (TN #5079): 30,283 CIDs (0–30,283)
+//   Adobe-GB1-5 (TN #5079): 30,283 CIDs (0–30,283)
 //   Adobe-Japan1-7 (TN #5078): 23,059 CIDs (0–23,059)
-//   Adobe-CNS1-7   (TN #5080): 20,316 CIDs (0–20,316)
+//   Adobe-CNS1-7 (TN #5080): 20,316 CIDs (0–20,316)
 //   Adobe-Korea1-2 (TN #5093): 18,351 CIDs (0–18,351)
 const CID_MAX_GB1: u16 = 30_283;
 const CID_MAX_JAPAN1: u16 = 23_059;
@@ -6657,14 +6657,14 @@ mod tests {
     // =========================================================================
     // #535 follow-up — unified AGL fallback chain (v0.3.55)
     //
-    // The v0.3.54 #535 fix added a robust ToUnicode + embedded-cmap + AGL
+    // The #535 fix added a robust ToUnicode + embedded-cmap + AGL
     // fallback chain in `src/fonts/character_mapper.rs::glyph_name_to_unicode`,
     // but the original full-document Type0 / Identity-H call site at
     // `font_dict.rs::Font::char_code_to_unicode` was the only consumer. Simple
     // fonts, Type1 / CFF embedded encodings, and `/Differences` arrays still
     // routed through this `font_dict::glyph_name_to_unicode` entry, which
     // lacked the newer chain's variant-suffix stripping (`.alt`, `.sc`,
-    // `.001`). v0.3.55 delegates to the unified chain as a final fallback so
+    // `.001`). delegates to the unified chain as a final fallback so
     // all callers — including any future inline-image font-resolution path
     // (PDF spec §8.9.7) — share the same behaviour.
     //
@@ -6674,7 +6674,7 @@ mod tests {
     #[test]
     fn glyph_name_with_variant_suffix_resolves_via_unified_chain() {
         // Subset fonts append stylistic-variant tags (`.sc`, `.alt`, `.001`)
-        // to the canonical glyph name. The v0.3.54 chain strips the suffix
+        // to the canonical glyph name. The chain strips the suffix
         // returns the base codepoint; this entry now picks that up too.
         assert_eq!(glyph_name_to_unicode("A.sc"), Some('A'));
         assert_eq!(glyph_name_to_unicode("bullet.alt"), Some('\u{2022}'));
@@ -6983,7 +6983,7 @@ mod tests {
     #[test]
     fn test_char_to_unicode_tounicode_fffd_fallback() {
         // A ToUnicode mapping to U+FFFD means the font author explicitly declared
-        // "no Unicode equivalent" for this code.  Per Fix B (§9.10.2) the function
+        // "no Unicode equivalent" for this code. Per Fix B (§9.10.2) the function
         // must return U+FFFD and NOT fall through to the encoding-based path.
         let cmap_data = b"beginbfchar\n<0041> <FFFD>\nendbfchar";
         let font = make_font(|f| {
@@ -7882,7 +7882,7 @@ mod tests {
     }
 
     // ────────────────────────────────────────────────────────────────────────────
-    // Fix A / B / C tests  (§9.10.2 Priority-3 guard + control filter + OOB CID)
+    // Fix A / B / C tests (§9.10.2 Priority-3 guard + control filter + OOB CID)
     // ────────────────────────────────────────────────────────────────────────────
 
     /// Build a minimal ToUnicode CMap stream that maps codes 0x0041–0x005A
@@ -8011,11 +8011,11 @@ mod tests {
     ///
     /// A Type0 font with Adobe-GB1 ordering, a *non-Identity* predefined-CMap
     /// encoding (`UniGB-UCS2-H` → `Encoding::Standard`), and a ToUnicode CMap
-    /// covering only A–Z.  The Fix-A guard is deliberately scoped to
+    /// covering only A–Z. The Fix-A guard is deliberately scoped to
     /// non-Identity Type0 fonts (Identity fonts map CID→Unicode directly
     /// have a valid CMap-miss fallback), so the encoding here must be a real
     /// predefined CMap — not Identity-H — for this guard to apply in
-    /// production.  Querying code 0x0061 (not in the ToUnicode CMap) must
+    /// production. Querying code 0x0061 (not in the ToUnicode CMap) must
     /// return U+FFFD, NOT the CJK character the Priority-3 predefined CMap
     /// lookup would otherwise produce.
     #[test]
@@ -8029,7 +8029,7 @@ mod tests {
 
         // Code 0x0061 ('a') is NOT in the ToUnicode CMap (which only covers A–Z).
         // The Priority-3 predefined CMap for Adobe-GB1 would map CID 97 to some
-        // Latin character.  With Fix A, the function must return U+FFFD instead.
+        // Latin character. With Fix A, the function must return U+FFFD instead.
         let result = font.char_to_unicode(0x0061);
         assert_eq!(
             result,

@@ -143,7 +143,7 @@ impl PyPdfDocument {
     /// Get number of pages.
     ///
     /// works as both an attribute (the v0.3.6 shape)
-    /// AND as a method call (the v0.3.54 shape). Returns a `_PageCount`
+    /// AND as a method call (the shape). Returns a `_PageCount`
     /// wrapper that is callable (`doc.page_count()` returns the int),
     /// indexable (`range(doc.page_count)` works via `__index__`),
     /// comparable with ints (`doc.page_count == 5`). The method-call
@@ -408,8 +408,8 @@ impl PyPdfDocument {
     /// previews where the caller doesn't want to do DPI arithmetic.
     ///
     /// Args:
-    ///     page (int):   Zero-based page index.
-    ///     width (int):  Target box width in pixels (must be > 0).
+    ///     page (int): Zero-based page index.
+    ///     width (int): Target box width in pixels (must be > 0).
     ///     height (int): Target box height in pixels (must be > 0).
     ///     format (str, optional): "png" (default) or "jpeg".
     ///     background (tuple[float, float, float, float], optional):
@@ -2137,7 +2137,7 @@ impl PyPdfDocument {
     /// Named `structured_warnings` (not `flatten_warnings`) to avoid
     /// collision with the existing `DocumentEditor::flatten_warnings`
     /// accessor for form-flattening warnings; the Rust side was
-    /// renamed in v0.3.56 for the same reason.
+    /// renamed in for the same reason.
     fn structured_warnings(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let warnings = self.inner.structured_warnings();
         let list = pyo3::types::PyList::empty(py);
@@ -2682,11 +2682,10 @@ impl PyPdfDocument {
 /// Int-like callable wrapper returned by `PdfDocument.page_count` for
 /// backward-compatibility. Behaves as an int via `__int__` /
 /// `__index__` / comparison protocols. Also callable via `__call__` so
-/// the v0.3.54 method-call shape (`doc.page_count()`) still works.
+/// the method-call shape (`doc.page_count()`) still works.
 ///
 /// New code should use the attribute form (`doc.page_count`); the
-/// method-call form is deprecated and will be removed in v0.4.0
-/// (#414).
+/// method-call form is deprecated and will be removed in v0.4.0.
 #[pyclass(module = "pdf_oxide.pdf_oxide", name = "_PageCount")]
 pub struct PyPageCount {
     value: usize,
@@ -2706,7 +2705,7 @@ impl PyPageCount {
     }
 
     /// `range(doc.page_count)` works via the index protocol. This is
-    /// the v0.3.6 shape that broke in v0.3.54.
+    /// the v0.3.6 shape that broke in.
     fn __index__(&self) -> usize {
         self.value
     }
@@ -6828,7 +6827,7 @@ fn set_max_ops_per_stream(limit: Option<usize>) -> Option<usize> {
 /// Python wrapper: toggle the global U+FFFD
 /// preservation flag. When `True`, `extract_text` / `extract_words` /
 /// `extract_spans` emit U+FFFD chars for unmapped glyphs (matching
-/// `extract_chars` behaviour). When `False` (the v0.3.54 default),
+/// `extract_chars` behaviour). When `False` (the default),
 /// the high-level accessors filter them. Returns the previous value.
 #[pyfunction]
 fn set_preserve_unmapped_glyphs(preserve: bool) -> bool {
@@ -7671,7 +7670,7 @@ fn pdf_oxide(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "barcodes")]
     m.add_function(pyo3::wrap_pyfunction!(generate_qr_svg, m)?)?;
     m.add("VERSION", env!("CARGO_PKG_VERSION"))?;
-    // Cryptographic-provider surface (issue #236) — exposes the
+    // Cryptographic-provider surface — exposes the
     // FIPS-validated AwsLcProvider as a runtime opt-in. Functions
     // (not classes) so callers don't need to instantiate Rust types.
     m.add_function(pyo3::wrap_pyfunction!(crypto_active_provider, m)?)?;

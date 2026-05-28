@@ -302,7 +302,7 @@ impl EncryptDict {
             (4, _) => {
                 // V=4 means crypt-filter-based encryption. The actual algorithm
                 // is determined by /CFM in the /CF dictionary (PDF Spec Table 25):
-                //   "V2"    = RC4-128
+                //   "V2" = RC4-128
                 //   "AESV2" = AES-128
                 match self.stream_crypt_method.as_deref() {
                     Some("V2") => {
@@ -497,7 +497,7 @@ impl EncryptDictBuilder {
             Algorithm::Aes256 => (5, 6),
         };
 
-        // FIPS gate (Issue #236): the FIPS-validated `AwsLcProvider`
+        // FIPS gate: the FIPS-validated `AwsLcProvider`
         // refuses MD5 / RC4 entirely, so writing an R≤4 dict under it
         // would produce ciphertext that the same provider can't read
         // back. Reject up front with a clear error rather than letting

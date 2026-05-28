@@ -134,7 +134,7 @@ impl TextPostProcessor {
     /// ```
     /// use pdf_oxide::converters::text_post_processor::TextPostProcessor;
     ///
-    /// let input = "The  quick   brown  fox";
+    /// let input = "The quick brown fox";
     /// let output = TextPostProcessor::normalize_whitespace(input);
     /// assert_eq!(output, "The quick brown fox");
     /// ```
@@ -363,7 +363,7 @@ impl TextPostProcessor {
     /// sequence ("...") to produce cleaner text output. This handles common TOC
     /// formatting where sections are connected to page numbers by dot leaders:
     ///
-    /// Input:  "Section 1 ..................... 5"
+    /// Input: "Section 1 ..................... 5"
     /// Output: "Section 1 ... 5"
     ///
     /// # Examples
@@ -443,7 +443,7 @@ impl TextPostProcessor {
     ///
     /// Some PDF producers use hairspace (U+200A) or other typographic space
     /// variants (U+2000–U+200A, U+202F, U+205F) as word separators in justified
-    /// layouts, and encode them directly in ToUnicode CMaps.  For extraction
+    /// layouts, and encode them directly in ToUnicode CMaps. For extraction
     /// purposes every Unicode spacing character is equivalent to a regular space;
     /// keeping the original codepoints breaks word-level tokenisation downstream.
     ///
@@ -512,8 +512,8 @@ impl TextPostProcessor {
     ///
     pub fn repair_ligature_intra_space(text: &str) -> String {
         static RE_LIG_SPLIT: LazyLock<Regex> = LazyLock::new(|| {
-            // (\b[a-z]+)  space  (ffi|ffl|ff|fi|fl)  space  ([a-z]+\b)
-            //   prefix              ligature              suffix
+            // (\b[a-z]+) space (ffi|ffl|ff|fi|fl) space ([a-z]+\b)
+            //   prefix ligature suffix
             // Prefix is 1+ chars to cover the `affects` → `a ff ects`
             // case from the issue body (1-char prefix `a`). Suffix is
             // 1+ chars to cover any reasonable continuation.
@@ -547,8 +547,8 @@ impl TextPostProcessor {
         // U+00A8 glyphs adjacent to base letters).
         //
         // Patterns matched (both orderings observed in pdfTeX output):
-        //   `´E` (mark before)  →  `É`
-        //   `e´` (mark after)   →  `é`
+        //   `´E` (mark before) → `É`
+        //   `e´` (mark after) → `é`
         // Plus the same for grave/circumflex/cedilla/tilde/diaeresis.
         fn compose(prev: char, mark: char) -> Option<char> {
             match (prev, mark) {
@@ -730,8 +730,8 @@ impl TextPostProcessor {
     /// `code_and_formula.pdf`:
     ///
     /// ```text
-    /// function add (a , b ) {     →     function add(a, b) {
-    /// console . log ( add (3 , 5)); →   console.log(add(3, 5));
+    /// function add (a , b ) { → function add(a, b) {
+    /// console . log ( add (3 , 5)); → console.log(add(3, 5));
     /// ```
     ///
     /// Pattern: ` ([(\[{,;:.])` (space before punctuation) → `$1`,
@@ -1117,7 +1117,7 @@ mod tests {
         assert!(TextPostProcessor::is_space_after_special(')'));
     }
 
-    // ===== Tests for Leader Dot Normalization (Issue #104) =====
+    // ===== Tests for Leader Dot Normalization =====
 
     #[test]
     fn test_normalize_leader_dots_basic() {
@@ -1220,7 +1220,7 @@ mod tests {
     // === regression tests ===
     //
     // Per the release goal, every fix needs at least one
-    // test that fails on the v0.3.54 broken output and passes on
+    // test that fails on the broken output and passes on
     // the fix. These tests assert the repair-pass behaviour directly
     // on the v0.3.54-shaped input strings (taken verbatim from each
     // issue's "Actual" output) and verify the post-processed result
@@ -1242,7 +1242,7 @@ mod tests {
 
     #[test]
     fn ligature_ffi_swallowed_char_not_recoverable() {
-        // Honest limitation: v0.3.54 output `di ff cult` from a `/ffi`
+        // Honest limitation: output `di ff cult` from a `/ffi`
         // ligature has lost the `i`; post-processing concatenates
         // `ff` and `cult` but the `i` is gone. Proper root-cause fix
         // at AGL expansion site.

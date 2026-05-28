@@ -41,7 +41,7 @@ static MAX_OPERATORS_OVERRIDE: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
 /// Set the global content-stream operator cap. `None` keeps the
-/// default ([`MAX_OPERATORS`] = 1,000,000). `Some(n)` overrides to `n`
+/// default of `MAX_OPERATORS` (1,000,000). `Some(n)` overrides to `n`
 /// — pass `Some(usize::MAX)` for effectively unbounded.
 ///
 /// Returns the previous override (or `None` if the default was active).

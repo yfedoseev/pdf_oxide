@@ -5,7 +5,7 @@
 //! the single "run an ONNX graph" operation behind [`InferenceBackend`]
 //! so the same detector/recognizer + pre/post-processing drive either:
 //!
-//! * [`OrtBackend`]   — native ONNX Runtime (`ocr` feature), the
+//! * [`OrtBackend`] — native ONNX Runtime (`ocr` feature), the
 //!   default everywhere it is available; unchanged behaviour.
 //! * [`TractBackend`] — pure-Rust `tract` (`ocr-tract` feature, which
 //!   `ml` implies), the path the browser/Deno/edge `wasm32` build uses

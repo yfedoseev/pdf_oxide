@@ -32,16 +32,16 @@ use crate::pipeline::{OrderedTextSpan, ReadingOrderInfo};
 ///
 /// A normal PDF page is at most a few thousand points wide/tall. This limit of
 /// 100 000 bins is generous (≈ 33× a 3000-point A0 page) while being small
-/// enough to never cause an allocation problem.  Spans whose bounding-box span
+/// enough to never cause an allocation problem. Spans whose bounding-box span
 /// exceeds this limit are the result of a degenerate CTM; returning `None` from
 /// the projection safely skips the split instead of attempting a multi-terabyte
 /// allocation that would abort the process via `handle_alloc_error`.
 const MAX_PROJECTION_SIZE: usize = 100_000;
 
-/// Coarse classification of a region for the v0.3.54 #534 multi-column-prose
+/// Coarse classification of a region for the #534 multi-column-prose
 /// fix. Used to gate the tight-gutter cut: tight cuts are only accepted on
 /// regions that *positively* identify as prose, so the same XY-cut recursion
-/// no longer corrupts table cells (the v0.3.53 lesson — see lines 73–101).
+/// no longer corrupts table cells (the lesson — see lines 73–101).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RegionKind {
     /// Tall stack of wide lines OR tall stack of half-column lines with
@@ -52,7 +52,7 @@ enum RegionKind {
     /// table that reverted v0.3.53's two attempts is the prototype.
     Table,
     /// Anything else — too few lines, mixed shapes, decorative regions.
-    /// Default to the v0.3.53 behaviour (no tight cut).
+    /// Default to the behaviour (no tight cut).
     Mixed,
 }
 
@@ -195,7 +195,7 @@ impl XYCutStrategy {
     ///
     /// Public for use by MarkdownConverter's ColumnAware reading order mode.
     ///
-    /// v0.3.55 (#543): runs a pre-pass that detects multi-line heading runs
+    /// (#543): runs a pre-pass that detects multi-line heading runs
     /// (bold or larger-than-body font, ≥ 2 wrapped lines with matching
     /// X-extent) and locks them as atomic blocks the recursive splitter
     /// cannot split. Without this, a wrapped heading whose tail lines
@@ -236,7 +236,7 @@ impl XYCutStrategy {
     /// Detect contiguous bold/large-font runs that span ≥ 2 lines with
     /// matching X-extent (i.e. wrapped subsection headings).
     ///
-    /// Per the v0.3.55 fix-543 plan §A.2: two adjacent spans (in reading
+    /// Per the fix-543 plan §A.2: two adjacent spans (in reading
     /// order) are considered to belong to the same heading run when
     /// ALL of the following hold:
     ///
@@ -498,7 +498,7 @@ impl XYCutStrategy {
             return vec![self.sort_indices(all_spans, indices)];
         }
 
-        // v0.3.54 (#534): two-column-prose probe BEFORE the
+        // (#534): two-column-prose probe BEFORE the
         // single-column short-circuit. Tight gutters (~10-15pt) that
         // sit below `min_valley_width` defeat the standard projection-
         // valley detector, and the wide+dense heuristic inside
@@ -629,7 +629,7 @@ impl XYCutStrategy {
 
     /// Classifier verdict for a region — used to gate the tight-gutter
     /// column-split path (#534) so the same XY-cut recursion no longer
-    /// corrupts table cells (the v0.3.53 lesson).
+    /// corrupts table cells (the lesson).
     ///
     /// See the inline post-mortem at lines 73–101: two prior attempts at
     /// the multi-column-prose fix were reverted by the 70-PDF sweep when
@@ -709,7 +709,7 @@ impl XYCutStrategy {
         }
 
         // TABLE: lots of narrow lines, short content per line (mean_chars
-        // < 8). The v0.3.53 google_doc_document.pdf population table —
+        // < 8). The google_doc_document.pdf population table —
         // the canonical regression that reverted attempts 1 & 2 — sits
         // squarely here (digit-only cells, ≤ 7 chars each).
         if mean_chars < 8.0 {
@@ -782,7 +782,7 @@ impl XYCutStrategy {
         // For each line, find the largest gap between adjacent spans.
         // A line is treated as multiple "half-lines" if a gap ≥ 10 pt
         // splits it; each side of the gap contributes its leftmost-x
-        // to `narrow_lefts`. This is the v0.3.53 lesson: the row-by-
+        // to `narrow_lefts`. This is the lesson: the row-by-
         // row interleave shape on issue_07 spans the gutter as bbox
         // but has a clear gap within each line.
         let narrow_threshold = region_width * 0.6;
@@ -882,7 +882,7 @@ impl XYCutStrategy {
         }
 
         // Positive identification of prose — required by the
-        // classifier to avoid the v0.3.53 google_doc 2-col table
+        // classifier to avoid the google_doc 2-col table
         // sub-region false positive.
         if self.classify_region_kind(all_spans, indices) != RegionKind::Prose {
             return None;
@@ -1133,7 +1133,7 @@ impl XYCutStrategy {
                 }
             }
         }
-        // Centered-block guard (issue #1): a CENTERED title/subtitle/
+        // Centered-block guard: a CENTERED title/subtitle/
         // byline block (each line horizontally centered, varying widths)
         // produces accidental gap clusters that look like a column
         // gutter — but it is NOT columnar, and treating it as columns
@@ -1181,7 +1181,7 @@ impl XYCutStrategy {
         // A SMALL centered block (title / subtitle / byline — few lines,
         // scattered leftmost edges) is treated as a single column so its
         // lines stay in top-to-bottom order and a centered multi-word
-        // title is not split into per-word "columns" (issue #1). Gated
+        // title is not split into per-word "columns". Gated
         // to <= 6 lines so it only catches title-page-style blocks: a
         // real multi-column body has many lines and is never classified
         // centered here (its left column starts at a consistent margin,
@@ -1725,7 +1725,7 @@ impl ReadingOrderStrategy for XYCutStrategy {
         spans: Vec<TextSpan>,
         _context: &ReadingOrderContext,
     ) -> Result<Vec<OrderedTextSpan>> {
-        // v0.3.55 (#543): detect multi-line heading runs and route the
+        // (#543): detect multi-line heading runs and route the
         // partition through synthetic-span space so the splitter treats
         // each wrapped heading as a single atomic block. When no
         // headings are found we use the original index-only path that
@@ -2180,11 +2180,11 @@ mod tests {
         let mut strategy = XYCutStrategy::new();
         strategy.min_spans_for_split = 2; // lower threshold for small test
 
-        // Left column (x=50-200)        Right column (x=400-550)
-        //   "Description"   y=100          "Amount"          y=100
-        //   "Widget A"      y=120          "$150.00"         y=120
-        //   "Widget B"      y=140          "Discount"        y=140
-        //                                   "$25.00"          y=160
+        // Left column (x=50-200) Right column (x=400-550)
+        //   "Description" y=100 "Amount" y=100
+        //   "Widget A" y=120 "$150.00" y=120
+        //   "Widget B" y=140 "Discount" y=140
+        //                                   "$25.00" y=160
         let make = |text: &str, x: f32, y: f32, w: f32| {
             let mut s = make_span(x, y, w, 12.0);
             s.text = text.to_string();

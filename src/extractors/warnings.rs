@@ -21,7 +21,7 @@ pub struct Warning {
     /// the warning is document-scoped (xref recovery, trailer parse,
     /// etc.).
     pub page: Option<usize>,
-    /// Free-form message. Matches the v0.3.54 `log::warn!` strings to
+    /// Free-form message. Matches the `log::warn!` strings to
     /// preserve grep-ability for users transitioning off the stderr
     /// noise.
     pub message: String,

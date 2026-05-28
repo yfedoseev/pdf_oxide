@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadingOrderClass {
-    /// Default: y-then-x within region (the v0.3.54 behaviour).
+    /// Default: y-then-x within region (the behaviour).
     Default,
     /// Dramatic-script layout. Speaker tags at consistent
     /// left X; row-major join required.

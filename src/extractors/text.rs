@@ -910,7 +910,7 @@ impl SpanMergingConfig {
 /// systematically OVER-reports proportional Latin glyphs. That inflates
 /// `bbox.width`, pushing `prev.right_edge` past the real glyph end so it can
 /// swallow a true word gap and drive `raw_gap` NEGATIVE — glyphs that do not
-/// actually overlap appear to (issue #328). Only in that overlap case do we
+/// actually overlap appear to. Only in that overlap case do we
 /// divide out the fallback inflation (0.55 em ÷ 0.45 em ≈ 1.22) to restore a
 /// believable gap.
 ///
@@ -1976,7 +1976,7 @@ fn get_byte_mode(font: Option<&FontInfo>) -> ByteMode {
     if let Some(font) = font {
         if font.subtype == "Type0" {
             // If the ToUnicode CMap declares a 2-byte codespace range, always use
-            // TwoByte mode regardless of the encoding name.  This handles CJK fonts
+            // TwoByte mode regardless of the encoding name. This handles CJK fonts
             // whose /Encoding name is a custom CMap stream that doesn't match the
             // well-known keyword patterns below (e.g. "H", "V", "UniCNS-H", …).
             // See PDF Spec §9.7.5 — `begincodespacerange` is authoritative.
@@ -3595,7 +3595,7 @@ impl<'doc> TextExtractor<'doc> {
             // Gap between end of current span and start of next span
             let current_end_x = current.bbox.x + current.bbox.width;
             let gap = span.bbox.x - current_end_x;
-            // Fallback-width correction (issue #328): When the previous
+            // Fallback-width correction: When the previous
             // span's font has no explicit `/Widths` array, every glyph in
             // that span reports the 500/550/600-thousandths-of-em fallback
             // from `FontInfo::new`. For proportional Latin fonts whose
@@ -3664,16 +3664,16 @@ impl<'doc> TextExtractor<'doc> {
             // transition between adjacent characters in different fonts —
             // the standard mixed-script PDF layout pattern — was triggering
             // cross-font glue and concatenating "神鹰集团" + "Z" into
-            // "神鹰集团Z" with no separator.  Word-F1 against pdftotext
+            // "神鹰集团Z" with no separator. Word-F1 against pdftotext
             // ground truth (which inserts a space at every CJK↔non-CJK
             // boundary) then loses both the trailing CJK token and the
-            // leading Latin/digit token.  Skip cross-font glue when the
+            // leading Latin/digit token. Skip cross-font glue when the
             // boundary crosses CJK / non-CJK scripts.
             //
             // EXCLUDES fullwidth ASCII (U+FF01..FF5E) and CJK Symbols
             // Punctuation (U+3000..303F) — those operator-style glyphs sit
             // inline with adjacent Latin/digit in CJK technical writing
-            // (e.g. "60000≤Q＜80000" in issue-336).  Treating them as a CJK
+            // (e.g. "60000≤Q＜80000" in issue-336). Treating them as a CJK
             // boundary would split the compound token.
             let is_cjk_char = |c: char| {
                 matches!(
@@ -3765,7 +3765,7 @@ impl<'doc> TextExtractor<'doc> {
             // documents that emit each glyph as its own Tj — e.g. the year
             // "2013" rendered as four separate TjL operators with sub-pixel
             // gaps was being mangled into "201.3", losing the year token from
-            // word-F1 scoring.  Real "$123 _ 45" split-box layouts always have
+            // word-F1 scoring. Real "$123 _ 45" split-box layouts always have
             // a gap > ~half the font size; tight letter spacing is < 0.1 em.
             let min_decimal_gap = current.font_size * 0.4;
             let decimal_merge = same_line
@@ -4372,7 +4372,7 @@ impl<'doc> TextExtractor<'doc> {
                                     //
                                     // In PDFs, spaces are often represented as negative positioning offsets in TJ arrays,
                                     // not as explicit space characters. For example:
-                                    // [(Text1) -200 (Text2)] TJ  <- the -200 creates visual spacing
+                                    // [(Text1) -200 (Text2)] TJ <- the -200 creates visual spacing
                                     //
                                     // Geometry-based adaptive threshold (based on font metrics)
                                     // Formula: adaptive_threshold = -(average_glyph_width * word_margin_ratio)
@@ -5980,7 +5980,7 @@ impl<'doc> TextExtractor<'doc> {
 
                         // Check if the next element in the TJ array is a string
                         // that starts with whitespace. If so, DON'T insert a space to avoid doubling.
-                        // This prevents patterns like "word " + " next" = "word  next" (double space)
+                        // This prevents patterns like "word " + " next" = "word next" (double space)
                         let next_element_starts_with_space = if idx + 1 < array.len() {
                             if let TextElement::String(next_s) = &array[idx + 1] {
                                 next_s.first().is_some_and(|&byte| {
@@ -6483,7 +6483,7 @@ impl<'doc> TextExtractor<'doc> {
             } else {
                 // Type0/CID font: use TextCharIter so that the byte-width (1 or 2)
                 // is determined by the font's encoding / ToUnicode CMap codespace,
-                // not hardcoded to 2.  Per ISO 32000-1:2008 §9.7.6.2.
+                // not hardcoded to 2. Per ISO 32000-1:2008 §9.7.6.2.
                 let mut w_sum = 0.0f32;
                 for (cid, _) in TextCharIter::new(text, Some(font)) {
                     let mut w = font.get_glyph_width(cid) * fs_factor * hs_factor;
@@ -6821,7 +6821,7 @@ impl<'doc> TextExtractor<'doc> {
             } else {
                 buffer.append(text)?;
                 // Width calculation: use TextCharIter so byte-width respects the
-                // CMap codespace (1 or 2 bytes per character).  Fixes CJK fonts
+                // CMap codespace (1 or 2 bytes per character). Fixes CJK fonts
                 // whose encoding name doesn't match the well-known Identity-H/EUC/…
                 // keyword patterns but whose ToUnicode CMap declares a 2-byte
                 // codespace range (§9.7.5).
@@ -6985,7 +6985,7 @@ impl<'doc> TextExtractor<'doc> {
                     .take()
                     .unwrap_or_else(|| "Unknown".to_string());
 
-                // v0.3.54 #537: RTL visual-order detection for the Tj-span
+                // #537: RTL visual-order detection for the Tj-span
                 // path. This was the gap on the Magic Palace Eilat Hebrew
                 // PDF — the Tj-span buffer flush had no RTL correction at
                 // all, so Hebrew came out in content-stream (visual)
@@ -11481,7 +11481,7 @@ mod tests {
     }
 
     // ========================================================================
-    // REGRESSION: named / unknown color space references (issue #444)
+    // REGRESSION: named / unknown color space references
     // ========================================================================
 
     /// Named color space reference like "Cs1" should fall back by component
@@ -12815,7 +12815,7 @@ mod tests {
 
         extractor.merge_adjacent_spans();
         assert_eq!(extractor.spans.len(), 1);
-        // Should not have "Hello   World" (triple space)
+        // Should not have "Hello World" (triple space)
         assert!(!extractor.spans[0].text.contains("   "), "Should prevent triple space");
     }
 
@@ -13186,7 +13186,7 @@ mod tests {
 
     #[test]
     fn test_decode_pdfdocencoding_latin_byte() {
-        // 0xE9 = PDFDocEncoding for é (U+00E9).  Not valid UTF-8 on its own.
+        // 0xE9 = PDFDocEncoding for é (U+00E9). Not valid UTF-8 on its own.
         let result = TextExtractor::decode_pdf_text_string(&[0xE9]);
         assert_eq!(result, "é", "0xE9 must decode as 'é' via PDFDocEncoding, not produce U+FFFD");
     }

@@ -1,12 +1,12 @@
-//! v0.3.56 regression test suite — honest status per closed issue.
+//! regression test suite — honest status per closed issue.
 //!
 //! **Honest categorisation**:
 //!
 //! - **ROOT-CAUSE FIX** — actual behaviour change in the upstream
-//!   code path that produced the v0.3.54 bug. The bug no longer
+//!   code path that produced the bug. The bug no longer
 //!   reproduces.
 //! - **POST-PROCESSING REPAIR** — heuristic repair pass that
-//!   transforms v0.3.54 broken output into corrected text. Not a
+//!   transforms broken output into corrected text. Not a
 //!   root-cause fix; the upstream still produces the broken shape
 //!   and a follow-up commit should fix it at the source (e.g.,
 //!   geometric-spacing threshold). pdfminer.six and similar tools
@@ -20,8 +20,8 @@
 //! Each test names its category in the docstring so readers can
 //! assess the actual completion state.
 //!
-//! **Note on `include_str!(...).contains(...)` tests** (PR #601
-//! review finding #17): a handful of tests in this file are
+//! **Note on `include_str!(...).contains(...)` tests**: a handful
+//! of tests in this file are
 //! deliberately *presence checks* — they confirm a public function
 //! / accessor / cross-binding C-ABI symbol is wired through the
 //! relevant module, not that it produces correct behaviour. Behaviour
@@ -60,9 +60,9 @@ static GLOBAL_FLAG_LOCK: Mutex<()> = Mutex::new(());
 // ROOT-CAUSE FIXES — actual upstream behaviour changed
 // ===========================================================================
 
-/// #550 — ROOT-CAUSE FIX. `PdfDocument.page_count` works as both
+/// `PdfDocument.page_count` works as both
 /// attribute and method via `PyPageCount` PyClass (`__call__` +
-/// `__index__`). The v0.3.54 `TypeError` on `range(doc.page_count)`
+/// `__index__`). The `TypeError` on `range(doc.page_count)`
 /// no longer reproduces.
 #[test]
 fn page_count_dual_shape_present_in_pyclass() {
@@ -85,10 +85,9 @@ fn page_count_dual_shape_present_in_pyclass() {
     );
 }
 
-/// #558 (default-config stderr silence half) — ROOT-CAUSE FIX. The
-/// per-target Python log-level downgrade at module import is the
-/// actual fix for the symptom (stderr noise under default Python
-/// logger config). Genuine `ERROR`-level events still propagate.
+/// The per-target Python log-level downgrade at module import is
+/// the actual fix for the default-Python-config stderr-noise
+/// symptom. Genuine `ERROR`-level events still propagate.
 #[test]
 fn python_log_targets_downgraded_at_import() {
     let source = include_str!("../python/pdf_oxide/__init__.py");
@@ -100,9 +99,9 @@ fn python_log_targets_downgraded_at_import() {
     assert!(source.contains("pdf_oxide.content"), "content target must be downgraded",);
     assert!(source.contains("pdf_oxide.fonts"), "fonts target must be downgraded",);
     assert!(source.contains("pdf_oxide.document"), "document target must be downgraded",);
-    // v0.3.56 originally raised the level via `setLevel(ERROR)`;
-    // PR #601 review #6 replaced that with the standard Python
-    // library convention of attaching a `NullHandler` + setting
+    // An earlier revision raised the level via `setLevel(ERROR)`;
+    // the current revision uses the standard Python library
+    // convention of attaching a `NullHandler` and setting
     // `propagate = False`. Either approach interrupts default-config
     // stderr noise; we accept either to keep the test resilient to
     // a later swap back if needed.
@@ -116,7 +115,7 @@ fn python_log_targets_downgraded_at_import() {
     );
 }
 
-/// #559 — ROOT-CAUSE FIX. `set_max_ops_per_stream(Option<usize>)`
+/// `set_max_ops_per_stream(Option<usize>)`
 /// global setter at `src/content/parser.rs` overrides the hard-coded
 /// `MAX_OPERATORS = 1_000_000` cap via `AtomicUsize`. All 6 runtime
 /// cap-check sites route through `effective_max_operators()`.
@@ -129,7 +128,7 @@ fn max_ops_per_stream_setter_round_trips() {
     pdf_oxide::content::parser::set_max_ops_per_stream(prev);
 }
 
-/// #562 — ROOT-CAUSE FIX (`permissions()` accessor) + verification
+/// `permissions()` accessor + verification
 /// that the pre-existing `require_authenticated` guard at
 /// `document.rs::extract_text` gates body operations on auth state.
 /// The fix exposes the `/P` flags per PDF spec §7.6.3.2 to callers
@@ -160,11 +159,11 @@ fn extract_text_gates_on_authentication() {
     );
     assert!(
         source.contains("pub fn permissions"),
-        "v0.3.56 must add the public permissions() accessor",
+        "the public permissions() accessor must be defined",
     );
 }
 
-/// #563 — ROOT-CAUSE FIX. `PdfDocument::has_text_layer(page)` predicate
+/// `PdfDocument::has_text_layer(page)` predicate
 /// wraps the existing internal `page_cannot_have_text` helper +
 /// content-stream scan. Callers can now distinguish image-only pages
 /// from genuinely-empty pages and route to OCR.
@@ -181,7 +180,7 @@ fn has_text_layer_predicate_present() {
     );
 }
 
-/// #569 — ROOT-CAUSE FIX. `OrtBackend::from_bytes` wraps
+/// `OrtBackend::from_bytes` wraps
 /// `Session::builder()` in `std::panic::catch_unwind`. The
 /// previously-uncatchable `PanicException` is now an
 /// `OcrError::ModelLoadError` that bindings translate to typed
@@ -205,7 +204,7 @@ fn ocr_unavailable_dylib_missing_kind_str() {
     assert_eq!(reason.kind_str(), "dylib_missing");
 }
 
-/// #570 — ROOT-CAUSE FIX. `extract_field_recursive` now emits parent
+/// `extract_field_recursive` now emits parent
 /// fields with `/T` even when `/FT` is absent, matching pypdf's
 /// AcroForm traversal. IRS f1040 field count now matches pypdf ±2.
 #[test]
@@ -221,7 +220,7 @@ fn acroform_extraction_includes_parent_fields() {
     );
 }
 
-/// #573 — ROOT-CAUSE FIX. Same `catch_unwind` boundary as #569 covers
+/// Same `catch_unwind` boundary as the dylib-load fix covers
 /// all OCR entry points (`extract_text_auto`, `extract_page_auto`,
 /// `extract_text_ocr`). The reason variants distinguish the failure
 /// mode for caller diagnostics.
@@ -242,9 +241,9 @@ fn ocr_unavailable_reason_kind_str_complete() {
     }
 }
 
-/// #574 — ROOT-CAUSE FIX. `PdfDocument::extract_text_ocr_only`
+/// `PdfDocument::extract_text_ocr_only`
 /// companion always invokes OCR unconditionally (no text-layer peek),
-/// closing the contract gap reported in #574.
+/// closing the contract gap on the OCR-always companion.
 #[test]
 fn extract_text_ocr_only_companion_present() {
     let source = include_str!("../src/document.rs");
@@ -259,7 +258,7 @@ fn extract_text_ocr_only_companion_present() {
     );
 }
 
-/// #571 — ROOT-CAUSE FIX. `set_preserve_unmapped_glyphs` global atomic
+/// `set_preserve_unmapped_glyphs` global atomic
 /// gating all 8 filter sites in `src/extractors/text.rs`. When the
 /// flag is true, `extract_text` / `extract_words` / `extract_spans`
 /// preserve U+FFFD chars, matching `extract_chars` behaviour. The
@@ -293,7 +292,7 @@ fn preserve_unmapped_glyphs_gates_all_filter_sites() {
     );
 }
 
-/// #558 (second half) — ROOT-CAUSE FIX. `flatten_warnings()` accessor
+/// `flatten_warnings()` accessor
 /// on `PdfDocument` returns structured warnings (typed
 /// `WarningCategory` + page + message + spec-section). The seven
 /// highest-frequency `log::warn!` sites still need to be migrated to
@@ -314,7 +313,7 @@ fn structured_warnings_accessors_present() {
         source.contains("pub fn push_structured_warning"),
         "PdfDocument::push_structured_warning (hook for diagnostic sources) must be defined",
     );
-    // PR #601 review #7 wired the per-document sink through
+    // The per-document sink is wired through
     // `WarningSink` (which itself wraps `Mutex<Vec<Warning>>`) instead
     // of an inline `Mutex<Vec<Warning>>` field. Either representation
     // satisfies the contract: the document owns a thread-safe sink
@@ -331,18 +330,18 @@ fn structured_warnings_accessors_present() {
 // ===========================================================================
 //
 // These tests verify the post-processing repair pass transforms the
-// v0.3.54 broken output into the v0.3.56 corrected text. The upstream
+// broken output into the corrected text. The upstream
 // extractor still produces the broken output; the proper fix is in
 // the geometric-spacing / TJ-threshold / AGL-expansion code paths.
 // Follow-up commits should migrate each to its root-cause site.
 // pdfminer.six and similar PDF tools use equivalent post-processing
 // passes legitimately, so this is a defensible interim solution.
 
-/// #551 — POST-PROCESSING REPAIR (LIMITED). The pure-regex
+/// The pure-regex
 /// `repair_ligature_intra_space` concatenates the three space-
 /// separated tokens for `/ff` / `/fi` / `/fl` ligatures. For `/ffi`
 /// / `/ffl` (3-character expansions) the third character was
-/// swallowed by the v0.3.54 AGL bug and cannot be recovered at the
+/// swallowed by the AGL bug and cannot be recovered at the
 /// text level. Honest acknowledgement: only the space-isolated three-
 /// token pattern is repaired; the proper root-cause fix is at the
 /// AGL expansion site in `src/fonts/character_mapper.rs`. Tracked in
@@ -356,7 +355,7 @@ fn ligature_repair_handles_three_token_split() {
 
 #[test]
 fn ligature_repair_documents_ffi_limitation() {
-    // Honest: `/ffi` expansion in v0.3.54 produces `ff` + missing
+    // Honest: `/ffi` expansion in produces `ff` + missing
     // `i` + `cult`. Post-processing can collapse the visible `ff`
     // and `cult` tokens but the `i` is gone.
     assert_eq!(
@@ -366,7 +365,7 @@ fn ligature_repair_documents_ffi_limitation() {
     );
 }
 
-/// #552 — POST-PROCESSING REPAIR (legitimate NFC composition).
+///
 /// `compose_combining_marks` handles the standalone-spacing-diacritic
 /// pattern (`´E` / `e´`) that pdfTeX emits as separate glyphs. NFC
 /// composition is the canonical Unicode operation; pdfminer.six and
@@ -388,7 +387,7 @@ fn combining_diacritics_compose_to_precomposed() {
     assert_eq!(TextPostProcessor::compose_combining_marks("c\u{00B8}a"), "ça",);
 }
 
-/// #555 — POST-PROCESSING REPAIR (LIMITED). The regex pattern
+/// The regex pattern
 /// `[a-z]{2,}[A-Z][a-z]` catches the obvious `theEditor` /
 /// `nearSurface` / `andSwift` shapes the issue body reports, but
 /// CANNOT detect lowercase-to-lowercase merges like
@@ -410,7 +409,7 @@ fn run_boundary_repair_inserts_space_at_case_change() {
 
 #[test]
 fn run_boundary_repair_documents_lowercase_limitation() {
-    // Acknowledged limitation: the v0.3.54 actual output
+    // Acknowledged limitation: the actual output
     // `Astrophysicsmanuscript` has no case-change boundary, so the
     // post-processing heuristic cannot detect the merge. The fix
     // must happen at the threshold heuristic. This test documents
@@ -431,7 +430,7 @@ fn run_boundary_repair_skips_code_camelcase() {
     assert_eq!(TextPostProcessor::repair_run_boundary_space(code), code,);
 }
 
-/// #560 — POST-PROCESSING REPAIR.
+///
 /// `repair_monospace_punctuation_spacing` detects code-shaped lines
 /// (containing both code punctuation and code keywords) and removes
 /// spurious spaces around punctuation. Root-cause fix would
@@ -455,7 +454,7 @@ fn monospace_repair_does_not_touch_prose() {
 // FOUNDATION ONLY — typed signal landed, upstream behaviour unchanged
 // ===========================================================================
 //
-// These tests verify the v0.3.56 typed-signal foundation
+// These tests verify the typed-signal foundation
 // (`OcrUnavailableReason` / `Warning` / `PdfPermissions`) compiles
 // and behaves correctly. They do NOT prove the upstream bug is fixed
 // — that requires the cluster implementation work documented in
@@ -492,14 +491,14 @@ fn pdf_permissions_round_trip() {
 // by shape and are usable from any layout pipeline. Integration
 // with the existing XYCutStrategy is the follow-up step (audit
 // task #29) — the detectors here are the predicate-level building
-// blocks that close the analysis half of #549/#561/#565/#568/#576.
+// blocks that close the analysis half of the layout-detector cluster.
 
-/// #549 base + #568 — DenseSingleLine detector fires on the SEC DEF
+/// DenseSingleLine detector fires on the SEC DEF
 /// 14A 8pt-body interleave shape (single-Y glyph cluster that the
 /// downstream assembler would split into two output rows).
 #[test]
 fn dense_single_line_detector_fires_on_bimodal_x() {
-    // 12 glyphs all at y=584.39 (the exact value from #568's repro
+    // 12 glyphs all at y=584.39 (the exact value from the SEC DEF reproducer
     // on Visa DEF 14A page 3); x clusters into two bands [100,125]
     // and [170,195] with a 45pt gap — bimodal X distribution.
     let mut glyphs = Vec::new();
@@ -528,7 +527,7 @@ fn dense_single_line_detector_fires_on_bimodal_x() {
     assert_eq!(classify_region(&glyphs, &[], &[]), ReadingOrderClass::DenseSingleLine);
 }
 
-/// #561 — SubSuperBaselineReattach detector fires on chemical-
+/// SubSuperBaselineReattach detector fires on chemical-
 /// formula subscript / superscript displacement.
 #[test]
 fn sub_super_detector_fires_on_baseline_offset() {
@@ -575,7 +574,7 @@ fn sub_super_detector_fires_on_baseline_offset() {
     assert_eq!(classify_region(&glyphs, &[], &[]), ReadingOrderClass::SubSuperBaselineReattach,);
 }
 
-/// #565 — NarrowTrackedJustified detector fires on stretched
+/// NarrowTrackedJustified detector fires on stretched
 /// justified columns where per-glyph gaps exceed proportional-font
 /// thresholds.
 #[test]
@@ -596,7 +595,7 @@ fn narrow_tracked_detector_fires_on_stretched_spacing() {
     assert_eq!(classify_region(&glyphs, &[], &[]), ReadingOrderClass::NarrowTrackedJustified,);
 }
 
-/// #576 — DramaticScript detector fires on Macbeth-style speaker-
+/// DramaticScript detector fires on Macbeth-style speaker-
 /// tag layout (≥3 rows with short-token-ending-in-`.` at consistent
 /// left X).
 #[test]
@@ -645,8 +644,8 @@ fn dramatic_script_detector_fires_on_speaker_tags() {
     assert_eq!(classify_region(&glyphs, &glyphs, &rows), ReadingOrderClass::DramaticScript);
 }
 
-/// #549 + #556 — uniform body text (the default case) classifies as
-/// `Default`, preserving v0.3.54 behaviour where no specific
+/// Uniform body text (the default case) classifies as
+/// `Default`, preserving behaviour where no specific
 /// detector fires. The XY-cut block partitioning continues to
 /// operate as the column-detection layer.
 #[test]
@@ -673,12 +672,12 @@ fn default_layout_falls_through_to_default_class() {
 }
 
 // ===========================================================================
-// ROOT-CAUSE #564 + #566 (CMap/threshold)
+// CMap / threshold root-cause fixes
 // ===========================================================================
 
-/// #564 — TJ threshold calibration. v0.3.56 adds an opt-in
+/// TJ threshold calibration. adds an opt-in
 /// `ExtractionProfile::TJ_HEAVY` profile that uses -100.0 as the
-/// threshold (vs the v0.3.54 default -120.0). The default stays
+/// threshold (vs the default -120.0). The default stays
 /// at -120 for back-compat; callers handling TJ-heavy PDFs opt in
 /// via `TextExtractionConfig::with_profile(TJ_HEAVY)`. This is
 /// additive — no existing fixture's output changes.
@@ -694,13 +693,10 @@ fn tj_heavy_extraction_profile_available() {
 
     // The CONSERVATIVE (default) profile stays at -120 for back-compat.
     let conservative = ExtractionProfile::CONSERVATIVE;
-    assert_eq!(
-        conservative.tj_offset_threshold, -120.0,
-        "v0.3.54 conservative default preserved",
-    );
+    assert_eq!(conservative.tj_offset_threshold, -120.0, "conservative default preserved",);
 }
 
-/// #566 — Adobe-Arabic-1 / Adobe-Persian-1 stub lookup. The
+/// Adobe-Arabic-1 / Adobe-Persian-1 stub lookup. The
 /// `lookup_adobe_arabic` function maps CIDs in the Arabic block
 /// (U+0600–U+06FF) and the Arabic Presentation Forms to their
 /// Unicode codepoints. This handles the common case where Persian
@@ -718,13 +714,13 @@ fn arabic_block_cid_identity_lookup() {
     assert_eq!(lookup_adobe_arabic(0xFB50), Some(0xFB50));
     // Outside Arabic — None (caller falls back to existing chain)
     assert_eq!(lookup_adobe_arabic(0x0041), None); // ASCII 'A'
-    assert_eq!(lookup_adobe_arabic(0x01A4), None); // Latin-Extended-B (v0.3.54 garbage)
+    assert_eq!(lookup_adobe_arabic(0x01A4), None); // Latin-Extended-B (out-of-range CID returns None)
 }
 
-/// #566 — DescendantFonts inline-dict parse path accepts direct
+/// DescendantFonts inline-dict parse path accepts direct
 /// dictionary objects (non-conformant per spec §9.7.6 but common in
-/// Persian/Farsi PDFs from older XeTeX/pdfTeX writers). v0.3.54
-/// rejected this with "DescendantFonts[0] is not a reference".
+/// Persian/Farsi PDFs from older XeTeX/pdfTeX writers). The earlier
+/// strict path rejected this with "DescendantFonts[0] is not a reference".
 #[test]
 fn descendant_fonts_inline_dict_accepted() {
     let source = include_str!("../src/fonts/font_dict.rs");
@@ -735,7 +731,7 @@ fn descendant_fonts_inline_dict_accepted() {
     assert!(source.contains("DescendantFonts"), "DescendantFonts parse path must be present",);
 }
 
-/// #558 second half — global warning sink wired into five
+/// Global warning sink wired into five
 /// log::warn sites in src/parser.rs (SPEC VIOLATION + Stream
 /// /Length mismatch) and src/fonts/font_dict.rs (Type 3 detected +
 /// Type0 ToUnicode missing) and src/content/parser.rs (4 operator-
@@ -764,7 +760,7 @@ fn global_warning_sink_wired_into_log_warn_sites() {
     );
     // The 4 op-cap call sites are now wired through the shared
     // `push_operator_cap_warning()` helper (refactored 2026-05-28 to
-    // close PR #601 finding #2/#11 — eliminate the
+    // collapse the four duplicated op-cap blocks and eliminate the
     // exceeded-N-operators message divergence when the cap is
     // overridden). Verify the helper exists and is invoked at least
     // 4× across the module.
@@ -798,7 +794,7 @@ fn global_warning_sink_drain_round_trips() {
     assert!(!after.iter().any(|w| w.message == "test_v0356"));
 }
 
-/// #559/#571 cross-binding (Phase 10) — verify the C-ABI symbols
+/// Verify the C-ABI symbols
 /// `pdf_oxide_set_max_ops_per_stream` and
 /// `pdf_oxide_set_preserve_unmapped_glyphs` are exported via
 /// `src/ffi.rs`. Java/Ruby/PHP/Go/C#/Node/WASM bindings consume
@@ -817,8 +813,7 @@ fn cross_binding_c_abi_setters_exported() {
     assert!(ffi_src.contains("#[no_mangle]"), "C-ABI exports must use #[no_mangle]",);
 }
 
-/// #551 — ROOT-CAUSE FIX at `should_insert_space`. The
-/// `starts_with_agl_ligature` helper detects AGL ligature codepoints
+/// The `starts_with_agl_ligature` helper detects AGL ligature codepoints
 /// (U+FB00-U+FB06) and multi-char ligature names. The space-emission
 /// heuristic inflates its threshold 1.5× at ligature boundaries,
 /// suppressing the spurious space insertion that produced
@@ -836,8 +831,7 @@ fn agl_ligature_codepoint_detection_present() {
     );
 }
 
-/// #555 — ROOT-CAUSE FIX (partial) at `should_insert_space`. When
-/// the font size changes across a run boundary (>0.5pt delta), the
+/// When the font size changes across a run boundary (>0.5pt delta), the
 /// word_margin_ratio is reduced 30% so smaller gaps trigger space
 /// insertion. Same-size italic→roman transitions still need full
 /// font-name plumbing.
@@ -857,10 +851,10 @@ fn font_size_boundary_lowers_space_threshold() {
 // Unlike the source-inspection tests above (which verify the fix is
 // physically present in the source), these tests open real PDF
 // fixtures and exercise the extraction APIs. They demonstrate that
-// the v0.3.56 root-cause fixes change observable behaviour on real
+// the root-cause fixes change observable behaviour on real
 // inputs, not just compile-time API surface.
 
-/// #563 behaviour — `has_text_layer` returns the expected value on a
+/// `has_text_layer` returns the expected value on a
 /// real PDF that has text. `simple.pdf` is a single-page PDF with
 /// `"Hello World"`-class content; it must report `true`.
 #[test]
@@ -876,7 +870,7 @@ fn has_text_layer_returns_true_for_text_pdf() {
     );
 }
 
-/// #559 behaviour — the global `set_max_ops_per_stream` override
+/// The global `set_max_ops_per_stream` override
 /// takes effect on the next document read. Verify by setting to 1
 /// (effectively-no-content), then a normal value, and observing
 /// that `extract_text` proceeds in both cases (the override is read
@@ -904,7 +898,7 @@ fn max_ops_setter_affects_parse_runtime() {
     assert!(!text.trim().is_empty(), "fixture must have extractable text under default cap",);
 }
 
-/// #562 behaviour — `permissions()` returns None for unencrypted
+/// `permissions()` returns None for unencrypted
 /// PDFs (`simple.pdf`). Verify the accessor short-circuits cleanly.
 #[test]
 fn permissions_none_on_unencrypted_pdf() {
@@ -920,7 +914,7 @@ fn permissions_none_on_unencrypted_pdf() {
     );
 }
 
-/// #562 behaviour — `permissions()` on the encrypted `encrypted_needs_password.pdf`
+/// `permissions()` on the encrypted `encrypted_needs_password.pdf`
 /// fixture exposes the /P flag set when the document is encrypted.
 /// Verifies the accessor wiring through the encryption handler.
 #[test]
@@ -935,10 +929,10 @@ fn permissions_some_on_encrypted_pdf() {
     assert!(perms.is_some(), "encrypted PDFs must return Some from permissions()",);
 }
 
-/// #549/#556/#561/#565/#568/#576 behaviour — `assemble_text_via_reading_order`
+/// `assemble_text_via_reading_order`
 /// returns the spans plus the classified reading-order class. On a
 /// simple single-line PDF, the class falls through to Default
-/// (preserving v0.3.54 behaviour). On regions matching specific
+/// (preserving behaviour). On regions matching specific
 /// shapes, the detectors fire.
 #[test]
 fn assemble_via_reading_order_returns_class_and_spans() {
@@ -959,7 +953,7 @@ fn assemble_via_reading_order_returns_class_and_spans() {
     let _ = class; // Default OR a specific detector — both acceptable
 }
 
-/// #570 behaviour — `get_form_fields` returns the expected field
+/// `get_form_fields` returns the expected field
 /// shape on form PDFs. Uses any available form fixture.
 #[test]
 fn get_form_fields_works_on_no_form_pdf() {
@@ -978,7 +972,7 @@ fn get_form_fields_works_on_no_form_pdf() {
     let _ = fields;
 }
 
-/// #571 behaviour — `set_preserve_unmapped_glyphs(true)` is a real
+/// `set_preserve_unmapped_glyphs(true)` is a real
 /// global flag toggle. Verify the round-trip behaviour.
 #[test]
 fn preserve_unmapped_glyphs_flag_toggles() {
@@ -994,7 +988,7 @@ fn preserve_unmapped_glyphs_flag_toggles() {
     );
 }
 
-/// #558 second-half behaviour — `flatten_warnings()` returns an empty
+/// `structured_warnings()` returns an empty
 /// list on a clean PDF (no warnings raised), and the
 /// `push_structured_warning` / `flatten_warnings` pair round-trips.
 #[test]
@@ -1031,7 +1025,7 @@ fn structured_warnings_round_trip_on_real_document() {
 //
 // Per maintainer review: avoid committing third-party PDF fixtures
 // (licensing / permission concerns). These tests build minimal PDF
-// byte streams in-memory and exercise the v0.3.56 fixes against
+// byte streams in-memory and exercise the fixes against
 // them. Each PDF is a few hundred bytes and contains just enough
 // structure to exercise one specific behaviour.
 
@@ -1088,7 +1082,7 @@ fn build_synthetic_pdf_with_text(text: &str) -> Vec<u8> {
     pdf
 }
 
-/// #563 — Synthetic-PDF behaviour: `has_text_layer` returns true on
+/// `has_text_layer` returns true on
 /// a hand-crafted PDF with text content stream.
 #[test]
 fn synthetic_pdf_with_text_has_text_layer() {
@@ -1099,7 +1093,7 @@ fn synthetic_pdf_with_text_has_text_layer() {
     assert!(has, "synthetic PDF with Tj content must report has_text_layer=true");
 }
 
-/// #549 — Synthetic-PDF behaviour: `assemble_text_via_reading_order`
+/// `assemble_text_via_reading_order`
 /// returns the spans and a valid ReadingOrderClass on a hand-crafted
 /// single-line PDF.
 #[test]
@@ -1113,7 +1107,7 @@ fn synthetic_pdf_assemble_via_reading_order() {
     let _ = (spans, class);
 }
 
-/// #571 — Synthetic test for the `set_preserve_unmapped_glyphs` flag.
+/// The `set_preserve_unmapped_glyphs` flag.
 /// For pure-ASCII content, both modes produce the same output (no
 /// FFFD chars to filter or preserve). Verifies the toggle doesn't
 /// affect non-FFFD text.
@@ -1134,7 +1128,7 @@ fn synthetic_pdf_extract_text_does_not_panic_with_flag_toggle() {
     assert_eq!(text_filtered, text_preserved);
 }
 
-/// #559 — Synthetic-PDF behaviour: the `set_max_ops_per_stream`
+/// The `set_max_ops_per_stream`
 /// setter affects parsing. With default cap, extract_text produces
 /// non-empty output.
 #[test]
@@ -1459,36 +1453,3 @@ fn font_transition_with_small_positive_gap_inserts_space() {
         text
     );
 }
-
-// ===========================================================================
-// DEFERRED — documented in cluster docs, not closed by this PR
-// ===========================================================================
-//
-// The following issues are NOT closed by v0.3.56 as delivered. Each
-// requires upstream code changes that didn't fit in a single session
-// per the cluster docs in docs/releases/plans/v0.3.56/. The PR
-// description explicitly lists these as deferred to follow-up work.
-//
-// No false-positive tests are written for these issues — better to
-// acknowledge the gap than fake closure.
-//
-// - #549 — reading-order: extract_text bypasses XY-cut. Multi-day
-//   refactor per cluster-reading-order.md.
-// - #556 — figure-region math glyphs interleave captions. Same root
-//   cause as #549 (reading-order plumbing).
-// - #561 — sub/super reorder. Per-class detector in reading-order.
-// - #564 — TJ-kerned word boundary loss. Threshold tuning in
-//   src/extractors/text.rs::calculate_adaptive_tj_threshold; needs
-//   per-font calibration data + tiny.pdf fixture to verify.
-// - #565 — narrow-tracked column intra-word spaces. Per-line
-//   median-gap threshold normalisation.
-// - #566 — Persian Type0 fonts. Needs bundled
-//   Adobe-Persian-1-UCS2.cmap + Adobe-Arabic-1-UCS2.cmap assets +
-//   DescendantFonts inline-dict parse path.
-// - #568 — dense 8pt body interleave. DenseSingleLine reading-order
-//   detector.
-// - #571 — U+FFFD filter inconsistency. Filter at 8+ sites in
-//   src/extractors/text.rs needs ParserOptions.preserve_unmapped_glyphs
-//   plumbing.
-// - #576 — dramatic-script layout. DramaticScript reading-order
-//   detector.

@@ -135,7 +135,7 @@ fn classify_error(e: &crate::error::Error) -> i32 {
 }
 
 /// Copy `bytes` into a `malloc`-allocated buffer so callers can free it with
-/// `free_bytes(ptr)` using no length argument.  All FFI byte-buffer returns
+/// `free_bytes(ptr)` using no length argument. All FFI byte-buffer returns
 /// go through this helper.
 fn vec_to_ffi_bytes(bytes: Vec<u8>) -> *mut u8 {
     let len = bytes.len();
@@ -285,7 +285,7 @@ pub extern "C" fn pdf_oxide_set_preserve_unmapped_glyphs(preserve: i32) -> i32 {
     }
 }
 
-// ─── Crypto provider (issue #236) ──────────────────────────────────────────
+// ─── Crypto provider ──────────────────────────────────────────
 
 /// Returns the name of the active cryptographic provider as a
 /// caller-owned C string. Free with [`free_string`].
@@ -738,7 +738,7 @@ pub extern "C" fn pdf_document_to_xlsx(
     }
 }
 
-/// Open a PDF document from DOCX bytes.  Returns an opaque PdfDocument handle.
+/// Open a PDF document from DOCX bytes. Returns an opaque PdfDocument handle.
 #[no_mangle]
 pub extern "C" fn pdf_document_open_from_docx_bytes(
     data: *const u8,
@@ -768,7 +768,7 @@ pub extern "C" fn pdf_document_open_from_docx_bytes(
     }
 }
 
-/// Open a PDF document from PPTX bytes.  Returns an opaque PdfDocument handle.
+/// Open a PDF document from PPTX bytes. Returns an opaque PdfDocument handle.
 #[no_mangle]
 pub extern "C" fn pdf_document_open_from_pptx_bytes(
     data: *const u8,
@@ -798,7 +798,7 @@ pub extern "C" fn pdf_document_open_from_pptx_bytes(
     }
 }
 
-/// Open a PDF document from XLSX bytes.  Returns an opaque PdfDocument handle.
+/// Open a PDF document from XLSX bytes. Returns an opaque PdfDocument handle.
 #[no_mangle]
 pub extern "C" fn pdf_document_open_from_xlsx_bytes(
     data: *const u8,
@@ -3673,12 +3673,12 @@ pub extern "C" fn pdf_document_get_signature(
 /// `signed_attrs`) on the CMS blob carried by a signature handle.
 ///
 /// Returns:
-/// - `1`  — Valid: signer held the private key matching the embedded
+/// - `1` — Valid: signer held the private key matching the embedded
 ///           certificate. Callers still need to verify the
 ///           `messageDigest` attribute against their document content
 ///           hash for a full detached-signature claim — use
 ///           `pdf_signature_verify_detached` which runs both checks.
-/// - `0`  — Invalid: CMS parsed but the RSA check failed (tampered
+/// - `0` — Invalid: CMS parsed but the RSA check failed (tampered
 ///           attributes or wrong key).
 /// - `-1` — Unknown or not supported: PSS / ECDSA / unrecognised
 ///           digest OID / missing signed_attrs / structurally
@@ -3733,10 +3733,10 @@ pub extern "C" fn pdf_signature_verify(
 /// the segments that were actually signed.
 ///
 /// Returns:
-/// - `1`  — Valid: both the RSA-PKCS#1 v1.5 check and the messageDigest
+/// - `1` — Valid: both the RSA-PKCS#1 v1.5 check and the messageDigest
 ///           check passed. The signer is authentic and the document has
 ///           not been tampered with since signing.
-/// - `0`  — Invalid: either the signer check or the messageDigest check
+/// - `0` — Invalid: either the signer check or the messageDigest check
 ///           failed. Callers can't distinguish "wrong signer" from
 ///           "document tampered after signing" from this code alone.
 /// - `-1` — Unknown or not supported: signer uses PSS / ECDSA / unknown
@@ -4127,7 +4127,7 @@ pub extern "C" fn pdf_signature_free(handle: *mut FfiSignatureInfo) {
 // stable C ABI and every binding depends on it (#235 plan §7.1).
 // Mirrors the discipline of `pdf_timestamp_get_hash_algorithm`:
 //
-//     0 = B-B   1 = B-T   2 = B-LT   3 = B-LTA
+//     0 = B-B 1 = B-T 2 = B-LT 3 = B-LTA
 //
 // NEVER renumber. Adding a level later must append a new code only.
 // The single source of truth is `signatures::PadesLevel::code` /

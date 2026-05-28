@@ -2192,7 +2192,7 @@ impl PdfDocument {
     /// Resolve a single-level indirect reference (PDF spec §7.3.10).
     ///
     /// If `obj` is `Object::Reference(...)`, loads and returns the target object.
-    /// For any other object type, returns a clone unchanged.  This is the
+    /// For any other object type, returns a clone unchanged. This is the
     /// canonical way to handle "any value may be a direct or indirect reference"
     /// throughout the parser.
     fn resolve_obj_ref(&self, obj: &Object) -> Object {
@@ -2257,7 +2257,7 @@ impl PdfDocument {
         // re-seek the shared reader between our seek() and read(), so we
         // read a garbage buffer for a different object. That surfaced as
         // a spurious `[1000] invalid PDF structure or content stream`
-        // ParseError under concurrent `render_page_fit` (issue #507).
+        // ParseError under concurrent `render_page_fit`.
         let offset = entry.offset;
         let mut buf = [0u8; 1024];
         let n = {
@@ -2329,7 +2329,7 @@ impl PdfDocument {
     ///
     /// The retain filter in `extract_text_with_options` removes every
     /// span whose bbox is contained in a detected table's bbox. On CJK
-    /// reference-data PDFs (issue #329) the test-name label column is
+    /// reference-data PDFs the test-name label column is
     /// narrow and vertically centred within each multi-row data block,
     /// so its spans are inside the table bbox and would be dropped
     /// without replacement — the spatial table extractor does not emit
@@ -3030,8 +3030,8 @@ impl PdfDocument {
         );
 
         // Per PDF §7.6.3, object streams (/Type /ObjStm) shall NOT be individually
-        // encrypted.  Encryption initialization is therefore not required to read an
-        // ObjStm: the unencrypted parse path below is always attempted first.  If
+        // encrypted. Encryption initialization is therefore not required to read an
+        // ObjStm: the unencrypted parse path below is always attempted first. If
         // initialization fails (e.g. unsupported algorithm, no legacy-crypto feature),
         // log and continue — the handler will be None and we'll use the no-decryption
         // path, which is exactly what the spec mandates for ObjStm content.
@@ -3077,12 +3077,12 @@ impl PdfDocument {
         //
         // Per ISO 32000-2:2020 Section 7.6.3, object streams (/Type /ObjStm)
         // cross-reference streams (/Type /XRef) shall NOT be individually encrypted.
-        // The stream data is only compressed, not encrypted.  Many PDF producers
+        // The stream data is only compressed, not encrypted. Many PDF producers
         // (including many real-world producers) follow this rule even under
         // PDF 1.x, so attempting AES decryption on the raw stream bytes fails
         // because the data length is not a multiple of the AES block size (16).
         //
-        // We therefore always parse object streams WITHOUT decryption.  If a
+        // We therefore always parse object streams WITHOUT decryption. If a
         // future PDF is encountered where the producer DID encrypt the ObjStm
         // (non-standard), the unencrypted parse will fail and we fall back to
         // trying with decryption.
@@ -3319,7 +3319,7 @@ impl PdfDocument {
         }
 
         // The trailer omits /Root. A Linearized file's sparse end-of-file
-        // trailer legitimately does this (issue #509); discover the Catalog
+        // trailer legitimately does this; discover the Catalog
         // by scanning indirect objects for /Type /Catalog, as Poppler /
         // PDFium do.
         self.find_catalog_by_scan().ok_or_else(|| {
@@ -3332,7 +3332,7 @@ impl PdfDocument {
 
     /// Scan indirect objects for the document Catalog (`/Type /Catalog`).
     ///
-    /// Used only as a fallback when the trailer omits `/Root` (issue #509).
+    /// Used only as a fallback when the trailer omits `/Root`.
     /// Bounded so a pathological xref can't turn this into an unbounded
     /// scan; the Catalog is virtually always one of the first objects.
     ///
@@ -3575,7 +3575,7 @@ impl PdfDocument {
             Err(Error::EncryptedPdf) => Err(Error::EncryptedPdf),
             Err(e) => {
                 // For encrypted PDFs any failure to read the page tree means we
-                // cannot access the content.  Scanning would also return Ok(0),
+                // cannot access the content. Scanning would also return Ok(0),
                 // so skip the fallback and surface the real error immediately.
                 if self.is_encrypted() {
                     log::warn!("Page count failed for encrypted PDF: {}", e);
@@ -4743,7 +4743,7 @@ impl PdfDocument {
         // Structure tree: try to load when MarkInfo says "marked" OR when the
         // catalog directly references a StructTreeRoot (PDF 1.4 documents such
         // as hello_structure.pdf predate the MarkInfo dictionary but are still
-        // valid tagged PDFs per §14.7.1).  Checking the catalog for
+        // valid tagged PDFs per §14.7.1). Checking the catalog for
         // /StructTreeRoot is cheap — it's a single dictionary key lookup.
         let cached_tree = {
             let cached = self.structure_tree_cache.lock_or_recover().clone();
@@ -4775,7 +4775,7 @@ impl PdfDocument {
         // Table detection uses base spans only (no widget spans).
         let tables = if options.extract_tables {
             // text_fallback=false: extract_text preserves the pre-v0.3.47 behaviour
-            // where line-less pages return no tables.  Only the structured-output
+            // where line-less pages return no tables. Only the structured-output
             // converters (to_markdown, to_html) opt in to text-only spatial fallback.
             self.extract_page_tables(page_index, &base_spans, options, false)
         } else {
@@ -4819,7 +4819,7 @@ impl PdfDocument {
             let mut spans = all_spans;
 
             // Exclude spans that are inside detected tables, BUT
-            // preserve multi-row-spanning label columns (issue #329).
+            // preserve multi-row-spanning label columns.
             // The spatial table extractor clusters data cells into
             // table cells but does NOT emit the sparse label column
             // that sits vertically centred within each multi-row data
@@ -5050,7 +5050,7 @@ impl PdfDocument {
             // as isolated fragments interleaved with other spans (pdfa_004).
             Self::merge_sub_superscript_spans(&mut spans);
 
-            // Inline table insertion (issue #315).
+            // Inline table insertion.
             //
             // Tables were previously rendered in a single block appended
             // at the end of the page text, after all flow spans. That
@@ -5124,7 +5124,7 @@ impl PdfDocument {
                     // contained within the previous span AND has identical text.
                     // Without the text comparison, distinct lines that happen to
                     // overlap spatially (e.g., due to small Tm-scaled offsets)
-                    // would be silently dropped (issue #254).
+                    // would be silently dropped.
                     let y_same = (prev.bbox.y - span.bbox.y).abs() < 2.0;
                     if y_same
                         && span.bbox.x >= prev.bbox.x - 0.5
@@ -5174,7 +5174,7 @@ impl PdfDocument {
                             && !text.ends_with(' ')
                             && !text.ends_with('\n')
                         {
-                            // Inflated-width overlap recovery (issue #328).
+                            // Inflated-width overlap recovery.
                             // A negative raw gap here usually comes from a
                             // font whose `/Widths` array is missing
                             // `FontInfo::new` fell back to the 550/1000-em
@@ -6083,9 +6083,9 @@ impl PdfDocument {
         let min_fs = prev.font_size.min(current.font_size).max(1.0);
         // Continuous formula — avoids the step discontinuity at the 4×
         // ratio boundary. Examples:
-        //   same-size 12 pt body: max(12×1.2, 12×0.3) = 14.4 pt  ← 1.2× leading
-        //   heading+body 24+10 pt: max(10×1.2, 24×0.3) = 12.0 pt  ← keeps para break
-        //   superscript 12+6 pt:   max(6×1.2, 12×0.3) = 7.2 pt   ← same line
+        //   same-size 12 pt body: max(12×1.2, 12×0.3) = 14.4 pt ← 1.2× leading
+        //   heading+body 24+10 pt: max(10×1.2, 24×0.3) = 12.0 pt ← keeps para break
+        //   superscript 12+6 pt: max(6×1.2, 12×0.3) = 7.2 pt ← same line
         // Prior formula was max_fs×0.5 for normal ratios; new formula uses 1.2× of the
         // smaller font, which is wider and reduces false newlines for normal leading.
         // Formula: max(min_fs * 1.2, max_fs * 0.3)
@@ -6249,17 +6249,17 @@ impl PdfDocument {
         // CJK script ↔ non-CJK boundary: pdftotext (and the GT it produces)
         // inserts a space wherever a CJK *script* glyph (ideograph, kana, or
         // hangul) meets a Latin/digit character on the same line, regardless
-        // of how tightly the two were typeset.  Without this, mixed-script
+        // of how tightly the two were typeset. Without this, mixed-script
         // content like "神鹰集团" + "2015" collapses into one token
         // "神鹰集团2015", which never matches GT's separate "神鹰集团"
         // "2015" tokens (issue 484, pr-136).
         //
         // IMPORTANT: this MUST exclude fullwidth ASCII variants (U+FF01..FF5E
         // — ＜＞＝＠ etc.) and CJK Symbols and Punctuation (U+3000..303F) even
-        // though they are technically "CJK characters".  Those are *operator*
+        // though they are technically "CJK characters". Those are *operator*
         // glyphs that sit inline with adjacent digits and Latin in CJK
         // technical documents — pdftotext keeps "60000≤Q＜80000"
-        // "20＜μ≤30" as compound tokens (issue 484, issue-336).  Forcing a
+        // "20＜μ≤30" as compound tokens (issue 484, issue-336). Forcing a
         // boundary space there destroys the compound and regresses Jaccard.
         let is_cjk_script = |c: char| {
             matches!(
@@ -6279,7 +6279,7 @@ impl PdfDocument {
         };
         // ASCII punctuation hugs the preceding token in every script —
         // pdftotext's GT renders "する." with no space and "神鹰，2015"
-        // with no space before the comma either.  Suppress the boundary
+        // with no space before the comma either. Suppress the boundary
         // forced-space when the transitioning glyph IS the punctuation;
         // the space-threshold path below still handles real gaps.
         let is_clause_punct =
@@ -6295,18 +6295,18 @@ impl PdfDocument {
         // This aligns with the text extractor's font-aware threshold (~50% of space width).
         let space_threshold = font_size * 0.15;
 
-        // Insert space if gap is significant.  Previously the upper bound was
+        // Insert space if gap is significant. Previously the upper bound was
         // `gap < font_size * 5.0` on the rationale that very large gaps mean
         // "column boundary, no space needed" — but downstream the caller
         // concatenates the two spans together when this returns false, so
         // "column boundary" actually rendered as `3.80%4.41%` on wide rate
-        // tables (issue 487 pr-138-example.pdf).  Drop the upper bound so any
+        // tables (issue 487 pr-138-example.pdf). Drop the upper bound so any
         // gap above the inter-glyph threshold gets at least a single space.
         gap > space_threshold
     }
 
     /// Detect a span whose text is `N.M` (all-digit groups around one dot) and whose
-    /// bbox.width is >40% larger than char_widths imply.  This pattern occurs in
+    /// bbox.width is >40% larger than char_widths imply. This pattern occurs in
     /// sailing-score / competition-table PDFs where two adjacent columns (e.g. Q8=1,
     /// F9=10) are stored as a single Tj text run "1.10" spanning both column cells.
     /// Reference ground truth tokenises them as separate words; we must split at the dot.
@@ -6326,17 +6326,17 @@ impl PdfDocument {
             return false;
         }
         let char_count = text.chars().count();
-        // Signal 1: sparse char_widths array.  When the font's glyph
+        // Signal 1: sparse char_widths array. When the font's glyph
         // iteration produces fewer advance-width entries than there are
         // characters in the decoded string, the span was assembled from two
         // (or more) concatenated Tj runs whose widths come from different
-        // points in the glyph table.  This is the exact pattern issue 487
+        // points in the glyph table. This is the exact pattern issue 487
         // nougat_018 sailing-score grids hit: each score cell is emitted as
         // a single Tj like `1.10` with `char_widths=[w]` while the PDF
         // semantically means "1" followed by "10" in adjacent score
-        // columns.  bbox.width can still be tight here (the producer set
+        // columns. bbox.width can still be tight here (the producer set
         // it to cover just the rendered glyph run), so the existing
-        // bbox-inflation check below misses these.  Catch them via the
+        // bbox-inflation check below misses these. Catch them via the
         // sparse-cw signal directly.
         if !span.char_widths.is_empty() && span.char_widths.len() < char_count {
             return true;
@@ -6355,7 +6355,7 @@ impl PdfDocument {
         };
         // Use absolute gap (bbox_w - expected) rather than a ratio so that
         // 5-char spans like "12.11" (gap ≈ 1.1×fs) are caught along with
-        // 4-char spans like "1.10" (gap ≈ 1.4×fs).  1.0×font_size is a safe
+        // 4-char spans like "1.10" (gap ≈ 1.4×fs). 1.0×font_size is a safe
         // lower bound: normal text rarely has >1em of hidden whitespace.
         let gap = span.bbox.width - expected_width;
         span.font_size > 0.0 && gap > span.font_size * 1.0
@@ -6365,7 +6365,7 @@ impl PdfDocument {
     /// `decode_text_to_unicode` produces unicode chars, `char_widths.len()` < char count.
     /// This indicates two concatenated text runs stored in one Tj operator (e.g. "Theorem1.7"
     /// where "Theorem" widths come from the font's glyph table and "1.7" doesn't have
-    /// matching glyph entries).  Return the byte offset at which to insert a space,
+    /// matching glyph entries). Return the byte offset at which to insert a space,
     /// or None if no split is appropriate.
     pub(crate) fn char_widths_boundary_split(span: &TextSpan) -> Option<usize> {
         let cw_len = span.char_widths.len();
@@ -6384,7 +6384,7 @@ impl PdfDocument {
             return None;
         }
         // Non-ASCII chars at the boundary are encoding artifacts (e.g. Polish diacritics
-        // in Latin-2 / CP1250 fonts producing one fewer char_width entry).  Only split
+        // in Latin-2 / CP1250 fonts producing one fewer char_width entry). Only split
         // when the boundary char is ASCII, indicating a genuine text-run concatenation.
         if !boundary_char.is_ascii() {
             return None;
@@ -6555,7 +6555,7 @@ impl PdfDocument {
         //
         // Extending char_widths: char_widths_boundary_split fires whenever cw_len < char_count.
         // After merging sub text, char_count grows but cw_len stays the same, which would
-        // cause the split to re-separate the merged token (e.g. "k1" → "k 1").  Adding
+        // cause the split to re-separate the merged token (e.g. "k1" → "k 1"). Adding
         // estimated widths for the sub characters prevents this.
         for (base_idx, _, sub_text, sub_right, sub_cw, sub_fs) in &ops {
             let base = &mut spans[*base_idx];
@@ -6594,7 +6594,7 @@ impl PdfDocument {
     #[inline]
     pub(crate) fn push_span_text(out: &mut String, span: &TextSpan) {
         // A span whose entire text is one or more newline/CR characters is a
-        // ToUnicode line-break signal.  Treat it as a logical newline separator rather
+        // ToUnicode line-break signal. Treat it as a logical newline separator rather
         // than emitting the raw control characters verbatim as visible content.
         if !span.text.is_empty() && span.text.chars().all(|c| c == '\n' || c == '\r') {
             if !out.ends_with('\n') {
@@ -6959,7 +6959,7 @@ impl PdfDocument {
     /// Build TextSpan objects from the /Contents field of content-bearing annotations.
     ///
     /// Sticky note (/Subtype/Text), FreeText, Stamp, and markup annotations carry
-    /// human-readable text in their /Contents field.  Widget annotations are already
+    /// human-readable text in their /Contents field. Widget annotations are already
     /// handled by `extract_widget_spans`; Popup annotations hold no independent
     /// content (their text belongs to the parent annotation).
     fn annotation_content_spans(&self, page_index: usize) -> Vec<TextSpan> {
@@ -8357,7 +8357,7 @@ impl PdfDocument {
         }
 
         // Append text from non-Widget annotations (/Subtype /Text, FreeText,
-        // Stamp, Highlight, etc.) that carry a /Contents entry.  These are not
+        // Stamp, Highlight, etc.) that carry a /Contents entry. These are not
         // part of the page content stream so they are not picked up by the
         // regular extractor.
         spans.extend(self.annotation_content_spans(page_index));
@@ -8369,7 +8369,7 @@ impl PdfDocument {
         self.mark_running_artifact_spans(page_index, &mut spans)?;
 
         // Normalize Unicode typographic spaces (U+2000–U+200B, U+202F, U+205F)
-        // to ASCII space.  Some PDF producers encode word separators as hair-space
+        // to ASCII space. Some PDF producers encode word separators as hair-space
         // or thin-space variants in ToUnicode CMaps (e.g. justified text layouts);
         // normalising here gives consistent word boundaries to every downstream
         // consumer (extract_text, word-F1 scoring, etc.).
@@ -8387,7 +8387,7 @@ impl PdfDocument {
 
         // Apply char_widths boundary splits directly to span.text so that every
         // downstream consumer (to_markdown, to_html, extract_text) sees the same
-        // word boundaries.  extract_text applies the same logic through push_span_text;
+        // word boundaries. extract_text applies the same logic through push_span_text;
         // after this normalization push_span_text sees a space at the boundary
         // becomes a no-op, so there is no double-application risk.
         for span in &mut spans {
@@ -8813,7 +8813,7 @@ impl PdfDocument {
     /// the first document to call `structured_warnings` collects
     /// the global tail that accumulated since the last drain.
     ///
-    /// Renamed from `flatten_warnings` in v0.3.56 to avoid colliding
+    /// Renamed from `flatten_warnings` in to avoid colliding
     /// with the pre-existing `DocumentEditor::flatten_warnings`
     /// (which returns the form-flattening side-effect log, a
     /// `&[String]` — different feature). Both the Rust and Python
@@ -9203,10 +9203,10 @@ impl PdfDocument {
             std::collections::HashMap::new();
         let mut first_seen_any: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
-        // Track distinct literal texts per signature.  A signature whose digits
+        // Track distinct literal texts per signature. A signature whose digits
         // are stable across every page (i.e. the literal text never changes) is
         // NOT a page-number-containing header — it is substantive content that
-        // happens to repeat.  Only suppress signatures where the literal text
+        // happens to repeat. Only suppress signatures where the literal text
         // varies (at least two distinct forms) meaning digits change per page.
         let mut literal_variants: std::collections::HashMap<
             String,
@@ -9818,7 +9818,7 @@ impl PdfDocument {
         use crate::layout::{clustering, AdaptiveLayoutParams, DocumentProperties, Word};
 
         // Span source. The default (no profile) flows through the canonical
-        // `page_reading_order` helper (issue #457): tagged → struct tree,
+        // `page_reading_order` helper: tagged → struct tree,
         // untagged → geometric top-to-bottom. The legacy profile path keeps
         // its previous XY-Cut + row-aware-sort behavior pending the planned
         // removal of `profile`.
@@ -9935,9 +9935,9 @@ impl PdfDocument {
         }
 
         // Post-processing: merge adjacent words whose spans abut or overlap on
-        // the same line.  PDFs (especially tagged CJK documents) sometimes encode
+        // the same line. PDFs (especially tagged CJK documents) sometimes encode
         // typographically-adjacent glyphs as separate marked-content runs, e.g.
-        // "Q" and "（peu/d）" with a gap of -0.18 points.  Without merging these
+        // "Q" and "（peu/d）" with a gap of -0.18 points. Without merging these
         // remain separate tokens and never match the ground-truth "Q（peu/d）".
         //
         // Merge condition: same line (y_diff ≤ 0.5 × max line height) AND
@@ -10073,7 +10073,7 @@ impl PdfDocument {
         use crate::layout::{clustering, AdaptiveLayoutParams, DocumentProperties, TextLine, Word};
 
         // Span source. Default (no profile) → canonical `page_reading_order`
-        // helper (issue #457). Legacy profile path keeps XY-Cut + row-aware
+        // helper. Legacy profile path keeps XY-Cut + row-aware
         // sort pending the planned removal of `profile`.
         let spans: Vec<crate::layout::TextSpan> = match profile {
             Some(p) => {
@@ -10446,10 +10446,10 @@ impl PdfDocument {
     ///     println!("Path with {} operations, bbox: {:?}",
     ///         path.operations.len(), path.bbox);
     ///     if path.has_stroke() {
-    ///         println!("  Stroked with width: {}", path.stroke_width);
+    ///         println!(" Stroked with width: {}", path.stroke_width);
     ///     }
     ///     if path.has_fill() {
-    ///         println!("  Filled");
+    ///         println!(" Filled");
     ///     }
     /// }
     /// # Ok(())
@@ -10646,7 +10646,7 @@ impl PdfDocument {
                     extractor.clip_even_odd();
                 },
 
-                // XObject processing (Issue #40)
+                // XObject processing
                 Operator::Do { name } => {
                     if let Err(e) =
                         self.process_form_xobject_paths(&name, &mut extractor, &mut state_stack)
@@ -10758,7 +10758,7 @@ impl PdfDocument {
         Ok(detect_tables_with_lines(&spans, &lines, &config))
     }
 
-    /// Process paths from a Form XObject (Issue #40).
+    /// Process paths from a Form XObject.
     ///
     /// This method recursively extracts paths from Form XObjects encountered via the `Do` operator.
     /// It handles:
@@ -11462,7 +11462,7 @@ impl PdfDocument {
     }
 
     /// Look up a font from the per-document `font_cache`, parsing and inserting
-    /// on a cache miss.  Used by the page renderer so that `FontInfo::from_dict`
+    /// on a cache miss. Used by the page renderer so that `FontInfo::from_dict`
     /// (which decodes widths, CID maps, ToUnicode CMaps, and extracts embedded
     /// font bytes) is called at most once per PDF object reference, even when
     /// multiple pages share the same font resources.
@@ -11820,7 +11820,7 @@ impl PdfDocument {
                 // The combined identity hash covers ALL reference fonts (sorted by
                 // name), so a hit requires every font in the Resources dict to match,
                 // not just one. This prevents false positives when pages reuse the
-                // same font key names with different per-page subsets (issue #408).
+                // same font key names with different per-page subsets.
                 if !all_from_cache {
                     let combined_check_hash = {
                         use std::hash::{Hash, Hasher};
@@ -12038,7 +12038,7 @@ impl PdfDocument {
         // 2-row table that fails is_real_grid below and gets dropped, after
         // which the cells fall through to paragraph flow with column-based
         // reading order — producing orphan `<p>40000≤Q</p>` /
-        // `<p>＜55000</p>` pairs.  Consolidate vertically-adjacent fragments
+        // `<p>＜55000</p>` pairs. Consolidate vertically-adjacent fragments
         // that share an identical column structure BEFORE applying
         // is_real_grid so the merged multi-row table survives the filter.
         let raw_tables =
@@ -12046,7 +12046,7 @@ impl PdfDocument {
                 raw_tables,
             );
 
-        // Per #457 Step 4: spatial detection without struct-tree backing
+        // Step 4: spatial detection without struct-tree backing
         // is prone to false positives on form-style layouts (label-colon-
         // value pairs that align horizontally, form fillable boxes drawn
         // with thin lines). Drop tables that don't look like real grids.
@@ -12058,8 +12058,8 @@ impl PdfDocument {
             // PDF with decorative horizontal rules (newsletter mastheads,
             // press-release banners) can hand `is_real_grid` a "wide data
             // table" that is actually wrapped paragraphs partitioned by
-            // word x-alignment.  Reject those before they reach the
-            // converter.  See `looks_like_prose_table` for the heuristic.
+            // word x-alignment. Reject those before they reach the
+            // converter. See `looks_like_prose_table` for the heuristic.
             .filter(|t| !looks_like_prose_table(t))
             .collect();
 
@@ -12081,7 +12081,7 @@ impl PdfDocument {
         // Text-only spatial fallback for converter paths (to_markdown / to_html — issue #486).
         //
         // Wide data tables (e.g. sailing-score grids with 16-18 columns) exceed the default
-        // `max_table_columns: 15` limit and are rejected by the main pipeline.  When the
+        // `max_table_columns: 15` limit and are rejected by the main pipeline. When the
         // caller explicitly opted in to text-only detection (text_fallback=true), retry with
         // a relaxed config that raises the column ceiling and adjusts tolerances so that
         // genuinely wide data tables are captured.
@@ -12099,7 +12099,7 @@ impl PdfDocument {
         // - Results must pass is_real_grid() just like main-pipeline tables.
 
         // Guard 1 — Tagged PDFs: presence of a structure tree means the document has an
-        // explicit semantic layout.  Spatial text-only detection would misfire on
+        // explicit semantic layout. Spatial text-only detection would misfire on
         // structure elements (headings, paragraphs) that happen to share a Y band.
         if config.text_fallback && struct_tree_opt.is_some() {
             log::debug!(
@@ -12147,7 +12147,7 @@ impl PdfDocument {
             };
 
             // When ruling lines are present on the page, restrict text detection to
-            // spans that fall within the VERTICAL-LINE Y bounds.  Vertical lines
+            // spans that fall within the VERTICAL-LINE Y bounds. Vertical lines
             // define the table's column structure and their Y extent precisely
             // delineates the table rows, excluding page headers and footers which
             // sit above/below the table frame.
@@ -12198,14 +12198,14 @@ impl PdfDocument {
                 .into_iter()
                 // Text-only detection infers columns from word x-alignment
                 // alone; a title + a wrapped body line (two rows) is the
-                // signature of ordinary prose, not a table.  Require ≥3
+                // signature of ordinary prose, not a table. Require ≥3
                 // rows of evidence before promoting to a table.
                 .filter(|t| t.rows.len() >= 3 && t.is_real_grid())
                 // Prose split across many "columns" is the dominant
                 // false-positive shape for text-only detection on
                 // line-less pages: a paragraph wraps to N lines, words
                 // cluster into N×K cells, and `is_real_grid` accepts the
-                // shape.  Real data-table cells almost never end with a
+                // shape. Real data-table cells almost never end with a
                 // comma or semicolon (those punctuation marks belong to
                 // running sentences), so a high comma-tail ratio is the
                 // most discriminating prose signal we have.
@@ -14486,7 +14486,7 @@ fn get_root_ref_from_trailer(trailer: &Object) -> Option<ObjectRef> {
 }
 
 /// First in-use *uncompressed* object in the xref, used as a /Root-independent
-/// probe for the garbage-prefix offset-shift decision (issue #509). Compressed
+/// probe for the garbage-prefix offset-shift decision. Compressed
 /// entries can't be seek-validated, so they're skipped.
 fn first_in_use_uncompressed(xref: &crate::xref::CrossRefTable) -> Option<ObjectRef> {
     xref.all_object_numbers()
@@ -14501,7 +14501,7 @@ fn first_in_use_uncompressed(xref: &crate::xref::CrossRefTable) -> Option<Object
 /// Cell contents in real data tables are atomic units (numbers, codes,
 /// names, short labels): they almost always start with an uppercase
 /// letter, a digit, or a symbol (currency, +/-, punctuation marker)
-/// rarely end with a mid-sentence comma or semicolon.  Prose-as-table
+/// rarely end with a mid-sentence comma or semicolon. Prose-as-table
 /// cells, by contrast, are fragments of running sentences — they
 /// frequently start with a lowercase stopword ("and", "the", "to") because
 /// the column boundary fell mid-clause, and frequently end with `,` or
@@ -14542,7 +14542,7 @@ fn looks_like_prose_table(table: &crate::structure::Table) -> bool {
             // Table-of-contents leader runs (". . . . . . ." between an
             // entry's title and its page number) cluster into their own
             // x-columns and create phantom 10–12-column "tables" out of
-            // an ordinary three-column TOC.  A cell whose content is
+            // an ordinary three-column TOC. A cell whose content is
             // exclusively dots and spaces is the leader, not data.
             if trimmed.chars().all(|c| c == '.' || c == ' ') {
                 leader_dots += 1;
@@ -14569,7 +14569,7 @@ fn validate_object_at_offset<R: Read + Seek>(
         None => return false,
     };
     // Compressed objects live inside object streams — their "offset" is the
-    // stream object number, not a byte position.  We cannot validate them by
+    // stream object number, not a byte position. We cannot validate them by
     // seeking, but their presence in a correctly parsed xref stream is
     // sufficient proof that the xref is valid.
     if entry.entry_type == crate::xref::XRefEntryType::Compressed {
@@ -15764,10 +15764,10 @@ mod tests {
         let current = make_test_span("World", 200.0, 100.0, 50.0, 12.0);
         // Issue 487 (pr-138-example.pdf rate tables): a very large
         // same-line gap (here 150 pt > 5 em) must still produce a single
-        // space.  The earlier `gap < font_size * 5.0` upper bound made
+        // space. The earlier `gap < font_size * 5.0` upper bound made
         // this return false, after which the caller concatenated the two
         // spans without a separator and `3.80%` + `4.41%` came out as
-        // `3.80%4.41%`.  Large gap = different column = still a space.
+        // `3.80%4.41%`. Large gap = different column = still a space.
         assert!(PdfDocument::should_insert_space(&prev, &current));
     }
 
@@ -16010,7 +16010,7 @@ mod tests {
     }
 
     // ========================================================================
-    // reverse_rtl_visual_order_runs tests (issue #330)
+    // reverse_rtl_visual_order_runs tests
     // ========================================================================
     //
     // These tests cover the two distinct RTL span shapes pdf_oxide sees
@@ -17778,7 +17778,7 @@ mod tests {
     // ========================================================================
 
     /// Helper: build a minimal PDF whose single character maps to U+FB01 (LATIN SMALL
-    /// LIGATURE FI) via a ToUnicode CMap.  This exercises the path where pdfium hands us
+    /// LIGATURE FI) via a ToUnicode CMap. This exercises the path where pdfium hands us
     /// U+FB01 from the font's ToUnicode map and we must NOT expand it to "fi".
     fn build_ligature_fi_pdf() -> Vec<u8> {
         let cmap = "/CIDInit /ProcSet findresource begin\n\
@@ -17850,7 +17850,7 @@ mod tests {
     ///
     /// Before the fix, `extract_text` unconditionally calls
     /// `get_ligature_components(ﬁ)` → "fi", discarding the font's own
-    /// ToUnicode intent.  After the fix the ligature char is preserved.
+    /// ToUnicode intent. After the fix the ligature char is preserved.
     #[test]
     fn test_ligature_fi_preserved_in_extract_text() {
         let pdf = build_ligature_fi_pdf();
@@ -18771,7 +18771,7 @@ mod tests {
     }
 
     /// Regression test: validate_object_at_offset must return true for
-    /// compressed (type 2) xref entries.  Previously, it treated the object
+    /// compressed (type 2) xref entries. Previously, it treated the object
     /// stream number as a byte offset, sought to a random location,
     /// returned false — triggering a full-file xref reconstruction that took
     /// 35+ seconds on large PDFs.
@@ -18818,12 +18818,12 @@ mod tests {
     ///
     /// Layout:
     /// ```text
-    ///   Left col (x=10)       Right col (x=200)
-    ///   +-----------+          +-----------+
-    ///   | L1 (y=700)|          | R1 (y=700)|
-    ///   | L2 (y=680)|          | R2 (y=680)|
-    ///   | L3 (y=660)|          | R3 (y=660)|
-    ///   +-----------+          +-----------+
+    ///   Left col (x=10) Right col (x=200)
+    ///   +-----------+ +-----------+
+    ///   | L1 (y=700)| | R1 (y=700)|
+    ///   | L2 (y=680)| | R2 (y=680)|
+    ///   | L3 (y=660)| | R3 (y=660)|
+    ///   +-----------+ +-----------+
     /// ```
     /// Expected ColumnAware order: L1, L2, L3, R1, R2, R3
     /// TopToBottom order would interleave: L1, R1, L2, R2, L3, R3
@@ -18890,7 +18890,7 @@ mod tests {
     }
 
     // ========================================================================
-    // extract_page_text / PageText tests (Issue #268)
+    // extract_page_text / PageText tests
     // ========================================================================
 
     #[test]
@@ -18951,7 +18951,7 @@ mod tests {
     ///
     /// Before the fix, the containment filter in extract_text() would skip any
     /// span geometrically contained within the previous span, even if the text
-    /// was different.  This caused the second line to silently disappear.
+    /// was different. This caused the second line to silently disappear.
     ///
     /// The fix adds a `span.text == prev.text` guard so that only true
     /// duplicates are filtered.
@@ -18959,7 +18959,7 @@ mod tests {
     fn test_containment_filter_preserves_distinct_overlapping_lines() {
         // Build a minimal PDF with two Td-placed text strings at very close Y
         // positions (Y=700 and Y=699 — within the 2.0pt "same line" threshold)
-        // but with different content.  The first string is wider so the second
+        // but with different content. The first string is wider so the second
         // is geometrically contained within it.
         let content =
             b"BT /F1 12 Tf 50 700 Td (First line has longer text here) Tj 0 -1 Td (Second) Tj ET";
@@ -19166,7 +19166,7 @@ mod tests {
     }
 
     /// Regression: line-continuation spans that share a Y-band with the dense
-    /// column must NOT be promoted by `reorder_rowspan_labels` (issue #444).
+    /// column must NOT be promoted by `reorder_rowspan_labels`.
     ///
     /// A resume-like PDF has two X groups: a dense main-text column (x=63)
     /// and a sparse rightward column (x=430) whose spans are all on the SAME

@@ -97,7 +97,7 @@ mod tests {
     fn non_arabic_returns_none() {
         // ASCII
         assert_eq!(lookup(0x41), None);
-        // Latin-Extended-B (the v0.3.54 garbage block)
+        // Latin-Extended-B (the garbage block)
         assert_eq!(lookup(0x01A4), None);
         // Hebrew (different block, not covered by this CMap)
         assert_eq!(lookup(0x05D0), None);
