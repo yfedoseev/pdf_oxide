@@ -379,7 +379,7 @@ typedef struct Pdf Pdf;
  * # Memory management
  *
  * The document maintains several internal caches for performance. The main
- * object cache is bounded at 64 MB (see `DEFAULT_OBJECT_CACHE_MAX_BYTES`) and
+ * object cache is bounded at 64 MB (see `DEFAULT_OBJECT_CACHE_MAX_BYTES`)
  * uses FIFO eviction to prevent unbounded heap growth when processing
  * many pages sequentially.
  */
@@ -456,6 +456,29 @@ void pdf_oxide_set_log_level(int32_t level);
  * Get the current log level. Returns 0-5 matching the set_log_level values.
  */
 int32_t pdf_oxide_get_log_level(void);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
+/**
+ * Set the global content-stream operator cap.
+ * `limit < 0` restores the default (1,000,000); any non-negative
+ * value (including 0) is used as the explicit cap. Returns the
+ * previous cap (or -1 if the default was active).
+ *
+ * Bindings (Java JNI, Ruby FFI, PHP FFI, Go cgo / purego, C# P/Invoke,
+ * Node N-API, WASM) call this via the cdylib's exported symbol.
+ */
+int64_t pdf_oxide_set_max_ops_per_stream(int64_t limit);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
+/**
+ * Toggle the global U+FFFD preservation flag for
+ * the high-level extract_text / extract_words / extract_spans
+ * accessors. `1` = preserve FFFD chars; `0` = filter (v0.3.54
+ * default). Returns the previous value as `0` or `1`.
+ */
+int32_t pdf_oxide_set_preserve_unmapped_glyphs(int32_t preserve);
 #endif
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
@@ -935,7 +958,7 @@ int32_t pdf_redaction_apply(DocumentEditor *handle,
 /**
  * Standalone document sanitization without geometric redaction
  * (#231 T10): strips `/Info`, catalog XMP `/Metadata`, document
- * JavaScript (`/OpenAction`, `/AA`, `/Names/JavaScript`) and
+ * JavaScript (`/OpenAction`, `/AA`, `/Names/JavaScript`)
  * `/Names/EmbeddedFiles`; the removed subtrees are hard-excluded from
  * the output (G6). Returns the number of top-level constructs removed,
  * or -1 on error.
@@ -1832,7 +1855,7 @@ FfiRenderedImage *pdf_render_page_thumbnail(PdfDocument *doc,
 /**
  * Render a page and return the raw premultiplied RGBA8888 pixel buffer.
  *
- * The caller retrieves the pixel bytes via `pdf_get_rendered_image_data` and
+ * The caller retrieves the pixel bytes via `pdf_get_rendered_image_data`
  * the dimensions via `out_width`/`out_height` (set on success). Pixels are
  * row-major, top-left origin; `data_len == *out_width * *out_height * 4`.
  * Free the returned handle with `pdf_rendered_image_free`.
@@ -3697,7 +3720,7 @@ int32_t pdf_page_builder_new_page_same_size(FfiPageBuilder *handle, int32_t *err
  * real FluentPageBuilder.
  *
  * Cell array is row-major: `cell_strings[row * n_columns + col]`. Each
- * pointer must be a valid null-terminated UTF-8 C string. `widths` and
+ * pointer must be a valid null-terminated UTF-8 C string. `widths`
  * `aligns` are both length `n_columns`; `aligns` encodes 0/1/2 (see
  * `pdf_page_builder_text_in_rect`). `has_header != 0` promotes the
  * first row to a header (bold + default background).
@@ -3793,7 +3816,7 @@ uintptr_t pdf_page_builder_streaming_table_batch_count(FfiPageBuilder *handle);
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
 /**
- * Explicitly mark a batch boundary: increment the batch counter and
+ * Explicitly mark a batch boundary: increment the batch counter
  * reset the pending-row counter. A no-op if there are no pending rows.
  */
 int32_t pdf_page_builder_streaming_table_flush(FfiPageBuilder *handle, int32_t *error_code);
@@ -3838,7 +3861,7 @@ int32_t pdf_page_builder_streaming_table_finish(FfiPageBuilder *handle, int32_t 
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
 /**
- * Commit this page's buffered operations to its parent builder and
+ * Commit this page's buffered operations to its parent builder
  * **consume** the page handle. After a successful call the handle is
  * invalid; do not call `_free`.
  */
