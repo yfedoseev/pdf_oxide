@@ -14,7 +14,10 @@
 #     because the host's x86_64 `objcopy` silently no-op'd on ARM64
 #     objects (exited 0 but produced byte-identical output)
 #   - macOS x86_64/arm64: ~80-100 MB Mach-O `__LLVM,__bitcode` UNSTRIPPED
-#     before the llvm-objcopy fix (the prior `strip -S` only touched DWARF)
+#     before the bitcode_strip fix (the prior `strip -S` only touched
+#     DWARF; the intermediate llvm-objcopy attempt never ran because
+#     Xcode does not ship `llvm-objcopy` under any `xcrun`-resolvable
+#     name and macos-latest has no `llvm-objcopy` on PATH)
 #
 # Usage: shrink-staticlib.sh <path-to-staticlib> [<target-triple>]
 #
@@ -61,26 +64,6 @@ pick_objcopy_linux() {
   echo "objcopy"
 }
 
-# Pick a Mach-O-capable objcopy for Darwin. macOS's `strip` doesn't touch
-# `__LLVM,__bitcode`; LLVM's objcopy does. `xcrun -f llvm-objcopy` resolves
-# the one bundled with Xcode; fall back to PATH (Homebrew llvm) if Xcode
-# doesn't ship it on a given runner image.
-pick_objcopy_darwin() {
-  if command -v xcrun >/dev/null 2>&1; then
-    local path
-    path=$(xcrun -f llvm-objcopy 2>/dev/null || true)
-    if [[ -n "$path" && -x "$path" ]]; then
-      echo "$path"
-      return
-    fi
-  fi
-  if command -v llvm-objcopy >/dev/null 2>&1; then
-    echo "llvm-objcopy"
-    return
-  fi
-  echo ""
-}
-
 case "$(uname -s)" in
   Linux|MINGW*|MSYS*|CYGWIN*)
     OBJCOPY=$(pick_objcopy_linux)
@@ -115,20 +98,31 @@ case "$(uname -s)" in
   Darwin)
     # macOS staticlibs from Rust w/ `lto = true` carry per-object
     # `__LLVM,__bitcode` segments — multi-MB each, unused by CGo, node-gyp,
-    # or NuGet. `strip -S` removes DWARF only; `llvm-objcopy` removes the
-    # bitcode segment. Run both.
-    OBJCOPY=$(pick_objcopy_darwin)
-    if [[ -n "$OBJCOPY" ]]; then
-      echo "shrink-staticlib: using $OBJCOPY (Mach-O bitcode strip)"
-      tmp="${LIB}.shrink.tmp"
-      "$OBJCOPY" \
-        --remove-section=__LLVM,__bitcode \
-        --remove-section=__LLVM,__cmdline \
-        --strip-debug \
-        "$LIB" "$tmp"
-      mv "$tmp" "$LIB"
+    # or NuGet. Xcode does NOT ship `llvm-objcopy` under any `xcrun`-
+    # resolvable name (and `strip -S` only touches DWARF), so use Apple's
+    # purpose-built `bitcode_strip`, which is part of Xcode + the Command
+    # Line Tools and is always present on macos-latest runners.
+    #
+    # `bitcode_strip` operates per-Mach-O, not on archives, so the standard
+    # pattern is: explode the .a, strip each member, reassemble via libtool,
+    # then `strip -S` for DWARF cleanup.
+    if ! command -v xcrun >/dev/null 2>&1; then
+      echo "shrink-staticlib: xcrun not available on Darwin; running strip -S only (bitcode will survive)" >&2
+      strip -S "$LIB"
     else
-      echo "shrink-staticlib: llvm-objcopy not available, falling back to strip -S (DWARF-only)" >&2
+      echo "shrink-staticlib: using xcrun bitcode_strip -r (Mach-O __LLVM,__bitcode strip)"
+      abs_lib=$(cd "$(dirname "$LIB")" && pwd)/$(basename "$LIB")
+      workdir=$(mktemp -d)
+      (
+        cd "$workdir"
+        ar x "$abs_lib"
+        for obj in *.o; do
+          [[ -f "$obj" ]] || continue
+          xcrun bitcode_strip -r "$obj" -o "$obj"
+        done
+        xcrun libtool -static -o "$abs_lib" *.o
+      )
+      rm -rf "$workdir"
       strip -S "$LIB"
     fi
     ;;
