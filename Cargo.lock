@@ -37,9 +37,9 @@ dependencies = [
 
 [[package]]
 name = "aes"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66bd29a732b644c0431c6140f370d097879203d79b80c94a6747ba0872adaef8"
+checksum = "f1fc76eaeac4c9164506c466d4ffdd8ec9d0c5bf57ee97177c4d8eceb3a0e138"
 dependencies = [
  "cipher 0.5.1",
  "cpubits",
@@ -3036,7 +3036,7 @@ dependencies = [
 name = "pdf_oxide"
 version = "0.3.56"
 dependencies = [
- "aes 0.9.0",
+ "aes 0.9.1",
  "aws-lc-rs",
  "barcoders",
  "base64 0.22.1",
