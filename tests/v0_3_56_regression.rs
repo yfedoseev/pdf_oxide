@@ -242,10 +242,10 @@ fn extract_text_ocr_only_companion_present() {
 }
 
 /// #571 — ROOT-CAUSE FIX. `set_preserve_unmapped_glyphs` global atomic
-/// + all 8 filter sites in `src/extractors/text.rs` gated on the flag.
-/// When the flag is true, `extract_text` / `extract_words` /
-/// `extract_spans` preserve U+FFFD chars, matching `extract_chars`
-/// behaviour. Default is false (back-compat); callers opt in.
+/// gating all 8 filter sites in `src/extractors/text.rs`. When the
+/// flag is true, `extract_text` / `extract_words` / `extract_spans`
+/// preserve U+FFFD chars, matching `extract_chars` behaviour. The
+/// default is false (back-compat); callers opt in.
 #[test]
 fn preserve_unmapped_glyphs_setter_round_trips() {
     let _guard = GLOBAL_FLAG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -979,8 +979,8 @@ fn preserve_unmapped_glyphs_flag_toggles() {
 }
 
 /// #558 second-half behaviour — `flatten_warnings()` returns an empty
-/// list on a clean PDF (no warnings raised). Plus `push_structured_warning`
-/// + `flatten_warnings` round-trips.
+/// list on a clean PDF (no warnings raised), and the
+/// `push_structured_warning` / `flatten_warnings` pair round-trips.
 #[test]
 fn structured_warnings_round_trip_on_real_document() {
     let path = "tests/fixtures/1008.3918v2.pdf";

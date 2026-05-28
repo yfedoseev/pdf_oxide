@@ -7462,9 +7462,10 @@ impl PdfDocument {
     /// in `/V` than ever render at once.
     ///
     /// Heuristic: ~14 chars per cm² at body font sizes. At PDF
-    /// 72 dpi (1 pt = 0.0353 cm), `capacity ≈ 0.0175 * w_pt * h_pt
-    /// + 64`; the +64 constant absorbs short labels where the
-    /// area estimate is too tight to even hold the field's name.
+    /// 72 dpi (1 pt = 0.0353 cm), the formula
+    /// `capacity = 0.0175 * w_pt * h_pt + 64` applies; the constant
+    /// term absorbs short labels where the area estimate alone is
+    /// too tight to even hold the field's name.
     fn widget_text_capacity(bbox: &crate::geometry::Rect) -> usize {
         let area = bbox.width.max(0.0) * bbox.height.max(0.0);
         (0.0175 * area) as usize + 64
@@ -8655,20 +8656,23 @@ impl PdfDocument {
             // Allow small overlap (super/sub glyphs nest slightly
             // under the body letter's bounding box).
             let dx_left = curr_x - s_right;
-            if s_right < curr_right && dx_left <= max_em && dx_left >= -max_em * 0.5 {
-                if s.text
+            if s_right < curr_right
+                && dx_left <= max_em
+                && dx_left >= -max_em * 0.5
+                && s.text
                     .chars()
                     .next_back()
                     .is_some_and(|c| c.is_alphabetic())
-                {
-                    has_left = true;
-                }
+            {
+                has_left = true;
             }
             let dx_right = s.bbox.x - curr_right;
-            if s.bbox.x > curr_x && dx_right <= max_em && dx_right >= -max_em * 0.5 {
-                if s.text.chars().next().is_some_and(|c| c.is_alphabetic()) {
-                    has_right = true;
-                }
+            if s.bbox.x > curr_x
+                && dx_right <= max_em
+                && dx_right >= -max_em * 0.5
+                && s.text.chars().next().is_some_and(|c| c.is_alphabetic())
+            {
+                has_right = true;
             }
         }
         has_left && has_right

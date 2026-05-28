@@ -32,6 +32,13 @@ parameters:
         - phpstan-stubs/ffi.stub.php
     # FFI returns are runtime-typed; don't lie to PHPStan about them.
     treatPhpDocTypesAsCertain: false
+    # PHPStan periodically improves its FFI / phpstorm-stubs handling,
+    # which can cause individual entries in `ignoreErrors:` to stop
+    # matching anything. The patterns below are intentionally broad
+    # safety nets for an evolving stub surface; flagging unmatched
+    # ones as a build error makes CI brittle against upstream stub
+    # version bumps. Allow unmatched ignores to pass silently.
+    reportUnmatchedIgnoredErrors: false
     # NOTE: do NOT add the stub to `bootstrapFiles:` — bootstrapFiles
     # are PHP-`require`d at PHPStan startup, which would redeclare the
     # ext-ffi runtime `class FFI` and fatal. `stubFiles:` already gives

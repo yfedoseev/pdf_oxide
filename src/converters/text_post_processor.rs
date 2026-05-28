@@ -12,7 +12,7 @@
 //!   between words.
 //!
 //! - **Special character spacing**:
-//!  Ensures proper spacing around Greek letters, mathematical symbols,
+//!   Ensures proper spacing around Greek letters, mathematical symbols,
 //!   other special characters that require boundary detection.
 
 use regex::Regex;

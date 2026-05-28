@@ -3165,6 +3165,15 @@ impl<'doc> TextExtractor<'doc> {
                 if y_offset.abs() > half_em {
                     continue;
                 }
+                // Skip subscripts (lowered glyphs). The document-level
+                // pass `apply_super_sub_script_substitutions` needs to
+                // see them at their original lowered baseline so it can
+                // substitute ASCII digits with U+2080..U+2089 (e.g.
+                // H2O -> H\u{2082}O). Snapping them onto the base
+                // baseline would defeat that substitution.
+                if y_offset < 0.0 {
+                    continue;
+                }
                 // X adjacency: the candidate's left edge must sit
                 // near the base's right edge — within one base
                 // font_size to the right and a small slack to the
