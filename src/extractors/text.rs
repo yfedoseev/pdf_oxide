@@ -1013,7 +1013,7 @@ pub(crate) fn is_monospace_font(font_name: &str) -> bool {
 /// (U+2190–U+21FF) and the math-operator blocks so symbolic/technical text is
 /// unaffected; restricted to clearly pictographic ranges plus the VS16 emoji
 /// presentation selector.
-fn is_pictographic(c: char) -> bool {
+pub(crate) fn is_pictographic(c: char) -> bool {
     matches!(c as u32,
         0x1F300..=0x1FAFF   // Misc & Supplemental Symbols and Pictographs, Ext-A
         | 0x1F000..=0x1F0FF // Mahjong / Dominoes / Playing cards
@@ -1056,12 +1056,13 @@ fn should_insert_space(
     // A wide pictographic glyph (e.g. 📄) advances far, so the residual gap to
     // the next token falls below the proportional-font space threshold and the
     // inter-token space would otherwise be dropped (`📄README` instead of
-    // `📄 README`). Word boundaries are reader latitude (§9.10), so when an emoji
-    // is immediately followed by a letter and there is any positive gap, keep the
-    // space. Gated on the pictographic codepoint (non-emoji text is unaffected);
-    // the positive-gap guard avoids forcing a space inside a combined ZWJ/VS
-    // emoji sequence, which advances with ~0 gap.
-    if gap_pt > 0.0
+    // `📄 README`). In practice the emoji glyph's right edge abuts the next
+    // token (gap ≈ 0). Word boundaries are reader latitude (§9.10), so when an
+    // emoji is immediately followed by a letter, keep the space. The
+    // `is_alphabetic` requirement on the following char already excludes combined
+    // ZWJ/VS emoji sequences (whose next char is a selector or another pictograph,
+    // never a letter), so a non-negative gap is the correct gate.
+    if gap_pt >= 0.0
         && preceding_text
             .chars()
             .next_back()
@@ -12345,18 +12346,28 @@ mod tests {
     fn test_should_insert_space_emoji_letter_boundary() {
         let config = SpanMergingConfig::default();
         let fonts = HashMap::new();
-        // Small positive gap that would otherwise drop the inter-token space.
-        let decision = should_insert_space(
-            "📄", "README", 0.5, 12.0, "F1", &fonts, false, &config, None, None, 12.0, 12.0,
-        );
-        assert!(decision.insert_space, "emoji→letter with a positive gap must keep the space");
-
-        // Zero gap (combined ZWJ/VS sequence) must not be forced into a space by
-        // the emoji rule.
+        // The real case (arxiv_2510.26287): a wide emoji glyph abuts the next
+        // token, so the gap is exactly 0. The space must still be kept.
         let decision0 = should_insert_space(
             "📄", "README", 0.0, 12.0, "F1", &fonts, false, &config, None, None, 12.0, 12.0,
         );
-        assert!(!decision0.insert_space, "emoji→letter with zero gap must not force a space");
+        assert!(
+            decision0.insert_space,
+            "emoji→letter with a zero (abutting) gap must keep space"
+        );
+
+        // A positive gap also keeps it.
+        let decision = should_insert_space(
+            "📄", "README", 0.5, 12.0, "F1", &fonts, false, &config, None, None, 12.0, 12.0,
+        );
+        assert!(decision.insert_space, "emoji→letter with a positive gap keeps the space");
+
+        // A combined emoji sequence (next char is another pictograph, not a
+        // letter) must NOT be forced into a space by this rule.
+        let combined = should_insert_space(
+            "📄", "📄", 0.0, 12.0, "F1", &fonts, false, &config, None, None, 12.0, 12.0,
+        );
+        assert!(!combined.insert_space, "emoji→emoji must not be forced into a space");
     }
 
     #[test]

@@ -6422,6 +6422,18 @@ impl PdfDocument {
             return false;
         }
 
+        // Emoji / pictographic → letter boundary: a wide pictographic glyph
+        // (e.g. 📄) abuts the next token, so the proportional-gap test below
+        // would drop the inter-token space (`📄README` instead of `📄 README`).
+        // Word boundaries are reader latitude (ISO 32000-1:2008 §9.10); keep the
+        // space. The alphabetic-follower requirement excludes combined ZWJ/VS
+        // emoji sequences (whose next char is a selector or another pictograph).
+        if prev_tail.is_some_and(crate::extractors::text::is_pictographic)
+            && curr_head.is_some_and(char::is_alphabetic)
+        {
+            return true;
+        }
+
         // Calculate horizontal gap
         let prev_end_x = prev.bbox.x + prev.bbox.width;
         let gap = current.bbox.x - prev_end_x;
