@@ -109,6 +109,8 @@ char *pdf_document_extract_text(PdfDocument *handle, int32_t page_index, int32_t
 
 char *pdf_document_to_markdown(PdfDocument *handle, int32_t page_index, int32_t *error_code);
 
+char *pdf_document_extract_structured_to_json(PdfDocument *handle, int32_t page_index, int32_t *error_code);
+
 char *pdf_document_to_html(PdfDocument *handle, int32_t page_index, int32_t *error_code);
 
 char *pdf_document_to_plain_text(PdfDocument *handle, int32_t page_index, int32_t *error_code);

@@ -143,10 +143,9 @@ fn assert_both_present(text: &str) {
 
 // ── F1: trustworthy marked (Marked true, Suspects false) → structure order ──
 //
-// `extract_text` and `to_markdown` assemble directly from MCID order and so
-// honour the structure tree (Bravo before Alpha). `to_plain_text` runs through
-// the geometric line/column grouping converter (a tracked #608 follow-up), so
-// it is asserted only for content, not order.
+// All four text accessors must honour the structure tree (Bravo before Alpha):
+// `extract_text` and `to_plain_text` assemble directly from MCID order;
+// `to_markdown` and `to_html` route through MCID-driven reading order.
 #[test]
 fn f1_trustworthy_marked_uses_structure_order() {
     let pdf = build_pdf(true, Some("<< /Marked true /Suspects false >>"));
@@ -158,23 +157,18 @@ fn f1_trustworthy_marked_uses_structure_order() {
         "trustworthy marked+non-suspect tree must be preferred"
     );
 
-    let et = doc.extract_text(0).unwrap();
-    assert_both_present(&et);
-    assert!(
-        precedes(&et, "Bravo", "Alpha"),
-        "extract_text must use structure order (Bravo before Alpha); got: {et:?}"
-    );
-
-    // to_plain_text uses the geometric grouping converter (see module note);
-    // assert only that both fragments survive.
-    let pt = doc.to_plain_text(0, &opts).unwrap();
-    assert_both_present(&pt);
-
-    let md = doc.to_markdown(0, &opts).unwrap();
-    assert!(
-        precedes(&md, "Bravo", "Alpha"),
-        "to_markdown must use structure order (Bravo before Alpha); got: {md:?}"
-    );
+    for (name, out) in [
+        ("extract_text", doc.extract_text(0).unwrap()),
+        ("to_plain_text", doc.to_plain_text(0, &opts).unwrap()),
+        ("to_markdown", doc.to_markdown(0, &opts).unwrap()),
+        ("to_html", doc.to_html(0, &opts).unwrap()),
+    ] {
+        assert_both_present(&out);
+        assert!(
+            precedes(&out, "Bravo", "Alpha"),
+            "{name} must use structure order (Bravo before Alpha); got: {out:?}"
+        );
+    }
 }
 
 // ── F2: suspect (Marked true, Suspects true) → geometric order ──

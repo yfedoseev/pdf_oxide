@@ -8230,7 +8230,7 @@ impl PdfDocument {
 
             if let Some(spans) = mcid_map.get(&mcid) {
                 consumed_mcids.insert(mcid);
-                for span in spans {
+                for span in Self::order_mcid_spans(spans) {
                     if let Some(prev) = prev_span {
                         let y_diff = (prev.bbox.y - span.bbox.y).abs();
 
@@ -8317,6 +8317,27 @@ impl PdfDocument {
         Ok(text)
     }
 
+    /// Order one MCID's spans for emission in the structure-order assemblers
+    /// (#608). A single marked-content element can carry spans across several
+    /// visual lines; emitting them in raw extraction order can mis-order them,
+    /// so sort by the canonical reading-order comparator. Skipped for single-
+    /// span MCIDs and for any MCID containing RTL text (whose span order is
+    /// handled by the bidi passes) — both stay byte-identical.
+    fn order_mcid_spans(spans: &[crate::layout::TextSpan]) -> Vec<&crate::layout::TextSpan> {
+        let mut ordered: Vec<&crate::layout::TextSpan> = spans.iter().collect();
+        let has_rtl = |s: &crate::layout::TextSpan| {
+            s.text
+                .chars()
+                .any(|c| crate::text::rtl_detector::is_rtl_text(c as u32))
+        };
+        if spans.len() > 1 && !spans.iter().any(has_rtl) {
+            ordered.sort_by(|a, b| {
+                crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
+            });
+        }
+        ordered
+    }
+
     /// Extract text from a Tagged PDF page using pre-computed structure traversal cache.
     ///
     /// This is the optimized version of `extract_text_structure_order` that uses
@@ -8395,7 +8416,7 @@ impl PdfDocument {
 
             if let Some(spans) = mcid_map.get(&mcid) {
                 consumed_mcids.insert(mcid);
-                for span in spans {
+                for span in Self::order_mcid_spans(spans) {
                     if let Some(prev) = prev_span {
                         let y_diff = (prev.bbox.y - span.bbox.y).abs();
                         if y_diff > Self::same_line_threshold(prev, span) {
@@ -8554,6 +8575,25 @@ impl PdfDocument {
         crate::geometry::Rect::new(ax.min(bx), ay.min(by), (ax - bx).abs(), (ay - by).abs())
     }
 
+    /// Map a single span's bbox into the displayed frame for a `/Rotate`d page
+    /// (translate to origin → [`rotate_span_bbox`] → translate back).
+    fn map_span_into_rotated_frame(
+        s: &mut crate::layout::TextSpan,
+        rot: i32,
+        llx: f32,
+        lly: f32,
+        w: f32,
+        h: f32,
+    ) {
+        let rel =
+            crate::geometry::Rect::new(s.bbox.x - llx, s.bbox.y - lly, s.bbox.width, s.bbox.height);
+        let m = Self::rotate_span_bbox(rel, rot, w, h);
+        s.bbox.x = llx + m.x;
+        s.bbox.y = lly + m.y;
+        s.bbox.width = m.width;
+        s.bbox.height = m.height;
+    }
+
     fn postprocess_spans(
         &self,
         page_index: usize,
@@ -8599,28 +8639,23 @@ impl PdfDocument {
         // rot == 180 is numerically identical to the previous mirror. (A
         // within-span character re-order for rotated multi-glyph spans — the
         // issue14415 within-line residual — is a tracked follow-up.)
-        if let Ok((llx, lly, urx, ury)) = self.get_page_media_box(page_index) {
-            let rot = self
-                .get_page_rotation(page_index)
-                .unwrap_or(0)
-                .rem_euclid(360);
-            if matches!(rot, 90 | 180 | 270) {
-                let w = urx - llx;
-                let h = ury - lly;
-                for s in spans.iter_mut() {
-                    // Translate to the page origin, rotate, translate back.
-                    let rel = crate::geometry::Rect::new(
-                        s.bbox.x - llx,
-                        s.bbox.y - lly,
-                        s.bbox.width,
-                        s.bbox.height,
-                    );
-                    let m = Self::rotate_span_bbox(rel, rot, w, h);
-                    s.bbox.x = llx + m.x;
-                    s.bbox.y = lly + m.y;
-                    s.bbox.width = m.width;
-                    s.bbox.height = m.height;
-                }
+        // Captured so the same transform is applied to annotation spans appended
+        // later (their /Rect is in unrotated page space too). `None` for rot==0
+        // or unknown media box — those pages are byte-identical.
+        let page_rotation: Option<(i32, f32, f32, f32, f32)> =
+            match self.get_page_media_box(page_index) {
+                Ok((llx, lly, urx, ury)) => {
+                    let rot = self
+                        .get_page_rotation(page_index)
+                        .unwrap_or(0)
+                        .rem_euclid(360);
+                    matches!(rot, 90 | 180 | 270).then_some((rot, llx, lly, urx - llx, ury - lly))
+                },
+                Err(_) => None,
+            };
+        if let Some((rot, llx, lly, w, h)) = page_rotation {
+            for s in spans.iter_mut() {
+                Self::map_span_into_rotated_frame(s, rot, llx, lly, w, h);
             }
         }
 
@@ -8677,8 +8712,16 @@ impl PdfDocument {
         // Append text from non-Widget annotations (/Subtype /Text, FreeText,
         // Stamp, Highlight, etc.) that carry a /Contents entry. These are not
         // part of the page content stream so they are not picked up by the
-        // regular extractor.
+        // regular extractor. On a /Rotate'd page their /Rect-derived bboxes are
+        // in unrotated page space, so map the appended spans into the same
+        // displayed frame as the content spans (no-op for unrotated pages).
+        let pre_annotation_len = spans.len();
         spans.extend(self.annotation_content_spans(page_index));
+        if let Some((rot, llx, lly, w, h)) = page_rotation {
+            for s in spans[pre_annotation_len..].iter_mut() {
+                Self::map_span_into_rotated_frame(s, rot, llx, lly, w, h);
+            }
+        }
 
         // Mark running headers/footers (untagged-PDF heuristic). Spans whose
         // normalized text recurs on >=50% of pages and sits near the top or
@@ -13829,18 +13872,17 @@ impl PdfDocument {
         // Step 4: Create pipeline with config
         let pipeline = TextPipeline::with_config(pipeline_config.clone());
 
-        // Step 5: Build reading order context.
-        //
-        // NOTE (#608): for a trustworthy tagged PDF the structure-tree reading
-        // order is honoured by `extract_text` and `to_markdown` (which assemble
-        // directly from MCID order). `to_plain_text` / `to_html` run spans
-        // through the geometric line/column grouping converter, which regroups
-        // by Y position and therefore overrides any per-span `reading_order` the
-        // StructureTreeStrategy would assign. Feeding MCID order here is thus a
-        // no-op for these two converters, so we keep the geometric context — and
-        // its byte-for-byte output — unchanged. Routing structured logical order
-        // through the plain-text/HTML converters is a tracked follow-up.
-        let context = ReadingOrderContext::new().with_page(page_index as u32);
+        // Step 5: Build reading order context. For a trustworthy tagged PDF use
+        // the canonical builder so the StructureTreeStrategy assigns MCID-driven
+        // reading order (§14.8.2.3.1). The HTML converter sorts by
+        // `reading_order` (and only uses Y for line-break gaps), so it honours
+        // the structure order. Untagged / suspect PDFs keep the exact bare
+        // geometric context, so their output is byte-for-byte unchanged.
+        let context = if self.prefers_structure_reading_order() {
+            crate::pipeline::page_order::build_context(self, page_index)
+        } else {
+            ReadingOrderContext::new().with_page(page_index as u32)
+        };
 
         // Step 6: Process through pipeline (applies reading order strategy)
         let ordered_spans = pipeline.process(spans, context)?;
@@ -13968,6 +14010,17 @@ impl PdfDocument {
         page_index: usize,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
+        // #608: for a trustworthy tagged PDF, read in logical structure order
+        // (§14.8.2.3.1) by assembling directly from the structure tree — the
+        // same path `extract_text` uses. The geometric plain-text converter
+        // below regroups spans by Y and would otherwise override the structure
+        // order. Untagged / suspect PDFs fall through to the exact converter
+        // path below, so their output is byte-for-byte unchanged.
+        if self.prefers_structure_reading_order() {
+            let base_spans = self.extract_spans(page_index)?;
+            return self.assemble_text_from_spans(page_index, base_spans, options);
+        }
+
         // Step 1: Extract raw spans (unchanged - this is the foundation)
         let mut spans = self.extract_spans(page_index)?;
 

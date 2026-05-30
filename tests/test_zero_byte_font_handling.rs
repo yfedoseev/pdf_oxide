@@ -48,6 +48,7 @@ fn test_skip_truetype_cmap_when_embedded_font_zero_bytes() {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Should use Adobe Glyph List fallback despite 0-byte embedded data
@@ -102,6 +103,7 @@ fn test_skip_truetype_cmap_for_common_office_fonts() {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         let result = font.char_to_unicode(gid);
@@ -161,6 +163,7 @@ fn test_still_use_truetype_cmap_when_embedded_font_has_data() {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Should attempt mapping - either via embedded data or AGL

@@ -111,6 +111,21 @@ class FunctionBindings
     }
 
     /**
+     * Extract structured page layout as a JSON string (#536).
+     *
+     * @param CData $handle The document handle
+     * @param int $pageIndex Zero-based page index
+     * @return string Serialized StructuredPage JSON
+     */
+    public function pdfDocumentExtractStructuredToJson(CData $handle, int $pageIndex): string
+    {
+        $errorCode = $this->ffi->new('int');
+        $json = $this->ffi->pdf_document_extract_structured_to_json($handle, $pageIndex, FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_document_extract_structured_to_json', ['page' => $pageIndex]);
+        return StringMarshaller::fromCString($json);
+    }
+
+    /**
      * Convert page to Markdown.
      *
      * @param CData $handle The document handle

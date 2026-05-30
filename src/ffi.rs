@@ -555,6 +555,42 @@ pub extern "C" fn pdf_document_extract_text(
     }
 }
 
+/// Extract a page as structured typed regions (issue #536), returned as a JSON
+/// string (a serialized `StructuredPage`: `page_index`, `page_width`,
+/// `page_height`, and `regions[]` with `kind` / `text` / `bbox` / `spans` /
+/// `column_index`). Bindings deserialize the JSON into their native types.
+///
+/// Returns NULL on error (see `error_code`); the returned string must be freed
+/// with `pdf_free_string`.
+#[no_mangle]
+pub extern "C" fn pdf_document_extract_structured_to_json(
+    handle: *mut PdfDocument,
+    page_index: i32,
+    error_code: *mut i32,
+) -> *mut c_char {
+    if handle.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let doc = handle_ref(handle);
+    match doc.extract_structured(page_index as usize) {
+        Ok(structured) => match serde_json::to_string(&structured) {
+            Ok(json) => {
+                set_error(error_code, ERR_SUCCESS);
+                to_c_string(&json)
+            },
+            Err(_) => {
+                set_error(error_code, ERR_INTERNAL);
+                ptr::null_mut()
+            },
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
+    }
+}
+
 /// Convert a page to Markdown.
 #[no_mangle]
 pub extern "C" fn pdf_document_to_markdown(

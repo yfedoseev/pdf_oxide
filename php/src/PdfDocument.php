@@ -141,6 +141,25 @@ final class PdfDocument
     }
 
     /**
+     * Extract a structured layout view of a single page (#536).
+     *
+     * Returns the deserialized `StructuredPage` as an associative array:
+     * `['page_index' => int, 'page_width' => float, 'page_height' => float,
+     *   'regions' => [['kind' => string, 'text' => string, 'bbox' => [...],
+     *                  'spans' => [...], 'column_index' => int], ...]]`.
+     *
+     * @return array<string, mixed>
+     *
+     * @throws \OutOfBoundsException when `$page` is out of range
+     * @throws InvalidStateException when the document has been closed
+     */
+    public function extractStructured(int $page): array
+    {
+        $json = $this->bindings->pdfDocumentExtractStructuredToJson($this->requireHandle(), $page);
+        return json_decode($json, true);
+    }
+
+    /**
      * Auto-routed extraction (v0.3.51 #517). Returns native text when
      * present, OCR text for scanned regions when the `ocr` feature is
      * available, and gracefully falls back to native text + a logged

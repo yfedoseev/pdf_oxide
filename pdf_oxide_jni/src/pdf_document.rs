@@ -319,3 +319,51 @@ pub extern "system" fn Java_fyi_oxide_pdf_PdfDocument_nativeExtractText<'local>(
     })
     .resolve::<ThrowRuntimeExAndDefault>()
 }
+
+// ─────────────────────── extractStructured ─────────────────────────────────
+
+/// `Java_fyi_oxide_pdf_PdfDocument_nativeExtractStructured` — extract a page as
+/// structured typed regions (issue #536), returned as a JSON string (a
+/// serialized `StructuredPage`).
+///
+/// # Safety
+///
+/// JVM-invoked. `handle` must be valid; a negative `page_index` is surfaced as
+/// `IndexOutOfBoundsException`.
+#[no_mangle]
+pub extern "system" fn Java_fyi_oxide_pdf_PdfDocument_nativeExtractStructured<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    page_index: jint,
+) -> jni::objects::JString<'local> {
+    env.with_env(|env| -> Result<jni::objects::JString<'local>, JniError> {
+        // SAFETY: Java side asserted handle != 0 before calling.
+        let doc = unsafe { doc_ref(handle) };
+        if page_index < 0 {
+            let class = jni::strings::JNIString::from("java/lang/IndexOutOfBoundsException");
+            let msg = jni::strings::JNIString::from(format!("page index {} < 0", page_index));
+            let _ = env.throw_new(&class, &msg);
+            return Err(JniError::JavaException);
+        }
+        match doc.extract_structured(page_index as usize) {
+            Ok(structured) => match serde_json::to_string(&structured) {
+                Ok(json) => Ok(env.new_string(json)?),
+                Err(e) => {
+                    let class = jni::strings::JNIString::from("java/lang/RuntimeException");
+                    let msg = jni::strings::JNIString::from(format!(
+                        "structured serialization failed: {e}"
+                    ));
+                    let _ = env.throw_new(&class, &msg);
+                    Err(JniError::JavaException)
+                },
+            },
+            Err(e) => {
+                throw_pdf(env, &e)?;
+                // Unreachable but type-required:
+                Ok(jni::objects::JString::default())
+            },
+        }
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}

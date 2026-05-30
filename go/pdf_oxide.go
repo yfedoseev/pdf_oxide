@@ -49,6 +49,7 @@ extern char* pdf_document_classify_page(void* handle, int32_t page_index, int* e
 extern char* pdf_document_classify_document(void* handle, int* error_code);
 extern char* pdf_document_extract_text_auto(void* handle, int32_t page_index, int* error_code);
 extern char* pdf_document_extract_page_auto(void* handle, int32_t page_index, const char* options_json, int* error_code);
+extern char* pdf_document_extract_structured_to_json(void* handle, int32_t page_index, int* error_code);
 
 // Document Editor FFI declarations
 extern void* document_editor_open(const char* path, int* error_code);
@@ -714,6 +715,37 @@ func (doc *PdfDocument) ExtractPageAuto(pageIndex int, opts ...AutoOption) (stri
 	s := C.GoString(c)
 	C.free_string(c)
 	return s, nil
+}
+
+// ExtractStructured returns a structure-tree-ordered extraction of the page
+// as a JSON StructuredPage string ({page_index, page_width, page_height,
+// regions:[{kind, text, bbox, spans, column_index}]}). Callers unmarshal the
+// JSON themselves (#536).
+func (doc *PdfDocument) ExtractStructured(page int) (string, error) {
+	if err := doc.acquireRead(); err != nil {
+		return "", err
+	}
+	defer doc.mu.Unlock()
+
+	if page < 0 {
+		return "", ErrInvalidPageIndex
+	}
+
+	var errorCode C.int
+	cText := C.pdf_document_extract_structured_to_json(doc.handle, C.int32_t(page), &errorCode)
+
+	if errorCode != 0 {
+		return "", ffiError(errorCode)
+	}
+
+	if cText == nil {
+		return "", ErrInternal
+	}
+
+	text := C.GoString(cText)
+	C.free_string(cText)
+
+	return text, nil
 }
 
 // ToMarkdown converts a page to Markdown format

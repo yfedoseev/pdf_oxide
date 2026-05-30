@@ -2090,6 +2090,17 @@ impl PyPdfDocument {
         }
     }
 
+    /// Extract a page as structured typed regions (issue #536), returned as a
+    /// JSON string (deserialize with `json.loads`): a `StructuredPage` whose
+    /// `regions` each carry `kind`, `text`, `bbox`, `spans`, and `column_index`.
+    fn extract_structured(&mut self, page: usize) -> PyResult<String> {
+        let structured = self
+            .inner
+            .extract_structured(page)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        serde_json::to_string(&structured).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
     /// Get page annotations info.
     fn get_annotations(&mut self, py: Python<'_>, page: usize) -> PyResult<Py<PyAny>> {
         let annos = self

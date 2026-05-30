@@ -441,6 +441,37 @@ namespace PdfOxide.Core
             finally { _lock.ExitReadLock(); }
         }
 
+        /// <summary>
+        /// #536: Extracts the structured layout of a page as a JSON string.
+        /// </summary>
+        /// <remarks>
+        /// The returned JSON is a serialized <c>StructuredPage</c>:
+        /// <c>{page_index, page_width, page_height, regions:[{kind, text, bbox,
+        /// spans, column_index}]}</c>. As with <see cref="ExtractText(int)"/>,
+        /// the raw payload (here, JSON) is returned rather than parsed, so no
+        /// JSON dependency is imposed on the binding — deserialize with the JSON
+        /// library of your choice.
+        /// </remarks>
+        /// <param name="page">The page index (0-based).</param>
+        /// <returns>The structured page serialized as a JSON <see cref="string"/>.</returns>
+        /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="page"/> is out of range.</exception>
+        /// <exception cref="ObjectDisposedException">Thrown if the document has been disposed.</exception>
+        /// <exception cref="PdfException">Thrown if structured extraction fails.</exception>
+        public string ExtractStructured(int page)
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                if (page < 0 || page >= PageCount)
+                    throw new ArgumentOutOfRangeException(nameof(page));
+                var ptr = NativeMethods.PdfDocumentExtractStructuredToJson(_handle, page, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
+        }
+
         /// <summary>#517: cheap per-page text-vs-OCR classification → JSON
         /// PageClassification (the frozen cross-binding envelope).</summary>
         public string ClassifyPage(int pageIndex)

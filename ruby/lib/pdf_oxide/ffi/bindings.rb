@@ -77,6 +77,10 @@ module PdfOxide
       # bytes but never calls free_string → leaks one full-document buffer
       # per call.
       attach_function :pdf_document_extract_text, %i[pointer int32 pointer], :pointer
+      # char *pdf_document_extract_structured_to_json(void *handle, int32_t page_index, int32_t *error_code)
+      # Returns owned char* (serialized StructuredPage JSON) — bind as
+      # :pointer so the caller frees via StringMarshaller/free_string (#536).
+      attach_function :pdf_document_extract_structured_to_json, %i[pointer int32 pointer], :pointer
       attach_function :pdf_document_to_markdown, %i[pointer int32 pointer], :pointer
       attach_function :pdf_document_to_markdown_all, %i[pointer pointer], :pointer
       attach_function :pdf_document_to_html, %i[pointer int32 pointer], :pointer

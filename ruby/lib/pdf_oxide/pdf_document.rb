@@ -138,6 +138,23 @@ module PdfOxide
       StringMarshaller.from_c_string(ptr) || ''
     end
 
+    # Extract a structured representation of a single page (#536).
+    # Returns the parsed `StructuredPage` JSON as a Hash:
+    # `{ "page_index", "page_width", "page_height",
+    #    "regions" => [ { "kind", "text", "bbox", "spans", "column_index" } ] }`.
+    # @param page [Integer] 0-based page index.
+    # @return [Hash] parsed structured page.
+    def extract_structured(page)
+      validate_page_index(page)
+      err = ::FFI::MemoryPointer.new(:int32)
+      ptr = Bindings.pdf_document_extract_structured_to_json(handle, page, err)
+      raise_for_code(err.read_int32, 'extract_structured')
+      json = StringMarshaller.from_c_string(ptr) || ''
+
+      require 'json'
+      JSON.parse(json)
+    end
+
     # Auto-routed extraction for a single page (v0.3.51 #517).
     # Returns native text where present, OCR'd text for scanned regions
     # when the `ocr` feature is available, and gracefully falls back to

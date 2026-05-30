@@ -477,6 +477,20 @@ impl WasmPdfDocument {
             .map_err(|e| JsValue::from_str(&format!("Failed to extract all text: {}", e)))
     }
 
+    /// Extract a page as structured typed regions (issue #536), returned as a
+    /// JSON string (a `StructuredPage`); parse with `JSON.parse` on the JS side.
+    #[wasm_bindgen(js_name = "extractStructured")]
+    pub fn extract_structured(&mut self, page_index: usize) -> Result<String, JsValue> {
+        let structured = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?
+            .extract_structured(page_index)
+            .map_err(|e| JsValue::from_str(&format!("Failed to extract structured: {}", e)))?;
+        serde_json::to_string(&structured)
+            .map_err(|e| JsValue::from_str(&format!("Serialization failed: {}", e)))
+    }
+
     /// Identify and remove headers.
     ///
     /// Uses spec-compliant /Artifact tags when available (100% accuracy), or

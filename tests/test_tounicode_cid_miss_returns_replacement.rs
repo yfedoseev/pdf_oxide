@@ -60,6 +60,7 @@ fn subset_type0_font() -> FontInfo {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     }
 }
 

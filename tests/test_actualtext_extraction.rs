@@ -50,6 +50,7 @@ fn test_ligature_extraction_fi() {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Character 0xFB01 is the 'fi' ligature
@@ -96,6 +97,7 @@ fn test_ligature_extraction_fl() {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     let result = font.char_to_unicode(0xFB02);
@@ -141,6 +143,7 @@ fn test_ligature_extraction_ffi() {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     let result = font.char_to_unicode(0xFB03);
@@ -187,6 +190,7 @@ fn test_ligature_extraction_ffl() {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     let result = font.char_to_unicode(0xFB04);
