@@ -637,6 +637,21 @@ char *pdf_document_extract_text(PdfDocument *handle, int32_t page_index, int32_t
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
 /**
+ * Extract a page as structured typed regions (issue #536), returned as a JSON
+ * string (a serialized `StructuredPage`: `page_index`, `page_width`,
+ * `page_height`, and `regions[]` with `kind` / `text` / `bbox` / `spans` /
+ * `column_index`). Bindings deserialize the JSON into their native types.
+ *
+ * Returns NULL on error (see `error_code`); the returned string must be freed
+ * with `pdf_free_string`.
+ */
+char *pdf_document_extract_structured_to_json(PdfDocument *handle,
+                                              int32_t page_index,
+                                              int32_t *error_code);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
+/**
  * Convert a page to Markdown.
  */
 char *pdf_document_to_markdown(PdfDocument *handle, int32_t page_index, int32_t *error_code);
