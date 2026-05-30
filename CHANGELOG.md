@@ -2,6 +2,30 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.58] - 2026-05-31
+
+> Structure-tree reading order with /Suspects handling, structured page extraction (extract_structured), /Rotate 90°/270° support, emoji word-spacing, a two-phase image-handle refinement, and a dependency refresh
+
+### Added
+
+- **`PdfDocument::extract_structured(page) -> StructuredPage`** — additive typed page surface (#536). Returns the page's text grouped into reading-order `StructuredRegion`s with a `RegionRole` (`BodyBlock`, `StructuralHeading { level }`, `MarginalLabel`, `Header`, `Footer`, `PageNumber`, `Artifact`) and a best-effort `column_index` for two-column bodies. Roles reuse signals already on each span — `/Artifact` marked content (ISO 32000-1:2008 §14.8.2.2), structure-tree heading levels (§14.7.2), and geometry (§14.8.2.3.1) — so a trustworthy tagged PDF yields tree-driven roles for free. New public types `StructuredPage` / `StructuredRegion` / `RegionRole` in `pdf_oxide::structured` (serde-serializable). Thanks @lggcs.
+- **`PdfDocument::prefers_structure_reading_order() -> bool`** — read-only introspection accessor reporting whether text extraction will use the Tagged-PDF *logical structure order* (a depth-first traversal of `/StructTreeRoot`, ISO 32000-1:2008 §14.8.2.3.1 / §14.7.1) rather than geometric page-content order for this document. (#608)
+
+### Fixed
+
+- **Suspect tagged PDFs now extract in geometric reading order (#608)** — a document advertising `/MarkInfo /Suspects true` (the `/TagSuspect /Ordering` signal that the producer could not guarantee page content order matches logical structure order, §14.8.2.3.1) was previously read through its structure tree by `extract_text`, which could emit content out of visual order. Such documents now fall back to geometric order, while trustworthy tagged PDFs — `/Marked`, or a catalog `/StructTreeRoot` on PDF-1.4 files that predate `/MarkInfo` — continue to read in logical structure order across `extract_text` and Markdown. A single shared trustworthiness predicate now gates every reading-order path so they cannot drift apart. Non-suspect and untagged documents are byte-for-byte unchanged.
+
+- **`/Rotate 90` and `/Rotate 270` pages now read in display orientation** — pages with a 90°- or 270°-clockwise `/Rotate` (ISO 32000-1:2008 §7.7.3.3) were previously extracted in raw user-space coordinates and came out sideways, with lines and words in the wrong order. Every span is now mapped into the displayed coordinate frame — including the page width/height swap for 90°/270° (§8.3.3) — before reading-order assembly, so all four rotation angles read upright. Unrotated and 180° pages are byte-for-byte unchanged. (A within-line character re-order for rotated multi-glyph spans remains a tracked follow-up.)
+- **Space after an emoji is no longer dropped** — a pictographic glyph (e.g. 📄) immediately followed by a word (`📄 README.md`) previously merged into `📄README.md`, because the residual gap after the wide glyph fell below the proportional-font space threshold. An emoji→letter boundary with a positive gap now keeps the inter-token space. Word segmentation is reader latitude (ISO 32000-1:2008 §9.10); the rule is gated on pictographic codepoints (arrows and math-operator blocks excluded), so technical text is unaffected.
+
+### Changed
+
+- **`PdfImageHandle::decode()` / `raw_compressed_bytes()` now borrow `&self`** and `PdfImageHandle` is `Clone` (refining the v0.3.57 two-phase image API, #588). A single handle now supports an inspect → raw-bytes → decode flow without re-enumerating the page. Borrowing is a strict superset of the previous by-value signatures, so existing callers still compile. (Resolving resource-name `/ColorSpace` inside `decode()` per §8.6.6 / §8.9.7, and an `indexed_base()` accessor for Indexed images per §8.6.6.3, remain tracked follow-ups.)
+
+### Dependencies
+
+- **Rust**: `serde_json` 1.0.149 → 1.0.150 (#578), `log` 0.4.29 → 0.4.30 (#592), `quick-xml` 0.40.0 → 0.40.1 (#579), `cbc` 0.2.0 → 0.2.1 (pulls `cipher` 0.5.2 / `crypto-common` 0.2.2, #577). **Go**: `ebitengine/purego` 0.10.0 → 0.10.1 (#593). **Ruby**: `rubocop-rspec` 2.20 → 3.9 (#581). **CI actions**: `actions/setup-java` v4 → v5.2.0 (#585), `github/codeql-action` v3 4.35.5 → 4.36.0 (#582), `taiki-e/install-action` 2.79.2 → 2.79.12 (#580), `EmbarkStudios/cargo-deny-action` 2.0.18 → 2.0.20 (#584), `golangci/golangci-lint-action` 9.2.0 → 9.2.1 (#583).
+
 ## [0.3.57] - 2026-05-30
 
 > Community contributions + extraction-quality sweep — separation plates, OCG ink filtering, two-phase images, rendered-advance metrics, plus multi-column reading order, page-rotation, CJK/UTF-8 CMap decoding, RTL logical order, indirect-ref page boxes, and font-cache correctness

@@ -2227,6 +2227,7 @@ pub(crate) fn parse_filter_chain(
 }
 
 /// Internal image source stored inside a [`PdfImageHandle`].
+#[derive(Clone)]
 enum PdfImageSource {
     /// Indirect Image XObject reference; loaded on demand.
     XObject(ObjectRef),
@@ -2268,6 +2269,7 @@ enum PdfImageSource {
 ///     .collect::<Result<_, _>>()
 ///     .unwrap();
 /// ```
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct PdfImageHandle<'doc> {
     /// Image width in pixels (from XObject `/Width`).
@@ -2308,19 +2310,20 @@ impl<'doc> PdfImageHandle<'doc> {
     ///
     /// This is the expensive operation: it decompresses the image stream,
     /// decodes pixels, and applies colour-space conversions as needed.
-    pub fn decode(self) -> Result<PdfImage> {
+    ///
+    /// Takes `&self` so a single handle supports a two-phase inspect → raw →
+    /// decode flow ([`raw_compressed_bytes`](Self::raw_compressed_bytes) then
+    /// `decode`) without re-enumerating the page.
+    pub fn decode(&self) -> Result<PdfImage> {
         use crate::extractors::extract_image_from_xobject;
 
         let xobject_for_extract;
-        let (obj, obj_ref) = match self.source {
+        let (obj, obj_ref) = match &self.source {
             PdfImageSource::XObject(obj_ref) => {
-                xobject_for_extract = self.doc.load_object(obj_ref)?;
-                (&xobject_for_extract, Some(obj_ref))
+                xobject_for_extract = self.doc.load_object(*obj_ref)?;
+                (&xobject_for_extract, Some(*obj_ref))
             },
-            PdfImageSource::Inline { stream_object, .. } => {
-                xobject_for_extract = stream_object;
-                (&xobject_for_extract, None)
-            },
+            PdfImageSource::Inline { stream_object, .. } => (stream_object, None),
         };
 
         let mut image = extract_image_from_xobject(Some(self.doc), obj, obj_ref, None)?;
@@ -2342,10 +2345,13 @@ impl<'doc> PdfImageHandle<'doc> {
     /// For JPEG images (`filter_chain == [DCTDecode]`) these bytes form a valid
     /// JPEG file and can be written directly to disk or forwarded to a downstream
     /// pipeline without recompression.
-    pub fn raw_compressed_bytes(self) -> Result<Vec<u8>> {
-        match self.source {
+    ///
+    /// Takes `&self` so it can be combined with [`decode`](Self::decode) on the
+    /// same handle (inspect → raw → decode) without re-enumerating the page.
+    pub fn raw_compressed_bytes(&self) -> Result<Vec<u8>> {
+        match &self.source {
             PdfImageSource::XObject(obj_ref) => {
-                let obj = self.doc.load_object(obj_ref)?;
+                let obj = self.doc.load_object(*obj_ref)?;
                 match obj {
                     crate::object::Object::Stream { data, .. } => Ok(data.to_vec()),
                     _ => Err(crate::error::Error::Image("XObject is not a stream".to_string())),

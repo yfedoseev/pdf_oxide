@@ -1006,6 +1006,21 @@ pub(crate) fn is_monospace_font(font_name: &str) -> bool {
     MONO_MARKERS.iter().any(|m| lower.contains(m))
 }
 
+/// True for codepoints in the main emoji / pictographic blocks.
+///
+/// Used only as a word-spacing hint — ISO 32000-1:2008 §9.10 leaves word
+/// segmentation to the reader. Deliberately **excludes** arrows
+/// (U+2190–U+21FF) and the math-operator blocks so symbolic/technical text is
+/// unaffected; restricted to clearly pictographic ranges plus the VS16 emoji
+/// presentation selector.
+fn is_pictographic(c: char) -> bool {
+    matches!(c as u32,
+        0x1F300..=0x1FAFF   // Misc & Supplemental Symbols and Pictographs, Ext-A
+        | 0x1F000..=0x1F0FF // Mahjong / Dominoes / Playing cards
+        | 0x2600..=0x27BF   // Misc Symbols + Dingbats
+        | 0xFE0F) // VS16 emoji presentation selector
+}
+
 fn should_insert_space(
     preceding_text: &str,
     following_text: &str,
@@ -1035,6 +1050,28 @@ fn should_insert_space(
     // Spaces already present in text strings should not be duplicated
     if has_boundary_space(preceding_text, following_text) {
         return SpaceDecision::no_space(SpaceSource::AlreadyPresent, 1.0);
+    }
+
+    // Rule 0.4: Emoji / pictographic → letter boundary.
+    // A wide pictographic glyph (e.g. 📄) advances far, so the residual gap to
+    // the next token falls below the proportional-font space threshold and the
+    // inter-token space would otherwise be dropped (`📄README` instead of
+    // `📄 README`). Word boundaries are reader latitude (§9.10), so when an emoji
+    // is immediately followed by a letter and there is any positive gap, keep the
+    // space. Gated on the pictographic codepoint (non-emoji text is unaffected);
+    // the positive-gap guard avoids forcing a space inside a combined ZWJ/VS
+    // emoji sequence, which advances with ~0 gap.
+    if gap_pt > 0.0
+        && preceding_text
+            .chars()
+            .next_back()
+            .is_some_and(is_pictographic)
+        && following_text
+            .chars()
+            .next()
+            .is_some_and(char::is_alphabetic)
+    {
+        return SpaceDecision::insert(SpaceSource::GeometricGap, 0.85);
     }
 
     // Rule 0.5: Email Pattern Detection
@@ -12292,6 +12329,33 @@ mod tests {
             7.2,
         );
         assert!(decision.insert_space, "Citation context with TJ should insert space");
+    }
+
+    #[test]
+    fn test_is_pictographic_ranges() {
+        assert!(is_pictographic('📄'));
+        assert!(is_pictographic('✅'));
+        assert!(!is_pictographic('A'));
+        assert!(!is_pictographic('→')); // arrow excluded (math/symbol text)
+        assert!(!is_pictographic('5'));
+    }
+
+    #[test]
+    fn test_should_insert_space_emoji_letter_boundary() {
+        let config = SpanMergingConfig::default();
+        let fonts = HashMap::new();
+        // Small positive gap that would otherwise drop the inter-token space.
+        let decision = should_insert_space(
+            "📄", "README", 0.5, 12.0, "F1", &fonts, false, &config, None, None, 12.0, 12.0,
+        );
+        assert!(decision.insert_space, "emoji→letter with a positive gap must keep the space");
+
+        // Zero gap (combined ZWJ/VS sequence) must not be forced into a space by
+        // the emoji rule.
+        let decision0 = should_insert_space(
+            "📄", "README", 0.0, 12.0, "F1", &fonts, false, &config, None, None, 12.0, 12.0,
+        );
+        assert!(!decision0.insert_space, "emoji→letter with zero gap must not force a space");
     }
 
     #[test]

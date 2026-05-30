@@ -79,7 +79,7 @@ fn page_reading_order_inner(
 ///
 /// Best-effort: any errors reading structure metadata produce a context
 /// without MCID order, which means the pipeline takes the geometric path.
-fn build_context(doc: &PdfDocument, page_index: usize) -> ReadingOrderContext {
+pub(crate) fn build_context(doc: &PdfDocument, page_index: usize) -> ReadingOrderContext {
     let media_box = doc
         .get_page_media_box(page_index)
         .unwrap_or((0.0, 0.0, 612.0, 792.0));
@@ -91,12 +91,12 @@ fn build_context(doc: &PdfDocument, page_index: usize) -> ReadingOrderContext {
         .with_page(page_index as u32)
         .with_bbox(bbox);
 
-    let mark_info = doc.mark_info().unwrap_or_default();
-    if !mark_info.marked {
-        return ctx;
-    }
-
-    let Ok(Some(tree)) = doc.structure_tree() else {
+    // Use logical structure order only when the tree is trustworthy
+    // (§14.8.2.3.1 / §14.7.1): the document is /Marked or the catalog references
+    // a /StructTreeRoot, and /MarkInfo /Suspects is not true. This accepts
+    // PDF-1.4 catalog-only tagged files that the old `!marked` early-return
+    // wrongly skipped, and rejects suspect trees.
+    let Some(tree) = doc.struct_tree_trustworthy() else {
         return ctx;
     };
 
@@ -107,7 +107,9 @@ fn build_context(doc: &PdfDocument, page_index: usize) -> ReadingOrderContext {
     if !mcid_order.is_empty() {
         ctx = ctx.with_mcid_order(mcid_order);
     }
-    ctx = ctx.with_suspects(mark_info.suspects);
+    // The predicate already vetted the tree as non-suspect, so the strategy's
+    // own suspect guard is a no-op here.
+    ctx = ctx.with_suspects(false);
     ctx
 }
 

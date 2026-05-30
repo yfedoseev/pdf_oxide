@@ -488,3 +488,24 @@ fn form_xobject_self_reference_is_safe() {
         .expect("page_image_handles on cyclic Form");
     assert_eq!(handles.len(), 0, "self-referential Form with no images must yield 0 handles");
 }
+
+#[test]
+fn handle_methods_take_ref_and_clone() {
+    // 8c: decode() / raw_compressed_bytes() borrow &self, so a single handle
+    // supports a two-phase inspect → raw → decode flow, and PdfImageHandle is
+    // Clone for ergonomic filtering/retaining.
+    let pdf_bytes = build_pdf_with_jpeg(64, 64);
+    let doc = PdfDocument::from_bytes(pdf_bytes).expect("open PDF");
+    let handles = doc.page_image_handles(0).expect("handles");
+    let h = &handles[0];
+
+    // Inspect → raw → decode, all on the same borrowed handle.
+    let raw = h.raw_compressed_bytes().expect("raw bytes");
+    assert!(!raw.is_empty(), "raw JPEG bytes must be present");
+    assert!(h.decode().is_ok(), "decode on &handle must succeed");
+
+    // Still usable after both calls; Clone works and leaves the original intact.
+    let h2 = h.clone();
+    assert_eq!(h2.width, h.width);
+    assert!(h.raw_compressed_bytes().is_ok(), "original handle still usable");
+}

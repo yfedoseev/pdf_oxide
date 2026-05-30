@@ -214,6 +214,9 @@ pub mod split_bookmarks;
 /// PDF logical structure (Tagged PDFs)
 pub mod structure;
 
+/// Structured per-page extraction (`extract_structured`, #536)
+pub mod structured;
+
 // Format converters
 pub mod converters;
 
@@ -321,6 +324,7 @@ pub use redaction::{
     redact_content_stream, Classification, FontInfoMetrics, OcgPolicy, RedactionOptions,
     RedactionRegion, RedactionReport, RegionSet,
 };
+pub use structured::{RegionRole, StructuredPage, StructuredRegion};
 
 // Global font cache for batch processing
 pub use fonts::global_cache::{
