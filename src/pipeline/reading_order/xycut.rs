@@ -708,6 +708,26 @@ impl XYCutStrategy {
             return RegionKind::Prose;
         }
 
+        // SHORT-LINE PROSE (#536 short-verse two-column bodies): the
+        // `mean_chars > 20` guard above deliberately rejected short-verse
+        // two-column bodies (Bible / lexicon editions — a verse fragment
+        // per column-line is often < 20 non-whitespace chars) along with
+        // short-cell tables. The guard was doing two jobs at once. Here we
+        // re-admit ONLY the short-line case that carries a *strong central
+        // gutter corridor* a short-cell table cannot fake: a single
+        // persistent vertical gutter near the region centre, present on a
+        // high fraction of lines, with balanced left/right char mass and
+        // ≤ 2 left-edge clusters. A label+data table fails this on
+        // concentration/coverage (its gaps scatter across cell
+        // boundaries), centre (the dominant gap sits off-centre),
+        // char-balance (the label column is tiny), or left-edge clusters
+        // (≥ 3 columns). The long-line accept path above is byte-unchanged.
+        if mean_chars <= 20.0
+            && self.short_line_central_corridor_prose(all_spans, indices, x_min, region_width)
+        {
+            return RegionKind::Prose;
+        }
+
         // TABLE: lots of narrow lines, short content per line (mean_chars
         // < 8). The google_doc_document.pdf population table —
         // the canonical regression that reverted attempts 1 & 2 — sits
@@ -719,6 +739,189 @@ impl XYCutStrategy {
         // Anything in between (e.g. captions with headings, mixed
         // figure-and-text bands) → don't risk the tight cut.
         RegionKind::Mixed
+    }
+
+    /// Short-line two-column-prose admission (#536, v0.3.58 Part 1a).
+    ///
+    /// Called from `classify_region_kind` ONLY for the short-line case
+    /// (`mean_chars <= 20`) that the long-line prose guard rejects. A
+    /// short-verse two-column body (verse-per-line bibles/lexicons) has
+    /// short lines yet a strong, table-independent central gutter; a
+    /// short-cell numeric table has short lines and NO such corridor.
+    ///
+    /// Returns `true` only when ALL of the following hold — each one a
+    /// length-independent discriminator a short-cell label+data table
+    /// cannot satisfy:
+    ///   - a single persistent vertical gutter exists: per-line largest
+    ///     within-line gap clusters at one X (10 pt radius) covering
+    ///     **≥ 70 %** of gap-bearing lines (concentration) and present on
+    ///     **≥ 60 %** of all lines (coverage) — a table's dominant gap
+    ///     scatters across cell boundaries and appears on a minority of
+    ///     rows;
+    ///   - that gutter sits near the region centre: offset ∈
+    ///     **[0.30, 0.70]·region_width** — a label+data table's dominant
+    ///     gap sits off-centre;
+    ///   - **left/right char balance:** non-whitespace char mass on each
+    ///     side of the gutter is **≥ 35 %** of the total — a label column
+    ///     is lopsided (one side is tiny numeric labels);
+    ///   - **≤ 2 left-edge clusters** left of the gutter (30 pt radius) —
+    ///     a real two-column body starts each column at one X; an
+    ///     N-column table has ≥ 3 left-edge clusters (the fix-534
+    ///     `left_edge_clusters >= 3 → Mixed` rule).
+    fn short_line_central_corridor_prose(
+        &self,
+        all_spans: &[TextSpan],
+        indices: &[usize],
+        x_min: f32,
+        region_width: f32,
+    ) -> bool {
+        if region_width <= 0.0 {
+            return false;
+        }
+
+        // Re-cluster spans into lines, keeping PER-SPAN (left, right, chars)
+        // so we can find the within-line gutter gap and split char mass.
+        let mut lines: std::collections::BTreeMap<i32, Vec<(f32, f32, usize)>> =
+            std::collections::BTreeMap::new();
+        for &i in indices {
+            let s = &all_spans[i];
+            let y_key = s.bbox.top().round() as i32;
+            let nonws = s.text.chars().filter(|c| !c.is_whitespace()).count();
+            lines
+                .entry(y_key)
+                .or_default()
+                .push((s.bbox.left(), s.bbox.right(), nonws));
+        }
+        let total_lines = lines.len();
+        if total_lines == 0 {
+            return false;
+        }
+
+        // Per-line: largest within-line gap and its midpoint X. A gap of
+        // ≥ 6 pt suppresses ordinary 2–5 pt word spacing.
+        const MIN_GAP_PT: f32 = 6.0;
+        let mut gap_positions: Vec<f32> = Vec::new();
+        for line_spans in lines.values() {
+            if line_spans.len() < 2 {
+                continue;
+            }
+            let mut sorted = line_spans.clone();
+            sorted.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
+            let mut largest_gap = 0.0_f32;
+            let mut largest_mid = 0.0_f32;
+            for w in sorted.windows(2) {
+                let gap = w[1].0 - w[0].1;
+                if gap > largest_gap {
+                    largest_gap = gap;
+                    largest_mid = (w[0].1 + w[1].0) * 0.5;
+                }
+            }
+            if largest_gap >= MIN_GAP_PT {
+                gap_positions.push(largest_mid);
+            }
+        }
+        if gap_positions.is_empty() {
+            return false;
+        }
+
+        // Cluster gap positions (10 pt radius) → dominant corridor.
+        const CLUSTER_RADIUS_PT: f32 = 10.0;
+        let mut sorted_gaps = gap_positions.clone();
+        sorted_gaps.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+        let mut best_size = 0usize;
+        let mut best_center = 0.0_f32;
+        for &pivot in &sorted_gaps {
+            let lo = pivot - CLUSTER_RADIUS_PT;
+            let hi = pivot + CLUSTER_RADIUS_PT;
+            let mut count = 0usize;
+            let mut sum = 0.0_f32;
+            for &g in &sorted_gaps {
+                if g >= lo && g <= hi {
+                    count += 1;
+                    sum += g;
+                }
+            }
+            if count > best_size {
+                best_size = count;
+                best_center = sum / count as f32;
+            }
+        }
+        if best_size == 0 {
+            return false;
+        }
+
+        // Concentration ≥ 70 % of gap-bearing lines at one X.
+        if best_size * 10 < gap_positions.len() * 7 {
+            return false;
+        }
+        // Coverage ≥ 60 % of ALL lines carry the corridor.
+        if best_size * 10 < total_lines * 6 {
+            return false;
+        }
+        // Centre: gutter offset ∈ [0.30, 0.70]·region_width.
+        let gutter_offset = best_center - x_min;
+        if gutter_offset < region_width * 0.30 || gutter_offset > region_width * 0.70 {
+            return false;
+        }
+
+        // Left/right non-whitespace char balance about the corridor:
+        // each side ≥ 35 % of total. A label-column table is lopsided.
+        let mut left_chars = 0usize;
+        let mut right_chars = 0usize;
+        for line_spans in lines.values() {
+            for &(l, r, chars) in line_spans {
+                let mid = (l + r) * 0.5;
+                if mid < best_center {
+                    left_chars += chars;
+                } else {
+                    right_chars += chars;
+                }
+            }
+        }
+        let total_chars = left_chars + right_chars;
+        if total_chars == 0 {
+            return false;
+        }
+        if (left_chars as f32) < total_chars as f32 * 0.35
+            || (right_chars as f32) < total_chars as f32 * 0.35
+        {
+            return false;
+        }
+
+        // ≤ 2 left-edge clusters left of the corridor (30 pt radius). A
+        // real two-column body starts its left column at one X (one
+        // cluster, maybe two counting a paragraph indent); an N-column
+        // table left of the corridor has several cell-start X's → ≥ 3
+        // clusters. Cluster EVERY span left-edge that lies left of the
+        // corridor (not just each line's minimum) so multi-column cell
+        // starts are not collapsed into one cluster.
+        const LEFT_CLUSTER_RADIUS_PT: f32 = 30.0;
+        let mut clusters: Vec<(f32, usize)> = Vec::new();
+        for line_spans in lines.values() {
+            for &(l, _, _) in line_spans {
+                if l >= best_center {
+                    continue;
+                }
+                if let Some(c) = clusters
+                    .iter_mut()
+                    .find(|(c, _)| (*c - l).abs() <= LEFT_CLUSTER_RADIUS_PT)
+                {
+                    let count = c.1 as f32;
+                    c.0 = (c.0 * count + l) / (count + 1.0);
+                    c.1 += 1;
+                } else {
+                    clusters.push((l, 1));
+                }
+            }
+        }
+        // Drop singleton/noise clusters (< 2 lines) before counting, so a
+        // lone outlier left-edge doesn't inflate the count.
+        let dominant_left_clusters = clusters.iter().filter(|(_, n)| *n >= 2).count();
+        if dominant_left_clusters >= 3 {
+            return false;
+        }
+
+        true
     }
 
     /// Two-column-prose probe (#534) — does this region look like two
@@ -1045,7 +1248,11 @@ impl XYCutStrategy {
         // Prose gate — same safety as `detect_two_column_prose`.
         // Tables with narrow cell gaps fail the classifier
         // (`mean_chars < 8` → `Table`), preventing the gap-cluster
-        // signal from misfiring on tabular content.
+        // signal from misfiring on tabular content. Short-verse
+        // two-column bodies (#536) now also pass this gate: although
+        // their `mean_chars <= 20`, `classify_region_kind`'s short-line
+        // central-corridor admission arm returns `Prose` for them, so a
+        // routed short-verse body is cut here rather than re-collapsed.
         if self.classify_region_kind(all_spans, indices) != RegionKind::Prose {
             return None;
         }
@@ -2684,6 +2891,129 @@ mod tests {
             "narrow-gutter detector wrongly column-split a single-column body: \
              body spans landed in {} groups",
             body_groups
+        );
+    }
+
+    /// #536 Part 1a (xycut mirror): a short-verse two-column body —
+    /// short tokens per column-line (`mean_chars <= 20`) but a strong
+    /// balanced central gutter — must classify as `Prose` (so it gets
+    /// cut) and be accepted by `detect_narrow_gutter_prose`, even though
+    /// the long-line `mean_chars > 20` guard would reject it.
+    #[test]
+    fn test_short_verse_two_column_classified_prose_and_cut() {
+        let strategy = XYCutStrategy::new();
+        let make_word = |x: f32, y: f32, text: &str| {
+            let w = (text.chars().count() as f32 * 5.4).max(3.0);
+            make_span_text(x, y, w, 12.0, text, 12.0)
+        };
+
+        // Two columns: left starts at x=40, right at x=240. Each verse
+        // line carries two short, EQUAL-length 4-char tokens per side
+        // (8 non-whitespace chars/side → 16 chars/line, so mean_chars
+        // ≤ 20 and the long-line prose guard does NOT apply — this
+        // exercises the new short-line admission arm). The left column's
+        // right edge lands consistently near x≈94 and the gutter gap
+        // midpoint is stable at ≈167 every line (region x≈40..≈294,
+        // width≈254, gutter offset ≈0.50·width). Stable gap → high
+        // corridor concentration; equal token counts → balanced char
+        // mass; two tight left-column start X's (40, 72) within one
+        // column → ≤ 2 left-edge clusters. Uniform token widths keep the
+        // within-line gap midpoint inside the 10 pt clustering radius.
+        let left_lines = [
+            ["comm", "lalu"],
+            ["crea", "ciel"],
+            ["terr", "etai"],
+            ["info", "vide"],
+            ["surf", "labi"],
+            ["espr", "leau"],
+        ];
+        let right_lines = [
+            ["EtD1", "ditq"],
+            ["lumi", "soit"],
+            ["etla", "fut1"],
+            ["Dieu", "vitq"],
+            ["bonn", "ilse"],
+            ["aral", "obsc"],
+        ];
+        let mut spans = Vec::new();
+        // 24 lines total (4 verse-stanzas of 6) so the body clears the
+        // ≥12 gap-bearing-line floor in detect_narrow_gutter_prose.
+        for rep in 0..4 {
+            for i in 0..6 {
+                let y = 600.0 - ((rep * 6 + i) as f32) * 14.0;
+                // Left column: two 4-char words at x=40 and x=72.
+                spans.push(make_word(40.0, y, left_lines[i][0]));
+                spans.push(make_word(72.0, y, left_lines[i][1]));
+                // Right column: two 4-char words at x=240 and x=272.
+                spans.push(make_word(240.0, y, right_lines[i][0]));
+                spans.push(make_word(272.0, y, right_lines[i][1]));
+            }
+        }
+
+        let indices: Vec<usize> = (0..spans.len()).collect();
+        assert_eq!(
+            strategy.classify_region_kind(&spans, &indices),
+            RegionKind::Prose,
+            "short-verse two-column body with a strong balanced central \
+             corridor must classify as Prose despite mean_chars <= 20"
+        );
+        assert!(
+            strategy
+                .detect_narrow_gutter_prose(&spans, &indices)
+                .is_some(),
+            "detect_narrow_gutter_prose must accept the routed short-verse \
+             body (gutter found) so it is cut at the gutter"
+        );
+    }
+
+    /// #536 Part 1a (xycut mirror) — negative: a short-cell multi-column
+    /// numeric table (four narrow digit columns → short cells with ≥ 3
+    /// left-edge clusters and scattered within-line gaps) must STILL
+    /// classify as `Table` and NOT be accepted for cutting.
+    #[test]
+    fn test_short_cell_label_table_still_table_not_cut() {
+        let strategy = XYCutStrategy::new();
+        let make_word = |x: f32, y: f32, text: &str| {
+            let w = (text.chars().count() as f32 * 5.4).max(3.0);
+            make_span_text(x, y, w, 12.0, text, 12.0)
+        };
+
+        // A lopsided label+data table: a tiny numeric label column at
+        // x=40 (a single digit, ~1 char) and a wide data column at x=100
+        // (~8 chars). The within-line gutter is consistent, so the
+        // corridor concentration/coverage/centre guards alone would NOT
+        // reject it — but the left/right non-whitespace char balance is
+        // grossly lopsided (label side ≈ 11 % of chars, well under the
+        // 35 % floor), the length-independent table discriminator. A
+        // genuine two-column verse body has balanced sides; this table
+        // does not, so the short-line admission must reject it.
+        // mean_chars ≈ 9 (≥ 8), so it does NOT fall through the
+        // `mean_chars < 8 → Table` branch either — the balance check is
+        // what keeps it out of Prose.
+        let mut spans = Vec::new();
+        let labels = ["7", "8", "9", "5", "3", "1"];
+        let data = ["12345678", "23456781", "34567812", "45678123"];
+        for i in 0..24 {
+            let y = 600.0 - (i as f32) * 14.0;
+            // Narrow label column (off to the far left, tiny char mass).
+            spans.push(make_word(40.0, y, labels[i % labels.len()]));
+            // Wide data column.
+            spans.push(make_word(100.0, y, data[i % data.len()]));
+        }
+
+        let indices: Vec<usize> = (0..spans.len()).collect();
+        assert_ne!(
+            strategy.classify_region_kind(&spans, &indices),
+            RegionKind::Prose,
+            "lopsided label+data table must NOT be admitted as Prose \
+             (left/right char mass is unbalanced — label column is tiny)"
+        );
+        assert!(
+            strategy
+                .detect_narrow_gutter_prose(&spans, &indices)
+                .is_none(),
+            "detect_narrow_gutter_prose must reject the short-cell table \
+             (no central-corridor Prose admission) so it is NOT cut"
         );
     }
 

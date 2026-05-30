@@ -2303,6 +2303,15 @@ pub struct PdfImageHandle<'doc> {
     ctm: crate::content::Matrix,
     doc: &'doc crate::document::PdfDocument,
     source: PdfImageSource,
+    /// Active resource `/ColorSpace` subdictionary (name → resolved Object) for
+    /// this image's scope, so `decode()` can resolve a resource-name
+    /// `/ColorSpace` (e.g. `/CS0`) the same way the renderer does. Empty when the
+    /// image's colour space needs no resource lookup (the common case), which
+    /// preserves the original `color_space_map=None` decode path.
+    color_space_resources: std::collections::HashMap<String, crate::object::Object>,
+    /// For an Indexed image (`[/Indexed base hival lookup]`, §8.6.6.3), the
+    /// resolved de-indexed *base* colour space; `None` for non-Indexed images.
+    indexed_base: Option<ColorSpace>,
 }
 
 impl<'doc> PdfImageHandle<'doc> {
@@ -2326,7 +2335,16 @@ impl<'doc> PdfImageHandle<'doc> {
             PdfImageSource::Inline { stream_object, .. } => (stream_object, None),
         };
 
-        let mut image = extract_image_from_xobject(Some(self.doc), obj, obj_ref, None)?;
+        // Pass the active resource ColorSpace map so a resource-name
+        // `/ColorSpace` (e.g. `/CS0`) resolves the same way the renderer does.
+        // `None` when empty preserves the original decode path for the common
+        // case where the image's colour space needs no resource lookup.
+        let cs_map = if self.color_space_resources.is_empty() {
+            None
+        } else {
+            Some(&self.color_space_resources)
+        };
+        let mut image = extract_image_from_xobject(Some(self.doc), obj, obj_ref, cs_map)?;
 
         // Use pre-computed bbox and rotation from Phase 1 — no need to call
         // back into document.rs helpers here.
@@ -2362,6 +2380,18 @@ impl<'doc> PdfImageHandle<'doc> {
             } => Ok(compressed_bytes.to_vec()),
         }
     }
+
+    /// For an Indexed image, the de-indexed *base* colour space.
+    ///
+    /// When [`color_space`](Self::color_space) is [`ColorSpace::Indexed`] the
+    /// image samples are single palette indices (`components() == 1`) into an
+    /// `[/Indexed base hival lookup]` array (§8.6.6.3); this returns the resolved
+    /// `base` colour space — the space in which the de-indexed output pixels are
+    /// expressed. Returns `None` for every non-Indexed image (and only if an
+    /// Indexed `base` could not be parsed at all).
+    pub fn indexed_base(&self) -> Option<ColorSpace> {
+        self.indexed_base
+    }
 }
 
 impl std::fmt::Debug for PdfImageHandle<'_> {
@@ -2377,6 +2407,8 @@ impl std::fmt::Debug for PdfImageHandle<'_> {
             .field("paint_order", &self.paint_order)
             .field("bbox", &self.bbox)
             .field("rotation_degrees", &self.rotation_degrees)
+            .field("color_space_resources", &self.color_space_resources)
+            .field("indexed_base", &self.indexed_base)
             .finish_non_exhaustive()
     }
 }
@@ -2433,6 +2465,93 @@ fn transform_bbox_with_ctm(
     }
 }
 
+/// Resolve a handle's reported colour space from a raw `/ColorSpace` entry.
+///
+/// Shared by the XObject and inline handle builders so the two paths cannot
+/// drift. Returns the `(color_space, indexed_base)` pair stored on the handle:
+///
+/// - **Resource-name resolution.** If `entry` is an `Object::Name` that is *not*
+///   one of the standard device spaces (`DeviceGray`/`DeviceRGB`/`DeviceCMYK`/
+///   `Pattern`, which "always identify the corresponding colour spaces directly"
+///   and "never refer to resources", §8.6.3/§8.9.7), it is looked up in
+///   `color_space_resources` (the active `/Resources/ColorSpace` subdictionary),
+///   mirroring the renderer / `extract_image_from_xobject`.
+/// - **Indirect-ref hop.** If the entry (or looked-up value) is a `Reference`,
+///   one `load_object` hop is resolved via `doc`.
+/// - **Indexed (§8.6.6.3).** When the resolved object is an
+///   `[/Indexed base hival lookup]` array, returns `(ColorSpace::Indexed,
+///   Some(base))` with the de-indexed `base` resolved (including an indirect
+///   `base` ref and inner refs, e.g. `[/ICCBased <stream_ref>]`), reusing the
+///   same base-resolution logic as `resolve_indexed_palette`. If the base cannot
+///   be parsed, returns `(ColorSpace::Indexed, None)`.
+/// - Otherwise returns `(parse_color_space(resolved)?, None)`, falling back to
+///   `DeviceRGB` on parse failure.
+fn resolve_color_space_for_handle(
+    entry: &crate::object::Object,
+    color_space_resources: &std::collections::HashMap<String, crate::object::Object>,
+    doc: Option<&crate::document::PdfDocument>,
+) -> (ColorSpace, Option<ColorSpace>) {
+    use crate::object::Object;
+
+    // (a) Resource-name → resolved Object (skip standard device names, which
+    // always identify their space directly and never refer to resources).
+    let after_name = match entry {
+        Object::Name(name)
+            if !matches!(name.as_str(), "DeviceGray" | "DeviceRGB" | "DeviceCMYK" | "Pattern") =>
+        {
+            color_space_resources
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| entry.clone())
+        },
+        _ => entry.clone(),
+    };
+
+    // (b) Resolve one indirect-ref hop.
+    let resolved = match (after_name.as_reference(), doc) {
+        (Some(r), Some(d)) => d.load_object(r).unwrap_or(after_name),
+        _ => after_name,
+    };
+
+    // (c) `[/Indexed base hival lookup]` (§8.6.6.3): report Indexed + base.
+    if let Object::Array(arr) = &resolved {
+        if arr.first().and_then(|o| o.as_name()) == Some("Indexed") && arr.len() >= 2 {
+            // Resolve the base object, mirroring resolve_indexed_palette: an
+            // indirect base ref, plus inner refs of an array base such as
+            // [/ICCBased <stream_ref>] so parse_color_space can read /N.
+            let base_obj = if let Some(d) = doc {
+                let outer = if let Some(r) = arr[1].as_reference() {
+                    d.load_object(r).unwrap_or_else(|_| arr[1].clone())
+                } else {
+                    arr[1].clone()
+                };
+                if let Object::Array(mut inner) = outer {
+                    for item in inner.iter_mut() {
+                        if let Some(r) = item.as_reference() {
+                            if let Ok(resolved) = d.load_object(r) {
+                                *item = resolved;
+                            }
+                        }
+                    }
+                    Object::Array(inner)
+                } else {
+                    outer
+                }
+            } else {
+                arr[1].clone()
+            };
+            let base = parse_color_space(&base_obj).ok();
+            return (ColorSpace::Indexed, base);
+        }
+    }
+
+    // (d) Non-Indexed: parse directly, fall back to DeviceRGB.
+    match parse_color_space(&resolved) {
+        Ok(cs) => (cs, None),
+        Err(_) => (ColorSpace::DeviceRGB, None),
+    }
+}
+
 /// Build a `PdfImageHandle` from an Image XObject dictionary entry.
 ///
 /// Returns `None` if the XObject reference cannot be resolved or the dict lacks
@@ -2444,9 +2563,8 @@ pub(crate) fn image_handle_from_xobject<'doc>(
     xobject_dict: &std::collections::HashMap<String, crate::object::Object>,
     ctm: crate::content::Matrix,
     paint_order: usize,
+    color_space_resources: &std::collections::HashMap<String, crate::object::Object>,
 ) -> Option<PdfImageHandle<'doc>> {
-    use crate::object::Object;
-
     let w = xobject_dict
         .get("Width")
         .and_then(|o| o.as_integer())
@@ -2468,30 +2586,14 @@ pub(crate) fn image_handle_from_xobject<'doc>(
         .map(|n| n as u64)
         .unwrap_or(0);
     let filter_chain = parse_filter_chain(xobject_dict);
-    let color_space = xobject_dict
-        .get("ColorSpace")
-        .and_then(|cs| parse_color_space(cs).ok())
-        .unwrap_or(ColorSpace::DeviceRGB);
 
-    // For an `[/Indexed base hival lookup]` color space (§8.6.6.3), report the
-    // base color space in the handle (the de-indexed output space). Only the
-    // direct-array form is handled here; an indirect `/ColorSpace` reference to
-    // an Indexed array keeps the `Indexed` tag. (Resource-name and indirect-ref
-    // resolution for the handle metadata is a follow-up — see decode() notes.)
-    let color_space = if matches!(&color_space, ColorSpace::Indexed) {
-        if let Some(Object::Array(arr)) = xobject_dict.get("ColorSpace") {
-            if arr.len() >= 2 {
-                arr.get(1)
-                    .and_then(|base| parse_color_space(base).ok())
-                    .unwrap_or(color_space)
-            } else {
-                color_space
-            }
-        } else {
-            color_space
-        }
-    } else {
-        color_space
+    // Resolve the reported colour space via the shared helper: resource-name →
+    // map entry, one indirect-ref hop, and `[/Indexed base ...]` (§8.6.6.3) →
+    // `Indexed` + de-indexed base. Default to DeviceRGB when `/ColorSpace` is
+    // absent.
+    let (color_space, indexed_base) = match xobject_dict.get("ColorSpace") {
+        Some(entry) => resolve_color_space_for_handle(entry, color_space_resources, Some(doc)),
+        None => (ColorSpace::DeviceRGB, None),
     };
 
     // Compute bbox and rotation in Phase 1 while the CTM is in scope.
@@ -2513,6 +2615,8 @@ pub(crate) fn image_handle_from_xobject<'doc>(
         ctm,
         doc,
         source: PdfImageSource::XObject(obj_ref),
+        color_space_resources: color_space_resources.clone(),
+        indexed_base,
     })
 }
 
@@ -2523,6 +2627,7 @@ pub(crate) fn image_handle_from_inline<'doc>(
     data: Vec<u8>,
     ctm: crate::content::Matrix,
     paint_order: usize,
+    color_space_resources: &std::collections::HashMap<String, crate::object::Object>,
 ) -> Option<PdfImageHandle<'doc>> {
     use crate::object::Object;
 
@@ -2545,10 +2650,15 @@ pub(crate) fn image_handle_from_inline<'doc>(
         .unwrap_or(8) as u8;
     let byte_size = data.len() as u64;
     let filter_chain = parse_filter_chain(&expanded);
-    let color_space = expanded
-        .get("ColorSpace")
-        .and_then(|cs| parse_color_space(cs).ok())
-        .unwrap_or(ColorSpace::DeviceRGB);
+
+    // Resolve the reported colour space via the same shared helper as the
+    // XObject path so the two agree. For inline images a resource-name
+    // `/ColorSpace` into `/Resources/ColorSpace` is explicitly legal (§8.9.7),
+    // and `[/Indexed base ...]` (§8.6.6.3) reports `Indexed` + de-indexed base.
+    let (color_space, indexed_base) = match expanded.get("ColorSpace") {
+        Some(entry) => resolve_color_space_for_handle(entry, color_space_resources, Some(doc)),
+        None => (ColorSpace::DeviceRGB, None),
+    };
 
     // Compute bbox and rotation in Phase 1 while the CTM is in scope.
     let unit_rect = crate::geometry::Rect::new(0.0, 0.0, 1.0, 1.0);
@@ -2584,5 +2694,256 @@ pub(crate) fn image_handle_from_inline<'doc>(
             stream_object,
             compressed_bytes,
         },
+        color_space_resources: color_space_resources.clone(),
+        indexed_base,
     })
+}
+
+#[cfg(test)]
+mod handle_color_space_tests {
+    use super::*;
+    use crate::object::{Object, ObjectRef};
+    use std::collections::HashMap;
+
+    fn empty_map() -> HashMap<String, Object> {
+        HashMap::new()
+    }
+
+    /// `[/Indexed /DeviceRGB 1 <00 00 00 FF FF FF>]` as a direct array.
+    fn direct_indexed_rgb() -> Object {
+        Object::Array(vec![
+            Object::Name("Indexed".to_string()),
+            Object::Name("DeviceRGB".to_string()),
+            Object::Integer(1),
+            Object::String(vec![0, 0, 0, 255, 255, 255]),
+        ])
+    }
+
+    #[test]
+    fn helper_direct_indexed_reports_indexed_with_rgb_base() {
+        let entry = direct_indexed_rgb();
+        let (cs, base) = resolve_color_space_for_handle(&entry, &empty_map(), None);
+        assert_eq!(cs, ColorSpace::Indexed);
+        assert_eq!(base, Some(ColorSpace::DeviceRGB));
+    }
+
+    #[test]
+    fn helper_resource_name_resolves_to_device_gray() {
+        // `/CS0` → /DeviceGray via the resource map (not a standard device name,
+        // so it is looked up).
+        let mut map = empty_map();
+        map.insert("CS0".to_string(), Object::Name("DeviceGray".to_string()));
+        let entry = Object::Name("CS0".to_string());
+        let (cs, base) = resolve_color_space_for_handle(&entry, &map, None);
+        assert_eq!(cs, ColorSpace::DeviceGray);
+        assert_eq!(base, None);
+    }
+
+    #[test]
+    fn helper_resource_name_resolves_to_indexed() {
+        // `/CS0` → an Indexed array via the resource map: Indexed + base.
+        let mut map = empty_map();
+        map.insert("CS0".to_string(), direct_indexed_rgb());
+        let entry = Object::Name("CS0".to_string());
+        let (cs, base) = resolve_color_space_for_handle(&entry, &map, None);
+        assert_eq!(cs, ColorSpace::Indexed);
+        assert_eq!(base, Some(ColorSpace::DeviceRGB));
+    }
+
+    #[test]
+    fn helper_standard_device_name_not_resource_resolved() {
+        // A standard device name must resolve directly and never be looked up,
+        // even if the map (incorrectly) shadows it.
+        let mut map = empty_map();
+        map.insert("DeviceRGB".to_string(), Object::Name("DeviceGray".to_string()));
+        let entry = Object::Name("DeviceRGB".to_string());
+        let (cs, base) = resolve_color_space_for_handle(&entry, &map, None);
+        assert_eq!(cs, ColorSpace::DeviceRGB);
+        assert_eq!(base, None);
+    }
+
+    /// Build a PDF whose object `99 0 obj` is the given colour-space object, so
+    /// `resolve_color_space_for_handle(99 0 R, .., Some(doc))` can resolve the
+    /// indirect-ref hop. The catalog/pages are minimal placeholders.
+    fn pdf_with_cs_object(cs_body: &str) -> Vec<u8> {
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets: Vec<(u32, usize)> = Vec::new();
+
+        offsets.push((1, pdf.len()));
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+        offsets.push((2, pdf.len()));
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+        offsets.push((3, pdf.len()));
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>\nendobj\n",
+        );
+
+        offsets.push((99, pdf.len()));
+        pdf.extend_from_slice(format!("99 0 obj\n{}\nendobj\n", cs_body).as_bytes());
+
+        let xref_off = pdf.len();
+        // Emit a single contiguous xref subsection covering 0..=99 with most
+        // entries free; only the objects we wrote are marked in-use.
+        let max_id = 99u32;
+        pdf.extend_from_slice(format!("xref\n0 {}\n", max_id + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for id in 1..=max_id {
+            if let Some((_, off)) = offsets.iter().find(|(oid, _)| *oid == id) {
+                pdf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+            } else {
+                pdf.extend_from_slice(b"0000000000 65535 f \n");
+            }
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                max_id + 1,
+                xref_off
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
+    #[test]
+    fn helper_indirect_indexed_array_de_indexed() {
+        // `/ColorSpace 99 0 R` where 99 0 obj is `[/Indexed /DeviceRGB 1 <...>]`.
+        let doc = crate::document::PdfDocument::from_bytes(pdf_with_cs_object(
+            "[/Indexed /DeviceRGB 1 <000000FFFFFF>]",
+        ))
+        .expect("synthetic pdf parses");
+        let entry = Object::Reference(ObjectRef::new(99, 0));
+        let (cs, base) = resolve_color_space_for_handle(&entry, &empty_map(), Some(&doc));
+        assert_eq!(cs, ColorSpace::Indexed);
+        assert_eq!(base, Some(ColorSpace::DeviceRGB));
+    }
+
+    #[test]
+    fn helper_indirect_plain_device_gray() {
+        // `/ColorSpace 99 0 R` where 99 0 obj is `/DeviceGray`.
+        let doc =
+            crate::document::PdfDocument::from_bytes(pdf_with_cs_object("/DeviceGray")).unwrap();
+        let entry = Object::Reference(ObjectRef::new(99, 0));
+        let (cs, base) = resolve_color_space_for_handle(&entry, &empty_map(), Some(&doc));
+        assert_eq!(cs, ColorSpace::DeviceGray);
+        assert_eq!(base, None);
+    }
+
+    #[test]
+    fn inline_indexed_consistent_with_xobject() {
+        // The inline path uses the same helper, so a direct Indexed array must
+        // report `Indexed` + DeviceRGB base — identical to the XObject contract.
+        let entry = direct_indexed_rgb();
+        let (xobj_cs, xobj_base) = resolve_color_space_for_handle(&entry, &empty_map(), None);
+        // Inline path: same helper, same inputs.
+        let (inline_cs, inline_base) = resolve_color_space_for_handle(&entry, &empty_map(), None);
+        assert_eq!(xobj_cs, inline_cs);
+        assert_eq!(xobj_base, inline_base);
+        assert_eq!(inline_cs, ColorSpace::Indexed);
+        assert_eq!(inline_base, Some(ColorSpace::DeviceRGB));
+    }
+
+    /// Build a PDF with an image XObject (object 99) so a handle can be built
+    /// against a real document and `decode()` exercised. The image is a 1×1
+    /// uncompressed sample; `cs_name` is written verbatim as its `/ColorSpace`.
+    fn pdf_with_image_xobject(cs_name: &str, sample: &[u8]) -> Vec<u8> {
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets: Vec<(u32, usize)> = Vec::new();
+
+        offsets.push((1, pdf.len()));
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        offsets.push((2, pdf.len()));
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+        offsets.push((3, pdf.len()));
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>\nendobj\n",
+        );
+
+        offsets.push((99, pdf.len()));
+        let header = format!(
+            "99 0 obj\n<< /Type /XObject /Subtype /Image /Width 1 /Height 1 \
+             /BitsPerComponent 8 /ColorSpace {} /Length {} >>\nstream\n",
+            cs_name,
+            sample.len()
+        );
+        pdf.extend_from_slice(header.as_bytes());
+        pdf.extend_from_slice(sample);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let xref_off = pdf.len();
+        let max_id = 99u32;
+        pdf.extend_from_slice(format!("xref\n0 {}\n", max_id + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for id in 1..=max_id {
+            if let Some((_, off)) = offsets.iter().find(|(oid, _)| *oid == id) {
+                pdf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+            } else {
+                pdf.extend_from_slice(b"0000000000 65535 f \n");
+            }
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                max_id + 1,
+                xref_off
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
+    #[test]
+    fn decode_resolves_resource_name_cs() {
+        // Image XObject with `/ColorSpace /CS0`; the page `/Resources/ColorSpace`
+        // maps `/CS0 → /DeviceGray`. Before the fix, decode() failed with
+        // "Unsupported color space: CS0"; now it succeeds.
+        let doc = crate::document::PdfDocument::from_bytes(pdf_with_image_xobject("/CS0", &[128]))
+            .unwrap();
+        let obj_ref = ObjectRef::new(99, 0);
+        let xobj = doc.load_object(obj_ref).unwrap();
+        let dict = xobj.as_dict().expect("image xobject dict").clone();
+
+        let mut map = empty_map();
+        map.insert("CS0".to_string(), Object::Name("DeviceGray".to_string()));
+
+        let handle = image_handle_from_xobject(
+            &doc,
+            obj_ref,
+            &dict,
+            crate::content::Matrix::identity(),
+            0,
+            &map,
+        )
+        .expect("handle builds");
+
+        assert_eq!(handle.color_space, ColorSpace::DeviceGray);
+        assert!(handle.indexed_base().is_none());
+        // decode() must now resolve /CS0 via the stored resource map.
+        let image = handle.decode().expect("decode resolves resource-name CS");
+        assert_eq!(*image.color_space(), ColorSpace::DeviceGray);
+    }
+
+    #[test]
+    fn xobject_direct_indexed_handle_reports_indexed_with_base() {
+        let doc = crate::document::PdfDocument::from_bytes(pdf_with_image_xobject(
+            "[/Indexed /DeviceRGB 1 <000000FFFFFF>]",
+            &[0],
+        ))
+        .unwrap();
+        let obj_ref = ObjectRef::new(99, 0);
+        let dict = doc.load_object(obj_ref).unwrap().as_dict().unwrap().clone();
+        let handle = image_handle_from_xobject(
+            &doc,
+            obj_ref,
+            &dict,
+            crate::content::Matrix::identity(),
+            0,
+            &empty_map(),
+        )
+        .unwrap();
+        assert_eq!(handle.color_space, ColorSpace::Indexed);
+        assert_eq!(handle.indexed_base(), Some(ColorSpace::DeviceRGB));
+    }
 }

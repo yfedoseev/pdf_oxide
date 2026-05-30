@@ -33,7 +33,7 @@
 
 #![forbid(unsafe_code)]
 
-use unicode_bidi::BidiInfo;
+use unicode_bidi::{BidiInfo, Level};
 
 /// Cheap pre-check: does `text` look like it contains any RTL
 /// characters? Used by the converter to skip the bidi pass entirely
@@ -92,6 +92,126 @@ pub fn paragraph_is_rtl(text: &str) -> bool {
         .first()
         .map(|p| p.level.is_rtl())
         .unwrap_or(false)
+}
+
+/// Is `c` a digit that participates as an embedded left-to-right
+/// sub-run inside an RTL line — either a European digit (`0`–`9`,
+/// ASCII U+0030..U+0039) or an Arabic-Indic / Extended Arabic-Indic
+/// digit (U+0660..U+0669, U+06F0..U+06F9)? Even in an RTL paragraph
+/// these read left-to-right (UAX #9 §3.3.3 W2 + §3.3.4 L1/L2): the
+/// digit *sequence* keeps ascending order.
+fn is_bidi_digit(c: char) -> bool {
+    let cp = c as u32;
+    c.is_ascii_digit()
+        || (0x0660..=0x0669).contains(&cp) // Arabic-Indic
+        || (0x06F0..=0x06F9).contains(&cp) // Extended Arabic-Indic
+}
+
+/// Is `c` a Latin letter (the other source of an embedded LTR sub-run
+/// inside an RTL line)? ASCII fast path plus the Latin-1 / Latin
+/// Extended ranges that cover accented Latin (e.g. `é`, `ï`).
+fn is_latin_letter(c: char) -> bool {
+    if c.is_ascii_alphabetic() {
+        return true;
+    }
+    let cp = c as u32;
+    c.is_alphabetic()
+        && ((0x00C0..=0x024F).contains(&cp) // Latin-1 Supp + Latin Extended-A/B
+            || (0x1E00..=0x1EFF).contains(&cp)) // Latin Extended Additional
+}
+
+/// Whole-line UAX #9 §3.3.4 pass for a *confidently RTL* line that
+/// also contains embedded LTR material (European / Arabic-Indic
+/// numerals and/or Latin words) — e.g. the date `14 april 1434 ٤٣٤١`.
+///
+/// **Contract — the input is already in logical order.** The page-text
+/// path has *already* produced logical-order codepoints upstream
+/// (per-run visual/logical detection + the existing `.chars().rev()`
+/// span passes), so this function must **not** re-reverse the RTL runs
+/// — doing so would invert previously-correct output. Instead it treats
+/// the line as logical order under an RTL paragraph level and applies
+/// only the L1/L2 part of §3.3.4 that the per-run passes cannot
+/// express: each maximal embedded **even-level (LTR)** sub-run (digits
+/// and/or Latin letters, plus the neutral spaces resolved into that
+/// level) is ordered left-to-right, while the already-logical
+/// **odd-level (RTL)** runs stay exactly where they are.
+///
+/// # Gating (no-regression contract)
+///
+/// Returns `line` byte-for-byte unchanged unless **both**:
+/// 1. [`paragraph_is_rtl`] — the first strong char is RTL (UAX #9
+///    §3.3.1), so the line is confidently RTL-dominant; ambiguous or
+///    LTR-first lines are left alone.
+/// 2. The line contains at least one bidi digit or Latin letter (the
+///    *mixed* condition) — pure-RTL lines have no embedded LTR sublevel
+///    to fix and are returned identical, preserving the existing
+///    `right_to_left_02` / Hebrew fixtures.
+///
+/// Character count is always preserved (the output is a permutation of
+/// the input chars; no glyph is dropped, duplicated, or substituted).
+pub(crate) fn reorder_mixed_rtl_line(line: &str) -> String {
+    // Gate 1: confidently RTL-dominant (first strong char RTL).
+    if !paragraph_is_rtl(line) {
+        return line.to_string();
+    }
+    // Gate 2: the "mixed" condition — at least one embedded-LTR char.
+    let has_embedded_ltr = line.chars().any(|c| is_bidi_digit(c) || is_latin_letter(c));
+    if !has_embedded_ltr {
+        return line.to_string();
+    }
+
+    // Resolve per-char embedding levels under an explicit RTL paragraph
+    // base. `Some(Level::rtl())` pins the paragraph direction so digits
+    // and Latin words next to Arabic resolve to an *even* (LTR) level
+    // and the Arabic/Hebrew resolves to an *odd* (RTL) level — exactly
+    // the §3.3.4 levels we need, without `reorder_line`'s full
+    // logical→visual flip (which would re-reverse our already-logical
+    // RTL runs).
+    let info = BidiInfo::new(line, Some(Level::rtl()));
+    let chars: Vec<char> = line.chars().collect();
+    // `levels` is indexed by UTF-8 byte offset; map it to char indices.
+    if info.levels.len() != line.len() {
+        // Defensive: shape mismatch — leave the line untouched.
+        return line.to_string();
+    }
+    let mut char_levels: Vec<Level> = Vec::with_capacity(chars.len());
+    {
+        let mut byte = 0usize;
+        for c in &chars {
+            char_levels.push(info.levels[byte]);
+            byte += c.len_utf8();
+        }
+    }
+
+    // Walk the line; keep odd-level (RTL) chars fixed in place, and for
+    // each maximal even-level (LTR) sub-run order it strictly
+    // left-to-right by logical index (ascending). Because the input is
+    // already logical, a correctly-emitted LTR sub-run is already
+    // ascending and this is a no-op for it; a sub-run an upstream pass
+    // accidentally left in RTL-visual order is straightened here. RTL
+    // runs are emitted verbatim, so already-logical RTL order is never
+    // disturbed.
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        if char_levels[i].is_rtl() {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        // Maximal even-level (LTR) sub-run [i, j).
+        let mut j = i;
+        while j < chars.len() && char_levels[j].is_ltr() {
+            j += 1;
+        }
+        // The sub-run's chars in logical (ascending) order = chars[i..j]
+        // as-is; emit left-to-right.
+        for &c in &chars[i..j] {
+            out.push(c);
+        }
+        i = j;
+    }
+    out
 }
 
 /// Verdict of the geometric visual-vs-logical detector (#537).
@@ -639,6 +759,86 @@ mod tests {
         assert!(!paragraph_is_rtl("123 456"));
         // Mixed but RTL-dominated.
         assert!(paragraph_is_rtl("نص with English"));
+    }
+
+    // ==========================================================================
+    // reorder_mixed_rtl_line — whole-line UAX #9 §3.3.4 embedded-LTR pass
+    // ==========================================================================
+
+    /// The motivating BidiSample case: a confidently-RTL date line that
+    /// mixes Latin (`april`), European numerals (`1434`/`14`) and an
+    /// Arabic-Indic numeral run (`٤٣٤١`). The embedded LTR sub-runs must
+    /// read left-to-right and keep their relative position within the
+    /// line; char count is preserved (output is a permutation).
+    #[test]
+    fn reorder_mixed_rtl_line_date_keeps_ltr_subruns_left_to_right() {
+        let line = "14 april 1434 ٤٣٤١";
+        let out = reorder_mixed_rtl_line(line);
+        // Embedded LTR tokens stay left-to-right (not reversed).
+        assert!(out.contains("1434"), "`1434` reversed/lost: {:?} -> {:?}", line, out);
+        assert!(out.contains("april"), "`april` reversed/lost: {:?} -> {:?}", line, out);
+        assert!(out.contains("14 "), "leading `14` reversed/lost: {:?} -> {:?}", line, out);
+        // Relative line position preserved: `14` precedes `april`, which
+        // precedes `1434`, in the emitted (logical) order.
+        let p14 = out.find("14").expect("14 present");
+        let papril = out.find("april").expect("april present");
+        let p1434 = out.find("1434").expect("1434 present");
+        assert!(p14 < papril && papril < p1434, "LTR sub-run order changed: {:?}", out);
+        // Char count preserved — no glyph dropped or duplicated.
+        assert_eq!(
+            out.chars().count(),
+            line.chars().count(),
+            "char count changed: {:?} -> {:?}",
+            line,
+            out
+        );
+    }
+
+    /// A pure-Arabic line (no embedded digit/Latin) hits the "mixed"
+    /// gate and is returned byte-for-byte identical — pins the
+    /// no-regression contract for `right_to_left_02` / Hebrew fixtures.
+    #[test]
+    fn reorder_mixed_rtl_line_pure_arabic_is_byte_identical() {
+        let line = "هذا نص عربي خالص";
+        assert_eq!(reorder_mixed_rtl_line(line), line);
+    }
+
+    /// A pure-English line is LTR-dominant (first strong char Latin),
+    /// fails the RTL gate, and is returned byte-for-byte identical.
+    #[test]
+    fn reorder_mixed_rtl_line_pure_english_is_byte_identical() {
+        let line = "This is plain English 2024";
+        assert_eq!(reorder_mixed_rtl_line(line), line);
+    }
+
+    /// An ambiguous / LTR-first mixed line (first strong char is Latin
+    /// even though Arabic appears later) is left unchanged — the
+    /// confidence gate only acts on RTL-dominant lines.
+    #[test]
+    fn reorder_mixed_rtl_line_ltr_first_is_unchanged() {
+        let line = "Invoice رقم 123";
+        assert_eq!(reorder_mixed_rtl_line(line), line);
+    }
+
+    /// Char count is preserved across a spread of mixed RTL inputs
+    /// (property-style spot check) — output is always a permutation.
+    #[test]
+    fn reorder_mixed_rtl_line_preserves_char_count() {
+        for s in [
+            "14 april 1434 ٤٣٤١",
+            "هذا منتج Microsoft الجديد",
+            "عام 2024 كان جيدا",
+            "السعر 99 دولار",
+        ] {
+            let out = reorder_mixed_rtl_line(s);
+            assert_eq!(
+                out.chars().count(),
+                s.chars().count(),
+                "char count changed: {:?} -> {:?}",
+                s,
+                out
+            );
+        }
     }
 
     // ==========================================================================

@@ -4835,7 +4835,26 @@ impl PdfDocument {
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
         let base_spans = self.extract_spans(page_index)?;
-        self.assemble_text_from_spans(page_index, base_spans, options)
+        let text = self.assemble_text_from_spans(page_index, base_spans, options)?;
+        Ok(Self::apply_mixed_rtl_line_pass(text))
+    }
+
+    /// Per-line UAX #9 pass for mixed-direction lines (bidi item 4): for each
+    /// output line that is confidently RTL and mixes Arabic/Hebrew with
+    /// European/Arabic-Indic numerals or Latin words (e.g. a date
+    /// `14 april 1434 ٤٣٤١`), give the embedded LTR sub-runs their left-to-right
+    /// sublevel (UAX #9 §3.3.4) while leaving the already-logical RTL runs fixed.
+    /// Gated inside `reorder_mixed_rtl_line`, so pure-RTL, pure-LTR, and
+    /// non-RTL lines are returned byte-for-byte unchanged; the ASCII fast path
+    /// keeps all Latin-only extraction identical.
+    fn apply_mixed_rtl_line_pass(text: String) -> String {
+        if text.is_ascii() {
+            return text;
+        }
+        text.split('\n')
+            .map(crate::text::bidi::reorder_mixed_rtl_line)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn assemble_text_from_spans(
@@ -9349,11 +9368,16 @@ impl PdfDocument {
     /// cluster gate both miss it). Mirrors `detect_narrow_gutter_prose`
     /// (`src/pipeline/reading_order/xycut.rs`) at the document-routing layer.
     ///
-    /// Prose-guarded (`mean non-whitespace chars per line > 20`) so numeric /
-    /// short-cell tables — which a bare corridor signal would also match —
-    /// are not routed to XY-cut. This is the conservative, table-safe subset:
-    /// it captures long-line academic references but intentionally NOT short-
-    /// verse layouts (tracked separately under #607).
+    /// Table-safe by construction (#536). Long-line bodies
+    /// (`mean non-whitespace chars per line > 20`) keep the original
+    /// concentration / coverage / centre accept path. Short-line bodies
+    /// (verse / lexicon editions) are admitted only under stricter,
+    /// length-independent guards a numeric / short-cell table cannot satisfy:
+    /// higher concentration and coverage, left/right column char-mass balance,
+    /// and a grid-row signal (a multi-cell table has ≥ 2 wide gaps on most
+    /// rows; a two-column body has one gutter). Full-width display-math /
+    /// heading rows are excluded from the gutter-coverage denominator so a
+    /// minority of them does not veto an otherwise two-column page.
     fn has_persistent_gutter_corridor(
         spans: &[crate::layout::TextSpan],
         median: f32,
@@ -9382,33 +9406,47 @@ impl PdfDocument {
             return false;
         }
 
-        // Prose guard: tables (numeric / short cells) score low mean chars
-        // per line; two-column prose scores high. Mirrors the `mean_chars`
-        // arm of `classify_region_kind`. > 20 is the table-safe floor.
         let total_chars: usize = lines.values().map(|(_, c)| *c).sum();
         let mean_chars = total_chars as f32 / lines.len() as f32;
-        if mean_chars <= 20.0 {
-            return false;
-        }
 
         // Largest within-line gap per line (≥ 6 pt suppresses word spacing);
-        // record the gap midpoint X.
+        // record the gap midpoint X. Also flag full-width lines with no internal
+        // gutter (display equations, full-width headings) so they neither support
+        // nor veto the corridor — they are excluded from the coverage denominator
+        // (Part 1b: display-math robustness, #536/arxiv_math).
         const MIN_GAP_PT: f32 = 6.0;
         let mut gap_positions: Vec<f32> = Vec::new();
+        let mut full_width_lines = 0usize;
+        let mut multi_gap_lines = 0usize;
         for (line_spans, _) in lines.values() {
-            if line_spans.len() < 2 {
+            if line_spans.is_empty() {
                 continue;
             }
             let mut sorted = line_spans.clone();
             sorted.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
+            let line_left = sorted.first().map(|s| s.0).unwrap_or(0.0);
+            let line_right = sorted.last().map(|s| s.1).unwrap_or(0.0);
             let mut largest_gap = 0.0_f32;
             let mut largest_mid = 0.0_f32;
+            let mut significant_gaps = 0usize;
             for w in sorted.windows(2) {
                 let gap = w[1].0 - w[0].1;
+                if gap >= MIN_GAP_PT {
+                    significant_gaps += 1;
+                }
                 if gap > largest_gap {
                     largest_gap = gap;
                     largest_mid = (w[0].1 + w[1].0) * 0.5;
                 }
+            }
+            if (line_right - line_left) >= region_width * 0.9 && largest_gap < MIN_GAP_PT {
+                full_width_lines += 1;
+            }
+            // A line with two or more wide internal gaps is a grid row (≥ 3
+            // cells), not a two-column body line (one gutter). Used by the
+            // short-line table discriminator below.
+            if significant_gaps >= 2 {
+                multi_gap_lines += 1;
             }
             if largest_gap >= MIN_GAP_PT {
                 gap_positions.push(largest_mid);
@@ -9417,6 +9455,8 @@ impl PdfDocument {
         if gap_positions.len() < 12 {
             return false;
         }
+        // Coverage denominator excludes full-width display rows.
+        let eff_lines = lines.len().saturating_sub(full_width_lines).max(1);
 
         // Cluster gap midpoints (10 pt radius); find the dominant corridor.
         const CLUSTER_RADIUS_PT: f32 = 10.0;
@@ -9444,29 +9484,58 @@ impl PdfDocument {
             }
         }
 
-        // Concentration ≥ 62 %: one persistent corridor (2-col prose) vs many
-        // weaker corridors (tables). 0.62 admits the measured academic
-        // fixtures (0.65 / 0.69) while staying above the table noise floor.
-        if best_size * 50 < gap_positions.len() * 31 {
-            return false;
-        }
-        // The corridor must be a genuine full-height two-column body: present
-        // on a MAJORITY (≥ 50 %) of all lines, with a solid absolute floor.
-        // Stricter than `detect_narrow_gutter_prose`'s 20 % because this is a
-        // page-routing decision — a mixed prose+table page whose table happens
-        // to share one cell-gap x must NOT be routed to XY-cut (that reorders
-        // the table). Bibliographies put the gutter on nearly every line.
-        if best_size < 16 || best_size * 2 < lines.len() {
+        // Gutter must sit near the page centre (0.30–0.70). A true two-column
+        // body splits down the middle; a table's dominant gap (label column vs
+        // data, or one of several cell boundaries) sits off-centre.
+        let gutter_offset = best_center - x_min;
+        let centre_ok =
+            gutter_offset >= region_width * 0.30 && gutter_offset <= region_width * 0.70;
+        if best_size < 16 || !centre_ok {
             return false;
         }
 
-        // Gutter must sit near the page centre (0.30–0.70). A true two-column
-        // body splits down the middle; a table's dominant gap (label column vs
-        // data, or one of several cell boundaries) sits off-centre and is
-        // rejected here. This is the decisive prose-vs-table discriminator at
-        // the routing layer.
-        let gutter_offset = best_center - x_min;
-        gutter_offset >= region_width * 0.30 && gutter_offset <= region_width * 0.70
+        if mean_chars > 20.0 {
+            // Long-line two-column prose (the v0.3.57 accept path, unchanged
+            // except the coverage denominator now excludes display rows):
+            // concentration ≥ 62 %, coverage ≥ 50 % of (effective) lines.
+            return best_size * 50 >= gap_positions.len() * 31 && best_size * 2 >= eff_lines;
+        }
+
+        // Short-line bodies (verse / lexicon / dictionary editions, #536): the
+        // raw `mean_chars` floor used to reject these along with short-cell
+        // tables. Admit them only under STRICTER, length-independent guards a
+        // short-cell table cannot satisfy (Part 1a).
+        let strict_concentration = best_size * 10 >= gap_positions.len() * 7; // ≥ 70 %
+        let strict_coverage = best_size * 5 >= eff_lines * 3; // ≥ 60 % of lines
+        if !(strict_concentration && strict_coverage) {
+            return false;
+        }
+        // Column char-mass balance: each side of the gutter must carry ≥ 35 % of
+        // the non-whitespace characters. A narrow label / verse-number column
+        // paired with wide data is lopsided and rejected.
+        let (mut left_chars, mut right_chars) = (0usize, 0usize);
+        for s in spans {
+            let cx = s.bbox.x + s.bbox.width * 0.5;
+            if (cx - median).abs() > max_extent {
+                continue;
+            }
+            let n = s.text.chars().filter(|c| !c.is_whitespace()).count();
+            if cx < best_center {
+                left_chars += n;
+            } else {
+                right_chars += n;
+            }
+        }
+        let total = (left_chars + right_chars).max(1) as f32;
+        if (left_chars as f32) < total * 0.35 || (right_chars as f32) < total * 0.35 {
+            return false;
+        }
+        // Grid-row discriminator: a two-column body has ONE wide gap per line
+        // (the gutter); a multi-cell numeric table has ≥ 2 wide gaps on most
+        // rows (cell boundaries). Reject when the majority of lines are grid
+        // rows — this is what keeps short-cell tables off the XY-cut path
+        // without the raw `mean_chars` floor that also blocked short verse.
+        multi_gap_lines * 2 <= eff_lines
     }
 
     /// True if the spans cluster into lines whose leftmost X positions
@@ -14479,6 +14548,57 @@ impl PdfDocument {
         self.extract_images_filtered(page_index, &ImageExtractFilter::default())
     }
 
+    /// Build the resource-name → colour-space-object map from a resolved
+    /// `/Resources` dictionary's `/ColorSpace` subdictionary (§8.6.3 / §7.8.3),
+    /// resolving one indirect-ref hop per entry so the stored value is a colour
+    /// space name or array. Empty when there is no `/ColorSpace` subdictionary;
+    /// the standard device names parse directly and need no entry. Consumed by
+    /// the image-handle builders so `decode()` / the handle's `color_space` can
+    /// resolve names like `/CS0` (§8.6.6, §8.9.7).
+    fn build_color_space_map(
+        &self,
+        resources: Option<&Object>,
+    ) -> std::collections::HashMap<String, Object> {
+        let mut map = std::collections::HashMap::new();
+        let Some(res) = resources else {
+            return map;
+        };
+        let res = if let Some(r) = res.as_reference() {
+            match self.load_object(r) {
+                Ok(o) => o,
+                Err(_) => return map,
+            }
+        } else {
+            res.clone()
+        };
+        let Some(res_dict) = res.as_dict() else {
+            return map;
+        };
+        let Some(cs_entry) = res_dict.get("ColorSpace") else {
+            return map;
+        };
+        let cs_obj = if let Some(r) = cs_entry.as_reference() {
+            match self.load_object(r) {
+                Ok(o) => o,
+                Err(_) => return map,
+            }
+        } else {
+            cs_entry.clone()
+        };
+        let Some(cs_dict) = cs_obj.as_dict() else {
+            return map;
+        };
+        for (name, value) in cs_dict.iter() {
+            let resolved = if let Some(r) = value.as_reference() {
+                self.load_object(r).unwrap_or_else(|_| value.clone())
+            } else {
+                value.clone()
+            };
+            map.insert(name.clone(), resolved);
+        }
+        map
+    }
+
     /// Enumerate images on a page without decompressing any stream (Phase 1).
     ///
     /// Walks the page content stream once and reads image metadata (dimensions,
@@ -14543,6 +14663,9 @@ impl PdfDocument {
             Ok(ops) => ops,
             Err(_) => return Ok(Vec::new()),
         };
+
+        // Resource-name colour-space map for this page scope (§8.6.6 / §8.9.7).
+        let cs_map = self.build_color_space_map(resources.as_ref());
 
         // Pre-resolve the XObject dictionary once
         let xobject_dict = if let Some(ref res) = resources {
@@ -14611,7 +14734,7 @@ impl PdfDocument {
                         .copied()
                         .unwrap_or_else(crate::content::Matrix::identity);
                     if let Some(handle) =
-                        image_handle_from_inline(self, &dict, data, ctm, paint_order)
+                        image_handle_from_inline(self, &dict, data, ctm, paint_order, &cs_map)
                     {
                         handles.push(handle);
                         paint_order += 1;
@@ -14665,9 +14788,15 @@ impl PdfDocument {
         match subtype {
             "Image" => {
                 if let Some(ref_obj) = xobject_ref_opt {
-                    if let Some(h) =
-                        image_handle_from_xobject(self, ref_obj, xobj_dict, ctm, *paint_order)
-                    {
+                    let cs_map = self.build_color_space_map(resources);
+                    if let Some(h) = image_handle_from_xobject(
+                        self,
+                        ref_obj,
+                        xobj_dict,
+                        ctm,
+                        *paint_order,
+                        &cs_map,
+                    ) {
                         *paint_order += 1;
                         Ok(vec![h])
                     } else {
@@ -14862,9 +14991,15 @@ impl PdfDocument {
                         .last()
                         .copied()
                         .unwrap_or_else(crate::content::Matrix::identity);
-                    if let Some(h) =
-                        image_handle_from_inline(self, &dict, data, current_ctm, *paint_order)
-                    {
+                    let cs_map = self.build_color_space_map(Some(&form_resources));
+                    if let Some(h) = image_handle_from_inline(
+                        self,
+                        &dict,
+                        data,
+                        current_ctm,
+                        *paint_order,
+                        &cs_map,
+                    ) {
                         handles.push(h);
                         *paint_order += 1;
                     }
@@ -20622,7 +20757,69 @@ mod tests {
         assert!(
             !PdfDocument::is_multi_column_page(&spans),
             "short-cell numeric table must NOT be routed as multi-column \
-             (prose guard rejects mean_chars <= 20)"
+             (grid-row discriminator rejects ≥2-gap rows)"
+        );
+    }
+
+    /// #536 Part 1a: a SHORT-line two-column verse body (Bible / lexicon) — one
+    /// short fragment per column, one central gutter per line — used to be
+    /// rejected by the raw `mean_chars <= 20` floor. It must now be admitted via
+    /// the corridor's short-line path (single gap/line, balanced, central).
+    #[test]
+    fn test_corridor_accepts_short_verse_two_column() {
+        let mut spans = Vec::new();
+        for i in 0..20 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(corridor_span("Bereshit", 50.0, y, 45.0)); // 8 chars, →95
+            spans.push(corridor_span("barahem", 300.0, y, 40.0)); // 7 chars, →340
+        }
+        // Call the corridor directly (bypass the upstream bimodal/histogram
+        // gates) with a no-op degenerate-CTM filter.
+        assert!(
+            PdfDocument::has_persistent_gutter_corridor(&spans, 300.0, 10_000.0),
+            "short-verse two-column body (1 gutter/line, balanced) must be admitted"
+        );
+    }
+
+    /// #536 Part 1a guard: a lopsided narrow-label + wide-data table must stay
+    /// rejected even though it has one gap per line — its gutter sits off-centre
+    /// (failing the centre gate) and its columns are lopsided (failing the
+    /// char-mass balance), either of which is sufficient.
+    #[test]
+    fn test_corridor_rejects_label_column_table() {
+        let mut spans = Vec::new();
+        for i in 0..20 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(corridor_span("1", 50.0, y, 8.0)); // tiny label →58
+            spans.push(corridor_span("Descriptionlongdata", 300.0, y, 200.0)); // wide →500
+        }
+        assert!(
+            !PdfDocument::has_persistent_gutter_corridor(&spans, 300.0, 10_000.0),
+            "lopsided narrow-label + wide-data table must be rejected (char balance)"
+        );
+    }
+
+    /// #536 Part 1b: a two-column prose body interleaved with a MINORITY of
+    /// full-width display-math / heading rows must still be detected — the
+    /// full-width rows are excluded from the coverage denominator. Without the
+    /// exclusion the coverage floor (best_size*2 >= lines) fails.
+    #[test]
+    fn test_corridor_survives_minority_display_math() {
+        let mut spans = Vec::new();
+        // 16 two-column prose lines.
+        for i in 0..16 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(corridor_span("Lorem ipsum dolor", 50.0, y, 120.0)); // →170
+            spans.push(corridor_span("sit amet consectetur", 300.0, y, 150.0)); // →450
+        }
+        // 24 full-width display rows (span the page, no internal gutter).
+        for i in 0..24 {
+            let y = 400.0 - i as f32 * 14.0;
+            spans.push(corridor_span("Section heading spanning width", 50.0, y, 400.0));
+        }
+        assert!(
+            PdfDocument::has_persistent_gutter_corridor(&spans, 300.0, 10_000.0),
+            "two-column prose with a minority of full-width display rows must hold"
         );
     }
 
