@@ -2,6 +2,25 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.59] - 2026-05-31
+
+> Community contributions — Type 4 PostScript calculator functions, optional-content (OCG/OCMD) render + extraction filtering, document-order ToUnicode parsing, per-variant standard-font width tables, and inline-image NUL-whitespace handling
+
+### Added
+
+- **Type 4 (PostScript calculator) function evaluator** — a complete, standalone evaluator for PDF Type 4 functions (ISO 32000-1:2008 §7.10.5). All Table 42 operators are implemented with spec-faithful semantics: the trigonometric operators (`sin`/`cos`/`atan`) operate in **degrees** with `atan` mapped to `[0, 360)`, `round`/`truncate`/`floor`/`ceiling` tie behaviour, strict int-vs-real typing, and `i64`-overflow handling for `idiv`/`mod`/`mul`/`add`/`sub`/`bitshift`. A dedicated `Error::Type4Runtime` distinguishes stack underflow, typecheck, sqrt-of-negative, and divide-by-zero from invalid input. *Note: this lands as a tested capability not yet wired into the Separation/DeviceN tint-transform colour path — that integration is a tracked follow-up, so rendering behaviour is unchanged for now.* (#603) Thanks @RayVR.
+- **Optional-content (OCG / OCMD) filtering for rendering and extraction** — `render_page` and the text extractors now resolve optional-content visibility through a shared `optional_content` resolver, honouring OCMD `/P` policy (`AnyOn`/`AllOn`/`AnyOff`/`AllOff`) and `/VE` visibility expressions (§8.11.2.2), the default configuration `/OCProperties/D` with `/BaseState`/`ON`/`OFF` (§8.11.4), and the hidden-content text-advance rule (§8.11.3). Marked-content (`BDC /OC … EMC`) on both the extraction and rendering paths is filtered consistently, fixing a prior duplication where the renderer mis-decoded UTF-16LE/PDFDocEncoding layer names. PDFs without optional content are byte-for-byte unchanged. By design, `render_page` honours the PDF's own default configuration while `extract_text` filters only caller-supplied layers (§8.11.3 NOTE 4). (#604) Thanks @RayVR.
+
+### Fixed
+
+- **ToUnicode CMaps process `bfchar` and `bfrange` sections in document order (#619)** — a ToUnicode CMap is a single combined mapping space where a later definition overrides an earlier one for the same code (ISO 32000-1:2008 §9.10.3); sections are now applied in the order they appear so the last definition wins, matching Adobe/pdf.js/MuPDF/Poppler. Thanks @haberman.
+- **Null byte (`0x00`) is treated as PDF white-space when locating the inline-image `EI` operator (#618)** — `NUL` is one of the six PDF white-space characters (ISO 32000-1:2008 §7.2, Table 1) but was previously omitted, so an `EI` delimited by a null byte in inline-image (`BI`/`ID`/`EI`) binary data could be missed. Thanks @haberman.
+- **Bold/italic variants of the standard Times and Helvetica fonts use correct per-variant width tables (#615)** — the Bold and Italic variants of Times and the Bold variant of Helvetica were falling back to the Regular-weight width table, drifting character positions and word-break detection in documents using these common standard-14 fonts without a `/Widths` array (ISO 32000-1:2008 §9.6.2.2). Per-variant widths are now sourced from the Adobe Core 14 AFM metrics. Thanks @haberman.
+
+### Dependencies
+
+- **CI actions**: `taiki-e/install-action` 2.79.12 → 2.81.0 (#580).
+
 ## [0.3.58] - 2026-05-31
 
 > Structure-tree reading order with /Suspects handling, structured page extraction, two-column reference/verse routing, math-font punctuation + emoji spacing, mixed bidirectional text, /Rotate 90°/270°, image colour-space resolution, and a dependency refresh
@@ -65,7 +84,6 @@ All notable changes to PDFOxide are documented here.
 - **Unchecked checkboxes no longer inject `[ ]` noise** — an unchecked checkbox widget previously emitted a stray `[ ]` marker into the surrounding text; it now contributes nothing.
 - **Page numbers and running headers no longer leak into body text (#553)** — a standalone page number or running-header line isolated on its own baseline is no longer spliced into the adjacent paragraph.
 - **Glyph corruption between documents that reuse a font name (#597, #598)** — Type 3 fonts (whose glyphs are document-scoped content streams) are no longer shared via the cross-document font cache, and the cache key now includes glyph-width metrics, so two fonts that share a BaseFont name but differ in `/Widths` no longer alias to one another.
-- **Helvetica-Bold and Times-Bold now use correct per-variant width tables** — the Bold variants of these standard fonts were incorrectly falling back to the Regular-weight width table, causing character positions and word-break detection to drift in documents using these common fonts. Width values are sourced from the Adobe AFM metrics files.
 - **Type 3 font spacing now honours the font's `FontMatrix` (#606)** — glyph advances for Type 3 fonts were scaled by a hard-coded 1/1000 em; they now apply the font's own `FontMatrix[0]`, so Type 3 fonts with a non-standard (e.g. identity `[1 0 0 1 0 0]`) matrix get correct character and word spacing. Thanks @haberman.
 - **Faster, no double rescan on damaged PDFs (#572)** — a reconstructed cross-reference table now seeds the object-scan cache, removing a redundant second full-file sweep on corrupt/polyglot PDFs.
 - **Form XObject image cache poisoning when fonts/XObjects collide on basename** — the OCG ink-filtering work also fixed three latent bugs in OCG/ink handling: a parser edge case, a Form XObject cache keyed too coarsely, and ink-state restore on graphics-state pop. Thanks @RayVR. (#600)

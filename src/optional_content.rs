@@ -7,6 +7,17 @@
 //! correctness bug where the renderer failed to decode UTF-16LE / PDFDocEncoding
 //! layer names that the extractor handled correctly).
 //!
+//! NOTE — the two callers apply different *default* policies, by design.
+//! `render_page` honours the PDF's own default configuration `/OCProperties/D`
+//! (so an OCG marked off in `/D/OFF`, or off under `/D/BaseState /OFF`, is hidden
+//! even when the caller passes no layer filter). `extract_text` instead treats
+//! all content as visible unless the caller explicitly names layers to exclude,
+//! and skips OCG evaluation entirely when that set is empty. Both are spec-
+//! defensible — §8.11.3 NOTE 4 leaves it to the consumer whether optional content
+//! is processed for a non-interactive (e.g. text-extraction) purpose — but it
+//! means the two surfaces can legitimately disagree on visibility for the same
+//! PDF. Callers wanting render/extract parity should pass matching `excluded_layers`.
+//!
 //! References:
 //!  - ISO 32000-1:2008 §8.11.2 — Optional Content
 //!  - ISO 32000-1:2008 §8.11.2.2 — Optional Content Membership Dictionaries

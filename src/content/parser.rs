@@ -5575,6 +5575,8 @@ mod tests {
 
     #[test]
     fn test_is_whitespace() {
+        // NUL (0x00) is one of the six PDF white-space chars (ISO 32000-1:2008 §7.2, Table 1).
+        assert!(is_whitespace(0x00));
         assert!(is_whitespace(b' '));
         assert!(is_whitespace(b'\t'));
         assert!(is_whitespace(b'\r'));
