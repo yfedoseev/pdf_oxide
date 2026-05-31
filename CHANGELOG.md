@@ -2,9 +2,9 @@
 
 All notable changes to PDFOxide are documented here.
 
-## [0.3.59] - 2026-05-31
+## [0.3.59] - 2026-06-01
 
-> Community contributions — Type 4 PostScript calculator functions, optional-content (OCG/OCMD) render + extraction filtering, document-order ToUnicode parsing, per-variant standard-font width tables, and inline-image NUL-whitespace handling
+> Community contributions — Type 4 PostScript calculator functions, optional-content (OCG/OCMD) render + extraction filtering, document-order ToUnicode parsing, per-variant standard-font width tables, subset-font cache isolation, and inline-image NUL-whitespace handling
 
 ### Added
 
