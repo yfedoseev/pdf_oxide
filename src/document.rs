@@ -12685,14 +12685,41 @@ impl PdfDocument {
     /// fonts carry no subset prefix, so the cheap hash cannot distinguish them
     /// — this predicate gates them out of the global cache instead (#597).
     fn font_is_document_local(font_obj: &Object) -> bool {
-        font_obj
-            .as_dict()
-            .and_then(|d| d.get("Subtype"))
-            .and_then(|s| match s {
-                Object::Name(n) => Some(n.as_str()),
-                _ => None,
-            })
-            == Some("Type3")
+        let dict = match font_obj.as_dict() {
+            Some(d) => d,
+            None => return false,
+        };
+
+        // Type 3 fonts reference this document's resources via their CharProcs,
+        // so a cached FontInfo cannot cross PdfDocument boundaries.
+        if dict.get("Subtype").and_then(|s| s.as_name()) == Some("Type3") {
+            return true;
+        }
+
+        // Subset fonts carry a document-specific glyph subset and ToUnicode
+        // CMap, so they are unsafe to share across documents even when the
+        // BaseFont name collides. A subset BaseFont is tagged with exactly six
+        // uppercase letters and a '+' per ISO 32000-1:2008 §9.6.4
+        // (e.g. `AAAAAA+ArialUnicodeMS`).
+        match dict.get("BaseFont").and_then(|b| b.as_name()) {
+            Some(base_font) => Self::is_subset_basefont(base_font),
+            // A non-Type3 font is required by the spec to carry /BaseFont; if it
+            // is absent we cannot prove the font is shareable, so fail safe and
+            // treat it as document-local rather than risk poisoning the cache.
+            None => true,
+        }
+    }
+
+    /// Detect a PDF subset-font tag on a `/BaseFont` name: exactly six uppercase
+    /// ASCII letters followed by `+`, per ISO 32000-1:2008 §9.6.4 (e.g.
+    /// `AAAAAA+ArialUnicodeMS`). `is_ascii_uppercase` is precisely A–Z, so
+    /// multibyte (CJK) names never satisfy the test and are treated as full
+    /// fonts — correct, since subset tags are by definition ASCII A–Z.
+    fn is_subset_basefont(base_font: &str) -> bool {
+        let bytes = base_font.as_bytes();
+        bytes.len() > 7
+            && bytes[6] == b'+'
+            && bytes[..6].iter().all(|b| b.is_ascii_uppercase())
     }
 
     /// Load fonts from a Resources dictionary into the extractor.
@@ -12870,11 +12897,11 @@ impl PdfDocument {
                         // Compute identity hash (cheap: 3-6 dict lookups, ~200ns)
                         let id_hash = Self::font_identity_hash_cheap(&font);
 
-                        // #597: Type 3 (and other document-local) fonts must
-                        // not cross PdfDocument boundaries via the global
-                        // cache — their glyph procs reference this document's
-                        // resources. The per-document Layer 4/5 caches below
-                        // stay safe to use.
+                        // Type 3 fonts and subset fonts must not cross
+                        // PdfDocument boundaries via the global cache — their
+                        // glyph procs / glyph-subset + ToUnicode mappings are
+                        // document-specific. The per-document Layer 4/5 caches
+                        // below stay safe to use.
                         let is_document_local = Self::font_is_document_local(&font);
 
                         // Layer 5: Per-font identity cache — skip from_dict when a
@@ -18496,6 +18523,42 @@ mod tests {
         }
         // A dict with no Subtype is not document-local.
         assert!(!PdfDocument::font_is_document_local(&Object::Null));
+
+        // Subset fonts (six uppercase letters + '+', ISO 32000-1 §9.6.4) are
+        // document-local regardless of subtype — their glyph subset and
+        // ToUnicode are document-specific and must not be shared cross-document.
+        for subtype in ["Type1", "TrueType", "Type0", "CIDFontType2"] {
+            let mut d = std::collections::HashMap::new();
+            d.insert("Subtype".to_string(), Object::Name(subtype.to_string()));
+            d.insert(
+                "BaseFont".to_string(),
+                Object::Name("AAAAAA+ArialUnicodeMS".to_string()),
+            );
+            assert!(
+                PdfDocument::font_is_document_local(&Object::Dictionary(d)),
+                "subset {subtype} must be treated as document-local"
+            );
+        }
+
+        // Subset-prefix edge cases: a 6-uppercase name without '+', a lowercase
+        // tag, a short tag, and an empty real name are NOT subsets — stay cacheable.
+        for name in ["ARIALX", "abcdef+Real", "AAAAA+Short", "AAAAAA+"] {
+            let mut d = std::collections::HashMap::new();
+            d.insert("Subtype".to_string(), Object::Name("Type0".to_string()));
+            d.insert("BaseFont".to_string(), Object::Name(name.to_string()));
+            assert!(
+                !PdfDocument::font_is_document_local(&Object::Dictionary(d)),
+                "{name} is not a subset tag and must remain cacheable"
+            );
+        }
+
+        // A non-Type3 font missing /BaseFont fails safe to document-local.
+        let mut no_basefont = std::collections::HashMap::new();
+        no_basefont.insert("Subtype".to_string(), Object::Name("Type0".to_string()));
+        assert!(
+            PdfDocument::font_is_document_local(&Object::Dictionary(no_basefont)),
+            "a non-Type3 font with no /BaseFont must fail safe to document-local"
+        );
     }
 
     // ========================================================================
