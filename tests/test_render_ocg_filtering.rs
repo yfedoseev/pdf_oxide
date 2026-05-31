@@ -3,6 +3,11 @@
 //! Verifies that `RenderOptions::excluded_layers` suppresses graphical content
 //! (rectangles, text) drawn inside OCG-tagged BDC scopes while preserving
 //! content outside those scopes.
+//!
+//! The whole suite exercises `pdf_oxide::rendering`, which is gated behind the
+//! `rendering` feature, so the file is compiled only when that feature is on —
+//! otherwise `cargo test` (default features) cannot resolve the import.
+#![cfg(feature = "rendering")]
 
 use std::collections::HashSet;
 
