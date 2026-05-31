@@ -145,6 +145,17 @@ pub enum Error {
         /// Why OCR couldn't be initialised or invoked.
         reason: crate::extractors::status::OcrUnavailableReason,
     },
+
+    /// Runtime error during PostScript Type 4 function evaluation
+    /// (stack underflow, typecheck, division by zero, overflow, undefined
+    /// operations).
+    ///
+    /// Distinct from [`Error::InvalidPdf`], which means a malformed parse;
+    /// `Type4Runtime` means a syntactically valid program failed at execution
+    /// time. Callers should typically fall back to a default gray rendering
+    /// rather than failing the entire page.
+    #[error("Type 4 runtime error: {0}")]
+    Type4Runtime(String),
 }
 
 #[cfg(test)]
