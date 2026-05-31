@@ -889,9 +889,22 @@ impl FontInfo {
             cid_default_width,
             has_explicit_dw,
             descendant_tt_cmap,
+            desc_raw_ascent,
+            desc_raw_descent,
         ) = if subtype == "Type0" {
             match Self::parse_descendant_fonts(font_dict, &base_font, doc) {
-                Ok((map, info, ftype, widths, dw, explicit_dw, tt_cmap, desc_embedded)) => {
+                Ok((
+                    map,
+                    info,
+                    ftype,
+                    widths,
+                    dw,
+                    explicit_dw,
+                    tt_cmap,
+                    desc_embedded,
+                    d_ascent,
+                    d_descent,
+                )) => {
                     log::info!(
                             "Font '{}': Parsed DescendantFonts - CIDFontType={}, CIDSystemInfo={}-{}, widths={}, embedded={}",
                             base_font,
@@ -909,7 +922,7 @@ impl FontInfo {
                     if desc_embedded.is_some() && embedded_font_data.is_none() {
                         embedded_font_data = desc_embedded;
                     }
-                    (map, info, ftype, widths, dw, explicit_dw, tt_cmap)
+                    (map, info, ftype, widths, dw, explicit_dw, tt_cmap, d_ascent, d_descent)
                 },
                 Err(e) => {
                     log::warn!(
@@ -917,12 +930,19 @@ impl FontInfo {
                         base_font,
                         e
                     );
-                    (Some(CIDToGIDMap::Identity), None, None, None, 1000.0, false, None)
+                    (Some(CIDToGIDMap::Identity), None, None, None, 1000.0, false, None, None, None)
                 },
             }
         } else {
-            (None, None, None, None, 1000.0, false, None)
+            (None, None, None, None, 1000.0, false, None, None, None)
         };
+
+        // For Type0 fonts the /FontDescriptor lives on the CIDFont descendant (§9.7.4).
+        // If the top-level font had no descriptor (the common case), fall back to the
+        // descendant's values so CID/CJK glyphs get real metrics instead of the 0.95/-0.35
+        // Poppler-compatible default.
+        let raw_ascent = raw_ascent.or(desc_raw_ascent);
+        let raw_descent = raw_descent.or(desc_raw_descent);
 
         // Pre-populate OnceLock with descendant's TrueType cmap if available.
         // Otherwise leave it for lazy extraction from embedded_font_data.
@@ -1063,7 +1083,8 @@ impl FontInfo {
     /// Extracts CIDFont dictionary and related information
     /// Per PDF Spec ISO 32000-1:2008, Section 9.7.1
     ///
-    /// Returns: (CIDToGIDMap, CIDSystemInfo, CIDFontType, CIDWidths, DefaultWidth)
+    /// Returns: (CIDToGIDMap, CIDSystemInfo, CIDFontType, CIDWidths, DefaultWidth,
+    ///          has_explicit_dw, TrueTypeCMap, EmbeddedFontData, raw_ascent, raw_descent)
     fn parse_descendant_fonts(
         font_dict: &HashMap<String, Object>,
         base_font: &str,
@@ -1077,6 +1098,8 @@ impl FontInfo {
         bool,                 // has_explicit_dw (F14/F15 fix)
         Option<TrueTypeCMap>, // TrueType cmap from descendant's embedded font
         Option<Arc<Vec<u8>>>, // Embedded font data from CIDFont's FontDescriptor
+        Option<f32>,          // raw_ascent from descendant FontDescriptor
+        Option<f32>,          // raw_descent from descendant FontDescriptor
     )> {
         let descendant_obj = font_dict
             .get("DescendantFonts")
@@ -1361,6 +1384,12 @@ impl FontInfo {
         let descendant_embedded =
             Self::extract_embedded_font_from_descriptor(cidfont_dict, base_font, doc);
 
+        // Extract ascent/descent from the CIDFont's FontDescriptor (§9.7.4 / Table 117).
+        // The Type0 wrapper has no top-level /FontDescriptor, so these values must be
+        // read from the descendant.
+        let (desc_raw_ascent, desc_raw_descent) =
+            Self::read_raw_ascent_descent_from_descriptor(cidfont_dict, doc);
+
         Ok((
             cid_to_gid_map,
             cid_system_info,
@@ -1370,6 +1399,8 @@ impl FontInfo {
             has_explicit_dw,
             descendant_tt_cmap,
             descendant_embedded,
+            desc_raw_ascent,
+            desc_raw_descent,
         ))
     }
 
@@ -1426,6 +1457,39 @@ impl FontInfo {
             },
             _ => None,
         }
+    }
+
+    /// Read raw /Ascent and /Descent from a font dictionary's /FontDescriptor.
+    /// Returns (raw_ascent, raw_descent) in PDF 1/1000-em units, or None if absent.
+    /// Used to pull ascent/descent off a CIDFont descendant (§9.7.4 / Table 117).
+    fn read_raw_ascent_descent_from_descriptor(
+        font_dict: &HashMap<String, Object>,
+        doc: &PdfDocument,
+    ) -> (Option<f32>, Option<f32>) {
+        let desc_obj = match font_dict.get("FontDescriptor") {
+            Some(obj) => obj,
+            None => return (None, None),
+        };
+        let desc = if let Some(r) = desc_obj.as_reference() {
+            match doc.load_object(r) {
+                Ok(obj) => obj,
+                Err(_) => return (None, None),
+            }
+        } else {
+            desc_obj.clone()
+        };
+        let desc_dict = match desc.as_dict() {
+            Some(d) => d,
+            None => return (None, None),
+        };
+        let read_f32 = |key: &str| -> Option<f32> {
+            desc_dict.get(key).and_then(|o| {
+                o.as_real()
+                    .map(|r| r as f32)
+                    .or_else(|| o.as_integer().map(|i| i as f32))
+            })
+        };
+        (read_f32("Ascent"), read_f32("Descent"))
     }
 
     /// Extract embedded font data from a font dictionary's /FontDescriptor.
@@ -8928,6 +8992,70 @@ mod tests {
             Encoding::Standard(ref n) => assert_eq!(n, "UniGB-UCS2-H"),
             other => panic!("predefined CMap name must be Encoding::Standard, got {other:?}"),
         }
+    }
+
+    /// Type0/CID fonts read ascent/descent from the CIDFont descendant's FontDescriptor
+    /// (§9.7.4 / Table 117), not from the Type0 wrapper (which has no top-level
+    /// /FontDescriptor). Verify that `FontInfo::from_dict` on a Type0 font with a
+    /// descendant FontDescriptor that carries Ascent=800 / Descent=-200 yields
+    /// ascent ≈ 0.8 and descent ≈ -0.2 (both normalised from 1/1000-em to fraction-of-em).
+    #[test]
+    fn test_type0_ascent_descent_from_descendant_descriptor() {
+        // Build an inline CIDFont dictionary with a FontDescriptor containing Ascent/Descent.
+        let mut desc: HashMap<String, Object> = HashMap::new();
+        desc.insert("Type".to_string(), Object::Name("FontDescriptor".to_string()));
+        desc.insert("Ascent".to_string(), Object::Integer(800));
+        desc.insert("Descent".to_string(), Object::Integer(-200));
+
+        // Build the CIDFont dictionary (inline, no object references needed).
+        let mut cidfont: HashMap<String, Object> = HashMap::new();
+        cidfont.insert("Type".to_string(), Object::Name("Font".to_string()));
+        cidfont.insert("Subtype".to_string(), Object::Name("CIDFontType0".to_string()));
+        cidfont.insert("BaseFont".to_string(), Object::Name("TestCIDFont".to_string()));
+        cidfont.insert("DW".to_string(), Object::Integer(1000));
+        cidfont.insert(
+            "CIDSystemInfo".to_string(),
+            Object::Dictionary({
+                let mut si = HashMap::new();
+                si.insert(
+                    "Registry".to_string(),
+                    Object::String(b"Adobe".to_vec()),
+                );
+                si.insert(
+                    "Ordering".to_string(),
+                    Object::String(b"Identity".to_vec()),
+                );
+                si.insert("Supplement".to_string(), Object::Integer(0));
+                si
+            }),
+        );
+        cidfont.insert("FontDescriptor".to_string(), Object::Dictionary(desc));
+
+        // Wrap the CIDFont in the Type0 outer font dictionary.
+        let mut type0: HashMap<String, Object> = HashMap::new();
+        type0.insert("Type".to_string(), Object::Name("Font".to_string()));
+        type0.insert("Subtype".to_string(), Object::Name("Type0".to_string()));
+        type0.insert("BaseFont".to_string(), Object::Name("TestType0Font".to_string()));
+        type0.insert("Encoding".to_string(), Object::Name("Identity-H".to_string()));
+        type0.insert(
+            "DescendantFonts".to_string(),
+            Object::Array(vec![Object::Dictionary(cidfont)]),
+        );
+
+        let doc = minimal_pdf_doc();
+        let font = FontInfo::from_dict(&Object::Dictionary(type0), &doc)
+            .expect("Type0 font with inline descendant must parse");
+
+        assert!(
+            (font.ascent - 0.8).abs() < 1e-4,
+            "Expected ascent ≈ 0.8 (800/1000), got {}",
+            font.ascent
+        );
+        assert!(
+            (font.descent - (-0.2)).abs() < 1e-4,
+            "Expected descent ≈ -0.2 (-200/1000), got {}",
+            font.descent
+        );
     }
 
     // =========================================================================

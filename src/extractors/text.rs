@@ -4702,8 +4702,10 @@ impl<'doc> TextExtractor<'doc> {
                                             rotation_degrees,
                                             advance_width: tx.abs(),
                                             rendered_advance: tx.abs(),
-                                            ascent: 0.95 * effective_font_size,
-                                            descent: -0.35 * effective_font_size,
+                                            ascent: font.map(|f| f.ascent).unwrap_or(0.95)
+                                                * effective_font_size,
+                                            descent: font.map(|f| f.descent).unwrap_or(-0.35)
+                                                * effective_font_size,
                                             matrix: Some([
                                                 final_matrix.a,
                                                 final_matrix.b,

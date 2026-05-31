@@ -6,7 +6,11 @@ All notable changes to PDFOxide are documented here.
 
 ### Added
 
-- **`TextChar::ascent` and `TextChar::descent`** — glyph ascent and descent in device space (pre-multiplied by effective font size, matching the units of `advance_width` and `rendered_advance`). Sourced from the font's `FontDescriptor` (`/Ascent` / `/Descent`), with fallbacks to built-in metrics for the 14 standard PDF fonts and then Poppler-compatible defaults (0.95em / −0.35em). Use `origin_y + ascent` / `origin_y + descent` directly to get glyph bounding-box edges. Thanks @haberman.
+- **`TextChar::ascent` and `TextChar::descent`** — glyph ascent and descent in device space (pre-multiplied by effective font size, matching the units of `advance_width` and `rendered_advance`). Sourced from the font's `FontDescriptor` (`/Ascent` / `/Descent`), with fallbacks to built-in metrics for the 14 standard PDF fonts and then Poppler-compatible defaults (0.95em / −0.35em). For Type0/CID fonts the values are now read from the CIDFont descendant's descriptor (§9.7.4) rather than silently falling back to 0.95em / −0.35em. Use `origin_y + ascent` / `origin_y + descent` directly to get glyph bounding-box edges. Thanks @haberman.
+
+### Changed
+
+- **`TextChar` and `FontInfo` gain two new `pub` fields (`ascent: f32`, `descent: f32`)** — source-breaking for downstream code that constructs these structs with struct-literal syntax; add the two new fields to fix. Both structs are not `#[non_exhaustive]`.
 
 ## [0.3.59] - 2026-06-01
 
