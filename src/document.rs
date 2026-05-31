@@ -12717,9 +12717,7 @@ impl PdfDocument {
     /// fonts — correct, since subset tags are by definition ASCII A–Z.
     fn is_subset_basefont(base_font: &str) -> bool {
         let bytes = base_font.as_bytes();
-        bytes.len() > 7
-            && bytes[6] == b'+'
-            && bytes[..6].iter().all(|b| b.is_ascii_uppercase())
+        bytes.len() > 7 && bytes[6] == b'+' && bytes[..6].iter().all(|b| b.is_ascii_uppercase())
     }
 
     /// Load fonts from a Resources dictionary into the extractor.
@@ -18530,10 +18528,7 @@ mod tests {
         for subtype in ["Type1", "TrueType", "Type0", "CIDFontType2"] {
             let mut d = std::collections::HashMap::new();
             d.insert("Subtype".to_string(), Object::Name(subtype.to_string()));
-            d.insert(
-                "BaseFont".to_string(),
-                Object::Name("AAAAAA+ArialUnicodeMS".to_string()),
-            );
+            d.insert("BaseFont".to_string(), Object::Name("AAAAAA+ArialUnicodeMS".to_string()));
             assert!(
                 PdfDocument::font_is_document_local(&Object::Dictionary(d)),
                 "subset {subtype} must be treated as document-local"

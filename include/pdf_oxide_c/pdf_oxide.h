@@ -46,6 +46,33 @@
 #define DEFAULT_MAX_DECOMPRESSED_BYTES ((256 * 1024) * 1024)
 
 /**
+ * Maximum nested `{ ... }` depth permitted by the parser. PLRM has no formal
+ * cap, but real-world Type 4 streams are shallow; bounding it prevents a
+ * maliciously deep stream from blowing the Rust call stack since `parse_body`
+ * recurses for each brace level. Programs nested deeper return
+ * [`Error::InvalidPdf`].
+ */
+#define MAX_PARSE_DEPTH 32
+
+/**
+ * Maximum operand stack size during execution. PLRM §7.10.5.2 requires a
+ * "stack overflow" diagnostic; we surface it as [`Error::Type4Runtime`]. The
+ * cap matches what Adobe accepts in practice — Acrobat's interpreter allows
+ * up to a few hundred operands.
+ */
+#define MAX_STACK 256
+
+/**
+ * Maximum number of instructions the evaluator will execute. Type 4 has no
+ * loops in the language proper, but nested `if`/`ifelse` plus large generated
+ * bodies (or pathological streams crafted to consume CPU) can still produce
+ * arbitrarily many steps. 100 000 is generous for any realistic tint
+ * transform while still being a hard upper bound. Programs that exceed this
+ * budget return [`Error::Type4Runtime`].
+ */
+#define MAX_INSTRUCTIONS 100000
+
+/**
  * Field is read-only (bit 1)
  */
 #define READ_ONLY 1
@@ -1821,6 +1848,34 @@ FfiRenderedImage *pdf_render_page_with_options(PdfDocument *doc,
                                                int32_t render_annotations,
                                                int32_t jpeg_quality,
                                                int32_t *error_code);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
+/**
+ * Render a page with the full RenderOptions surface plus OCG layer filtering.
+ *
+ * `excluded_layers` is a pointer to an array of `excluded_layers_count` null-
+ * terminated UTF-8 C strings. Each string is the `/Name` of an Optional
+ * Content Group (OCG) to suppress. Pass a null pointer or zero count to
+ * disable filtering (matches `pdf_render_page_with_options` behaviour).
+ *
+ * The renderer also honours OCMD references that resolve to any of the named
+ * OCGs, per ISO 32000-1 §8.11.2.
+ */
+FfiRenderedImage *pdf_render_page_with_options_ex(PdfDocument *doc,
+                                                  int32_t page_index,
+                                                  int32_t dpi,
+                                                  int32_t format,
+                                                  float bg_r,
+                                                  float bg_g,
+                                                  float bg_b,
+                                                  float bg_a,
+                                                  int32_t transparent_background,
+                                                  int32_t render_annotations,
+                                                  int32_t jpeg_quality,
+                                                  const char *const *excluded_layers,
+                                                  uintptr_t excluded_layers_count,
+                                                  int32_t *error_code);
 #endif
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
