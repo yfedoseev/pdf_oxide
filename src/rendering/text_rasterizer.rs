@@ -578,6 +578,58 @@ impl TextRasterizer {
         filtered
     }
 
+    /// Measure-only: compute the horizontal advance of a Tj text string
+    /// without painting any glyphs.
+    ///
+    /// Used by the operator loop when a text-showing operator falls inside an
+    /// excluded OCG scope: glyphs must not be rasterised, but the text matrix
+    /// still needs to advance so that any subsequent visible text in the same
+    /// BT/ET block paints at the correct X position.
+    ///
+    /// Implements the PDF text advance formula `tx = ((w0 * Tfs) + Tc + Tw) * Th`
+    /// per ISO 32000-1 §9.4.4, summing across the source-character widths exposed
+    /// by [`crate::fonts::FontInfo::get_glyph_width`].
+    pub fn measure_text(
+        &self,
+        text: &[u8],
+        gs: &GraphicsState,
+        font_cache: &HashMap<String, Arc<crate::fonts::FontInfo>>,
+    ) -> f32 {
+        let font_info = gs
+            .font_name
+            .as_ref()
+            .and_then(|n| font_cache.get(n).cloned());
+        measure_text_bytes(text, gs, font_info.as_deref())
+    }
+
+    /// Measure-only: compute the horizontal advance of a TJ array without
+    /// painting any glyphs.
+    pub fn measure_tj_array(
+        &self,
+        array: &[TextElement],
+        gs: &GraphicsState,
+        font_cache: &HashMap<String, Arc<crate::fonts::FontInfo>>,
+    ) -> f32 {
+        let font_info = gs
+            .font_name
+            .as_ref()
+            .and_then(|n| font_cache.get(n).cloned());
+        let mut total: f32 = 0.0;
+        for element in array {
+            match element {
+                TextElement::String(text) => {
+                    total += measure_text_bytes(text, gs, font_info.as_deref());
+                },
+                TextElement::Offset(offset) => {
+                    // PDF offsets are in 1/1000th of a unit, positive shifts to the left.
+                    let shift = (-offset / 1000.0) * gs.font_size;
+                    total += shift;
+                },
+            }
+        }
+        total
+    }
+
     /// Render a TJ array (text with positioning adjustments).
     /// Returns the total horizontal advance in PDF points.
     pub fn render_tj_array(
@@ -1448,4 +1500,52 @@ impl Default for TextRasterizer {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Compute the PDF-spec horizontal text advance for `bytes` without painting.
+///
+/// Mirrors the advance math in [`TextRasterizer::render_unicode_text`] but
+/// without any glyph outline work. Per ISO 32000-1 §9.4.4:
+///
+/// `tx = ((w0 * Tfs) + Tc + Tw) * Th`
+///
+/// where w0 is the glyph width in 1000ths of an em, Tfs is the font size,
+/// Tc is char_space, Tw is word_space (only added at byte 0x20), and Th is
+/// horizontal_scaling/100.
+///
+/// When no font metrics are available we fall back to a half-em estimate per
+/// character — same constant `render_text_fallback` uses for the visible path,
+/// so the suppressed branch stays consistent with the painted branch.
+fn measure_text_bytes(
+    bytes: &[u8],
+    gs: &GraphicsState,
+    font_info: Option<&crate::fonts::FontInfo>,
+) -> f32 {
+    let font_size = gs.font_size;
+    let h_scale = gs.horizontal_scaling / 100.0;
+    let mut advance: f32 = 0.0;
+
+    if let Some(font) = font_info {
+        for (char_code, _) in TextCharIter::new(bytes, Some(font)) {
+            let w = font.get_glyph_width(char_code);
+            let glyph_adv = w * font_size / 1000.0;
+            advance += (glyph_adv + gs.char_space) * h_scale;
+            // PDF word_space applies to byte value 0x20 (ASCII space) under the
+            // current font's encoding. For Type0 fonts this is rarely a real
+            // word boundary, but we follow the visible-path convention.
+            if char_code == 0x20 {
+                advance += gs.word_space * h_scale;
+            }
+        }
+    } else {
+        // No font info — half-em estimate per byte, matching render_text_fallback.
+        let char_width = font_size * 0.6;
+        for &b in bytes {
+            advance += (char_width + gs.char_space) * h_scale;
+            if b == 0x20 {
+                advance += gs.word_space * h_scale;
+            }
+        }
+    }
+    advance
 }

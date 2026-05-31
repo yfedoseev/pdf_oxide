@@ -2801,74 +2801,28 @@ impl<'doc> TextExtractor<'doc> {
 
     /// Decode a PDF text string (handles UTF-16BE/LE with BOM and PDFDocEncoding).
     ///
-    /// Per ISO 32000 §7.9.2, strings without a UTF-16 BOM are PDFDocEncoding.
-    /// We try UTF-8 first as a lenient path for non-spec-compliant PDFs that
-    /// embed raw UTF-8 without a BOM; if that fails we fall back to the correct
-    /// PDFDocEncoding lookup (which handles the 0x80–0x9E special-char zone
-    /// maps 0xA0–0xFF as ISO Latin-1, unlike from_utf8_lossy which substitutes
-    /// U+FFFD for any byte that is not valid UTF-8).
+    /// Thin delegate to [`crate::optional_content::decode_pdf_text_string`] — that
+    /// module owns the canonical implementation shared with the rendering path
+    /// (UTF-16BE/LE with BOM, PDFDocEncoding fallback per ISO 32000-1:2008 §7.9.2).
     fn decode_pdf_text_string(bytes: &[u8]) -> String {
-        if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
-            // UTF-16BE with BOM
-            let utf16_pairs: Vec<u16> = bytes[2..]
-                .chunks_exact(2)
-                .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
-                .collect();
-            String::from_utf16(&utf16_pairs)
-                .unwrap_or_else(|_| String::from_utf8_lossy(bytes).to_string())
-        } else if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
-            // UTF-16LE with BOM
-            let utf16_pairs: Vec<u16> = bytes[2..]
-                .chunks_exact(2)
-                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-                .collect();
-            String::from_utf16(&utf16_pairs)
-                .unwrap_or_else(|_| String::from_utf8_lossy(bytes).to_string())
-        } else {
-            // Try UTF-8 first (lenient: some PDFs embed raw UTF-8 without a BOM).
-            // Fall back to PDFDocEncoding per ISO 32000 §7.9.2.
-            String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| {
-                bytes
-                    .iter()
-                    .filter_map(|&b| crate::fonts::font_dict::pdfdoc_encoding_lookup(b))
-                    .collect()
-            })
-        }
+        crate::optional_content::decode_pdf_text_string(bytes)
     }
 
     /// Resolve BDC properties: can be an inline dictionary or a name referencing /Properties resource.
+    ///
+    /// Thin delegate to [`crate::optional_content::resolve_bdc_properties`].
+    /// Passing `self.document` as `Option` lets the inline-dict fast path work
+    /// even on a freshly-constructed extractor with no document attached (used
+    /// by unit tests).
     fn resolve_bdc_properties(
         &self,
         properties: &Object,
     ) -> Option<std::collections::HashMap<String, Object>> {
-        // Inline dictionary
-        if let Some(dict) = properties.as_dict() {
-            return Some(dict.clone());
-        }
-
-        // Name reference — look up in /Properties sub-dictionary of resources
-        let prop_name = properties.as_name()?;
-        let resources = self.resources.as_ref()?;
-        let res_dict = if let Some(res_ref) = resources.as_reference() {
-            self.document?.load_object(res_ref).ok()?
-        } else {
-            resources.clone()
-        };
-        let res_dict = res_dict.as_dict()?;
-        let properties_dict_obj = res_dict.get("Properties")?;
-        let properties_dict = if let Some(r) = properties_dict_obj.as_reference() {
-            self.document?.load_object(r).ok()?
-        } else {
-            properties_dict_obj.clone()
-        };
-        let properties_dict = properties_dict.as_dict()?;
-        let prop_obj = properties_dict.get(prop_name)?;
-        let resolved = if let Some(r) = prop_obj.as_reference() {
-            self.document?.load_object(r).ok()?
-        } else {
-            prop_obj.clone()
-        };
-        resolved.as_dict().cloned()
+        crate::optional_content::resolve_bdc_properties(
+            properties,
+            self.resources.as_ref(),
+            self.document,
+        )
     }
 
     /// Resolve a named color space from the /Resources /ColorSpace dictionary.
@@ -2950,69 +2904,15 @@ impl<'doc> TextExtractor<'doc> {
 
     /// Check whether a BDC properties dict represents an excluded OCG or OCMD.
     ///
-    /// Handles two cases per ISO 32000-1 Section 8.11.2:
-    /// - Direct OCG: dict has `/Name` -> check against excluded layers
-    /// - OCMD: dict has `/Type /OCMD` and `/OCGs` array -> resolve each
-    ///   referenced OCG and check its `/Name` against excluded layers
+    /// Thin delegate to [`crate::optional_content::check_ocg_excluded`] — that
+    /// module is the single source of truth for OCG/OCMD evaluation, including
+    /// OCMD `/P` visibility-policy handling.
     fn check_ocg_excluded(&self, props_dict: &std::collections::HashMap<String, Object>) -> bool {
-        if let Some(ocg_name) = props_dict.get("Name") {
-            return self.ocg_name_is_excluded(ocg_name);
-        }
-
-        if let Some(Object::Name(t)) = props_dict.get("Type") {
-            if t == "OCMD" {
-                if let Some(ocgs_obj) = props_dict.get("OCGs") {
-                    return self.ocmd_ocgs_excluded(ocgs_obj);
-                }
-            }
-        }
-
-        false
-    }
-
-    fn ocg_name_is_excluded(&self, name_obj: &Object) -> bool {
-        if let Some(name_str) = name_obj.as_name() {
-            return self.excluded_layers.contains(name_str);
-        }
-        if let Some(name_bytes) = name_obj.as_string() {
-            let name_str = Self::decode_pdf_text_string(name_bytes);
-            return self.excluded_layers.contains(&name_str);
-        }
-        false
-    }
-
-    /// Resolve OCMD /OCGs and check if any referenced OCG is excluded.
-    /// /OCGs can be a single reference or an array of references.
-    fn ocmd_ocgs_excluded(&self, ocgs_obj: &Object) -> bool {
         let doc = match self.document {
             Some(d) => d,
             None => return false,
         };
-
-        let refs: Vec<&Object> = if let Some(arr) = ocgs_obj.as_array() {
-            arr.iter().collect()
-        } else {
-            vec![ocgs_obj]
-        };
-
-        for obj in refs {
-            let resolved = if let Some(r) = obj.as_reference() {
-                match doc.load_object(r) {
-                    Ok(o) => o,
-                    Err(_) => continue,
-                }
-            } else {
-                obj.clone()
-            };
-            if let Some(d) = resolved.as_dict() {
-                if let Some(name_obj) = d.get("Name") {
-                    if self.ocg_name_is_excluded(name_obj) {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
+        crate::optional_content::check_ocg_excluded(props_dict, doc, &self.excluded_layers)
     }
 
     /// Get current ActualText from marked content stack (PDF Spec Section 14.9.4).

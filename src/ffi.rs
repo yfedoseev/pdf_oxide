@@ -4754,12 +4754,15 @@ pub extern "C" fn pdf_render_page_with_options(
         } else {
             Some([bg_r, bg_g, bg_b, bg_a])
         };
+        // OCG layer filtering is exposed on the variant
+        // `pdf_render_page_with_options_ex` below — keeping this ABI stable.
         let opts = RustRenderOptions {
             dpi: dpi as u32,
             format: fmt,
             background,
             render_annotations: render_annotations != 0,
             jpeg_quality: jpeg_quality as u8,
+            excluded_layers: std::collections::HashSet::new(),
             scale_override: None,
         };
         match rendering::render_page(d, page_index as usize, &opts) {
@@ -4787,6 +4790,112 @@ pub extern "C" fn pdf_render_page_with_options(
             transparent_background,
             render_annotations,
             jpeg_quality,
+        );
+        set_error(error_code, _ERR_UNSUPPORTED);
+        ptr::null_mut()
+    }
+}
+
+/// Render a page with the full RenderOptions surface plus OCG layer filtering.
+///
+/// `excluded_layers` is a pointer to an array of `excluded_layers_count` null-
+/// terminated UTF-8 C strings. Each string is the `/Name` of an Optional
+/// Content Group (OCG) to suppress. Pass a null pointer or zero count to
+/// disable filtering (matches `pdf_render_page_with_options` behaviour).
+///
+/// The renderer also honours OCMD references that resolve to any of the named
+/// OCGs, per ISO 32000-1 §8.11.2.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn pdf_render_page_with_options_ex(
+    doc: *mut PdfDocument,
+    page_index: i32,
+    dpi: i32,
+    format: i32,
+    bg_r: f32,
+    bg_g: f32,
+    bg_b: f32,
+    bg_a: f32,
+    transparent_background: i32,
+    render_annotations: i32,
+    jpeg_quality: i32,
+    excluded_layers: *const *const c_char,
+    excluded_layers_count: usize,
+    error_code: *mut i32,
+) -> *mut FfiRenderedImage {
+    #[cfg(feature = "rendering")]
+    {
+        if doc.is_null() {
+            set_error(error_code, ERR_INVALID_ARG);
+            return ptr::null_mut();
+        }
+        if dpi <= 0 || !(1..=100).contains(&jpeg_quality) {
+            set_error(error_code, ERR_INVALID_ARG);
+            return ptr::null_mut();
+        }
+        let d = handle_ref(doc as *const _);
+        let fmt = if format == 1 {
+            RenderImageFormat::Jpeg
+        } else {
+            RenderImageFormat::Png
+        };
+        let background = if transparent_background != 0 {
+            None
+        } else {
+            Some([bg_r, bg_g, bg_b, bg_a])
+        };
+
+        let mut layers: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if !excluded_layers.is_null() && excluded_layers_count > 0 {
+            for i in 0..excluded_layers_count {
+                // Safety: caller-supplied pointer must point to an array of
+                // at least `excluded_layers_count` C strings or be null.
+                let entry: *const c_char = unsafe { *excluded_layers.add(i) };
+                if entry.is_null() {
+                    continue;
+                }
+                if let Some(s) = c_str_lossy(entry) {
+                    layers.insert(s);
+                }
+            }
+        }
+
+        let opts = RustRenderOptions {
+            dpi: dpi as u32,
+            format: fmt,
+            background,
+            render_annotations: render_annotations != 0,
+            jpeg_quality: jpeg_quality as u8,
+            excluded_layers: layers,
+            scale_override: None,
+        };
+        match rendering::render_page(d, page_index as usize, &opts) {
+            Ok(img) => {
+                set_error(error_code, ERR_SUCCESS);
+                Box::into_raw(Box::new(FfiRenderedImage { inner: img }))
+            },
+            Err(e) => {
+                set_error(error_code, classify_error(&e));
+                ptr::null_mut()
+            },
+        }
+    }
+    #[cfg(not(feature = "rendering"))]
+    {
+        let _ = (
+            doc,
+            page_index,
+            dpi,
+            format,
+            bg_r,
+            bg_g,
+            bg_b,
+            bg_a,
+            transparent_background,
+            render_annotations,
+            jpeg_quality,
+            excluded_layers,
+            excluded_layers_count,
         );
         set_error(error_code, _ERR_UNSUPPORTED);
         ptr::null_mut()
