@@ -1479,8 +1479,8 @@ mod tests {
         // it must surface as InvalidPdf so callers don't classify it as a
         // runtime resource failure and retry forever.
         let mut bytes = Vec::new();
-        bytes.extend(std::iter::repeat(b'{').take(50));
-        bytes.extend(std::iter::repeat(b'}').take(50));
+        bytes.extend(std::iter::repeat_n(b'{', 50));
+        bytes.extend(std::iter::repeat_n(b'}', 50));
         match evaluate_type4(&bytes, &[]) {
             Err(Error::InvalidPdf(_)) => {}, // correct
             Err(Error::Type4Runtime(s)) => {
