@@ -617,77 +617,18 @@ impl PageRenderer {
                                                 }
                                             },
                                             "Separation" | "DeviceN" => {
-                                                // Per PDF spec, Separation = [/Separation name altCS tintTransform]
-                                                // Evaluate tint transform against alternate color space
+                                                // Separation = [/Separation name altCS tintTransform].
+                                                // Evaluate the tint transform (FunctionType 0 or 2)
+                                                // and map the alternate-space result to RGB. Falls
+                                                // back to a subtractive single-ink grey only when the
+                                                // function can't be evaluated.
                                                 if !components.is_empty() {
-                                                    let tint = components[0];
-                                                    let alt_cs = arr
-                                                        .get(2)
-                                                        .and_then(|o| o.as_name())
-                                                        .unwrap_or("");
-                                                    if alt_cs == "DeviceCMYK" && arr.len() >= 4 {
-                                                        if let Some(func_obj) = arr.get(3) {
-                                                            if let Ok(func_res) =
-                                                                doc.resolve_object(func_obj)
-                                                            {
-                                                                if let Some(fd) = func_res.as_dict()
-                                                                {
-                                                                    if fd
-                                                                        .get("FunctionType")
-                                                                        .and_then(|o| {
-                                                                            o.as_integer()
-                                                                        })
-                                                                        == Some(2)
-                                                                    {
-                                                                        let c0 =
-                                                                            fd.get("C0").and_then(
-                                                                                |o| o.as_array(),
-                                                                            );
-                                                                        let c1 =
-                                                                            fd.get("C1").and_then(
-                                                                                |o| o.as_array(),
-                                                                            );
-                                                                        let get_f = |arr: Option<&Vec<Object>>, i: usize, def: f32| -> f32 {
-                                                                            arr.and_then(|a| a.get(i)).map(|o| match o { Object::Real(v) => *v as f32, Object::Integer(v) => *v as f32, _ => def }).unwrap_or(def)
-                                                                        };
-                                                                        let c = get_f(c0, 0, 0.0)
-                                                                            + tint
-                                                                                * (get_f(
-                                                                                    c1, 0, 0.0,
-                                                                                ) - get_f(
-                                                                                    c0, 0, 0.0,
-                                                                                ));
-                                                                        let m = get_f(c0, 1, 0.0)
-                                                                            + tint
-                                                                                * (get_f(
-                                                                                    c1, 1, 0.0,
-                                                                                ) - get_f(
-                                                                                    c0, 1, 0.0,
-                                                                                ));
-                                                                        let y = get_f(c0, 2, 0.0)
-                                                                            + tint
-                                                                                * (get_f(
-                                                                                    c1, 2, 0.0,
-                                                                                ) - get_f(
-                                                                                    c0, 2, 0.0,
-                                                                                ));
-                                                                        let k = get_f(c0, 3, 0.0)
-                                                                            + tint
-                                                                                * (get_f(
-                                                                                    c1, 3, 1.0,
-                                                                                ) - get_f(
-                                                                                    c0, 3, 0.0,
-                                                                                ));
-                                                                        gs.fill_color_rgb =
-                                                                            cmyk_to_rgb(c, m, y, k);
-                                                                        handled = true;
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                    if !handled {
-                                                        let g = 1.0 - tint;
+                                                    if let Some(rgb) =
+                                                        eval_separation_rgb(doc, arr, &components)
+                                                    {
+                                                        gs.fill_color_rgb = rgb;
+                                                    } else {
+                                                        let g = 1.0 - components[0];
                                                         gs.fill_color_rgb = (g, g, g);
                                                     }
                                                     handled = true;
@@ -862,9 +803,19 @@ impl PageRenderer {
                                                 }
                                             },
                                             "Separation" | "DeviceN" => {
+                                                // `scn` with a Separation/DeviceN space: evaluate the
+                                                // tint transform (FunctionType 0 or 2) -> alternate
+                                                // space -> RGB. The bare `grey = 1 - tint` fallback
+                                                // rendered a full-tint spot colour as solid black.
                                                 if !components.is_empty() {
-                                                    let g = 1.0 - components[0];
-                                                    gs.fill_color_rgb = (g, g, g);
+                                                    if let Some(rgb) =
+                                                        eval_separation_rgb(doc, arr, &components)
+                                                    {
+                                                        gs.fill_color_rgb = rgb;
+                                                    } else {
+                                                        let g = 1.0 - components[0];
+                                                        gs.fill_color_rgb = (g, g, g);
+                                                    }
                                                     handled = true;
                                                 }
                                             },
@@ -2547,6 +2498,169 @@ fn encode_png(pixmap: &Pixmap) -> Result<Vec<u8>> {
 /// Combine two transformations.
 fn combine_transforms(base: Transform, ctm: &Matrix) -> Transform {
     base.pre_concat(Transform::from_row(ctm.a, ctm.b, ctm.c, ctm.d, ctm.e, ctm.f))
+}
+
+/// Coerce a numeric PDF object (Integer or Real) to f32.
+fn obj_to_f32(o: &Object) -> Option<f32> {
+    match o {
+        Object::Integer(i) => Some(*i as f32),
+        Object::Real(r) => Some(*r as f32),
+        _ => None,
+    }
+}
+
+/// Read a dictionary entry as a Vec<f32> (numeric array), or empty.
+fn dict_f32_array(
+    dict: &std::collections::HashMap<String, Object>,
+    key: &str,
+) -> Vec<f32> {
+    dict.get(key)
+        .and_then(|o| o.as_array())
+        .map(|a| a.iter().filter_map(obj_to_f32).collect())
+        .unwrap_or_default()
+}
+
+/// Read one `bps`-bit big-endian sample at sample-index `index` from a packed
+/// sample stream (FunctionType 0 data is MSB-first, samples back-to-back).
+fn read_packed_sample(data: &[u8], index: usize, bps: u32) -> u64 {
+    let mut bit_pos = index as u64 * bps as u64;
+    let mut val: u64 = 0;
+    for _ in 0..bps {
+        let byte = data.get((bit_pos / 8) as usize).copied().unwrap_or(0);
+        let bit = (byte >> (7 - (bit_pos % 8))) & 1;
+        val = (val << 1) | bit as u64;
+        bit_pos += 1;
+    }
+    val
+}
+
+/// Map output components (from a tint transform) in the alternate colour
+/// space to RGB by component count: 1 → Gray, 3 → RGB, 4 → CMYK. This sidesteps
+/// parsing the alternate space name/ICC profile — the function's output arity
+/// already equals the alternate space's component count.
+fn components_to_rgb(comps: &[f32]) -> Option<(f32, f32, f32)> {
+    match comps.len() {
+        1 => Some((comps[0], comps[0], comps[0])),
+        3 => Some((comps[0], comps[1], comps[2])),
+        4 => Some(cmyk_to_rgb(comps[0], comps[1], comps[2], comps[3])),
+        _ => None,
+    }
+}
+
+/// Evaluate a single-input PDF function (Separation/DeviceN tint transforms are
+/// 1→N maps). Supports FunctionType 2 (exponential interpolation) and
+/// FunctionType 0 (sampled). Returns the output component vector, or None when
+/// the function type/shape isn't supported so the caller can fall back.
+fn eval_pdf_function_1d(
+    doc: &crate::document::PdfDocument,
+    func: &Object,
+    input: f32,
+) -> Option<Vec<f32>> {
+    let resolved = doc.resolve_object(func).ok()?;
+    let dict = resolved.as_dict()?;
+    let ftype = dict.get("FunctionType").and_then(|o| o.as_integer())?;
+
+    // Clip the input to Domain (default [0, 1]).
+    let domain = dict_f32_array(dict, "Domain");
+    let (d0, d1) = (
+        domain.first().copied().unwrap_or(0.0),
+        domain.get(1).copied().unwrap_or(1.0),
+    );
+    let x = input.clamp(d0.min(d1), d0.max(d1));
+
+    match ftype {
+        2 => {
+            let n = dict
+                .get("N")
+                .and_then(obj_to_f32)
+                .unwrap_or(1.0);
+            let c0 = dict_f32_array(dict, "C0");
+            let c1 = dict_f32_array(dict, "C1");
+            // Defaults per spec: C0 = [0.0], C1 = [1.0].
+            let len = c0.len().max(c1.len()).max(1);
+            let xn = x.powf(n);
+            let out = (0..len)
+                .map(|j| {
+                    let a = c0.get(j).copied().unwrap_or(0.0);
+                    let b = c1.get(j).copied().unwrap_or(1.0);
+                    a + xn * (b - a)
+                })
+                .collect();
+            Some(out)
+        }
+        0 => {
+            let size = dict
+                .get("Size")
+                .and_then(|o| o.as_array())
+                .and_then(|a| a.first())
+                .and_then(|o| o.as_integer())? as usize;
+            if size < 1 {
+                return None;
+            }
+            let bps = dict.get("BitsPerSample").and_then(|o| o.as_integer())? as u32;
+            let range = dict_f32_array(dict, "Range");
+            if range.len() < 2 {
+                return None;
+            }
+            let m = range.len() / 2; // number of output components
+            // Encode default [0, size-1]; Decode default = Range.
+            let encode = {
+                let e = dict_f32_array(dict, "Encode");
+                if e.len() >= 2 {
+                    (e[0], e[1])
+                } else {
+                    (0.0, (size - 1) as f32)
+                }
+            };
+            let decode = {
+                let d = dict_f32_array(dict, "Decode");
+                if d.len() >= range.len() {
+                    d
+                } else {
+                    range.clone()
+                }
+            };
+            let data = resolved.decode_stream_data().ok()?;
+            let max = ((1u64 << bps) - 1) as f32;
+
+            // Map x∈Domain → e∈[0,size-1] via Encode, then clamp.
+            let e = if (d1 - d0).abs() < f32::EPSILON {
+                encode.0
+            } else {
+                encode.0 + (x - d0) * (encode.1 - encode.0) / (d1 - d0)
+            };
+            let e = e.clamp(0.0, (size - 1) as f32);
+            let lo = e.floor() as usize;
+            let hi = (lo + 1).min(size - 1);
+            let frac = e - lo as f32;
+
+            let mut out = Vec::with_capacity(m);
+            for j in 0..m {
+                let s_lo = read_packed_sample(&data, lo * m + j, bps) as f32 / max;
+                let s_hi = read_packed_sample(&data, hi * m + j, bps) as f32 / max;
+                let s = s_lo + frac * (s_hi - s_lo);
+                let (dlo, dhi) = (decode[2 * j], decode[2 * j + 1]);
+                out.push(dlo + s * (dhi - dlo));
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+/// Resolve a Separation/DeviceN colour (`[/Separation name altCS tintFn]` or
+/// `[/DeviceN names altCS tintFn …]`) at the given tint(s) to RGB by evaluating
+/// the tint transform and converting the alternate-space result. Single tint
+/// input (the Separation case); returns None when it can't be evaluated.
+fn eval_separation_rgb(
+    doc: &crate::document::PdfDocument,
+    arr: &[Object],
+    tints: &[f32],
+) -> Option<(f32, f32, f32)> {
+    let func = arr.get(3)?;
+    let tint = *tints.first()?;
+    let outputs = eval_pdf_function_1d(doc, func, tint)?;
+    components_to_rgb(&outputs)
 }
 
 /// Convert DeviceCMYK (0.0–1.0) to DeviceRGB (0.0–1.0) per ISO 32000-1:2008
