@@ -184,6 +184,12 @@ pub mod functions;
 // Colour management (ICC profile handling)
 pub mod color;
 
+// Separation/DeviceN tint-transform resolution and alternate-space → RGB.
+// Gated with `rendering` alongside its only consumer (the page renderer); it
+// depends on the rendering-gated `PdfDocument::resolve_object`.
+#[cfg(feature = "rendering")]
+pub mod tint;
+
 // Pluggable cryptographic backend (FIPS / sovereign-jurisdiction
 // providers). Issue #236.
 pub mod crypto;

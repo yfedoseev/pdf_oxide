@@ -12,12 +12,15 @@ with a `Separation` colour over a `DeviceCMYK` alternate. The tint transform
 maps tint `1.0 → CMYK(0.1, 0, 0.15, 0)` — a light green, **RGB ≈ (230, 255, 216)**.
 The two files differ only in the tint-transform function type:
 
-| File | Tint transform |
-| --- | --- |
-| [`separation-type2.pdf`](separation-type2.pdf) | `FunctionType 2` (exponential interpolation) |
-| [`separation-type0.pdf`](separation-type0.pdf) | `FunctionType 0` (sampled) |
+| File | Colour space | Tint transform | Alternate | Centre pixel |
+| --- | --- | --- | --- | --- |
+| [`separation-type2.pdf`](separation-type2.pdf) | Separation | `FunctionType 2` (exponential) | DeviceCMYK | light green ≈ (230,255,217) |
+| [`separation-type0.pdf`](separation-type0.pdf) | Separation | `FunctionType 0` (sampled) | DeviceCMYK | light green ≈ (229,255,217) |
+| [`separation-type4.pdf`](separation-type4.pdf) | Separation | `FunctionType 4` (PostScript) | DeviceCMYK | light green ≈ (230,255,217) |
+| [`devicen-type4.pdf`](devicen-type4.pdf) | DeviceN (2 colorants) | `FunctionType 4` (2→4) | DeviceCMYK | green ≈ (51,255,102) |
+| [`separation-lab.pdf`](separation-lab.pdf) | Separation | `FunctionType 2` | **Lab** | red ≈ (255,0,0) |
 
-The page content stream is just:
+The page content stream is just (two operands for the 2-colorant DeviceN):
 
 ```
 /CsTest cs 1 scn 0 0 100 100 re f
@@ -25,10 +28,20 @@ The page content stream is just:
 
 ## Expected vs. buggy
 
-| | FunctionType 2 | FunctionType 0 |
+| | FunctionType 2 | FunctionType 0 | FunctionType 4 |
+| --- | --- | --- | --- |
+| **Fixed** (light green) | ![](separation-type2-fixed.png) | ![](separation-type0-fixed.png) | ![](separation-type4-fixed.png) |
+| **Buggy** (solid black) | ![](separation-type2-buggy.png) | ![](separation-type0-buggy.png) | ![](separation-type4-buggy.png) |
+
+The multi-colorant DeviceN and Lab cases render as below. Their "buggy" images
+are the state at the parent commit (`dbc832a`), before this change: Type 4 was
+unevaluated (DeviceN and Type 4 Separation fell back to grey → black) and the
+Lab alternate's `[L*, a*, b*]` output was mistaken for out-of-range RGB → black.
+
+| | DeviceN Type 4 (green) | Separation + Lab (red) |
 | --- | --- | --- |
-| **Fixed** (light green ≈ 230,255,216) | ![](separation-type2-fixed.png) | ![](separation-type0-fixed.png) |
-| **Buggy** (solid black 0,0,0) | ![](separation-type2-buggy.png) | ![](separation-type0-buggy.png) |
+| **Fixed** | ![](devicen-type4-fixed.png) | ![](separation-lab-fixed.png) |
+| **Buggy** (solid black) | ![](devicen-type4-buggy.png) | ![](separation-lab-buggy.png) |
 
 ## Root cause
 
@@ -39,8 +52,17 @@ bare `grey = 1 - tint` fallback, so a full tint (`1.0`) became black. The
 alternate, so sampled (`FunctionType 0`) transforms and RGB/Gray alternates hit
 the same fallback.
 
-The fix evaluates the tint transform (`FunctionType 0` and `2`) and maps the
-alternate-space output to RGB by component count (1 → Gray, 3 → RGB, 4 → CMYK).
+The fix evaluates the tint transform and maps the alternate-space output to RGB:
+
+- **`FunctionType 0` and `2`** are evaluated for the single-input Separation case.
+- **`FunctionType 4`** (PostScript calculator, §7.10.5) is wired in for any input
+  arity, which also makes true **multi-colorant DeviceN** (n inputs → m outputs,
+  §8.6.6.5) render correctly. Multi-input `FunctionType 0`/`2` (unsupported) and
+  any unevaluable transform still degrade safely to grey.
+- The **alternate colour space** (the arr[2] slot) is inspected rather than
+  guessed from component count, so a `Lab` (§8.6.5.4) or non-RGB `ICCBased`
+  alternate is converted correctly (CIELAB→sRGB for Lab) instead of being read
+  as `DeviceRGB`.
 
 ## Reproduce
 
@@ -65,3 +87,13 @@ The PDFs are committed artifacts. They were generated with a small throwaway
 crate). The `FunctionType 0` sample stream is two CMYK samples — `00 00 00 00`
 (tint 0) and `1A 00 26 00` (tint 1, i.e. `0.1, 0, 0.15, 0` at 8 bits/sample) —
 with `Size [2]`, `BitsPerSample 8`, `Range [0 1 0 1 0 1 0 1]`.
+
+The later fixtures use these tint transforms (also via the throwaway generator):
+
+- `separation-type4.pdf` — `FunctionType 4` program
+  `{ dup 0.1 mul 0 3 -1 roll 0.15 mul 0 }`: tint `t → CMYK(0.1t, 0, 0.15t, 0)`.
+- `devicen-type4.pdf` — 2-colorant DeviceN, `FunctionType 4` program
+  `{ exch 0.8 mul 0 3 -1 roll 0.6 mul 0 }`: tints `[a, b] → CMYK(0.8a, 0, 0.6b, 0)`.
+- `separation-lab.pdf` — `FunctionType 2` over a `Lab` alternate
+  (`/WhitePoint [0.9505 1.0 1.089]`, D65): tint `1.0 → Lab(53.24, 80.09, 67.2)`,
+  i.e. sRGB red.

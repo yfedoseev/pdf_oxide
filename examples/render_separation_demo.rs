@@ -17,7 +17,13 @@ fn main() {
     let label = std::env::args().nth(1).unwrap_or_else(|| "rendered".to_string());
     let dir = Path::new("examples/separation-blackout");
 
-    for name in ["separation-type2", "separation-type0"] {
+    for name in [
+        "separation-type2",
+        "separation-type0",
+        "separation-type4",
+        "devicen-type4",
+        "separation-lab",
+    ] {
         let pdf_path = dir.join(format!("{name}.pdf"));
         let bytes = std::fs::read(&pdf_path).expect("read reproducer pdf");
         let doc = PdfDocument::from_bytes(bytes).expect("open reproducer pdf");

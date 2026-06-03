@@ -55,3 +55,44 @@ fn separation_scn_fill_type0_is_not_black() {
     let pdf = include_bytes!("../examples/separation-blackout/separation-type0.pdf");
     assert_light_green("FunctionType 0", centre_pixel(pdf));
 }
+
+/// FunctionType 4 (PostScript calculator) tint transform on a single-colorant
+/// Separation. `{ dup 0.1 mul 0 3 -1 roll 0.15 mul 0 }` maps tint 1.0 to the
+/// same CMYK(0.1,0,0.15,0) light green as the Type 0/2 fixtures.
+#[test]
+fn separation_scn_fill_type4_is_not_black() {
+    let pdf = include_bytes!("../examples/separation-blackout/separation-type4.pdf");
+    assert_light_green("FunctionType 4", centre_pixel(pdf));
+}
+
+/// Multi-colorant DeviceN (2 colorants) with a 2-in/4-out Type 4 tint transform
+/// `{ exch 0.8 mul 0 3 -1 roll 0.6 mul 0 }`: tints [1,1] -> CMYK(0.8,0,0.6,0) ->
+/// RGB ≈ (51,255,102), a green. Before the multi-input fix this either rendered
+/// the wrong colour (only the first tint fed in) or fell back to grey.
+#[test]
+fn devicen_scn_fill_type4_multicolorant() {
+    let pdf = include_bytes!("../examples/separation-blackout/devicen-type4.pdf");
+    let (r, g, b) = centre_pixel(pdf);
+    assert!(
+        g > 150 && g >= r && g >= b,
+        "DeviceN Type 4: expected green-dominant, got ({r},{g},{b})",
+    );
+    assert!(
+        r < 130,
+        "DeviceN Type 4: expected low red from C=0.8, got r={r} ({r},{g},{b})",
+    );
+}
+
+/// Separation whose alternate space is `[/Lab …]`. The tint transform maps
+/// tint 1.0 to Lab(53.24, 80.09, 67.2) — sRGB red. The alternate space must be
+/// inspected and converted via CIELAB→sRGB, not treated as DeviceRGB (which
+/// would read L=53.24 as a >100% red channel) nor as the old L*/100 grey.
+#[test]
+fn separation_scn_fill_lab_alternate() {
+    let pdf = include_bytes!("../examples/separation-blackout/separation-lab.pdf");
+    let (r, g, b) = centre_pixel(pdf);
+    assert!(
+        r > 150 && r > g && r > b,
+        "Lab alternate: expected red-dominant from Lab(53,80,67), got ({r},{g},{b})",
+    );
+}
