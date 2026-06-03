@@ -24,17 +24,78 @@ use nom::Parser;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 
-/// Maximum number of operators to parse from a single content stream.
+/// Default maximum number of operators to parse from a single content
+/// stream. Prevents pathological inputs (e.g., Isartor 6.1.12) from
+/// consuming unbounded time and memory.
 ///
-/// Prevents pathological inputs (e.g., Isartor 6.1.12) from consuming
-/// unbounded time and memory.
+/// Callers can override via [`set_max_ops_per_stream`] to raise the
+/// cap (or set `usize::MAX` for effectively unbounded — use with
+/// caution on adversarial PDFs).
 const MAX_OPERATORS: usize = 1_000_000;
+
+/// Global cap override for content-stream operator count. `0`
+/// means "use [`MAX_OPERATORS`] default"; any other value is the
+/// effective cap. Atomic so it's safe to set from one thread while
+/// extraction runs on another (e.g. parallel-page extraction).
+static MAX_OPERATORS_OVERRIDE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Set the global content-stream operator cap. `None` keeps the
+/// default of `MAX_OPERATORS` (1,000,000). `Some(n)` overrides to `n`
+/// — pass `Some(usize::MAX)` for effectively unbounded.
+///
+/// Returns the previous override (or `None` if the default was active).
+/// The override is process-global; setting it on one thread affects all
+/// concurrent extractions.
+///
+/// **Use case**: large technical PDFs (textbooks, ISO standards) that
+/// have legitimate content streams exceeding 1,000,000 operators. The
+/// default cap exists to bound the cost of adversarial inputs; raise
+/// it when you know the inputs are trusted.
+pub fn set_max_ops_per_stream(limit: Option<usize>) -> Option<usize> {
+    let new = limit.unwrap_or(0);
+    let prev = MAX_OPERATORS_OVERRIDE.swap(new, std::sync::atomic::Ordering::SeqCst);
+    if prev == 0 {
+        None
+    } else {
+        Some(prev)
+    }
+}
+
+/// Current effective operator cap. Reads the override if set; otherwise
+/// returns [`MAX_OPERATORS`]. Internal hot-path helper.
+#[inline]
+fn effective_max_operators() -> usize {
+    let override_val = MAX_OPERATORS_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+    if override_val == 0 {
+        MAX_OPERATORS
+    } else {
+        override_val
+    }
+}
 
 /// Maximum consecutive parse errors (byte skips) before bailing out.
 ///
 /// If we skip this many bytes without finding a valid operator, the
 /// remaining data is likely junk, not a parseable content stream.
 const MAX_CONSECUTIVE_ERRORS: usize = 1024;
+
+/// Emit the operator-cap-exceeded warning at the actual *effective* cap
+/// (which may have been overridden via `set_max_ops_per_stream`). PDF
+/// Spec Annex C documents implementation limits; the cap exists to
+/// bound parser cost on adversarial inputs.
+#[inline]
+fn push_operator_cap_warning() {
+    let cap = effective_max_operators();
+    let msg = format!("Content stream exceeded {cap} operators, truncating");
+    log::warn!("{msg}");
+    crate::extractors::warnings::push_global_warning(crate::extractors::warnings::Warning {
+        category: crate::extractors::warnings::WarningCategory::OperatorCapExceeded,
+        page: None,
+        message: msg,
+        spec_section: Some("Annex C"),
+    });
+}
 
 /// Parse a content stream into a sequence of operators.
 ///
@@ -68,8 +129,8 @@ pub fn parse_content_stream(data: &[u8]) -> Result<Vec<Operator>> {
                 input = rest;
                 consecutive_errors = 0;
 
-                if operators.len() >= MAX_OPERATORS {
-                    log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
+                if operators.len() >= effective_max_operators() {
+                    push_operator_cap_warning();
                     break;
                 }
             },
@@ -128,8 +189,8 @@ pub fn parse_content_stream_paths_only(data: &[u8]) -> Result<Vec<Operator>> {
         if i >= len {
             break;
         }
-        if operators.len() >= MAX_OPERATORS {
-            log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
+        if operators.len() >= effective_max_operators() {
+            push_operator_cap_warning();
             break;
         }
 
@@ -428,8 +489,8 @@ pub fn parse_content_stream_text_only(data: &[u8]) -> Result<Vec<Operator>> {
             break;
         }
 
-        if operators.len() >= MAX_OPERATORS {
-            log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
+        if operators.len() >= effective_max_operators() {
+            push_operator_cap_warning();
             break;
         }
 
@@ -662,6 +723,34 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
             let op = &data[op_start..i];
 
             match op {
+                b"BI" => {
+                    // Inline image (§8.9.7): `BI key/val pairs ID
+                    // <binary data> EI`. The binary image bytes can
+                    // contain stray q/Q/cm-shaped ASCII sequences
+                    // that would corrupt the CTM stack if parsed as
+                    // operators. Skip the whole block by scanning
+                    // to the first whitespace-bounded `EI` (`EI`
+                    // embedded inside the binary data is tolerated
+                    // because the surrounding bytes are unlikely to
+                    // be whitespace).
+                    num_count = 0;
+                    let mut j = i;
+                    while j + 1 < len {
+                        if data[j] == b'E' && data[j + 1] == b'I' {
+                            let before_ok = j == 0 || data[j - 1].is_ascii_whitespace();
+                            let after_ok = j + 2 >= len
+                                || data[j + 2].is_ascii_whitespace()
+                                || matches!(data[j + 2], b'(' | b'<' | b'[' | b'/' | b'%');
+                            if before_ok && after_ok {
+                                j += 2;
+                                break;
+                            }
+                        }
+                        j += 1;
+                    }
+                    i = j;
+                    continue;
+                },
                 b"q" => {
                     ctm_stack.push((ctm, current_font_idx));
                     num_count = 0;
@@ -1223,8 +1312,8 @@ where
             break;
         }
 
-        if op_count >= MAX_OPERATORS {
-            log::warn!("Content stream exceeded {} operators, truncating", MAX_OPERATORS);
+        if op_count >= effective_max_operators() {
+            push_operator_cap_warning();
             break;
         }
 
@@ -1355,7 +1444,7 @@ where
             break;
         }
 
-        if op_count >= MAX_OPERATORS {
+        if op_count >= effective_max_operators() {
             break;
         }
 
@@ -1472,7 +1561,7 @@ pub fn parse_content_stream_images_only(data: &[u8]) -> Result<Vec<Operator>> {
             break;
         }
 
-        if operators.len() >= MAX_OPERATORS {
+        if operators.len() >= effective_max_operators() {
             break;
         }
 
@@ -2210,9 +2299,9 @@ fn find_and_extract_image_data(input: &[u8]) -> IResult<&[u8], Vec<u8>> {
     Ok((inp, input[..ei_pos].to_vec()))
 }
 
-/// Check if a byte is whitespace (space, tab, CR, LF, FF).
+/// Check if a byte is whitespace (null, tab, LF, FF, CR, space — PDF spec Table 1).
 fn is_whitespace(byte: u8) -> bool {
-    matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | b'\x0C')
+    matches!(byte, b'\x00' | b'\t' | b'\r' | b'\n' | b'\x0C' | b' ')
 }
 
 /// Check if a byte is whitespace or a PDF delimiter.
@@ -4111,6 +4200,20 @@ mod tests {
         assert!(ops.iter().any(|op| matches!(op, Operator::RestoreState)));
     }
 
+    #[test]
+    fn test_parse_inline_image_null_before_ei() {
+        // PDF spec Table 1 lists NULL (0x00) as whitespace.
+        let mut stream = b"q BI /W 2 /H 2 ID AB".to_vec();
+        stream.extend_from_slice(b"\x00EI Q BT (Hi) Tj ET");
+        let ops = parse_content_stream(&stream).unwrap();
+        assert!(ops
+            .iter()
+            .any(|op| matches!(op, Operator::InlineImage { .. })));
+        assert!(ops.iter().any(|op| matches!(op, Operator::RestoreState)));
+        // Text after the inline image must still be extracted
+        assert!(ops.iter().any(|op| matches!(op, Operator::Tj { .. })));
+    }
+
     // ── Number parsing edge cases ───────────────────────────────────
 
     #[test]
@@ -5472,6 +5575,8 @@ mod tests {
 
     #[test]
     fn test_is_whitespace() {
+        // NUL (0x00) is one of the six PDF white-space chars (ISO 32000-1:2008 §7.2, Table 1).
+        assert!(is_whitespace(0x00));
         assert!(is_whitespace(b' '));
         assert!(is_whitespace(b'\t'));
         assert!(is_whitespace(b'\r'));

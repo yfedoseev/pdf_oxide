@@ -288,13 +288,23 @@ mod tests {
         // Added word-level spans to provide realistic gap distribution for adaptive threshold
         let spans = vec![
             // Left column - multiple words with small gaps
+            // (each make_span emits a 50pt-wide span; first three
+            // share Y=100 and stride 5pt apart so the left column's
+            // total X extent is 0..60pt + 50pt span width = 0..110pt,
+            // which clears the MIN_RESULT_WIDTH_PT = 60pt floor that
+            // find_horizontal_split applies to reject sliver columns).
             make_span("Left Top Word1", 0.0, 100.0, None),
             make_span("Left Top Word2", 5.0, 100.0, None), // 5pt word gap
             make_span("Left Top Word3", 10.0, 100.0, None), // 5pt word gap
             make_span("Left Bottom", 0.0, 50.0, None),
-            // Right column (gap >> word gaps)
+            // Right column (gap >> word gaps). Two spans at x=200
+            // give a right-column extent of 200..250 = 50pt — below
+            // the 60pt floor. Add a second word so the right column
+            // has extent 200..305 = 105pt, well above the floor.
             make_span("Right Top", 200.0, 100.0, None),
+            make_span("Right Top2", 255.0, 100.0, None),
             make_span("Right Bottom", 200.0, 50.0, None),
+            make_span("Right Bottom2", 255.0, 50.0, None),
         ];
 
         let mut strategy = StructureTreeStrategy::new();

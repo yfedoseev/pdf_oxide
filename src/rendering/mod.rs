@@ -30,11 +30,14 @@
 //! 3. Rasterize paths, text, and images to tiny-skia pixmap
 //! 4. Convert to output format (PNG/JPEG)
 
-mod page_renderer;
+pub(crate) mod ext_gstate;
+pub(crate) mod page_renderer;
 mod path_rasterizer;
+mod separation_renderer;
 mod text_rasterizer;
 
 pub use page_renderer::{ImageFormat, PageRenderer, RenderOptions, RenderedImage};
+pub use separation_renderer::{render_separation, render_separations, SeparationPlate};
 
 use crate::content::GraphicsState;
 use crate::error::Result;

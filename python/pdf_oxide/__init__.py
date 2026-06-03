@@ -94,6 +94,65 @@ def _setup_ort_dylib_path() -> None:
 _setup_ort_dylib_path()
 
 
+def _setup_default_log_levels() -> None:
+    """Quiet stderr-spam from internal pdf_oxide warnings under default
+    Python logging config.
+
+    pdf_oxide routes every internal ``log::warn!`` through the ``pyo3_log``
+    bridge, which forwards records to Python's ``logging`` module. Python's
+    default root-logger config emits ``WARNING``-level records to stderr,
+    so every quirky-but-recoverable PDF produces noise like
+    ``SPEC VIOLATION: No newline after stream keyword``,
+    ``Type0 font 'X' has no ToUnicode entry!``, etc. — observed at ~150
+    lines per PDF in `pdfa_001.pdf`.
+
+    This function attaches a ``NullHandler`` to each of the four
+    highest-frequency internal targets and disables propagation, so
+    records stop at the pdf_oxide logger boundary instead of bubbling
+    up to the root logger's default stderr handler.
+
+    This is the standard Python library convention (see PEP 282 + the
+    ``logging`` HOWTO): a library never owns the user's logger level
+    or root handler config; it provides a NullHandler so records have
+    somewhere to land, and ``propagate = False`` so its own records
+    don't surface unless the caller explicitly opts in.
+
+    Callers who want the warnings back can:
+
+    - Use ``logging.getLogger("pdf_oxide.parser").propagate = True``
+      to re-enable bubbling for a single category, OR add a handler
+      to that logger directly.
+    - Use ``doc.structured_warnings()`` to receive the warnings as
+      structured ``Warning`` dicts (category, page, message,
+      spec_section) instead of stderr text.
+      (``doc.flatten_warnings()`` is the pre-existing form-flattening
+      surface returning ``list[str]`` — different feature.)
+
+    The setup is idempotent: repeated calls are harmless (NullHandler
+    is added at most once via instance check). Genuine ERROR-level
+    events bubble through the ``Result`` chain into Python exceptions,
+    not through ``log::warn!``, so this does not hide real errors.
+
+    See ``docs/releases/plans/v0.3.56/cluster-diagnostics-noise.md``.
+    """
+    import logging as _logging
+
+    _quiet_targets = (
+        "pdf_oxide.parser",
+        "pdf_oxide.content",
+        "pdf_oxide.fonts",
+        "pdf_oxide.document",
+    )
+    for _target in _quiet_targets:
+        _logger = _logging.getLogger(_target)
+        if not any(isinstance(h, _logging.NullHandler) for h in _logger.handlers):
+            _logger.addHandler(_logging.NullHandler())
+        _logger.propagate = False
+
+
+_setup_default_log_levels()
+
+
 class RenderedPixmap(NamedTuple):
     """Raw premultiplied RGBA8888 pixel buffer from :meth:`PdfDocument.render_pixmap`.
 
@@ -105,6 +164,32 @@ class RenderedPixmap(NamedTuple):
         height (int): Image height in pixels.
     """
 
+    data: bytes
+    width: int
+    height: int
+
+
+class SeparationPlate(NamedTuple):
+    """A single ink separation plate rendered as grayscale.
+
+    Pixel intensity (0-255) represents the tint percentage of one ink at
+    each point. Used in prepress workflows, ink coverage analysis, and ML
+    pipelines that process packaging/label PDFs.
+
+    The pixel convention is ML/QC-friendly: ``value == ink coverage``.
+    0 means no ink, 255 means full tint coverage. To display the plate as
+    black ink on white paper (prepress viewer convention), invert before
+    showing: ``display = 255 - value``.
+
+    Attributes:
+        ink_name (str): Ink name (e.g., "Cyan", "PANTONE 185 C", "Dieline").
+        data (bytes): Grayscale pixels, row-major, top-left origin.
+            ``len(data) == width * height``. 0 = no ink, 255 = full tint.
+        width (int): Image width in pixels.
+        height (int): Image height in pixels.
+    """
+
+    ink_name: str
     data: bytes
     width: int
     height: int
@@ -182,6 +267,7 @@ from .pdf_oxide import (  # noqa: E402
 
 __all__ = [
     "RenderedPixmap",
+    "SeparationPlate",
     "PdfDocument",
     "AsyncPdfDocument",
     "AsyncPdf",

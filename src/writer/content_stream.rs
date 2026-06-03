@@ -3008,6 +3008,7 @@ mod tests {
             matrix: None,
             reading_order: None,
             artifact_type: None,
+            layer: None,
         };
 
         let mut builder = ContentStreamBuilder::new();
@@ -3037,6 +3038,7 @@ mod tests {
             matrix: None,
             reading_order: None,
             artifact_type: None,
+            layer: None,
         };
 
         let mut builder = ContentStreamBuilder::new();
@@ -3067,6 +3069,7 @@ mod tests {
             matrix: None,
             reading_order: None,
             artifact_type: None,
+            layer: None,
         };
 
         let mut builder = ContentStreamBuilder::new();
@@ -3096,6 +3099,7 @@ mod tests {
             matrix: None,
             reading_order: None,
             artifact_type: None,
+            layer: None,
         };
 
         let mut builder = ContentStreamBuilder::new();

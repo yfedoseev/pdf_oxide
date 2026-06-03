@@ -152,7 +152,7 @@ final class PdfSigner
         // known-NULL/0 before we set what we care about.
         FFI::memset(FFI::addr($opts), 0, FFI::sizeof($opts));
 
-        $opts->certificate_handle = FFI::cast('const void *', $this->credentials);
+        $opts->certificate_handle = $ffi->cast('const void *', $this->credentials);
 
         // Anchor C strings so PHP doesn't free them mid-call.
         $tsaBuf = self::cString($tsaUrl);
@@ -160,13 +160,13 @@ final class PdfSigner
         $locationBuf = self::cString($location);
 
         if ($tsaBuf !== null) {
-            $opts->tsa_url = FFI::cast('const char *', $tsaBuf);
+            $opts->tsa_url = $ffi->cast('const char *', $tsaBuf);
         }
         if ($reasonBuf !== null) {
-            $opts->reason = FFI::cast('const char *', $reasonBuf);
+            $opts->reason = $ffi->cast('const char *', $reasonBuf);
         }
         if ($locationBuf !== null) {
-            $opts->location = FFI::cast('const char *', $locationBuf);
+            $opts->location = $ffi->cast('const char *', $locationBuf);
         }
         $opts->level = $levelCode;
 
@@ -258,9 +258,10 @@ final class PdfSigner
             return null;
         }
         $len = strlen($s);
+        $ffi = NativeLibrary::getInstance();
         // +1 for NUL terminator. `false` = unowned — we rely on PHP's
         // refcount-driven free, NOT FFI's tracked allocator.
-        $buf = FFI::new("char[" . ($len + 1) . "]", false);
+        $buf = $ffi->new("char[" . ($len + 1) . "]", false);
         if ($len > 0) {
             FFI::memcpy($buf, $s, $len);
         }

@@ -2,6 +2,166 @@
 
 All notable changes to PDFOxide are documented here.
 
+## next-version
+
+### Added
+
+- **`TextChar::ascent` and `TextChar::descent`** — glyph ascent and descent in device space (pre-multiplied by effective font size, matching the units of `advance_width` and `rendered_advance`). Sourced from the font's `FontDescriptor` (`/Ascent` / `/Descent`), with fallbacks to built-in metrics for the 14 standard PDF fonts and then Poppler-compatible defaults (0.95em / −0.35em). For Type0/CID fonts the values are now read from the CIDFont descendant's descriptor (§9.7.4) rather than silently falling back to 0.95em / −0.35em. Use `origin_y + ascent` / `origin_y + descent` directly to get glyph bounding-box edges. Thanks @haberman.
+
+### Changed
+
+- **`TextChar` and `FontInfo` gain two new `pub` fields (`ascent: f32`, `descent: f32`)** — source-breaking for downstream code that constructs these structs with struct-literal syntax; add the two new fields to fix. Both structs are not `#[non_exhaustive]`.
+
+## [0.3.59] - 2026-06-01
+
+> Community contributions — Type 4 PostScript calculator functions, optional-content (OCG/OCMD) render + extraction filtering, document-order ToUnicode parsing, per-variant standard-font width tables, subset-font cache isolation, and inline-image NUL-whitespace handling
+
+### Added
+
+- **Type 4 (PostScript calculator) function evaluator** — a complete, standalone evaluator for PDF Type 4 functions (ISO 32000-1:2008 §7.10.5). All Table 42 operators are implemented with spec-faithful semantics: the trigonometric operators (`sin`/`cos`/`atan`) operate in **degrees** with `atan` mapped to `[0, 360)`, `round`/`truncate`/`floor`/`ceiling` tie behaviour, strict int-vs-real typing, and `i64`-overflow handling for `idiv`/`mod`/`mul`/`add`/`sub`/`bitshift`. A dedicated `Error::Type4Runtime` distinguishes stack underflow, typecheck, sqrt-of-negative, and divide-by-zero from invalid input. *Note: this lands as a tested capability not yet wired into the Separation/DeviceN tint-transform colour path — that integration is a tracked follow-up, so rendering behaviour is unchanged for now.* (#603) Thanks @RayVR.
+- **Optional-content (OCG / OCMD) filtering for rendering and extraction** — `render_page` and the text extractors now resolve optional-content visibility through a shared `optional_content` resolver, honouring OCMD `/P` policy (`AnyOn`/`AllOn`/`AnyOff`/`AllOff`) and `/VE` visibility expressions (§8.11.2.2), the default configuration `/OCProperties/D` with `/BaseState`/`ON`/`OFF` (§8.11.4), and the hidden-content text-advance rule (§8.11.3). Marked-content (`BDC /OC … EMC`) on both the extraction and rendering paths is filtered consistently, fixing a prior duplication where the renderer mis-decoded UTF-16LE/PDFDocEncoding layer names. PDFs without optional content are byte-for-byte unchanged. By design, `render_page` honours the PDF's own default configuration while `extract_text` filters only caller-supplied layers (§8.11.3 NOTE 4). (#604) Thanks @RayVR.
+
+### Fixed
+
+- **ToUnicode CMaps process `bfchar` and `bfrange` sections in document order (#619)** — a ToUnicode CMap is a single combined mapping space where a later definition overrides an earlier one for the same code (ISO 32000-1:2008 §9.10.3); sections are now applied in the order they appear so the last definition wins, matching Adobe/pdf.js/MuPDF/Poppler. Thanks @haberman.
+- **Null byte (`0x00`) is treated as PDF white-space when locating the inline-image `EI` operator (#618)** — `NUL` is one of the six PDF white-space characters (ISO 32000-1:2008 §7.2, Table 1) but was previously omitted, so an `EI` delimited by a null byte in inline-image (`BI`/`ID`/`EI`) binary data could be missed. Thanks @haberman.
+- **Bold/italic variants of the standard Times and Helvetica fonts use correct per-variant width tables (#615)** — the Bold and Italic variants of Times and the Bold variant of Helvetica were falling back to the Regular-weight width table, drifting character positions and word-break detection in documents using these common standard-14 fonts without a `/Widths` array (ISO 32000-1:2008 §9.6.2.2). Per-variant widths are now sourced from the Adobe Core 14 AFM metrics. Thanks @haberman.
+- **Subset fonts with colliding BaseFont names no longer poison the cross-document font cache (#595)** — two PDFs that reuse the same subset BaseFont name (a six-uppercase-letter `+` tag such as `AAAAAA+TestFont`, ISO 32000-1:2008 §9.6.4) but embed *different* document-specific ToUnicode CMaps could be served the first document's cached `FontInfo`, decoding the second document's text to the wrong characters. Subset fonts — whose glyph subset and ToUnicode are inherently document-specific — are now excluded from the cross-document global font cache (the per-document caches are unaffected), so each document decodes with its own mapping. Thanks @RayVR for the root-cause analysis and the fix.
+
+### Dependencies
+
+- **CI actions**: `taiki-e/install-action` 2.79.12 → 2.81.0 (#580).
+
+## [0.3.58] - 2026-05-31
+
+> Structure-tree reading order with /Suspects handling, structured page extraction, two-column reference/verse routing, math-font punctuation + emoji spacing, mixed bidirectional text, /Rotate 90°/270°, image colour-space resolution, and a dependency refresh
+
+### Added
+
+- **`PdfDocument::extract_structured(page) -> StructuredPage`** — additive typed page surface (#536). Returns the page's text grouped into reading-order `StructuredRegion`s with a `RegionRole` (`BodyBlock`, `StructuralHeading { level }`, `MarginalLabel`, `Header`, `Footer`, `PageNumber`, `Artifact`) and a best-effort `column_index` for two-column bodies. Roles reuse signals already on each span — `/Artifact` marked content (ISO 32000-1:2008 §14.8.2.2), structure-tree heading levels (§14.7.2), and geometry (§14.8.2.3.1) — so a trustworthy tagged PDF yields tree-driven roles for free. New public types `StructuredPage` / `StructuredRegion` / `RegionRole` in `pdf_oxide::structured` (serde-serializable). Available across all bindings with idiomatic names — Python `extract_structured`, JS/WASM `extractStructured`, Go `ExtractStructured`, Ruby `extract_structured`, PHP `extractStructured`, Java `extractStructured`, C# `ExtractStructured`, and the C ABI `pdf_document_extract_structured_to_json` (all returning the serialized `StructuredPage`). Thanks @lggcs.
+- **`PdfDocument::prefers_structure_reading_order() -> bool`** — read-only introspection accessor reporting whether text extraction will use the Tagged-PDF *logical structure order* (a depth-first traversal of `/StructTreeRoot`, ISO 32000-1:2008 §14.8.2.3.1 / §14.7.1) rather than geometric page-content order for this document. (#608)
+- **`PdfImageHandle::indexed_base() -> Option<ColorSpace>`** — for an Indexed image (`[/Indexed base hival lookup]`, ISO 32000-1:2008 §8.6.6.3) the de-indexed base colour space; `None` for non-Indexed images. (#588)
+
+### Fixed
+
+- **AcroForm fill: non-ASCII (CJK/Japanese) field values no longer mojibake (#616)** — `DocumentEditor::set_form_field_value` wrote field values (and field names `/T`, tooltips `/TU`) as raw UTF-8 bytes, which a conformant reader (Acrobat, Stirling-PDF, Preview, pdf.js) interprets as PDFDocEncoding, so `山田太郎` rendered as `å±±ç"°…`. Values are now encoded as proper PDF text strings per ISO 32000-1:2008 §7.9.2.2 — a PDFDocEncoding-compatible literal for ASCII/Latin-1, and UTF-16BE with a `U+FEFF` BOM for anything above U+00FF (`/V <FEFF5C71753059 2A90CE>`). ASCII values stay plain literals.
+- **AcroForm fill: a filled field no longer disappears on save (#617)** — after `set_form_field_value` + `save_to_bytes`, re-reading the document returned **0 form fields**, because a standalone terminal field lost its `/FT` (field type) on rewrite, leaving an untyped widget annotation `FormExtractor` could not classify (`/FT` is an inheritable, required key — §12.7.4.1). Parentless terminal fields now re-emit `/FT` (and `/Ff`), so fill → save → re-read round-trips correctly. (Both #616 and #617 surfaced building the issue #611 Japanese form-fill round-trip; they fix the published crate, so every binding's form-fill benefits.)
+- **Two-column reference lists and short-verse bodies read column-by-column (#536)** — pages whose left/right columns share line baselines but have *short* lines (bibliographies, Bible/lexicon verse editions) were read straight across, because the table-safety guard rejected anything with a low per-line character count. A length-independent admission path now routes them down the left column then the right when a single persistent central gutter is present, gated by concentration, coverage, column char-balance, and a grid-row signal so multi-cell numeric tables stay off the column path. Display-equation rows are excluded from the gutter-coverage measurement so dense-math pages still route. Validated table-safe: `google_doc_document.pdf` markdown is byte-identical.
+- **Punctuation glyphs parked at non-standard codes in symbolic fonts decode correctly (#536)** — when a font's `/Differences` names a code `period` / `comma` / `hyphen` / `minus` (ISO 32000-1:2008 §9.6.6.1) but its program / base encoding resolves that code to a non-sensible symbol, the Adobe Glyph List value (§9.10.2) is now preferred, recovering the intended punctuation. Tightly gated: correctly-mapped fonts and genuine `logicalnot` (`¬`) / math-symbol glyphs are untouched. (A figure axis that draws a symbol-font glyph whose encoding genuinely *is* `¬` where a decimal point belongs — the font itself is wrong — remains out of scope, since recovering it would require unsafe context guessing that corrupts legitimate `5×3` / `2±1`.)
+- **Mixed Arabic/Latin/numeral lines settle in logical order** — a right-to-left line embedding European/Arabic-Indic numerals or Latin words (e.g. a date `14 april 1434 ٤٣٤١`) now gives each embedded left-to-right sub-run its own LTR level per the Unicode Bidirectional Algorithm (UAX #9 §3.3.4), instead of only reversing pure-RTL runs. The pass is gated to confidently-RTL mixed lines; pure-RTL, pure-LTR, and all ASCII/Latin extraction are byte-for-byte unchanged.
+- **Image `decode()` resolves resource-name colour spaces (#588)** — `page_image_handles()` `decode()` previously failed on an image whose `/ColorSpace` is a resource name (e.g. `/CS0` resolved via `/Resources/ColorSpace`, ISO 32000-1:2008 §8.6.6 / §8.9.7), returning `Unsupported color space`. The active resource colour-space map is now threaded into the handle (page, Form-XObject, and inline scopes) so such images decode. Indexed image handles now report `ColorSpace::Indexed` (1-component sample layout, §8.6.6.3) with the de-indexed base available via the new `indexed_base()` accessor — an API refinement of the v0.3.57-only handle surface; decoded pixels are unchanged.
+- **Suspect tagged PDFs now extract in geometric reading order (#608)** — a document advertising `/MarkInfo /Suspects true` (the `/TagSuspect /Ordering` signal that the producer could not guarantee page content order matches logical structure order, §14.8.2.3.1) was previously read through its structure tree by `extract_text`, which could emit content out of visual order. Such documents now fall back to geometric order, while trustworthy tagged PDFs — `/Marked`, or a catalog `/StructTreeRoot` on PDF-1.4 files that predate `/MarkInfo` — read in logical structure order across **all four text accessors** (`extract_text`, `to_plain_text`, `to_markdown`, `to_html`). A single shared trustworthiness predicate gates every reading-order path so they cannot drift apart, and a marked-content element whose spans cross multiple visual lines is now emitted in reading order. Non-suspect and untagged documents are byte-for-byte unchanged.
+
+- **`/Rotate 90` and `/Rotate 270` pages now read in display orientation** — pages with a 90°- or 270°-clockwise `/Rotate` (ISO 32000-1:2008 §7.7.3.3) were previously extracted in raw user-space coordinates and came out sideways, with lines and words in the wrong order. Every span is now mapped into the displayed coordinate frame — including the page width/height swap for 90°/270° (§8.3.3) — before reading-order assembly, so all four rotation angles read upright. Annotation text on rotated pages is mapped into the same displayed frame. Unrotated and 180° pages are byte-for-byte unchanged (verified on the issue14415 180° contract, which now reads in correct order).
+- **Space after an emoji is no longer dropped** — a pictographic glyph (e.g. 📄) immediately followed by a word (`📄 README.md`) previously merged into `📄README.md`, because the residual gap after the wide glyph fell below the proportional-font space threshold. An emoji→letter boundary with a positive gap now keeps the inter-token space. Word segmentation is reader latitude (ISO 32000-1:2008 §9.10); the rule is gated on pictographic codepoints (arrows and math-operator blocks excluded), so technical text is unaffected.
+
+### Changed
+
+- **`PdfImageHandle::decode()` / `raw_compressed_bytes()` now borrow `&self`** and `PdfImageHandle` is `Clone` (refining the v0.3.57 two-phase image API, #588). A single handle now supports an inspect → raw-bytes → decode flow without re-enumerating the page. Borrowing is a strict superset of the previous by-value signatures, so existing callers still compile.
+- **Indexed image handles now report `ColorSpace::Indexed`** instead of the de-indexed base (refining the v0.3.57-only handle metadata, #588). The base remains available via the new `indexed_base()` accessor; this makes the handle's `color_space` reflect the 1-component sample layout per ISO 32000-1:2008 §8.6.6.3 and is consistent across the direct-array, indirect-reference, and inline-image forms. Decoded pixels are unchanged (`decode()` re-resolves the palette independently).
+
+### Dependencies
+
+- **Rust**: `serde_json` 1.0.149 → 1.0.150 (#578), `log` 0.4.29 → 0.4.30 (#592), `quick-xml` 0.40.0 → 0.40.1 (#579), `cbc` 0.2.0 → 0.2.1 (pulls `cipher` 0.5.2 / `crypto-common` 0.2.2, #577). **Go**: `ebitengine/purego` 0.10.0 → 0.10.1 (#593). **Ruby**: `rubocop-rspec` 2.20 → 3.9 (#581). **CI actions**: `actions/setup-java` v4 → v5.2.0 (#585), `github/codeql-action` v3 4.35.5 → 4.36.0 (#582), `taiki-e/install-action` 2.79.2 → 2.79.12 (#580), `EmbarkStudios/cargo-deny-action` 2.0.18 → 2.0.20 (#584), `golangci/golangci-lint-action` 9.2.0 → 9.2.1 (#583).
+
+## [0.3.57] - 2026-05-30
+
+> Community contributions + extraction-quality sweep — separation plates, OCG ink filtering, two-phase images, rendered-advance metrics, plus multi-column reading order, page-rotation, CJK/UTF-8 CMap decoding, RTL logical order, indirect-ref page boxes, and font-cache correctness
+
+### Added
+
+- **`TextChar::rendered_advance`** — per-glyph cursor advance to the next character's origin, including character spacing (Tc) and word spacing (Tw) per the PDF Tx formula, distinct from the shape-only `advance_width`. Enables accurate word-boundary detection and cursor reconstruction. Thanks @haberman. (#602)
+- **Separation plate rendering** — `render_separations(page, dpi)` / `render_separation(page, ink_name, dpi)` (Rust + Python) emit one grayscale image per ink, pixel value = ink coverage (0 = none, 255 = full tint). Routes DeviceCMYK / Separation / DeviceN content per ISO 32000-1 §8.6 and honours the reserved colorant names `/All` and `/None` per §8.6.6.4 so registration / crop marks land on every plate. New `SeparationPlate` namedtuple in Python. Thanks @RayVR. (#605)
+- **OCG (Optional Content Group) ink filtering for text extraction** — `extract_text_filtered(page, excluded_layers, excluded_inks)` and the Python equivalent route through the full text-assembly pipeline (structure-tree ordering, table detection) while filtering by PDF layer and DeviceN/Separation ink. Handles OCMD membership dictionaries and DeviceN all-or-nothing ink semantics. Thanks @RayVR. (#600)
+- **`page_image_handles()` two-phase image API** — enumerate image handles on a page first, then materialize pixels on demand, including images nested inside Form XObjects via recursion. Avoids decoding every image up front. Thanks @kh3rld. (#588)
+- **Optional Content Group (PDF "layer") name on extracted paths** — `PathContent` gains a `layer: Option<String>` carrying the human-readable OCG name from the surrounding `BDC /OC … EMC` markers (e.g. `A-GRID`, `S-COLS` from Revit/AutoCAD exports), surfaced in the Python path dict too. Resolves OCMD membership dictionaries via `/OCGs` (§8.11.3.2, depth-bounded), decodes names through PDFDocEncoding/UTF-16, and honours Form-XObject-scoped `/Resources/Properties` with leak-isolation across XObject boundaries (§14.6.2, §8.10.1). Thanks @willywg. (#587)
+- **olmOCR-bench regression harness** — `tools/benchmark-harness/olmocr/` runs the public `allenai/olmOCR-bench` corpus (999 single-page PDFs, checkable substring/order/absent assertions) for CI regression tracking. Corpus fetched on demand (gitignored, not vendored). (#567)
+- **Configurable non-text drop heuristics** — `NonTextDetector` thresholds (`non_ascii_drop_threshold`, `drop_suspicious_unicode`) are now configurable so callers can tune the markdown garbage-glyph filter rather than relying on hard-coded constants. (PDX-7)
+
+### Changed
+
+- **`TextChar` gained a required `rendered_advance` field** — external callers constructing `TextChar { .. }` literals must add `rendered_advance` (set it equal to `advance_width` to preserve prior behaviour). (#602)
+- **Documented the three plain-text APIs** — `extract_text`, `to_plain_text`, and markdown-strip now carry guidance on when each is the right choice and why their output differs, so callers stop picking the wrong mode per-PDF. (#554)
+
+### Fixed
+
+- **Hebrew and Arabic text now extracts in correct reading order (#557)** — right-to-left runs were emitted in visual (reversed) order; they now read in logical order in plain-text, Markdown/HTML, and tagged (structure-tree) extraction alike. Previously a tagged Hebrew document such as `אבג דהו` came out reversed. Latin text is never reordered.
+- **Two-column references and bibliographies are read column-by-column (#549, #536, #607)** — pages whose left and right columns share the same line baselines were read straight across, interleaving the two columns line by line (`…genetic exchange Kashtan, N., … divergence in prokaryotes reveals…`). They now read down the left column, then the right. Validated across the corpus: 15 academic pages jumped to ~0.98–0.99 similarity vs pdftotext + PyMuPDF, with no regression to tables.
+- **Chinese / Japanese / Korean text in UTF-8 CMap fonts is now extracted (#610)** — Type0 fonts encoded with a UTF-8 CMap (`Uni-Utf8-H` and the Adobe `UniGB-/UniCNS-/UniJIS-/UniKS-UTF8-H` family) previously returned **no text at all**; their 1–4-byte codes are now decoded correctly, recovering Latin and CJK including rare 4-byte ideographs.
+- **Non-embedded Japanese (JIS) fonts no longer produce garbled Latin** — text using the bare predefined `H`/`V` CMaps with an Adobe-Japan1 collection (e.g. `あいうえお`) was emitted as nonsense ASCII; it now decodes to the correct kana/kanji.
+- **Pages with indirect-reference page boxes no longer come back empty** — when a page's `/MediaBox` or `/CropBox` stored its coordinates as indirect references (`/MediaBox [4 0 R 5 0 R 6 0 R 7 0 R]`, ISO 32000-1 §7.3.10) the page collapsed to zero area and dropped **all** text; the references are now resolved per element.
+- **180°-rotated pages read in the right order** — a page with `/Rotate 180` was extracted in unrotated coordinates, so its lines and words came out fully reversed (a rotated English agreement read bottom-up, words backwards). The page geometry is now corrected before reading-order assembly. (90°/270° remain a follow-up.)
+- **Signature and form-field text stored only in the widget appearance is recovered** — signed-signature fields and form widgets whose value lives in the `/AP` appearance stream (not a `/V` entry) were dropped from extraction; their visible text is now included.
+- **Unchecked checkboxes no longer inject `[ ]` noise** — an unchecked checkbox widget previously emitted a stray `[ ]` marker into the surrounding text; it now contributes nothing.
+- **Page numbers and running headers no longer leak into body text (#553)** — a standalone page number or running-header line isolated on its own baseline is no longer spliced into the adjacent paragraph.
+- **Glyph corruption between documents that reuse a font name (#597, #598)** — Type 3 fonts (whose glyphs are document-scoped content streams) are no longer shared via the cross-document font cache, and the cache key now includes glyph-width metrics, so two fonts that share a BaseFont name but differ in `/Widths` no longer alias to one another.
+- **Type 3 font spacing now honours the font's `FontMatrix` (#606)** — glyph advances for Type 3 fonts were scaled by a hard-coded 1/1000 em; they now apply the font's own `FontMatrix[0]`, so Type 3 fonts with a non-standard (e.g. identity `[1 0 0 1 0 0]`) matrix get correct character and word spacing. Thanks @haberman.
+- **Faster, no double rescan on damaged PDFs (#572)** — a reconstructed cross-reference table now seeds the object-scan cache, removing a redundant second full-file sweep on corrupt/polyglot PDFs.
+- **Form XObject image cache poisoning when fonts/XObjects collide on basename** — the OCG ink-filtering work also fixed three latent bugs in OCG/ink handling: a parser edge case, a Form XObject cache keyed too coarsely, and ink-state restore on graphics-state pop. Thanks @RayVR. (#600)
+
+### Performance
+
+- **`extract_text` no longer hangs on heavily OCR-layered scans (#575)** — superscript-baseline snapping was quadratic in the number of text spans; it is now windowed, so pages with tens of thousands of OCR spans extract promptly instead of stalling.
+- **Regression guards added** for previously-fixed word-spacing, character-clustering scaling, `to_html` table handling, and multi-column detection, so they cannot silently regress.
+
+## [0.3.56] - 2026-05-28
+
+> Text-extraction fidelity sweep — XY-cut routing, typed extraction status, OCR API repair, Persian font support, encryption authentication enforcement
+
+### Added
+
+- **`ExtractionSignal` enum + `Warning` / `WarningSink` types** (`src/extractors/status.rs`, `src/extractors/warnings.rs`) — typed signal surface so callers can distinguish "no text" from "extraction failure" (`Ok` / `Truncated{at_op}` / `NoTextLayer` / `UnmappedGlyphs{count}` / `OcrUnavailable{reason}` / `PasswordRequired` / `Multiple`). Foundation for `flatten_warnings()` and per-call status accessors.
+- **`PdfPermissions` accessor** (`src/encryption/permissions.rs`) — decodes `/P` flags per PDF spec §7.6.3.2 Table 22; surfaces `print`, `modify`, `copy`, `annotate`, `form_fill`, `extract_for_accessibility`, `assemble`, `print_high_quality`. Closes #562 API gap.
+- **`PdfDocument::has_text_layer(page) -> Result<bool>`** — predicate wrapping `page_cannot_have_text` + `may_contain_text` so callers know whether to fall back to OCR. Closes #563.
+- **`PdfDocument::extract_text_ocr_only(page, engine, options)`** — additive companion that always invokes OCR (no text-layer peek). Closes #574.
+- **`set_max_ops_per_stream(Option<usize>)`** (`src/content/parser.rs`) — global `AtomicUsize` override for the 1,000,000-operator cap; all 6 runtime check-sites gated through `effective_max_operators()`. Closes #559.
+- **`set_preserve_unmapped_glyphs(bool)`** (`src/extractors/text.rs`) — global atomic + 8 filter-site gating so U+FFFD glyphs from glyph-name-only fonts (MSAM10, dingbats) can be preserved for downstream repair. Closes #571.
+- **`assemble_text_via_reading_order(spans)`** helper + Python wrappers + 4 per-class detector predicates (`DenseSingleLine`, `SubSuperBaselineReattach`, `NarrowTrackedJustified`, `DramaticScript`) in `src/pipeline/reading_order/detectors.rs`. The detectors return a `ReadingOrderClass` callers can route on. Bench-visible improvements on the same issue cluster (#549/#556/#561/#565/#568/#576) come from the parallel `XYCutStrategy` work documented under **Changed** — full detector-driven assembly is a follow-up.
+- **`ExtractionProfile::TJ_HEAVY`** (`src/config/extraction_profiles.rs`) — opt-in profile for TJ-kerned word-boundary recovery (threshold -100 vs CONSERVATIVE -120). Closes #564.
+- **Adobe-Persian-1 / Adobe-Arabic-1 stub CMaps** (`src/fonts/cid_mappings/adobe_arabic.rs`) + DescendantFonts inline-dict parse path in `src/fonts/font_dict.rs`. Closes #566.
+- **`PyPageCount` dual-shape** — Python `doc.page_count` works as both attribute and method (`__call__` + `__index__`) so `range(doc.page_count)` works again post-v0.3.54 regression. Closes #550.
+- **`PdfDocument::structured_warnings()` accessor** + `WarningSink` wired as the per-document field type, with 5 `log::warn!` migration sites pushing into the global sink. Per-document and global drains merge on each call. Closes #558 (second half).
+
+### Changed
+
+- **`extract_text` / `extract_text_auto` / `extract_page_auto` no longer panic** when ONNX Runtime fails to dlopen — `std::panic::catch_unwind` around the full `ort::Session::builder()` chain converts the dylib-load panic to a typed `OcrError::ModelLoadError`. Closes #569, #573.
+- **`extract_text_ocr` honours its contract** — was previously a passthrough that returned the empty text layer of scanned PDFs; now invokes the supplied engine when `text_layer_empty` is true. Closes #574.
+- **`get_form_fields` walks parent fields with `/T` even without `/FT`** — matches pypdf's traversal of IRS AcroForm logical-group dictionaries (~15-30% of checkbox `/Off` values were silently dropped). Closes #570.
+- **Default Python logger no longer captures `pdf_oxide.{parser,content,fonts,document}` WARN records** — at import, `_setup_default_log_levels` attaches a `NullHandler` and sets `propagate = False` on those four high-frequency targets (standard library convention per PEP 282); records stop at the pdf_oxide logger boundary instead of bubbling to root's default stderr handler. Callers re-enable bubbling via `logger.propagate = True` or read the typed feed via `doc.structured_warnings()`. Closes #558 (first half).
+- **Span-boundary spacing tightened** — bucket-1/2/3/4 fixes: span `bbox.x` matches first char after TJ word boundary; font-transition with small positive gap inserts a space; super/sub digit runs substituted to U+2070–2089/U+00B2/B3/B9; spacing diacritics (U+00B4, U+0060) folded into following base letter via NFC.
+- **`merge_adjacent_spans` joins same-font multi-char small-caps / drop-cap runs** so "SUBTITLE A—OFFICE OF THE" is no longer split mid-word; bench small-caps clusters now read cleanly. Closes #555 root-cause path; complements #560.
+- **Super/subscript glyphs snap onto base baseline pre-sort** so arxiv affiliation markers ("name¹,²") stay inline with the author run instead of being lifted into a stray top-of-page band. Improves bench by lifting 6 papers in the py-pdf 14-PDF set.
+- **AcroForm widget text-capacity bound** — `truncate_to_widget_capacity` caps `/V` to `0.0175 * w * h + 64` chars so scrollable fields with embedded Lorem-ipsum (pdfbox AcroFormsBasicFields) no longer dump 90 KB of phantom text per widget.
+- **Forward-scan CTM tracker skips inline image data (BI…EI)** so the marker bytes inside JPX/JBIG2 streams stop being parsed as text operators (2201.00151 p2: 758 of 789 garbage spans → 0).
+- **XY-cut `find_horizontal_split_indexed` rejects sliver sub-splits** (`MIN_RESULT_WIDTH_PT = 60.0 pt`) so 8 pt monospaced columns no longer fragment into 48 pt strips.
+- **Narrow-gutter prose detector** (`detect_narrow_gutter_prose`) uses gap-position clustering to recover 2-column body text where the legacy detector saw outlier singleton clusters and bailed — fixes arXiv 2201.00151-class column interleave. Bench: py-pdf 14-PDF mean 89.4% → **90.2%**.
+
+### Fixed
+
+- **#549** — `extract_text` and `to_plain_text` now route through XY-cut on multi-column / dramatic-script layouts (parity with `to_markdown_all`). Largest single bench improvement of the cycle.
+- **#551** — Latin ligatures (fi/fl/ff/ffi) preserved at `should_insert_space` threshold + post-processing repair pass for the merged-cluster cases not visible at extractor time.
+- **#552** — Combining diacritics (`´`, `` ` ``, `^`, etc.) NFC-composed into the following base letter at `apply_combining_mark_composition` instead of being emitted as a separate token before the letter.
+- **#555** — Missing space at run/font boundary repaired at `should_insert_space` (root-cause) + `repair_run_boundary_space` (post-processing for case-change boundaries like `theEditor`).
+- **#556** — Figure-region math glyphs (subscripts/superscripts) no longer interleave captions; same reading-order plumbing as #549.
+- **#558** — `SPEC VIOLATION` / xref-reconstruction / font-warn log noise gated behind opt-in `setup_logging()`; structured `flatten_warnings()` accessor available for programmatic consumers.
+- **#560** — Monospace code blocks no longer emit intra-token whitespace at every glyph boundary; `is_monospace_font` helper bumps the space-insertion threshold from 0.5× to 1.2× space-width.
+- **#561** — Subscript/superscript glyphs no longer reordered into wrong inline position; `SubSuperBaselineReattach` detector + pre-sort baseline snap.
+- **#562** — `password_protected.pdf` and `copy_protected.pdf` no longer extract text without authentication; `permissions()` accessor + existing `require_authenticated()` guard verified end-to-end.
+- **#563** — Image-only / rasterized PDFs surface `has_text_layer() == false` so callers can dispatch to OCR instead of receiving silent empty strings.
+- **#564** — Word boundaries no longer lost on TJ-kerned text; opt-in `ExtractionProfile::TJ_HEAVY` calibration.
+- **#565** — Narrow-tracked / justified column intra-word spaces eliminated via per-line median-gap normalisation in `NarrowTrackedJustified` detector.
+- **#566** — Persian/Farsi Type0 fonts (NazaninNormal, YagutBold) without bundled CMap now resolve via Adobe-Persian-1 / Adobe-Arabic-1 stub lookup; DescendantFonts inline-dict parse path accepted.
+- **#568** — Dense 8 pt body lines no longer split into two interleaved character streams; `DenseSingleLine` detector + min-result-width filter.
+- **#576** — Dramatic-script layouts (centered speaker tags + indented dialogue) read in performance order; `DramaticScript` detector.
+
+### Security
+
+- **#562** — Verified no text extraction path bypasses authentication on encrypted PDFs. `EncryptionHandler::raw_permissions()` accessor for cross-binding `/P` consumption; spec-aligned audit at `docs/releases/issues/password-bypass-audit.md`.
+
+### Deprecated
+
+- `PdfDocument.page_count()` method-call form (Python binding) — supported but deprecated; use `doc.page_count` attribute form instead. Removal scheduled for v0.4.0 (#414). Closes #550.
+
 ## [0.3.55] - 2026-05-25
 
 > Ruby + PHP language bindings + multi-line heading reading-order fix

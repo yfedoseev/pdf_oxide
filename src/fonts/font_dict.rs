@@ -37,6 +37,14 @@ pub struct FontInfo {
     /// PDF Spec: ISO 32000-1:2008, Section 9.6.2
     /// Typical values: <80 = light, 80-110 = normal/medium, >110 = bold
     pub stem_v: Option<f32>,
+    /// Ascent above the baseline (fraction of em, from FontDescriptor /Ascent).
+    /// Converted from PDF's 1/1000-em units to a fraction of em (raw value ÷ 1000).
+    /// Defaults to 0.95 when the font descriptor is absent (matching Poppler's fallback).
+    pub ascent: f32,
+    /// Descent below the baseline (fraction of em, from FontDescriptor /Descent).
+    /// Converted from PDF's 1/1000-em units to a fraction of em; always ≤ 0.
+    /// Defaults to -0.35 when the font descriptor is absent (matching Poppler's fallback).
+    pub descent: f32,
     /// Embedded TrueType font data (from FontFile2 stream)
     /// Shared via Arc to avoid expensive cloning
     pub embedded_font_data: Option<Arc<Vec<u8>>>,
@@ -53,8 +61,8 @@ pub struct FontInfo {
     /// `uniXXXX`/`uXXXXX` synth) before falling through to the hardcoded
     /// `gid_to_standard_glyph_name` ASCII map and CID-as-Unicode last
     /// resort. Resolves `•` → `❍` substitution and `fi`/`fl` ligature
-    /// corruption on Identity-H subset fonts without `CIDToGIDMap`. See
-    /// `docs/releases/plans/v0.3.54/fix-535-tounicode-fallback.md`.
+    /// corruption on Identity-H subset fonts without `CIDToGIDMap`.
+    ///
     pub embedded_glyph_names: std::sync::OnceLock<Option<Vec<Option<String>>>>,
     /// Whether this font has an embedded TrueType font (FontFile2).
     /// Controls whether lazy truetype_cmap extraction is attempted.
@@ -69,6 +77,11 @@ pub struct FontInfo {
     pub cid_system_info: Option<CIDSystemInfo>,
     /// CIDFont subtype ("CIDFontType0" for CFF, "CIDFontType2" for TrueType)
     pub cid_font_type: Option<String>,
+    /// `FontMatrix[a]` element — scales glyph-space widths to text-space units.
+    /// Standard Type1/TrueType: 0.001 (widths in 1/1000 em).
+    /// Type3 with `FontMatrix [1 0 0 1 0 0]`: 1.0 (widths already in text-space units).
+    /// `advance_in_text_space = width × font_matrix_a × font_size`
+    pub font_matrix_a: f32,
     /// Character widths in 1000ths of em (PDF units)
     /// For simple fonts (Type1, TrueType): array indexed by (char_code - first_char)
     /// PDF Spec: ISO 32000-1:2008, Section 9.7.4
@@ -106,6 +119,15 @@ pub struct FontInfo {
     /// Index by byte value (0-255). Built lazily on first advance_position call.
     /// Eliminates per-byte bounds check and subtraction in get_glyph_width.
     pub byte_to_width_table: std::sync::OnceLock<[f32; 256]>,
+    /// Raw `/Differences` glyph names retained by character code (simple fonts).
+    /// Populated alongside the `Encoding::Custom` map during `parse_encoding`,
+    /// but unlike the Custom map (which stores the *resolved* char) this keeps the
+    /// authoritative glyph *name* the writer assigned via the encoding dictionary's
+    /// `/Differences` array (ISO 32000-1 §9.6.6.1, Table 114). Used by
+    /// `glyph_name_for_code` to recover punctuation (`period`/`comma`/`hyphen`/
+    /// `minus`) when an upstream decode yields a non-sensible symbol — see the
+    /// glyph-name-gated interceptions in `char_to_unicode`.
+    pub diff_glyph_names: HashMap<u8, String>,
 }
 
 /// Font encoding types.
@@ -253,8 +275,7 @@ impl FontInfo {
     /// - the parsed name is `.notdef` (which AGL doesn't map and isn't
     ///   useful as text anyway).
     ///
-    /// Used by §9.10.2 Priority 3c in `decode_char_to_unicode`. Documented
-    /// in `docs/releases/plans/v0.3.54/fix-535-tounicode-fallback.md`.
+    /// Used by §9.10.2 Priority 3c in `decode_char_to_unicode`.
     pub(crate) fn embedded_glyph_name(&self, gid: u16) -> Option<&str> {
         let names = self
             .embedded_glyph_names
@@ -304,6 +325,28 @@ impl FontInfo {
             })
             .as_ref()?;
         names.get(gid as usize).and_then(|n| n.as_deref())
+    }
+
+    /// Authoritative glyph name for a *simple* font character code, in priority
+    /// order (ISO 32000-1 §9.6.6.1 / §9.10.2):
+    /// (a) the `/Differences` glyph name retained in `diff_glyph_names`;
+    /// (b) else the embedded post/charset glyph name for the code's GID
+    ///     (`embedded_glyph_name`), when the embedded program carries names.
+    ///
+    /// Used by the Item 1 punctuation-recovery interceptions in `char_to_unicode`.
+    fn glyph_name_for_code(&self, char_code: u32) -> Option<&str> {
+        if let Some(name) = self.diff_glyph_names.get(&(char_code as u8)) {
+            return Some(name.as_str());
+        }
+        // Fall back to the embedded program's glyph name for this code's GID.
+        // For embedded CFF subsets the byte_code → GID map is authoritative;
+        // otherwise treat the code as the GID (TrueType simple-font convention).
+        let gid = self
+            .cff_gid_map
+            .as_ref()
+            .and_then(|m| m.get(&(char_code as u8)).copied())
+            .unwrap_or(char_code as u16);
+        self.embedded_glyph_name(gid)
     }
 
     /// Parse font information from a font dictionary object.
@@ -360,126 +403,194 @@ impl FontInfo {
 
         // Log Type 3 fonts - may require special glyph name mapping
         if subtype == "Type3" {
-            log::warn!("Font '{}' is Type 3 - may require special glyph name mapping", base_font);
+            let msg =
+                format!("Font '{}' is Type 3 - may require special glyph name mapping", base_font);
+            log::warn!("{}", msg);
+            // push into the structured warning
+            // sink. PDF Spec §9.6.4 "Type 3 Fonts" describes the
+            // user-defined CharProcs glyph-program model; the
+            // standard glyph name registry doesn't apply, so
+            // extraction may fall back to glyph-name heuristics.
+            crate::extractors::warnings::push_global_warning(
+                crate::extractors::warnings::Warning {
+                    category: crate::extractors::warnings::WarningCategory::Type3Font,
+                    page: None,
+                    message: msg,
+                    spec_section: Some("9.6.4"),
+                },
+            );
         }
+
+        // Parse FontMatrix [a] for Type 3 fonts.
+        // Standard Type 1 FontMatrix is [0.001 0 0 0.001 0 0], so widths are in 1/1000 em.
+        // Type 3 fonts can use an identity FontMatrix [1 0 0 1 0 0], meaning widths are
+        // in text-space units directly (no 1/1000 scaling needed).
+        let font_matrix_a = if subtype == "Type3" {
+            font_dict
+                .get("FontMatrix")
+                .and_then(|obj| obj.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|v| {
+                    v.as_real()
+                        .map(|r| r as f32)
+                        .or_else(|| v.as_integer().map(|i| i as f32))
+                })
+                // A degenerate FontMatrix[0] — zero, near-zero, or non-finite —
+                // is a malformed horizontal scale (ISO 32000-1 §9.2.4 / §9.6.5)
+                // and would make the `default_width * 0.001 / font_matrix_a`
+                // rescale below divide by ~0 → inf/NaN, and the
+                // `font_size * font_matrix_a` advance collapse to 0. Reject it
+                // and fall back to the standard 0.001 (Type 1) scale.
+                .filter(|a| a.is_finite() && a.abs() > 1e-6)
+                .unwrap_or(0.001)
+        } else {
+            0.001
+        };
 
         // Parse FontDescriptor FIRST to get font flags (needed for encoding decision)
         // PDF Spec: ISO 32000-1:2008, Section 9.6.2 - Font Descriptor
-        let (font_weight, flags, stem_v, mut embedded_font_data, is_truetype_font) =
-            if let Some(descriptor_ref) = font_dict
-                .get("FontDescriptor")
-                .and_then(|obj| obj.as_reference())
-            {
-                // Load the FontDescriptor object
-                if let Ok(descriptor_obj) = doc.load_object(descriptor_ref) {
-                    if let Some(descriptor_dict) = descriptor_obj.as_dict() {
-                        let weight = descriptor_dict
-                            .get("FontWeight")
-                            .and_then(|weight_obj| weight_obj.as_integer())
-                            .map(|w| w as i32);
+        let (
+            font_weight,
+            flags,
+            stem_v,
+            mut embedded_font_data,
+            is_truetype_font,
+            raw_ascent,
+            raw_descent,
+        ) = if let Some(descriptor_ref) = font_dict
+            .get("FontDescriptor")
+            .and_then(|obj| obj.as_reference())
+        {
+            // Load the FontDescriptor object
+            if let Ok(descriptor_obj) = doc.load_object(descriptor_ref) {
+                if let Some(descriptor_dict) = descriptor_obj.as_dict() {
+                    let weight = descriptor_dict
+                        .get("FontWeight")
+                        .and_then(|weight_obj| weight_obj.as_integer())
+                        .map(|w| w as i32);
 
-                        let descriptor_flags = descriptor_dict
-                            .get("Flags")
-                            .and_then(|flags_obj| flags_obj.as_integer())
-                            .map(|f| f as i32);
+                    let descriptor_flags = descriptor_dict
+                        .get("Flags")
+                        .and_then(|flags_obj| flags_obj.as_integer())
+                        .map(|f| f as i32);
 
-                        let stem_v_value = descriptor_dict.get("StemV").and_then(|sv_obj| {
-                            sv_obj
-                                .as_real()
-                                .map(|r| r as f32)
-                                .or_else(|| sv_obj.as_integer().map(|i| i as f32))
-                        });
+                    let stem_v_value = descriptor_dict.get("StemV").and_then(|sv_obj| {
+                        sv_obj
+                            .as_real()
+                            .map(|r| r as f32)
+                            .or_else(|| sv_obj.as_integer().map(|i| i as f32))
+                    });
 
-                        // Load embedded font data from FontFile2 (TrueType), FontFile (Type 1), or FontFile3 (CFF/OpenType)
-                        // IMPORTANT: Track whether font is TrueType or CFF - only TrueType fonts have cmaps!
-                        let (embedded_font, is_truetype_font) =
-                            if let Some(ff2_obj) = descriptor_dict.get("FontFile2") {
-                                log::info!("Font '{}' has FontFile2 entry (TrueType)", base_font);
-                                let font_data = ff2_obj
-                                    .as_reference()
-                                    .and_then(|ff2_ref| {
-                                        doc.load_object(ff2_ref).ok().map(|obj| (obj, ff2_ref))
-                                    })
-                                    .and_then(|(ff2_stream, ff2_ref)| {
-                                        doc.decode_stream_with_encryption(&ff2_stream, ff2_ref).ok()
-                                    })
-                                    .map(|data| {
-                                        log::info!(
-                                            "Font '{}' loaded embedded TrueType font ({} bytes)",
-                                            base_font,
-                                            data.len()
-                                        );
-                                        Arc::new(data)
-                                    });
-                                (font_data, true) // TrueType - can have cmaps
-                            } else if let Some(ff3_obj) = descriptor_dict.get("FontFile3") {
+                    let ascent_value = descriptor_dict.get("Ascent").and_then(|obj| {
+                        obj.as_real()
+                            .map(|r| r as f32)
+                            .or_else(|| obj.as_integer().map(|i| i as f32))
+                    });
+
+                    let descent_value = descriptor_dict.get("Descent").and_then(|obj| {
+                        obj.as_real()
+                            .map(|r| r as f32)
+                            .or_else(|| obj.as_integer().map(|i| i as f32))
+                    });
+
+                    // Load embedded font data from FontFile2 (TrueType), FontFile (Type 1), or FontFile3 (CFF/OpenType)
+                    // IMPORTANT: Track whether font is TrueType or CFF - only TrueType fonts have cmaps!
+                    let (embedded_font, is_truetype_font) = if let Some(ff2_obj) =
+                        descriptor_dict.get("FontFile2")
+                    {
+                        log::info!("Font '{}' has FontFile2 entry (TrueType)", base_font);
+                        let font_data = ff2_obj
+                            .as_reference()
+                            .and_then(|ff2_ref| {
+                                doc.load_object(ff2_ref).ok().map(|obj| (obj, ff2_ref))
+                            })
+                            .and_then(|(ff2_stream, ff2_ref)| {
+                                doc.decode_stream_with_encryption(&ff2_stream, ff2_ref).ok()
+                            })
+                            .map(|data| {
                                 log::info!(
+                                    "Font '{}' loaded embedded TrueType font ({} bytes)",
+                                    base_font,
+                                    data.len()
+                                );
+                                Arc::new(data)
+                            });
+                        (font_data, true) // TrueType - can have cmaps
+                    } else if let Some(ff3_obj) = descriptor_dict.get("FontFile3") {
+                        log::info!(
                             "Font '{}' has FontFile3 entry (CFF/OpenType - no TrueType cmap)",
                             base_font
                         );
-                                let font_data = ff3_obj
-                                    .as_reference()
-                                    .and_then(|ff3_ref| {
-                                        doc.load_object(ff3_ref).ok().map(|obj| (obj, ff3_ref))
-                                    })
-                                    .and_then(|(ff3_stream, ff3_ref)| {
-                                        doc.decode_stream_with_encryption(&ff3_stream, ff3_ref).ok()
-                                    })
-                                    .map(|data| {
-                                        // Wrap raw CFF in OpenType container for ttf-parser
-                                        let data =
-                                            if !data.is_empty() && data[0] == 1 && data.len() > 4 {
-                                                log::info!(
+                        let font_data = ff3_obj
+                            .as_reference()
+                            .and_then(|ff3_ref| {
+                                doc.load_object(ff3_ref).ok().map(|obj| (obj, ff3_ref))
+                            })
+                            .and_then(|(ff3_stream, ff3_ref)| {
+                                doc.decode_stream_with_encryption(&ff3_stream, ff3_ref).ok()
+                            })
+                            .map(|data| {
+                                // Wrap raw CFF in OpenType container for ttf-parser
+                                let data = if !data.is_empty() && data[0] == 1 && data.len() > 4 {
+                                    log::info!(
                                         "Font '{}': Wrapping raw CFF in OpenType ({} bytes)",
                                         base_font,
                                         data.len()
                                     );
-                                                wrap_cff_in_opentype(&data)
-                                            } else {
-                                                log::info!(
+                                    wrap_cff_in_opentype(&data)
+                                } else {
+                                    log::info!(
                                         "Font '{}' loaded embedded CFF/OpenType font ({} bytes)",
                                         base_font,
                                         data.len()
                                     );
-                                                data
-                                            };
-                                        Arc::new(data)
-                                    });
-                                (font_data, false) // CFF - no TrueType cmap
-                            } else if let Some(ff_obj) = descriptor_dict.get("FontFile") {
-                                log::info!("Font '{}' has FontFile entry (Type 1)", base_font);
-                                let font_data = ff_obj
-                                    .as_reference()
-                                    .and_then(|ff_ref| {
-                                        doc.load_object(ff_ref).ok().map(|obj| (obj, ff_ref))
-                                    })
-                                    .and_then(|(ff_stream, ff_ref)| {
-                                        doc.decode_stream_with_encryption(&ff_stream, ff_ref).ok()
-                                    })
-                                    .map(|data| {
-                                        log::info!(
-                                            "Font '{}' loaded embedded Type 1 font ({} bytes)",
-                                            base_font,
-                                            data.len()
-                                        );
-                                        Arc::new(data)
-                                    });
-                                (font_data, false) // Type 1 - no TrueType cmap
-                            } else {
-                                log::debug!("Font '{}' has no embedded font data", base_font);
-                                (None, false)
-                            };
-
-                        (weight, descriptor_flags, stem_v_value, embedded_font, is_truetype_font)
+                                    data
+                                };
+                                Arc::new(data)
+                            });
+                        (font_data, false) // CFF - no TrueType cmap
+                    } else if let Some(ff_obj) = descriptor_dict.get("FontFile") {
+                        log::info!("Font '{}' has FontFile entry (Type 1)", base_font);
+                        let font_data = ff_obj
+                            .as_reference()
+                            .and_then(|ff_ref| {
+                                doc.load_object(ff_ref).ok().map(|obj| (obj, ff_ref))
+                            })
+                            .and_then(|(ff_stream, ff_ref)| {
+                                doc.decode_stream_with_encryption(&ff_stream, ff_ref).ok()
+                            })
+                            .map(|data| {
+                                log::info!(
+                                    "Font '{}' loaded embedded Type 1 font ({} bytes)",
+                                    base_font,
+                                    data.len()
+                                );
+                                Arc::new(data)
+                            });
+                        (font_data, false) // Type 1 - no TrueType cmap
                     } else {
-                        (None, None, None, None, false)
-                    }
+                        log::debug!("Font '{}' has no embedded font data", base_font);
+                        (None, false)
+                    };
+
+                    (
+                        weight,
+                        descriptor_flags,
+                        stem_v_value,
+                        embedded_font,
+                        is_truetype_font,
+                        ascent_value,
+                        descent_value,
+                    )
                 } else {
-                    (None, None, None, None, false)
+                    (None, None, None, None, false, None, None)
                 }
             } else {
-                (None, None, None, None, false)
-            };
+                (None, None, None, None, false, None, None)
+            }
+        } else {
+            (None, None, None, None, false, None, None)
+        };
 
         // TrueType cmap extraction is now LAZY — deferred until first access via
         // truetype_cmap() accessor. This saves 10-25ms per font when ToUnicode CMap
@@ -520,7 +631,9 @@ impl FontInfo {
                 None
             };
 
-        let (encoding, diff_multi_char_map) = if let Some(enc_obj) = font_dict.get("Encoding") {
+        let (encoding, diff_multi_char_map, diff_glyph_names) = if let Some(enc_obj) =
+            font_dict.get("Encoding")
+        {
             let resolved_enc_obj = if let Some(obj_ref) = enc_obj.as_reference() {
                 doc.load_object(obj_ref)?
             } else {
@@ -536,7 +649,7 @@ impl FontInfo {
             } else {
                 log::debug!("Font '{}' using /Encoding entry", base_font);
             }
-            let (mut parsed_enc, mut multi_map) =
+            let (mut parsed_enc, mut multi_map, glyph_names) =
                 Self::parse_encoding(&resolved_enc_obj, doc, font_program_enc_cache.as_ref())?;
 
             // When /Encoding is a named encoding (e.g., /WinAnsiEncoding) AND the font
@@ -581,7 +694,7 @@ impl FontInfo {
                 }
             }
 
-            (parsed_enc, multi_map)
+            (parsed_enc, multi_map, glyph_names)
         } else {
             // No /Encoding entry — use font program's built-in encoding if available
             if let Some(prog_enc) = font_program_enc_cache {
@@ -598,19 +711,27 @@ impl FontInfo {
                         }
                     }
                 }
-                (Encoding::Custom(prog_enc), multi_map)
+                (Encoding::Custom(prog_enc), multi_map, HashMap::new())
             } else if is_symbolic_font(flags) {
                 log::debug!(
                     "Font '{}' is symbolic with no /Encoding - will use built-in encoding (Symbol/ZapfDingbats)",
                     base_font
                 );
-                (Encoding::Standard("SymbolicBuiltIn".to_string()), HashMap::new())
+                (
+                    Encoding::Standard("SymbolicBuiltIn".to_string()),
+                    HashMap::new(),
+                    HashMap::new(),
+                )
             } else {
                 log::debug!(
                     "Font '{}' has no /Encoding entry - defaulting to StandardEncoding",
                     base_font
                 );
-                (Encoding::Standard("StandardEncoding".to_string()), HashMap::new())
+                (
+                    Encoding::Standard("StandardEncoding".to_string()),
+                    HashMap::new(),
+                    HashMap::new(),
+                )
             }
         };
 
@@ -659,7 +780,20 @@ impl FontInfo {
             }
         } else {
             if subtype == "Type0" {
-                log::warn!("Type0 font '{}' has no ToUnicode entry!", base_font);
+                let msg = format!("Type0 font '{}' has no ToUnicode entry!", base_font);
+                log::warn!("{}", msg);
+                // push to the structured sink. PDF
+                // Spec §9.10.2 "ToUnicode CMaps" describes the
+                // mapping; absent ToUnicode triggers the fallback
+                // chain (Encoding → AGL → CID-as-Unicode) per §9.10.3.
+                crate::extractors::warnings::push_global_warning(
+                    crate::extractors::warnings::Warning {
+                        category: crate::extractors::warnings::WarningCategory::ToUnicodeMissing,
+                        page: None,
+                        message: msg,
+                        spec_section: Some("9.10.2"),
+                    },
+                );
             }
             None
         };
@@ -736,6 +870,16 @@ impl FontInfo {
             550.0
         };
 
+        // The heuristic above is calibrated for standard fonts where font_matrix_a = 0.001
+        // (i.e. glyph-space units are 1/1000 em).  Type3 fonts can use an arbitrary
+        // FontMatrix; if font_matrix_a differs from 0.001, rescale so that callers
+        // multiplying by font_matrix_a still get the intended em-fraction result.
+        let default_width = if subtype == "Type3" && font_matrix_a != 0.001 {
+            default_width * 0.001 / font_matrix_a
+        } else {
+            default_width
+        };
+
         // Phase 3: Parse DescendantFonts for Type0 fonts
         let (
             cid_to_gid_map,
@@ -745,9 +889,22 @@ impl FontInfo {
             cid_default_width,
             has_explicit_dw,
             descendant_tt_cmap,
+            desc_raw_ascent,
+            desc_raw_descent,
         ) = if subtype == "Type0" {
             match Self::parse_descendant_fonts(font_dict, &base_font, doc) {
-                Ok((map, info, ftype, widths, dw, explicit_dw, tt_cmap, desc_embedded)) => {
+                Ok((
+                    map,
+                    info,
+                    ftype,
+                    widths,
+                    dw,
+                    explicit_dw,
+                    tt_cmap,
+                    desc_embedded,
+                    d_ascent,
+                    d_descent,
+                )) => {
                     log::info!(
                             "Font '{}': Parsed DescendantFonts - CIDFontType={}, CIDSystemInfo={}-{}, widths={}, embedded={}",
                             base_font,
@@ -765,7 +922,7 @@ impl FontInfo {
                     if desc_embedded.is_some() && embedded_font_data.is_none() {
                         embedded_font_data = desc_embedded;
                     }
-                    (map, info, ftype, widths, dw, explicit_dw, tt_cmap)
+                    (map, info, ftype, widths, dw, explicit_dw, tt_cmap, d_ascent, d_descent)
                 },
                 Err(e) => {
                     log::warn!(
@@ -773,12 +930,19 @@ impl FontInfo {
                         base_font,
                         e
                     );
-                    (Some(CIDToGIDMap::Identity), None, None, None, 1000.0, false, None)
+                    (Some(CIDToGIDMap::Identity), None, None, None, 1000.0, false, None, None, None)
                 },
             }
         } else {
-            (None, None, None, None, 1000.0, false, None)
+            (None, None, None, None, 1000.0, false, None, None, None)
         };
+
+        // For Type0 fonts the /FontDescriptor lives on the CIDFont descendant (§9.7.4).
+        // If the top-level font had no descriptor (the common case), fall back to the
+        // descendant's values so CID/CJK glyphs get real metrics instead of the 0.95/-0.35
+        // Poppler-compatible default.
+        let raw_ascent = raw_ascent.or(desc_raw_ascent);
+        let raw_descent = raw_descent.or(desc_raw_descent);
 
         // Pre-populate OnceLock with descendant's TrueType cmap if available.
         // Otherwise leave it for lazy extraction from embedded_font_data.
@@ -803,6 +967,26 @@ impl FontInfo {
             None
         };
 
+        // Normalize ascent/descent from 1000ths-of-em to fraction-of-em.
+        // PDF spec says these are in 1/1000 of em (glyph space units).
+        // Fall back to standard font metrics for the 14 standard PDF fonts,
+        // then to Poppler-compatible defaults (0.95 / -0.35).
+        let (default_ascent, default_descent) =
+            standard_font_metrics(&base_font).unwrap_or((0.95, -0.35));
+        let ascent = raw_ascent.map(|v| v / 1000.0).unwrap_or(default_ascent);
+        // PDF Descent should be ≤ 0 (below baseline). Some PDFs store it as a positive
+        // magnitude; Poppler normalizes by negating. Mirror that here.
+        let descent = raw_descent
+            .map(|v| {
+                let d = v / 1000.0;
+                if d > 0.0 {
+                    -d
+                } else {
+                    d
+                }
+            })
+            .unwrap_or(default_descent);
+
         Ok(FontInfo {
             base_font,
             subtype,
@@ -811,6 +995,8 @@ impl FontInfo {
             font_weight,
             flags,
             stem_v,
+            ascent,
+            descent,
             embedded_font_data,
             truetype_cmap: truetype_cmap_lock,
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -818,6 +1004,7 @@ impl FontInfo {
             cid_to_gid_map,
             cid_system_info,
             cid_font_type,
+            font_matrix_a,
             widths,
             first_char,
             last_char,
@@ -829,6 +1016,7 @@ impl FontInfo {
             multi_char_map: diff_multi_char_map,
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names,
         })
     }
 
@@ -895,7 +1083,8 @@ impl FontInfo {
     /// Extracts CIDFont dictionary and related information
     /// Per PDF Spec ISO 32000-1:2008, Section 9.7.1
     ///
-    /// Returns: (CIDToGIDMap, CIDSystemInfo, CIDFontType, CIDWidths, DefaultWidth)
+    /// Returns: (CIDToGIDMap, CIDSystemInfo, CIDFontType, CIDWidths, DefaultWidth,
+    ///          has_explicit_dw, TrueTypeCMap, EmbeddedFontData, raw_ascent, raw_descent)
     fn parse_descendant_fonts(
         font_dict: &HashMap<String, Object>,
         base_font: &str,
@@ -909,6 +1098,8 @@ impl FontInfo {
         bool,                 // has_explicit_dw (F14/F15 fix)
         Option<TrueTypeCMap>, // TrueType cmap from descendant's embedded font
         Option<Arc<Vec<u8>>>, // Embedded font data from CIDFont's FontDescriptor
+        Option<f32>,          // raw_ascent from descendant FontDescriptor
+        Option<f32>,          // raw_descent from descendant FontDescriptor
     )> {
         let descendant_obj = font_dict
             .get("DescendantFonts")
@@ -951,16 +1142,47 @@ impl FontInfo {
             );
         }
 
-        let cidfont_ref = array[0].as_reference().ok_or_else(|| Error::ParseError {
-            offset: 0,
-            reason: format!("Type0 font '{}': DescendantFonts[0] is not a reference", base_font),
-        })?;
-
-        let cidfont_obj = doc.load_object(cidfont_ref)?;
-        let cidfont_dict = cidfont_obj.as_dict().ok_or_else(|| Error::ParseError {
-            offset: 0,
-            reason: format!("Type0 font '{}': CIDFont is not a dictionary", base_font),
-        })?;
+        // accept both indirect
+        // references AND direct dictionary objects in DescendantFonts.
+        // PDF spec §9.7.6 mandates indirect refs, but Persian / Farsi
+        // PDFs from older XeTeX / pdfTeX writers (Nazanin, Yagut,
+        // Mitra, Lotus fonts) commonly inline the CIDFont dict
+        // directly. Older versions rejected the inline form with
+        // "DescendantFonts[0] is not a reference" and fell back to
+        // Identity-H, which emits CIDs as Latin-Extended-B garbage
+        // instead of mapping through the CIDSystemInfo collection.
+        // Accepting the inline form gets the parser past this gate;
+        // bundling the official Adobe-Persian-1-UCS2 /
+        // Adobe-Arabic-1-UCS2 CMap data is a separate follow-up.
+        let cidfont_obj_owned;
+        let cidfont_dict = match array[0].as_reference() {
+            Some(cidfont_ref) => {
+                cidfont_obj_owned = doc.load_object(cidfont_ref)?;
+                cidfont_obj_owned
+                    .as_dict()
+                    .ok_or_else(|| Error::ParseError {
+                        offset: 0,
+                        reason: format!("Type0 font '{}': CIDFont is not a dictionary", base_font),
+                    })?
+            },
+            None => {
+                // Inline-dict path — accept it per §9.7.6 lenient
+                // reader posture.
+                log::info!(
+                    "Type0 font '{}': DescendantFonts[0] is a direct dictionary \
+                     (non-conformant per §9.7.6 but recoverable); parsing inline",
+                    base_font,
+                );
+                array[0].as_dict().ok_or_else(|| Error::ParseError {
+                    offset: 0,
+                    reason: format!(
+                        "Type0 font '{}': DescendantFonts[0] is neither a reference \
+                         nor a dictionary",
+                        base_font
+                    ),
+                })?
+            },
+        };
 
         // Get CIDFont subtype (required: CIDFontType0 or CIDFontType2)
         let cid_font_type = cidfont_dict
@@ -1162,6 +1384,12 @@ impl FontInfo {
         let descendant_embedded =
             Self::extract_embedded_font_from_descriptor(cidfont_dict, base_font, doc);
 
+        // Extract ascent/descent from the CIDFont's FontDescriptor (§9.7.4 / Table 117).
+        // The Type0 wrapper has no top-level /FontDescriptor, so these values must be
+        // read from the descendant.
+        let (desc_raw_ascent, desc_raw_descent) =
+            Self::read_raw_ascent_descent_from_descriptor(cidfont_dict, doc);
+
         Ok((
             cid_to_gid_map,
             cid_system_info,
@@ -1171,6 +1399,8 @@ impl FontInfo {
             has_explicit_dw,
             descendant_tt_cmap,
             descendant_embedded,
+            desc_raw_ascent,
+            desc_raw_descent,
         ))
     }
 
@@ -1227,6 +1457,39 @@ impl FontInfo {
             },
             _ => None,
         }
+    }
+
+    /// Read raw /Ascent and /Descent from a font dictionary's /FontDescriptor.
+    /// Returns (raw_ascent, raw_descent) in PDF 1/1000-em units, or None if absent.
+    /// Used to pull ascent/descent off a CIDFont descendant (§9.7.4 / Table 117).
+    fn read_raw_ascent_descent_from_descriptor(
+        font_dict: &HashMap<String, Object>,
+        doc: &PdfDocument,
+    ) -> (Option<f32>, Option<f32>) {
+        let desc_obj = match font_dict.get("FontDescriptor") {
+            Some(obj) => obj,
+            None => return (None, None),
+        };
+        let desc = if let Some(r) = desc_obj.as_reference() {
+            match doc.load_object(r) {
+                Ok(obj) => obj,
+                Err(_) => return (None, None),
+            }
+        } else {
+            desc_obj.clone()
+        };
+        let desc_dict = match desc.as_dict() {
+            Some(d) => d,
+            None => return (None, None),
+        };
+        let read_f32 = |key: &str| -> Option<f32> {
+            desc_dict.get(key).and_then(|o| {
+                o.as_real()
+                    .map(|r| r as f32)
+                    .or_else(|| o.as_integer().map(|i| i as f32))
+            })
+        };
+        (read_f32("Ascent"), read_f32("Descent"))
     }
 
     /// Extract embedded font data from a font dictionary's /FontDescriptor.
@@ -1454,8 +1717,8 @@ impl FontInfo {
     /// # Example /W array
     /// ```pdf
     /// /W [
-    ///   1 [500 600 700]     % CID 1=500, CID 2=600, CID 3=700
-    ///   100 200 300         % CIDs 100-200 all have width 300
+    ///   1 [500 600 700] % CID 1=500, CID 2=600, CID 3=700
+    ///   100 200 300 % CIDs 100-200 all have width 300
     /// ]
     /// ```
     fn parse_cid_widths(
@@ -1579,27 +1842,38 @@ impl FontInfo {
     /// ```
     ///
     /// Where integers specify starting codes, and names specify glyphs for consecutive codes.
+    ///
+    /// The third element of the returned tuple is the `diff_glyph_names` side
+    /// map: `code → /Differences glyph name` for simple fonts (empty otherwise).
+    /// It retains the authoritative glyph *name* (not the resolved char) so the
+    /// punctuation-recovery interceptions in `char_to_unicode` can consult it.
     fn parse_encoding(
         enc_obj: &Object,
         doc: &PdfDocument,
         font_program_encoding: Option<&HashMap<u8, char>>,
-    ) -> Result<(Encoding, HashMap<u8, String>)> {
+    ) -> Result<(Encoding, HashMap<u8, String>, HashMap<u8, String>)> {
         let empty_map = HashMap::new();
         // Encoding can be either a name or a dictionary
         if let Some(name) = enc_obj.as_name() {
-            // Standard encoding names
+            // Standard encoding names (no /Differences ⇒ no glyph-name side map)
             match name {
-                "WinAnsiEncoding" => {
-                    Ok((Encoding::Standard("WinAnsiEncoding".to_string()), empty_map))
-                },
-                "MacRomanEncoding" => {
-                    Ok((Encoding::Standard("MacRomanEncoding".to_string()), empty_map))
-                },
-                "MacExpertEncoding" => {
-                    Ok((Encoding::Standard("MacExpertEncoding".to_string()), empty_map))
-                },
-                "Identity-H" | "Identity-V" => Ok((Encoding::Identity, empty_map)),
-                _ => Ok((Encoding::Standard(name.to_string()), empty_map)),
+                "WinAnsiEncoding" => Ok((
+                    Encoding::Standard("WinAnsiEncoding".to_string()),
+                    empty_map,
+                    HashMap::new(),
+                )),
+                "MacRomanEncoding" => Ok((
+                    Encoding::Standard("MacRomanEncoding".to_string()),
+                    empty_map,
+                    HashMap::new(),
+                )),
+                "MacExpertEncoding" => Ok((
+                    Encoding::Standard("MacExpertEncoding".to_string()),
+                    empty_map,
+                    HashMap::new(),
+                )),
+                "Identity-H" | "Identity-V" => Ok((Encoding::Identity, empty_map, HashMap::new())),
+                _ => Ok((Encoding::Standard(name.to_string()), empty_map, HashMap::new())),
             }
         } else if let Some(dict) = enc_obj.as_dict() {
             // Check if this is a CMap stream (Type0 font encoding reference)
@@ -1624,22 +1898,28 @@ impl FontInfo {
                         "Encoding is Adobe CMap stream (CMapName={:?}), treating as Identity",
                         cmap_name
                     );
-                    return Ok((Encoding::Identity, HashMap::new()));
+                    return Ok((Encoding::Identity, HashMap::new(), HashMap::new()));
                 }
                 // For predefined PDF CMaps like "Identity-H", "Identity-V"
                 if cmap_name == "Identity-H" || cmap_name == "Identity-V" {
-                    return Ok((Encoding::Identity, HashMap::new()));
+                    return Ok((Encoding::Identity, HashMap::new(), HashMap::new()));
                 }
                 // Custom CMap streams (e.g., "Prince-ArialMT-H", "OneByteIdentityH")
                 log::debug!(
                     "Encoding is custom CMap stream (CMapName={:?}), treating as Standard",
                     cmap_name
                 );
-                return Ok((Encoding::Standard(cmap_name.to_string()), HashMap::new()));
+                return Ok((
+                    Encoding::Standard(cmap_name.to_string()),
+                    HashMap::new(),
+                    HashMap::new(),
+                ));
             }
 
             // Custom encoding dictionary - parse /Differences array
             let mut multi_char_map: HashMap<u8, String> = HashMap::new();
+            // Retain the raw /Differences glyph name per code (see field docs).
+            let mut diff_glyph_names: HashMap<u8, String> = HashMap::new();
 
             // Step 1: Get base encoding (if specified)
             let mut encoding_map: HashMap<u8, char> = if let Some(base_enc_obj) =
@@ -1717,6 +1997,14 @@ impl FontInfo {
                                 current_code = *code as u32;
                             },
                             Object::Name(glyph_name) => {
+                                // Retain the authoritative glyph name for this code
+                                // (ISO 32000-1 §9.6.6.1, Table 114). Kept regardless
+                                // of whether it resolves to a single/compound/unknown
+                                // Unicode value, so the punctuation-recovery
+                                // interceptions in `char_to_unicode` can consult it.
+                                if current_code <= 255 {
+                                    diff_glyph_names.insert(current_code as u8, glyph_name.clone());
+                                }
                                 // Map glyph name to Unicode character(s)
                                 if let Some(unicode_char) = glyph_name_to_unicode(glyph_name) {
                                     if current_code <= 255 {
@@ -1774,12 +2062,20 @@ impl FontInfo {
             }
 
             if !encoding_map.is_empty() || !multi_char_map.is_empty() {
-                Ok((Encoding::Custom(encoding_map), multi_char_map))
+                Ok((Encoding::Custom(encoding_map), multi_char_map, diff_glyph_names))
             } else {
-                Ok((Encoding::Standard("StandardEncoding".to_string()), HashMap::new()))
+                Ok((
+                    Encoding::Standard("StandardEncoding".to_string()),
+                    HashMap::new(),
+                    diff_glyph_names,
+                ))
             }
         } else {
-            Ok((Encoding::Standard("StandardEncoding".to_string()), HashMap::new()))
+            Ok((
+                Encoding::Standard("StandardEncoding".to_string()),
+                HashMap::new(),
+                HashMap::new(),
+            ))
         }
     }
 
@@ -1957,8 +2253,271 @@ impl FontInfo {
         }
 
         let code = char_code as u8;
-        // Times-Roman standard widths (most common chars, PDF spec Appendix D)
+        let is_bold = name.contains("Bold");
+
+        // Times-Roman / Times-Bold / Times-BoldItalic standard widths (Adobe AFM metrics)
         if is_times {
+            if name.contains("BoldItalic") {
+                // Times-BoldItalic widths (Adobe Core 14 Fonts AFM).
+                return Some(match code {
+                    32 => 250.0,
+                    33 => 389.0,
+                    34 => 555.0,
+                    35 => 500.0,
+                    36 => 500.0,
+                    37 => 833.0,
+                    38 => 778.0,
+                    39 => 333.0,
+                    40 => 333.0,
+                    41 => 333.0,
+                    42 => 500.0,
+                    43 => 570.0,
+                    44 => 250.0,
+                    45 => 333.0,
+                    46 => 250.0,
+                    47 => 278.0,
+                    48..=57 => 500.0,
+                    58 => 333.0,
+                    59 => 333.0,
+                    60 => 570.0,
+                    61 => 570.0,
+                    62 => 570.0,
+                    63 => 500.0,
+                    64 => 832.0,
+                    65 => 667.0,
+                    66 => 667.0,
+                    67 => 667.0,
+                    68 => 722.0,
+                    69 => 667.0,
+                    70 => 667.0,
+                    71 => 722.0,
+                    72 => 778.0,
+                    73 => 389.0,
+                    74 => 500.0,
+                    75 => 667.0,
+                    76 => 611.0,
+                    77 => 889.0,
+                    78 => 722.0,
+                    79 => 722.0,
+                    80 => 611.0,
+                    81 => 722.0,
+                    82 => 667.0,
+                    83 => 556.0,
+                    84 => 611.0,
+                    85 => 722.0,
+                    86 => 667.0,
+                    87 => 889.0,
+                    88 => 667.0,
+                    89 => 611.0,
+                    90 => 611.0,
+                    91 => 333.0,
+                    92 => 278.0,
+                    93 => 333.0,
+                    94 => 570.0,
+                    95 => 500.0,
+                    97 => 500.0,
+                    98 => 500.0,
+                    99 => 444.0,
+                    100 => 500.0,
+                    101 => 444.0,
+                    102 => 333.0,
+                    103 => 500.0,
+                    104 => 556.0,
+                    105 => 278.0,
+                    106 => 278.0,
+                    107 => 500.0,
+                    108 => 278.0,
+                    109 => 778.0,
+                    110 => 556.0,
+                    111 => 500.0,
+                    112 => 500.0,
+                    113 => 500.0,
+                    114 => 389.0,
+                    115 => 389.0,
+                    116 => 278.0,
+                    117 => 556.0,
+                    118 => 444.0,
+                    119 => 667.0,
+                    120 => 500.0,
+                    121 => 444.0,
+                    122 => 389.0,
+                    _ => return None,
+                });
+            }
+            if is_bold {
+                // Times-Bold widths (Adobe Core 14 Fonts AFM).
+                return Some(match code {
+                    32 => 250.0,
+                    33 => 333.0,
+                    34 => 555.0,
+                    35 => 500.0,
+                    36 => 500.0,
+                    37 => 1000.0,
+                    38 => 833.0,
+                    39 => 333.0,
+                    40 => 333.0,
+                    41 => 333.0,
+                    42 => 500.0,
+                    43 => 570.0,
+                    44 => 250.0,
+                    45 => 333.0,
+                    46 => 250.0,
+                    47 => 278.0,
+                    48..=57 => 500.0,
+                    58 => 333.0,
+                    59 => 333.0,
+                    60 => 570.0,
+                    61 => 570.0,
+                    62 => 570.0,
+                    63 => 500.0,
+                    64 => 930.0,
+                    65 => 722.0,
+                    66 => 667.0,
+                    67 => 722.0,
+                    68 => 722.0,
+                    69 => 667.0,
+                    70 => 611.0,
+                    71 => 778.0,
+                    72 => 778.0,
+                    73 => 389.0,
+                    74 => 500.0,
+                    75 => 778.0,
+                    76 => 667.0,
+                    77 => 944.0,
+                    78 => 722.0,
+                    79 => 778.0,
+                    80 => 611.0,
+                    81 => 778.0,
+                    82 => 722.0,
+                    83 => 556.0,
+                    84 => 667.0,
+                    85 => 722.0,
+                    86 => 722.0,
+                    87 => 1000.0,
+                    88 => 722.0,
+                    89 => 722.0,
+                    90 => 667.0,
+                    91 => 333.0,
+                    92 => 278.0,
+                    93 => 333.0,
+                    94 => 581.0,
+                    95 => 500.0,
+                    97 => 500.0,
+                    98 => 556.0,
+                    99 => 444.0,
+                    100 => 556.0,
+                    101 => 444.0,
+                    102 => 333.0,
+                    103 => 500.0,
+                    104 => 556.0,
+                    105 => 278.0,
+                    106 => 333.0,
+                    107 => 556.0,
+                    108 => 278.0,
+                    109 => 833.0,
+                    110 => 556.0,
+                    111 => 500.0,
+                    112 => 556.0,
+                    113 => 556.0,
+                    114 => 444.0,
+                    115 => 389.0,
+                    116 => 333.0,
+                    117 => 556.0,
+                    118 => 500.0,
+                    119 => 722.0,
+                    120 => 500.0,
+                    121 => 500.0,
+                    122 => 444.0,
+                    _ => return None,
+                });
+            }
+            if name.contains("Italic") {
+                // Times-Italic widths (Adobe Core 14 Fonts AFM).
+                return Some(match code {
+                    32 => 250.0,
+                    33 => 333.0,
+                    34 => 420.0,
+                    35 => 500.0,
+                    36 => 500.0,
+                    37 => 833.0,
+                    38 => 778.0,
+                    39 => 333.0,
+                    40 => 333.0,
+                    41 => 333.0,
+                    42 => 500.0,
+                    43 => 675.0,
+                    44 => 250.0,
+                    45 => 333.0,
+                    46 => 250.0,
+                    47 => 278.0,
+                    48..=57 => 500.0,
+                    58 => 333.0,
+                    59 => 333.0,
+                    60 => 675.0,
+                    61 => 675.0,
+                    62 => 675.0,
+                    63 => 500.0,
+                    64 => 920.0,
+                    65 => 611.0,
+                    66 => 611.0,
+                    67 => 667.0,
+                    68 => 722.0,
+                    69 => 611.0,
+                    70 => 611.0,
+                    71 => 722.0,
+                    72 => 722.0,
+                    73 => 333.0,
+                    74 => 444.0,
+                    75 => 667.0,
+                    76 => 556.0,
+                    77 => 833.0,
+                    78 => 667.0,
+                    79 => 722.0,
+                    80 => 611.0,
+                    81 => 722.0,
+                    82 => 611.0,
+                    83 => 500.0,
+                    84 => 556.0,
+                    85 => 722.0,
+                    86 => 611.0,
+                    87 => 833.0,
+                    88 => 611.0,
+                    89 => 556.0,
+                    90 => 556.0,
+                    91 => 389.0,
+                    92 => 278.0,
+                    93 => 389.0,
+                    94 => 422.0,
+                    95 => 500.0,
+                    97 => 500.0,
+                    98 => 500.0,
+                    99 => 444.0,
+                    100 => 500.0,
+                    101 => 444.0,
+                    102 => 278.0,
+                    103 => 500.0,
+                    104 => 500.0,
+                    105 => 278.0,
+                    106 => 278.0,
+                    107 => 444.0,
+                    108 => 278.0,
+                    109 => 722.0,
+                    110 => 500.0,
+                    111 => 500.0,
+                    112 => 500.0,
+                    113 => 500.0,
+                    114 => 389.0,
+                    115 => 389.0,
+                    116 => 278.0,
+                    117 => 500.0,
+                    118 => 444.0,
+                    119 => 667.0,
+                    120 => 444.0,
+                    121 => 444.0,
+                    122 => 389.0,
+                    _ => return None,
+                });
+            }
             return Some(match code {
                 32 => 250.0,
                 33 => 333.0,
@@ -2052,8 +2611,76 @@ impl FontInfo {
             });
         }
 
-        // Helvetica standard widths
+        // Helvetica / Helvetica-Bold standard widths (Adobe AFM metrics)
         if is_helvetica {
+            if is_bold {
+                // Helvetica-Bold / Helvetica-BoldOblique widths (Adobe Core 14 Fonts AFM).
+                return Some(match code {
+                    32 => 278.0,
+                    33 => 333.0,
+                    34 => 474.0,
+                    44 => 278.0,
+                    45 => 333.0,
+                    46 => 278.0,
+                    47 => 278.0,
+                    48..=57 => 556.0,
+                    58 => 333.0,
+                    59 => 333.0,
+                    65 => 722.0,
+                    66 => 722.0,
+                    67 => 722.0,
+                    68 => 722.0,
+                    69 => 667.0,
+                    70 => 611.0,
+                    71 => 778.0,
+                    72 => 722.0,
+                    73 => 278.0,
+                    74 => 556.0,
+                    75 => 722.0,
+                    76 => 611.0,
+                    77 => 833.0,
+                    78 => 722.0,
+                    79 => 778.0,
+                    80 => 667.0,
+                    81 => 778.0,
+                    82 => 722.0,
+                    83 => 667.0,
+                    84 => 611.0,
+                    85 => 722.0,
+                    86 => 667.0,
+                    87 => 944.0,
+                    88 => 667.0,
+                    89 => 667.0,
+                    90 => 611.0,
+                    97 => 556.0,
+                    98 => 611.0,
+                    99 => 556.0,
+                    100 => 611.0,
+                    101 => 556.0,
+                    102 => 333.0,
+                    103 => 611.0,
+                    104 => 611.0,
+                    105 => 278.0,
+                    106 => 278.0,
+                    107 => 556.0,
+                    108 => 278.0,
+                    109 => 889.0,
+                    110 => 611.0,
+                    111 => 611.0,
+                    112 => 611.0,
+                    113 => 611.0,
+                    114 => 389.0,
+                    115 => 556.0,
+                    116 => 333.0,
+                    117 => 611.0,
+                    118 => 556.0,
+                    119 => 778.0,
+                    120 => 556.0,
+                    121 => 556.0,
+                    122 => 500.0,
+                    _ => return None,
+                });
+            }
             return Some(match code {
                 32 => 278.0,
                 33 => 278.0,
@@ -2503,9 +3130,9 @@ impl FontInfo {
         //
         // Per §9.10.2: if a ToUnicode CMap is PRESENT it is the authoritative source.
         // For composite (Type0) fonts a present-but-incomplete ToUnicode means the
-        // unmapped codes genuinely have no Unicode equivalent.  Falling through to the
+        // unmapped codes genuinely have no Unicode equivalent. Falling through to the
         // predefined-CMap path (Priority 3 §9.10.2) for Type0 would guess wrong CJK
-        // characters and score near zero versus ground truth.  Therefore:
+        // characters and score near zero versus ground truth. Therefore:
         //
         //   • ToUnicode hit → return the mapped string (or U+FFFD if it maps to FFFD
         //     or a bare C0 control character).
@@ -2521,7 +3148,7 @@ impl FontInfo {
 
                 // For Identity-encoded fonts, a U+FFFD result coming from a notdefrange
                 // entry is NOT a definitive mapping — the CID-as-Unicode path gives the
-                // correct character (CID == Unicode codepoint).  Treat it as a CMap miss
+                // correct character (CID == Unicode codepoint). Treat it as a CMap miss
                 // so we fall through to the Identity fallback below.
                 let effective_hit = raw_unicode
                     .filter(|u| *u != "\u{FFFD}" || !matches!(self.encoding, Encoding::Identity));
@@ -2530,7 +3157,7 @@ impl FontInfo {
                     // Fix B: filter bare C0 control characters (U+0000–U+001F except
                     // tab/LF/CR which are legitimate whitespace in extracted text).
                     // These are never valid visible text and typically indicate a
-                    // broken ToUnicode entry.  Return U+FFFD and do NOT fall through
+                    // broken ToUnicode entry. Return U+FFFD and do NOT fall through
                     // even for simple fonts — the CMap explicitly mapped this code.
                     let is_c0_control = unicode
                         .chars()
@@ -2550,6 +3177,26 @@ impl FontInfo {
                         );
                         return Some("\u{FFFD}".to_string());
                     } else {
+                        // Interception A (Item 1): glyph-name-gated punctuation
+                        // recovery. When a present ToUnicode CMap resolves a code to
+                        // a non-sensible symbol (e.g. U+00AC `¬`) but the font's
+                        // authoritative glyph name for that code is punctuation
+                        // (`period`/`comma`/`hyphen`/`minus` via /Differences or the
+                        // embedded post/charset table), prefer the §9.10.2(a)+(b) AGL
+                        // result. Gated so a correctly-mapped period (whose hit is
+                        // already `.`) never enters here.
+                        if is_non_sensible_symbol(unicode) {
+                            if let Some(glyph_name) = self.glyph_name_for_code(char_code) {
+                                if let Some(punct) = punctuation_unicode_for_glyph_name(glyph_name)
+                                {
+                                    log::debug!(
+                                        "Interception A: code 0x{:04X} ToUnicode '{}' is a non-sensible symbol; glyph name '{}' → '{}' (font '{}')",
+                                        char_code, unicode, glyph_name, punct, self.base_font
+                                    );
+                                    return Some(punct.to_string());
+                                }
+                            }
+                        }
                         return Some(unicode.clone());
                     }
                 } else {
@@ -2566,7 +3213,7 @@ impl FontInfo {
                     }
 
                     // Fix A (§9.10.2): for composite (Type0) fonts a present ToUnicode
-                    // CMap is the authoritative mapping.  A miss means the glyph has no
+                    // CMap is the authoritative mapping. A miss means the glyph has no
                     // Unicode equivalent — do NOT fall through to the predefined-CMap
                     // path which would produce plausible-looking but wrong CJK chars.
                     // Exception: Identity-encoded fonts map CID directly to Unicode, so
@@ -2736,15 +3383,15 @@ impl FontInfo {
         //
         //   (a) Byte-encoding CMaps (GBpc-EUC-H, GB-EUC-H, B5pc-H, EUC-H, KSC-EUC-H,
         //       etc.): the value in the content stream is a raw multi-byte code in a
-        //       legacy encoding (GBK, EUC-CN, Big5, EUC-JP, EUC-KR).  §9.10.2 says to
+        //       legacy encoding (GBK, EUC-CN, Big5, EUC-JP, EUC-KR). §9.10.2 says to
         //       map char code → CID first, but those encoding CMap tables are not
-        //       embedded here.  Decoding the raw bytes directly with encoding_rs is
+        //       embedded here. Decoding the raw bytes directly with encoding_rs is
         //       equivalent (same Unicode output) and is permitted by the spec's fallback
         //       clause: "there is no way to determine … a conforming reader may choose a
         //       character code of their choosing."
         //
         //   (b) Identity / UCS2 CMaps (Identity-H, UniGB-UCS2-H, etc.): the value in
-        //       the content stream IS (or approximates) a CID.  Use the Adobe-XX CID →
+        //       the content stream IS (or approximates) a CID. Use the Adobe-XX CID →
         //       Unicode table directly (§9.10.2 step b).
         //
         // `decode_cjk_raw_charcode` returns None for non-byte-encoding CMaps, so
@@ -2758,7 +3405,7 @@ impl FontInfo {
 
             // Step (a): try direct byte decode for legacy CJK byte-encoding CMaps.
             // This is the correct primary path for GBpc-EUC-H, GB-EUC-H, B5pc-H,
-            // EUC-H, KSC-EUC-H, etc.  Returns None for Identity/UCS2 CMaps, in
+            // EUC-H, KSC-EUC-H, etc. Returns None for Identity/UCS2 CMaps, in
             // which case we fall through to the CID lookup below.
             if let Some(result) =
                 decode_cjk_raw_charcode(char_code, &enc_name, &self.cid_system_info)
@@ -2899,6 +3546,24 @@ impl FontInfo {
                         custom_char as u32
                     );
 
+                    // Interception B (Item 1): glyph-name-gated punctuation
+                    // override. If the base/program encoding resolved this code to a
+                    // non-sensible symbol but the /Differences glyph name is
+                    // punctuation, the name is authoritative (ISO 32000-1 §9.6.6.1) —
+                    // return the AGL punctuation so a `/period`-named code always wins
+                    // as `.` regardless of how the resolved char came out.
+                    if is_non_sensible_symbol(&custom_char.to_string()) {
+                        if let Some(glyph_name) = self.diff_glyph_names.get(&(char_code as u8)) {
+                            if let Some(punct) = punctuation_unicode_for_glyph_name(glyph_name) {
+                                log::debug!(
+                                    "Interception B: code 0x{:02X} resolved to non-sensible symbol '{}'; /Differences name '{}' → '{}' (font '{}')",
+                                    char_code, custom_char, glyph_name, punct, self.base_font
+                                );
+                                return Some(punct.to_string());
+                            }
+                        }
+                    }
+
                     // Handle ligatures (ff, fi, fl, ffi, ffl) by expanding to component characters
                     // This is NOT in the PDF spec but improves text extraction usability
                     if is_ligature_char(custom_char) {
@@ -2974,7 +3639,7 @@ impl FontInfo {
                         }
 
                         // ==========================================================================
-                        // PRIORITY 3c (#535, v0.3.54): embedded post/charset glyph name → AGL+synth
+                        // PRIORITY 3c (#535,): embedded post/charset glyph name → AGL+synth
                         // ==========================================================================
                         // Per ISO 32000-1:2008 §9.10.2 fallback chain, consult the embedded font
                         // program's own glyph-name table when the TrueType `cmap` reverse lookup
@@ -3566,7 +4231,7 @@ pub(crate) fn glyph_name_to_unicode(glyph_name: &str) -> Option<char> {
         }
     }
 
-    // Priority 5 (#535 follow-up): delegate to the unified v0.3.54 fallback chain
+    // Priority 5 (#535 follow-up): delegate to the unified fallback chain
     // in `character_mapper::glyph_name_to_unicode`. The newer chain adds:
     //   - Variant-suffix stripping (`A.sc`, `bullet.alt`, `fi.001`) — common in
     //     subset fonts where producers append stylistic-variant tags.
@@ -3574,7 +4239,7 @@ pub(crate) fn glyph_name_to_unicode(glyph_name: &str) -> Option<char> {
     //     (4..6 hex, no surrogates, no control chars) validation.
     // This brings simple-font / Type1 / CFF / Differences-array callers (which
     // route through this `font_dict::glyph_name_to_unicode` entry) onto the
-    // same fallback chain as the v0.3.54 #535 Type0 Identity-H path. Inline-
+    // same fallback chain as the #535 Type0 Identity-H path. Inline-
     // image font streams (PDF spec §8.9.7) that resolve glyph names by this
     // path inherit the same behaviour transparently — no separate inline-image
     // codepath exists in this crate; inline images per spec carry only image
@@ -3622,10 +4287,52 @@ pub(crate) fn glyph_name_to_unicode_string(glyph_name: &str) -> Option<String> {
         }
     }
 
-    // Final fallback (#535 follow-up): unified v0.3.54 chain — variant-suffix
+    // Final fallback (#535 follow-up): unified chain — variant-suffix
     // stripping + strict uniXXXX / uXXXXX synth. Returns the full `String` shape
     // (multi-codepoint AGL entries are forwarded unchanged).
     super::character_mapper::glyph_name_to_unicode(glyph_name)
+}
+
+/// AGL Unicode for the closed set of punctuation glyph names that the Item 1
+/// fix recovers (ISO 32000-1 §9.10.2(a)+(b)). Restricted deliberately to these
+/// four names — generalising to all AGL names would re-introduce regression risk
+/// against fonts whose ToUnicode is genuinely authoritative.
+///
+/// `period`→`"."`, `comma`→`","`, `hyphen`→`"-"`, `minus`→`"\u{2212}"`;
+/// anything else → `None`.
+fn punctuation_unicode_for_glyph_name(name: &str) -> Option<&'static str> {
+    match name {
+        "period" => Some("."),
+        "comma" => Some(","),
+        "hyphen" => Some("-"),
+        "minus" => Some("\u{2212}"),
+        _ => None,
+    }
+}
+
+/// True iff `s` is a single character that is a "non-sensible symbol" — i.e. a
+/// symbol/arrow/math glyph that is clearly not the punctuation a `period`/
+/// `comma`/`hyphen`/`minus` glyph name denotes. This gates the Item 1
+/// interceptions so they fire only when an upstream decode produced a wrong
+/// symbol (e.g. U+00AC `¬` or an arrow/math char) for a punctuation-named code.
+///
+/// Covers the Latin-1 supplement symbol range (U+00A1..=U+00BF, which includes
+/// U+00AC `¬`) and the arrow/math/symbol blocks (U+2190..=U+2BFF). Returns
+/// `false` for `.`, `,`, `-`, ASCII digits, and any alphabetic letter.
+fn is_non_sensible_symbol(s: &str) -> bool {
+    let mut chars = s.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else {
+        // Empty or multi-char strings are not single non-sensible symbols.
+        return false;
+    };
+    // Sensible by construction: letters and ASCII digits/punctuation.
+    if c.is_alphabetic() || c.is_ascii_digit() || c.is_ascii_punctuation() {
+        return false;
+    }
+    let cp = c as u32;
+    // Latin-1 supplement symbol range (¬ = U+00AC, etc.) and the
+    // arrow / mathematical-operator / misc-symbol blocks.
+    matches!(cp, 0x00A1..=0x00BF | 0x2190..=0x2BFF)
 }
 
 // Removed old implementation - replaced with compact AGL lookup above
@@ -3659,8 +4366,8 @@ fn _old_glyph_name_to_unicode_removed() {
 ///
 /// ```ignore
 /// # use pdf_oxide::fonts::font_dict::is_ligature_char;
-/// assert_eq!(is_ligature_char('ﬁ'), true);  // U+FB01
-/// assert_eq!(is_ligature_char('ﬂ'), true);  // U+FB02
+/// assert_eq!(is_ligature_char('ﬁ'), true); // U+FB01
+/// assert_eq!(is_ligature_char('ﬂ'), true); // U+FB02
 /// assert_eq!(is_ligature_char('A'), false);
 /// ```ignore
 fn is_ligature_char(c: char) -> bool {
@@ -4401,8 +5108,8 @@ fn standard_encoding_lookup(encoding: &str, code: u8) -> Option<String> {
 /// For Type0 fonts using named CJK CMaps (e.g., "GBK-EUC-H", "GB-EUC-H",
 /// "ETen-B5-H", "EUC-H", "KSC-EUC-H"), the 2-byte value read from the content
 /// stream is NOT an Adobe CID — it is a raw multi-byte encoding value (GBK,
-/// EUC-CN, Big5, EUC-JP, or EUC-KR).  Adobe-GB1 CIDs cap at ~30 553, so
-/// `lookup_predefined_cmap` always returns None for GBK values ≥ 0xA1A1, and
+/// EUC-CN, Big5, EUC-JP, or EUC-KR). Adobe-GB1 CIDs cap at ~30 553, so
+/// `lookup_predefined_cmap` always returns None for GBK values ≥ 0xA1A1,
 /// the caller falls through to a broken `char::from_u32` path that maps them
 /// to Korean Hangul (same code-point range).
 ///
@@ -4417,6 +5124,32 @@ fn decode_cjk_raw_charcode(
         .as_ref()
         .map(|i| i.ordering.as_str())
         .unwrap_or("");
+
+    // CORPUS-3: the bare Adobe predefined CMaps "H"/"V" are (overwhelmingly)
+    // Adobe-Japan1-H/V and carry JIS X 0208 codes in GL form (both bytes
+    // 0x21–0x7E). encoding_rs decodes EUC-JP (high bit set), so lift GL→EUC by
+    // OR-ing 0x8080, then decode. Recovers non-embedded Japanese (noembed-jis7:
+    // "あいうえお" was emitted as garbage "CACCCECGCI").
+    if (enc_name == "H" || enc_name == "V") && (ordering == "Japan1" || ordering.is_empty()) {
+        let hi = (char_code >> 8) & 0xFF;
+        let lo = char_code & 0xFF;
+        if (0x21..=0x7E).contains(&hi) && (0x21..=0x7E).contains(&lo) {
+            let euc = [(hi | 0x80) as u8, (lo | 0x80) as u8];
+            let (decoded, _, errors) = encoding_rs::EUC_JP.decode(&euc);
+            if !errors {
+                let r = decoded.replace('\u{FFFD}', "");
+                if !r.is_empty() {
+                    return Some(r);
+                }
+            }
+        }
+        // ASCII range (single-byte-ish codes 0x20–0x7E) pass through as-is.
+        if char_code <= 0x7E {
+            if let Some(c) = char::from_u32(char_code) {
+                return Some(c.to_string());
+            }
+        }
+    }
 
     // Determine which legacy encoding applies based on the CMap name and ordering.
     // CMap names that imply raw legacy encoding (not CID-keyed identity):
@@ -4462,9 +5195,9 @@ fn decode_cjk_raw_charcode(
 // to avoid accidental wrap-around in future table expansions.
 //
 // Sources:
-//   Adobe-GB1-5    (TN #5079): 30,283 CIDs (0–30,283)
+//   Adobe-GB1-5 (TN #5079): 30,283 CIDs (0–30,283)
 //   Adobe-Japan1-7 (TN #5078): 23,059 CIDs (0–23,059)
-//   Adobe-CNS1-7   (TN #5080): 20,316 CIDs (0–20,316)
+//   Adobe-CNS1-7 (TN #5080): 20,316 CIDs (0–20,316)
 //   Adobe-Korea1-2 (TN #5093): 18,351 CIDs (0–18,351)
 const CID_MAX_GB1: u16 = 30_283;
 const CID_MAX_JAPAN1: u16 = 23_059;
@@ -4569,6 +5302,32 @@ fn lookup_adobe_korea1_to_unicode(cid: u16) -> Option<u32> {
     crate::fonts::cid_mappings::lookup_adobe_korea1(cid)
 }
 
+/// Ascent/descent (as fractions of em) for the 14 standard PDF fonts.
+/// Values from Adobe AFM files; used when no FontDescriptor is present.
+fn standard_font_metrics(base_font: &str) -> Option<(f32, f32)> {
+    // Strip subset prefix (e.g. "ABCDEF+Courier" -> "Courier")
+    let name = if let Some(pos) = base_font.find('+') {
+        &base_font[pos + 1..]
+    } else {
+        base_font
+    };
+    match name {
+        "Courier" | "Courier-Bold" | "Courier-Oblique" | "Courier-BoldOblique" => {
+            Some((0.629, -0.157))
+        },
+        "Helvetica" | "Helvetica-Bold" | "Helvetica-Oblique" | "Helvetica-BoldOblique" => {
+            Some((0.718, -0.207))
+        },
+        "Times-Roman" => Some((0.683, -0.217)),
+        "Times-Bold" => Some((0.676, -0.205)),
+        "Times-Italic" => Some((0.683, -0.205)),
+        "Times-BoldItalic" => Some((0.683, -0.205)),
+        "Symbol" => Some((1.010, -0.293)),
+        "ZapfDingbats" => Some((0.820, -0.143)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4595,6 +5354,8 @@ mod tests {
             font_weight: Some(700),
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -4602,6 +5363,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -4613,6 +5375,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
         assert!(font.is_bold());
 
@@ -4624,6 +5387,8 @@ mod tests {
             font_weight: Some(400),
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -4631,6 +5396,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -4642,6 +5408,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
         assert!(!font2.is_bold());
     }
@@ -4656,6 +5423,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -4663,6 +5432,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -4674,6 +5444,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
         assert!(font.is_italic());
 
@@ -4685,6 +5456,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -4692,6 +5465,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -4703,6 +5477,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
         assert!(font2.is_italic());
     }
@@ -4720,6 +5495,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -4727,6 +5504,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -4738,6 +5516,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         // Should use ToUnicode mapping (priority)
@@ -4756,6 +5535,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -4763,6 +5544,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -4774,6 +5556,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         assert_eq!(font.char_to_unicode(0x41), Some("A".to_string()));
@@ -4791,6 +5574,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -4798,6 +5583,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -4809,6 +5595,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         // Type0 without ToUnicode should use CID-as-Unicode fallback
@@ -4824,6 +5611,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -4831,6 +5620,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -4842,6 +5632,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         // Simple fonts (Type1) CAN use Identity encoding for valid Unicode codes
@@ -4955,6 +5746,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -4962,6 +5755,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -4973,6 +5767,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         let font2 = font.clone();
@@ -5076,6 +5871,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5083,6 +5880,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5094,6 +5892,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         // Should use custom encoding
@@ -5115,6 +5914,8 @@ mod tests {
             font_weight: None,    // No explicit weight
             flags: Some(0x80000), // ForceBold flag set
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5122,6 +5923,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5133,6 +5935,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         assert_eq!(font_with_force_bold.get_font_weight(), FontWeight::Bold);
@@ -5147,6 +5950,8 @@ mod tests {
             font_weight: None,
             flags: Some(0x40000), // Different flag, NOT ForceBold
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5154,6 +5959,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5165,6 +5971,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         assert_eq!(font_without_force_bold.get_font_weight(), FontWeight::Normal);
@@ -5183,6 +5990,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: Some(120.0), // Heavy stem
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5190,6 +5999,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5201,6 +6011,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         assert_eq!(font_heavy_stem.get_font_weight(), FontWeight::Bold);
@@ -5215,6 +6026,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: Some(95.0), // Medium stem
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5222,6 +6035,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5233,6 +6047,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         assert_eq!(font_medium_stem.get_font_weight(), FontWeight::Medium);
@@ -5247,6 +6062,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: Some(70.0), // Light stem
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5254,6 +6071,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5265,6 +6083,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         assert_eq!(font_light_stem.get_font_weight(), FontWeight::Normal);
@@ -5283,6 +6102,8 @@ mod tests {
             font_weight: Some(300), // But explicit weight is Light
             flags: Some(0x80000),   // ForceBold flag set
             stem_v: Some(120.0),    // Heavy stem
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5290,6 +6111,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5301,6 +6123,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         assert_eq!(font_explicit.get_font_weight(), FontWeight::Light);
@@ -5315,6 +6138,8 @@ mod tests {
             font_weight: None,    // No explicit weight
             flags: Some(0x80000), // ForceBold flag set
             stem_v: Some(70.0),   // Light stem
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5322,6 +6147,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5333,6 +6159,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         assert_eq!(font_force_bold.get_font_weight(), FontWeight::Bold);
@@ -5347,6 +6174,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: Some(70.0), // Light stem, but name says Bold
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5354,6 +6183,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5365,6 +6195,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         assert_eq!(font_name.get_font_weight(), FontWeight::Bold);
@@ -5383,6 +6214,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5390,6 +6223,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5401,6 +6235,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
         assert_eq!(font_black.get_font_weight(), FontWeight::Black);
         assert!(font_black.is_bold());
@@ -5414,6 +6249,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5421,6 +6258,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5432,6 +6270,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
         assert_eq!(font_extrabold.get_font_weight(), FontWeight::ExtraBold);
         assert!(font_extrabold.is_bold());
@@ -5445,6 +6284,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5452,6 +6293,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5463,6 +6305,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
         assert_eq!(font_bold.get_font_weight(), FontWeight::Bold);
         assert!(font_bold.is_bold());
@@ -5476,6 +6319,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5483,6 +6328,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5494,6 +6340,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
         assert_eq!(font_semibold.get_font_weight(), FontWeight::SemiBold);
         assert!(font_semibold.is_bold());
@@ -5507,6 +6354,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5514,6 +6363,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5525,6 +6375,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
         assert_eq!(font_medium.get_font_weight(), FontWeight::Medium);
         assert!(!font_medium.is_bold());
@@ -5538,6 +6389,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5545,6 +6398,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5556,6 +6410,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
         assert_eq!(font_light.get_font_weight(), FontWeight::Light);
         assert!(!font_light.is_bold());
@@ -5569,6 +6424,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5576,6 +6433,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5587,6 +6445,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
         assert_eq!(font_extralight.get_font_weight(), FontWeight::ExtraLight);
         assert!(!font_extralight.is_bold());
@@ -5600,6 +6459,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5607,6 +6468,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5618,6 +6480,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
         assert_eq!(font_thin.get_font_weight(), FontWeight::Thin);
         assert!(!font_thin.is_bold());
@@ -5631,6 +6494,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5638,6 +6503,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5649,6 +6515,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
         assert_eq!(font_normal.get_font_weight(), FontWeight::Normal);
         assert!(!font_normal.is_bold());
@@ -5910,6 +6777,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5917,6 +6786,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5928,6 +6798,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         // Widths from cid_widths
@@ -5953,6 +6824,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5960,6 +6833,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 500.0, // Simple font default
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -5971,6 +6845,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         // CID 1 has explicit width
@@ -5992,6 +6867,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -5999,6 +6876,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 600.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -6010,6 +6888,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         // All CIDs use default_width when no cid_widths and no widths array
@@ -6037,6 +6916,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -6044,6 +6925,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 500.0,
             cid_to_gid_map: None,
             cid_system_info: Some(CIDSystemInfo {
@@ -6059,6 +6941,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         // Range test
@@ -6087,6 +6970,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -6094,6 +6979,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 500.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -6105,6 +6991,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
         overrides(&mut f);
         f
@@ -6599,14 +7486,14 @@ mod tests {
     // =========================================================================
     // #535 follow-up — unified AGL fallback chain (v0.3.55)
     //
-    // The v0.3.54 #535 fix added a robust ToUnicode + embedded-cmap + AGL
+    // The #535 fix added a robust ToUnicode + embedded-cmap + AGL
     // fallback chain in `src/fonts/character_mapper.rs::glyph_name_to_unicode`,
     // but the original full-document Type0 / Identity-H call site at
     // `font_dict.rs::Font::char_code_to_unicode` was the only consumer. Simple
     // fonts, Type1 / CFF embedded encodings, and `/Differences` arrays still
     // routed through this `font_dict::glyph_name_to_unicode` entry, which
     // lacked the newer chain's variant-suffix stripping (`.alt`, `.sc`,
-    // `.001`). v0.3.55 delegates to the unified chain as a final fallback so
+    // `.001`). delegates to the unified chain as a final fallback so
     // all callers — including any future inline-image font-resolution path
     // (PDF spec §8.9.7) — share the same behaviour.
     //
@@ -6616,7 +7503,7 @@ mod tests {
     #[test]
     fn glyph_name_with_variant_suffix_resolves_via_unified_chain() {
         // Subset fonts append stylistic-variant tags (`.sc`, `.alt`, `.001`)
-        // to the canonical glyph name. The v0.3.54 chain strips the suffix and
+        // to the canonical glyph name. The chain strips the suffix
         // returns the base codepoint; this entry now picks that up too.
         assert_eq!(glyph_name_to_unicode("A.sc"), Some('A'));
         assert_eq!(glyph_name_to_unicode("bullet.alt"), Some('\u{2022}'));
@@ -6925,7 +7812,7 @@ mod tests {
     #[test]
     fn test_char_to_unicode_tounicode_fffd_fallback() {
         // A ToUnicode mapping to U+FFFD means the font author explicitly declared
-        // "no Unicode equivalent" for this code.  Per Fix B (§9.10.2) the function
+        // "no Unicode equivalent" for this code. Per Fix B (§9.10.2) the function
         // must return U+FFFD and NOT fall through to the encoding-based path.
         let cmap_data = b"beginbfchar\n<0041> <FFFD>\nendbfchar";
         let font = make_font(|f| {
@@ -7641,6 +8528,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -7651,6 +8540,7 @@ mod tests {
             widths: None, // No widths → should use standard metrics
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 500.0,
             cid_widths: None,
             cid_default_width: 1000.0,
@@ -7659,6 +8549,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         // 'A' = 722 in Times-Roman (not the default 500)
@@ -7681,6 +8572,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -7691,6 +8584,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 500.0,
             cid_widths: None,
             cid_default_width: 1000.0,
@@ -7699,6 +8593,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         // Courier is monospace — all chars 600
@@ -7717,6 +8612,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -7727,6 +8624,7 @@ mod tests {
             widths: Some(vec![999.0]), // Has explicit widths
             first_char: Some(65),      // Starting at 'A'
             last_char: Some(65),
+            font_matrix_a: 0.001,
             default_width: 500.0,
             cid_widths: None,
             cid_default_width: 1000.0,
@@ -7735,6 +8633,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         // Should use explicit width (999), not standard Times width (722)
@@ -7751,6 +8650,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -7761,6 +8662,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 500.0,
             cid_widths: None,
             cid_default_width: 1000.0,
@@ -7769,6 +8671,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         // Unknown font → should fall back to default_width (500)
@@ -7791,6 +8694,8 @@ mod tests {
             font_weight: Some(400),
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -7798,6 +8703,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info: None,
@@ -7809,6 +8715,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         let table = font.get_byte_to_width_table();
@@ -7824,7 +8731,7 @@ mod tests {
     }
 
     // ────────────────────────────────────────────────────────────────────────────
-    // Fix A / B / C tests  (§9.10.2 Priority-3 guard + control filter + OOB CID)
+    // Fix A / B / C tests (§9.10.2 Priority-3 guard + control filter + OOB CID)
     // ────────────────────────────────────────────────────────────────────────────
 
     /// Build a minimal ToUnicode CMap stream that maps codes 0x0041–0x005A
@@ -7928,6 +8835,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -7935,6 +8844,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 1000.0,
             cid_to_gid_map: None,
             cid_system_info,
@@ -7946,6 +8856,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         }
     }
 
@@ -7953,11 +8864,11 @@ mod tests {
     ///
     /// A Type0 font with Adobe-GB1 ordering, a *non-Identity* predefined-CMap
     /// encoding (`UniGB-UCS2-H` → `Encoding::Standard`), and a ToUnicode CMap
-    /// covering only A–Z.  The Fix-A guard is deliberately scoped to
-    /// non-Identity Type0 fonts (Identity fonts map CID→Unicode directly and
+    /// covering only A–Z. The Fix-A guard is deliberately scoped to
+    /// non-Identity Type0 fonts (Identity fonts map CID→Unicode directly
     /// have a valid CMap-miss fallback), so the encoding here must be a real
     /// predefined CMap — not Identity-H — for this guard to apply in
-    /// production.  Querying code 0x0061 (not in the ToUnicode CMap) must
+    /// production. Querying code 0x0061 (not in the ToUnicode CMap) must
     /// return U+FFFD, NOT the CJK character the Priority-3 predefined CMap
     /// lookup would otherwise produce.
     #[test]
@@ -7971,7 +8882,7 @@ mod tests {
 
         // Code 0x0061 ('a') is NOT in the ToUnicode CMap (which only covers A–Z).
         // The Priority-3 predefined CMap for Adobe-GB1 would map CID 97 to some
-        // Latin character.  With Fix A, the function must return U+FFFD instead.
+        // Latin character. With Fix A, the function must return U+FFFD instead.
         let result = font.char_to_unicode(0x0061);
         assert_eq!(
             result,
@@ -8081,5 +8992,207 @@ mod tests {
             Encoding::Standard(ref n) => assert_eq!(n, "UniGB-UCS2-H"),
             other => panic!("predefined CMap name must be Encoding::Standard, got {other:?}"),
         }
+    }
+
+    /// Type0/CID fonts read ascent/descent from the CIDFont descendant's FontDescriptor
+    /// (§9.7.4 / Table 117), not from the Type0 wrapper (which has no top-level
+    /// /FontDescriptor). Verify that `FontInfo::from_dict` on a Type0 font with a
+    /// descendant FontDescriptor that carries Ascent=800 / Descent=-200 yields
+    /// ascent ≈ 0.8 and descent ≈ -0.2 (both normalised from 1/1000-em to fraction-of-em).
+    #[test]
+    fn test_type0_ascent_descent_from_descendant_descriptor() {
+        // Build an inline CIDFont dictionary with a FontDescriptor containing Ascent/Descent.
+        let mut desc: HashMap<String, Object> = HashMap::new();
+        desc.insert("Type".to_string(), Object::Name("FontDescriptor".to_string()));
+        desc.insert("Ascent".to_string(), Object::Integer(800));
+        desc.insert("Descent".to_string(), Object::Integer(-200));
+
+        // Build the CIDFont dictionary (inline, no object references needed).
+        let mut cidfont: HashMap<String, Object> = HashMap::new();
+        cidfont.insert("Type".to_string(), Object::Name("Font".to_string()));
+        cidfont.insert("Subtype".to_string(), Object::Name("CIDFontType0".to_string()));
+        cidfont.insert("BaseFont".to_string(), Object::Name("TestCIDFont".to_string()));
+        cidfont.insert("DW".to_string(), Object::Integer(1000));
+        cidfont.insert(
+            "CIDSystemInfo".to_string(),
+            Object::Dictionary({
+                let mut si = HashMap::new();
+                si.insert("Registry".to_string(), Object::String(b"Adobe".to_vec()));
+                si.insert("Ordering".to_string(), Object::String(b"Identity".to_vec()));
+                si.insert("Supplement".to_string(), Object::Integer(0));
+                si
+            }),
+        );
+        cidfont.insert("FontDescriptor".to_string(), Object::Dictionary(desc));
+
+        // Wrap the CIDFont in the Type0 outer font dictionary.
+        let mut type0: HashMap<String, Object> = HashMap::new();
+        type0.insert("Type".to_string(), Object::Name("Font".to_string()));
+        type0.insert("Subtype".to_string(), Object::Name("Type0".to_string()));
+        type0.insert("BaseFont".to_string(), Object::Name("TestType0Font".to_string()));
+        type0.insert("Encoding".to_string(), Object::Name("Identity-H".to_string()));
+        type0.insert(
+            "DescendantFonts".to_string(),
+            Object::Array(vec![Object::Dictionary(cidfont)]),
+        );
+
+        let doc = minimal_pdf_doc();
+        let font = FontInfo::from_dict(&Object::Dictionary(type0), &doc)
+            .expect("Type0 font with inline descendant must parse");
+
+        assert!(
+            (font.ascent - 0.8).abs() < 1e-4,
+            "Expected ascent ≈ 0.8 (800/1000), got {}",
+            font.ascent
+        );
+        assert!(
+            (font.descent - (-0.2)).abs() < 1e-4,
+            "Expected descent ≈ -0.2 (-200/1000), got {}",
+            font.descent
+        );
+    }
+
+    // =========================================================================
+    // Item 1 (v0.3.58) — decimal-point / punctuation glyph recovery.
+    // =========================================================================
+
+    /// A minimal in-memory PDF so `parse_encoding` (which takes `&PdfDocument`)
+    /// can run in a unit test. The encoding dict and /Differences array below
+    /// use only inline objects, so the document is never actually dereferenced.
+    fn minimal_pdf_doc() -> crate::document::PdfDocument {
+        let pdf = b"%PDF-1.4\n\
+            1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n\
+            2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n\
+            3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n\
+            xref\n\
+            0 4\n\
+            0000000000 65535 f \n\
+            0000000009 00000 n \n\
+            0000000058 00000 n \n\
+            0000000115 00000 n \n\
+            trailer\n<< /Size 4 /Root 1 0 R >>\n\
+            startxref\n197\n%%EOF\n";
+        crate::document::PdfDocument::from_bytes(pdf.to_vec()).expect("minimal PDF should parse")
+    }
+
+    /// A synthetic CMMI-like encoding dict that parks `/period` at code 58.
+    fn cmmi_like_encoding_obj() -> Object {
+        let mut enc: HashMap<String, Object> = HashMap::new();
+        enc.insert(
+            "Differences".to_string(),
+            Object::Array(vec![
+                Object::Integer(44),
+                Object::Name("arrowhookleft".to_string()),
+                Object::Integer(58),
+                Object::Name("period".to_string()),
+            ]),
+        );
+        Object::Dictionary(enc)
+    }
+
+    /// Task 1 verify: the /Differences glyph name survives parse time.
+    #[test]
+    fn test_diff_glyph_names_retains_period_for_code_58() {
+        let doc = minimal_pdf_doc();
+        let (_enc, _multi, diff_names) =
+            FontInfo::parse_encoding(&cmmi_like_encoding_obj(), &doc, None).unwrap();
+        assert_eq!(diff_names.get(&58).map(String::as_str), Some("period"));
+        assert_eq!(diff_names.get(&44).map(String::as_str), Some("arrowhookleft"));
+    }
+
+    /// Task 2 verify: the closed-set AGL punctuation helper.
+    #[test]
+    fn test_punctuation_unicode_for_glyph_name_closed_set() {
+        assert_eq!(punctuation_unicode_for_glyph_name("period"), Some("."));
+        assert_eq!(punctuation_unicode_for_glyph_name("comma"), Some(","));
+        assert_eq!(punctuation_unicode_for_glyph_name("hyphen"), Some("-"));
+        assert_eq!(punctuation_unicode_for_glyph_name("minus"), Some("\u{2212}"));
+        // Anything outside the closed set → None (no over-generalisation).
+        assert_eq!(punctuation_unicode_for_glyph_name("colon"), None);
+        assert_eq!(punctuation_unicode_for_glyph_name("logicalnot"), None);
+        assert_eq!(punctuation_unicode_for_glyph_name("A"), None);
+    }
+
+    /// Task 2 verify: the non-sensible-symbol predicate.
+    #[test]
+    fn test_is_non_sensible_symbol() {
+        // Wrong symbols that should trigger recovery.
+        assert!(is_non_sensible_symbol("\u{00AC}")); // ¬ logicalnot
+        assert!(is_non_sensible_symbol("\u{2192}")); // → rightwards arrow
+        assert!(is_non_sensible_symbol("\u{2212}")); // − minus sign (math operator)
+                                                     // Sensible punctuation / digits / letters → false.
+        assert!(!is_non_sensible_symbol("."));
+        assert!(!is_non_sensible_symbol(","));
+        assert!(!is_non_sensible_symbol("-"));
+        assert!(!is_non_sensible_symbol("5"));
+        assert!(!is_non_sensible_symbol("A"));
+        // Empty / multi-char never qualifies.
+        assert!(!is_non_sensible_symbol(""));
+        assert!(!is_non_sensible_symbol("ff"));
+    }
+
+    /// Build a CMMI-like simple font with the given ToUnicode CMap bytes and a
+    /// `/Differences 58 /period` side map (and matching Custom encoding entry).
+    fn cmmi_like_font(to_unicode: Option<&[u8]>, custom_char_for_58: char) -> FontInfo {
+        let mut diff_glyph_names: HashMap<u8, String> = HashMap::new();
+        diff_glyph_names.insert(58, "period".to_string());
+        let mut custom_map: HashMap<u8, char> = HashMap::new();
+        custom_map.insert(58, custom_char_for_58);
+        make_font(|f| {
+            f.base_font = "SQLQIW+CMMI10".to_string();
+            f.subtype = "Type1".to_string();
+            f.flags = Some(4); // symbolic
+            f.encoding = Encoding::Custom(custom_map);
+            f.to_unicode = to_unicode.map(|b| LazyCMap::new(b.to_vec()));
+            f.diff_glyph_names = diff_glyph_names;
+        })
+    }
+
+    /// Task 3 verify (Interception A): a non-sensible ToUnicode hit (U+00AC) for
+    /// a `/period`-named code is recovered to `.`.
+    #[test]
+    fn test_interception_a_tounicode_non_sensible_symbol_recovered() {
+        // ToUnicode maps 0x3A → U+00AC (¬), a non-sensible symbol for /period.
+        let cmap = b"beginbfchar\n<003A> <00AC>\nendbfchar";
+        let font = cmmi_like_font(Some(cmap), '.');
+        assert_eq!(font.char_to_unicode(0x3A), Some(".".to_string()));
+    }
+
+    /// Task 4 verify (Interception B): no ToUnicode, Custom encoding resolves 58
+    /// to a wrong symbol, but the /Differences /period name overrides to `.`.
+    #[test]
+    fn test_interception_b_custom_encoding_punctuation_override() {
+        // Custom map deliberately resolves code 58 to ¬ (the wrong symbol);
+        // diff_glyph_names[58] = "period" must win.
+        let font = cmmi_like_font(None, '\u{00AC}');
+        assert_eq!(font.char_to_unicode(0x3A), Some(".".to_string()));
+    }
+
+    /// Task 5 regression guard: correctly-mapped fonts and genuine symbols are
+    /// untouched by the punctuation-recovery interceptions.
+    #[test]
+    fn test_punctuation_recovery_regression_guard() {
+        // (a) A correctly-mapped period via ToUnicode (0x2E → U+002E) with no
+        //     special glyph name stays `.` — the hit is already sensible so
+        //     Interception A never fires.
+        let cmap_ok = b"beginbfchar\n<002E> <002E>\nendbfchar";
+        let font_ok = make_font(|f| {
+            f.to_unicode = Some(LazyCMap::new(cmap_ok.to_vec()));
+        });
+        assert_eq!(font_ok.char_to_unicode(0x2E), Some(".".to_string()));
+
+        // (b) A genuine `logicalnot` glyph (¬) must stay ¬: its /Differences
+        //     name is NOT in the punctuation closed set, so neither
+        //     interception fires even though the resolved char is a symbol.
+        let cmap_not = b"beginbfchar\n<0021> <00AC>\nendbfchar";
+        let mut diff_glyph_names: HashMap<u8, String> = HashMap::new();
+        diff_glyph_names.insert(0x21, "logicalnot".to_string());
+        let font_not = make_font(|f| {
+            f.base_font = "NSCCOE+txexs".to_string();
+            f.flags = Some(4);
+            f.to_unicode = Some(LazyCMap::new(cmap_not.to_vec()));
+            f.diff_glyph_names = diff_glyph_names;
+        });
+        assert_eq!(font_not.char_to_unicode(0x21), Some("\u{00AC}".to_string()));
     }
 }

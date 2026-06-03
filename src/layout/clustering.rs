@@ -40,6 +40,12 @@ use crate::layout::text_block::{TextBlock, TextChar};
 ///         font_weight: FontWeight::Normal,
 ///         color: Color::black(),
 ///         mcid: None,
+///         origin_x: 0.0,
+///         origin_y: 0.0,
+///         rotation_degrees: 0.0,
+///         advance_width: 10.0,
+///         rendered_advance: 10.0,
+///         matrix: None,
 ///     },
 ///     TextChar {
 ///         char: 'i',
@@ -49,6 +55,12 @@ use crate::layout::text_block::{TextBlock, TextChar};
 ///         font_weight: FontWeight::Normal,
 ///         color: Color::black(),
 ///         mcid: None,
+///         origin_x: 11.0,
+///         origin_y: 0.0,
+///         rotation_degrees: 0.0,
+///         advance_width: 5.0,
+///         rendered_advance: 5.0,
+///         matrix: None,
 ///     },
 /// ];
 ///
@@ -157,8 +169,16 @@ pub fn cluster_chars_into_words(chars: &[TextChar], epsilon: f32) -> Vec<Vec<usi
 ///         font_name: "Times".to_string(),
 ///         font_size: 12.0,
 ///         font_weight: FontWeight::Normal,
+///         is_italic: false,
+///         is_monospace: false,
 ///         color: Color::black(),
 ///         mcid: None,
+///         origin_x: 0.0,
+///         origin_y: 0.0,
+///         rotation_degrees: 0.0,
+///         advance_width: 10.0,
+///         rendered_advance: 10.0,
+///         matrix: None,
 ///     },
 /// ];
 /// let word1 = TextBlock::from_chars(chars1);
@@ -170,8 +190,16 @@ pub fn cluster_chars_into_words(chars: &[TextChar], epsilon: f32) -> Vec<Vec<usi
 ///         font_name: "Times".to_string(),
 ///         font_size: 12.0,
 ///         font_weight: FontWeight::Normal,
+///         is_italic: false,
+///         is_monospace: false,
 ///         color: Color::black(),
 ///         mcid: None,
+///         origin_x: 50.0,
+///         origin_y: 1.0,
+///         rotation_degrees: 0.0,
+///         advance_width: 10.0,
+///         rendered_advance: 10.0,
+///         matrix: None,
 ///     },
 /// ];
 /// let word2 = TextBlock::from_chars(chars2);
@@ -410,6 +438,9 @@ mod tests {
             origin_y: bbox.y,
             rotation_degrees: 0.0,
             advance_width: bbox.width,
+            rendered_advance: bbox.width,
+            ascent: 0.95 * 12.0,
+            descent: -0.35 * 12.0,
             matrix: None,
         }
     }
@@ -464,6 +495,47 @@ mod tests {
         assert!(clusters[1].contains(&7));
         assert!(clusters[1].contains(&8));
         assert!(clusters[1].contains(&9));
+    }
+
+    // PDX-2 (liteparse report): char clustering was O(n²) (BFS scanning all
+    // unvisited chars per frontier member), making dense pages quadratic. The
+    // sort-then-group rewrite is O(n log n). This guard clusters a large input
+    // (50 words × 5 chars across 50 lines = 2500 chars); pre-fix this was
+    // millions of inner-loop iterations, post-fix it returns promptly and with
+    // the correct cluster count. A plain wall-clock assert would be flaky on a
+    // shared CI box, so we pin correctness on a large input — a quadratic
+    // regression would manifest as a hang well inside the test timeout.
+    #[test]
+    fn test_pdx2_clustering_scales_on_large_input() {
+        let mut chars = Vec::new();
+        let words = 50usize;
+        let lines = 50usize;
+        for line in 0..lines {
+            let y = line as f32 * 20.0;
+            for w in 0..words {
+                // Each word: 5 glyphs at ~11pt pitch, words separated by a big gap.
+                let word_x0 = w as f32 * 80.0;
+                for g in 0..5 {
+                    chars.push(mock_char('a', word_x0 + g as f32 * 11.0, y));
+                }
+            }
+        }
+        assert_eq!(chars.len(), words * lines * 5);
+
+        let clusters = cluster_chars_into_words(&chars, 20.0);
+
+        // Exactly one cluster per word per line — no cross-word or cross-line merges.
+        assert_eq!(
+            clusters.len(),
+            words * lines,
+            "PDX-2 regression: expected {} word clusters, got {}",
+            words * lines,
+            clusters.len()
+        );
+        assert!(
+            clusters.iter().all(|c| c.len() == 5),
+            "PDX-2 regression: every word cluster should contain its 5 glyphs"
+        );
     }
 
     #[test]

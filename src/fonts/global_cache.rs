@@ -238,6 +238,8 @@ mod tests {
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -248,6 +250,7 @@ mod tests {
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 600.0,
             cid_widths: None,
             cid_default_width: 1000.0,
@@ -256,6 +259,7 @@ mod tests {
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         }
     }
 

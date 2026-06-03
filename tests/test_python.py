@@ -814,6 +814,66 @@ def test_extract_paths_operations():
         pytest.skip("Test fixture '1.pdf' not available or invalid")
 
 
+def _minimal_pdf_with_path(content: bytes = b"100 100 m 200 200 l S") -> bytes:
+    """Build a minimal in-memory PDF whose single page draws one stroked
+    line, mirroring the Rust `build_minimal_pdf` test helper. The committed
+    fixtures carry no vector geometry, so this gives `extract_paths` a
+    deterministic, non-empty result to exercise the per-path assertions."""
+    pdf = bytearray(b"%PDF-1.4\n")
+
+    off1 = len(pdf)
+    pdf += b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+
+    off2 = len(pdf)
+    pdf += b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+
+    off3 = len(pdf)
+    pdf += (
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Contents 4 0 R /Resources << >> >>\nendobj\n"
+    )
+
+    off4 = len(pdf)
+    pdf += b"4 0 obj\n<< /Length %d >>\nstream\n" % len(content)
+    pdf += content
+    pdf += b"\nendstream\nendobj\n"
+
+    xref_off = len(pdf)
+    pdf += b"xref\n0 5\n"
+    pdf += b"0000000000 65535 f \n"
+    for off in (off1, off2, off3, off4):
+        pdf += b"%010d 00000 n \n" % off
+    pdf += b"trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % xref_off
+    return bytes(pdf)
+
+
+def test_extract_paths_layer_field_shape():
+    """Test that extract_paths surfaces the OCG (PDF layer) field.
+
+    The `layer` key must be present on every path dict and be either a
+    `str` (when the path was emitted inside a `BDC /OC … EMC` region whose
+    property dict resolves to a named OCG) or `None` (when the path was
+    emitted outside any /OC region, or when the PDF has no /OCProperties
+    metadata).
+
+    The synthetic PDF below draws a single stroked line with no optional
+    content, so the assertion targets the field's *shape* (key present,
+    value str-or-None) on a guaranteed-non-empty path list. A construction
+    PDF with OCGs (exported from Revit/AutoCAD with layers preserved) would
+    let us additionally assert recognizable names like "A-GRID".
+    """
+    doc = PdfDocument.from_bytes(_minimal_pdf_with_path())
+    paths = doc.extract_paths(0)
+    assert isinstance(paths, list)
+    # The synthetic page has exactly one stroked line; a vacuous (empty)
+    # list would skip the per-path checks below.
+    assert paths, "expected at least one extracted path from the synthetic PDF"
+    for path in paths:
+        assert isinstance(path, dict)
+        assert "layer" in path, "Path dict should contain 'layer' field"
+        assert path["layer"] is None or isinstance(path["layer"], str)
+
+
 def test_extract_images_invalid_page():
     """Test extract_images with invalid page index."""
     try:

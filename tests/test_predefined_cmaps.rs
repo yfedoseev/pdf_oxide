@@ -45,14 +45,18 @@ fn test_identity_h_cmap_simple_cid_to_unicode() {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // CID 0x4E00 should map to Unicode U+4E00 via Identity-H
@@ -95,14 +99,18 @@ fn test_unigb_ucs2_h_cmap_simplified_chinese() {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // For UCS2 encoding, char_to_unicode receives the raw character code from the
@@ -149,14 +157,18 @@ fn test_unijis_ucs2_h_cmap_japanese() {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Japanese Hiragana character "あ" (U+3042)
@@ -198,14 +210,18 @@ fn test_unicns_ucs2_h_cmap_traditional_chinese() {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Traditional Chinese character "一" (U+4E00)
@@ -247,14 +263,18 @@ fn test_uniks_ucs2_h_cmap_korean() {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Korean Hangul character "가" (U+AC00)

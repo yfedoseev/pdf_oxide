@@ -46,6 +46,33 @@
 #define DEFAULT_MAX_DECOMPRESSED_BYTES ((256 * 1024) * 1024)
 
 /**
+ * Maximum nested `{ ... }` depth permitted by the parser. PLRM has no formal
+ * cap, but real-world Type 4 streams are shallow; bounding it prevents a
+ * maliciously deep stream from blowing the Rust call stack since `parse_body`
+ * recurses for each brace level. Programs nested deeper return
+ * [`Error::InvalidPdf`].
+ */
+#define MAX_PARSE_DEPTH 32
+
+/**
+ * Maximum operand stack size during execution. PLRM §7.10.5.2 requires a
+ * "stack overflow" diagnostic; we surface it as [`Error::Type4Runtime`]. The
+ * cap matches what Adobe accepts in practice — Acrobat's interpreter allows
+ * up to a few hundred operands.
+ */
+#define MAX_STACK 256
+
+/**
+ * Maximum number of instructions the evaluator will execute. Type 4 has no
+ * loops in the language proper, but nested `if`/`ifelse` plus large generated
+ * bodies (or pathological streams crafted to consume CPU) can still produce
+ * arbitrarily many steps. 100 000 is generous for any realistic tint
+ * transform while still being a hard upper bound. Programs that exceed this
+ * budget return [`Error::Type4Runtime`].
+ */
+#define MAX_INSTRUCTIONS 100000
+
+/**
  * Field is read-only (bit 1)
  */
 #define READ_ONLY 1
@@ -379,7 +406,7 @@ typedef struct Pdf Pdf;
  * # Memory management
  *
  * The document maintains several internal caches for performance. The main
- * object cache is bounded at 64 MB (see `DEFAULT_OBJECT_CACHE_MAX_BYTES`) and
+ * object cache is bounded at 64 MB (see `DEFAULT_OBJECT_CACHE_MAX_BYTES`)
  * uses FIFO eviction to prevent unbounded heap growth when processing
  * many pages sequentially.
  */
@@ -456,6 +483,29 @@ void pdf_oxide_set_log_level(int32_t level);
  * Get the current log level. Returns 0-5 matching the set_log_level values.
  */
 int32_t pdf_oxide_get_log_level(void);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
+/**
+ * Set the global content-stream operator cap.
+ * `limit < 0` restores the default (1,000,000); any non-negative
+ * value (including 0) is used as the explicit cap. Returns the
+ * previous cap (or -1 if the default was active).
+ *
+ * Bindings (Java JNI, Ruby FFI, PHP FFI, Go cgo / purego, C# P/Invoke,
+ * Node N-API, WASM) call this via the cdylib's exported symbol.
+ */
+int64_t pdf_oxide_set_max_ops_per_stream(int64_t limit);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
+/**
+ * Toggle the global U+FFFD preservation flag for
+ * the high-level extract_text / extract_words / extract_spans
+ * accessors. `1` = preserve FFFD chars; `0` = filter (v0.3.54
+ * default). Returns the previous value as `0` or `1`.
+ */
+int32_t pdf_oxide_set_preserve_unmapped_glyphs(int32_t preserve);
 #endif
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
@@ -614,6 +664,21 @@ char *pdf_document_extract_text(PdfDocument *handle, int32_t page_index, int32_t
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
 /**
+ * Extract a page as structured typed regions (issue #536), returned as a JSON
+ * string (a serialized `StructuredPage`: `page_index`, `page_width`,
+ * `page_height`, and `regions[]` with `kind` / `text` / `bbox` / `spans` /
+ * `column_index`). Bindings deserialize the JSON into their native types.
+ *
+ * Returns NULL on error (see `error_code`); the returned string must be freed
+ * with `pdf_free_string`.
+ */
+char *pdf_document_extract_structured_to_json(PdfDocument *handle,
+                                              int32_t page_index,
+                                              int32_t *error_code);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
+/**
  * Convert a page to Markdown.
  */
 char *pdf_document_to_markdown(PdfDocument *handle, int32_t page_index, int32_t *error_code);
@@ -672,7 +737,7 @@ uint8_t *pdf_document_to_xlsx(PdfDocument *handle, uintptr_t *out_len, int32_t *
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
 /**
- * Open a PDF document from DOCX bytes.  Returns an opaque PdfDocument handle.
+ * Open a PDF document from DOCX bytes. Returns an opaque PdfDocument handle.
  */
 PdfDocument *pdf_document_open_from_docx_bytes(const uint8_t *data,
                                                uintptr_t len,
@@ -681,7 +746,7 @@ PdfDocument *pdf_document_open_from_docx_bytes(const uint8_t *data,
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
 /**
- * Open a PDF document from PPTX bytes.  Returns an opaque PdfDocument handle.
+ * Open a PDF document from PPTX bytes. Returns an opaque PdfDocument handle.
  */
 PdfDocument *pdf_document_open_from_pptx_bytes(const uint8_t *data,
                                                uintptr_t len,
@@ -690,7 +755,7 @@ PdfDocument *pdf_document_open_from_pptx_bytes(const uint8_t *data,
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
 /**
- * Open a PDF document from XLSX bytes.  Returns an opaque PdfDocument handle.
+ * Open a PDF document from XLSX bytes. Returns an opaque PdfDocument handle.
  */
 PdfDocument *pdf_document_open_from_xlsx_bytes(const uint8_t *data,
                                                uintptr_t len,
@@ -935,7 +1000,7 @@ int32_t pdf_redaction_apply(DocumentEditor *handle,
 /**
  * Standalone document sanitization without geometric redaction
  * (#231 T10): strips `/Info`, catalog XMP `/Metadata`, document
- * JavaScript (`/OpenAction`, `/AA`, `/Names/JavaScript`) and
+ * JavaScript (`/OpenAction`, `/AA`, `/Names/JavaScript`)
  * `/Names/EmbeddedFiles`; the removed subtrees are hard-excluded from
  * the output (G6). Returns the number of top-level constructs removed,
  * or -1 on error.
@@ -1519,12 +1584,12 @@ void *pdf_document_get_signature(const void *document_handle, int32_t index, int
  * `signed_attrs`) on the CMS blob carried by a signature handle.
  *
  * Returns:
- * - `1`  — Valid: signer held the private key matching the embedded
+ * - `1` — Valid: signer held the private key matching the embedded
  *           certificate. Callers still need to verify the
  *           `messageDigest` attribute against their document content
  *           hash for a full detached-signature claim — use
  *           `pdf_signature_verify_detached` which runs both checks.
- * - `0`  — Invalid: CMS parsed but the RSA check failed (tampered
+ * - `0` — Invalid: CMS parsed but the RSA check failed (tampered
  *           attributes or wrong key).
  * - `-1` — Unknown or not supported: PSS / ECDSA / unrecognised
  *           digest OID / missing signed_attrs / structurally
@@ -1542,10 +1607,10 @@ int32_t pdf_signature_verify(const void *signature_handle, int32_t *error_code);
  * the segments that were actually signed.
  *
  * Returns:
- * - `1`  — Valid: both the RSA-PKCS#1 v1.5 check and the messageDigest
+ * - `1` — Valid: both the RSA-PKCS#1 v1.5 check and the messageDigest
  *           check passed. The signer is authentic and the document has
  *           not been tampered with since signing.
- * - `0`  — Invalid: either the signer check or the messageDigest check
+ * - `0` — Invalid: either the signer check or the messageDigest check
  *           failed. Callers can't distinguish "wrong signer" from
  *           "document tampered after signing" from this code alone.
  * - `-1` — Unknown or not supported: signer uses PSS / ECDSA / unknown
@@ -1787,6 +1852,34 @@ FfiRenderedImage *pdf_render_page_with_options(PdfDocument *doc,
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
 /**
+ * Render a page with the full RenderOptions surface plus OCG layer filtering.
+ *
+ * `excluded_layers` is a pointer to an array of `excluded_layers_count` null-
+ * terminated UTF-8 C strings. Each string is the `/Name` of an Optional
+ * Content Group (OCG) to suppress. Pass a null pointer or zero count to
+ * disable filtering (matches `pdf_render_page_with_options` behaviour).
+ *
+ * The renderer also honours OCMD references that resolve to any of the named
+ * OCGs, per ISO 32000-1 §8.11.2.
+ */
+FfiRenderedImage *pdf_render_page_with_options_ex(PdfDocument *doc,
+                                                  int32_t page_index,
+                                                  int32_t dpi,
+                                                  int32_t format,
+                                                  float bg_r,
+                                                  float bg_g,
+                                                  float bg_b,
+                                                  float bg_a,
+                                                  int32_t transparent_background,
+                                                  int32_t render_annotations,
+                                                  int32_t jpeg_quality,
+                                                  const char *const *excluded_layers,
+                                                  uintptr_t excluded_layers_count,
+                                                  int32_t *error_code);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
+/**
  * Render a rectangular region of a page. `crop_*` are in PDF user-space
  * points (origin bottom-left). Format: 0=PNG, 1=JPEG.
  */
@@ -1832,7 +1925,7 @@ FfiRenderedImage *pdf_render_page_thumbnail(PdfDocument *doc,
 /**
  * Render a page and return the raw premultiplied RGBA8888 pixel buffer.
  *
- * The caller retrieves the pixel bytes via `pdf_get_rendered_image_data` and
+ * The caller retrieves the pixel bytes via `pdf_get_rendered_image_data`
  * the dimensions via `out_width`/`out_height` (set on success). Pixels are
  * row-major, top-left origin; `data_len == *out_width * *out_height * 4`.
  * Free the returned handle with `pdf_rendered_image_free`.
@@ -3697,7 +3790,7 @@ int32_t pdf_page_builder_new_page_same_size(FfiPageBuilder *handle, int32_t *err
  * real FluentPageBuilder.
  *
  * Cell array is row-major: `cell_strings[row * n_columns + col]`. Each
- * pointer must be a valid null-terminated UTF-8 C string. `widths` and
+ * pointer must be a valid null-terminated UTF-8 C string. `widths`
  * `aligns` are both length `n_columns`; `aligns` encodes 0/1/2 (see
  * `pdf_page_builder_text_in_rect`). `has_header != 0` promotes the
  * first row to a header (bold + default background).
@@ -3793,7 +3886,7 @@ uintptr_t pdf_page_builder_streaming_table_batch_count(FfiPageBuilder *handle);
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
 /**
- * Explicitly mark a batch boundary: increment the batch counter and
+ * Explicitly mark a batch boundary: increment the batch counter
  * reset the pending-row counter. A no-op if there are no pending rows.
  */
 int32_t pdf_page_builder_streaming_table_flush(FfiPageBuilder *handle, int32_t *error_code);
@@ -3838,7 +3931,7 @@ int32_t pdf_page_builder_streaming_table_finish(FfiPageBuilder *handle, int32_t 
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
 /**
- * Commit this page's buffered operations to its parent builder and
+ * Commit this page's buffered operations to its parent builder
  * **consume** the page handle. After a successful call the handle is
  * invalid; do not call `_free`.
  */

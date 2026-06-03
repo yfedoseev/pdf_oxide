@@ -48,6 +48,19 @@ pub struct PathContent {
     /// separator lines (footnote rules, header/footer rules).
     #[serde(skip)]
     pub artifact_type: Option<ArtifactType>,
+    /// Optional Content Group (PDF "layer") name resolved from the
+    /// surrounding `BDC /OC … EMC` markers in the content stream. Set
+    /// during path extraction by `PathExtractor` when an OCG is active;
+    /// `None` for paths emitted outside any `/OC`-tagged marked-content
+    /// region or in PDFs that do not declare optional content.
+    ///
+    /// The string is the human-readable `/Name` entry of the referenced
+    /// `OptionalContentGroup`, e.g. `"A-GRID"`, `"S-COLS"`, `"A-WALL-DIM"`
+    /// for PDFs exported from Revit/AutoCAD with layer metadata intact.
+    /// Reference: ISO 32000-1:2008 §8.11 (Optional Content) + §14.6
+    /// (Marked Content).
+    #[serde(default)]
+    pub layer: Option<String>,
 }
 
 impl PathContent {
@@ -65,6 +78,7 @@ impl PathContent {
             matrix: None,
             reading_order: None,
             artifact_type: None,
+            layer: None,
         }
     }
 
@@ -83,6 +97,7 @@ impl PathContent {
             matrix: None,
             reading_order: None,
             artifact_type: None,
+            layer: None,
         }
     }
 
@@ -107,6 +122,14 @@ impl PathContent {
     /// Set reading order.
     pub fn with_reading_order(mut self, order: usize) -> Self {
         self.reading_order = Some(order);
+        self
+    }
+
+    /// Set the Optional Content Group (PDF "layer") name. Used by
+    /// `PathExtractor` while walking the content stream to attach the
+    /// active OCG name to each extracted path.
+    pub fn with_layer(mut self, layer: impl Into<String>) -> Self {
+        self.layer = Some(layer.into());
         self
     }
 
@@ -397,6 +420,7 @@ impl Default for PathContent {
             matrix: None,
             reading_order: None,
             artifact_type: None,
+            layer: None,
         }
     }
 }

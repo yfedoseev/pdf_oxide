@@ -5,7 +5,7 @@
 //! the single "run an ONNX graph" operation behind [`InferenceBackend`]
 //! so the same detector/recognizer + pre/post-processing drive either:
 //!
-//! * [`OrtBackend`]   — native ONNX Runtime (`ocr` feature), the
+//! * [`OrtBackend`] — native ONNX Runtime (`ocr` feature), the
 //!   default everywhere it is available; unchanged behaviour.
 //! * [`TractBackend`] — pure-Rust `tract` (`ocr-tract` feature, which
 //!   `ml` implies), the path the browser/Deno/edge `wasm32` build uses
@@ -71,14 +71,57 @@ pub(crate) struct OrtBackend {
 #[cfg(feature = "ocr")]
 impl OrtBackend {
     pub(crate) fn from_bytes(model_bytes: &[u8], num_threads: usize) -> OcrResult<Self> {
-        let session = ort::session::Session::builder()
-            .map_err(|e| {
-                OcrError::ModelLoadError(format!("Failed to create session builder: {}", e))
-            })?
-            .with_intra_threads(num_threads)
-            .map_err(|e| OcrError::ModelLoadError(format!("Failed to set threads: {}", e)))?
-            .commit_from_memory(model_bytes)
-            .map_err(|e| OcrError::ModelLoadError(format!("Failed to load model: {}", e)))?;
+        // wrap `ort::Session::builder()` (and the
+        // builder chain) in `std::panic::catch_unwind` so a missing
+        // `libonnxruntime.so` / `.dylib` / `.dll` (the default-wheel
+        // case where ORT is not bundled) does NOT propagate as an
+        // uncatchable `PanicException` across the PyO3 / JNI / N-API /
+        // cgo / FFI boundary. The catch produces a clean
+        // `OcrError::ModelLoadError` instead, which each binding's
+        // wrapper translates to the appropriate language-native
+        // exception (`OcrUnavailable` in Python / Java / Ruby / PHP /
+        // Go / C# / Node / WASM per
+        // `research-typed-signals-cross-lang.md` §13).
+        //
+        // Without this, ORT's lazy dylib load fires through
+        // `ort::api()` inside `Session::builder()` and panics at
+        // `.../ort-2.0.0-rc.11/src/lib.rs:191:41` with
+        // "Failed to load ONNX Runtime dylib".
+        // `&[u8]` is already `UnwindSafe`, and `AssertUnwindSafe`
+        // additionally allows borrowing it through the closure without
+        // an owned copy. A previous revision called `.to_vec()` first,
+        // which copied the full 50-100 MB PaddleOCR detection model on
+        // the OCR hot path for no safety benefit.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ort::session::Session::builder()
+                .map_err(|e| {
+                    OcrError::ModelLoadError(format!("Failed to create session builder: {}", e))
+                })?
+                .with_intra_threads(num_threads)
+                .map_err(|e| OcrError::ModelLoadError(format!("Failed to set threads: {}", e)))?
+                .commit_from_memory(model_bytes)
+                .map_err(|e| OcrError::ModelLoadError(format!("Failed to load model: {}", e)))
+        }));
+        let session = match result {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => return Err(e),
+            Err(panic_payload) => {
+                let detail = panic_payload
+                    .downcast::<String>()
+                    .map(|b| *b)
+                    .unwrap_or_else(|p| {
+                        p.downcast::<&'static str>()
+                            .map(|b| (*b).to_string())
+                            .unwrap_or_else(|_| "unknown panic".to_string())
+                    });
+                return Err(OcrError::ModelLoadError(format!(
+                    "ONNX Runtime initialisation panicked (typically: \
+                     libonnxruntime dylib failed to load — install onnxruntime \
+                     or set ORT_DYLIB_PATH). Detail: {}",
+                    detail
+                )));
+            },
+        };
         Ok(Self {
             session: std::sync::Mutex::new(session),
         })

@@ -5,6 +5,10 @@ benchmark-harness/*
 # they run into the hundreds of MB of binary PDFs.
 !benchmark-harness/README.md
 !benchmark-harness/validate_fixtures.sh
+# olmOCR-bench harness code (#567) is tracked; its corpus stays ignored
+# under fixtures/olmocr-bench/.
+!benchmark-harness/olmocr/
+benchmark-harness/olmocr/__pycache__/
 !benchmark-harness/fixtures/
 benchmark-harness/fixtures/*
 !benchmark-harness/fixtures/*/

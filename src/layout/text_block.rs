@@ -130,6 +130,9 @@ impl TextSpan {
                         origin_y: self.bbox.y,
                         rotation_degrees: 0.0,
                         advance_width: w,
+                        rendered_advance: w,
+                        ascent: 0.95 * self.font_size,
+                        descent: -0.35 * self.font_size,
                         matrix: Some([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
                     }
                 })
@@ -158,6 +161,9 @@ impl TextSpan {
                     origin_y: self.bbox.y,
                     rotation_degrees: 0.0,
                     advance_width: char_width,
+                    rendered_advance: char_width,
+                    ascent: 0.95 * self.font_size,
+                    descent: -0.35 * self.font_size,
                     matrix: Some([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
                 })
                 .collect()
@@ -232,10 +238,50 @@ pub struct TextChar {
 
     /// Horizontal advance width (distance to next character position).
     ///
-    /// This is the amount the text position advances after drawing this
-    /// character, accounting for character width and any spacing. Used
-    /// for precise text layout calculations.
+    /// Glyph advance width from font metrics (device space).
+    ///
+    /// This is the advance for the glyph shape only — it does **not** include
+    /// character spacing (Tc), word spacing (Tw), or TJ array adjustments.
+    /// For word-boundary detection and the full cursor advance including all
+    /// spacing, use [`Self::rendered_advance`].
     pub advance_width: f32,
+
+    /// Actual rendered advance to the next character's origin (device space).
+    ///
+    /// This is the per-glyph cursor advance including character spacing (Tc)
+    /// and word spacing (Tw for U+0020), per the PDF spec Tx formula:
+    /// `(w0 × Tfs / 1000 + Tc + Tw) × Th` converted to device space.
+    ///
+    /// TJ array adjustments between strings are **not** folded into this
+    /// field.  They are emitted as separate synthetic-space [`TextChar`]s
+    /// inserted between the glyphs they affect, so the overall cursor
+    /// displacement is correctly represented by walking the full char list.
+    ///
+    /// Equivalent to Poppler's `dx` argument in `drawChar`.
+    ///
+    /// For the last character on a line this falls back to `advance_width`.
+    /// Use this field (not `advance_width`) to detect word boundaries:
+    /// a gap `next.origin_x − (this.origin_x + this.rendered_advance) > threshold`
+    /// reliably identifies inter-word spacing.
+    pub rendered_advance: f32,
+
+    /// Distance from the baseline to the top of the typographic glyph box (device space).
+    ///
+    /// From the font descriptor `/Ascent`; falls back to Adobe AFM values for the 14
+    /// standard PDF fonts, then to 0.95 × font_size (Poppler's default).
+    ///
+    /// `bbox.height` is the full em square and does not reflect the font's actual cap
+    /// height. Use `origin_y + ascent` for the glyph's true top edge.
+    pub ascent: f32,
+
+    /// Distance from the baseline to the bottom of the typographic glyph box (device space, negative).
+    ///
+    /// From the font descriptor `/Descent`; falls back to Adobe AFM values for the 14
+    /// standard PDF fonts, then to −0.35 × font_size (Poppler's default).
+    ///
+    /// `bbox` does not represent the descender region at all (its origin is the
+    /// baseline). Use `origin_y + descent` for the glyph's true bottom edge.
+    pub descent: f32,
 
     /// Full transformation matrix [a, b, c, d, e, f].
     ///
@@ -269,6 +315,9 @@ impl Default for TextChar {
             origin_y: 0.0,
             rotation_degrees: 0.0,
             advance_width: 0.0,
+            rendered_advance: 0.0,
+            ascent: 0.95 * 12.0,
+            descent: -0.35 * 12.0,
             matrix: Some([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
         }
     }
@@ -344,6 +393,9 @@ impl TextChar {
             origin_y: bbox.y,
             rotation_degrees: 0.0,
             advance_width: bbox.width,
+            rendered_advance: bbox.width,
+            ascent: 0.95 * font_size,
+            descent: -0.35 * font_size,
             matrix: None,
         }
     }
@@ -608,6 +660,9 @@ mod tests {
             origin_y: bbox.y,
             rotation_degrees: 0.0,
             advance_width: bbox.width,
+            rendered_advance: bbox.width,
+            ascent: 0.95 * 12.0,
+            descent: -0.35 * 12.0,
             matrix: None,
         }
     }
@@ -666,6 +721,9 @@ mod tests {
             origin_y: 0.0,
             rotation_degrees: 0.0,
             advance_width: 10.0,
+            rendered_advance: 10.0,
+            ascent: 0.95 * 12.0,
+            descent: -0.35 * 12.0,
             matrix: None,
         };
         assert!(c.is_monospace);

@@ -484,31 +484,32 @@ pub fn parse_tounicode_cmap(data: &[u8]) -> Result<CMap> {
         }
     }
 
-    // Parse bfchar sections
-    // PDF Spec: ISO 32000-1:2008, Section 9.10.3 - ToUnicode CMaps
-    // Format: <srcCode> <dstString>
-    for section in extract_sections(&content, "beginbfchar", "endbfchar") {
-        for line in section.lines() {
-            for (src, dst) in parse_bfchar_line(line) {
-                log::trace!("ToUnicode bfchar: 0x{:02X} -> {:?}", src, dst);
-                cmap.insert(src, dst);
-            }
-        }
-    }
-
-    // Parse bfrange sections
-    // PDF Spec: ISO 32000-1:2008, Section 9.10.3 - ToUnicode CMaps
-    // Format: <srcCodeLo> <srcCodeHi> [<dstString0> <dstString1> ... <dstStringN>]
-    //     or: <srcCodeLo> <srcCodeHi> <dstString>
-    for section in extract_sections(&content, "beginbfrange", "endbfrange") {
-        for line in section.lines() {
-            if let Some(mappings) = parse_bfrange_line(line) {
-                log::trace!("ToUnicode bfrange: {} mappings parsed", mappings.len());
-                // Store as range entry for binary search
-                for (src, dst) in mappings {
-                    cmap.insert(src, dst);
+    // Parse bfchar and bfrange sections in document order so that later entries
+    // overwrite earlier ones for the same code (ISO 32000-1:2008 §9.10.3).
+    // pdf.js, MuPDF, and Poppler all use this last-wins, document-order semantics.
+    for (kind, section) in bf_sections_in_document_order(&content) {
+        match kind {
+            BfSectionKind::Char => {
+                // Format: <srcCode> <dstString>
+                for line in section.lines() {
+                    for (src, dst) in parse_bfchar_line(line) {
+                        log::trace!("ToUnicode bfchar: 0x{:02X} -> {:?}", src, dst);
+                        cmap.insert(src, dst);
+                    }
                 }
-            }
+            },
+            BfSectionKind::Range => {
+                // Format: <srcCodeLo> <srcCodeHi> [<dstString0> <dstString1> ... <dstStringN>]
+                //     or: <srcCodeLo> <srcCodeHi> <dstString>
+                for line in section.lines() {
+                    if let Some(mappings) = parse_bfrange_line(line) {
+                        log::trace!("ToUnicode bfrange: {} mappings parsed", mappings.len());
+                        for (src, dst) in mappings {
+                            cmap.insert(src, dst);
+                        }
+                    }
+                }
+            },
         }
     }
 
@@ -531,6 +532,38 @@ pub fn parse_tounicode_cmap(data: &[u8]) -> Result<CMap> {
     }
 
     Ok(cmap)
+}
+
+enum BfSectionKind {
+    Char,
+    Range,
+}
+
+/// Yield `beginbfchar` and `beginbfrange` sections in the order they appear in
+/// the CMap stream, so that callers can process them with document-order,
+/// last-wins semantics (matching pdf.js, MuPDF, and Poppler).
+fn bf_sections_in_document_order(content: &str) -> impl Iterator<Item = (BfSectionKind, &str)> {
+    let mut remaining = content;
+    std::iter::from_fn(move || {
+        loop {
+            let pos = remaining.find("beginbf")?;
+            let after = &remaining[pos + "beginbf".len()..];
+
+            if let Some(body) = after.strip_prefix("char") {
+                if let Some(end) = body.find("endbfchar") {
+                    remaining = &body[end + "endbfchar".len()..];
+                    return Some((BfSectionKind::Char, &body[..end]));
+                }
+            } else if let Some(body) = after.strip_prefix("range") {
+                if let Some(end) = body.find("endbfrange") {
+                    remaining = &body[end + "endbfrange".len()..];
+                    return Some((BfSectionKind::Range, &body[..end]));
+                }
+            }
+            // Unrecognised "beginbf…" token or missing end marker; skip past it.
+            remaining = after;
+        }
+    })
 }
 
 /// Extract sections between begin and end markers.

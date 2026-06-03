@@ -10,6 +10,8 @@ fn make_test_font(name: &str, subtype: &str) -> pdf_oxide::fonts::FontInfo {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -17,6 +19,7 @@ fn make_test_font(name: &str, subtype: &str) -> pdf_oxide::fonts::FontInfo {
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cid_to_gid_map: None,
         cid_system_info: None,
@@ -28,6 +31,7 @@ fn make_test_font(name: &str, subtype: &str) -> pdf_oxide::fonts::FontInfo {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     }
 }
 

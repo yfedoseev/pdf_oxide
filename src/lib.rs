@@ -178,6 +178,9 @@ pub mod xref_reconstruction;
 // Stream decoders
 pub mod decoders;
 
+// PDF function evaluators (Type 4 PostScript calculator)
+pub mod functions;
+
 // Colour management (ICC profile handling)
 pub mod color;
 
@@ -196,6 +199,7 @@ pub mod layout;
 pub mod content;
 pub mod extractors;
 pub mod fonts;
+pub mod optional_content;
 pub mod text;
 
 // Document structure
@@ -213,6 +217,9 @@ pub mod redaction;
 pub mod split_bookmarks;
 /// PDF logical structure (Tagged PDFs)
 pub mod structure;
+
+/// Structured per-page extraction (`extract_structured`, #536)
+pub mod structured;
 
 // Format converters
 pub mod converters;
@@ -314,12 +321,14 @@ pub use annotations::{Annotation, LinkAction, LinkDestination};
 pub use config::{DocumentType, ExtractionProfile};
 pub use document::{ExtractedImageRef, ImageFormat, PdfDocument, ReadingOrder};
 pub use error::{Error, Result};
+pub use extractors::images::{PdfFilter, PdfImageHandle};
 pub use layout::PageText;
 pub use outline::{Destination, OutlineItem};
 pub use redaction::{
     redact_content_stream, Classification, FontInfoMetrics, OcgPolicy, RedactionOptions,
     RedactionRegion, RedactionReport, RegionSet,
 };
+pub use structured::{RegionRole, StructuredPage, StructuredRegion};
 
 // Global font cache for batch processing
 pub use fonts::global_cache::{

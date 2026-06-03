@@ -184,6 +184,8 @@ fn create_font_with_encoding(encoding: Encoding) -> FontInfo {
         font_weight: Some(400),
         flags: Some(32),
         stem_v: Some(100.0),
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -197,10 +199,12 @@ fn create_font_with_encoding(encoding: Encoding) -> FontInfo {
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 500.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     }
 }

@@ -75,6 +75,8 @@ end
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -88,11 +90,13 @@ end
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 500.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Verify: All entries should be accessible
@@ -160,6 +164,8 @@ end
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -173,11 +179,13 @@ end
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 500.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Verify: Range lookups work (binary search should find correct range)
@@ -280,6 +288,8 @@ end
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -293,11 +303,13 @@ end
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 500.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Verify bfchar sections work
@@ -381,6 +393,8 @@ end
             font_weight: None,
             flags: None,
             stem_v: None,
+            ascent: 0.95,
+            descent: -0.35,
             embedded_font_data: None,
             truetype_cmap: std::sync::OnceLock::new(),
             embedded_glyph_names: std::sync::OnceLock::new(),
@@ -394,11 +408,13 @@ end
             widths: None,
             first_char: None,
             last_char: None,
+            font_matrix_a: 0.001,
             default_width: 500.0,
             cff_gid_map: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
+            diff_glyph_names: std::collections::HashMap::new(),
         };
 
         // Both formats should parse identically
@@ -477,6 +493,8 @@ end
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -490,11 +508,13 @@ end
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 500.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Verify: Large CMap parsing works (lazy loading should handle all 10k entries)
@@ -564,6 +584,8 @@ end
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -577,11 +599,13 @@ end
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 500.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Verify: Lazy loading should handle mega-CMaps efficiently

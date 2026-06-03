@@ -283,18 +283,31 @@ fn parse_stream_data<'a>(
     } else if input.starts_with(b"\r") {
         // CR alone - SPEC VIOLATION
         // PDF Spec ISO 32000-1:2008, Section 7.3.8.1 requires CRLF or LF, not CR alone
-        log::warn!(
-            "SPEC VIOLATION: Stream keyword followed by CR alone (should be CRLF or LF). \
+        let msg = "SPEC VIOLATION: Stream keyword followed by CR alone (should be CRLF or LF). \
             Accepting in lenient mode for compatibility. \
-            PDF Spec: ISO 32000-1:2008, Section 7.3.8.1"
-        );
+            PDF Spec: ISO 32000-1:2008, Section 7.3.8.1";
+        log::warn!("{}", msg);
+        // push into the process-wide structured sink
+        // so callers can retrieve via `flatten_warnings()` instead of
+        // parsing stderr from `log::warn`.
+        crate::extractors::warnings::push_global_warning(crate::extractors::warnings::Warning {
+            category: crate::extractors::warnings::WarningCategory::SpecViolation,
+            page: None,
+            message: msg.to_string(),
+            spec_section: Some("7.3.8.1"),
+        });
         &input[1..]
     } else {
         // No newline after 'stream' - SPEC VIOLATION
-        log::warn!(
-            "SPEC VIOLATION: No newline after stream keyword (should be CRLF or LF). \
-            PDF Spec: ISO 32000-1:2008, Section 7.3.8.1"
-        );
+        let msg = "SPEC VIOLATION: No newline after stream keyword (should be CRLF or LF). \
+            PDF Spec: ISO 32000-1:2008, Section 7.3.8.1";
+        log::warn!("{}", msg);
+        crate::extractors::warnings::push_global_warning(crate::extractors::warnings::Warning {
+            category: crate::extractors::warnings::WarningCategory::SpecViolation,
+            page: None,
+            message: msg.to_string(),
+            spec_section: Some("7.3.8.1"),
+        });
         input
     };
 
@@ -318,7 +331,17 @@ fn parse_stream_data<'a>(
             }
 
             // /Length was wrong — fall back to scanning for 'endstream'
-            log::warn!("Stream /Length {} is incorrect, falling back to endstream scan", length);
+            let msg =
+                format!("Stream /Length {} is incorrect, falling back to endstream scan", length);
+            log::warn!("{}", msg);
+            crate::extractors::warnings::push_global_warning(
+                crate::extractors::warnings::Warning {
+                    category: crate::extractors::warnings::WarningCategory::SpecViolation,
+                    page: None,
+                    message: msg,
+                    spec_section: Some("7.3.8.2"),
+                },
+            );
             if let Some(pos) = find_endstream(input) {
                 // Strip trailing CR/LF per PDF spec Section 7.3.8.1
                 let mut end = pos;

@@ -122,7 +122,11 @@ impl From<&FieldValue> for FormFieldValue {
 impl From<&FormFieldValue> for Object {
     fn from(value: &FormFieldValue) -> Self {
         match value {
-            FormFieldValue::Text(s) => Object::String(s.as_bytes().to_vec()),
+            // #616: encode as a conformant PDF text string (ISO 32000-1
+            // §7.9.2.2) — PDFDocEncoding-compatible literal for ASCII/Latin-1,
+            // UTF-16BE + FEFF BOM for anything above U+00FF — instead of raw
+            // UTF-8 bytes, which a reader misreads as PDFDocEncoding (mojibake).
+            FormFieldValue::Text(s) => Object::text_string(s),
             FormFieldValue::Boolean(b) => {
                 // Checkboxes use /Yes or /Off names
                 if *b {
@@ -131,12 +135,10 @@ impl From<&FormFieldValue> for Object {
                     Object::Name("Off".to_string())
                 }
             },
-            FormFieldValue::Choice(s) => Object::String(s.as_bytes().to_vec()),
-            FormFieldValue::MultiChoice(v) => Object::Array(
-                v.iter()
-                    .map(|s| Object::String(s.as_bytes().to_vec()))
-                    .collect(),
-            ),
+            FormFieldValue::Choice(s) => Object::text_string(s),
+            FormFieldValue::MultiChoice(v) => {
+                Object::Array(v.iter().map(Object::text_string).collect())
+            },
             FormFieldValue::None => Object::Null,
         }
     }
@@ -372,6 +374,16 @@ impl FormFieldWrapper {
     pub fn from_read(field: FormField, page_index: usize, object_ref: Option<ObjectRef>) -> Self {
         let name = field.full_name.clone();
         let partial_name = extract_partial_name(&name);
+        // #617: retain the field's type so a terminal field re-emits its own
+        // `/FT` on save. Without it `FormExtractor` can't classify the rewritten
+        // field and it vanishes from the form.
+        let field_type = match &field.field_type {
+            crate::extractors::forms::FieldType::Text => Some(FormFieldType::Text),
+            crate::extractors::forms::FieldType::Button => Some(FormFieldType::Checkbox),
+            crate::extractors::forms::FieldType::Choice => Some(FormFieldType::ComboBox),
+            // Signature / Unknown are not fill targets; leave untyped.
+            _ => None,
+        };
         Self {
             name,
             original: Some(field),
@@ -380,7 +392,7 @@ impl FormFieldWrapper {
             modified: false,
             is_new: false,
             object_ref,
-            field_type: None,
+            field_type,
             widget_config: None,
             // Hierarchy fields
             parent_ref: None,
@@ -640,7 +652,27 @@ impl FormFieldWrapper {
         if let Some(parent_ref) = self.parent_ref {
             dict.insert("Parent".to_string(), Object::Reference(parent_ref));
             // Use partial name instead of full name for child fields
-            dict.insert("T".to_string(), Object::String(self.partial_name.as_bytes().to_vec()));
+            dict.insert("T".to_string(), Object::text_string(&self.partial_name));
+        // #616
+        } else if !dict.contains_key("FT") {
+            // #617: a terminal field with no /Parent must carry its own /FT
+            // (an inheritable, required key — ISO 32000-1 §12.7.4.1). Without it
+            // the rewritten dictionary is an untyped widget annotation and
+            // `FormExtractor::extract_fields` no longer recognises it, so the
+            // field disappears after fill+save. Re-emit /FT (and /Ff if set).
+            if let Some(ref ft) = self.field_type {
+                let ft_name = match ft {
+                    FormFieldType::Text => "Tx",
+                    FormFieldType::Checkbox
+                    | FormFieldType::RadioGroup
+                    | FormFieldType::PushButton => "Btn",
+                    FormFieldType::ComboBox | FormFieldType::ListBox => "Ch",
+                };
+                dict.insert("FT".to_string(), Object::Name(ft_name.to_string()));
+            }
+            if let Some(flags) = self.modified_flags {
+                dict.insert("Ff".to_string(), Object::Integer(flags as i64));
+            }
         }
 
         dict
@@ -696,7 +728,7 @@ impl FormFieldWrapper {
         let mut dict = HashMap::new();
 
         // Partial name (T) - required
-        dict.insert("T".to_string(), Object::String(self.partial_name.as_bytes().to_vec()));
+        dict.insert("T".to_string(), Object::text_string(&self.partial_name)); // #616
 
         // Field type (FT) - optional for non-terminal, but useful for inheritance
         if let Some(ref ft) = self.field_type {
@@ -740,7 +772,7 @@ impl FormFieldWrapper {
 
         // Tooltip
         if let Some(ref tooltip) = self.modified_tooltip {
-            dict.insert("TU".to_string(), Object::String(tooltip.as_bytes().to_vec()));
+            dict.insert("TU".to_string(), Object::text_string(tooltip)); // #616
         }
 
         dict
@@ -980,6 +1012,43 @@ pub fn is_merged_field_dict(dict: &HashMap<String, Object>) -> bool {
 mod tests {
     use super::*;
     use crate::extractors::forms::{FieldType, FieldValue, FormField};
+
+    // #616: non-ASCII field values must serialize as a conformant PDF text
+    // string — UTF-16BE prefixed with the U+FEFF BOM (ISO 32000-1 §7.9.2.2) —
+    // not the raw UTF-8 bytes (which a reader misreads as PDFDocEncoding →
+    // mojibake). 山田太郎 = U+5C71 U+7530 U+592A U+90CE.
+    #[test]
+    fn text_field_value_cjk_encodes_utf16be_with_bom() {
+        let obj = Object::from(&FormFieldValue::Text("山田太郎".to_string()));
+        match obj {
+            Object::String(bytes) => assert_eq!(
+                bytes,
+                vec![0xFE, 0xFF, 0x5C, 0x71, 0x75, 0x30, 0x59, 0x2A, 0x90, 0xCE],
+                "CJK value must be UTF-16BE + BOM, got {bytes:02X?}"
+            ),
+            other => panic!("expected Object::String, got {other:?}"),
+        }
+    }
+
+    // ASCII stays a plain literal (PDFDocEncoding-compatible) — no UTF-16 bloat.
+    #[test]
+    fn text_field_value_ascii_stays_literal() {
+        for v in [
+            FormFieldValue::Text("John".to_string()),
+            FormFieldValue::Choice("Option A".to_string()),
+        ] {
+            match Object::from(&v) {
+                Object::String(bytes) => {
+                    assert!(
+                        bytes.iter().all(|&b| b < 0x80),
+                        "ASCII must stay 1-byte: {bytes:02X?}"
+                    );
+                    assert_ne!(&bytes[..2.min(bytes.len())], &[0xFE, 0xFF], "no BOM for ASCII");
+                },
+                other => panic!("expected Object::String, got {other:?}"),
+            }
+        }
+    }
 
     #[test]
     fn test_form_field_value_from_field_value() {

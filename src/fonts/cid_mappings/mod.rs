@@ -25,6 +25,7 @@
 //! This module uses `phf_map!` for O(1) CID-to-Unicode lookup, following the
 //! same pattern as `adobe_glyph_list.rs`.
 
+mod adobe_arabic;
 mod adobe_cns1;
 mod adobe_gb1;
 mod adobe_japan1;
@@ -92,6 +93,26 @@ pub fn lookup_adobe_cns1(cid: u16) -> Option<u32> {
 #[inline]
 pub fn lookup_adobe_korea1(cid: u16) -> Option<u32> {
     adobe_korea1::lookup(cid)
+}
+
+/// look up Unicode code point for a CID in
+/// Adobe-Arabic-1 / Adobe-Persian-1 (used by Persian / Farsi /
+/// Pashto / Urdu fonts that ship without ToUnicode CMaps).
+///
+/// Stub implementation: identity mapping for the Arabic block
+/// (U+0600–U+06FF) and Arabic Presentation Forms (U+FB50–U+FDFF +
+/// U+FE70–U+FEFF). The official Adobe-Arabic-1-UCS2 CMap is
+/// follow-up work.
+///
+/// Returns the Unicode code point, or `None` if the CID isn't in
+/// the supported range (caller falls back to the existing chain).
+///
+/// # Arguments
+///
+/// * `cid` - Character Identifier
+#[inline]
+pub fn lookup_adobe_arabic(cid: u16) -> Option<u32> {
+    adobe_arabic::lookup(cid)
 }
 
 #[cfg(test)]

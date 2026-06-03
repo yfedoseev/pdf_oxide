@@ -12,9 +12,11 @@ pub mod images;
 pub mod page_labels;
 pub mod paths;
 pub mod pattern_detector;
+pub mod status;
 pub mod structured;
 pub mod synthetic_structure;
 pub mod text;
+pub mod warnings;
 pub mod xmp;
 
 #[cfg(feature = "debug-span-merging")]
@@ -40,10 +42,12 @@ pub use images::{
 pub use page_labels::{PageLabelExtractor, PageLabelRange, PageLabelStyle};
 pub use paths::{FillRule, PathExtractor};
 pub use pattern_detector::{PatternDetector, PatternPreservationConfig};
+pub use status::OcrUnavailableReason;
 pub use structured::{
     BoundingBox, DocumentElement, DocumentMetadata, ExtractorConfig, ListItem, StructuredDocument,
     StructuredExtractor, TextAlignment, TextStyle,
 };
 pub use synthetic_structure::{SyntheticStructureConfig, SyntheticStructureGenerator};
 pub use text::{SpanMergingConfig, TextExtractionConfig, TextExtractor};
+pub use warnings::{Warning, WarningCategory, WarningSink};
 pub use xmp::{XmpExtractor, XmpMetadata};

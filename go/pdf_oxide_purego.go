@@ -164,6 +164,8 @@ var (
 	ffiPdfDocumentClassifyDocument func(handle uintptr, errCode *int32) *byte
 	ffiPdfDocumentExtractTextAuto  func(handle uintptr, pageIndex int32, errCode *int32) *byte
 	ffiPdfDocumentExtractPageAuto  func(handle uintptr, pageIndex int32, optionsJSON string, errCode *int32) *byte
+	// #536 structure-tree-ordered structured extraction (JSON StructuredPage).
+	ffiPdfDocumentExtractStructuredToJSON func(handle uintptr, pageIndex int32, errCode *int32) *byte
 
 	// PdfCreator — minimal, enough to generate test fixtures via FromMarkdown.
 	ffiPdfFromMarkdown func(markdown string, errCode *int32) uintptr
@@ -278,6 +280,7 @@ func registerFFI(lib uintptr) {
 	r(&ffiPdfDocumentClassifyDocument, "pdf_document_classify_document")
 	r(&ffiPdfDocumentExtractTextAuto, "pdf_document_extract_text_auto")
 	r(&ffiPdfDocumentExtractPageAuto, "pdf_document_extract_page_auto")
+	r(&ffiPdfDocumentExtractStructuredToJSON, "pdf_document_extract_structured_to_json")
 	r(&ffiPdfDocumentToHtmlAll, "pdf_document_to_html_all")
 	r(&ffiPdfDocumentToPlainTextAll, "pdf_document_to_plain_text_all")
 
@@ -606,6 +609,26 @@ func (doc *PdfDocument) ExtractPageAuto(pageIndex int, opts ...AutoOption) (stri
 	}
 	var ec int32
 	p := ffiPdfDocumentExtractPageAuto(doc.handle, int32(pageIndex), autoOptionsJSON(opts), &ec)
+	if ec != 0 {
+		return "", ffiErrorFromInt(int(ec))
+	}
+	return goStringAndFree(p), nil
+}
+
+// ExtractStructured returns a structure-tree-ordered extraction of the page
+// as a JSON StructuredPage string ({page_index, page_width, page_height,
+// regions:[{kind, text, bbox, spans, column_index}]}). Callers unmarshal the
+// JSON themselves (#536).
+func (doc *PdfDocument) ExtractStructured(page int) (string, error) {
+	if err := doc.acquireRead(); err != nil {
+		return "", err
+	}
+	defer doc.mu.Unlock()
+	if page < 0 {
+		return "", ErrInvalidPageIndex
+	}
+	var ec int32
+	p := ffiPdfDocumentExtractStructuredToJSON(doc.handle, int32(page), &ec)
 	if ec != 0 {
 		return "", ffiErrorFromInt(int(ec))
 	}

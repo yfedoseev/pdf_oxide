@@ -117,6 +117,25 @@ impl ExtractionProfile {
         enable_citation_detection: false,
     };
 
+    /// TJ-heavy profile — calibrated for documents
+    /// that emit entire paragraphs as one `TJ` array with kerning
+    /// between every glyph (the kreuzberg `tiny.pdf` /
+    /// `Loremipsumdolorsitamet` shape). The threshold of -100.0
+    /// catches word-boundary kerning these PDFs use while staying
+    /// safely above the in-word adjustment range. Callers opt in
+    /// via `TextExtractionConfig::with_profile(ExtractionProfile::TJ_HEAVY)`.
+    pub const TJ_HEAVY: Self = Self {
+        name: "TJ-Heavy (Lorem-Ipsum-style PDFs)",
+        tj_offset_threshold: -100.0,
+        word_margin_ratio: 0.1,
+        space_threshold_em_ratio: 0.25,
+        space_char_multiplier: 0.5,
+        use_adaptive_threshold: false,
+        enable_document_type_detection: false,
+        enable_email_detection: false,
+        enable_citation_detection: false,
+    };
+
     /// Aggressive profile - liberal space insertion
     /// More spaces, helps with documents that suppress spacing
     pub const AGGRESSIVE: Self = Self {

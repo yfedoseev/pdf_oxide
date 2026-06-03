@@ -220,4 +220,10 @@ jobs:
 
       - name: composer audit --locked
         working-directory: php
-        run: composer audit --locked --no-interaction
+        # `--abandoned=report` keeps abandoned-package warnings visible
+        # in the log without failing the build. Real security
+        # advisories (the actual purpose of this gate) still fail the
+        # job; abandoned transitive dev-deps from PHPUnit are a
+        # marketplace-drift signal that requires a coordinated dev-dep
+        # upgrade, not a release blocker.
+        run: composer audit --locked --no-interaction --abandoned=report

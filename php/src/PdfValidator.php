@@ -65,7 +65,7 @@ final class PdfValidator
     public static function isPdfA(PdfDocument $doc, int $level = self::PDFA_1B): bool
     {
         $ffi = NativeLibrary::getInstance();
-        $errorCode = \FFI::new('int32_t');
+        $errorCode = $ffi->new('int32_t');
         $results = $ffi->pdf_validate_pdf_a_level($doc->getHandle(), $level, \FFI::addr($errorCode));
         if ((int) $errorCode->cdata !== 0 || $results === null) {
             return false;
@@ -82,7 +82,7 @@ final class PdfValidator
     public static function isPdfUa(PdfDocument $doc, int $level = self::PDFUA_1): bool
     {
         $ffi = NativeLibrary::getInstance();
-        $errorCode = \FFI::new('int32_t');
+        $errorCode = $ffi->new('int32_t');
         $results = $ffi->pdf_validate_pdf_ua($doc->getHandle(), $level, \FFI::addr($errorCode));
         if ((int) $errorCode->cdata !== 0 || $results === null) {
             return false;
@@ -113,7 +113,7 @@ final class PdfValidator
     public static function validatePdfA(PdfDocument $doc, int $level = self::PDFA_1B): array
     {
         $ffi = NativeLibrary::getInstance();
-        $errorCode = \FFI::new('int32_t');
+        $errorCode = $ffi->new('int32_t');
         $results = $ffi->pdf_validate_pdf_a_level($doc->getHandle(), $level, \FFI::addr($errorCode));
         if ((int) $errorCode->cdata !== 0 || $results === null) {
             return ['compliant' => false, 'errorCount' => 0, 'warningCount' => 0];

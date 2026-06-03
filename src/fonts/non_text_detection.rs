@@ -104,6 +104,17 @@ pub struct NonTextDetector {
     pub confidence_threshold: f32,
     /// Minimum sequence length to evaluate
     pub min_sequence_length: usize,
+    /// Span-level non-ASCII ratio above which a span is treated as non-text
+    /// content and dropped by `mark_non_text_spans` (default: 0.3). Set to
+    /// `>= 1.0` to disable the non-ASCII drop entirely — appropriate for CJK,
+    /// accented-Latin, or currency/math-heavy documents where a high
+    /// non-ASCII ratio is normal content, not noise (PDX-7, liteparse report).
+    pub non_ascii_drop_threshold: f32,
+    /// Whether `mark_non_text_spans` drops spans containing characters in the
+    /// "suspicious" Unicode blocks (misc symbols, dingbats, emoji, math
+    /// operators). Default `true` preserves historical behaviour; set `false`
+    /// to keep symbol/math glyphs that the text path retains (PDX-7).
+    pub drop_suspicious_unicode: bool,
 }
 
 impl Default for NonTextDetector {
@@ -112,6 +123,10 @@ impl Default for NonTextDetector {
             unmapped_threshold: 0.5,   // >50% unmapped = likely figure
             confidence_threshold: 0.4, // avg confidence <0.4 = likely figure
             min_sequence_length: 10,
+            // Defaults preserve the historical span-drop behaviour; callers
+            // that need symbol/CJK/accented content can relax these.
+            non_ascii_drop_threshold: 0.3,
+            drop_suspicious_unicode: true,
         }
     }
 }
@@ -205,8 +220,10 @@ impl NonTextDetector {
                 let non_ascii_ratio = span.text.chars().filter(|c| !c.is_ascii()).count() as f32
                     / span.text.len().max(1) as f32;
 
-                let is_likely_non_text = non_ascii_ratio > 0.3 || // >30% non-ASCII
-                    has_suspicious_patterns(&span.text);
+                let non_ascii_drop = non_ascii_ratio > self.non_ascii_drop_threshold;
+                let suspicious_drop =
+                    self.drop_suspicious_unicode && has_suspicious_patterns(&span.text);
+                let is_likely_non_text = non_ascii_drop || suspicious_drop;
 
                 SpanClassification {
                     span_index: idx,
@@ -389,5 +406,80 @@ mod tests {
     fn test_sequence_confidence_low_mapped() {
         let conf = compute_sequence_confidence("☺♦♠♥♣", 1, "Arial");
         assert!(conf.score < 0.5);
+    }
+
+    // PDX-7 (liteparse report): the span-drop heuristics in mark_non_text_spans
+    // must be configurable so symbol/CJK/accented content can be preserved.
+    // Defaults keep historical behaviour; relaxing the knobs keeps the content.
+    fn span_with_text(text: &str) -> crate::layout::TextSpan {
+        use crate::geometry::Rect;
+        use crate::layout::{Color, FontWeight, TextSpan};
+        TextSpan {
+            artifact_type: None,
+            text: text.to_string(),
+            bbox: Rect::new(0.0, 0.0, 10.0, 12.0),
+            font_name: "Helvetica".to_string(),
+            font_size: 12.0,
+            font_weight: FontWeight::Normal,
+            color: Color::black(),
+            mcid: None,
+            sequence: 0,
+            split_boundary_before: false,
+            offset_semantic: false,
+            is_italic: false,
+            is_monospace: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
+            primary_detected: false,
+            char_widths: vec![],
+            heading_level: None,
+        }
+    }
+
+    #[test]
+    fn test_non_text_drop_is_configurable() {
+        // --- non-ASCII-ratio knob ---
+        // Pure CJK is ~33% non-ASCII (1 char / 3 UTF-8 bytes), over the 0.3
+        // default — real text the heuristic wrongly drops. CJK is not in the
+        // "suspicious" Unicode blocks, so this isolates the non-ASCII gate.
+        let cjk = span_with_text("日本語のテキスト処理");
+        assert!(
+            NonTextDetector::default().mark_non_text_spans(std::slice::from_ref(&cjk))[0]
+                .is_non_text,
+            "default: CJK dropped by the non-ASCII ratio gate"
+        );
+        let na_off = NonTextDetector {
+            non_ascii_drop_threshold: 1.0,
+            ..NonTextDetector::default()
+        };
+        assert!(
+            !na_off.mark_non_text_spans(&[cjk])[0].is_non_text,
+            "PDX-7: CJK preserved when the non-ASCII drop is disabled"
+        );
+
+        // --- suspicious-Unicode knob ---
+        // C1 control codes (0x0080-0x009F, 2 bytes each) push special_ratio
+        // over has_suspicious_patterns' 0.4 cutoff. Disable the non-ASCII gate
+        // so we isolate the suspicious-Unicode gate.
+        let ctrl = span_with_text("\u{0080}\u{0081}\u{0082}");
+        let susp_on = NonTextDetector {
+            non_ascii_drop_threshold: 1.0,
+            drop_suspicious_unicode: true,
+            ..NonTextDetector::default()
+        };
+        assert!(
+            susp_on.mark_non_text_spans(std::slice::from_ref(&ctrl))[0].is_non_text,
+            "suspicious-Unicode gate drops the span when enabled"
+        );
+        let susp_off = NonTextDetector {
+            non_ascii_drop_threshold: 1.0,
+            drop_suspicious_unicode: false,
+            ..NonTextDetector::default()
+        };
+        assert!(
+            !susp_off.mark_non_text_spans(&[ctrl])[0].is_non_text,
+            "PDX-7: content preserved when the suspicious-Unicode drop is disabled"
+        );
     }
 }

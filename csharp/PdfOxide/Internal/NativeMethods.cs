@@ -135,6 +135,14 @@ namespace PdfOxide.Internal
             int pageIndex,
             out int errorCode);
 
+        // #536 structured layout extraction → JSON StructuredPage envelope.
+        [LibraryImport(LibName, EntryPoint = "pdf_document_extract_structured_to_json", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr PdfDocumentExtractStructuredToJson(
+            NativeHandle handle,
+            int pageIndex,
+            out int errorCode);
+
         [LibraryImport(LibName, EntryPoint = "pdf_document_extract_page_auto", StringMarshalling = StringMarshalling.Utf8)]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
         public static partial IntPtr PdfDocumentExtractPageAuto(

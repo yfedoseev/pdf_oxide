@@ -36,6 +36,7 @@ mod aes;
 mod algorithms;
 mod certificate;
 mod handler;
+pub mod permissions;
 // `pub(crate)` so the `crypto::RustCryptoProvider::SymmetricCipher`
 // impl in `src/crypto/rust_provider.rs` can call
 // `rc4::rc4_crypt_impl` (the cipher-only entry point that does NOT
@@ -53,6 +54,7 @@ pub use certificate::{
     KeyTransportAlgorithm, RecipientInfo, RecipientPermissions,
 };
 pub use handler::EncryptionHandler;
+pub use permissions::PdfPermissions;
 pub use write_handler::EncryptionWriteHandler;
 
 /// A fresh MD5 hasher for the ISO 32000-1 §7.6.3 Standard-Security-
@@ -300,7 +302,7 @@ impl EncryptDict {
             (4, _) => {
                 // V=4 means crypt-filter-based encryption. The actual algorithm
                 // is determined by /CFM in the /CF dictionary (PDF Spec Table 25):
-                //   "V2"    = RC4-128
+                //   "V2" = RC4-128
                 //   "AESV2" = AES-128
                 match self.stream_crypt_method.as_deref() {
                     Some("V2") => {
@@ -495,7 +497,7 @@ impl EncryptDictBuilder {
             Algorithm::Aes256 => (5, 6),
         };
 
-        // FIPS gate (Issue #236): the FIPS-validated `AwsLcProvider`
+        // FIPS gate: the FIPS-validated `AwsLcProvider`
         // refuses MD5 / RC4 entirely, so writing an R≤4 dict under it
         // would produce ciphertext that the same provider can't read
         // back. Reject up front with a clear error rather than letting
@@ -624,44 +626,52 @@ impl Permissions {
         Self { bits }
     }
 
+    /// Decoded view per [`PdfPermissions`]. The bit decoding lives
+    /// in one place; this method-style API delegates so the two
+    /// decoders cannot drift apart.
+    #[inline]
+    fn decoded(&self) -> PdfPermissions {
+        PdfPermissions::from_p_flag(self.bits)
+    }
+
     /// Check if printing is allowed.
     pub fn can_print(&self) -> bool {
-        (self.bits & (1 << 2)) != 0
+        self.decoded().print_low_res
     }
 
     /// Check if modifying the document is allowed.
     pub fn can_modify(&self) -> bool {
-        (self.bits & (1 << 3)) != 0
+        self.decoded().modify
     }
 
     /// Check if copying text/graphics is allowed.
     pub fn can_copy(&self) -> bool {
-        (self.bits & (1 << 4)) != 0
+        self.decoded().copy
     }
 
     /// Check if adding/modifying annotations is allowed.
     pub fn can_annotate(&self) -> bool {
-        (self.bits & (1 << 5)) != 0
+        self.decoded().annotate
     }
 
     /// Check if filling form fields is allowed (R>=3).
     pub fn can_fill_forms(&self) -> bool {
-        (self.bits & (1 << 8)) != 0
+        self.decoded().fill_forms
     }
 
     /// Check if content extraction for accessibility is allowed (R>=3).
     pub fn can_extract_accessibility(&self) -> bool {
-        (self.bits & (1 << 9)) != 0
+        self.decoded().accessibility
     }
 
     /// Check if assembling the document is allowed (R>=3).
     pub fn can_assemble(&self) -> bool {
-        (self.bits & (1 << 10)) != 0
+        self.decoded().assemble
     }
 
     /// Check if high-quality printing is allowed (R>=3).
     pub fn can_print_high_quality(&self) -> bool {
-        (self.bits & (1 << 11)) != 0
+        self.decoded().print_high_res
     }
 }
 

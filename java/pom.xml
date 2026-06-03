@@ -8,7 +8,7 @@
                                namespace verification under oxide.fyi)
   artifactId:  pdf-oxide      (the Maven artifact; matches the
                                package fyi.oxide.pdf)
-  version:     0.3.55         (lockstep with Cargo workspace /
+  version:     0.3.59         (lockstep with Cargo workspace /
                                js/package.json / .csproj /
                                pyproject.toml — release-preflight
                                from v0.3.51 #515 enforces parity)
@@ -20,8 +20,8 @@
 
   Publishing:  Central Portal (post-OSSRH, June 2025) via
                central-publishing-maven-plugin 0.9.0 with
-               autoPublish=false — matches feedback_release_gate:
-               human flips publish at Central Portal after VALIDATED.
+               autoPublish=true — the release gate fires at PR-merge,
+               same as PyPI / npm / crates.io / RubyGems / NuGet.
 
   Plan:        docs/releases/plans/v0.3.53/  (gitignored workspace)
 -->
@@ -33,7 +33,7 @@
 
     <groupId>fyi.oxide</groupId>
     <artifactId>pdf-oxide</artifactId>
-    <version>0.3.55</version>
+    <version>0.3.59</version>
     <packaging>jar</packaging>
 
     <name>pdf_oxide — Java binding</name>
@@ -72,7 +72,7 @@
         <connection>scm:git:https://github.com/yfedoseev/pdf_oxide.git</connection>
         <developerConnection>scm:git:git@github.com:yfedoseev/pdf_oxide.git</developerConnection>
         <url>https://github.com/yfedoseev/pdf_oxide</url>
-        <tag>v0.3.55</tag>
+        <tag>v0.3.59</tag>
     </scm>
 
     <issueManagement>
@@ -374,9 +374,8 @@
              pdf/native/{OS}/{ARCH}/ by the GitHub Actions job
              (per feature-NNN-java-binding.md T21). GPG-signs all
              artifacts; uploads to Central Portal via the central-
-             publishing-maven-plugin with autoPublish=false (matches
-             feedback_release_gate: human flips publish after
-             VALIDATED). -->
+             publishing-maven-plugin with autoPublish=true (release
+             gate fires at PR-merge, in line with other registries). -->
         <profile>
             <id>release</id>
             <build>
@@ -411,12 +410,12 @@
                         <extensions>true</extensions>
                         <configuration>
                             <publishingServerId>central</publishingServerId>
-                            <!-- Stop at VALIDATED state — human flips
-                                 publish manually from the Central
-                                 Portal UI. Matches our release-gate
-                                 pattern across all bindings. -->
-                            <autoPublish>false</autoPublish>
-                            <waitUntil>validated</waitUntil>
+                            <!-- Auto-promote to Maven Central without
+                                 UI step. The release gate already
+                                 happens at the PR-merge step, matching
+                                 the other 9 registries. -->
+                            <autoPublish>true</autoPublish>
+                            <waitUntil>published</waitUntil>
                         </configuration>
                     </plugin>
                 </plugins>

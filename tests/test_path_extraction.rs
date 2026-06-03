@@ -172,6 +172,132 @@ mod path_extractor_tests {
         let paths = extractor.finish();
         assert!(paths.is_empty());
     }
+
+    // ─── Optional Content Group (PDF "layer") tagging ─────────────────
+    //
+    // Covers the BDC/BMC/EMC marked-content stack added to expose the
+    // OCG name on each finalized path (ISO 32000-1:2008 §8.11, §14.6).
+
+    #[test]
+    fn test_layer_attached_when_oc_active() {
+        let mut extractor = PathExtractor::new();
+        extractor.set_stroke_color(Color::black());
+
+        // Simulate `BDC /OC <</Name (A-GRID)>>` — dispatcher resolves the
+        // OCG /Name and pushes Some("A-GRID") onto the layer stack.
+        extractor.push_oc_layer(Some("A-GRID".to_string()));
+        extractor.move_to(0.0, 0.0);
+        extractor.line_to(100.0, 0.0);
+        extractor.stroke();
+        extractor.pop_oc_layer();
+
+        let paths = extractor.finish();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].layer.as_deref(), Some("A-GRID"));
+    }
+
+    #[test]
+    fn test_layer_none_outside_oc() {
+        let mut extractor = PathExtractor::new();
+        extractor.set_stroke_color(Color::black());
+
+        // No BDC /OC seen — path is emitted in the default content scope.
+        extractor.move_to(0.0, 0.0);
+        extractor.line_to(50.0, 50.0);
+        extractor.stroke();
+
+        let paths = extractor.finish();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].layer, None);
+    }
+
+    #[test]
+    fn test_layer_cleared_after_pop() {
+        let mut extractor = PathExtractor::new();
+        extractor.set_stroke_color(Color::black());
+
+        extractor.push_oc_layer(Some("S-COLS".to_string()));
+        extractor.move_to(0.0, 0.0);
+        extractor.line_to(10.0, 0.0);
+        extractor.stroke(); // belongs to S-COLS
+        extractor.pop_oc_layer();
+
+        extractor.move_to(0.0, 20.0);
+        extractor.line_to(10.0, 20.0);
+        extractor.stroke(); // belongs to no layer
+
+        let paths = extractor.finish();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0].layer.as_deref(), Some("S-COLS"));
+        assert_eq!(paths[1].layer, None);
+    }
+
+    #[test]
+    fn test_outer_oc_survives_nested_non_oc_bmc() {
+        // Real-world PDFs nest non-/OC marked content (e.g. /Span <<...>>
+        // for accessibility) inside an /OC region. The outer OCG must
+        // continue to apply to paths emitted in the inner region.
+        let mut extractor = PathExtractor::new();
+        extractor.set_stroke_color(Color::black());
+
+        extractor.push_oc_layer(Some("A-WALL".to_string())); // BDC /OC /Layer_1
+        extractor.push_oc_layer(None); // BMC /Span (non-OC marked content)
+
+        extractor.move_to(0.0, 0.0);
+        extractor.line_to(10.0, 0.0);
+        extractor.stroke();
+
+        extractor.pop_oc_layer(); // EMC (closes /Span)
+        extractor.pop_oc_layer(); // EMC (closes /OC)
+
+        let paths = extractor.finish();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].layer.as_deref(), Some("A-WALL"));
+    }
+
+    #[test]
+    fn test_nested_oc_inner_wins() {
+        // When two /OC regions nest, paths in the inner region belong to
+        // the inner OCG (the innermost Some(_) on the stack wins).
+        let mut extractor = PathExtractor::new();
+        extractor.set_stroke_color(Color::black());
+
+        extractor.push_oc_layer(Some("OUTER".to_string()));
+        extractor.push_oc_layer(Some("INNER".to_string()));
+
+        extractor.move_to(0.0, 0.0);
+        extractor.line_to(10.0, 0.0);
+        extractor.stroke();
+
+        extractor.pop_oc_layer();
+        extractor.move_to(0.0, 20.0);
+        extractor.line_to(10.0, 20.0);
+        extractor.stroke();
+
+        extractor.pop_oc_layer();
+
+        let paths = extractor.finish();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0].layer.as_deref(), Some("INNER"));
+        assert_eq!(paths[1].layer.as_deref(), Some("OUTER"));
+    }
+
+    #[test]
+    fn test_underflow_pop_is_safe() {
+        // Malformed PDFs may emit EMC without a matching BDC. Pop on an
+        // empty stack must be a no-op — extraction should keep going.
+        let mut extractor = PathExtractor::new();
+        extractor.set_stroke_color(Color::black());
+
+        extractor.pop_oc_layer(); // stack empty — must not panic
+        extractor.move_to(0.0, 0.0);
+        extractor.line_to(10.0, 0.0);
+        extractor.stroke();
+
+        let paths = extractor.finish();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].layer, None);
+    }
 }
 
 // ============================================================================
@@ -199,6 +325,7 @@ mod svg_conversion_tests {
             matrix: None,
             artifact_type: None,
             reading_order: None,
+            layer: None,
         }
     }
 
@@ -264,6 +391,7 @@ mod svg_conversion_tests {
             matrix: None,
             artifact_type: None,
             reading_order: None,
+            layer: None,
         };
 
         // Generate curve path data
@@ -296,6 +424,7 @@ mod svg_conversion_tests {
             matrix: None,
             artifact_type: None,
             reading_order: None,
+            layer: None,
         };
 
         // Rectangle should be converted to M L L L Z
@@ -323,6 +452,7 @@ mod svg_conversion_tests {
             matrix: None,
             artifact_type: None,
             reading_order: None,
+            layer: None,
         };
 
         assert_eq!(round_cap.line_cap, LineCap::Round);
@@ -346,6 +476,7 @@ mod svg_conversion_tests {
             matrix: None,
             artifact_type: None,
             reading_order: None,
+            layer: None,
         };
 
         assert_eq!(bevel_join.line_join, LineJoin::Bevel);

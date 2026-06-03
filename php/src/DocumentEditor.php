@@ -104,7 +104,7 @@ final class DocumentEditor
     public function getProducer(): string
     {
         $ffi = NativeLibrary::getInstance();
-        $errorCode = \FFI::new('int32_t');
+        $errorCode = $ffi->new('int32_t');
         $cStr = $ffi->document_editor_get_producer($this->requireHandle(), \FFI::addr($errorCode));
         if ($cStr === null || (int) $errorCode->cdata !== 0) {
             return '';
@@ -119,7 +119,7 @@ final class DocumentEditor
     {
         $ffi = NativeLibrary::getInstance();
         $cStr = StringMarshaller::toCString($producer);
-        $errorCode = \FFI::new('int32_t');
+        $errorCode = $ffi->new('int32_t');
         try {
             $rc = (int) $ffi->document_editor_set_producer($this->requireHandle(), $cStr, \FFI::addr($errorCode));
             if ($rc !== 0 || (int) $errorCode->cdata !== 0) {
@@ -135,8 +135,8 @@ final class DocumentEditor
     public function version(): array
     {
         $ffi = NativeLibrary::getInstance();
-        $major = \FFI::new('uint8_t');
-        $minor = \FFI::new('uint8_t');
+        $major = $ffi->new('uint8_t');
+        $minor = $ffi->new('uint8_t');
         $ffi->document_editor_get_version($this->requireHandle(), \FFI::addr($major), \FFI::addr($minor));
         return ['major' => (int) $major->cdata, 'minor' => (int) $minor->cdata];
     }
@@ -144,7 +144,7 @@ final class DocumentEditor
     public function pageCount(): int
     {
         $ffi = NativeLibrary::getInstance();
-        $errorCode = \FFI::new('int32_t');
+        $errorCode = $ffi->new('int32_t');
         return (int) $ffi->document_editor_get_page_count($this->requireHandle(), \FFI::addr($errorCode));
     }
 
@@ -158,7 +158,7 @@ final class DocumentEditor
     public function sourcePath(): string
     {
         $ffi = NativeLibrary::getInstance();
-        $errorCode = \FFI::new('int32_t');
+        $errorCode = $ffi->new('int32_t');
         $cStr = $ffi->document_editor_get_source_path($this->requireHandle(), \FFI::addr($errorCode));
         if ($cStr === null) {
             return '';
@@ -175,7 +175,7 @@ final class DocumentEditor
     {
         $ffi = NativeLibrary::getInstance();
         $cPath = StringMarshaller::toCString($path);
-        $errorCode = \FFI::new('int32_t');
+        $errorCode = $ffi->new('int32_t');
         try {
             $rc = (int) $ffi->document_editor_save($this->requireHandle(), $cPath, \FFI::addr($errorCode));
             if ($rc !== 0 || (int) $errorCode->cdata !== 0) {
@@ -191,8 +191,8 @@ final class DocumentEditor
     {
         $ffi = NativeLibrary::getInstance();
         // C signature: document_editor_save_to_bytes(handle, uint64_t* len, int32_t* err)
-        $dataLen = \FFI::new('uint64_t');
-        $errorCode = \FFI::new('int32_t');
+        $dataLen = $ffi->new('uint64_t');
+        $errorCode = $ffi->new('int32_t');
         $ptr = $ffi->document_editor_save_to_bytes(
             $this->requireHandle(),
             \FFI::addr($dataLen),

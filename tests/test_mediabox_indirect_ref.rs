@@ -112,6 +112,40 @@ fn build_pdf_direct_mediabox() -> Vec<u8> {
     pdf
 }
 
+/// Build a minimal 1-page PDF where each *element* of the `/MediaBox` array is
+/// itself an indirect reference (pdf.js issue7872):
+///   3 0 obj  Page  → /MediaBox [4 0 R 5 0 R 6 0 R 7 0 R]
+///   4..7 0 obj      → 0, 0, 250, 50
+/// Before the fix the per-element references read as 0.0, collapsing the page
+/// to a zero-area box that clipped away all text.
+fn build_pdf_per_element_indirect_mediabox() -> Vec<u8> {
+    let mut pdf = Vec::new();
+    pdf.extend_from_slice(b"%PDF-1.4\n");
+
+    let off1 = pdf.len();
+    pdf.extend_from_slice(b"1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n");
+
+    let off2 = pdf.len();
+    pdf.extend_from_slice(b"2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n");
+
+    let off3 = pdf.len();
+    pdf.extend_from_slice(
+        b"3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [4 0 R 5 0 R 6 0 R 7 0 R] /Resources <<>>>>\nendobj\n",
+    );
+
+    let off4 = pdf.len();
+    pdf.extend_from_slice(b"4 0 obj\n0\nendobj\n");
+    let off5 = pdf.len();
+    pdf.extend_from_slice(b"5 0 obj\n0\nendobj\n");
+    let off6 = pdf.len();
+    pdf.extend_from_slice(b"6 0 obj\n250\nendobj\n");
+    let off7 = pdf.len();
+    pdf.extend_from_slice(b"7 0 obj\n50\nendobj\n");
+
+    write_xref_and_trailer(&mut pdf, &[0, off1, off2, off3, off4, off5, off6, off7]);
+    pdf
+}
+
 /// Build a minimal 1-page PDF where `/CropBox` is stored as an indirect reference.
 fn build_pdf_indirect_cropbox() -> Vec<u8> {
     let mut pdf = Vec::new();
@@ -174,6 +208,26 @@ fn test_indirect_mediabox_inherited_from_pages_node() {
         (llx, lly, urx, ury),
         (0.0, 0.0, 595.0, 842.0),
         "Inherited indirect MediaBox [0 0 595 842] should be resolved correctly"
+    );
+}
+
+/// A PDF where each MediaBox array element is an indirect reference
+/// (`/MediaBox [4 0 R 5 0 R 6 0 R 7 0 R]`, pdf.js issue7872) must resolve every
+/// element to its true value, not collapse to a zero-area box.
+#[test]
+fn test_per_element_indirect_mediabox() {
+    let pdf = build_pdf_per_element_indirect_mediabox();
+    let doc = PdfDocument::from_bytes(pdf).expect("PDF should parse successfully");
+
+    let (llx, lly, urx, ury) = doc
+        .get_page_media_box(0)
+        .expect("get_page_media_box must succeed for per-element indirect MediaBox");
+
+    assert_eq!(
+        (llx, lly, urx, ury),
+        (0.0, 0.0, 250.0, 50.0),
+        "Per-element indirect MediaBox [4 0 R 5 0 R 6 0 R 7 0 R] -> [0 0 250 50] \
+         must resolve each element instead of reading references as 0.0"
     );
 }
 

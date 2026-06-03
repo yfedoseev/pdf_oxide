@@ -1,0 +1,4 @@
+# olmOCR-bench corpus is fetched on demand (allenai/olmOCR-bench, ODC-BY),
+# never committed. See tools/benchmark-harness/olmocr/README.md.
+*
+!.gitignore

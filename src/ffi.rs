@@ -135,7 +135,7 @@ fn classify_error(e: &crate::error::Error) -> i32 {
 }
 
 /// Copy `bytes` into a `malloc`-allocated buffer so callers can free it with
-/// `free_bytes(ptr)` using no length argument.  All FFI byte-buffer returns
+/// `free_bytes(ptr)` using no length argument. All FFI byte-buffer returns
 /// go through this helper.
 fn vec_to_ffi_bytes(bytes: Vec<u8>) -> *mut u8 {
     let len = bytes.len();
@@ -253,7 +253,39 @@ pub extern "C" fn pdf_oxide_get_log_level() -> i32 {
     }
 }
 
-// ─── Crypto provider (issue #236) ──────────────────────────────────────────
+/// Set the global content-stream operator cap.
+/// `limit < 0` restores the default (1,000,000); any non-negative
+/// value (including 0) is used as the explicit cap. Returns the
+/// previous cap (or -1 if the default was active).
+///
+/// Bindings (Java JNI, Ruby FFI, PHP FFI, Go cgo / purego, C# P/Invoke,
+/// Node N-API, WASM) call this via the cdylib's exported symbol.
+#[no_mangle]
+pub extern "C" fn pdf_oxide_set_max_ops_per_stream(limit: i64) -> i64 {
+    let new_limit = if limit < 0 {
+        None
+    } else {
+        Some(limit as usize)
+    };
+    let prev = crate::content::parser::set_max_ops_per_stream(new_limit);
+    prev.map(|v| v as i64).unwrap_or(-1)
+}
+
+/// Toggle the global U+FFFD preservation flag for
+/// the high-level extract_text / extract_words / extract_spans
+/// accessors. `1` = preserve FFFD chars; `0` = filter (v0.3.54
+/// default). Returns the previous value as `0` or `1`.
+#[no_mangle]
+pub extern "C" fn pdf_oxide_set_preserve_unmapped_glyphs(preserve: i32) -> i32 {
+    let prev = crate::extractors::text::set_preserve_unmapped_glyphs(preserve != 0);
+    if prev {
+        1
+    } else {
+        0
+    }
+}
+
+// ─── Crypto provider ──────────────────────────────────────────
 
 /// Returns the name of the active cryptographic provider as a
 /// caller-owned C string. Free with [`free_string`].
@@ -523,6 +555,42 @@ pub extern "C" fn pdf_document_extract_text(
     }
 }
 
+/// Extract a page as structured typed regions (issue #536), returned as a JSON
+/// string (a serialized `StructuredPage`: `page_index`, `page_width`,
+/// `page_height`, and `regions[]` with `kind` / `text` / `bbox` / `spans` /
+/// `column_index`). Bindings deserialize the JSON into their native types.
+///
+/// Returns NULL on error (see `error_code`); the returned string must be freed
+/// with `pdf_free_string`.
+#[no_mangle]
+pub extern "C" fn pdf_document_extract_structured_to_json(
+    handle: *mut PdfDocument,
+    page_index: i32,
+    error_code: *mut i32,
+) -> *mut c_char {
+    if handle.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let doc = handle_ref(handle);
+    match doc.extract_structured(page_index as usize) {
+        Ok(structured) => match serde_json::to_string(&structured) {
+            Ok(json) => {
+                set_error(error_code, ERR_SUCCESS);
+                to_c_string(&json)
+            },
+            Err(_) => {
+                set_error(error_code, ERR_INTERNAL);
+                ptr::null_mut()
+            },
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
+    }
+}
+
 /// Convert a page to Markdown.
 #[no_mangle]
 pub extern "C" fn pdf_document_to_markdown(
@@ -706,7 +774,7 @@ pub extern "C" fn pdf_document_to_xlsx(
     }
 }
 
-/// Open a PDF document from DOCX bytes.  Returns an opaque PdfDocument handle.
+/// Open a PDF document from DOCX bytes. Returns an opaque PdfDocument handle.
 #[no_mangle]
 pub extern "C" fn pdf_document_open_from_docx_bytes(
     data: *const u8,
@@ -736,7 +804,7 @@ pub extern "C" fn pdf_document_open_from_docx_bytes(
     }
 }
 
-/// Open a PDF document from PPTX bytes.  Returns an opaque PdfDocument handle.
+/// Open a PDF document from PPTX bytes. Returns an opaque PdfDocument handle.
 #[no_mangle]
 pub extern "C" fn pdf_document_open_from_pptx_bytes(
     data: *const u8,
@@ -766,7 +834,7 @@ pub extern "C" fn pdf_document_open_from_pptx_bytes(
     }
 }
 
-/// Open a PDF document from XLSX bytes.  Returns an opaque PdfDocument handle.
+/// Open a PDF document from XLSX bytes. Returns an opaque PdfDocument handle.
 #[no_mangle]
 pub extern "C" fn pdf_document_open_from_xlsx_bytes(
     data: *const u8,
@@ -1514,7 +1582,7 @@ pub extern "C" fn pdf_redaction_apply(
 
 /// Standalone document sanitization without geometric redaction
 /// (#231 T10): strips `/Info`, catalog XMP `/Metadata`, document
-/// JavaScript (`/OpenAction`, `/AA`, `/Names/JavaScript`) and
+/// JavaScript (`/OpenAction`, `/AA`, `/Names/JavaScript`)
 /// `/Names/EmbeddedFiles`; the removed subtrees are hard-excluded from
 /// the output (G6). Returns the number of top-level constructs removed,
 /// or -1 on error.
@@ -3641,12 +3709,12 @@ pub extern "C" fn pdf_document_get_signature(
 /// `signed_attrs`) on the CMS blob carried by a signature handle.
 ///
 /// Returns:
-/// - `1`  — Valid: signer held the private key matching the embedded
+/// - `1` — Valid: signer held the private key matching the embedded
 ///           certificate. Callers still need to verify the
 ///           `messageDigest` attribute against their document content
 ///           hash for a full detached-signature claim — use
 ///           `pdf_signature_verify_detached` which runs both checks.
-/// - `0`  — Invalid: CMS parsed but the RSA check failed (tampered
+/// - `0` — Invalid: CMS parsed but the RSA check failed (tampered
 ///           attributes or wrong key).
 /// - `-1` — Unknown or not supported: PSS / ECDSA / unrecognised
 ///           digest OID / missing signed_attrs / structurally
@@ -3701,10 +3769,10 @@ pub extern "C" fn pdf_signature_verify(
 /// the segments that were actually signed.
 ///
 /// Returns:
-/// - `1`  — Valid: both the RSA-PKCS#1 v1.5 check and the messageDigest
+/// - `1` — Valid: both the RSA-PKCS#1 v1.5 check and the messageDigest
 ///           check passed. The signer is authentic and the document has
 ///           not been tampered with since signing.
-/// - `0`  — Invalid: either the signer check or the messageDigest check
+/// - `0` — Invalid: either the signer check or the messageDigest check
 ///           failed. Callers can't distinguish "wrong signer" from
 ///           "document tampered after signing" from this code alone.
 /// - `-1` — Unknown or not supported: signer uses PSS / ECDSA / unknown
@@ -4095,7 +4163,7 @@ pub extern "C" fn pdf_signature_free(handle: *mut FfiSignatureInfo) {
 // stable C ABI and every binding depends on it (#235 plan §7.1).
 // Mirrors the discipline of `pdf_timestamp_get_hash_algorithm`:
 //
-//     0 = B-B   1 = B-T   2 = B-LT   3 = B-LTA
+//     0 = B-B 1 = B-T 2 = B-LT 3 = B-LTA
 //
 // NEVER renumber. Adding a level later must append a new code only.
 // The single source of truth is `signatures::PadesLevel::code` /
@@ -4686,12 +4754,15 @@ pub extern "C" fn pdf_render_page_with_options(
         } else {
             Some([bg_r, bg_g, bg_b, bg_a])
         };
+        // OCG layer filtering is exposed on the variant
+        // `pdf_render_page_with_options_ex` below — keeping this ABI stable.
         let opts = RustRenderOptions {
             dpi: dpi as u32,
             format: fmt,
             background,
             render_annotations: render_annotations != 0,
             jpeg_quality: jpeg_quality as u8,
+            excluded_layers: std::collections::HashSet::new(),
             scale_override: None,
         };
         match rendering::render_page(d, page_index as usize, &opts) {
@@ -4719,6 +4790,112 @@ pub extern "C" fn pdf_render_page_with_options(
             transparent_background,
             render_annotations,
             jpeg_quality,
+        );
+        set_error(error_code, _ERR_UNSUPPORTED);
+        ptr::null_mut()
+    }
+}
+
+/// Render a page with the full RenderOptions surface plus OCG layer filtering.
+///
+/// `excluded_layers` is a pointer to an array of `excluded_layers_count` null-
+/// terminated UTF-8 C strings. Each string is the `/Name` of an Optional
+/// Content Group (OCG) to suppress. Pass a null pointer or zero count to
+/// disable filtering (matches `pdf_render_page_with_options` behaviour).
+///
+/// The renderer also honours OCMD references that resolve to any of the named
+/// OCGs, per ISO 32000-1 §8.11.2.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn pdf_render_page_with_options_ex(
+    doc: *mut PdfDocument,
+    page_index: i32,
+    dpi: i32,
+    format: i32,
+    bg_r: f32,
+    bg_g: f32,
+    bg_b: f32,
+    bg_a: f32,
+    transparent_background: i32,
+    render_annotations: i32,
+    jpeg_quality: i32,
+    excluded_layers: *const *const c_char,
+    excluded_layers_count: usize,
+    error_code: *mut i32,
+) -> *mut FfiRenderedImage {
+    #[cfg(feature = "rendering")]
+    {
+        if doc.is_null() {
+            set_error(error_code, ERR_INVALID_ARG);
+            return ptr::null_mut();
+        }
+        if dpi <= 0 || !(1..=100).contains(&jpeg_quality) {
+            set_error(error_code, ERR_INVALID_ARG);
+            return ptr::null_mut();
+        }
+        let d = handle_ref(doc as *const _);
+        let fmt = if format == 1 {
+            RenderImageFormat::Jpeg
+        } else {
+            RenderImageFormat::Png
+        };
+        let background = if transparent_background != 0 {
+            None
+        } else {
+            Some([bg_r, bg_g, bg_b, bg_a])
+        };
+
+        let mut layers: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if !excluded_layers.is_null() && excluded_layers_count > 0 {
+            for i in 0..excluded_layers_count {
+                // Safety: caller-supplied pointer must point to an array of
+                // at least `excluded_layers_count` C strings or be null.
+                let entry: *const c_char = unsafe { *excluded_layers.add(i) };
+                if entry.is_null() {
+                    continue;
+                }
+                if let Some(s) = c_str_lossy(entry) {
+                    layers.insert(s);
+                }
+            }
+        }
+
+        let opts = RustRenderOptions {
+            dpi: dpi as u32,
+            format: fmt,
+            background,
+            render_annotations: render_annotations != 0,
+            jpeg_quality: jpeg_quality as u8,
+            excluded_layers: layers,
+            scale_override: None,
+        };
+        match rendering::render_page(d, page_index as usize, &opts) {
+            Ok(img) => {
+                set_error(error_code, ERR_SUCCESS);
+                Box::into_raw(Box::new(FfiRenderedImage { inner: img }))
+            },
+            Err(e) => {
+                set_error(error_code, classify_error(&e));
+                ptr::null_mut()
+            },
+        }
+    }
+    #[cfg(not(feature = "rendering"))]
+    {
+        let _ = (
+            doc,
+            page_index,
+            dpi,
+            format,
+            bg_r,
+            bg_g,
+            bg_b,
+            bg_a,
+            transparent_background,
+            render_annotations,
+            jpeg_quality,
+            excluded_layers,
+            excluded_layers_count,
         );
         set_error(error_code, _ERR_UNSUPPORTED);
         ptr::null_mut()
@@ -4916,7 +5093,7 @@ pub extern "C" fn pdf_render_page_thumbnail(
 
 /// Render a page and return the raw premultiplied RGBA8888 pixel buffer.
 ///
-/// The caller retrieves the pixel bytes via `pdf_get_rendered_image_data` and
+/// The caller retrieves the pixel bytes via `pdf_get_rendered_image_data`
 /// the dimensions via `out_width`/`out_height` (set on success). Pixels are
 /// row-major, top-left origin; `data_len == *out_width * *out_height * 4`.
 /// Free the returned handle with `pdf_rendered_image_free`.
@@ -7944,7 +8121,7 @@ pub extern "C" fn pdf_document_plan_split_by_bookmarks(
 // ─── Comprehensive auto extraction (#517) ──────────────────────────────────
 //
 // JSON-string result at the C-ABI (matches the shipped split-by-bookmarks
-// idiom — api-design.md §4; the frozen parity contract for all bindings).
+// idiom —; the frozen parity contract for all bindings).
 // Enums serialise as stable snake_case tokens. Read-only inspection;
 // encrypted-unauthenticated fails closed (case L) via `classify_error`.
 
@@ -8923,7 +9100,7 @@ pub extern "C" fn pdf_ocr_extract_text(
 //      `pdf_document_builder_*_page` call on the same builder before
 //      the prior `pdf_page_builder_done` returns `ERR_INVALID_ARG (1)`.
 //
-//   3. `pdf_page_builder_done` commits the buffered operations and
+//  3. `pdf_page_builder_done` commits the buffered operations
 //      clears the parent's open-page slot. The page handle becomes
 //      invalid. `pdf_page_builder_free` drops without committing
 //      (error recovery only).
@@ -10824,7 +11001,7 @@ pub extern "C" fn pdf_page_builder_new_page_same_size(
 /// real FluentPageBuilder.
 ///
 /// Cell array is row-major: `cell_strings[row * n_columns + col]`. Each
-/// pointer must be a valid null-terminated UTF-8 C string. `widths` and
+/// pointer must be a valid null-terminated UTF-8 C string. `widths`
 /// `aligns` are both length `n_columns`; `aligns` encodes 0/1/2 (see
 /// `pdf_page_builder_text_in_rect`). `has_header != 0` promotes the
 /// first row to a header (bold + default background).
@@ -11069,7 +11246,7 @@ pub extern "C" fn pdf_page_builder_streaming_table_batch_count(
     handle_ref(handle).st_batch_count
 }
 
-/// Explicitly mark a batch boundary: increment the batch counter and
+/// Explicitly mark a batch boundary: increment the batch counter
 /// reset the pending-row counter. A no-op if there are no pending rows.
 #[no_mangle]
 pub extern "C" fn pdf_page_builder_streaming_table_flush(
@@ -11181,7 +11358,7 @@ pub extern "C" fn pdf_page_builder_streaming_table_finish(
     push_page_op(handle, error_code, FfiPageOp::StreamingTableFinish)
 }
 
-/// Commit this page's buffered operations to its parent builder and
+/// Commit this page's buffered operations to its parent builder
 /// **consume** the page handle. After a successful call the handle is
 /// invalid; do not call `_free`.
 #[no_mangle]

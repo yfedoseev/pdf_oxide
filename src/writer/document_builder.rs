@@ -980,6 +980,7 @@ impl<'a> FluentPageBuilder<'a> {
                 matrix: None,
                 reading_order: None,
                 artifact_type: None,
+                layer: None,
             }));
         self.cursor_y -= self.text_config.size;
         self
@@ -3447,6 +3448,7 @@ impl DocumentBuilder {
                     matrix: None,
                     reading_order: None,
                     artifact_type: Some(ArtifactType::Layout),
+                    layer: None,
                 }));
 
                 // Footnote bodies, stacked from sep_y downward.

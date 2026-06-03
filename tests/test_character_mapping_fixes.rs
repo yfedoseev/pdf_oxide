@@ -27,10 +27,13 @@ fn test_type0_identity_encoding_without_tounicode_returns_none() {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cid_to_gid_map: None,
         cid_system_info: None,
@@ -45,6 +48,7 @@ fn test_type0_identity_encoding_without_tounicode_returns_none() {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // CID-as-Unicode fallback: 0x37 → '7', 0x41 → 'A'
@@ -72,10 +76,13 @@ fn test_simple_font_identity_encoding_works_for_valid_codes() {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cid_to_gid_map: None,
         cid_system_info: None,
@@ -90,6 +97,7 @@ fn test_simple_font_identity_encoding_works_for_valid_codes() {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // For simple fonts, Identity encoding is valid for Unicode-compatible codes
@@ -130,10 +138,13 @@ fn test_type0_missing_tounicode_is_an_error() {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cid_to_gid_map: None,
         cid_system_info: None,
@@ -148,6 +159,7 @@ fn test_type0_missing_tounicode_is_an_error() {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // CID-as-Unicode fallback: printable chars return themselves, control chars may return None
@@ -178,10 +190,13 @@ fn test_tounicode_with_valid_mappings_works() {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cid_to_gid_map: None,
         cid_system_info: None,
@@ -196,6 +211,7 @@ fn test_tounicode_with_valid_mappings_works() {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // ToUnicode mappings should be used (highest priority)
@@ -220,10 +236,13 @@ fn test_multi_byte_character_codes_are_processed() {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cid_to_gid_map: None,
         cid_system_info: None,
@@ -238,6 +257,7 @@ fn test_multi_byte_character_codes_are_processed() {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Multi-byte codes (> 0xFF) should be handled without panic
@@ -272,10 +292,13 @@ fn test_extraction_priority_chain() {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cid_to_gid_map: None,
         cid_system_info: None,
@@ -290,6 +313,7 @@ fn test_extraction_priority_chain() {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // ToUnicode should override standard encoding
@@ -318,10 +342,13 @@ fn test_symbolic_font_encoding() {
         font_weight: None,
         flags: Some(0x04), // Bit 3: Symbolic flag
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cid_to_gid_map: None,
         cid_system_info: None,
@@ -336,6 +363,7 @@ fn test_symbolic_font_encoding() {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Symbol fonts should use special encoding
@@ -363,10 +391,13 @@ fn test_pdf_without_tounicode_doesnt_scramble_text() {
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cid_to_gid_map: None,
         cid_system_info: None,
@@ -381,6 +412,7 @@ fn test_pdf_without_tounicode_doesnt_scramble_text() {
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // CID-as-Unicode fallback: printable chars map to themselves

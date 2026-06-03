@@ -404,6 +404,26 @@ public final class PdfDocument implements AutoCloseable {
     }
 
     /**
+     * Extract the structured layout of a single page as a JSON string
+     * (#536). The returned JSON is a serialized {@code StructuredPage}:
+     * {@code {page_index, page_width, page_height, regions:[{kind, text,
+     * bbox, spans, column_index}]}}.
+     *
+     * <p>Like {@link #extractText(int)}, this returns the raw payload
+     * (here, JSON) rather than parsing it — callers may deserialize with
+     * the JSON library of their choice. This keeps the binding free of a
+     * JSON-parser dependency.
+     *
+     * @param page 0-based page index.
+     * @return the structured page serialized as a JSON string.
+     * @throws IndexOutOfBoundsException if {@code page} is out of range.
+     * @throws PdfInvalidStateException if this document has been closed.
+     */
+    public String extractStructured(int page) {
+        return nativeExtractStructured(checkHandle(), page);
+    }
+
+    /**
      * @return true if this document is still open (handle has not
      *         been freed). Useful for diagnostics; in normal code paths
      *         prefer the try-with-resources pattern.
@@ -516,6 +536,8 @@ public final class PdfDocument implements AutoCloseable {
     private static native String nativeCreator(long handle);
 
     private static native String nativeExtractTextAuto(long handle, int pageIndex);
+
+    private static native String nativeExtractStructured(long handle, int pageIndex);
 
     private static native byte[] nativeRenderPng(long handle, int pageIndex, int dpi);
 

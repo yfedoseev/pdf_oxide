@@ -62,6 +62,8 @@ end
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -79,11 +81,13 @@ end
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Verify: Single-byte codes still work
@@ -151,6 +155,8 @@ end
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -168,11 +174,13 @@ end
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Verify: Range 1 (0x0001-0x000F → 0x4E00-0x4E0E)
@@ -242,6 +250,8 @@ end
         font_weight: Some(400),
         flags: Some(0x0010),
         stem_v: Some(75.0),
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -259,11 +269,13 @@ end
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Verify: Typical GB1 characters
@@ -313,6 +325,8 @@ end
         font_weight: Some(400),
         flags: Some(0x0010),
         stem_v: Some(85.0),
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -330,11 +344,13 @@ end
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Verify: Range 1 (Traditional Chinese characters)
@@ -389,6 +405,8 @@ end
         font_weight: Some(400),
         flags: Some(0x0010),
         stem_v: Some(80.0),
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -406,11 +424,13 @@ end
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Verify: Hiragana range
@@ -456,9 +476,10 @@ endbfrange
 
     let mut full_cmap = mixed_cmap.to_string();
 
-    // Add more mixed mappings
-    for i in 4..50 {
-        full_cmap.push_str(&format!("<{:04X}> <{:04X}>\n", i, 0x4E00 + i - 1));
+    // Add more mixed mappings — use codes 0x80..0xAD to avoid conflicting
+    // with the bfrange covering 0x0020..0x007E.
+    for i in 0x80_u32..0xAE {
+        full_cmap.push_str(&format!("<{:04X}> <{:04X}>\n", i, 0x4E00 + i));
     }
 
     full_cmap.push_str(
@@ -479,6 +500,8 @@ end
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -496,11 +519,13 @@ end
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 500.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Verify: ASCII range (0x0020-0x007E)
@@ -556,6 +581,8 @@ end
         font_weight: None,
         flags: None,
         stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
         embedded_font_data: None,
         truetype_cmap: std::sync::OnceLock::new(),
         embedded_glyph_names: std::sync::OnceLock::new(),
@@ -573,11 +600,13 @@ end
         widths: None,
         first_char: None,
         last_char: None,
+        font_matrix_a: 0.001,
         default_width: 1000.0,
         cff_gid_map: None,
         multi_char_map: HashMap::new(),
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
     };
 
     // Verify: Large CID values

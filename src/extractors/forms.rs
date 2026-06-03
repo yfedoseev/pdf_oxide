@@ -362,16 +362,26 @@ impl FormExtractor {
             format!("{}.{}", parent_name, partial_name)
         };
 
-        // Check if this field has children
-        if let Some(kids_ref) = field_dict.get("Kids") {
-            // This is a non-terminal field - process children
+        // Recurse into Kids and also emit a row for parent fields
+        // that carry a /T name, matching pypdf's traversal. The
+        // previous behaviour recursed into Kids and dropped any
+        // parent without an explicit /FT, which under-counted IRS
+        // AcroForms by 15–30% (parent dictionaries for grouped
+        // fields like multi-digit SSN boxes have /T but no /FT —
+        // pypdf surfaces them, we did not).
+        let has_kids = if let Some(kids_ref) = field_dict.get("Kids") {
             let kids = Self::resolve_object(doc, kids_ref)?;
             if let Some(kids_array) = kids.as_array() {
                 for kid_ref in kids_array {
                     Self::extract_field_recursive(doc, kid_ref, &full_name, result)?;
                 }
+                true
+            } else {
+                false
             }
-        }
+        } else {
+            false
+        };
 
         // Extract field type
         let field_type = field_dict
@@ -381,8 +391,19 @@ impl FormExtractor {
             .map(|name| Self::parse_field_type(&name))
             .unwrap_or(FieldType::Unknown("".to_string()));
 
-        // Skip if no field type (non-terminal field with only Kids)
-        if matches!(field_type, FieldType::Unknown(ref s) if s.is_empty()) {
+        // only skip the parent when it has NEITHER /FT
+        // NOR /T. A parent with /T but no /FT (logical grouping like
+        // `topmostSubform[0].Page1[0].FilingStatus[0]`) IS surfaced in
+        // results, matching pypdf's behaviour. The terminal kids that
+        // already got their own row carry the actual /V (checkbox
+        // /Off/Yes state).
+        let no_ft = matches!(field_type, FieldType::Unknown(ref s) if s.is_empty());
+        if no_ft && (has_kids && partial_name.is_empty()) {
+            // Truly anonymous parent with no /T — nothing to surface.
+            return Ok(());
+        }
+        if no_ft && !has_kids && partial_name.is_empty() {
+            // Leaf without /FT or /T — skip.
             return Ok(());
         }
 

@@ -254,6 +254,15 @@ pub struct GraphicsState {
     pub stroke_alpha: f32,
     /// Blend mode (BM): Normal, Multiply, Screen, Overlay, etc.
     pub blend_mode: String,
+
+    // Overprint parameters (from ExtGState, ISO 32000-1 §11.7.4)
+    /// Overprint for non-stroking ops (ExtGState `/op`). PDF default `false`.
+    pub fill_overprint: bool,
+    /// Overprint for stroking ops (ExtGState `/OP`). PDF default `false`.
+    pub stroke_overprint: bool,
+    /// Overprint mode (ExtGState `/OPM`): 0 = standard, 1 = nonzero
+    /// ("Adobe nonzero overprint"). PDF default `0`.
+    pub overprint_mode: u8,
 }
 
 impl GraphicsState {
@@ -297,6 +306,9 @@ impl GraphicsState {
             fill_alpha: 1.0,                 // Fully opaque (PDF default)
             stroke_alpha: 1.0,               // Fully opaque (PDF default)
             blend_mode: "Normal".to_string(), // Normal blend mode (PDF default)
+            fill_overprint: false,           // §11.7.4 default
+            stroke_overprint: false,         // §11.7.4 default
+            overprint_mode: 0,               // §11.7.4 default (standard mode)
         }
     }
 
@@ -641,5 +653,32 @@ mod tests {
         let m = Matrix::default();
         assert_eq!(m.a, 1.0);
         assert_eq!(m.d, 1.0);
+    }
+
+    #[test]
+    fn graphics_state_default_overprint_is_off() {
+        // ISO 32000-1 Table 128: OP/op default false, OPM default 0.
+        let gs = GraphicsState::default();
+        assert!(!gs.fill_overprint);
+        assert!(!gs.stroke_overprint);
+        assert_eq!(gs.overprint_mode, 0);
+    }
+
+    #[test]
+    fn graphics_state_overprint_survives_save_restore() {
+        let mut stack = GraphicsStateStack::new();
+        stack.current_mut().fill_overprint = true;
+        stack.current_mut().stroke_overprint = true;
+        stack.current_mut().overprint_mode = 1;
+
+        stack.save();
+        stack.current_mut().fill_overprint = false;
+        stack.current_mut().stroke_overprint = false;
+        stack.current_mut().overprint_mode = 0;
+
+        stack.restore();
+        assert!(stack.current().fill_overprint);
+        assert!(stack.current().stroke_overprint);
+        assert_eq!(stack.current().overprint_mode, 1);
     }
 }

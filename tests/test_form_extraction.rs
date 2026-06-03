@@ -343,15 +343,18 @@ fn test_widget_spans_checkbox_checked() {
 
 #[test]
 fn test_widget_spans_checkbox_unchecked() {
-    // Unchecked checkboxes should render as [ ]
+    // An UNCHECKED checkbox carries no text and must NOT emit a "[ ]" marker
+    // (CORPUS-1): that synthetic noise made pdf_oxide diverge from pdftotext /
+    // PyMuPDF on AcroForm-heavy PDFs. Only the meaningful checked state "[x]"
+    // is surfaced (see test_widget_spans_checkbox_checked).
     let bytes = create_form_pdf_bytes();
     let (_temp, doc) = open_pdf_from_bytes(&bytes);
 
     let text = doc.extract_text(0).expect("Failed to extract text");
 
     assert!(
-        text.contains("[ ]"),
-        "Unchecked checkbox should render as '[ ]' in extracted text.\nGot: {}",
+        !text.contains("[ ]"),
+        "Unchecked checkbox must NOT emit a '[ ]' marker (noise).\nGot: {}",
         text
     );
 }

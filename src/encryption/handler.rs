@@ -174,6 +174,16 @@ impl EncryptionHandler {
         Permissions::from_bits(self.dict.permissions)
     }
 
+    /// Get the raw `/P` permission flag integer per PDF spec §7.6.3.2
+    /// Table 22. Used by [`crate::document::PdfDocument::permissions`]
+    /// to construct the [`crate::encryption::permissions::PdfPermissions`]
+    /// struct.
+    ///
+    /// PDF spec uses two's-complement int32 with bits 13-32 reserved.
+    pub fn raw_permissions(&self) -> i32 {
+        self.dict.permissions
+    }
+
     /// Get the encryption algorithm.
     pub fn algorithm(&self) -> Algorithm {
         self.algorithm

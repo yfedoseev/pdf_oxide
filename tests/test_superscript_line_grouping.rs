@@ -50,8 +50,15 @@ fn subscript_between_baseline_letters_stays_in_reading_order() {
         put(&mut page, "O", 122.0, 200.0, "Helvetica", 14.0);
     });
 
+    // v0.3.56: the document-level pass substitutes ASCII digits in
+    // lowered + smaller-font spans with their Unicode subscript
+    // equivalents (U+2080..U+2089). The chemistry-style formula
+    // therefore extracts as "H\u{2082}O" — the digit's Unicode
+    // codepoint preserves the subscript semantics that downstream
+    // search/index passes need. Reading order is still the
+    // assertion target: H, then subscript, then O.
     let collapsed: String = out.split_whitespace().collect();
-    assert_eq!(collapsed, "H2O", "got {:?}", out.trim_end());
+    assert_eq!(collapsed, "H\u{2082}O", "got {:?}", out.trim_end());
 }
 
 #[test]

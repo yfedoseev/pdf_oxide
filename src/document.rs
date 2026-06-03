@@ -293,7 +293,7 @@ thread_local! {
 /// # Memory management
 ///
 /// The document maintains several internal caches for performance. The main
-/// object cache is bounded at 64 MB (see `DEFAULT_OBJECT_CACHE_MAX_BYTES`) and
+/// object cache is bounded at 64 MB (see `DEFAULT_OBJECT_CACHE_MAX_BYTES`)
 /// uses FIFO eviction to prevent unbounded heap growth when processing
 /// many pages sequentially.
 pub struct PdfDocument {
@@ -313,7 +313,7 @@ pub struct PdfDocument {
     /// `BufReader` and read each other's bytes, surfacing as a spurious
     /// `[1000] invalid PDF structure or content stream`. Acquired only at
     /// the top-level entry of `load_object` (recursion depth 0) with a
-    /// double-checked cache, so warm cache hits stay fully parallel and
+    /// double-checked cache, so warm cache hits stay fully parallel
     /// same-thread recursion never re-acquires (no self-deadlock). #507.
     load_lock: Mutex<()>,
     /// Raw bytes of the document (kept for duplication/editing)
@@ -421,7 +421,7 @@ pub struct PdfDocument {
     /// LRU cache of decompressed page content streams, keyed by page index.
     page_content_cache: Mutex<BoundedEntryCache<usize, std::sync::Arc<Vec<u8>>>>,
     /// Cached signatures of running headers/footers detected via cross-page
-    /// repetition. A span whose normalized text matches a signature and
+    /// repetition. A span whose normalized text matches a signature
     /// sits near the top/bottom of the page is treated as an artifact.
     /// Populated lazily on first access; `Some(set)` with an empty set
     /// means detection ran and found nothing (vs `None` = not yet run).
@@ -436,6 +436,14 @@ pub struct PdfDocument {
     /// Populated when silent fallbacks occur (font not found, CMap absent, etc.).
     /// Retrieve with [`PdfDocument::warnings`]; drain with [`PdfDocument::take_warnings`].
     accumulated_warnings: Mutex<Vec<String>>,
+    /// structured warnings accumulator. Each
+    /// internal warning site that previously only called `log::warn!`
+    /// can additionally push a typed [`crate::extractors::warnings::Warning`]
+    /// here, letting callers retrieve diagnostics as structured data
+    /// (via [`PdfDocument::structured_warnings`]) instead of parsing
+    /// stderr text. The existing String-list `accumulated_warnings`
+    /// stays for back-compat.
+    warning_sink: crate::extractors::warnings::WarningSink,
 }
 
 // Compile-time verification that PdfDocument is Send + Sync.
@@ -520,7 +528,7 @@ pub enum PageArea {
 /// each object header so that the caller can then `load_uncompressed_object`
 /// at exactly that offset without parsing the whole file body.
 ///
-/// The scan is intentionally tolerant: it doesn't require `/Type` and
+/// The scan is intentionally tolerant: it doesn't require `/Type`
 /// `/ObjStm` to be separated by whitespace (many producers write
 /// `/Type/ObjStm`), doesn't anchor on any particular position within the
 /// header, and doesn't rely on xref entries being correct — which is the
@@ -624,6 +632,80 @@ fn contains_objstm_marker(window: &[u8]) -> bool {
     false
 }
 
+/// Append ink names declared by `Separation` and `DeviceN` colour spaces
+/// in `cs_dict` to `out`. Reserved colorants `/All` and `/None` (§8.6.6.4)
+/// are skipped. Caller is responsible for deduping across multiple calls.
+///
+/// When `doc` is `Some`, indirect references inside each colour-space array
+/// (e.g. a DeviceN whose names list is `4 0 R` rather than inline) are
+/// resolved. Tools that hand-build inline arrays and don't need indirection
+/// resolution can pass `None`.
+///
+/// Used by both [`PdfDocument::get_page_inks`] and
+/// [`PdfDocument::get_page_inks_deep`] so the per-colorant rules live in
+/// exactly one place.
+fn extract_inks_from_color_space_dict(
+    cs_dict: &std::collections::HashMap<String, Object>,
+    doc: Option<&PdfDocument>,
+    out: &mut Vec<String>,
+) {
+    let deref = |obj: &Object| -> Object {
+        match (obj.as_reference(), doc) {
+            (Some(r), Some(d)) => d.load_object(r).unwrap_or_else(|_| obj.clone()),
+            _ => obj.clone(),
+        }
+    };
+
+    for cs_def in cs_dict.values() {
+        let arr = match cs_def.as_array() {
+            Some(a) => a,
+            None => continue,
+        };
+        if arr.len() < 2 {
+            continue;
+        }
+        let cs_type = match arr.first().and_then(Object::as_name) {
+            Some(n) => n,
+            None => continue,
+        };
+        match cs_type {
+            "Separation" => {
+                // §8.6.6.2: [/Separation /InkName /AlternateCS /TintTransform].
+                // The name slot is usually inline but resolve indirects for safety.
+                let name_obj = match arr.get(1) {
+                    Some(o) => deref(o),
+                    None => continue,
+                };
+                if let Some(ink) = name_obj.as_name() {
+                    if ink != "All" && ink != "None" {
+                        out.push(ink.to_string());
+                    }
+                }
+            },
+            "DeviceN" => {
+                // §8.6.6.3: [/DeviceN <names-array> /AlternateCS /TintTransform <attrs>].
+                // The names array is commonly emitted as an indirect reference
+                // when the same colorant set is shared across multiple DeviceN
+                // spaces; resolve before unpacking the names.
+                let names_obj = match arr.get(1) {
+                    Some(o) => deref(o),
+                    None => continue,
+                };
+                if let Some(inks) = names_obj.as_array() {
+                    for ink_obj in inks {
+                        if let Some(ink) = ink_obj.as_name() {
+                            if ink != "All" && ink != "None" {
+                                out.push(ink.to_string());
+                            }
+                        }
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+}
+
 impl PdfDocument {
     /// Open a PDF document from in-memory bytes.
     ///
@@ -676,7 +758,7 @@ impl PdfDocument {
         // skip this lose access to APIs that re-read the bytes
         // (notably `compliance::convert_to_pdf_a`, which constructs a
         // `DocumentEditor` from `source_bytes` — an empty Vec breaks
-        // it with `"Invalid PDF header: ... File is empty"`). See
+        // it with `"Invalid PDF header: ... File is empty"`).
         // issue #456.
         //
         // The doc comment on this function already promised "Reads the
@@ -690,6 +772,11 @@ impl PdfDocument {
         let (major, minor, header_offset) = parse_header(&mut reader, true)?;
         let version = (major, minor);
 
+        // Whether the xref table below came from a full-file reconstruction
+        // scan (vs. a parsed xref). Used to pre-seed the object-scan cache so
+        // a later miss doesn't rescan the whole file a second time (#572).
+        let mut xref_reconstructed = false;
+
         // Try to parse xref table normally
         let (mut xref, trailer) = match Self::try_open_regular(&mut reader) {
             Ok((xref, trailer)) => {
@@ -700,6 +787,7 @@ impl PdfDocument {
                     log::warn!(
                         "Regular xref parsing succeeded but table is empty, attempting reconstruction"
                     );
+                    xref_reconstructed = true;
                     Self::try_reconstruct_xref(&mut reader)?
                 } else {
                     // A valid xref can have any number of entries (§7.5.4).
@@ -715,6 +803,7 @@ impl PdfDocument {
                 match Self::try_reconstruct_xref(&mut reader) {
                     Ok((reconstructed_xref, reconstructed_trailer)) => {
                         log::info!("Successfully reconstructed xref table");
+                        xref_reconstructed = true;
                         (reconstructed_xref, reconstructed_trailer)
                     },
                     Err(recon_err) => {
@@ -763,11 +852,37 @@ impl PdfDocument {
                 "Root object not loadable after xref parse, falling back to xref reconstruction"
             );
             match Self::try_reconstruct_xref(&mut reader) {
-                Ok(result) => result,
+                Ok(result) => {
+                    xref_reconstructed = true;
+                    result
+                },
                 Err(_) => (xref, trailer), // Use original if reconstruction also fails
             }
         } else {
             (xref, trailer)
+        };
+
+        // #572: a reconstruction scan already located every uncompressed
+        // "N G obj" in the file, so a later scan_for_object full-file rescan
+        // (on the first object miss) would find nothing new — it just repeats
+        // the work, the ~25 s "first extract_text" cost on corrupt-xref
+        // polyglots. Pre-seed the scan-offset cache from the reconstructed
+        // table so that first miss is O(1). Only do this when reconstructed:
+        // a normal (parsed) xref may be legitimately partial, and there the
+        // full scan is the intended recovery path.
+        let prepopulated_scan: Option<HashMap<u32, u64>> = if xref_reconstructed {
+            Some(
+                xref.all_object_numbers()
+                    .filter_map(|id| {
+                        xref.get(id).and_then(|e| {
+                            (e.in_use && e.entry_type == crate::xref::XRefEntryType::Uncompressed)
+                                .then_some((id, e.offset))
+                        })
+                    })
+                    .collect(),
+            )
+        } else {
+            None
         };
 
         // Note: Encryption initialization was originally lazy, but decode_stream_with_encryption
@@ -794,7 +909,7 @@ impl PdfDocument {
             structure_content_cache: Mutex::new(None),
             page_cache: Mutex::new(HashMap::new()),
             page_cache_populated: AtomicBool::new(false),
-            scanned_object_offsets: Mutex::new(None),
+            scanned_object_offsets: Mutex::new(prepopulated_scan),
             objstm_recovery_done: Mutex::new(false),
             image_xobject_cache: Mutex::new(HashSet::new()),
             xobject_text_free_cache: Mutex::new(HashSet::new()),
@@ -810,6 +925,7 @@ impl PdfDocument {
             page_content_cache: Mutex::new(BoundedEntryCache::new(64)),
             running_artifact_signatures: Mutex::new(None),
             accumulated_warnings: Mutex::new(Vec::new()),
+            warning_sink: crate::extractors::warnings::WarningSink::new(),
         };
 
         // Initialize encryption immediately
@@ -1770,7 +1886,7 @@ impl PdfDocument {
         // Find ObjStm candidates by raw pattern search in the file body.
         //
         // Why not iterate xref entries here: the xref is precisely what we
-        // don't trust in this recovery path — its offsets may be wrong and
+        // don't trust in this recovery path — its offsets may be wrong
         // its type tags may be lying about what each slot contains. A raw
         // search for `N G obj ... /Type /ObjStm` finds every object stream
         // the producer actually wrote, independent of how the xref
@@ -2009,7 +2125,7 @@ impl PdfDocument {
             // uniformly for all object ids (critical low-numbered catalog
             // objects and page objects in the thousands); previously low
             // ids took a separate "fall through to loading logic" path
-            // that silently hit the Free arm of the entry_type match and
+            // that silently hit the Free arm of the entry_type match
             // still ended up Null.
             //
             // Recovery path 1 — standalone `N G obj` marker in the file
@@ -2183,7 +2299,7 @@ impl PdfDocument {
     /// Resolve a single-level indirect reference (PDF spec §7.3.10).
     ///
     /// If `obj` is `Object::Reference(...)`, loads and returns the target object.
-    /// For any other object type, returns a clone unchanged.  This is the
+    /// For any other object type, returns a clone unchanged. This is the
     /// canonical way to handle "any value may be a direct or indirect reference"
     /// throughout the parser.
     fn resolve_obj_ref(&self, obj: &Object) -> Object {
@@ -2241,14 +2357,14 @@ impl PdfDocument {
             return true; // conservative fallback
         }
 
-        // Seek + read under a SINGLE lock guard. Splitting the seek and
+        // Seek + read under a SINGLE lock guard. Splitting the seek
         // the read across two `self.reader.lock_or_recover()` acquisitions
         // is the #398 Race A split-lock bug (same one already fixed in
         // `load_uncompressed_object_impl`): a concurrent thread can
         // re-seek the shared reader between our seek() and read(), so we
         // read a garbage buffer for a different object. That surfaced as
         // a spurious `[1000] invalid PDF structure or content stream`
-        // ParseError under concurrent `render_page_fit` (issue #507).
+        // ParseError under concurrent `render_page_fit`.
         let offset = entry.offset;
         let mut buf = [0u8; 1024];
         let n = {
@@ -2320,7 +2436,7 @@ impl PdfDocument {
     ///
     /// The retain filter in `extract_text_with_options` removes every
     /// span whose bbox is contained in a detected table's bbox. On CJK
-    /// reference-data PDFs (issue #329) the test-name label column is
+    /// reference-data PDFs the test-name label column is
     /// narrow and vertically centred within each multi-row data block,
     /// so its spans are inside the table bbox and would be dropped
     /// without replacement — the spatial table extractor does not emit
@@ -2730,7 +2846,16 @@ impl PdfDocument {
             let bytes_read = reader.read_until(b'\n', &mut header_bytes)?;
 
             if bytes_read == 0 {
-                log::warn!("Unexpected EOF while reading object {} header", obj_ref.id);
+                let msg = format!("Unexpected EOF while reading object {} header", obj_ref.id);
+                log::warn!("{}", msg);
+                // also push into structured sink so
+                // callers can retrieve as data via flatten_warnings.
+                self.push_structured_warning(crate::extractors::warnings::Warning {
+                    category: crate::extractors::warnings::WarningCategory::EofPremature,
+                    page: None,
+                    message: msg,
+                    spec_section: Some("7.5"),
+                });
                 return Err(Error::UnexpectedEof);
             }
 
@@ -2898,11 +3023,19 @@ impl PdfDocument {
                 }
 
                 if bytes_read == 0 {
-                    log::warn!(
+                    let msg = format!(
                         "Unexpected EOF while reading object {} (no endobj found after {} bytes)",
                         obj_ref.id,
                         data.len()
                     );
+                    log::warn!("{}", msg);
+                    // structured-warnings sink.
+                    self.push_structured_warning(crate::extractors::warnings::Warning {
+                        category: crate::extractors::warnings::WarningCategory::EofPremature,
+                        page: None,
+                        message: msg,
+                        spec_section: Some("7.5"),
+                    });
                     // Don't fail - try to parse what we have
                     break;
                 }
@@ -3004,8 +3137,8 @@ impl PdfDocument {
         );
 
         // Per PDF §7.6.3, object streams (/Type /ObjStm) shall NOT be individually
-        // encrypted.  Encryption initialization is therefore not required to read an
-        // ObjStm: the unencrypted parse path below is always attempted first.  If
+        // encrypted. Encryption initialization is therefore not required to read an
+        // ObjStm: the unencrypted parse path below is always attempted first. If
         // initialization fails (e.g. unsupported algorithm, no legacy-crypto feature),
         // log and continue — the handler will be None and we'll use the no-decryption
         // path, which is exactly what the spec mandates for ObjStm content.
@@ -3049,14 +3182,14 @@ impl PdfDocument {
 
         // Parse all objects from the stream.
         //
-        // Per ISO 32000-2:2020 Section 7.6.3, object streams (/Type /ObjStm) and
+        // Per ISO 32000-2:2020 Section 7.6.3, object streams (/Type /ObjStm)
         // cross-reference streams (/Type /XRef) shall NOT be individually encrypted.
-        // The stream data is only compressed, not encrypted.  Many PDF producers
+        // The stream data is only compressed, not encrypted. Many PDF producers
         // (including many real-world producers) follow this rule even under
         // PDF 1.x, so attempting AES decryption on the raw stream bytes fails
         // because the data length is not a multiple of the AES block size (16).
         //
-        // We therefore always parse object streams WITHOUT decryption.  If a
+        // We therefore always parse object streams WITHOUT decryption. If a
         // future PDF is encountered where the producer DID encrypt the ObjStm
         // (non-standard), the unencrypted parse will fail and we fall back to
         // trying with decryption.
@@ -3293,7 +3426,7 @@ impl PdfDocument {
         }
 
         // The trailer omits /Root. A Linearized file's sparse end-of-file
-        // trailer legitimately does this (issue #509); discover the Catalog
+        // trailer legitimately does this; discover the Catalog
         // by scanning indirect objects for /Type /Catalog, as Poppler /
         // PDFium do.
         self.find_catalog_by_scan().ok_or_else(|| {
@@ -3306,7 +3439,7 @@ impl PdfDocument {
 
     /// Scan indirect objects for the document Catalog (`/Type /Catalog`).
     ///
-    /// Used only as a fallback when the trailer omits `/Root` (issue #509).
+    /// Used only as a fallback when the trailer omits `/Root`.
     /// Bounded so a pathological xref can't turn this into an unbounded
     /// scan; the Catalog is virtually always one of the first objects.
     ///
@@ -3368,6 +3501,64 @@ impl PdfDocument {
     /// ```
     pub fn structure_tree(&self) -> Result<Option<crate::structure::StructTreeRoot>> {
         crate::structure::parse_structure_tree(self)
+    }
+
+    /// Returns the document's structure tree **only when it is trustworthy for
+    /// reading-order purposes**, per ISO 32000-1:2008 §14.8.2.3.1 and §14.7.1.
+    ///
+    /// A `/StructTreeRoot` encodes the producer's *logical structure order* — a
+    /// depth-first traversal of the tag hierarchy — which is authoritative for
+    /// reading order independent of glyph geometry (§14.7.1). It is trusted when
+    /// the document is `/Marked` (Tagged PDF) **or** the catalog directly
+    /// references a `/StructTreeRoot` (PDF 1.3/1.4 tagged files predate the
+    /// `/MarkInfo` dictionary; §7.7.2) — matching the historical gate so output
+    /// for non-suspect documents is byte-for-byte unchanged — **and**
+    /// `/MarkInfo /Suspects` is not `true`. A `true` `/Suspects` flag is the
+    /// spec-sanctioned signal (the `/TagSuspect /Ordering` mechanism,
+    /// §14.8.2.3.1) that page content order may not match logical structure
+    /// order, so the tree is rejected and callers fall back to geometric order.
+    ///
+    /// Shares `structure_tree_cache`, so this costs a single cached parse.
+    pub(crate) fn struct_tree_trustworthy(&self) -> Option<Arc<crate::structure::StructTreeRoot>> {
+        let mark = self.mark_info().unwrap_or_default();
+        // Suspect documents: geometric reading order is spec-correct
+        // (§14.8.2.3.1). This is the only behavioural change versus the legacy
+        // inline gate, which never consulted /Suspects.
+        if mark.suspects {
+            return None;
+        }
+        let cached = self.structure_tree_cache.lock_or_recover().clone();
+        match cached {
+            Some(tree) => tree,
+            None => {
+                let has_struct_tree_root = self
+                    .catalog()
+                    .ok()
+                    .and_then(|cat| cat.as_dict().map(|d| d.contains_key("StructTreeRoot")))
+                    .unwrap_or(false);
+                let tree = if mark.marked || has_struct_tree_root {
+                    self.structure_tree().ok().flatten().map(Arc::new)
+                } else {
+                    None
+                };
+                *self.structure_tree_cache.lock_or_recover() = Some(tree.clone());
+                tree
+            },
+        }
+    }
+
+    /// Whether text extraction uses the Tagged-PDF *logical structure order* (a
+    /// depth-first traversal of `/StructTreeRoot`) rather than geometric
+    /// page-content order for this document.
+    ///
+    /// Returns `true` exactly when the document carries a trustworthy structure
+    /// tree per ISO 32000-1:2008 §14.8.2.3.1 / §14.7.1: it is `/Marked` or the
+    /// catalog references a `/StructTreeRoot`, the tree resolves non-empty, and
+    /// `/MarkInfo /Suspects` is not `true`. When `false`, extraction falls back
+    /// to geometric reading order. This is a read-only introspection accessor;
+    /// it does not change extraction behaviour.
+    pub fn prefers_structure_reading_order(&self) -> bool {
+        self.struct_tree_trustworthy().is_some()
     }
 
     /// Find the document's default CMYK output-intent profile.
@@ -3549,7 +3740,7 @@ impl PdfDocument {
             Err(Error::EncryptedPdf) => Err(Error::EncryptedPdf),
             Err(e) => {
                 // For encrypted PDFs any failure to read the page tree means we
-                // cannot access the content.  Scanning would also return Ok(0),
+                // cannot access the content. Scanning would also return Ok(0),
                 // so skip the fallback and surface the real error immediately.
                 if self.is_encrypted() {
                     log::warn!("Page count failed for encrypted PDF: {}", e);
@@ -3605,11 +3796,16 @@ impl PdfDocument {
             }
         }
 
+        // §7.3.10: *any* element of the rectangle array may itself be an
+        // indirect reference (pdf.js issue7872 stores `/MediaBox
+        // [4 0 R 5 0 R 6 0 R 7 0 R]`). Resolve each element before
+        // coercing — otherwise an unresolved Reference reads as 0.0 and
+        // the page collapses to a zero-area box that clips all content.
         Ok((
-            to_f32(&media_box[0]),
-            to_f32(&media_box[1]),
-            to_f32(&media_box[2]),
-            to_f32(&media_box[3]),
+            to_f32(&self.resolve_obj_ref(&media_box[0])),
+            to_f32(&self.resolve_obj_ref(&media_box[1])),
+            to_f32(&self.resolve_obj_ref(&media_box[2])),
+            to_f32(&self.resolve_obj_ref(&media_box[3])),
         ))
     }
 
@@ -3810,7 +4006,7 @@ impl PdfDocument {
     /// Get page count as u32 (legacy API).
     ///
     /// This is a convenience method that returns the page count as a u32.
-    /// It calls `page_count()` internally but converts the result and
+    /// It calls `page_count()` internally but converts the result
     /// returns 0 if an error occurs (for backward compatibility).
     #[deprecated(
         since = "0.1.0",
@@ -4677,7 +4873,25 @@ impl PdfDocument {
     /// println!("Page 1 text: {}", text);
     /// # Ok::<(), pdf_oxide::error::Error>(())
     /// ```
-    /// Extract text from a page.
+    ///
+    /// # Extract text from a page
+    ///
+    /// pdf_oxide exposes three plain-text surfaces with different strengths
+    /// (#554). Pick by document shape:
+    ///
+    /// - `extract_text(page)` (this method) — glyph-walk assembly with
+    ///   row-aware ordering, inline table rendering, and artifact filtering.
+    ///   The most discoverable default; strongest on single-column prose.
+    /// - `to_plain_text(page, opts)` / `to_plain_text_all(opts)` — runs the
+    ///   full pipeline (reading-order strategy incl. XY-cut). Best on
+    ///   multi-column / complex layouts where reading order matters.
+    /// - `to_markdown_all(opts)` then strip markup — preserves structure
+    ///   (headings, lists, tables) and often scores highest on heavily
+    ///   structured documents; lossiest for pure prose.
+    ///
+    /// No single mode wins on every PDF; when extraction quality is critical
+    /// and the layout is unknown, compare `to_plain_text_all` and
+    /// markdown-stripped output and keep whichever is better for your corpus.
     pub fn extract_text(&self, page_index: usize) -> Result<String> {
         // Enable table extraction so that tabular content is preserved as
         // space-padded, column-aligned rows (see Table::render_text).
@@ -4694,9 +4908,38 @@ impl PdfDocument {
         page_index: usize,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
+        let base_spans = self.extract_spans(page_index)?;
+        let text = self.assemble_text_from_spans(page_index, base_spans, options)?;
+        Ok(Self::apply_mixed_rtl_line_pass(text))
+    }
+
+    /// Per-line UAX #9 pass for mixed-direction lines (bidi item 4): for each
+    /// output line that is confidently RTL and mixes Arabic/Hebrew with
+    /// European/Arabic-Indic numerals or Latin words (e.g. a date
+    /// `14 april 1434 ٤٣٤١`), give the embedded LTR sub-runs their left-to-right
+    /// sublevel (UAX #9 §3.3.4) while leaving the already-logical RTL runs fixed.
+    /// Gated inside `reorder_mixed_rtl_line`, so pure-RTL, pure-LTR, and
+    /// non-RTL lines are returned byte-for-byte unchanged; the ASCII fast path
+    /// keeps all Latin-only extraction identical.
+    fn apply_mixed_rtl_line_pass(text: String) -> String {
+        if text.is_ascii() {
+            return text;
+        }
+        text.split('\n')
+            .map(crate::text::bidi::reorder_mixed_rtl_line)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn assemble_text_from_spans(
+        &self,
+        page_index: usize,
+        base_spans: Vec<crate::layout::TextSpan>,
+        options: &crate::converters::ConversionOptions,
+    ) -> Result<String> {
         self.require_authenticated()?;
 
-        let mut base_spans = self.extract_spans(page_index)?;
+        let mut base_spans = base_spans;
 
         // Drop spans that fall inside any caller-specified exclusion region.
         // This runs before the structure-tree and table pipelines so that
@@ -4714,42 +4957,19 @@ impl PdfDocument {
             base_spans = base_spans.filter_by_rect(region, mode);
         }
 
-        // Structure tree: try to load when MarkInfo says "marked" OR when the
-        // catalog directly references a StructTreeRoot (PDF 1.4 documents such
-        // as hello_structure.pdf predate the MarkInfo dictionary but are still
-        // valid tagged PDFs per §14.7.1).  Checking the catalog for
-        // /StructTreeRoot is cheap — it's a single dictionary key lookup.
-        let cached_tree = {
-            let cached = self.structure_tree_cache.lock_or_recover().clone();
-            match cached {
-                Some(tree) => tree,
-                None => {
-                    let is_marked = self.mark_info().map(|m| m.marked).unwrap_or(false);
-                    // Fall back to checking the catalog directly when MarkInfo is
-                    // absent or /Marked is false — presence of /StructTreeRoot is
-                    // authoritative for "is this a tagged PDF" per the spec.
-                    let has_struct_tree_root = !is_marked
-                        && self
-                            .catalog()
-                            .ok()
-                            .and_then(|cat| cat.as_dict().map(|d| d.contains_key("StructTreeRoot")))
-                            .unwrap_or(false);
-                    let tree = if is_marked || has_struct_tree_root {
-                        self.structure_tree().ok().flatten().map(Arc::new)
-                    } else {
-                        None
-                    };
-                    *self.structure_tree_cache.lock_or_recover() = Some(tree.clone());
-                    tree
-                },
-            }
-        };
+        // Structure tree: use it for reading order only when it is trustworthy
+        // per the shared predicate (§14.8.2.3.1) — the document is /Marked or
+        // the catalog references a /StructTreeRoot (PDF 1.4 documents such as
+        // hello_structure.pdf predate /MarkInfo but are still tagged, §14.7.1),
+        // AND /MarkInfo /Suspects is not true. Suspect documents fall through to
+        // the geometric `else` arm below, the spec-correct behaviour.
+        let cached_tree = self.struct_tree_trustworthy();
         let widget_spans = self.extract_widget_spans(page_index);
 
         // Table detection uses base spans only (no widget spans).
         let tables = if options.extract_tables {
             // text_fallback=false: extract_text preserves the pre-v0.3.47 behaviour
-            // where line-less pages return no tables.  Only the structured-output
+            // where line-less pages return no tables. Only the structured-output
             // converters (to_markdown, to_html) opt in to text-only spatial fallback.
             self.extract_page_tables(page_index, &base_spans, options, false)
         } else {
@@ -4793,14 +5013,14 @@ impl PdfDocument {
             let mut spans = all_spans;
 
             // Exclude spans that are inside detected tables, BUT
-            // preserve multi-row-spanning label columns (issue #329).
+            // preserve multi-row-spanning label columns.
             // The spatial table extractor clusters data cells into
             // table cells but does NOT emit the sparse label column
             // that sits vertically centred within each multi-row data
             // block (common on CJK lab-report reference tables like
             // WS/T 779). Those labels would otherwise be dropped
             // entirely from the output: the retain below would remove
-            // them because their bbox is inside the table, and
+            // them because their bbox is inside the table,
             // `table.render_text()` would not re-emit them because the
             // extractor never captured them as cells. Before running
             // the retain filter we identify these rowspan labels (same
@@ -5024,7 +5244,7 @@ impl PdfDocument {
             // as isolated fragments interleaved with other spans (pdfa_004).
             Self::merge_sub_superscript_spans(&mut spans);
 
-            // Inline table insertion (issue #315).
+            // Inline table insertion.
             //
             // Tables were previously rendered in a single block appended
             // at the end of the page text, after all flow spans. That
@@ -5098,7 +5318,7 @@ impl PdfDocument {
                     // contained within the previous span AND has identical text.
                     // Without the text comparison, distinct lines that happen to
                     // overlap spatially (e.g., due to small Tm-scaled offsets)
-                    // would be silently dropped (issue #254).
+                    // would be silently dropped.
                     let y_same = (prev.bbox.y - span.bbox.y).abs() < 2.0;
                     if y_same
                         && span.bbox.x >= prev.bbox.x - 0.5
@@ -5148,9 +5368,9 @@ impl PdfDocument {
                             && !text.ends_with(' ')
                             && !text.ends_with('\n')
                         {
-                            // Inflated-width overlap recovery (issue #328).
+                            // Inflated-width overlap recovery.
                             // A negative raw gap here usually comes from a
-                            // font whose `/Widths` array is missing and
+                            // font whose `/Widths` array is missing
                             // `FontInfo::new` fell back to the 550/1000-em
                             // constant, which over-reports each glyph's
                             // advance and drags `prev_end_x` past the real
@@ -5160,7 +5380,7 @@ impl PdfDocument {
                             // the same word — the overlap is a width-table
                             // artifact, not real kerning — so insert a
                             // space to preserve the word boundary. This
-                            // rescues cases like "STATION" + "FREEDOM" and
+                            // rescues cases like "STATION" + "FREEDOM"
                             // "UTILIZATION" + "CONFERENCE" in the NASA
                             // Apollo report header where raw gaps of
                             // -1.75 pt and -12.75 pt sit alongside
@@ -5172,11 +5392,26 @@ impl PdfDocument {
                     {
                         // Forward-gap guard: pairs newly admitted to same-line
                         // handling by the widened threshold get a column/field-
-                        // boundary check against FORWARD_GAP_K * max(fs). See
+                        // boundary check against FORWARD_GAP_K * max(fs).
                         // the constant's doc comment for calibration notes.
                         if !text.ends_with('\n') {
                             text.push('\n');
                         }
+                    } else if prev.font_name != span.font_name
+                        && gap > 0.5
+                        && gap < prev.font_size.max(span.font_size).max(6.0) * 3.0
+                        && !text.ends_with(' ')
+                        && !text.ends_with('\n')
+                    {
+                        // Same-line font transition with a meaningful
+                        // positive gap. Cross-font runs that survive the
+                        // upstream `cross_font_word_glue` merge (i.e.
+                        // both sides are multi-char) are word boundaries
+                        // even when the gap is too small for the generic
+                        // `should_insert_space` threshold (0.15 × fs) —
+                        // e.g. roman → italic transitions in academic
+                        // paper headers sit at ~2.7 pt at 10.9 pt body.
+                        text.push(' ');
                     } else if Self::should_insert_space(prev, span) {
                         text.push(' ');
                     } else {
@@ -5601,6 +5836,48 @@ impl PdfDocument {
         crate::ocr::extract_text_with_ocr(self, page_index, ocr_engine, ocr_options)
     }
 
+    /// Run the supplied OCR engine against the largest embedded image
+    /// on the page, regardless of whether the page has a native text
+    /// layer.
+    ///
+    /// The existing [`extract_text_with_ocr`] is text-layer-first
+    /// (OCR only when no native text), which can mask poor-quality
+    /// auto-OCR'd layers from scanner pipelines. This companion
+    /// always invokes the engine via [`crate::ocr::ocr_page`] —
+    /// useful when callers know the embedded layer is unreliable and
+    /// want the OCR pass for cross-checking.
+    ///
+    /// **Limitation**: the OCR target is the largest embedded
+    /// `/XObject Image` on the page (see [`crate::ocr::ocr_page`]).
+    /// For born-digital PDFs with no embedded raster, the underlying
+    /// helper falls back to native [`Self::extract_text`] when
+    /// `ocr_options.fallback_to_native` is set, otherwise returns an
+    /// empty string. Full-page rasterization (render → image → OCR)
+    /// is **not** performed here; callers that need it should drive
+    /// it directly via [`crate::rendering::render_page`] (requires
+    /// the `rendering` feature) and feed the result through their
+    /// own engine.
+    ///
+    /// Errors: returns `Error::OcrUnavailable { reason: ModelLoadFailed }`
+    /// when the OCR backend fails to initialise (e.g. missing
+    /// `libonnxruntime.so`) — the [`catch_unwind`](std::panic::catch_unwind)
+    /// in `OrtBackend::from_bytes` keeps that path panic-free.
+    #[cfg(feature = "ocr")]
+    pub fn extract_text_ocr_only(
+        &self,
+        page_index: usize,
+        ocr_engine: &crate::ocr::OcrEngine,
+        ocr_options: crate::ocr::OcrExtractOptions,
+    ) -> Result<String> {
+        crate::ocr::ocr_page(self, page_index, ocr_engine, &ocr_options).map_err(|e| {
+            Error::OcrUnavailable {
+                reason: crate::extractors::status::OcrUnavailableReason::ModelLoadFailed {
+                    detail: e.to_string(),
+                },
+            }
+        })
+    }
+
     /// Extract TextSpans with automatic OCR fallback for scanned pages.
     ///
     /// This method extracts text spans using native PDF text extraction, but falls back
@@ -5794,10 +6071,70 @@ impl PdfDocument {
                     has_presentation_form = true;
                 }
             }
-            if has_presentation_form && total >= 4 && rtl_count * 2 > total {
+            // #557: Pass 0 only applies to a *whole-line* visual-order span —
+            // one span holding several words separated by internal whitespace,
+            // in the order the content stream drew them (rightmost first). When
+            // the extractor instead emits one span PER WORD (the common
+            // CID-TrueType case, e.g. ArabicCIDTrueType.pdf), each word's
+            // characters are already in logical order, so char-reversing them
+            // here corrupts them. Their right-to-left *word* order is fixed
+            // separately by the span-run reversal pass below. Gate on internal
+            // whitespace so per-word logical spans are left untouched.
+            let has_internal_whitespace = span.text.trim().chars().any(|c| c.is_whitespace());
+            if has_presentation_form
+                && has_internal_whitespace
+                && total >= 4
+                && rtl_count * 2 > total
+            {
                 let reversed: String = span.text.chars().rev().collect();
                 span.text = reversed;
             }
+        }
+
+        // #557 Pass 0.5: per-word RTL span ORDER. The row-aware sort placed
+        // spans left-to-right (x ascending), but a right-to-left script reads
+        // the words in the opposite direction. For each maximal run of
+        // consecutive same-line spans that is purely RTL (every non-space span
+        // holds RTL letters and no Latin letters), reverse the run's order so
+        // the words come out in logical reading order. Each word's characters
+        // are left as-is (they are already logical — see Pass 0's gate).
+        let is_space = |s: &TextSpan| s.text.trim().is_empty();
+        let is_rtl_word = |s: &TextSpan| {
+            let mut has_rtl = false;
+            for c in s.text.chars() {
+                if c.is_ascii_alphabetic() {
+                    return false; // Latin letter → not a pure-RTL word
+                }
+                if is_rtl_text(c as u32) {
+                    has_rtl = true;
+                }
+            }
+            has_rtl
+        };
+        let mut i = 0;
+        while i < spans.len() {
+            if !is_rtl_word(&spans[i]) {
+                i += 1;
+                continue;
+            }
+            let y = spans[i].bbox.y;
+            let start = i;
+            let mut end = i + 1;
+            while end < spans.len()
+                && (spans[end].bbox.y - y).abs() < 2.0
+                && (is_rtl_word(&spans[end]) || is_space(&spans[end]))
+            {
+                end += 1;
+            }
+            // Trim trailing space spans so separators stay between words.
+            let mut last = end;
+            while last > start + 1 && is_space(&spans[last - 1]) {
+                last -= 1;
+            }
+            if last - start >= 2 {
+                spans[start..last].reverse();
+            }
+            i = end;
         }
 
         if spans.len() < 4 {
@@ -6000,9 +6337,9 @@ impl PdfDocument {
         let min_fs = prev.font_size.min(current.font_size).max(1.0);
         // Continuous formula — avoids the step discontinuity at the 4×
         // ratio boundary. Examples:
-        //   same-size 12 pt body: max(12×1.2, 12×0.3) = 14.4 pt  ← 1.2× leading
-        //   heading+body 24+10 pt: max(10×1.2, 24×0.3) = 12.0 pt  ← keeps para break
-        //   superscript 12+6 pt:   max(6×1.2, 12×0.3) = 7.2 pt   ← same line
+        //   same-size 12 pt body: max(12×1.2, 12×0.3) = 14.4 pt ← 1.2× leading
+        //   heading+body 24+10 pt: max(10×1.2, 24×0.3) = 12.0 pt ← keeps para break
+        //   superscript 12+6 pt: max(6×1.2, 12×0.3) = 7.2 pt ← same line
         // Prior formula was max_fs×0.5 for normal ratios; new formula uses 1.2× of the
         // smaller font, which is wider and reduces false newlines for normal leading.
         // Formula: max(min_fs * 1.2, max_fs * 0.3)
@@ -6159,6 +6496,18 @@ impl PdfDocument {
             return false;
         }
 
+        // Emoji / pictographic → letter boundary: a wide pictographic glyph
+        // (e.g. 📄) abuts the next token, so the proportional-gap test below
+        // would drop the inter-token space (`📄README` instead of `📄 README`).
+        // Word boundaries are reader latitude (ISO 32000-1:2008 §9.10); keep the
+        // space. The alphabetic-follower requirement excludes combined ZWJ/VS
+        // emoji sequences (whose next char is a selector or another pictograph).
+        if prev_tail.is_some_and(crate::extractors::text::is_pictographic)
+            && curr_head.is_some_and(char::is_alphabetic)
+        {
+            return true;
+        }
+
         // Calculate horizontal gap
         let prev_end_x = prev.bbox.x + prev.bbox.width;
         let gap = current.bbox.x - prev_end_x;
@@ -6166,17 +6515,17 @@ impl PdfDocument {
         // CJK script ↔ non-CJK boundary: pdftotext (and the GT it produces)
         // inserts a space wherever a CJK *script* glyph (ideograph, kana, or
         // hangul) meets a Latin/digit character on the same line, regardless
-        // of how tightly the two were typeset.  Without this, mixed-script
+        // of how tightly the two were typeset. Without this, mixed-script
         // content like "神鹰集团" + "2015" collapses into one token
-        // "神鹰集团2015", which never matches GT's separate "神鹰集团" and
+        // "神鹰集团2015", which never matches GT's separate "神鹰集团"
         // "2015" tokens (issue 484, pr-136).
         //
         // IMPORTANT: this MUST exclude fullwidth ASCII variants (U+FF01..FF5E
         // — ＜＞＝＠ etc.) and CJK Symbols and Punctuation (U+3000..303F) even
-        // though they are technically "CJK characters".  Those are *operator*
+        // though they are technically "CJK characters". Those are *operator*
         // glyphs that sit inline with adjacent digits and Latin in CJK
-        // technical documents — pdftotext keeps "60000≤Q＜80000" and
-        // "20＜μ≤30" as compound tokens (issue 484, issue-336).  Forcing a
+        // technical documents — pdftotext keeps "60000≤Q＜80000"
+        // "20＜μ≤30" as compound tokens (issue 484, issue-336). Forcing a
         // boundary space there destroys the compound and regresses Jaccard.
         let is_cjk_script = |c: char| {
             matches!(
@@ -6196,7 +6545,7 @@ impl PdfDocument {
         };
         // ASCII punctuation hugs the preceding token in every script —
         // pdftotext's GT renders "する." with no space and "神鹰，2015"
-        // with no space before the comma either.  Suppress the boundary
+        // with no space before the comma either. Suppress the boundary
         // forced-space when the transitioning glyph IS the punctuation;
         // the space-threshold path below still handles real gaps.
         let is_clause_punct =
@@ -6212,18 +6561,18 @@ impl PdfDocument {
         // This aligns with the text extractor's font-aware threshold (~50% of space width).
         let space_threshold = font_size * 0.15;
 
-        // Insert space if gap is significant.  Previously the upper bound was
+        // Insert space if gap is significant. Previously the upper bound was
         // `gap < font_size * 5.0` on the rationale that very large gaps mean
         // "column boundary, no space needed" — but downstream the caller
         // concatenates the two spans together when this returns false, so
         // "column boundary" actually rendered as `3.80%4.41%` on wide rate
-        // tables (issue 487 pr-138-example.pdf).  Drop the upper bound so any
+        // tables (issue 487 pr-138-example.pdf). Drop the upper bound so any
         // gap above the inter-glyph threshold gets at least a single space.
         gap > space_threshold
     }
 
     /// Detect a span whose text is `N.M` (all-digit groups around one dot) and whose
-    /// bbox.width is >40% larger than char_widths imply.  This pattern occurs in
+    /// bbox.width is >40% larger than char_widths imply. This pattern occurs in
     /// sailing-score / competition-table PDFs where two adjacent columns (e.g. Q8=1,
     /// F9=10) are stored as a single Tj text run "1.10" spanning both column cells.
     /// Reference ground truth tokenises them as separate words; we must split at the dot.
@@ -6243,17 +6592,17 @@ impl PdfDocument {
             return false;
         }
         let char_count = text.chars().count();
-        // Signal 1: sparse char_widths array.  When the font's glyph
+        // Signal 1: sparse char_widths array. When the font's glyph
         // iteration produces fewer advance-width entries than there are
         // characters in the decoded string, the span was assembled from two
         // (or more) concatenated Tj runs whose widths come from different
-        // points in the glyph table.  This is the exact pattern issue 487
+        // points in the glyph table. This is the exact pattern issue 487
         // nougat_018 sailing-score grids hit: each score cell is emitted as
         // a single Tj like `1.10` with `char_widths=[w]` while the PDF
         // semantically means "1" followed by "10" in adjacent score
-        // columns.  bbox.width can still be tight here (the producer set
+        // columns. bbox.width can still be tight here (the producer set
         // it to cover just the rendered glyph run), so the existing
-        // bbox-inflation check below misses these.  Catch them via the
+        // bbox-inflation check below misses these. Catch them via the
         // sparse-cw signal directly.
         if !span.char_widths.is_empty() && span.char_widths.len() < char_count {
             return true;
@@ -6272,7 +6621,7 @@ impl PdfDocument {
         };
         // Use absolute gap (bbox_w - expected) rather than a ratio so that
         // 5-char spans like "12.11" (gap ≈ 1.1×fs) are caught along with
-        // 4-char spans like "1.10" (gap ≈ 1.4×fs).  1.0×font_size is a safe
+        // 4-char spans like "1.10" (gap ≈ 1.4×fs). 1.0×font_size is a safe
         // lower bound: normal text rarely has >1em of hidden whitespace.
         let gap = span.bbox.width - expected_width;
         span.font_size > 0.0 && gap > span.font_size * 1.0
@@ -6282,7 +6631,7 @@ impl PdfDocument {
     /// `decode_text_to_unicode` produces unicode chars, `char_widths.len()` < char count.
     /// This indicates two concatenated text runs stored in one Tj operator (e.g. "Theorem1.7"
     /// where "Theorem" widths come from the font's glyph table and "1.7" doesn't have
-    /// matching glyph entries).  Return the byte offset at which to insert a space,
+    /// matching glyph entries). Return the byte offset at which to insert a space,
     /// or None if no split is appropriate.
     pub(crate) fn char_widths_boundary_split(span: &TextSpan) -> Option<usize> {
         let cw_len = span.char_widths.len();
@@ -6301,7 +6650,7 @@ impl PdfDocument {
             return None;
         }
         // Non-ASCII chars at the boundary are encoding artifacts (e.g. Polish diacritics
-        // in Latin-2 / CP1250 fonts producing one fewer char_width entry).  Only split
+        // in Latin-2 / CP1250 fonts producing one fewer char_width entry). Only split
         // when the boundary char is ASCII, indicating a genuine text-run concatenation.
         if !boundary_char.is_ascii() {
             return None;
@@ -6335,7 +6684,7 @@ impl PdfDocument {
     ///  - The vertical offset between base and sub is in [8 %, 85 %] of base_fs
     ///    (distinguishes true sub/superscripts from same-line small caps)
     ///
-    /// Matched subscript/superscript spans have their text appended to the base and
+    /// Matched subscript/superscript spans have their text appended to the base
     /// are removed from `spans`.
     fn merge_sub_superscript_spans(spans: &mut Vec<TextSpan>) {
         let n = spans.len();
@@ -6353,10 +6702,25 @@ impl PdfDocument {
 
         for i in 0..n {
             let sub = &spans[i];
-            if sub.text.is_empty() || sub.text.len() > 3 {
+            // Char-count gate (not byte-count): U+00B2/B3/B9 are 2-byte
+            // UTF-8 sequences and U+2070..U+209F are 3-byte, so the
+            // earlier byte-length check would have dropped a legitimate
+            // 3-digit Unicode subscript like "₁₂₃" (9 bytes).
+            if sub.text.is_empty() || sub.text.chars().count() > 3 {
                 continue;
             }
-            if !sub.text.chars().all(|c| c.is_ascii_alphanumeric()) {
+            // Accept the raw ASCII the extractor produces AND the
+            // already-substituted Unicode super/subscript codepoints
+            // (apply_super_sub_script_substitutions runs upstream).
+            // Without the U+00B2/B3/B9 + U+2070..U+209F gate, a
+            // chemistry formula like "H₂O" would lose the subscript
+            // span from this merge, leaving "H ₂ O" in the output.
+            let is_sub_char = |c: char| {
+                c.is_ascii_alphanumeric()
+                    || matches!(c, '\u{00B2}' | '\u{00B3}' | '\u{00B9}')
+                    || ('\u{2070}'..='\u{209F}').contains(&c)
+            };
+            if !sub.text.chars().all(is_sub_char) {
                 continue;
             }
             // Must be clearly smaller than the dominant font on this page.
@@ -6457,7 +6821,7 @@ impl PdfDocument {
         //
         // Extending char_widths: char_widths_boundary_split fires whenever cw_len < char_count.
         // After merging sub text, char_count grows but cw_len stays the same, which would
-        // cause the split to re-separate the merged token (e.g. "k1" → "k 1").  Adding
+        // cause the split to re-separate the merged token (e.g. "k1" → "k 1"). Adding
         // estimated widths for the sub characters prevents this.
         for (base_idx, _, sub_text, sub_right, sub_cw, sub_fs) in &ops {
             let base = &mut spans[*base_idx];
@@ -6496,7 +6860,7 @@ impl PdfDocument {
     #[inline]
     pub(crate) fn push_span_text(out: &mut String, span: &TextSpan) {
         // A span whose entire text is one or more newline/CR characters is a
-        // ToUnicode line-break signal.  Treat it as a logical newline separator rather
+        // ToUnicode line-break signal. Treat it as a logical newline separator rather
         // than emitting the raw control characters verbatim as visible content.
         if !span.text.is_empty() && span.text.chars().all(|c| c == '\n' || c == '\r') {
             if !out.ends_with('\n') {
@@ -6515,6 +6879,39 @@ impl PdfDocument {
             out.push_str(&span.text[split..]);
         } else {
             out.push_str(&span.text);
+        }
+    }
+
+    /// #557a: append a span's text to the structure-tree assembly, reversing a
+    /// PURE-RTL run (every non-space char is an Arabic/Hebrew letter, no Latin)
+    /// from visual to logical order. The tagged/struct-tree path collapses each
+    /// run to a single span and never reaches `reverse_rtl_visual_order_runs`,
+    /// so visually-stored RTL (e.g. issue10301 Hebrew "גבא") otherwise leaked
+    /// out reversed. A single-direction run's logical order is just its reverse,
+    /// so no glyph geometry is needed for the pure-RTL case.
+    fn push_span_text_bidi(out: &mut String, span: &TextSpan) {
+        use crate::text::rtl_detector::is_rtl_text;
+        let mut rtl = 0usize;
+        let mut has_latin = false;
+        for c in span.text.chars() {
+            if c.is_whitespace() {
+                continue;
+            }
+            if c.is_ascii_alphabetic() {
+                has_latin = true;
+                break;
+            }
+            if is_rtl_text(c as u32) {
+                rtl += 1;
+            }
+        }
+        if rtl >= 2 && !has_latin {
+            let reversed: String = span.text.chars().rev().collect();
+            let mut tmp = span.clone();
+            tmp.text = reversed;
+            Self::push_span_text(out, &tmp);
+        } else {
+            Self::push_span_text(out, span);
         }
     }
 
@@ -6683,16 +7080,32 @@ impl PdfDocument {
                         let value = Self::parse_string_value_static(dict.get("V"))
                             .or_else(|| self.resolve_inherited_field_value(&dict));
                         match value {
-                            Some(v) if !v.trim().is_empty() => Some(v.trim().to_string()),
+                            Some(v) if !v.trim().is_empty() => {
+                                // Bound the value to the widget's visual
+                                // capacity. Multi-line text-area fields
+                                // can hold scrollable content far larger
+                                // than the bbox visually renders; per
+                                // spec §12.7.4.3 `/V` is the field's
+                                // data, but `extract_text` semantics
+                                // target what would be visible on the
+                                // page. Truncate keeps the rendered
+                                // portion and drops the overflow.
+                                Some(Self::truncate_to_widget_capacity(v.trim().to_string(), &rect))
+                            },
                             _ => {
-                                // Fallback: try AP stream text
+                                // Fallback: try AP stream text. Truncate
+                                // to bbox capacity — some PDFs reuse a
+                                // single Form XObject for many widgets'
+                                // `/AP /N`, pointing every widget's
+                                // appearance at the page-background
+                                // content; without the cap each widget
+                                // would extract that content once.
                                 self.extract_text_from_ap_stream(&dict).and_then(|t| {
                                     let t = t.trim().to_string();
                                     if t.is_empty() {
-                                        None
-                                    } else {
-                                        Some(t)
+                                        return None;
                                     }
+                                    Some(Self::truncate_to_widget_capacity(t, &rect))
                                 })
                             },
                         }
@@ -6702,7 +7115,7 @@ impl PdfDocument {
                     if ff & field_flags::PUSH_BUTTON != 0 {
                         // Push button: caption is in /MK /CA per PDF Spec
                         // ISO 32000-1:2008 §12.5.6.19 (Appearance Characteristics
-                        // Dictionary). Extracting it lets screen readers and
+                        // Dictionary). Extracting it lets screen readers
                         // text-extraction consumers see the button label.
                         dict.get("MK")
                             .and_then(|mk| mk.as_dict())
@@ -6727,9 +7140,15 @@ impl PdfDocument {
                             None => false,
                         };
                         if is_checked {
+                            // A checked box is meaningful state worth surfacing.
                             Some("[x]".to_string())
                         } else {
-                            Some("[ ]".to_string())
+                            // An UNCHECKED box carries no text. Emitting "[ ]"
+                            // here injected noise that pdftotext/PyMuPDF never
+                            // produce — the dominant cause of pdf_oxide being
+                            // the sole outlier on AcroForm-heavy PDFs in the
+                            // cross-corpus sweep (CORPUS-1). Emit nothing.
+                            None
                         }
                     }
                 },
@@ -6782,7 +7201,19 @@ impl PdfDocument {
 
             let text = match display_text {
                 Some(t) if !t.is_empty() => t,
-                _ => continue,
+                _ => {
+                    // CORPUS-5: a widget with no extractable /V value (notably a
+                    // signature field, /FT /Sig) often carries its VISIBLE text
+                    // in the /AP/N appearance stream (e.g. "Firmato
+                    // elettronicamente da ..."). pdftotext / PyMuPDF surface it;
+                    // fall back to the appearance stream so it isn't dropped.
+                    // Fields that DO yield a /V value take the arm above, so this
+                    // never double-extracts.
+                    match self.extract_text_from_ap_stream(&dict) {
+                        Some(ap) if !ap.trim().is_empty() => ap.trim().to_string(),
+                        _ => continue,
+                    }
+                },
             };
 
             // Parse font size from /DA string
@@ -6845,7 +7276,7 @@ impl PdfDocument {
     /// Build TextSpan objects from the /Contents field of content-bearing annotations.
     ///
     /// Sticky note (/Subtype/Text), FreeText, Stamp, and markup annotations carry
-    /// human-readable text in their /Contents field.  Widget annotations are already
+    /// human-readable text in their /Contents field. Widget annotations are already
     /// handled by `extract_widget_spans`; Popup annotations hold no independent
     /// content (their text belongs to the parent annotation).
     fn annotation_content_spans(&self, page_index: usize) -> Vec<TextSpan> {
@@ -7347,6 +7778,40 @@ impl PdfDocument {
         Some(text)
     }
 
+    /// Char-count capacity for what physically fits inside a widget
+    /// bbox at body font sizes. Per PDF spec §12.7.4.3 the field's
+    /// value is `/V`; the appearance stream is visual rendering
+    /// only. When we fall back to AP extraction the result must be
+    /// bounded by what the widget could visually show — PDFs that
+    /// reuse a single Form XObject for many widgets' `/AP /N` would
+    /// otherwise dump the shared content once per widget, and
+    /// scrollable multi-line text fields hold far more characters
+    /// in `/V` than ever render at once.
+    ///
+    /// Heuristic: ~14 chars per cm² at body font sizes. At PDF
+    /// 72 dpi (1 pt = 0.0353 cm), the formula
+    /// `capacity = 0.0175 * w_pt * h_pt + 64` applies; the constant
+    /// term absorbs short labels where the area estimate alone is
+    /// too tight to even hold the field's name.
+    fn widget_text_capacity(bbox: &crate::geometry::Rect) -> usize {
+        let area = bbox.width.max(0.0) * bbox.height.max(0.0);
+        (0.0175 * area) as usize + 64
+    }
+
+    /// Truncate `text` to the widget's visual capacity. If `text`
+    /// already fits, returns it unchanged. Used to bound AP-fallback
+    /// extraction (and other content paths) so a single widget can't
+    /// dump page-background prose or scrollable field internals into
+    /// the page text.
+    fn truncate_to_widget_capacity(text: String, bbox: &crate::geometry::Rect) -> String {
+        let cap = Self::widget_text_capacity(bbox);
+        let n = text.chars().count();
+        if n <= cap {
+            return text;
+        }
+        text.chars().take(cap).collect()
+    }
+
     /// Walk /Parent chain to find inherited /FT (field type) value.
     fn resolve_inherited_ft(
         &self,
@@ -7602,6 +8067,147 @@ impl PdfDocument {
         true
     }
 
+    /// Assemble the page's text spans via the reading-order
+    /// pipeline, classifying each region with the per-class
+    /// detectors in [`crate::pipeline::reading_order::detectors`].
+    /// Returns the assembled spans plus the detector class that
+    /// fired on each region.
+    ///
+    /// The four detectors handle layout shapes that the plain
+    /// y-then-x assembly cannot produce correctly:
+    ///
+    /// - **DramaticScript**: Macbeth-style speaker-tag layouts —
+    ///   row-major join required.
+    /// - **DenseSingleLine**: SEC DEF 14A 8pt-body interleave —
+    ///   single-row regroup required.
+    /// - **SubSuperBaselineReattach**: chemical-formula
+    ///   subscripts — baseline reattach required.
+    /// - **NarrowTrackedJustified**: stretched justified columns —
+    ///   per-line median-gap threshold normalisation required.
+    ///
+    /// Regions that don't match any specific layout fall through to
+    /// `Default` (plain y-then-x assembly within the block).
+    ///
+    /// Callers can use this as a pre-step before applying their own
+    /// assembly logic, or rely on the classified `ReadingOrderClass`
+    /// to dispatch their assembly strategy. `extract_text` consumes
+    /// this implicitly through `extract_spans` + the existing
+    /// `XYCutStrategy`.
+    pub fn assemble_text_via_reading_order(
+        &self,
+        page_index: usize,
+    ) -> Result<(Vec<crate::layout::TextSpan>, crate::pipeline::reading_order::ReadingOrderClass)>
+    {
+        self.require_authenticated()?;
+        let spans = self.extract_spans(page_index)?;
+        // Convert spans to detector input. We only need the geometric
+        // signal (x/y/width/font_size), not the full TextSpan
+        // semantics.
+        let glyphs: Vec<crate::pipeline::reading_order::DetectorGlyph> = spans
+            .iter()
+            .map(|s| crate::pipeline::reading_order::DetectorGlyph {
+                x: s.bbox.x,
+                y: s.bbox.y,
+                width: s.bbox.width,
+                font_size: s.font_size,
+                text_len: s.text.chars().count(),
+            })
+            .collect();
+        // Build per-row text strings for DramaticScript detector,
+        // together with the leftmost glyph of each row (for the X-
+        // consistency check). Group spans by Y (within 0.5 pt),
+        // concatenating their texts in the order they appear in
+        // `spans` and tracking the smallest X seen per row.
+        let mut rows: Vec<(f32, String, crate::pipeline::reading_order::DetectorGlyph)> =
+            Vec::new();
+        for span in &spans {
+            let span_glyph = crate::pipeline::reading_order::DetectorGlyph {
+                x: span.bbox.x,
+                y: span.bbox.y,
+                width: span.bbox.width,
+                font_size: span.font_size,
+                text_len: span.text.chars().count(),
+            };
+            let mut placed = false;
+            for (y, text, first) in rows.iter_mut() {
+                if (*y - span.bbox.y).abs() < 0.5 {
+                    text.push(' ');
+                    text.push_str(&span.text);
+                    if span_glyph.x < first.x {
+                        *first = span_glyph;
+                    }
+                    placed = true;
+                    break;
+                }
+            }
+            if !placed {
+                rows.push((span.bbox.y, span.text.clone(), span_glyph));
+            }
+        }
+        let row_texts: Vec<&str> = rows.iter().map(|(_, t, _)| t.as_str()).collect();
+        let row_first_glyphs: Vec<crate::pipeline::reading_order::DetectorGlyph> =
+            rows.iter().map(|(_, _, g)| *g).collect();
+        let class =
+            crate::pipeline::reading_order::classify_region(&glyphs, &row_first_glyphs, &row_texts);
+        Ok((spans, class))
+    }
+
+    /// Returns `true` if the page has any text-bearing content (fonts in
+    /// resources + at least one `BT`/`Do` operator in the content stream),
+    /// `false` if the page is image-only or genuinely empty.
+    ///
+    /// Callers can route image-only pages to OCR
+    /// (`extract_text_ocr_only(page, engine)`) instead of receiving
+    /// an empty string with no signal.
+    ///
+    /// Conservative: returns `true` when the page resources can't be
+    /// inspected (load error, encrypted-not-authenticated, etc.) so the
+    /// caller still attempts extraction.
+    ///
+    /// # PDF spec basis
+    ///
+    /// §8.8 (Image XObjects): image-only pages have `/Resources` whose
+    /// only `/XObject` entries are `/Subtype /Image` with no `/Font`
+    /// resources.
+    pub fn has_text_layer(&self, page_index: usize) -> Result<bool> {
+        let page = self.get_page(page_index)?;
+        let page_dict = page.as_dict().ok_or_else(|| Error::ParseError {
+            offset: 0,
+            reason: "Page is not a dictionary".to_string(),
+        })?;
+        if self.page_cannot_have_text(page_dict) {
+            return Ok(false);
+        }
+        // Probe content stream for text-showing operators. If we can't
+        // read the content stream, be conservative and say yes (let
+        // extraction try).
+        match self.get_page_content_data(page_index) {
+            Ok(content_data) => Ok(Self::may_contain_text(&content_data)),
+            Err(_) => Ok(true),
+        }
+    }
+
+    /// Returns the document's `/P` permission flags as a `PdfPermissions`
+    /// struct if the document is encrypted; `None` otherwise.
+    ///
+    /// Per PDF spec §7.6.3.2 the `/P` flag is advisory — pdf_oxide
+    /// does not enforce restrictions — but callers who want to
+    /// enforce them (e.g., refuse copy-protected PDF extraction) can
+    /// do so themselves by checking the returned permissions.
+    ///
+    /// # PDF spec basis
+    ///
+    /// §7.6.3.2 Table 22 (`/P` Standard Encryption Dictionary entry).
+    /// Decoding is implemented in `encryption::permissions::PdfPermissions::from_p_flag`.
+    pub fn permissions(&self) -> Option<crate::encryption::PdfPermissions> {
+        // ensure_encryption_initialized may fail on malformed Encrypt
+        // dicts — that's fine, no permissions surface for those.
+        let _ = self.ensure_encryption_initialized();
+        let handler = self.encryption_handler.lock_or_recover();
+        let handler = handler.as_ref()?;
+        Some(crate::encryption::PdfPermissions::from_p_flag(handler.raw_permissions()))
+    }
+
     /// Extract text using structure tree for Tagged PDFs.
     ///
     /// This method implements PDF spec-compliant text extraction for Tagged PDFs
@@ -7710,7 +8316,7 @@ impl PdfDocument {
 
             if let Some(spans) = mcid_map.get(&mcid) {
                 consumed_mcids.insert(mcid);
-                for span in spans {
+                for span in Self::order_mcid_spans(spans) {
                     if let Some(prev) = prev_span {
                         let y_diff = (prev.bbox.y - span.bbox.y).abs();
 
@@ -7726,7 +8332,7 @@ impl PdfDocument {
                         }
                     }
 
-                    Self::push_span_text(&mut text, span);
+                    Self::push_span_text_bidi(&mut text, span);
                     prev_span = Some(span);
                 }
             } else {
@@ -7764,7 +8370,7 @@ impl PdfDocument {
                             text.push(' ');
                         }
                     }
-                    Self::push_span_text(&mut text, span);
+                    Self::push_span_text_bidi(&mut text, span);
                     prev_span = Some(span);
                 }
             }
@@ -7785,7 +8391,7 @@ impl PdfDocument {
                         text.push(' ');
                     }
                 }
-                Self::push_span_text(&mut text, span);
+                Self::push_span_text_bidi(&mut text, span);
                 prev_span = Some(span);
             }
         }
@@ -7795,6 +8401,27 @@ impl PdfDocument {
         // (would cause double-emission of all annotation text).
 
         Ok(text)
+    }
+
+    /// Order one MCID's spans for emission in the structure-order assemblers
+    /// (#608). A single marked-content element can carry spans across several
+    /// visual lines; emitting them in raw extraction order can mis-order them,
+    /// so sort by the canonical reading-order comparator. Skipped for single-
+    /// span MCIDs and for any MCID containing RTL text (whose span order is
+    /// handled by the bidi passes) — both stay byte-identical.
+    fn order_mcid_spans(spans: &[crate::layout::TextSpan]) -> Vec<&crate::layout::TextSpan> {
+        let mut ordered: Vec<&crate::layout::TextSpan> = spans.iter().collect();
+        let has_rtl = |s: &crate::layout::TextSpan| {
+            s.text
+                .chars()
+                .any(|c| crate::text::rtl_detector::is_rtl_text(c as u32))
+        };
+        if spans.len() > 1 && !spans.iter().any(has_rtl) {
+            ordered.sort_by(|a, b| {
+                crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
+            });
+        }
+        ordered
     }
 
     /// Extract text from a Tagged PDF page using pre-computed structure traversal cache.
@@ -7875,7 +8502,7 @@ impl PdfDocument {
 
             if let Some(spans) = mcid_map.get(&mcid) {
                 consumed_mcids.insert(mcid);
-                for span in spans {
+                for span in Self::order_mcid_spans(spans) {
                     if let Some(prev) = prev_span {
                         let y_diff = (prev.bbox.y - span.bbox.y).abs();
                         if y_diff > Self::same_line_threshold(prev, span) {
@@ -7890,7 +8517,7 @@ impl PdfDocument {
                         }
                     }
 
-                    Self::push_span_text(&mut text, span);
+                    Self::push_span_text_bidi(&mut text, span);
                     prev_span = Some(span);
                 }
             }
@@ -7917,7 +8544,7 @@ impl PdfDocument {
                             text.push(' ');
                         }
                     }
-                    Self::push_span_text(&mut text, span);
+                    Self::push_span_text_bidi(&mut text, span);
                     prev_span = Some(span);
                 }
             }
@@ -7943,7 +8570,7 @@ impl PdfDocument {
                         text.push(' ');
                     }
                 }
-                Self::push_span_text(&mut text, span);
+                Self::push_span_text_bidi(&mut text, span);
                 prev_span = Some(span);
             }
         }
@@ -7989,10 +8616,79 @@ impl PdfDocument {
     /// # }
     /// ```
     pub fn extract_spans(&self, page_index: usize) -> Result<Vec<crate::layout::TextSpan>> {
-        let mut spans = self.extract_spans_raw(page_index)?;
+        let spans = self.extract_spans_raw(page_index)?;
+        self.postprocess_spans(page_index, spans)
+    }
+
+    fn extract_spans_filtered(
+        &self,
+        page_index: usize,
+        excluded_layers: HashSet<String>,
+        excluded_inks: HashSet<String>,
+    ) -> Result<Vec<crate::layout::TextSpan>> {
+        let spans = self.extract_spans_raw_filtered(page_index, excluded_layers, excluded_inks)?;
+        self.postprocess_spans(page_index, spans)
+    }
+
+    /// Map a span rectangle (already translated so the page origin is at
+    /// `(0, 0)`) through a clockwise page `/Rotate` of `rot` degrees, returning
+    /// the axis-aligned bounding box in the displayed coordinate frame.
+    ///
+    /// `page_w` / `page_h` are the unrotated page dimensions; for 90° / 270° the
+    /// displayed page is `page_h × page_w`. Per ISO 32000-1:2008 §7.7.3.3 the
+    /// rotation is clockwise and §8.3.3 gives the point transform. `rot` must be
+    /// a normalised multiple of 90 (`0/90/180/270`); any other value returns the
+    /// rectangle unchanged. `rot == 0` is the identity and `rot == 180` is
+    /// numerically identical to the legacy mirror, preserving byte-for-byte
+    /// output for unrotated and 180° pages.
+    pub(crate) fn rotate_span_bbox(
+        bbox: crate::geometry::Rect,
+        rot: i32,
+        page_w: f32,
+        page_h: f32,
+    ) -> crate::geometry::Rect {
+        // Map a point (y-up) by the clockwise display rotation.
+        let map = |x: f32, y: f32| -> (f32, f32) {
+            match rot {
+                90 => (y, page_w - x),
+                180 => (page_w - x, page_h - y),
+                270 => (page_h - y, x),
+                _ => (x, y),
+            }
+        };
+        let (ax, ay) = map(bbox.x, bbox.y);
+        let (bx, by) = map(bbox.x + bbox.width, bbox.y + bbox.height);
+        crate::geometry::Rect::new(ax.min(bx), ay.min(by), (ax - bx).abs(), (ay - by).abs())
+    }
+
+    /// Map a single span's bbox into the displayed frame for a `/Rotate`d page
+    /// (translate to origin → [`rotate_span_bbox`] → translate back).
+    fn map_span_into_rotated_frame(
+        s: &mut crate::layout::TextSpan,
+        rot: i32,
+        llx: f32,
+        lly: f32,
+        w: f32,
+        h: f32,
+    ) {
+        let rel =
+            crate::geometry::Rect::new(s.bbox.x - llx, s.bbox.y - lly, s.bbox.width, s.bbox.height);
+        let m = Self::rotate_span_bbox(rel, rot, w, h);
+        s.bbox.x = llx + m.x;
+        s.bbox.y = lly + m.y;
+        s.bbox.width = m.width;
+        s.bbox.height = m.height;
+    }
+
+    fn postprocess_spans(
+        &self,
+        page_index: usize,
+        raw_spans: Vec<crate::layout::TextSpan>,
+    ) -> Result<Vec<crate::layout::TextSpan>> {
+        let mut spans = raw_spans;
 
         // Drop spans whose bbox lies entirely outside the page's MediaBox.
-        // PDFs that reuse one big Form XObject across pages (ExpertPdf and
+        // PDFs that reuse one big Form XObject across pages (ExpertPdf
         // similar tools — see issue B1 / nougat_005.pdf) rely on the
         // content stream's `W n` clip rectangle to hide the off-page
         // portion. Our text extractor doesn't honour `W n` yet, so
@@ -8017,10 +8713,42 @@ impl PdfDocument {
             });
         }
 
+        // Apply page /Rotate to span geometry BEFORE reading-order sorting.
+        // Spans are extracted in raw PDF user space; a page with a /Rotate entry
+        // must be read in its DISPLAYED orientation or the row-aware sort emits
+        // text in the wrong order (pdf.js issue14415 is a 180° English page that
+        // otherwise comes out word- and line-reversed). Every span is mapped into
+        // one consistent displayed frame via `rotate_span_bbox` BEFORE any
+        // geometric pass (column detection, table geometry, the row-aware sort),
+        // so 90° / 270° — which additionally swap page width/height — are handled
+        // uniformly alongside 180°. rot == 0 is untouched (byte-identical) and
+        // rot == 180 is numerically identical to the previous mirror. (A
+        // within-span character re-order for rotated multi-glyph spans — the
+        // issue14415 within-line residual — is a tracked follow-up.)
+        // Captured so the same transform is applied to annotation spans appended
+        // later (their /Rect is in unrotated page space too). `None` for rot==0
+        // or unknown media box — those pages are byte-identical.
+        let page_rotation: Option<(i32, f32, f32, f32, f32)> =
+            match self.get_page_media_box(page_index) {
+                Ok((llx, lly, urx, ury)) => {
+                    let rot = self
+                        .get_page_rotation(page_index)
+                        .unwrap_or(0)
+                        .rem_euclid(360);
+                    matches!(rot, 90 | 180 | 270).then_some((rot, llx, lly, urx - llx, ury - lly))
+                },
+                Err(_) => None,
+            };
+        if let Some((rot, llx, lly, w, h)) = page_rotation {
+            for s in spans.iter_mut() {
+                Self::map_span_into_rotated_frame(s, rot, llx, lly, w, h);
+            }
+        }
+
         // Reading order: XY-cut when the page has multiple columns (B4);
         // otherwise the cheap row-aware sort. XY-cut is spatial recursion
         // that correctly orders multi-column layouts (newspapers, academic
-        // papers, dashboards) but is overkill for single-column pages and
+        // papers, dashboards) but is overkill for single-column pages
         // doesn't handle tabular rowspan labels specifically. Heuristic:
         // count distinct X-center clusters with vertical overlap; ≥2
         // clusters → multi-column.
@@ -8068,10 +8796,18 @@ impl PdfDocument {
         }
 
         // Append text from non-Widget annotations (/Subtype /Text, FreeText,
-        // Stamp, Highlight, etc.) that carry a /Contents entry.  These are not
+        // Stamp, Highlight, etc.) that carry a /Contents entry. These are not
         // part of the page content stream so they are not picked up by the
-        // regular extractor.
+        // regular extractor. On a /Rotate'd page their /Rect-derived bboxes are
+        // in unrotated page space, so map the appended spans into the same
+        // displayed frame as the content spans (no-op for unrotated pages).
+        let pre_annotation_len = spans.len();
         spans.extend(self.annotation_content_spans(page_index));
+        if let Some((rot, llx, lly, w, h)) = page_rotation {
+            for s in spans[pre_annotation_len..].iter_mut() {
+                Self::map_span_into_rotated_frame(s, rot, llx, lly, w, h);
+            }
+        }
 
         // Mark running headers/footers (untagged-PDF heuristic). Spans whose
         // normalized text recurs on >=50% of pages and sits near the top or
@@ -8080,7 +8816,7 @@ impl PdfDocument {
         self.mark_running_artifact_spans(page_index, &mut spans)?;
 
         // Normalize Unicode typographic spaces (U+2000–U+200B, U+202F, U+205F)
-        // to ASCII space.  Some PDF producers encode word separators as hair-space
+        // to ASCII space. Some PDF producers encode word separators as hair-space
         // or thin-space variants in ToUnicode CMaps (e.g. justified text layouts);
         // normalising here gives consistent word boundaries to every downstream
         // consumer (extract_text, word-F1 scoring, etc.).
@@ -8098,8 +8834,8 @@ impl PdfDocument {
 
         // Apply char_widths boundary splits directly to span.text so that every
         // downstream consumer (to_markdown, to_html, extract_text) sees the same
-        // word boundaries.  extract_text applies the same logic through push_span_text;
-        // after this normalization push_span_text sees a space at the boundary and
+        // word boundaries. extract_text applies the same logic through push_span_text;
+        // after this normalization push_span_text sees a space at the boundary
         // becomes a no-op, so there is no double-application risk.
         for span in &mut spans {
             if let Some(split) = Self::char_widths_boundary_split(span) {
@@ -8111,7 +8847,337 @@ impl PdfDocument {
             }
         }
 
+        // Detect superscript / subscript runs and substitute ASCII
+        // digits with their Unicode super/sub-script equivalents
+        // (only when the run is sandwiched between alphabetic body
+        // spans on both sides — chemistry/math context like "S²X"
+        // or "H₂O"). The same substitution would otherwise fire on
+        // author-affiliation markers ("name¹,²") which the bench
+        // ground truth keeps in ASCII; gating on token-internal
+        // context keeps the desired cases without regressing the
+        // affiliation-block pages.
+        Self::apply_super_sub_script_substitutions(&mut spans);
+
+        // Fold spacing-diacritic spans (´, `, ^, ~, ¨, …) into the
+        // base letter of the following span when the diacritic is
+        // centred over the base glyph. PDFs that pre-shape accented
+        // Latin (LaTeX `\'E` → two glyphs, `acute` then `E`) emit
+        // the marks as separate `Tj` ops at the base glyph's X
+        // coordinate. Without this pass extract_text returns the
+        // raw two-glyph order "´Ecole" instead of "École".
+        Self::apply_combining_mark_composition(&mut spans);
+
         Ok(spans)
+    }
+
+    /// Fold a one-char spacing-diacritic span into the following
+    /// span's first character when they overlap in X (the typical
+    /// LaTeX `\'E` → `(´)(E)` shape). Substitutes the relevant
+    /// combining mark from U+0300..U+0327 and lets
+    /// `unicode_normalization::nfc` precompose where it can
+    /// ("E\u{0301}" → "É"). The diacritic span is left empty so
+    /// downstream rendering skips it.
+    fn apply_combining_mark_composition(spans: &mut Vec<crate::layout::TextSpan>) {
+        use unicode_normalization::UnicodeNormalization;
+
+        fn combining_for(spacing: char) -> Option<char> {
+            Some(match spacing {
+                '\u{00B4}' => '\u{0301}', // acute
+                '\u{0060}' => '\u{0300}', // grave
+                '\u{005E}' => '\u{0302}', // circumflex
+                '\u{02C6}' => '\u{0302}', // modifier-letter circumflex
+                '\u{007E}' => '\u{0303}', // tilde
+                '\u{02DC}' => '\u{0303}', // small tilde
+                '\u{00A8}' => '\u{0308}', // diaeresis
+                '\u{00AF}' => '\u{0304}', // macron
+                '\u{02C9}' => '\u{0304}', // modifier-letter macron
+                '\u{00B8}' => '\u{0327}', // cedilla
+                '\u{02DA}' => '\u{030A}', // ring above
+                _ => return None,
+            })
+        }
+
+        // First pass: spans that already got merged at the extractor
+        // (when the LaTeX `(´)(Ecole)` pair both sit at the same
+        // text-matrix origin the upstream merge_adjacent_spans pulls
+        // them into a single "´Ecole" span). Fold the leading
+        // diacritic + base letter into the precomposed form.
+        for span in spans.iter_mut() {
+            let mut iter = span.text.chars();
+            let Some(d) = iter.next() else { continue };
+            let Some(base) = iter.next() else { continue };
+            let Some(combining) = combining_for(d) else {
+                continue;
+            };
+            if !base.is_alphabetic() {
+                continue;
+            }
+            let rest_start = d.len_utf8() + base.len_utf8();
+            let mut composed = String::with_capacity(span.text.len() + 2);
+            composed.push(base);
+            composed.push(combining);
+            composed.push_str(&span.text[rest_start..]);
+            span.text = composed.nfc().collect();
+        }
+
+        // Walk spans pairwise. The diacritic is on its own one-
+        // character span; the next span carries the base letter.
+        let mut i = 0;
+        while i + 1 < spans.len() {
+            let mark_char = {
+                let s = &spans[i];
+                let mut iter = s.text.chars();
+                let first = iter.next();
+                let rest = iter.next();
+                if rest.is_some() {
+                    None
+                } else {
+                    first.and_then(combining_for)
+                }
+            };
+            let Some(combining) = mark_char else {
+                i += 1;
+                continue;
+            };
+            // Geometric: same line, diacritic anchored over the base
+            // letter's left edge (within ±1 pt).
+            let (same_line, overlaps_x) = {
+                let p = &spans[i];
+                let n = &spans[i + 1];
+                let same = (p.bbox.y - n.bbox.y).abs() < p.font_size.max(n.font_size) * 0.6;
+                let dx = (p.bbox.x - n.bbox.x).abs();
+                (same, dx <= 1.5)
+            };
+            if !(same_line && overlaps_x) {
+                i += 1;
+                continue;
+            }
+            // The next span must start with a base letter we can
+            // attach a combining mark to (Latin letter / digit).
+            let Some(base) = spans[i + 1].text.chars().next() else {
+                i += 1;
+                continue;
+            };
+            if !base.is_alphabetic() {
+                i += 1;
+                continue;
+            }
+            // Build "<base><combining><rest>" and NFC-compose.
+            let mut composed = String::with_capacity(spans[i + 1].text.len() + 2);
+            composed.push(base);
+            composed.push(combining);
+            let rest_start = base.len_utf8();
+            composed.push_str(&spans[i + 1].text[rest_start..]);
+            spans[i + 1].text = composed.nfc().collect();
+            // Empty out the diacritic span; downstream consumers
+            // skip zero-text spans.
+            spans[i].text.clear();
+            i += 2;
+        }
+
+        // Drop any spans we emptied.
+        spans.retain(|s| !s.text.is_empty());
+    }
+
+    /// Substitute ASCII digits and a few punctuation characters in
+    /// super/sub-script spans with their Unicode counterparts
+    /// (U+2070..U+2079 / U+00B2/B3/B9 for superscripts,
+    /// U+2080..U+2089 for subscripts). A span is treated as
+    /// super- or sub-script when its font is meaningfully smaller
+    /// than the previous span on the same line and its baseline is
+    /// raised or lowered. Only spans whose text consists entirely
+    /// of substitutable characters are rewritten — mixed-content
+    /// or single-letter superscript callouts (e.g. footnote "a")
+    /// fall through unchanged so the existing citation-handling
+    /// path stays in control.
+    fn apply_super_sub_script_substitutions(spans: &mut [crate::layout::TextSpan]) {
+        fn super_for_char(c: char) -> Option<char> {
+            Some(match c {
+                '0' => '\u{2070}',
+                '1' => '\u{00B9}',
+                '2' => '\u{00B2}',
+                '3' => '\u{00B3}',
+                '4' => '\u{2074}',
+                '5' => '\u{2075}',
+                '6' => '\u{2076}',
+                '7' => '\u{2077}',
+                '8' => '\u{2078}',
+                '9' => '\u{2079}',
+                '+' => '\u{207A}',
+                '-' => '\u{207B}',
+                '=' => '\u{207C}',
+                '(' => '\u{207D}',
+                ')' => '\u{207E}',
+                _ => return None,
+            })
+        }
+        fn sub_for_char(c: char) -> Option<char> {
+            Some(match c {
+                '0' => '\u{2080}',
+                '1' => '\u{2081}',
+                '2' => '\u{2082}',
+                '3' => '\u{2083}',
+                '4' => '\u{2084}',
+                '5' => '\u{2085}',
+                '6' => '\u{2086}',
+                '7' => '\u{2087}',
+                '8' => '\u{2088}',
+                '9' => '\u{2089}',
+                '+' => '\u{208A}',
+                '-' => '\u{208B}',
+                '=' => '\u{208C}',
+                '(' => '\u{208D}',
+                ')' => '\u{208E}',
+                _ => return None,
+            })
+        }
+        // Two-pass: first compute the body-font baseline for each
+        // line band (largest font_size on that line), then walk
+        // spans and substitute any whose font is meaningfully
+        // smaller AND whose baseline is raised or lowered relative
+        // to the body baseline.
+        let n = spans.len();
+        if n < 2 {
+            return;
+        }
+        const LINE_BAND_PT: f32 = 4.0;
+        // band_anchor[i] = (body_font_size, body_y) of the line
+        // band that span `i` belongs to. Sorting span indices by Y
+        // once + sliding a two-pointer window over the sorted view
+        // reduces the per-span band-anchor scan from O(n) to amortised
+        // O(window_size), bringing the whole pass from O(n²) down to
+        // O(n log n) on thesis-style pages with thousands of spans.
+        let mut sorted_by_y: Vec<usize> = (0..n).collect();
+        sorted_by_y
+            .sort_by(|&a, &b| crate::utils::safe_float_cmp(spans[a].bbox.y, spans[b].bbox.y));
+        let mut band_anchor: Vec<(f32, f32)> = vec![(0.0, 0.0); n];
+        for (pos, &i) in sorted_by_y.iter().enumerate() {
+            let cy = spans[i].bbox.y;
+            let mut max_fs = spans[i].font_size;
+            let mut anchor_y = spans[i].bbox.y;
+            // Walk backwards through the sorted view while y stays
+            // within LINE_BAND_PT of cy.
+            let mut k = pos;
+            while k > 0 {
+                let j = sorted_by_y[k - 1];
+                if (spans[j].bbox.y - cy).abs() > LINE_BAND_PT {
+                    break;
+                }
+                if spans[j].font_size > max_fs {
+                    max_fs = spans[j].font_size;
+                    anchor_y = spans[j].bbox.y;
+                }
+                k -= 1;
+            }
+            // Walk forwards similarly.
+            let mut k = pos + 1;
+            while k < n {
+                let j = sorted_by_y[k];
+                if (spans[j].bbox.y - cy).abs() > LINE_BAND_PT {
+                    break;
+                }
+                if spans[j].font_size > max_fs {
+                    max_fs = spans[j].font_size;
+                    anchor_y = spans[j].bbox.y;
+                }
+                k += 1;
+            }
+            band_anchor[i] = (max_fs, anchor_y);
+        }
+        for i in 0..n {
+            let (anchor_fs, anchor_y) = band_anchor[i];
+            let curr_fs = spans[i].font_size;
+            // Skip the body span itself (it IS the anchor).
+            if anchor_fs <= 0.0 || curr_fs >= anchor_fs * 0.85 {
+                continue;
+            }
+            let y_delta = spans[i].bbox.y - anchor_y;
+            let raised = y_delta > anchor_fs * 0.15;
+            let lowered = y_delta < -anchor_fs * 0.15;
+            if !raised && !lowered {
+                continue;
+            }
+            let map: fn(char) -> Option<char> = if raised { super_for_char } else { sub_for_char };
+            if spans[i].text.is_empty() || !spans[i].text.chars().all(|c| map(c).is_some()) {
+                continue;
+            }
+            // Limit the substitution to clearly token-internal
+            // super/sub-scripts: the run must have a base-sized
+            // neighbour on BOTH sides whose first/last char is
+            // alphabetic and roughly adjacent in X. Author-
+            // affiliation markers like "name¹,²" sit at the END
+            // of a line with no following body letter; the bench
+            // GT renders those as plain ASCII digits, so substi-
+            // tuting them would regress. Restricting to sandwiched
+            // runs keeps the chemistry / exponent cases that the
+            // GT does want as Unicode (S², H₂O, k₁) and skips the
+            // trailing footnote callouts.
+            if !Self::span_is_token_internal(spans, i) {
+                continue;
+            }
+            let substituted: String = spans[i].text.chars().map(|c| map(c).unwrap()).collect();
+            spans[i].text = substituted;
+        }
+    }
+
+    /// Return true when span `i` has a base-sized alphabetic
+    /// neighbour both before and after it on the same line band,
+    /// within ~1 em horizontally. That captures the "X²Y" /
+    /// "H₂O" / "k₁ + …" pattern but excludes footnote markers
+    /// that hang off the end of a word with no following body
+    /// character.
+    fn span_is_token_internal(spans: &[crate::layout::TextSpan], i: usize) -> bool {
+        let curr = &spans[i];
+        let curr_y = curr.bbox.y;
+        let curr_x = curr.bbox.x;
+        let curr_right = curr.bbox.x + curr.bbox.width;
+        let body_fs = spans
+            .iter()
+            .filter(|s| (s.bbox.y - curr_y).abs() <= 4.0)
+            .map(|s| s.font_size)
+            .fold(0f32, f32::max)
+            .max(1.0);
+        let neighbour_fs_min = body_fs * 0.85;
+        let max_em = body_fs;
+        let mut has_left = false;
+        let mut has_right = false;
+        for (j, s) in spans.iter().enumerate() {
+            if j == i {
+                continue;
+            }
+            if (s.bbox.y - curr_y).abs() > 4.0 {
+                continue;
+            }
+            if s.font_size < neighbour_fs_min {
+                continue;
+            }
+            // Anchor must start or end with an alphabetic character
+            // — a digit or punctuation neighbour does not signal a
+            // token-internal context.
+            let s_right = s.bbox.x + s.bbox.width;
+            // Allow small overlap (super/sub glyphs nest slightly
+            // under the body letter's bounding box).
+            let dx_left = curr_x - s_right;
+            if s_right < curr_right
+                && dx_left <= max_em
+                && dx_left >= -max_em * 0.5
+                && s.text
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphabetic())
+            {
+                has_left = true;
+            }
+            let dx_right = s.bbox.x - curr_right;
+            if s.bbox.x > curr_x
+                && dx_right <= max_em
+                && dx_right >= -max_em * 0.5
+                && s.text.chars().next().is_some_and(|c| c.is_alphabetic())
+            {
+                has_right = true;
+            }
+        }
+        has_left && has_right
     }
 
     /// Return per-page font statistics for use in heading detection and layout analysis.
@@ -8167,6 +9233,63 @@ impl PdfDocument {
         self.accumulated_warnings.lock_or_recover().push(msg.into());
     }
 
+    /// Return the document's accumulated structured warnings as a
+    /// snapshot. Each entry carries the warning's
+    /// [`WarningCategory`](crate::extractors::warnings::WarningCategory),
+    /// page (if applicable), human-readable message, and PDF spec
+    /// section reference (when applicable).
+    ///
+    /// Unlike [`Self::warnings`] which returns plain strings, this
+    /// accessor returns structured records callers can filter, route
+    /// to observability dashboards, or assert on in tests without
+    /// parsing message text. Pairs with the `pyo3_log` per-target
+    /// default-level downgrade to give Python users a clean stderr
+    /// experience plus an opt-in structured surface.
+    ///
+    /// Returns the warnings in insertion order. The vector is
+    /// non-destructive: subsequent calls return the same entries
+    /// plus any new ones pushed since the last call. Use
+    /// [`Self::take_structured_warnings`] to drain.
+    ///
+    /// Merges the process-wide `GLOBAL_WARNING_SINK` (where
+    /// free-function log sites like `SPEC VIOLATION`,
+    /// operator-cap-exceeded, and Type0/Type3 font fallbacks push
+    /// their structured records) into the per-document sink on each
+    /// call. The drain attribution follows the "first caller wins"
+    /// rule documented at the global sink — process-wide scope means
+    /// the first document to call `structured_warnings` collects
+    /// the global tail that accumulated since the last drain.
+    ///
+    /// Renamed from `flatten_warnings` in to avoid colliding
+    /// with the pre-existing `DocumentEditor::flatten_warnings`
+    /// (which returns the form-flattening side-effect log, a
+    /// `&[String]` — different feature). Both the Rust and Python
+    /// (`PyDocument`) surfaces now agree on `structured_warnings`.
+    pub fn structured_warnings(&self) -> Vec<crate::extractors::warnings::Warning> {
+        let global = crate::extractors::warnings::drain_global_warnings();
+        if !global.is_empty() {
+            self.warning_sink.extend(global);
+        }
+        self.warning_sink.snapshot()
+    }
+
+    /// Drain and return all accumulated structured warnings.
+    /// Companion to [`Self::structured_warnings`].
+    pub fn take_structured_warnings(&self) -> Vec<crate::extractors::warnings::Warning> {
+        self.warning_sink.take()
+    }
+
+    /// Record a structured warning. Hook called from migrated
+    /// `log::warn!` sites that also want to surface the warning as
+    /// structured data.
+    ///
+    /// Exposed as `pub` so external diagnostic sources (custom
+    /// extractors, FFI hooks) can also push warnings into the same
+    /// sink that [`Self::structured_warnings`] surfaces.
+    pub fn push_structured_warning(&self, warning: crate::extractors::warnings::Warning) {
+        self.warning_sink.push(warning);
+    }
+
     /// Heuristic: does this page have two or more vertical text columns?
     ///
     /// Used by `extract_spans` to decide whether to pay the XY-cut cost
@@ -8184,6 +9307,21 @@ impl PdfDocument {
     fn is_multi_column_page(spans: &[crate::layout::TextSpan]) -> bool {
         if spans.len() < 12 {
             return false; // too few to confidently split into columns
+        }
+
+        // Primary detector: line-start-X bimodality.
+        //
+        // The span-center histogram further down is noisy for word-level
+        // spans (every X position has many word starts on multi-word
+        // body-text lines). The reliable signal is the X position at
+        // which each *line* begins — a two-column body has a strong
+        // peak at the left-column-start X plus a strong peak at the
+        // right-column-start X, with a clear empty gutter between
+        // them. We cluster spans into lines by Y (1pt tolerance), pick
+        // the leftmost X per line, and look for ≥ 2 peaks separated by
+        // a gutter of ≥ 30pt with zero line-starts in it.
+        if Self::has_bimodal_line_starts(spans) {
+            return true;
         }
 
         let mut x_centers: Vec<f32> = spans
@@ -8337,7 +9475,310 @@ impl PdfDocument {
         const MIN_DOMINANT_FRACTION: f32 = 0.5;
         let left_frac = dominant_cluster_fraction(&|cx| cx < mid_x);
         let right_frac = dominant_cluster_fraction(&|cx| cx >= mid_x);
-        left_frac >= MIN_DOMINANT_FRACTION && right_frac >= MIN_DOMINANT_FRACTION
+        if left_frac >= MIN_DOMINANT_FRACTION && right_frac >= MIN_DOMINANT_FRACTION {
+            return true;
+        }
+
+        // Additive accept path (no change to the gate above): shared-baseline
+        // two-column bodies — academic references / bibliographies — read
+        // left+right on the SAME Y line, so the row-aware sort interleaves
+        // them. Their word-granular left edges scatter, so the dominant-
+        // cluster gate above misses them. But they exhibit ONE persistent
+        // vertical gutter corridor (the signal poppler/MuPDF use, independent
+        // of line length). Detect it via within-line gap projection, prose-
+        // guarded so numeric / short-cell tables — which also reach here —
+        // stay on the row-aware path. See #607.
+        Self::has_persistent_gutter_corridor(spans, median, MAX_EXTENT_FROM_MEDIAN)
+    }
+
+    /// Detect a single persistent vertical gutter corridor across the page —
+    /// the geometric fingerprint of a two-column prose body whose columns
+    /// share Y baselines (so `has_bimodal_line_starts` and the dominant-
+    /// cluster gate both miss it). Mirrors `detect_narrow_gutter_prose`
+    /// (`src/pipeline/reading_order/xycut.rs`) at the document-routing layer.
+    ///
+    /// Table-safe by construction (#536). Long-line bodies
+    /// (`mean non-whitespace chars per line > 20`) keep the original
+    /// concentration / coverage / centre accept path. Short-line bodies
+    /// (verse / lexicon editions) are admitted only under stricter,
+    /// length-independent guards a numeric / short-cell table cannot satisfy:
+    /// higher concentration and coverage, left/right column char-mass balance,
+    /// and a grid-row signal (a multi-cell table has ≥ 2 wide gaps on most
+    /// rows; a two-column body has one gutter). Full-width display-math /
+    /// heading rows are excluded from the gutter-coverage denominator so a
+    /// minority of them does not veto an otherwise two-column page.
+    fn has_persistent_gutter_corridor(
+        spans: &[crate::layout::TextSpan],
+        median: f32,
+        max_extent: f32,
+    ) -> bool {
+        // Group spans into lines by rounded Y baseline; carry left/right
+        // extents for gap projection and char count for the prose guard.
+        let mut lines: std::collections::BTreeMap<i32, (Vec<(f32, f32)>, usize)> =
+            std::collections::BTreeMap::new();
+        let mut x_min = f32::MAX;
+        let mut x_max = f32::MIN;
+        for s in spans {
+            let cx = s.bbox.x + s.bbox.width * 0.5;
+            if (cx - median).abs() > max_extent {
+                continue; // degenerate-CTM guard, same as the caller
+            }
+            let y_key = (s.bbox.y + s.bbox.height).round() as i32;
+            let entry = lines.entry(y_key).or_default();
+            entry.0.push((s.bbox.x, s.bbox.x + s.bbox.width));
+            entry.1 += s.text.chars().filter(|c| !c.is_whitespace()).count();
+            x_min = x_min.min(s.bbox.x);
+            x_max = x_max.max(s.bbox.x + s.bbox.width);
+        }
+        let region_width = x_max - x_min;
+        if lines.len() < 12 || region_width < 200.0 {
+            return false;
+        }
+
+        let total_chars: usize = lines.values().map(|(_, c)| *c).sum();
+        let mean_chars = total_chars as f32 / lines.len() as f32;
+
+        // Largest within-line gap per line (≥ 6 pt suppresses word spacing);
+        // record the gap midpoint X. Also flag full-width lines with no internal
+        // gutter (display equations, full-width headings) so they neither support
+        // nor veto the corridor — they are excluded from the coverage denominator
+        // (Part 1b: display-math robustness, #536/arxiv_math).
+        const MIN_GAP_PT: f32 = 6.0;
+        let mut gap_positions: Vec<f32> = Vec::new();
+        let mut full_width_lines = 0usize;
+        let mut multi_gap_lines = 0usize;
+        for (line_spans, _) in lines.values() {
+            if line_spans.is_empty() {
+                continue;
+            }
+            let mut sorted = line_spans.clone();
+            sorted.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
+            let line_left = sorted.first().map(|s| s.0).unwrap_or(0.0);
+            let line_right = sorted.last().map(|s| s.1).unwrap_or(0.0);
+            let mut largest_gap = 0.0_f32;
+            let mut largest_mid = 0.0_f32;
+            let mut significant_gaps = 0usize;
+            for w in sorted.windows(2) {
+                let gap = w[1].0 - w[0].1;
+                if gap >= MIN_GAP_PT {
+                    significant_gaps += 1;
+                }
+                if gap > largest_gap {
+                    largest_gap = gap;
+                    largest_mid = (w[0].1 + w[1].0) * 0.5;
+                }
+            }
+            if (line_right - line_left) >= region_width * 0.9 && largest_gap < MIN_GAP_PT {
+                full_width_lines += 1;
+            }
+            // A line with two or more wide internal gaps is a grid row (≥ 3
+            // cells), not a two-column body line (one gutter). Used by the
+            // short-line table discriminator below.
+            if significant_gaps >= 2 {
+                multi_gap_lines += 1;
+            }
+            if largest_gap >= MIN_GAP_PT {
+                gap_positions.push(largest_mid);
+            }
+        }
+        if gap_positions.len() < 12 {
+            return false;
+        }
+        // Coverage denominator excludes full-width display rows.
+        let eff_lines = lines.len().saturating_sub(full_width_lines).max(1);
+
+        // Cluster gap midpoints (10 pt radius); find the dominant corridor.
+        const CLUSTER_RADIUS_PT: f32 = 10.0;
+        gap_positions.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+        let mut best_size = 0usize;
+        let mut best_center = 0.0_f32;
+        let mut left = 0usize;
+        let mut right = 0usize;
+        let mut prefix: Vec<f32> = Vec::with_capacity(gap_positions.len() + 1);
+        prefix.push(0.0);
+        for &x in &gap_positions {
+            prefix.push(prefix.last().unwrap() + x);
+        }
+        for &pivot in &gap_positions {
+            while left < gap_positions.len() && gap_positions[left] < pivot - CLUSTER_RADIUS_PT {
+                left += 1;
+            }
+            while right < gap_positions.len() && gap_positions[right] <= pivot + CLUSTER_RADIUS_PT {
+                right += 1;
+            }
+            let count = right - left;
+            if count > best_size {
+                best_size = count;
+                best_center = (prefix[right] - prefix[left]) / count as f32;
+            }
+        }
+
+        // Gutter must sit near the page centre (0.30–0.70). A true two-column
+        // body splits down the middle; a table's dominant gap (label column vs
+        // data, or one of several cell boundaries) sits off-centre.
+        let gutter_offset = best_center - x_min;
+        let centre_ok =
+            gutter_offset >= region_width * 0.30 && gutter_offset <= region_width * 0.70;
+        if best_size < 16 || !centre_ok {
+            return false;
+        }
+
+        if mean_chars > 20.0 {
+            // Long-line two-column prose (the v0.3.57 accept path, unchanged
+            // except the coverage denominator now excludes display rows):
+            // concentration ≥ 62 %, coverage ≥ 50 % of (effective) lines.
+            return best_size * 50 >= gap_positions.len() * 31 && best_size * 2 >= eff_lines;
+        }
+
+        // Short-line bodies (verse / lexicon / dictionary editions, #536): the
+        // raw `mean_chars` floor used to reject these along with short-cell
+        // tables. Admit them only under STRICTER, length-independent guards a
+        // short-cell table cannot satisfy (Part 1a).
+        let strict_concentration = best_size * 10 >= gap_positions.len() * 7; // ≥ 70 %
+        let strict_coverage = best_size * 5 >= eff_lines * 3; // ≥ 60 % of lines
+        if !(strict_concentration && strict_coverage) {
+            return false;
+        }
+        // Column char-mass balance: each side of the gutter must carry ≥ 35 % of
+        // the non-whitespace characters. A narrow label / verse-number column
+        // paired with wide data is lopsided and rejected.
+        let (mut left_chars, mut right_chars) = (0usize, 0usize);
+        for s in spans {
+            let cx = s.bbox.x + s.bbox.width * 0.5;
+            if (cx - median).abs() > max_extent {
+                continue;
+            }
+            let n = s.text.chars().filter(|c| !c.is_whitespace()).count();
+            if cx < best_center {
+                left_chars += n;
+            } else {
+                right_chars += n;
+            }
+        }
+        let total = (left_chars + right_chars).max(1) as f32;
+        if (left_chars as f32) < total * 0.35 || (right_chars as f32) < total * 0.35 {
+            return false;
+        }
+        // Grid-row discriminator: a two-column body has ONE wide gap per line
+        // (the gutter); a multi-cell numeric table has ≥ 2 wide gaps on most
+        // rows (cell boundaries). Reject when the majority of lines are grid
+        // rows — this is what keeps short-cell tables off the XY-cut path
+        // without the raw `mean_chars` floor that also blocked short verse.
+        multi_gap_lines * 2 <= eff_lines
+    }
+
+    /// True if the spans cluster into lines whose leftmost X positions
+    /// form ≥ 2 distinct peaks separated by a clear gutter.
+    ///
+    /// Body-level word spans fill the X axis continuously, so the
+    /// span-center histogram cannot tell two-column body text apart
+    /// from a single-column page with varied line lengths. The line-
+    /// start histogram does: in two-column body text most lines start
+    /// at one of two X positions (left-column-start or right-column-
+    /// start), and the wide gutter between the columns produces a
+    /// long zero-count stretch.
+    fn has_bimodal_line_starts(spans: &[crate::layout::TextSpan]) -> bool {
+        const Y_BAND: f32 = 2.0;
+        const BIN_PT: f32 = 5.0;
+        const MIN_PEAK_COUNT: usize = 4;
+        const MIN_GUTTER_PT: f32 = 30.0;
+
+        if spans.len() < 24 {
+            return false;
+        }
+
+        // Cluster spans into lines by Y (descending so top-of-page first).
+        let mut lines: Vec<(f32, f32)> = Vec::new(); // (y, line_x_min)
+        let mut sorted = spans.to_vec();
+        sorted.sort_by(|a, b| {
+            crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y)
+                .then_with(|| crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x))
+        });
+
+        let mut current_y: Option<f32> = None;
+        let mut current_xmin: f32 = f32::INFINITY;
+        for s in &sorted {
+            match current_y {
+                Some(y) if (y - s.bbox.y).abs() <= Y_BAND => {
+                    current_xmin = current_xmin.min(s.bbox.x);
+                },
+                _ => {
+                    if let Some(y) = current_y {
+                        if current_xmin.is_finite() {
+                            lines.push((y, current_xmin));
+                        }
+                    }
+                    current_y = Some(s.bbox.y);
+                    current_xmin = s.bbox.x;
+                },
+            }
+        }
+        if let Some(y) = current_y {
+            if current_xmin.is_finite() {
+                lines.push((y, current_xmin));
+            }
+        }
+        if lines.len() < 16 {
+            return false;
+        }
+
+        // Bin line-start X positions.
+        let xmin = lines.iter().map(|(_, x)| *x).fold(f32::INFINITY, f32::min);
+        let xmax = lines
+            .iter()
+            .map(|(_, x)| *x)
+            .fold(f32::NEG_INFINITY, f32::max);
+        if !(xmin.is_finite() && xmax.is_finite()) || xmax - xmin < MIN_GUTTER_PT {
+            return false;
+        }
+        let bin_count = (((xmax - xmin) / BIN_PT).ceil() as usize).max(1);
+        if bin_count > 4096 {
+            return false; // degenerate CTM
+        }
+        let mut hist = vec![0usize; bin_count];
+        for (_, x) in &lines {
+            let idx = (((x - xmin) / BIN_PT) as usize).min(bin_count - 1);
+            hist[idx] += 1;
+        }
+
+        // Scan for ≥ 2 peaks (count ≥ MIN_PEAK_COUNT) with a long
+        // zero-count run between them.
+        let mut peaks: Vec<usize> = Vec::new(); // bin indices (peak center)
+        let mut in_peak = false;
+        let mut peak_start = 0usize;
+        for (i, &c) in hist.iter().enumerate() {
+            if c >= MIN_PEAK_COUNT {
+                if !in_peak {
+                    peak_start = i;
+                    in_peak = true;
+                }
+            } else if c == 0 && in_peak {
+                peaks.push((peak_start + i.saturating_sub(1)) / 2);
+                in_peak = false;
+            }
+        }
+        if in_peak {
+            peaks.push((peak_start + hist.len() - 1) / 2);
+        }
+        if peaks.len() < 2 {
+            return false;
+        }
+
+        // Check gutter: at least one pair of consecutive peaks must
+        // have ≥ MIN_GUTTER_PT zero-count between them.
+        let gutter_bins = (MIN_GUTTER_PT / BIN_PT) as usize;
+        for w in peaks.windows(2) {
+            let a = w[0];
+            let b = w[1];
+            if b <= a {
+                continue;
+            }
+            let zeros = hist[a + 1..b].iter().filter(|&&c| c == 0).count();
+            if zeros >= gutter_bins {
+                return true;
+            }
+        }
+        false
     }
 
     /// Normalize a span's text for cross-page signature matching.
@@ -8398,10 +9839,10 @@ impl PdfDocument {
             std::collections::HashMap::new();
         let mut first_seen_any: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
-        // Track distinct literal texts per signature.  A signature whose digits
+        // Track distinct literal texts per signature. A signature whose digits
         // are stable across every page (i.e. the literal text never changes) is
         // NOT a page-number-containing header — it is substantive content that
-        // happens to repeat.  Only suppress signatures where the literal text
+        // happens to repeat. Only suppress signatures where the literal text
         // varies (at least two distinct forms) meaning digits change per page.
         let mut literal_variants: std::collections::HashMap<
             String,
@@ -8507,15 +9948,26 @@ impl PdfDocument {
     /// Mark spans near the top/bottom of the page whose normalized text
     /// matches a cached running-artifact signature by setting
     /// `artifact_type` to Pagination.
+    /// #553: a bare page number (e.g. " 1 ", "12") varies per page, so it
+    /// never matches a repeated-text signature and leaks into the body. Treat
+    /// a short pure-digit token (1..=9999) as a page-number candidate — only
+    /// applied inside the top/bottom margin band by the caller, so ordinary
+    /// numerals in body text are never affected.
+    fn is_bare_page_number_text(trimmed: &str) -> bool {
+        !trimmed.is_empty()
+            && trimmed.len() <= 4
+            && trimmed.chars().all(|c| c.is_ascii_digit())
+            && trimmed
+                .parse::<u32>()
+                .map(|n| (1..=9999).contains(&n))
+                .unwrap_or(false)
+    }
+
     fn mark_running_artifact_spans(
         &self,
         page_index: usize,
         spans: &mut [crate::layout::TextSpan],
     ) -> Result<()> {
-        let signatures = self.ensure_running_artifact_signatures()?;
-        if signatures.is_empty() {
-            return Ok(());
-        }
         let (_, _, _, page_height) = match self.get_page_media_box(page_index) {
             Ok(mb) => mb,
             Err(_) => return Ok(()),
@@ -8524,6 +9976,18 @@ impl PdfDocument {
             return Ok(());
         }
         let band = page_height * 0.12;
+        // Snapshot baselines of every non-blank span, so the bare-page-number
+        // rule can require a candidate to stand ALONE on its line (#553): a
+        // digit adjacent to other text — e.g. the "8" in "8th" — is content,
+        // not a page number.
+        let occupied_baselines: Vec<f32> = spans
+            .iter()
+            .filter(|s| !s.text.trim().is_empty())
+            .map(|s| s.bbox.y)
+            .collect();
+        // Signature set may be empty (no repeated headers/footers); the
+        // bare-page-number rule below still runs.
+        let signatures = self.ensure_running_artifact_signatures()?;
         for s in spans.iter_mut() {
             if s.artifact_type.is_some() {
                 continue;
@@ -8535,6 +9999,26 @@ impl PdfDocument {
             }
             let trimmed = s.text.trim();
             if trimmed.is_empty() {
+                continue;
+            }
+            // #553: standalone page-number chrome in the margin band — only
+            // when the digit is ISOLATED on its line (no other text span
+            // within ~one line height), so digits embedded in words/runs are
+            // never dropped.
+            if Self::is_bare_page_number_text(trimmed) {
+                let line_tol = s.font_size.max(6.0);
+                let on_line = occupied_baselines
+                    .iter()
+                    .filter(|&&oy| (oy - s.bbox.y).abs() < line_tol)
+                    .count();
+                if on_line <= 1 {
+                    s.artifact_type = Some(crate::extractors::text::ArtifactType::Pagination(
+                        crate::extractors::text::PaginationSubtype::PageNumber,
+                    ));
+                }
+                continue;
+            }
+            if signatures.is_empty() {
                 continue;
             }
             let sig = Self::normalize_artifact_signature(trimmed);
@@ -8555,7 +10039,7 @@ impl PdfDocument {
 
     /// Internal helper: extract raw (unsorted) text spans from a page.
     ///
-    /// This is the common extraction logic shared by `extract_spans` and
+    /// This is the common extraction logic shared by `extract_spans`
     /// `extract_spans_with_reading_order`. Spans are returned without any
     /// sorting or erase-region filtering applied.
     fn extract_spans_raw(&self, page_index: usize) -> Result<Vec<crate::layout::TextSpan>> {
@@ -8575,22 +10059,43 @@ impl PdfDocument {
         page_index: usize,
         config: crate::extractors::TextExtractionConfig,
     ) -> Result<Vec<crate::layout::TextSpan>> {
+        self.extract_spans_impl(page_index, config, HashSet::new(), HashSet::new())
+    }
+
+    fn extract_spans_raw_filtered(
+        &self,
+        page_index: usize,
+        excluded_layers: HashSet<String>,
+        excluded_inks: HashSet<String>,
+    ) -> Result<Vec<crate::layout::TextSpan>> {
+        self.extract_spans_impl(
+            page_index,
+            crate::extractors::TextExtractionConfig::default(),
+            excluded_layers,
+            excluded_inks,
+        )
+    }
+
+    fn extract_spans_impl(
+        &self,
+        page_index: usize,
+        config: crate::extractors::TextExtractionConfig,
+        excluded_layers: HashSet<String>,
+        excluded_inks: HashSet<String>,
+    ) -> Result<Vec<crate::layout::TextSpan>> {
         self.require_authenticated()?;
         use crate::extractors::TextExtractor;
 
-        // Get page object
         let page = self.get_page(page_index)?;
         let page_dict = page.as_dict().ok_or_else(|| Error::ParseError {
             offset: 0,
             reason: "Page is not a dictionary".to_string(),
         })?;
 
-        // Fast pre-check: skip pages that cannot produce text based on resources alone.
         if self.page_cannot_have_text(page_dict) {
             return Ok(Vec::new());
         }
 
-        // Get content stream data — skip page on decode failure (Annex I)
         let content_data = match self.get_page_content_data(page_index) {
             Ok(data) => data,
             Err(e) => {
@@ -8607,8 +10112,13 @@ impl PdfDocument {
             return Ok(Vec::new());
         }
 
-        // Single-pass extraction with the provided config
         let mut extractor = TextExtractor::with_config(config);
+        if !excluded_layers.is_empty() {
+            extractor.set_excluded_layers(excluded_layers);
+        }
+        if !excluded_inks.is_empty() {
+            extractor.set_excluded_inks(excluded_inks);
+        }
         if let Some(resources) = page_dict.get("Resources") {
             extractor.set_resources(resources.clone());
             extractor.set_document(self);
@@ -8622,6 +10132,66 @@ impl PdfDocument {
         }
 
         extractor.extract_text_spans(&content_data)
+    }
+
+    /// Extract text from a page, excluding content from specified layers and inks.
+    ///
+    /// Uses the same full text assembly pipeline as [`extract_text`](Self::extract_text)
+    /// (structure-tree ordering, table detection, column detection), but with
+    /// layer/ink-excluded spans removed before assembly.
+    ///
+    /// **Ink filtering note:** For DeviceN color spaces, text is suppressed if
+    /// ANY ink in the DeviceN array matches an excluded ink name. Tint values
+    /// are not evaluated — this is an all-or-nothing match.
+    ///
+    /// # Arguments
+    ///
+    /// * `page_index` - Zero-based page index
+    /// * `excluded_layers` - OCG layer names to suppress (empty = no layer filtering)
+    /// * `excluded_inks` - Separation/DeviceN ink names to suppress (empty = no ink filtering)
+    pub fn extract_text_filtered(
+        &self,
+        page_index: usize,
+        excluded_layers: HashSet<String>,
+        excluded_inks: HashSet<String>,
+    ) -> Result<String> {
+        if excluded_layers.is_empty() && excluded_inks.is_empty() {
+            return self.extract_text(page_index);
+        }
+
+        let spans = self.extract_spans_filtered(page_index, excluded_layers, excluded_inks)?;
+        let options = crate::converters::ConversionOptions {
+            extract_tables: true,
+            ..Default::default()
+        };
+        self.assemble_text_from_spans(page_index, spans, &options)
+    }
+
+    /// Extract text from a region of a page with layer/ink filtering applied.
+    ///
+    /// Composes [`Self::extract_text_filtered`] with [`Self::extract_text_in_rect`]: spans
+    /// are filtered by layer/ink first, then by region, then assembled via
+    /// the full text pipeline (structure-tree ordering, table detection,
+    /// column detection, whitespace + line breaks).
+    pub fn extract_text_filtered_in_rect(
+        &self,
+        page_index: usize,
+        excluded_layers: HashSet<String>,
+        excluded_inks: HashSet<String>,
+        region: crate::geometry::Rect,
+        mode: crate::layout::RectFilterMode,
+    ) -> Result<String> {
+        let spans = if excluded_layers.is_empty() && excluded_inks.is_empty() {
+            self.extract_spans(page_index)?
+        } else {
+            self.extract_spans_filtered(page_index, excluded_layers, excluded_inks)?
+        };
+        let options = crate::converters::ConversionOptions {
+            extract_tables: true,
+            include_region: Some((region, mode)),
+            ..Default::default()
+        };
+        self.assemble_text_from_spans(page_index, spans, &options)
     }
 
     /// Extract text spans from a page using a specified reading order strategy.
@@ -8715,6 +10285,53 @@ impl PdfDocument {
     /// ```
     pub fn extract_page_text(&self, page_index: usize) -> Result<crate::layout::PageText> {
         self.extract_page_text_with_options(page_index, ReadingOrder::default())
+    }
+
+    /// Extract a page as typed [`StructuredPage`](crate::structured::StructuredPage)
+    /// regions (issue #536).
+    ///
+    /// Returns the page's text grouped into
+    /// [`StructuredRegion`](crate::structured::StructuredRegion)s — body blocks,
+    /// headings, header/footer/page-number chrome, and marginal labels — in
+    /// reading order, with a best-effort `column_index` for two-column bodies.
+    ///
+    /// Roles are derived from signals already attached to each span: `/Artifact`
+    /// marked content (ISO 32000-1:2008 §14.8.2.2), structure-tree heading levels
+    /// (§14.7.2), and span geometry (§14.8.2.3.1). A tagged PDF with a
+    /// trustworthy `/StructTreeRoot` (see
+    /// [`prefers_structure_reading_order`](Self::prefers_structure_reading_order))
+    /// therefore yields tree-driven roles; untagged PDFs use the geometric /
+    /// font-size fallbacks. This is an additive aggregation layer — it does not
+    /// change any existing extraction output.
+    ///
+    /// # Arguments
+    ///
+    /// * `page_index` - Zero-based page index
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use pdf_oxide::document::PdfDocument;
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut doc = PdfDocument::open("two_column.pdf")?;
+    /// let page = doc.extract_structured(0)?;
+    /// for region in &page.regions {
+    ///     println!("{:?} col={:?}: {}", region.kind, region.column_index, region.text);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn extract_structured(
+        &self,
+        page_index: usize,
+    ) -> Result<crate::structured::StructuredPage> {
+        let page_text = self.extract_page_text(page_index)?;
+        Ok(crate::structured::build_structured_page(
+            page_index,
+            page_text.page_width,
+            page_text.page_height,
+            page_text.spans,
+        ))
     }
 
     /// Extract complete page text data with a specific reading order.
@@ -8884,21 +10501,384 @@ impl PdfDocument {
     /// # }
     /// ```
     ///
-    /// # Performance Note
+    /// List all Optional Content Group (OCG) layer names in the document.
     ///
-    /// Character extraction is typically 30-50% faster than span extraction
-    /// because it skips the text grouping and merging logic.
-    pub fn extract_chars(&self, page_index: usize) -> Result<Vec<crate::layout::TextChar>> {
-        use crate::extractors::TextExtractor;
+    /// Reads `/OCProperties` from the document catalog and returns the `/Name`
+    /// of each OCG dictionary listed in `/OCGs`. These names can be passed to
+    /// `extract_text_filtered` / `extract_chars_filtered` via `excluded_layers`.
+    ///
+    /// Returns an empty vec if the document has no optional content.
+    pub fn get_layers(&self) -> Result<Vec<String>> {
+        let catalog = self.catalog()?;
+        let catalog_dict = catalog
+            .as_dict()
+            .ok_or_else(|| Error::InvalidPdf("Catalog is not a dictionary".to_string()))?;
 
-        // Get page object
+        let oc_props = match catalog_dict.get("OCProperties") {
+            Some(obj) => {
+                if let Some(r) = obj.as_reference() {
+                    self.load_object(r)?
+                } else {
+                    obj.clone()
+                }
+            },
+            None => return Ok(Vec::new()),
+        };
+
+        let oc_dict = match oc_props.as_dict() {
+            Some(d) => d,
+            None => return Ok(Vec::new()),
+        };
+
+        let ocgs_obj = match oc_dict.get("OCGs") {
+            Some(obj) => {
+                if let Some(r) = obj.as_reference() {
+                    self.load_object(r)?
+                } else {
+                    obj.clone()
+                }
+            },
+            None => return Ok(Vec::new()),
+        };
+
+        let ocgs_arr = match ocgs_obj.as_array() {
+            Some(a) => a,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut names = Vec::new();
+        for item in ocgs_arr {
+            let ocg_obj = if let Some(r) = item.as_reference() {
+                match self.load_object(r) {
+                    Ok(o) => o,
+                    Err(_) => continue,
+                }
+            } else {
+                item.clone()
+            };
+            if let Some(d) = ocg_obj.as_dict() {
+                if let Some(Object::Name(n)) = d.get("Name") {
+                    names.push(n.clone());
+                } else if let Some(Object::String(s)) = d.get("Name") {
+                    if let Ok(text) = String::from_utf8(s.clone()) {
+                        names.push(text);
+                    }
+                }
+            }
+        }
+        Ok(names)
+    }
+
+    /// List ink / separation names used on a specific page.
+    ///
+    /// Scans the page's `/Resources /ColorSpace` dictionary for `/Separation`
+    /// and `/DeviceN` color space definitions and returns their ink names.
+    /// These names can be passed to `extract_text_filtered` /
+    /// `extract_chars_filtered` via `excluded_inks`.
+    ///
+    /// **Note:** Only the page's own `/Resources` is walked. Spot inks
+    /// declared inside a Form XObject's local `/Resources /ColorSpace`
+    /// dictionary will not be enumerated — even though the renderer and
+    /// extractor will still honor them at use time. Callers populating a
+    /// UI picker from this list may miss XObject-local inks.
+    ///
+    /// For the full walk that follows `Do` operators into Form XObject
+    /// resources, use [`Self::get_page_inks_deep`] — that is what the
+    /// separation renderer uses to allocate plates.
+    pub fn get_page_inks(&self, page_index: usize) -> Result<Vec<String>> {
         let page = self.get_page(page_index)?;
         let page_dict = page.as_dict().ok_or_else(|| Error::ParseError {
             offset: 0,
             reason: "Page is not a dictionary".to_string(),
         })?;
 
-        // Get content stream data — skip page on decode failure (Annex I)
+        let resources = match page_dict.get("Resources") {
+            Some(r) => {
+                if let Some(rr) = r.as_reference() {
+                    self.load_object(rr)?
+                } else {
+                    r.clone()
+                }
+            },
+            None => return Ok(Vec::new()),
+        };
+
+        let res_dict = match resources.as_dict() {
+            Some(d) => d,
+            None => return Ok(Vec::new()),
+        };
+
+        let cs_obj = match res_dict.get("ColorSpace") {
+            Some(obj) => {
+                if let Some(r) = obj.as_reference() {
+                    self.load_object(r)?
+                } else {
+                    obj.clone()
+                }
+            },
+            None => return Ok(Vec::new()),
+        };
+
+        let cs_dict = match cs_obj.as_dict() {
+            Some(d) => d,
+            None => return Ok(Vec::new()),
+        };
+
+        // Resolve any indirect references so the extractor sees inline
+        // arrays. Mirrors the pre-existing per-entry resolve loop.
+        let mut resolved: std::collections::HashMap<String, Object> =
+            std::collections::HashMap::with_capacity(cs_dict.len());
+        for (name, cs_def) in cs_dict.iter() {
+            let v = if let Some(r) = cs_def.as_reference() {
+                match self.load_object(r) {
+                    Ok(o) => o,
+                    Err(_) => continue,
+                }
+            } else {
+                cs_def.clone()
+            };
+            resolved.insert(name.clone(), v);
+        }
+
+        let mut ink_names = Vec::new();
+        extract_inks_from_color_space_dict(&resolved, Some(self), &mut ink_names);
+
+        ink_names.sort();
+        ink_names.dedup();
+        Ok(ink_names)
+    }
+
+    /// List ink / separation names declared on a page **including** those
+    /// declared inside Form XObjects reached through the page's content-stream
+    /// `Do` operators.
+    ///
+    /// Walks the page's content stream looking for `Do` operators that invoke
+    /// Form XObjects (§8.10), recurses into each form's `/Resources/ColorSpace`
+    /// dictionary, and accumulates `/Separation` and `/DeviceN` ink names from
+    /// every visited resource tree.
+    ///
+    /// **Cycle handling:** indirect XObject references are deduplicated by
+    /// `ObjectRef`; recursion depth is bounded at `MAX_RECURSION_DEPTH` (100).
+    /// A cycle below the depth bound is silently terminated; a tree deeper
+    /// than the bound returns [`Error::RecursionLimitExceeded`].
+    ///
+    /// **Out of scope:** tiling / shading patterns (§8.7) and annotation
+    /// appearance streams (§12.5.5) — both can declare their own colour
+    /// spaces but the separation renderer does not paint into them, so
+    /// surfacing their inks here would create plates that stay empty.
+    pub fn get_page_inks_deep(&self, page_index: usize) -> Result<Vec<String>> {
+        let resources = self.page_resources_for_inks(page_index)?;
+        let content_data = self.get_page_content_data(page_index)?;
+        let operators = crate::content::parser::parse_content_stream(&content_data)?;
+
+        let mut ink_names: Vec<String> = Vec::new();
+        let mut visited: std::collections::HashSet<crate::object::ObjectRef> =
+            std::collections::HashSet::new();
+
+        self.collect_inks_from_resources(&resources, &mut ink_names)?;
+        self.walk_form_xobject_tree_for_inks(
+            &operators,
+            &resources,
+            &mut ink_names,
+            &mut visited,
+            0,
+        )?;
+
+        ink_names.sort();
+        ink_names.dedup();
+        Ok(ink_names)
+    }
+
+    /// Resolve the page's `/Resources` entry, following an indirect
+    /// reference if present. Mirrors the same pattern used by
+    /// [`Self::get_page_inks`]. Internal helper that does not depend on
+    /// the `rendering`-feature-gated [`Self::get_page_resources`].
+    fn page_resources_for_inks(&self, page_index: usize) -> Result<Object> {
+        let page = self.get_page(page_index)?;
+        let page_dict = page.as_dict().ok_or_else(|| Error::ParseError {
+            offset: 0,
+            reason: "Page is not a dictionary".to_string(),
+        })?;
+        let resources = match page_dict.get("Resources") {
+            Some(r) => match r.as_reference() {
+                Some(rr) => self.load_object(rr)?,
+                None => r.clone(),
+            },
+            None => Object::Dictionary(std::collections::HashMap::new()),
+        };
+        Ok(resources)
+    }
+
+    /// Dereference `obj` if it is an indirect reference; otherwise clone.
+    /// Internal helper that mirrors the rendering-gated
+    /// [`Self::resolve_object`] without taking the gate.
+    fn deref_object_for_inks(&self, obj: &Object) -> Result<Object> {
+        match obj.as_reference() {
+            Some(r) => self.load_object(r),
+            None => Ok(obj.clone()),
+        }
+    }
+
+    /// Append inks declared in `resources./ColorSpace` (resolving indirect
+    /// references) to `out`. Internal helper for both
+    /// [`Self::get_page_inks_deep`] and the recursive form walker.
+    fn collect_inks_from_resources(&self, resources: &Object, out: &mut Vec<String>) -> Result<()> {
+        let res_dict = match resources.as_dict() {
+            Some(d) => d,
+            None => return Ok(()),
+        };
+        let cs_obj = match res_dict.get("ColorSpace") {
+            Some(obj) => self.deref_object_for_inks(obj)?,
+            None => return Ok(()),
+        };
+        let cs_dict_raw = match cs_obj.as_dict() {
+            Some(d) => d,
+            None => return Ok(()),
+        };
+
+        let mut resolved: std::collections::HashMap<String, Object> =
+            std::collections::HashMap::with_capacity(cs_dict_raw.len());
+        for (name, cs_def) in cs_dict_raw.iter() {
+            let v = match cs_def.as_reference() {
+                Some(r) => match self.load_object(r) {
+                    Ok(o) => o,
+                    Err(_) => continue,
+                },
+                None => cs_def.clone(),
+            };
+            resolved.insert(name.clone(), v);
+        }
+        extract_inks_from_color_space_dict(&resolved, Some(self), out);
+        Ok(())
+    }
+
+    /// Recursive walker: for every `Operator::Do { name }` in `operators` that
+    /// resolves to a Form XObject, scan that form's `/Resources/ColorSpace`
+    /// and recurse into the form's own content stream.
+    ///
+    /// `visited` is keyed on the XObject's `ObjectRef` (indirect references
+    /// only). Inline-stream forms cannot self-reference (no name to invoke);
+    /// the depth limit is the backstop for any other malformed shape.
+    fn walk_form_xobject_tree_for_inks(
+        &self,
+        operators: &[crate::content::operators::Operator],
+        parent_resources: &Object,
+        out: &mut Vec<String>,
+        visited: &mut std::collections::HashSet<crate::object::ObjectRef>,
+        depth: u32,
+    ) -> Result<()> {
+        if depth >= MAX_RECURSION_DEPTH {
+            return Err(Error::RecursionLimitExceeded(MAX_RECURSION_DEPTH));
+        }
+        let xobjects = match parent_resources.as_dict() {
+            Some(rd) => match rd.get("XObject") {
+                Some(o) => self.deref_object_for_inks(o)?,
+                None => return Ok(()),
+            },
+            None => return Ok(()),
+        };
+        let xobj_dict = match xobjects.as_dict() {
+            Some(d) => d,
+            None => return Ok(()),
+        };
+
+        for op in operators {
+            let name = match op {
+                crate::content::operators::Operator::Do { name } => name,
+                _ => continue,
+            };
+            let xobj_entry = match xobj_dict.get(name) {
+                Some(o) => o,
+                None => continue,
+            };
+            let xobj_ref = xobj_entry.as_reference();
+            if let Some(r) = xobj_ref {
+                // Cycle through indirect refs: silent skip below depth bound.
+                if !visited.insert(r) {
+                    continue;
+                }
+            }
+            let xobj = match self.deref_object_for_inks(xobj_entry) {
+                Ok(o) => o,
+                Err(_) => continue,
+            };
+            let (form_dict, form_stream) = match xobj {
+                Object::Stream { ref dict, .. } => {
+                    if dict.get("Subtype").and_then(Object::as_name) != Some("Form") {
+                        continue;
+                    }
+                    let data = match xobj_ref {
+                        Some(r) => self.decode_stream_with_encryption(&xobj, r)?,
+                        None => xobj.decode_stream_data()?,
+                    };
+                    (dict.clone(), data)
+                },
+                _ => continue,
+            };
+
+            // §8.10.1: form may override resources or inherit the parent's.
+            let form_resources = match form_dict.get("Resources") {
+                Some(res) => self.deref_object_for_inks(res)?,
+                None => parent_resources.clone(),
+            };
+            self.collect_inks_from_resources(&form_resources, out)?;
+
+            // Recurse into the form's own content stream looking for nested
+            // `Do`. Malformed streams are tolerated — we want graceful
+            // degradation in a discovery API, not a hard error.
+            let form_ops = match crate::content::parser::parse_content_stream(&form_stream) {
+                Ok(ops) => ops,
+                Err(_) => continue,
+            };
+            self.walk_form_xobject_tree_for_inks(
+                &form_ops,
+                &form_resources,
+                out,
+                visited,
+                depth + 1,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// # Performance Note
+    ///
+    /// Character extraction is typically 30-50% faster than span extraction
+    /// because it skips the text grouping and merging logic.
+    pub fn extract_chars(&self, page_index: usize) -> Result<Vec<crate::layout::TextChar>> {
+        self.extract_chars_impl(page_index, HashSet::new(), HashSet::new())
+    }
+
+    /// Extract characters from a page, excluding content from specified layers and inks.
+    ///
+    /// # Arguments
+    ///
+    /// * `page_index` - Zero-based page index
+    /// * `excluded_layers` - OCG layer names to suppress (empty = no layer filtering)
+    /// * `excluded_inks` - Separation/DeviceN ink names to suppress (empty = no ink filtering)
+    pub fn extract_chars_filtered(
+        &self,
+        page_index: usize,
+        excluded_layers: HashSet<String>,
+        excluded_inks: HashSet<String>,
+    ) -> Result<Vec<crate::layout::TextChar>> {
+        self.extract_chars_impl(page_index, excluded_layers, excluded_inks)
+    }
+
+    fn extract_chars_impl(
+        &self,
+        page_index: usize,
+        excluded_layers: HashSet<String>,
+        excluded_inks: HashSet<String>,
+    ) -> Result<Vec<crate::layout::TextChar>> {
+        use crate::extractors::TextExtractor;
+
+        let page = self.get_page(page_index)?;
+        let page_dict = page.as_dict().ok_or_else(|| Error::ParseError {
+            offset: 0,
+            reason: "Page is not a dictionary".to_string(),
+        })?;
+
         let content_data = match self.get_page_content_data(page_index) {
             Ok(data) => data,
             Err(e) => {
@@ -8911,20 +10891,21 @@ impl PdfDocument {
             },
         };
 
-        // Early-out for pages with no text content (§9.4.3)
         if !Self::may_contain_text(&content_data) {
             return Ok(Vec::new());
         }
 
-        // Create text extractor for character-level extraction
         let mut extractor = TextExtractor::new();
+        if !excluded_layers.is_empty() {
+            extractor.set_excluded_layers(excluded_layers);
+        }
+        if !excluded_inks.is_empty() {
+            extractor.set_excluded_inks(excluded_inks);
+        }
 
-        // Load fonts from page resources and set resources for XObject access
         if let Some(resources) = page_dict.get("Resources") {
             extractor.set_resources(resources.clone());
             extractor.set_document(self);
-
-            // Load fonts
             if let Err(e) = self.load_fonts(resources, &mut extractor) {
                 log::warn!(
                     "Failed to load fonts for page {}: {}, continuing with defaults",
@@ -8934,18 +10915,13 @@ impl PdfDocument {
             }
         }
 
-        // Extract characters directly (single-pass, no document classification)
         let mut chars = extractor.extract(&content_data)?;
 
-        // Sort characters by reading order (Y-descending, then X-ascending)
-        // This ensures extract_words and extract_text_lines process them in logical order.
         chars.sort_by(|a, b| {
-            // Y-descending (top-to-bottom)
             let y_cmp = crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y);
             if y_cmp != std::cmp::Ordering::Equal {
                 return y_cmp;
             }
-            // X-ascending (left-to-right)
             crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x)
         });
 
@@ -9013,7 +10989,7 @@ impl PdfDocument {
         use crate::layout::{clustering, AdaptiveLayoutParams, DocumentProperties, Word};
 
         // Span source. The default (no profile) flows through the canonical
-        // `page_reading_order` helper (issue #457): tagged → struct tree,
+        // `page_reading_order` helper: tagged → struct tree,
         // untagged → geometric top-to-bottom. The legacy profile path keeps
         // its previous XY-Cut + row-aware-sort behavior pending the planned
         // removal of `profile`.
@@ -9130,9 +11106,9 @@ impl PdfDocument {
         }
 
         // Post-processing: merge adjacent words whose spans abut or overlap on
-        // the same line.  PDFs (especially tagged CJK documents) sometimes encode
+        // the same line. PDFs (especially tagged CJK documents) sometimes encode
         // typographically-adjacent glyphs as separate marked-content runs, e.g.
-        // "Q" and "（peu/d）" with a gap of -0.18 points.  Without merging these
+        // "Q" and "（peu/d）" with a gap of -0.18 points. Without merging these
         // remain separate tokens and never match the ground-truth "Q（peu/d）".
         //
         // Merge condition: same line (y_diff ≤ 0.5 × max line height) AND
@@ -9268,7 +11244,7 @@ impl PdfDocument {
         use crate::layout::{clustering, AdaptiveLayoutParams, DocumentProperties, TextLine, Word};
 
         // Span source. Default (no profile) → canonical `page_reading_order`
-        // helper (issue #457). Legacy profile path keeps XY-Cut + row-aware
+        // helper. Legacy profile path keeps XY-Cut + row-aware
         // sort pending the planned removal of `profile`.
         let spans: Vec<crate::layout::TextSpan> = match profile {
             Some(p) => {
@@ -9641,10 +11617,10 @@ impl PdfDocument {
     ///     println!("Path with {} operations, bbox: {:?}",
     ///         path.operations.len(), path.bbox);
     ///     if path.has_stroke() {
-    ///         println!("  Stroked with width: {}", path.stroke_width);
+    ///         println!(" Stroked with width: {}", path.stroke_width);
     ///     }
     ///     if path.has_fill() {
-    ///         println!("  Filled");
+    ///         println!(" Filled");
     ///     }
     /// }
     /// # Ok(())
@@ -9841,7 +11817,7 @@ impl PdfDocument {
                     extractor.clip_even_odd();
                 },
 
-                // XObject processing (Issue #40)
+                // XObject processing
                 Operator::Do { name } => {
                     if let Err(e) =
                         self.process_form_xobject_paths(&name, &mut extractor, &mut state_stack)
@@ -9854,12 +11830,137 @@ impl PdfDocument {
                     }
                 },
 
+                // Marked content operators — maintain the active Optional
+                // Content Group (PDF "layer") so each finalized path gets
+                // tagged with the OCG it was emitted under. Per ISO 32000-1
+                // §14.6, every `BDC`/`BMC` must be balanced by an `EMC`,
+                // so we always push (with `None` for non-`/OC` tags) and
+                // always pop — keeps the stack depth in sync with the
+                // marked-content nesting.
+                Operator::BeginMarkedContent { .. } => {
+                    extractor.push_oc_layer(None);
+                },
+                Operator::BeginMarkedContentDict { tag, properties } => {
+                    let layer = if tag == "OC" {
+                        self.resolve_oc_layer_name(extractor.current_resources(), &properties)
+                    } else {
+                        None
+                    };
+                    extractor.push_oc_layer(layer);
+                },
+                Operator::EndMarkedContent => {
+                    extractor.pop_oc_layer();
+                },
+
                 // Skip other operators (text, images, etc.)
                 _ => {},
             }
         }
 
         Ok(extractor.finish())
+    }
+
+    /// Resolve a `BDC /OC <properties>` property operand to the human-readable
+    /// layer name of the Optional Content it refers to (PDF spec
+    /// ISO 32000-1:2008 §8.11, §14.6).
+    ///
+    /// `properties` is the operand parsed by `Operator::BeginMarkedContentDict`
+    /// — per spec it is either:
+    ///
+    /// 1. An inline dictionary: an OCG (or OCMD) — read its name directly.
+    /// 2. A name (e.g. `/MC0`) that references `<resources> /Properties
+    ///    <name>` → an OCG or OCMD dictionary → read its name.
+    ///
+    /// `resources` is the resource dictionary currently in scope: the page
+    /// `/Resources` at page level, or the active Form XObject's own
+    /// `/Resources` when extracting inside an XObject (§14.6.2, §8.10.1).
+    ///
+    /// Returns `None` for malformed PDFs, missing `/Resources /Properties`
+    /// entries, or optional-content objects without a resolvable name.
+    /// Callers treat `None` as "path belongs to no named layer" — extraction
+    /// continues normally.
+    fn resolve_oc_layer_name(
+        &self,
+        resources: Option<&crate::object::Object>,
+        properties: &crate::object::Object,
+    ) -> Option<String> {
+        const OC_NAME_MAX_DEPTH: u8 = 8;
+
+        // Case 1: inline dictionary — the property list itself is the OCG (or
+        // OCMD) dictionary.
+        if let Some(dict) = properties.as_dict() {
+            return self.read_oc_name(dict, OC_NAME_MAX_DEPTH);
+        }
+
+        // Case 2: name reference (e.g. `/MC0`) — resolve through the current
+        // resource dict's `/Properties` subdictionary.
+        let prop_name = properties.as_name()?;
+        let resources_obj = self.deref_object(resources?)?;
+        let properties_dict = resources_obj.as_dict()?.get("Properties")?;
+        let properties_obj = self.deref_object(properties_dict)?;
+        let target = properties_obj.as_dict()?.get(prop_name)?;
+        let target_obj = self.deref_object(target)?;
+        self.read_oc_name(target_obj.as_dict()?, OC_NAME_MAX_DEPTH)
+    }
+
+    /// Read the human-readable layer name from an Optional Content dictionary.
+    ///
+    /// - An **OCG** (§8.11.2.1) carries its label in `/Name` — a PDF *text
+    ///   string*, decoded via [`Self::decode_pdf_text_string`] so
+    ///   PDFDocEncoding (Annex D) and UTF-16 (BE/LE, with BOM) layer names
+    ///   round-trip identically to the rest of the library.
+    /// - An **OCMD** (§8.11.3.2, Table 99) has no `/Name` of its own; its
+    ///   member OCGs live in `/OCGs`, which is *either* a single OCG *or* an
+    ///   array of them (array entries may be `null`). We follow the first
+    ///   entry that resolves to a dictionary and read its name.
+    ///
+    /// `depth` bounds the `/OCGs` chain so a malformed PDF whose membership
+    /// dictionary points back to another OCMD cannot recurse forever.
+    /// Returns `None` for missing / non-dictionary / nameless inputs — the
+    /// path is simply left unlabelled.
+    fn read_oc_name(
+        &self,
+        dict: &std::collections::HashMap<String, crate::object::Object>,
+        depth: u8,
+    ) -> Option<String> {
+        use crate::object::Object;
+
+        if depth == 0 {
+            return None;
+        }
+
+        // OCMD: no /Name of its own — follow /OCGs to the first member OCG.
+        if matches!(dict.get("Type").and_then(|t| t.as_name()), Some("OCMD")) {
+            let ocgs = self.deref_object(dict.get("OCGs")?)?;
+            let first_ocg = match ocgs.as_array() {
+                // /OCGs as an array: first entry that derefs to a dictionary.
+                Some(entries) => entries
+                    .iter()
+                    .find_map(|e| self.deref_object(e).filter(|o| o.as_dict().is_some())),
+                // /OCGs as a single OCG (already a dictionary).
+                None => Some(ocgs.clone()),
+            };
+            return self.read_oc_name(first_ocg?.as_dict()?, depth - 1);
+        }
+
+        // OCG (or inline property dict): /Name is a PDF text string.
+        match dict.get("Name")? {
+            Object::String(bytes) => Some(Self::decode_pdf_text_string(bytes)),
+            // Tolerate a /Name written as a PDF name object (non-conformant,
+            // but seen in real exports).
+            Object::Name(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    /// Dereference one level of indirection, loading the target object;
+    /// pass direct objects through unchanged. `None` if a reference fails to
+    /// load — callers treat that as "unresolvable, leave unlabelled".
+    fn deref_object(&self, obj: &crate::object::Object) -> Option<crate::object::Object> {
+        match obj.as_reference() {
+            Some(r) => self.load_object(r).ok(),
+            None => Some(obj.clone()),
+        }
     }
 
     /// Extract rectangles from a page (v0.3.14).
@@ -9953,7 +12054,7 @@ impl PdfDocument {
         Ok(detect_tables_with_lines(&spans, &lines, &config))
     }
 
-    /// Process paths from a Form XObject (Issue #40).
+    /// Process paths from a Form XObject.
     ///
     /// This method recursively extracts paths from Form XObjects encountered via the `Do` operator.
     /// It handles:
@@ -10140,6 +12241,10 @@ impl PdfDocument {
             None
         };
 
+        // Remember the marked-content nesting depth on entry so we can drop
+        // anything this XObject leaves unbalanced (see truncate below).
+        let oc_base_depth = extractor.oc_layer_depth();
+
         // Process operators from the XObject
         for op in operators {
             match op {
@@ -10265,6 +12370,28 @@ impl PdfDocument {
                     }
                 },
 
+                // Marked content — same Optional Content Group ("layer")
+                // tracking as the page-level loop, but `/OC` property
+                // references resolve against *this* XObject's resource scope
+                // (swapped in above), per §14.6.2 + §8.10.1. CAD exports that
+                // reuse Form XObjects for repeated symbols (gridline labels,
+                // callouts) carry their `/OC` markers and local `/Properties`
+                // here rather than on the page.
+                Operator::BeginMarkedContent { .. } => {
+                    extractor.push_oc_layer(None);
+                },
+                Operator::BeginMarkedContentDict { tag, properties } => {
+                    let layer = if tag == "OC" {
+                        self.resolve_oc_layer_name(extractor.current_resources(), &properties)
+                    } else {
+                        None
+                    };
+                    extractor.push_oc_layer(layer);
+                },
+                Operator::EndMarkedContent => {
+                    extractor.pop_oc_layer();
+                },
+
                 // Skip other operators
                 _ => {},
             }
@@ -10274,6 +12401,10 @@ impl PdfDocument {
         if extractor.has_current_path() {
             extractor.end_path();
         }
+
+        // Drop any marked-content entries this XObject left open so an
+        // unbalanced `BDC` cannot leak its layer onto the caller's paths.
+        extractor.truncate_oc_layers(oc_base_depth);
 
         // Restore the caller's resource scope before popping the cycle guard.
         if let Some(saved) = saved_scope {
@@ -10566,17 +12697,22 @@ impl PdfDocument {
         }
 
         // Get MediaBox (required, may be inherited).
-        // PDF spec §7.3.10: any value may be a direct or indirect reference.
+        // PDF spec §7.3.10: any value may be a direct or indirect reference —
+        // including each individual array element (pdf.js issue7872 stores
+        // `/MediaBox [4 0 R 5 0 R 6 0 R 7 0 R]`). Resolve every element,
+        // otherwise an unresolved Reference reads as None and silently
+        // falls back to the Letter-size default instead of the true bounds.
         let media_box = page_dict
             .get("MediaBox")
             .map(|o| self.resolve_obj_ref(o))
             .as_ref()
             .and_then(|o| o.as_array().map(|a| a.to_owned()))
             .map(|arr| {
-                let x0 = arr.first().and_then(obj_to_f32).unwrap_or(0.0);
-                let y0 = arr.get(1).and_then(obj_to_f32).unwrap_or(0.0);
-                let x1 = arr.get(2).and_then(obj_to_f32).unwrap_or(612.0);
-                let y1 = arr.get(3).and_then(obj_to_f32).unwrap_or(792.0);
+                let r: Vec<Object> = arr.iter().map(|o| self.resolve_obj_ref(o)).collect();
+                let x0 = r.first().and_then(obj_to_f32).unwrap_or(0.0);
+                let y0 = r.get(1).and_then(obj_to_f32).unwrap_or(0.0);
+                let x1 = r.get(2).and_then(obj_to_f32).unwrap_or(612.0);
+                let y1 = r.get(3).and_then(obj_to_f32).unwrap_or(792.0);
                 crate::geometry::Rect::from_points(x0, y0, x1, y1)
             })
             .unwrap_or(crate::geometry::Rect::from_points(
@@ -10591,10 +12727,11 @@ impl PdfDocument {
             .as_ref()
             .and_then(|o| o.as_array().map(|a| a.to_owned()))
             .map(|arr| {
-                let x0 = arr.first().and_then(obj_to_f32).unwrap_or(0.0);
-                let y0 = arr.get(1).and_then(obj_to_f32).unwrap_or(0.0);
-                let x1 = arr.get(2).and_then(obj_to_f32).unwrap_or(612.0);
-                let y1 = arr.get(3).and_then(obj_to_f32).unwrap_or(792.0);
+                let r: Vec<Object> = arr.iter().map(|o| self.resolve_obj_ref(o)).collect();
+                let x0 = r.first().and_then(obj_to_f32).unwrap_or(0.0);
+                let y0 = r.get(1).and_then(obj_to_f32).unwrap_or(0.0);
+                let x1 = r.get(2).and_then(obj_to_f32).unwrap_or(612.0);
+                let y1 = r.get(3).and_then(obj_to_f32).unwrap_or(792.0);
                 crate::geometry::Rect::from_points(x0, y0, x1, y1)
             });
 
@@ -10657,7 +12794,7 @@ impl PdfDocument {
     }
 
     /// Look up a font from the per-document `font_cache`, parsing and inserting
-    /// on a cache miss.  Used by the page renderer so that `FontInfo::from_dict`
+    /// on a cache miss. Used by the page renderer so that `FontInfo::from_dict`
     /// (which decodes widths, CID maps, ToUnicode CMaps, and extracts embedded
     /// font bytes) is called at most once per PDF object reference, even when
     /// multiple pages share the same font resources.
@@ -10672,7 +12809,7 @@ impl PdfDocument {
                 return Ok(arc);
             }
         }
-        let resolved = self.resolve_object(font_obj)?;
+        let resolved = self.deref_object_for_inks(font_obj)?;
         let info = crate::fonts::FontInfo::from_dict(&resolved, self)?;
         let arc = Arc::new(info);
         if let Some(font_ref) = font_obj.as_reference() {
@@ -10736,8 +12873,95 @@ impl PdfDocument {
                     }
                 }
             }
+            // #598: width metrics. Two non-subset fonts can share
+            // BaseFont + Subtype + Encoding yet ship different glyph widths —
+            // Standard-14 fonts may carry producer-specific /Widths overrides
+            // (§9.6.2.2), and differently-optimized embeds of the same named
+            // font diverge similarly. Without folding widths into the key,
+            // such fonts collide on the cross-document cache and the second
+            // document gets the first's advances. We hash the simple-font
+            // char range + width table and the Type0 default width. Only
+            // values present inline on this dict are reachable (this is a pure
+            // function over the font object); a referenced /Widths or the
+            // descendant CIDFont /W array falls back to the coarser key — an
+            // accepted, documented limitation, not a new regression.
+            if let Some(Object::Integer(first_char)) = d.get("FirstChar") {
+                7u8.hash(&mut hasher);
+                first_char.hash(&mut hasher);
+            }
+            if let Some(Object::Integer(last_char)) = d.get("LastChar") {
+                8u8.hash(&mut hasher);
+                last_char.hash(&mut hasher);
+            }
+            if let Some(Object::Array(widths)) = d.get("Widths") {
+                9u8.hash(&mut hasher);
+                (widths.len() as u64).hash(&mut hasher);
+                for w in widths {
+                    match w {
+                        Object::Integer(i) => i.hash(&mut hasher),
+                        // Bit-pattern hash so equal widths hash equally
+                        // (these are glyph advances, never NaN in practice).
+                        Object::Real(r) => r.to_bits().hash(&mut hasher),
+                        _ => 0u8.hash(&mut hasher),
+                    }
+                }
+            }
+            // Type0 default width, when present inline on the font dict.
+            if let Some(Object::Integer(dw)) = d.get("DW") {
+                10u8.hash(&mut hasher);
+                dw.hash(&mut hasher);
+            }
         }
         hasher.finish()
+    }
+
+    /// Whether a font dictionary describes a font that is *document-local* and
+    /// therefore must never be served from / inserted into the cross-document
+    /// global font cache (Layer 6), even if its cheap identity hash collides
+    /// with a font in another document.
+    ///
+    /// Type 3 fonts (PDF 32000-1 §9.6.5) define their glyphs as streams of PDF
+    /// graphics operators in a `/CharProcs` dictionary whose procedures
+    /// reference the *owning document's* resources (XObjects, ColorSpaces,
+    /// ExtGState, …). Two Type 3 fonts from different documents that happen to
+    /// share `/Name` + `/Encoding` shape are NOT interchangeable: serving one
+    /// document's parsed `FontInfo` for the other yields wrong glyphs. Such
+    /// fonts carry no subset prefix, so the cheap hash cannot distinguish them
+    /// — this predicate gates them out of the global cache instead (#597).
+    fn font_is_document_local(font_obj: &Object) -> bool {
+        let dict = match font_obj.as_dict() {
+            Some(d) => d,
+            None => return false,
+        };
+
+        // Type 3 fonts reference this document's resources via their CharProcs,
+        // so a cached FontInfo cannot cross PdfDocument boundaries.
+        if dict.get("Subtype").and_then(|s| s.as_name()) == Some("Type3") {
+            return true;
+        }
+
+        // Subset fonts carry a document-specific glyph subset and ToUnicode
+        // CMap, so they are unsafe to share across documents even when the
+        // BaseFont name collides. A subset BaseFont is tagged with exactly six
+        // uppercase letters and a '+' per ISO 32000-1:2008 §9.6.4
+        // (e.g. `AAAAAA+ArialUnicodeMS`).
+        match dict.get("BaseFont").and_then(|b| b.as_name()) {
+            Some(base_font) => Self::is_subset_basefont(base_font),
+            // A non-Type3 font is required by the spec to carry /BaseFont; if it
+            // is absent we cannot prove the font is shareable, so fail safe and
+            // treat it as document-local rather than risk poisoning the cache.
+            None => true,
+        }
+    }
+
+    /// Detect a PDF subset-font tag on a `/BaseFont` name: exactly six uppercase
+    /// ASCII letters followed by `+`, per ISO 32000-1:2008 §9.6.4 (e.g.
+    /// `AAAAAA+ArialUnicodeMS`). `is_ascii_uppercase` is precisely A–Z, so
+    /// multibyte (CJK) names never satisfy the test and are treated as full
+    /// fonts — correct, since subset tags are by definition ASCII A–Z.
+    fn is_subset_basefont(base_font: &str) -> bool {
+        let bytes = base_font.as_bytes();
+        bytes.len() > 7 && bytes[6] == b'+' && bytes[..6].iter().all(|b| b.is_ascii_uppercase())
     }
 
     /// Load fonts from a Resources dictionary into the extractor.
@@ -10862,7 +13086,7 @@ impl PdfDocument {
                     // over ALL reference fonts in the current Resources dict (sorted by
                     // name). This prevents false cache hits when pages reuse the same
                     // font key names but embed different per-page subsets — a single-font
-                    // spot-check is insufficient because it only guards one entry and
+                    // spot-check is insufficient because it only guards one entry
                     // lets differing sibling fonts (F2, F3 …) slip through unchecked.
                     // Fixes the regression described in issue #408.
                     let current_combined = {
@@ -10915,6 +13139,13 @@ impl PdfDocument {
                         // Compute identity hash (cheap: 3-6 dict lookups, ~200ns)
                         let id_hash = Self::font_identity_hash_cheap(&font);
 
+                        // Type 3 fonts and subset fonts must not cross
+                        // PdfDocument boundaries via the global cache — their
+                        // glyph procs / glyph-subset + ToUnicode mappings are
+                        // document-specific. The per-document Layer 4/5 caches
+                        // below stay safe to use.
+                        let is_document_local = Self::font_is_document_local(&font);
+
                         // Layer 5: Per-font identity cache — skip from_dict when a
                         // structurally identical font was already parsed elsewhere.
                         let cached_identity_opt = self
@@ -10932,27 +13163,34 @@ impl PdfDocument {
 
                         // Layer 6: Global cross-document font cache — reuse fonts
                         // parsed by previous PdfDocument instances in this process.
-                        if let Some(cached) =
-                            crate::fonts::global_cache::global_font_cache_get(id_hash)
-                        {
-                            self.font_identity_cache
-                                .lock_or_recover()
-                                .insert(id_hash, Arc::clone(&cached));
-                            self.font_cache
-                                .lock_or_recover()
-                                .insert(font_ref, Arc::clone(&cached));
-                            extractor.add_font_shared((*name).clone(), cached);
-                            continue;
+                        // Skipped entirely for document-local fonts (#597).
+                        if !is_document_local {
+                            if let Some(cached) =
+                                crate::fonts::global_cache::global_font_cache_get(id_hash)
+                            {
+                                self.font_identity_cache
+                                    .lock_or_recover()
+                                    .insert(id_hash, Arc::clone(&cached));
+                                self.font_cache
+                                    .lock_or_recover()
+                                    .insert(font_ref, Arc::clone(&cached));
+                                extractor.add_font_shared((*name).clone(), cached);
+                                continue;
+                            }
                         }
 
                         match FontInfo::from_dict(&font, self) {
                             Ok(font_info) => {
                                 let arc = Arc::new(font_info);
-                                // Populate both document-level and global caches
-                                crate::fonts::global_cache::global_font_cache_insert(
-                                    id_hash,
-                                    Arc::clone(&arc),
-                                );
+                                // Populate the document-level caches always; the
+                                // global cross-document cache only for fonts that
+                                // are safe to share across documents (#597).
+                                if !is_document_local {
+                                    crate::fonts::global_cache::global_font_cache_insert(
+                                        id_hash,
+                                        Arc::clone(&arc),
+                                    );
+                                }
                                 self.font_identity_cache
                                     .lock_or_recover()
                                     .insert(id_hash, Arc::clone(&arc));
@@ -11015,7 +13253,7 @@ impl PdfDocument {
                 // The combined identity hash covers ALL reference fonts (sorted by
                 // name), so a hit requires every font in the Resources dict to match,
                 // not just one. This prevents false positives when pages reuse the
-                // same font key names with different per-page subsets (issue #408).
+                // same font key names with different per-page subsets.
                 if !all_from_cache {
                     let combined_check_hash = {
                         use std::hash::{Hash, Hasher};
@@ -11233,7 +13471,7 @@ impl PdfDocument {
         // 2-row table that fails is_real_grid below and gets dropped, after
         // which the cells fall through to paragraph flow with column-based
         // reading order — producing orphan `<p>40000≤Q</p>` /
-        // `<p>＜55000</p>` pairs.  Consolidate vertically-adjacent fragments
+        // `<p>＜55000</p>` pairs. Consolidate vertically-adjacent fragments
         // that share an identical column structure BEFORE applying
         // is_real_grid so the merged multi-row table survives the filter.
         let raw_tables =
@@ -11241,7 +13479,7 @@ impl PdfDocument {
                 raw_tables,
             );
 
-        // Per #457 Step 4: spatial detection without struct-tree backing
+        // Step 4: spatial detection without struct-tree backing
         // is prone to false positives on form-style layouts (label-colon-
         // value pairs that align horizontally, form fillable boxes drawn
         // with thin lines). Drop tables that don't look like real grids.
@@ -11253,8 +13491,8 @@ impl PdfDocument {
             // PDF with decorative horizontal rules (newsletter mastheads,
             // press-release banners) can hand `is_real_grid` a "wide data
             // table" that is actually wrapped paragraphs partitioned by
-            // word x-alignment.  Reject those before they reach the
-            // converter.  See `looks_like_prose_table` for the heuristic.
+            // word x-alignment. Reject those before they reach the
+            // converter. See `looks_like_prose_table` for the heuristic.
             .filter(|t| !looks_like_prose_table(t))
             .collect();
 
@@ -11276,7 +13514,7 @@ impl PdfDocument {
         // Text-only spatial fallback for converter paths (to_markdown / to_html — issue #486).
         //
         // Wide data tables (e.g. sailing-score grids with 16-18 columns) exceed the default
-        // `max_table_columns: 15` limit and are rejected by the main pipeline.  When the
+        // `max_table_columns: 15` limit and are rejected by the main pipeline. When the
         // caller explicitly opted in to text-only detection (text_fallback=true), retry with
         // a relaxed config that raises the column ceiling and adjusts tolerances so that
         // genuinely wide data tables are captured.
@@ -11294,7 +13532,7 @@ impl PdfDocument {
         // - Results must pass is_real_grid() just like main-pipeline tables.
 
         // Guard 1 — Tagged PDFs: presence of a structure tree means the document has an
-        // explicit semantic layout.  Spatial text-only detection would misfire on
+        // explicit semantic layout. Spatial text-only detection would misfire on
         // structure elements (headings, paragraphs) that happen to share a Y band.
         if config.text_fallback && struct_tree_opt.is_some() {
             log::debug!(
@@ -11342,7 +13580,7 @@ impl PdfDocument {
             };
 
             // When ruling lines are present on the page, restrict text detection to
-            // spans that fall within the VERTICAL-LINE Y bounds.  Vertical lines
+            // spans that fall within the VERTICAL-LINE Y bounds. Vertical lines
             // define the table's column structure and their Y extent precisely
             // delineates the table rows, excluding page headers and footers which
             // sit above/below the table frame.
@@ -11393,14 +13631,14 @@ impl PdfDocument {
                 .into_iter()
                 // Text-only detection infers columns from word x-alignment
                 // alone; a title + a wrapped body line (two rows) is the
-                // signature of ordinary prose, not a table.  Require ≥3
+                // signature of ordinary prose, not a table. Require ≥3
                 // rows of evidence before promoting to a table.
                 .filter(|t| t.rows.len() >= 3 && t.is_real_grid())
                 // Prose split across many "columns" is the dominant
                 // false-positive shape for text-only detection on
                 // line-less pages: a paragraph wraps to N lines, words
                 // cluster into N×K cells, and `is_real_grid` accepts the
-                // shape.  Real data-table cells almost never end with a
+                // shape. Real data-table cells almost never end with a
                 // comma or semicolon (those punctuation marks belong to
                 // running sentences), so a high comma-tail ratio is the
                 // most discriminating prose signal we have.
@@ -11482,17 +13720,11 @@ impl PdfDocument {
         let pipeline_config = TextPipelineConfig::from_conversion_options(options);
 
         let (mcid_order, mcid_to_role, mcid_to_block_id) = {
-            let cached_tree = {
-                let cached = self.structure_tree_cache.lock_or_recover().clone();
-                match cached {
-                    Some(tree) => tree,
-                    None => {
-                        let tree = self.structure_tree().ok().flatten().map(Arc::new);
-                        *self.structure_tree_cache.lock_or_recover() = Some(tree.clone());
-                        tree
-                    },
-                }
-            };
+            // Use structure-tree reading order only when trustworthy (§14.8.2.3.1):
+            // honours /MarkInfo /Suspects so markdown stays consistent with
+            // extract_text / to_plain_text. (The /Table-element table path in
+            // extract_page_tables intentionally keeps its own gate.)
+            let cached_tree = self.struct_tree_trustworthy();
 
             if let Some(ref struct_tree) = cached_tree {
                 // Build per-page traversal cache once, then O(1) lookup per page
@@ -11624,7 +13856,7 @@ impl PdfDocument {
         // Step 7: Process through pipeline (applies reading order strategy)
         let mut ordered_spans = pipeline.process(spans, context)?;
 
-        // Annotate ordered spans with the per-MCID structural role and
+        // Annotate ordered spans with the per-MCID structural role
         // paragraph block-id so the markdown converter can emit headings
         // and bullets directly from the source PDF's `/StructTreeRoot`
         // and respect tagged paragraph boundaries even when the
@@ -11693,7 +13925,7 @@ impl PdfDocument {
         // megabytes (issue #377 corpus-comparison observation: a
         // 17-page arxiv paper produced 11 MB of markdown, ~600 KB
         // per page of base64 PNG data, swamping any text-content
-        // signal). 200 KB per image keeps small thumbnails and
+        // signal). 200 KB per image keeps small thumbnails
         // diagrams while skipping full-page renders.
         const MAX_BASE64_DATA_URI: usize = 200 * 1024;
         for (i, image) in images.iter().enumerate() {
@@ -11921,8 +14153,17 @@ impl PdfDocument {
         // Step 4: Create pipeline with config
         let pipeline = TextPipeline::with_config(pipeline_config.clone());
 
-        // Step 5: Build reading order context
-        let context = ReadingOrderContext::new().with_page(page_index as u32);
+        // Step 5: Build reading order context. For a trustworthy tagged PDF use
+        // the canonical builder so the StructureTreeStrategy assigns MCID-driven
+        // reading order (§14.8.2.3.1). The HTML converter sorts by
+        // `reading_order` (and only uses Y for line-break gaps), so it honours
+        // the structure order. Untagged / suspect PDFs keep the exact bare
+        // geometric context, so their output is byte-for-byte unchanged.
+        let context = if self.prefers_structure_reading_order() {
+            crate::pipeline::page_order::build_context(self, page_index)
+        } else {
+            ReadingOrderContext::new().with_page(page_index as u32)
+        };
 
         // Step 6: Process through pipeline (applies reading order strategy)
         let ordered_spans = pipeline.process(spans, context)?;
@@ -12050,6 +14291,17 @@ impl PdfDocument {
         page_index: usize,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
+        // #608: for a trustworthy tagged PDF, read in logical structure order
+        // (§14.8.2.3.1) by assembling directly from the structure tree — the
+        // same path `extract_text` uses. The geometric plain-text converter
+        // below regroups spans by Y and would otherwise override the structure
+        // order. Untagged / suspect PDFs fall through to the exact converter
+        // path below, so their output is byte-for-byte unchanged.
+        if self.prefers_structure_reading_order() {
+            let base_spans = self.extract_spans(page_index)?;
+            return self.assemble_text_from_spans(page_index, base_spans, options);
+        }
+
         // Step 1: Extract raw spans (unchanged - this is the foundation)
         let mut spans = self.extract_spans(page_index)?;
 
@@ -12073,7 +14325,17 @@ impl PdfDocument {
         // Step 4: Create pipeline with config
         let pipeline = TextPipeline::with_config(pipeline_config.clone());
 
-        // Step 5: Build reading order context
+        // Step 5: Build reading order context.
+        //
+        // NOTE (#608): for a trustworthy tagged PDF the structure-tree reading
+        // order is honoured by `extract_text` and `to_markdown` (which assemble
+        // directly from MCID order). `to_plain_text` / `to_html` run spans
+        // through the geometric line/column grouping converter, which regroups
+        // by Y position and therefore overrides any per-span `reading_order` the
+        // StructureTreeStrategy would assign. Feeding MCID order here is thus a
+        // no-op for these two converters, so we keep the geometric context — and
+        // its byte-for-byte output — unchanged. Routing structured logical order
+        // through the plain-text/HTML converters is a tracked follow-up.
         let context = ReadingOrderContext::new().with_page(page_index as u32);
 
         // Step 6: Process through pipeline (applies reading order strategy)
@@ -12353,7 +14615,7 @@ impl PdfDocument {
     /// second section onward. `ir_to_docx` writes one `<w:sectPr>` per
     /// section (each non-final sectPr lives inside a synthetic empty
     /// paragraph's `<w:pPr>`, the final one at body level), so a
-    /// PDF→DOCX→PDF round-trip preserves the source page count and
+    /// PDF→DOCX→PDF round-trip preserves the source page count
     /// dimensions instead of overflowing onto Letter-sized pages at
     /// the OfficeConfig default. Source-PDF fonts are embedded under
     /// `word/fonts/` for typeface preservation across the round-trip.
@@ -12407,7 +14669,7 @@ impl PdfDocument {
         // table (widths live in the document's `/W` array, not the
         // font program). `cmap_injector` patches both: it synthesises
         // a format-4 Unicode cmap from `/ToUnicode` so the font
-        // registers via `EmbeddedFont::has_usable_unicode_cmap`, and
+        // registers via `EmbeddedFont::has_usable_unicode_cmap`,
         // it stamps a real `hmtx` populated from the source PDF's
         // `/W` widths so ttf-parser's `glyph_hor_advance` returns
         // non-zero values when the round-trip writer rebuilds its
@@ -12449,7 +14711,7 @@ impl PdfDocument {
     }
 
     /// Build a `DocumentIR` from the entire PDF, tagged for the target
-    /// office format. Shared by `to_docx_bytes`, `to_pptx_bytes`, and
+    /// office format. Shared by `to_docx_bytes`, `to_pptx_bytes`,
     /// `to_xlsx_bytes`. Thin wrapper around `pdf_to_ir::pdf_to_ir`
     /// that applies default options.
     fn pdf_to_office_ir(
@@ -12618,6 +14880,471 @@ impl PdfDocument {
     pub fn extract_images(&self, page_index: usize) -> Result<Vec<crate::extractors::PdfImage>> {
         self.require_authenticated()?;
         self.extract_images_filtered(page_index, &ImageExtractFilter::default())
+    }
+
+    /// Build the resource-name → colour-space-object map from a resolved
+    /// `/Resources` dictionary's `/ColorSpace` subdictionary (§8.6.3 / §7.8.3),
+    /// resolving one indirect-ref hop per entry so the stored value is a colour
+    /// space name or array. Empty when there is no `/ColorSpace` subdictionary;
+    /// the standard device names parse directly and need no entry. Consumed by
+    /// the image-handle builders so `decode()` / the handle's `color_space` can
+    /// resolve names like `/CS0` (§8.6.6, §8.9.7).
+    fn build_color_space_map(
+        &self,
+        resources: Option<&Object>,
+    ) -> std::collections::HashMap<String, Object> {
+        let mut map = std::collections::HashMap::new();
+        let Some(res) = resources else {
+            return map;
+        };
+        let res = if let Some(r) = res.as_reference() {
+            match self.load_object(r) {
+                Ok(o) => o,
+                Err(_) => return map,
+            }
+        } else {
+            res.clone()
+        };
+        let Some(res_dict) = res.as_dict() else {
+            return map;
+        };
+        let Some(cs_entry) = res_dict.get("ColorSpace") else {
+            return map;
+        };
+        let cs_obj = if let Some(r) = cs_entry.as_reference() {
+            match self.load_object(r) {
+                Ok(o) => o,
+                Err(_) => return map,
+            }
+        } else {
+            cs_entry.clone()
+        };
+        let Some(cs_dict) = cs_obj.as_dict() else {
+            return map;
+        };
+        for (name, value) in cs_dict.iter() {
+            let resolved = if let Some(r) = value.as_reference() {
+                self.load_object(r).unwrap_or_else(|_| value.clone())
+            } else {
+                value.clone()
+            };
+            map.insert(name.clone(), resolved);
+        }
+        map
+    }
+
+    /// Enumerate images on a page without decompressing any stream (Phase 1).
+    ///
+    /// Walks the page content stream once and reads image metadata (dimensions,
+    /// colour space, filter chain, compressed size) directly from each Image
+    /// XObject dictionary. No pixel data is decoded. Returns a handle per image
+    /// in content-stream paint order.
+    ///
+    /// Call [`crate::PdfImageHandle::decode`] on individual handles to materialise only
+    /// the images you need, or [`crate::PdfImageHandle::raw_compressed_bytes`] to forward
+    /// compressed data (e.g. JPEG bytes) without recompression.
+    ///
+    /// Form XObjects (subtype `/Form`) are recursed into, matching the behaviour
+    /// of [`PdfDocument::extract_images`]. Cycle detection (depth limit 100) and
+    /// the document's Form stream cache are used. Images inside nested or shared
+    /// Forms receive the correct final CTM-composed `bbox` / `rotation_degrees`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use pdf_oxide::PdfDocument;
+    /// # let bytes = std::fs::read("page.pdf").unwrap();
+    /// let doc = PdfDocument::from_bytes(bytes).unwrap();
+    ///
+    /// // Decode only images larger than a thumbnail threshold
+    /// let images: Vec<_> = doc.page_image_handles(0)?
+    ///     .into_iter()
+    ///     .filter(|h| h.width >= 200 && h.height >= 200)
+    ///     .map(|h| h.decode())
+    ///     .collect::<Result<_, _>>()?;
+    /// # Ok::<(), pdf_oxide::error::Error>(())
+    /// ```
+    pub fn page_image_handles(
+        &self,
+        page_index: usize,
+    ) -> Result<Vec<crate::extractors::images::PdfImageHandle<'_>>> {
+        use crate::content::parse_content_stream_images_only;
+        use crate::content::Operator;
+        use crate::extractors::images::image_handle_from_inline;
+
+        self.require_authenticated()?;
+
+        let page = self.get_page(page_index)?;
+        let page_dict = page.as_dict().ok_or_else(|| Error::ParseError {
+            offset: 0,
+            reason: "Page is not a dictionary".to_string(),
+        })?;
+
+        let content_data = self.get_page_content_data(page_index)?;
+
+        let resources = match page_dict.get("Resources") {
+            Some(res) => {
+                if let Some(ref_obj) = res.as_reference() {
+                    Some(self.load_object(ref_obj)?)
+                } else {
+                    Some(res.clone())
+                }
+            },
+            None => None,
+        };
+
+        let operators = match parse_content_stream_images_only(&content_data) {
+            Ok(ops) => ops,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        // Resource-name colour-space map for this page scope (§8.6.6 / §8.9.7).
+        let cs_map = self.build_color_space_map(resources.as_ref());
+
+        // Pre-resolve the XObject dictionary once
+        let xobject_dict = if let Some(ref res) = resources {
+            if let Some(res_dict) = res.as_dict() {
+                if let Some(xobj_entry) = res_dict.get("XObject") {
+                    let resolved = if let Some(ref_obj) = xobj_entry.as_reference() {
+                        self.load_object(ref_obj)?
+                    } else {
+                        xobj_entry.clone()
+                    };
+                    resolved.as_dict().cloned()
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let mut handles = Vec::new();
+        let mut ctm_stack = vec![crate::content::Matrix::identity()];
+        let mut paint_order: usize = 0;
+        let mut xobject_stack: Vec<crate::object::ObjectRef> = Vec::new();
+
+        for op in operators {
+            match op {
+                Operator::SaveState => {
+                    if let Some(current) = ctm_stack.last() {
+                        ctm_stack.push(*current);
+                    }
+                },
+                Operator::RestoreState => {
+                    if ctm_stack.len() > 1 {
+                        ctm_stack.pop();
+                    }
+                },
+                Operator::Cm { a, b, c, d, e, f } => {
+                    if let Some(current) = ctm_stack.last_mut() {
+                        let m = crate::content::Matrix { a, b, c, d, e, f };
+                        *current = m.multiply(current);
+                    }
+                },
+                Operator::Do { name } => {
+                    if let Some(ref xobj_dict_map) = xobject_dict {
+                        let ctm = ctm_stack
+                            .last()
+                            .copied()
+                            .unwrap_or_else(crate::content::Matrix::identity);
+                        if let Ok(mut more) = self.collect_handles_from_do(
+                            &name,
+                            xobj_dict_map,
+                            resources.as_ref(),
+                            ctm,
+                            &mut paint_order,
+                            &mut xobject_stack,
+                        ) {
+                            handles.append(&mut more);
+                        }
+                    }
+                },
+                Operator::InlineImage { dict, data } => {
+                    let ctm = ctm_stack
+                        .last()
+                        .copied()
+                        .unwrap_or_else(crate::content::Matrix::identity);
+                    if let Some(handle) =
+                        image_handle_from_inline(self, &dict, data, ctm, paint_order, &cs_map)
+                    {
+                        handles.push(handle);
+                        paint_order += 1;
+                    }
+                },
+                _ => {},
+            }
+        }
+
+        Ok(handles)
+    }
+
+    /// Collect zero or more image handles for a `Do` operator.
+    ///
+    /// If the target is an Image XObject, returns a vec containing one handle
+    /// (paint_order is advanced). If it is a Form XObject, recurses and returns
+    /// all image handles found inside (including nested Forms), with correct
+    /// paint_order and CTM composition for every handle.
+    fn collect_handles_from_do<'s>(
+        &'s self,
+        name: &str,
+        xobject_dict: &std::collections::HashMap<String, Object>,
+        resources: Option<&Object>,
+        ctm: crate::content::Matrix,
+        paint_order: &mut usize,
+        xobject_stack: &mut Vec<crate::object::ObjectRef>,
+    ) -> Result<Vec<crate::extractors::images::PdfImageHandle<'s>>> {
+        use crate::extractors::images::image_handle_from_xobject;
+
+        let xobject_ref_obj = match xobject_dict.get(name) {
+            Some(o) => o,
+            None => return Ok(Vec::new()),
+        };
+
+        let xobject_ref_opt = xobject_ref_obj.as_reference();
+        let xobject = if let Some(ref_obj) = xobject_ref_opt {
+            self.load_object(ref_obj)?
+        } else {
+            xobject_ref_obj.clone()
+        };
+        let xobj_dict = match xobject.as_dict() {
+            Some(d) => d,
+            None => return Ok(Vec::new()),
+        };
+
+        let subtype = xobj_dict
+            .get("Subtype")
+            .and_then(|s| s.as_name())
+            .unwrap_or("");
+
+        match subtype {
+            "Image" => {
+                if let Some(ref_obj) = xobject_ref_opt {
+                    let cs_map = self.build_color_space_map(resources);
+                    if let Some(h) = image_handle_from_xobject(
+                        self,
+                        ref_obj,
+                        xobj_dict,
+                        ctm,
+                        *paint_order,
+                        &cs_map,
+                    ) {
+                        *paint_order += 1;
+                        Ok(vec![h])
+                    } else {
+                        Ok(Vec::new())
+                    }
+                } else {
+                    Ok(Vec::new())
+                }
+            },
+            "Form" => {
+                if let (Some(ref_obj), Some(parent_res)) = (xobject_ref_opt, resources) {
+                    self.collect_image_handles_from_form_xobject(
+                        ref_obj,
+                        &xobject,
+                        parent_res,
+                        ctm,
+                        paint_order,
+                        xobject_stack,
+                    )
+                } else {
+                    Ok(Vec::new())
+                }
+            },
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    /// Recursively collect image handles from a Form XObject.
+    ///
+    /// This is the handles-side equivalent of `extract_images_from_form_xobject`.
+    /// It uses the same cycle detection (ObjectRef stack + depth 100), the same
+    /// Form Resources fallback rules, the same Form /Matrix handling, and reuses
+    /// the document's xobject_stream_cache (50 MiB bound) for decompressed Form
+    /// content.
+    ///
+    /// Unlike the materialised path, we do not cache "raw" handles — we compose
+    /// the full CTM (`parent_ctm * form_matrix`) at entry and let every inner
+    /// handle (and nested Form) naturally receive the final geometry. This is
+    /// simpler for the two-phase API and produces correct `bbox`/`rotation_degrees`
+    /// / `ctm` fields on the returned handles.
+    fn collect_image_handles_from_form_xobject<'s>(
+        &'s self,
+        xobject_ref: crate::object::ObjectRef,
+        xobject: &Object,
+        parent_resources: &Object,
+        parent_ctm: crate::content::Matrix,
+        paint_order: &mut usize,
+        xobject_stack: &mut Vec<crate::object::ObjectRef>,
+    ) -> Result<Vec<crate::extractors::images::PdfImageHandle<'s>>> {
+        use crate::content::parse_content_stream_images_only;
+        use crate::content::Operator;
+        use crate::extractors::images::image_handle_from_inline;
+
+        // Cycle detection — identical policy to the materialised extraction path.
+        if xobject_stack.contains(&xobject_ref) || xobject_stack.len() >= 100 {
+            return Ok(Vec::new());
+        }
+
+        xobject_stack.push(xobject_ref);
+
+        let xobj_dict = match xobject.as_dict() {
+            Some(d) => d,
+            None => {
+                xobject_stack.pop();
+                return Ok(Vec::new());
+            },
+        };
+
+        // Form's own Resources (fallback to the parent's resources if absent).
+        let form_resources = if let Some(form_res) = xobj_dict.get("Resources") {
+            if let Some(ref_obj) = form_res.as_reference() {
+                self.load_object(ref_obj)?
+            } else {
+                form_res.clone()
+            }
+        } else {
+            parent_resources.clone()
+        };
+
+        // Pre-resolve the XObject dictionary for *this* Form's Resources.
+        let form_xobject_dict = if let Some(res_dict) = form_resources.as_dict() {
+            if let Some(xobj_entry) = res_dict.get("XObject") {
+                let resolved = if let Some(ref_obj) = xobj_entry.as_reference() {
+                    self.load_object(ref_obj)?
+                } else {
+                    xobj_entry.clone()
+                };
+                resolved.as_dict().cloned()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Form's own transformation matrix (default identity).
+        let form_matrix = if let Some(matrix_obj) = xobj_dict.get("Matrix") {
+            self.parse_matrix_from_object(matrix_obj)
+                .unwrap_or_else(crate::content::Matrix::identity)
+        } else {
+            crate::content::Matrix::identity()
+        };
+
+        // Decode the Form stream (respecting the 50 MiB document-level cache).
+        let cached_stream = self
+            .xobject_stream_cache
+            .lock_or_recover()
+            .get(&xobject_ref)
+            .cloned();
+        let stream_data = if let Some(cached) = cached_stream {
+            cached.as_ref().clone()
+        } else {
+            match self.decode_stream_with_encryption(xobject, xobject_ref) {
+                Ok(data) => {
+                    const MAX_STREAM_CACHE_BYTES: usize = 50 * 1024 * 1024;
+                    let current_bytes = self.xobject_stream_cache_bytes.load(Ordering::Relaxed);
+                    if current_bytes + data.len() <= MAX_STREAM_CACHE_BYTES {
+                        self.xobject_stream_cache_bytes
+                            .store(current_bytes + data.len(), Ordering::Relaxed);
+                        self.xobject_stream_cache
+                            .lock_or_recover()
+                            .insert(xobject_ref, std::sync::Arc::new(data.clone()));
+                    }
+                    data
+                },
+                Err(e) => {
+                    log::warn!("Failed to decode Form XObject stream: {}, skipping", e);
+                    xobject_stack.pop();
+                    return Ok(Vec::new());
+                },
+            }
+        };
+
+        // Parse with the fast images-only parser (same as the materialised path).
+        let operators = match parse_content_stream_images_only(&stream_data) {
+            Ok(ops) => ops,
+            Err(_) => {
+                xobject_stack.pop();
+                return Ok(Vec::new());
+            },
+        };
+
+        // Critical CTM composition:
+        // Start the form's internal graphics state with `parent_ctm * form_matrix`.
+        // Every image (and nested Form) discovered inside will then have its
+        // handle's bbox/rotation/ctm computed with the *final* transform that
+        // will be active when the image is painted on the page.
+        let start_ctm = parent_ctm.multiply(&form_matrix);
+        let mut ctm_stack = vec![start_ctm];
+        let mut handles = Vec::new();
+
+        for op in operators {
+            match op {
+                Operator::SaveState => {
+                    if let Some(current) = ctm_stack.last() {
+                        ctm_stack.push(*current);
+                    }
+                },
+                Operator::RestoreState => {
+                    if ctm_stack.len() > 1 {
+                        ctm_stack.pop();
+                    }
+                },
+                Operator::Cm { a, b, c, d, e, f } => {
+                    if let Some(current) = ctm_stack.last_mut() {
+                        let m = crate::content::Matrix { a, b, c, d, e, f };
+                        *current = m.multiply(current);
+                    }
+                },
+
+                Operator::Do { name } => {
+                    if let Some(ref xobj_d) = form_xobject_dict {
+                        let current_ctm = ctm_stack
+                            .last()
+                            .copied()
+                            .unwrap_or_else(crate::content::Matrix::identity);
+                        if let Ok(mut more) = self.collect_handles_from_do(
+                            &name,
+                            xobj_d,
+                            Some(&form_resources),
+                            current_ctm,
+                            paint_order,
+                            xobject_stack,
+                        ) {
+                            handles.append(&mut more);
+                        }
+                    }
+                },
+
+                Operator::InlineImage { dict, data } => {
+                    let current_ctm = ctm_stack
+                        .last()
+                        .copied()
+                        .unwrap_or_else(crate::content::Matrix::identity);
+                    let cs_map = self.build_color_space_map(Some(&form_resources));
+                    if let Some(h) = image_handle_from_inline(
+                        self,
+                        &dict,
+                        data,
+                        current_ctm,
+                        *paint_order,
+                        &cs_map,
+                    ) {
+                        handles.push(h);
+                        *paint_order += 1;
+                    }
+                },
+
+                _ => {},
+            }
+        }
+
+        xobject_stack.pop();
+        Ok(handles)
     }
 
     /// Extract images with pre-decompression filtering.
@@ -13681,7 +16408,7 @@ fn get_root_ref_from_trailer(trailer: &Object) -> Option<ObjectRef> {
 }
 
 /// First in-use *uncompressed* object in the xref, used as a /Root-independent
-/// probe for the garbage-prefix offset-shift decision (issue #509). Compressed
+/// probe for the garbage-prefix offset-shift decision. Compressed
 /// entries can't be seek-validated, so they're skipped.
 fn first_in_use_uncompressed(xref: &crate::xref::CrossRefTable) -> Option<ObjectRef> {
     xref.all_object_numbers()
@@ -13695,8 +16422,8 @@ fn first_in_use_uncompressed(xref: &crate::xref::CrossRefTable) -> Option<Object
 ///
 /// Cell contents in real data tables are atomic units (numbers, codes,
 /// names, short labels): they almost always start with an uppercase
-/// letter, a digit, or a symbol (currency, +/-, punctuation marker) and
-/// rarely end with a mid-sentence comma or semicolon.  Prose-as-table
+/// letter, a digit, or a symbol (currency, +/-, punctuation marker)
+/// rarely end with a mid-sentence comma or semicolon. Prose-as-table
 /// cells, by contrast, are fragments of running sentences — they
 /// frequently start with a lowercase stopword ("and", "the", "to") because
 /// the column boundary fell mid-clause, and frequently end with `,` or
@@ -13737,7 +16464,7 @@ fn looks_like_prose_table(table: &crate::structure::Table) -> bool {
             // Table-of-contents leader runs (". . . . . . ." between an
             // entry's title and its page number) cluster into their own
             // x-columns and create phantom 10–12-column "tables" out of
-            // an ordinary three-column TOC.  A cell whose content is
+            // an ordinary three-column TOC. A cell whose content is
             // exclusively dots and spaces is the leader, not data.
             if trimmed.chars().all(|c| c == '.' || c == ' ') {
                 leader_dots += 1;
@@ -13764,7 +16491,7 @@ fn validate_object_at_offset<R: Read + Seek>(
         None => return false,
     };
     // Compressed objects live inside object streams — their "offset" is the
-    // stream object number, not a byte position.  We cannot validate them by
+    // stream object number, not a byte position. We cannot validate them by
     // seeking, but their presence in a correctly parsed xref stream is
     // sufficient proof that the xref is valid.
     if entry.entry_type == crate::xref::XRefEntryType::Compressed {
@@ -14090,6 +16817,43 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
+    fn test_rotate_span_bbox_identity_and_180() {
+        let r = crate::geometry::Rect::new(10.0, 20.0, 30.0, 5.0);
+        let (w, h) = (200.0, 100.0);
+
+        // rot == 0 is the identity (byte-identical, unrotated pages untouched).
+        let id = PdfDocument::rotate_span_bbox(r, 0, w, h);
+        assert!((id.x - r.x).abs() < 1e-4 && (id.y - r.y).abs() < 1e-4);
+        assert!((id.width - r.width).abs() < 1e-4 && (id.height - r.height).abs() < 1e-4);
+
+        // rot == 180 matches the legacy mirror: x' = w-(x+width), y' = h-(y+height).
+        let m = PdfDocument::rotate_span_bbox(r, 180, w, h);
+        assert!((m.x - (w - (r.x + r.width))).abs() < 1e-4, "180 x: {}", m.x);
+        assert!((m.y - (h - (r.y + r.height))).abs() < 1e-4, "180 y: {}", m.y);
+        assert!((m.width - r.width).abs() < 1e-4 && (m.height - r.height).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_rotate_span_bbox_90_270_roundtrip_and_swap() {
+        let r = crate::geometry::Rect::new(10.0, 20.0, 30.0, 5.0);
+        // 90° / 270° swap width and height of the AABB.
+        let r90 = PdfDocument::rotate_span_bbox(r, 90, 200.0, 100.0);
+        assert!((r90.width - r.height).abs() < 1e-4, "w/h swap: {}", r90.width);
+        assert!((r90.height - r.width).abs() < 1e-4, "w/h swap: {}", r90.height);
+
+        // Applying 90° four times around a square page returns to the start.
+        let s = crate::geometry::Rect::new(12.0, 34.0, 6.0, 8.0);
+        let p = 100.0;
+        let a = PdfDocument::rotate_span_bbox(s, 90, p, p);
+        let b = PdfDocument::rotate_span_bbox(a, 90, p, p);
+        let c = PdfDocument::rotate_span_bbox(b, 90, p, p);
+        let d = PdfDocument::rotate_span_bbox(c, 90, p, p);
+        assert!((d.x - s.x).abs() < 1e-3, "roundtrip x: {} vs {}", d.x, s.x);
+        assert!((d.y - s.y).abs() < 1e-3, "roundtrip y: {} vs {}", d.y, s.y);
+        assert!((d.width - s.width).abs() < 1e-3 && (d.height - s.height).abs() < 1e-3);
+    }
+
+    #[test]
     fn test_parse_valid_header_1_7() {
         let mut cursor = Cursor::new(b"%PDF-1.7\n");
         let (major, minor, offset) = parse_header(&mut cursor, false).unwrap();
@@ -14354,6 +17118,31 @@ mod tests {
         );
 
         pdf
+    }
+
+    // #572: a corrupt/zero startxref forces full-file xref reconstruction.
+    // Because reconstruction already scans the whole file for every
+    // uncompressed object, the document must pre-seed its object-scan cache
+    // from the reconstructed table — so the first object miss is O(1) instead
+    // of triggering a SECOND full-file scan (the heavy "first extract_text"
+    // cost on corrupt-xref polyglot PDFs).
+    #[test]
+    fn test_reconstructed_xref_preseeds_scan_cache() {
+        let pdf = b"%PDF-1.4\n\
+            1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n\
+            2 0 obj\n<< /Type /Pages /Count 0 /Kids [] >>\nendobj\n\
+            trailer\n<< /Root 1 0 R /Size 3 >>\n\
+            startxref\n0\n%%EOF";
+        let doc = PdfDocument::from_bytes(pdf.to_vec()).expect("open corrupt-xref pdf");
+
+        let cache = doc.scanned_object_offsets.lock_or_recover();
+        let offsets = cache
+            .as_ref()
+            .expect("#572: reconstructed xref must pre-seed the scan-offset cache");
+        assert!(
+            offsets.contains_key(&1) && offsets.contains_key(&2),
+            "#572: pre-seeded cache should hold the reconstructed object offsets, got {offsets:?}"
+        );
     }
 
     // ========================================================================
@@ -14959,10 +17748,10 @@ mod tests {
         let current = make_test_span("World", 200.0, 100.0, 50.0, 12.0);
         // Issue 487 (pr-138-example.pdf rate tables): a very large
         // same-line gap (here 150 pt > 5 em) must still produce a single
-        // space.  The earlier `gap < font_size * 5.0` upper bound made
+        // space. The earlier `gap < font_size * 5.0` upper bound made
         // this return false, after which the caller concatenated the two
         // spans without a separator and `3.80%` + `4.41%` came out as
-        // `3.80%4.41%`.  Large gap = different column = still a space.
+        // `3.80%4.41%`. Large gap = different column = still a space.
         assert!(PdfDocument::should_insert_space(&prev, &current));
     }
 
@@ -15205,7 +17994,7 @@ mod tests {
     }
 
     // ========================================================================
-    // reverse_rtl_visual_order_runs tests (issue #330)
+    // reverse_rtl_visual_order_runs tests
     // ========================================================================
     //
     // These tests cover the two distinct RTL span shapes pdf_oxide sees
@@ -15324,6 +18113,48 @@ mod tests {
         PdfDocument::reverse_rtl_visual_order_runs(&mut spans);
         let after: Vec<String> = spans.iter().map(|s| s.text.clone()).collect();
         assert_eq!(before, after, "Pure-Latin spans must not be reversed by the RTL pass");
+    }
+
+    // #557: the common CID-TrueType shape — one span PER WORD, each word's
+    // characters already in LOGICAL order (Presentation Forms), laid out
+    // right-to-left so the row-aware sort hands them to us left-to-right
+    // (x ascending: last logical word first). The pass must (A) NOT
+    // char-reverse the per-word spans — they're already logical — and
+    // (B) reverse the WORD order so they read right-to-left. Phrase:
+    // "اﻧﻮاع اﳋﻄﻮط اﻟﻌﺮﺑﻴﺔ" ("types of Arabic fonts").
+    #[test]
+    fn test_reverse_rtl_per_word_logical_spans_reorder_not_charflip() {
+        // Spans in x-ascending order (as emitted by the row-aware sort):
+        // العربية (leftmost) … انواع (rightmost / logically first).
+        let mut spans = vec![
+            make_rtl_test_span("اﻟﻌﺮﺑﻴﺔ", 160.0, 700.0),
+            make_rtl_test_span(" ", 277.0, 700.0),
+            make_rtl_test_span("اﳋﻄﻮط", 288.0, 700.0),
+            make_rtl_test_span(" ", 409.0, 700.0),
+            make_rtl_test_span("اﻧﻮاع", 420.0, 700.0),
+        ];
+        PdfDocument::reverse_rtl_visual_order_runs(&mut spans);
+        let texts: Vec<&str> = spans.iter().map(|s| s.text.as_str()).collect();
+        // (B) word order reversed to logical right-to-left:
+        assert_eq!(
+            texts,
+            vec!["اﻧﻮاع", " ", "اﳋﻄﻮط", " ", "اﻟﻌﺮﺑﻴﺔ"],
+            "#557: per-word RTL spans must be reordered into logical word order \
+             without char-flipping (got {texts:?})"
+        );
+    }
+
+    // #553: bare page-number detection (applied only inside the margin band).
+    #[test]
+    fn test_is_bare_page_number_text() {
+        for yes in ["1", "12", "999", "1000", "9999", " 7 ".trim()] {
+            assert!(PdfDocument::is_bare_page_number_text(yes), "{yes:?} should be a page number");
+        }
+        for no in [
+            "", "0", "10000", "12345", "1a", "iv", "Page", "1.2", "-1", "1,2",
+        ] {
+            assert!(!PdfDocument::is_bare_page_number_text(no), "{no:?} must NOT be a page number");
+        }
     }
 
     // ========================================================================
@@ -15843,6 +18674,132 @@ mod tests {
         let _ = hash;
     }
 
+    // #598: two non-subset fonts sharing BaseFont/Subtype/Encoding but with
+    // different /Widths must NOT share a cross-document cache key.
+    #[test]
+    fn test_font_identity_hash_differs_on_widths() {
+        let base = || {
+            let mut d = std::collections::HashMap::new();
+            d.insert("BaseFont".to_string(), Object::Name("Helvetica".to_string()));
+            d.insert("Subtype".to_string(), Object::Name("Type1".to_string()));
+            d.insert("FirstChar".to_string(), Object::Integer(65));
+            d.insert("LastChar".to_string(), Object::Integer(67));
+            d
+        };
+        // PDF A: monospace override.
+        let mut a = base();
+        a.insert(
+            "Widths".to_string(),
+            Object::Array(vec![
+                Object::Integer(600),
+                Object::Integer(600),
+                Object::Integer(600),
+            ]),
+        );
+        // PDF B: real Helvetica metrics — same name, different widths.
+        let mut b = base();
+        b.insert(
+            "Widths".to_string(),
+            Object::Array(vec![
+                Object::Integer(667),
+                Object::Integer(667),
+                Object::Integer(722),
+            ]),
+        );
+
+        let hash_a = PdfDocument::font_identity_hash_cheap(&Object::Dictionary(a));
+        let hash_b = PdfDocument::font_identity_hash_cheap(&Object::Dictionary(b));
+        assert_ne!(
+            hash_a, hash_b,
+            "#598: fonts with identical BaseFont but different /Widths must not collide"
+        );
+
+        // Sanity: identical widths still hash equally (genuine cache hits).
+        let mut c = base();
+        c.insert(
+            "Widths".to_string(),
+            Object::Array(vec![
+                Object::Integer(600),
+                Object::Integer(600),
+                Object::Integer(600),
+            ]),
+        );
+        let mut a2 = base();
+        a2.insert(
+            "Widths".to_string(),
+            Object::Array(vec![
+                Object::Integer(600),
+                Object::Integer(600),
+                Object::Integer(600),
+            ]),
+        );
+        assert_eq!(
+            PdfDocument::font_identity_hash_cheap(&Object::Dictionary(c)),
+            PdfDocument::font_identity_hash_cheap(&Object::Dictionary(a2)),
+            "#598: identical fonts must still share a cache key"
+        );
+    }
+
+    // #597: Type 3 fonts are document-local and must be kept out of the
+    // cross-document global font cache (Layer 6). The gate uses
+    // font_is_document_local; pin its classification here.
+    #[test]
+    fn test_type3_font_is_document_local() {
+        let mut type3 = std::collections::HashMap::new();
+        type3.insert("Subtype".to_string(), Object::Name("Type3".to_string()));
+        type3.insert("Name".to_string(), Object::Name("F1".to_string()));
+        assert!(
+            PdfDocument::font_is_document_local(&Object::Dictionary(type3)),
+            "#597: Type3 fonts must be treated as document-local (uncacheable cross-document)"
+        );
+
+        // Non-Type3 fonts remain cacheable across documents.
+        for subtype in ["Type1", "TrueType", "Type0", "CIDFontType2"] {
+            let mut d = std::collections::HashMap::new();
+            d.insert("Subtype".to_string(), Object::Name(subtype.to_string()));
+            d.insert("BaseFont".to_string(), Object::Name("Helvetica".to_string()));
+            assert!(
+                !PdfDocument::font_is_document_local(&Object::Dictionary(d)),
+                "#597: {subtype} must remain cacheable across documents"
+            );
+        }
+        // A dict with no Subtype is not document-local.
+        assert!(!PdfDocument::font_is_document_local(&Object::Null));
+
+        // Subset fonts (six uppercase letters + '+', ISO 32000-1 §9.6.4) are
+        // document-local regardless of subtype — their glyph subset and
+        // ToUnicode are document-specific and must not be shared cross-document.
+        for subtype in ["Type1", "TrueType", "Type0", "CIDFontType2"] {
+            let mut d = std::collections::HashMap::new();
+            d.insert("Subtype".to_string(), Object::Name(subtype.to_string()));
+            d.insert("BaseFont".to_string(), Object::Name("AAAAAA+ArialUnicodeMS".to_string()));
+            assert!(
+                PdfDocument::font_is_document_local(&Object::Dictionary(d)),
+                "subset {subtype} must be treated as document-local"
+            );
+        }
+
+        // Subset-prefix edge cases: a 6-uppercase name without '+', a lowercase
+        // tag, a short tag, and an empty real name are NOT subsets — stay cacheable.
+        for name in ["ARIALX", "abcdef+Real", "AAAAA+Short", "AAAAAA+"] {
+            let mut d = std::collections::HashMap::new();
+            d.insert("Subtype".to_string(), Object::Name("Type0".to_string()));
+            d.insert("BaseFont".to_string(), Object::Name(name.to_string()));
+            assert!(
+                !PdfDocument::font_is_document_local(&Object::Dictionary(d)),
+                "{name} is not a subset tag and must remain cacheable"
+            );
+        }
+
+        // A non-Type3 font missing /BaseFont fails safe to document-local.
+        let mut no_basefont = std::collections::HashMap::new();
+        no_basefont.insert("Subtype".to_string(), Object::Name("Type0".to_string()));
+        assert!(
+            PdfDocument::font_is_document_local(&Object::Dictionary(no_basefont)),
+            "a non-Type3 font with no /BaseFont must fail safe to document-local"
+        );
+    }
+
     // ========================================================================
     // check_for_circular_references tests
     // ========================================================================
@@ -15850,7 +18807,7 @@ mod tests {
     #[test]
     fn test_check_for_circular_references_runs() {
         // Minimal PDFs naturally have Page <-> Pages parent references,
-        // so we just verify the function runs without panicking and
+        // so we just verify the function runs without panicking
         // returns a list (which may include the Page<->Pages backreference).
         let pdf = build_minimal_pdf(b"");
         let doc = PdfDocument::from_bytes(pdf).unwrap();
@@ -16973,7 +19930,7 @@ mod tests {
     // ========================================================================
 
     /// Helper: build a minimal PDF whose single character maps to U+FB01 (LATIN SMALL
-    /// LIGATURE FI) via a ToUnicode CMap.  This exercises the path where pdfium hands us
+    /// LIGATURE FI) via a ToUnicode CMap. This exercises the path where pdfium hands us
     /// U+FB01 from the font's ToUnicode map and we must NOT expand it to "fi".
     fn build_ligature_fi_pdf() -> Vec<u8> {
         let cmap = "/CIDInit /ProcSet findresource begin\n\
@@ -17045,7 +20002,7 @@ mod tests {
     ///
     /// Before the fix, `extract_text` unconditionally calls
     /// `get_ligature_components(ﬁ)` → "fi", discarding the font's own
-    /// ToUnicode intent.  After the fix the ligature char is preserved.
+    /// ToUnicode intent. After the fix the ligature char is preserved.
     #[test]
     fn test_ligature_fi_preserved_in_extract_text() {
         let pdf = build_ligature_fi_pdf();
@@ -17966,8 +20923,8 @@ mod tests {
     }
 
     /// Regression test: validate_object_at_offset must return true for
-    /// compressed (type 2) xref entries.  Previously, it treated the object
-    /// stream number as a byte offset, sought to a random location, and
+    /// compressed (type 2) xref entries. Previously, it treated the object
+    /// stream number as a byte offset, sought to a random location,
     /// returned false — triggering a full-file xref reconstruction that took
     /// 35+ seconds on large PDFs.
     #[test]
@@ -18013,12 +20970,12 @@ mod tests {
     ///
     /// Layout:
     /// ```text
-    ///   Left col (x=10)       Right col (x=200)
-    ///   +-----------+          +-----------+
-    ///   | L1 (y=700)|          | R1 (y=700)|
-    ///   | L2 (y=680)|          | R2 (y=680)|
-    ///   | L3 (y=660)|          | R3 (y=660)|
-    ///   +-----------+          +-----------+
+    ///   Left col (x=10) Right col (x=200)
+    ///   +-----------+ +-----------+
+    ///   | L1 (y=700)| | R1 (y=700)|
+    ///   | L2 (y=680)| | R2 (y=680)|
+    ///   | L3 (y=660)| | R3 (y=660)|
+    ///   +-----------+ +-----------+
     /// ```
     /// Expected ColumnAware order: L1, L2, L3, R1, R2, R3
     /// TopToBottom order would interleave: L1, R1, L2, R2, L3, R3
@@ -18085,7 +21042,156 @@ mod tests {
     }
 
     // ========================================================================
-    // extract_page_text / PageText tests (Issue #268)
+    // COLUMN-ORDER: persistent-gutter-corridor accept path (#607)
+    // ========================================================================
+
+    /// Build a span with explicit width and text (for corridor-geometry tests).
+    #[cfg(test)]
+    fn corridor_span(text: &str, x: f32, y: f32, w: f32) -> crate::layout::TextSpan {
+        use crate::geometry::Rect;
+        use crate::layout::{Color, FontWeight, TextSpan};
+        TextSpan {
+            artifact_type: None,
+            text: text.to_string(),
+            bbox: Rect::new(x, y, w, 10.0),
+            font_size: 10.0,
+            font_name: "Test".to_string(),
+            font_weight: FontWeight::Normal,
+            is_italic: false,
+            is_monospace: false,
+            color: Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+            },
+            mcid: None,
+            sequence: 0,
+            split_boundary_before: false,
+            offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
+            primary_detected: false,
+            char_widths: vec![],
+            heading_level: None,
+        }
+    }
+
+    /// A shared-baseline two-column prose body (academic references): each line
+    /// has scattered word-granular left edges in BOTH columns — so the
+    /// dominant-cluster-fraction gate misses it — but a single persistent
+    /// central gutter. The corridor accept path must route it as multi-column.
+    #[test]
+    fn test_corridor_accepts_scattered_two_column_prose() {
+        let mut spans = Vec::new();
+        // 20 lines; left column words at x≈50/95/140 (scattered), right column
+        // words at x≈300/345/390. Persistent central gutter at x≈230.
+        for i in 0..20 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(corridor_span("Lorem", 50.0, y, 35.0));
+            spans.push(corridor_span("ipsumdolor", 95.0, y, 40.0));
+            spans.push(corridor_span("sitametco", 140.0, y, 40.0));
+            spans.push(corridor_span("consectetur", 300.0, y, 40.0));
+            spans.push(corridor_span("adipiscing", 345.0, y, 40.0));
+            spans.push(corridor_span("elitsedo", 390.0, y, 40.0));
+        }
+        assert!(
+            PdfDocument::is_multi_column_page(&spans),
+            "scattered-edge two-column prose with a persistent central gutter \
+             must be detected as multi-column via the corridor accept path"
+        );
+    }
+
+    /// A short-cell numeric table shares one column gap but has tiny cells
+    /// (mean chars per line well below 20). The prose guard must reject it so
+    /// the table is NOT routed to XY-cut (which would reorder its cells).
+    #[test]
+    fn test_corridor_rejects_short_cell_table() {
+        let mut spans = Vec::new();
+        // Scattered left edges (so the bimodal-line-start detector does NOT
+        // fire and the dominant-cluster gate fails — i.e. control reaches the
+        // corridor path), but every cell is a short numeric token so the
+        // per-line mean char count stays well under the prose floor of 20.
+        for i in 0..20 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(corridor_span("12", 50.0, y, 12.0));
+            spans.push(corridor_span("34", 95.0, y, 12.0));
+            spans.push(corridor_span("56", 140.0, y, 12.0));
+            spans.push(corridor_span("78", 300.0, y, 12.0));
+            spans.push(corridor_span("90", 345.0, y, 12.0));
+            spans.push(corridor_span("12", 390.0, y, 12.0));
+        }
+        assert!(
+            !PdfDocument::is_multi_column_page(&spans),
+            "short-cell numeric table must NOT be routed as multi-column \
+             (grid-row discriminator rejects ≥2-gap rows)"
+        );
+    }
+
+    /// #536 Part 1a: a SHORT-line two-column verse body (Bible / lexicon) — one
+    /// short fragment per column, one central gutter per line — used to be
+    /// rejected by the raw `mean_chars <= 20` floor. It must now be admitted via
+    /// the corridor's short-line path (single gap/line, balanced, central).
+    #[test]
+    fn test_corridor_accepts_short_verse_two_column() {
+        let mut spans = Vec::new();
+        for i in 0..20 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(corridor_span("Bereshit", 50.0, y, 45.0)); // 8 chars, →95
+            spans.push(corridor_span("barahem", 300.0, y, 40.0)); // 7 chars, →340
+        }
+        // Call the corridor directly (bypass the upstream bimodal/histogram
+        // gates) with a no-op degenerate-CTM filter.
+        assert!(
+            PdfDocument::has_persistent_gutter_corridor(&spans, 300.0, 10_000.0),
+            "short-verse two-column body (1 gutter/line, balanced) must be admitted"
+        );
+    }
+
+    /// #536 Part 1a guard: a lopsided narrow-label + wide-data table must stay
+    /// rejected even though it has one gap per line — its gutter sits off-centre
+    /// (failing the centre gate) and its columns are lopsided (failing the
+    /// char-mass balance), either of which is sufficient.
+    #[test]
+    fn test_corridor_rejects_label_column_table() {
+        let mut spans = Vec::new();
+        for i in 0..20 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(corridor_span("1", 50.0, y, 8.0)); // tiny label →58
+            spans.push(corridor_span("Descriptionlongdata", 300.0, y, 200.0)); // wide →500
+        }
+        assert!(
+            !PdfDocument::has_persistent_gutter_corridor(&spans, 300.0, 10_000.0),
+            "lopsided narrow-label + wide-data table must be rejected (char balance)"
+        );
+    }
+
+    /// #536 Part 1b: a two-column prose body interleaved with a MINORITY of
+    /// full-width display-math / heading rows must still be detected — the
+    /// full-width rows are excluded from the coverage denominator. Without the
+    /// exclusion the coverage floor (best_size*2 >= lines) fails.
+    #[test]
+    fn test_corridor_survives_minority_display_math() {
+        let mut spans = Vec::new();
+        // 16 two-column prose lines.
+        for i in 0..16 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(corridor_span("Lorem ipsum dolor", 50.0, y, 120.0)); // →170
+            spans.push(corridor_span("sit amet consectetur", 300.0, y, 150.0)); // →450
+        }
+        // 24 full-width display rows (span the page, no internal gutter).
+        for i in 0..24 {
+            let y = 400.0 - i as f32 * 14.0;
+            spans.push(corridor_span("Section heading spanning width", 50.0, y, 400.0));
+        }
+        assert!(
+            PdfDocument::has_persistent_gutter_corridor(&spans, 300.0, 10_000.0),
+            "two-column prose with a minority of full-width display rows must hold"
+        );
+    }
+
+    // ========================================================================
+    // extract_page_text / PageText tests
     // ========================================================================
 
     #[test]
@@ -18146,7 +21252,7 @@ mod tests {
     ///
     /// Before the fix, the containment filter in extract_text() would skip any
     /// span geometrically contained within the previous span, even if the text
-    /// was different.  This caused the second line to silently disappear.
+    /// was different. This caused the second line to silently disappear.
     ///
     /// The fix adds a `span.text == prev.text` guard so that only true
     /// duplicates are filtered.
@@ -18154,7 +21260,7 @@ mod tests {
     fn test_containment_filter_preserves_distinct_overlapping_lines() {
         // Build a minimal PDF with two Td-placed text strings at very close Y
         // positions (Y=700 and Y=699 — within the 2.0pt "same line" threshold)
-        // but with different content.  The first string is wider so the second
+        // but with different content. The first string is wider so the second
         // is geometrically contained within it.
         let content =
             b"BT /F1 12 Tf 50 700 Td (First line has longer text here) Tj 0 -1 Td (Second) Tj ET";
@@ -18361,7 +21467,7 @@ mod tests {
     }
 
     /// Regression: line-continuation spans that share a Y-band with the dense
-    /// column must NOT be promoted by `reorder_rowspan_labels` (issue #444).
+    /// column must NOT be promoted by `reorder_rowspan_labels`.
     ///
     /// A resume-like PDF has two X groups: a dense main-text column (x=63)
     /// and a sparse rightward column (x=430) whose spans are all on the SAME
@@ -18860,5 +21966,231 @@ mod tests {
 
         let texts: Vec<&str> = spans.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(texts, vec!["September", "11", "th"]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Optional Content (PDF "layer") name resolution — OCG `/Name` decoding,
+    // OCMD `/OCGs` following, and the `/Properties` name-reference path
+    // against the current resource scope. ISO 32000-1:2008 §8.11, §14.6.
+    //
+    // The resolver methods are `&self` only to reach `load_object` for
+    // indirect references; these tests use direct objects, so a throwaway
+    // minimal PDF serves purely as the method receiver.
+    // ─────────────────────────────────────────────────────────────────────
+
+    fn oc_test_doc() -> PdfDocument {
+        PdfDocument::from_bytes(build_minimal_pdf(b"")).unwrap()
+    }
+
+    fn ocg_dict(name: Object) -> Object {
+        let mut d = std::collections::HashMap::new();
+        d.insert("Type".to_string(), Object::Name("OCG".to_string()));
+        d.insert("Name".to_string(), name);
+        Object::Dictionary(d)
+    }
+
+    fn ocmd_dict(ocgs: Object) -> Object {
+        let mut d = std::collections::HashMap::new();
+        d.insert("Type".to_string(), Object::Name("OCMD".to_string()));
+        d.insert("OCGs".to_string(), ocgs);
+        Object::Dictionary(d)
+    }
+
+    fn utf16_string(s: &str, big_endian: bool) -> Object {
+        let mut bytes = if big_endian {
+            vec![0xFE, 0xFF]
+        } else {
+            vec![0xFF, 0xFE]
+        };
+        for u in s.encode_utf16() {
+            if big_endian {
+                bytes.extend_from_slice(&u.to_be_bytes());
+            } else {
+                bytes.extend_from_slice(&u.to_le_bytes());
+            }
+        }
+        Object::String(bytes)
+    }
+
+    #[test]
+    fn test_oc_name_ocg_ascii() {
+        let doc = oc_test_doc();
+        let dict = ocg_dict(Object::String(b"A-GRID".to_vec()));
+        assert_eq!(doc.read_oc_name(dict.as_dict().unwrap(), 8).as_deref(), Some("A-GRID"));
+    }
+
+    #[test]
+    fn test_oc_name_ocg_utf16le_bom() {
+        // Regression for the reuse of decode_pdf_text_string: the previous
+        // inline reader only handled UTF-16BE and fell back to latin-1,
+        // mangling UTF-16LE-encoded layer names. The shared helper decodes
+        // the LE BOM correctly.
+        let doc = oc_test_doc();
+        let dict = ocg_dict(utf16_string("ÁREA-Ø", false));
+        assert_eq!(doc.read_oc_name(dict.as_dict().unwrap(), 8).as_deref(), Some("ÁREA-Ø"));
+    }
+
+    #[test]
+    fn test_oc_name_ocg_utf16be_bom() {
+        let doc = oc_test_doc();
+        let dict = ocg_dict(utf16_string("EJES", true));
+        assert_eq!(doc.read_oc_name(dict.as_dict().unwrap(), 8).as_deref(), Some("EJES"));
+    }
+
+    #[test]
+    fn test_oc_name_ocmd_single_ocg() {
+        // OCMD has no /Name — resolution follows /OCGs (single OCG) to its name.
+        let doc = oc_test_doc();
+        let ocmd = ocmd_dict(ocg_dict(Object::String(b"M-DUCT".to_vec())));
+        assert_eq!(doc.read_oc_name(ocmd.as_dict().unwrap(), 8).as_deref(), Some("M-DUCT"));
+    }
+
+    #[test]
+    fn test_oc_name_ocmd_ocgs_array_first_wins() {
+        // /OCGs may be an array of OCGs; the first resolvable member wins.
+        let doc = oc_test_doc();
+        let arr = Object::Array(vec![
+            ocg_dict(Object::String(b"S-COLS".to_vec())),
+            ocg_dict(Object::String(b"S-BEAM".to_vec())),
+        ]);
+        let ocmd = ocmd_dict(arr);
+        assert_eq!(doc.read_oc_name(ocmd.as_dict().unwrap(), 8).as_deref(), Some("S-COLS"));
+    }
+
+    #[test]
+    fn test_oc_name_ocmd_depth_guard() {
+        // A pathological OCMD chain (each /OCGs points to another OCMD) must
+        // terminate via the depth guard rather than recursing without bound.
+        let doc = oc_test_doc();
+        let mut nested = ocmd_dict(Object::Array(vec![]));
+        for _ in 0..20 {
+            nested = ocmd_dict(nested);
+        }
+        assert_eq!(doc.read_oc_name(nested.as_dict().unwrap(), 8), None);
+    }
+
+    #[test]
+    fn test_resolve_oc_name_via_resources_properties() {
+        // Case 2 (name reference) resolves against the *passed-in* resources.
+        // This is the crux of the Form-XObject fix: the resolver reads
+        // /Properties /<name> from whatever resource scope the caller hands
+        // it — page /Resources at page level, the XObject's own /Resources
+        // when extracting inside a Form XObject.
+        let doc = oc_test_doc();
+        let mut props = std::collections::HashMap::new();
+        props.insert("MC0".to_string(), ocg_dict(Object::String(b"A-WALL-DIM".to_vec())));
+        let mut resources = std::collections::HashMap::new();
+        resources.insert("Properties".to_string(), Object::Dictionary(props));
+        let resources = Object::Dictionary(resources);
+
+        let name_ref = Object::Name("MC0".to_string());
+        assert_eq!(
+            doc.resolve_oc_layer_name(Some(&resources), &name_ref)
+                .as_deref(),
+            Some("A-WALL-DIM")
+        );
+    }
+
+    #[test]
+    fn test_resolve_oc_name_inline_dict() {
+        let doc = oc_test_doc();
+        let inline = ocg_dict(Object::String(b"CORTES".to_vec()));
+        assert_eq!(doc.resolve_oc_layer_name(None, &inline).as_deref(), Some("CORTES"));
+    }
+
+    #[test]
+    fn test_resolve_oc_name_unresolvable_is_none() {
+        // A name reference with no resources in scope yields None (the path
+        // is left unlabelled) rather than an error.
+        let doc = oc_test_doc();
+        let name_ref = Object::Name("MC9".to_string());
+        assert_eq!(doc.resolve_oc_layer_name(None, &name_ref), None);
+    }
+
+    #[test]
+    fn test_extract_paths_layer_none_for_plain_stroke() {
+        // End-to-end through the real page pipeline: a stroked line on a page
+        // with no optional content yields a path whose `layer` is None. Guards
+        // the page-level marked-content refactor against perturbing plain
+        // extraction (and mirrors the Python shape test's synthetic PDF).
+        let doc = PdfDocument::from_bytes(build_minimal_pdf(b"100 100 m 200 200 l S")).unwrap();
+        let paths = doc.extract_paths(0).unwrap();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].layer, None);
+    }
+}
+
+#[cfg(test)]
+mod ink_dict_extractor_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn name(s: &str) -> Object {
+        Object::Name(s.to_string())
+    }
+
+    fn separation_cs(ink: &str) -> Object {
+        Object::Array(vec![
+            name("Separation"),
+            name(ink),
+            name("DeviceCMYK"),
+            Object::Null,
+        ])
+    }
+
+    fn device_n_cs(inks: &[&str]) -> Object {
+        Object::Array(vec![
+            name("DeviceN"),
+            Object::Array(inks.iter().map(|s| name(s)).collect()),
+            name("DeviceCMYK"),
+            Object::Null,
+        ])
+    }
+
+    #[test]
+    fn extracts_separation_ink_name() {
+        let mut cs_dict = HashMap::new();
+        cs_dict.insert("CS0".to_string(), separation_cs("Pantone-185"));
+        let mut out = Vec::new();
+        extract_inks_from_color_space_dict(&cs_dict, None, &mut out);
+        assert_eq!(out, vec!["Pantone-185".to_string()]);
+    }
+
+    #[test]
+    fn extracts_devicen_ink_names_in_declared_order() {
+        let mut cs_dict = HashMap::new();
+        cs_dict.insert("CS0".to_string(), device_n_cs(&["Cyan", "Magenta", "SpotGold"]));
+        let mut out = Vec::new();
+        extract_inks_from_color_space_dict(&cs_dict, None, &mut out);
+        assert_eq!(
+            out,
+            vec![
+                "Cyan".to_string(),
+                "Magenta".to_string(),
+                "SpotGold".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_all_and_none_colorants() {
+        // §8.6.6.4: /All and /None are reserved; never plate names.
+        let mut cs_dict = HashMap::new();
+        cs_dict.insert("CS0".to_string(), separation_cs("All"));
+        cs_dict.insert("CS1".to_string(), separation_cs("None"));
+        cs_dict.insert("CS2".to_string(), device_n_cs(&["All", "Spot1", "None"]));
+        let mut out = Vec::new();
+        extract_inks_from_color_space_dict(&cs_dict, None, &mut out);
+        assert_eq!(out, vec!["Spot1".to_string()]);
+    }
+
+    #[test]
+    fn ignores_non_separation_color_spaces() {
+        let mut cs_dict = HashMap::new();
+        cs_dict.insert("CS0".to_string(), Object::Array(vec![name("ICCBased"), Object::Null]));
+        cs_dict.insert("CS1".to_string(), name("DeviceCMYK"));
+        let mut out = Vec::new();
+        extract_inks_from_color_space_dict(&cs_dict, None, &mut out);
+        assert!(out.is_empty());
     }
 }
