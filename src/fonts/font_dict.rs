@@ -9017,14 +9017,8 @@ mod tests {
             "CIDSystemInfo".to_string(),
             Object::Dictionary({
                 let mut si = HashMap::new();
-                si.insert(
-                    "Registry".to_string(),
-                    Object::String(b"Adobe".to_vec()),
-                );
-                si.insert(
-                    "Ordering".to_string(),
-                    Object::String(b"Identity".to_vec()),
-                );
+                si.insert("Registry".to_string(), Object::String(b"Adobe".to_vec()));
+                si.insert("Ordering".to_string(), Object::String(b"Identity".to_vec()));
                 si.insert("Supplement".to_string(), Object::Integer(0));
                 si
             }),
