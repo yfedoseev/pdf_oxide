@@ -671,10 +671,13 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
-          # Use latest stable Go. go.mod's `go 1.21` directive keeps us
-          # compatible with older consumers; CI picks the newest toolchain
-          # available (>=1.25 required by govulncheck v1.3+).
-          go-version: 'stable'
+          # go.mod's `go 1.21` directive keeps us compatible with older
+          # consumers; CI builds with the newest patched toolchain (>=1.25
+          # required by govulncheck v1.3+). Pinned to 1.26.4 because the
+          # setup-go `stable` alias lagged at 1.26.3, which govulncheck flags
+          # for GO-2026-5037 (crypto/x509) and GO-2026-5039 (net/textproto),
+          # both fixed in go1.26.4. Bump as new patch releases land.
+          go-version: '1.26.4'
 
       # Download the pre-built native lib (extended features: barcodes,
       # rendering, signatures, tsa-client, system-fonts). Artifact preserves
