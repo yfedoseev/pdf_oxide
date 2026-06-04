@@ -1,18 +1,13 @@
-//! Separation / DeviceN tint-transform resolution and alternate-space → RGB
-//! conversion.
+//! Content-stream colour resolution to RGB for the page renderer.
 //!
-//! A `Separation` or `DeviceN` colour (ISO 32000-1:2008 §8.6.6.4–5) is given as
-//! a tint (or tints) that must be mapped through a *tint transform* function
-//! (§7.10) into an *alternate* colour space, which is then converted to RGB.
-//! This module owns that pipeline for the page renderer so the fill/stroke
-//! `sc`/`scn` paths resolve spot colours the same way instead of falling back to
-//! the naive `grey = 1 - tint` approximation. It is gated behind the `rendering`
-//! feature alongside its only consumer.
-//!
-//! The entry point is [`eval_separation_rgb`]. Supporting pieces — the PDF
-//! function evaluator ([`eval_pdf_function`]), the alternate-space dispatch
-//! ([`alternate_space_to_rgb`]) and the CIELAB→sRGB conversion ([`lab_to_rgb`])
-//! — are kept private; widen their visibility when a second caller needs them.
+//! [`resolve_color_to_rgb`] is the entry point the fill/stroke colour operators
+//! use; [`device_name_to_rgb`] is its no-I/O fast path for device/Cal names. A
+//! `Separation`/`DeviceN` colour (ISO 32000-1:2008 §8.6.6.4–5) maps its tint(s)
+//! through a *tint transform* function (§7.10) into an *alternate* colour space,
+//! which is then converted to RGB ([`eval_separation_rgb`]). Supporting pieces —
+//! the function evaluator ([`eval_pdf_function`]), alternate-space dispatch
+//! ([`alternate_space_to_rgb`]) and CIELAB→sRGB conversion ([`lab_to_rgb`]) — are
+//! private; widen their visibility when a second caller needs them.
 
 use crate::object::Object;
 
@@ -60,12 +55,48 @@ pub fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
     (r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0))
 }
 
-/// Map tint-transform output components to RGB purely by count: 1 → Gray,
-/// 3 → RGB, 4 → CMYK. Used as the fallback when the alternate colour space
-/// can't be classified by [`alternate_space_to_rgb`]; the function's output
-/// arity equals the alternate space's component count. Note the count-only path
-/// assumes a 3-component alternate is DeviceRGB — a Lab or non-RGB ICCBased(N=3)
-/// alternate is disambiguated by [`alternate_space_to_rgb`], which is tried first.
+/// Resolve a *named* device/Cal colour space to RGB with no document access or
+/// I/O: DeviceGray/CalGray, DeviceRGB/CalRGB, DeviceCMYK and the `G`/`RGB`/`CMYK`
+/// content-stream abbreviations (ISO 32000-1:2008 §8.6.3, §8.6.5). Returns None
+/// for any name needing the resolved space object (Separation, ICCBased, Lab,
+/// Indexed, a named resource like `Cs1`); the caller then uses
+/// [`resolve_color_to_rgb`].
+pub fn device_name_to_rgb(name: &str, components: &[f32]) -> Option<(f32, f32, f32)> {
+    match name {
+        "DeviceGray" | "CalGray" | "G" => components.first().map(|&g| (g, g, g)),
+        "DeviceRGB" | "CalRGB" | "RGB" if components.len() >= 3 => {
+            Some((components[0], components[1], components[2]))
+        },
+        "DeviceCMYK" | "CMYK" if components.len() >= 4 => {
+            Some(cmyk_to_rgb(components[0], components[1], components[2], components[3]))
+        },
+        _ => None,
+    }
+}
+
+/// Resolve any colour space *object* + its raw `components` to RGB — the single
+/// entry point the renderer's fill/stroke colour operators funnel through. The
+/// space is a device/Cal name or an array form (`[/ICCBased …]`, `[/CalRGB …]`,
+/// `[/CalGray …]`, `[/Lab …]`, `[/Separation …]`, `[/DeviceN …]`,
+/// `[/Indexed base hival lookup]`). Returns None when it can't be classified, so
+/// the caller can fall back to a grey approximation.
+pub fn resolve_color_to_rgb(
+    doc: &crate::document::PdfDocument,
+    space: &Object,
+    components: &[f32],
+) -> Option<(f32, f32, f32)> {
+    let resolved = doc.resolve_object(space).ok()?;
+    if let Some(name) = resolved.as_name() {
+        return device_name_to_rgb(name, components);
+    }
+    alternate_space_to_rgb(doc, &resolved, components)
+}
+
+/// Map tint-transform output to RGB by component count: 1 → Gray, 3 → RGB,
+/// 4 → CMYK. Fallback for when [`alternate_space_to_rgb`] can't classify the
+/// alternate space. It assumes a 3-component alternate is DeviceRGB, which is
+/// why `alternate_space_to_rgb` (which distinguishes Lab / non-RGB ICCBased) is
+/// tried first.
 fn components_to_rgb(comps: &[f32]) -> Option<(f32, f32, f32)> {
     match comps.len() {
         1 => Some((comps[0], comps[0], comps[0])),
@@ -243,12 +274,15 @@ pub fn eval_separation_rgb(
         .or_else(|| components_to_rgb(&outputs))
 }
 
-/// Convert tint-transform output `comps`, expressed in a Separation/DeviceN
-/// alternate colour space `alt_cs` (the arr[2] slot), to RGB by inspecting the
-/// actual alternate space rather than guessing from the component count. This
-/// disambiguates a 3-component Lab (§8.6.5.4) or Cal space from DeviceRGB.
-/// Returns None when the alternate space can't be classified, so the caller can
-/// fall back to the count-based [`components_to_rgb`].
+/// Convert components `comps` expressed in a resolved colour space `alt_cs` to
+/// RGB by inspecting the actual space rather than guessing from the component
+/// count. Used both for a Separation/DeviceN *alternate* space (the arr[2] slot)
+/// and, via [`resolve_color_to_rgb`], for a top-level array colour space. Handles
+/// named device/Cal spaces, ICCBased (by `/N`), CalRGB/CalGray, Lab (§8.6.5.4),
+/// Indexed palettes (§8.6.6.3) and — by recursion through [`eval_separation_rgb`]
+/// — a Separation/DeviceN space whose alternate is itself Separation/DeviceN.
+/// Returns None when the space can't be classified, so the caller can fall back
+/// to the count-based [`components_to_rgb`] or a grey approximation.
 fn alternate_space_to_rgb(
     doc: &crate::document::PdfDocument,
     alt_cs: &Object,
@@ -258,14 +292,11 @@ fn alternate_space_to_rgb(
 
     // Named device / Cal spaces, e.g. /DeviceRGB, /DeviceCMYK, /DeviceGray.
     if let Some(name) = resolved.as_name() {
-        return match name {
-            "DeviceGray" | "CalGray" | "G" => comps.first().map(|&g| (g, g, g)),
-            "DeviceRGB" | "CalRGB" | "RGB" | "DeviceCMYK" | "CMYK" => components_to_rgb(comps),
-            _ => None,
-        };
+        return device_name_to_rgb(name, comps);
     }
 
-    // Array forms: [/ICCBased stream], [/Lab dict], [/CalRGB dict], [/CalGray dict].
+    // Array forms: [/ICCBased stream], [/Lab dict], [/CalRGB dict],
+    // [/CalGray dict], [/Indexed base hival lookup], [/Separation …], [/DeviceN …].
     let arr = resolved.as_array()?;
     match arr.first().and_then(|o| o.as_name())? {
         "ICCBased" => {
@@ -292,17 +323,74 @@ fn alternate_space_to_rgb(
             let lab_dict = arr.get(1).and_then(|o| doc.resolve_object(o).ok());
             lab_to_rgb(lab_dict.as_ref().and_then(|o| o.as_dict()), comps)
         },
+        "Separation" | "DeviceN" => eval_separation_rgb(doc, arr, comps),
+        "Indexed" => indexed_to_rgb(doc, arr, comps),
         _ => None,
     }
 }
 
+/// Component count of a *base* colour space used by an Indexed space: 1 for
+/// DeviceGray/CalGray, 3 for DeviceRGB/CalRGB/Lab, 4 for DeviceCMYK, and the
+/// `/N` value for ICCBased. Returns None for spaces that can't carry an Indexed
+/// palette (Pattern, nested Indexed, …).
+fn indexed_base_components(doc: &crate::document::PdfDocument, base: &Object) -> Option<usize> {
+    let resolved = doc.resolve_object(base).ok()?;
+    if let Some(name) = resolved.as_name() {
+        return match name {
+            "DeviceGray" | "CalGray" | "G" => Some(1),
+            "DeviceRGB" | "CalRGB" | "RGB" => Some(3),
+            "DeviceCMYK" | "CMYK" => Some(4),
+            _ => None,
+        };
+    }
+    let arr = resolved.as_array()?;
+    match arr.first().and_then(|o| o.as_name())? {
+        "CalGray" => Some(1),
+        "CalRGB" | "Lab" => Some(3),
+        "ICCBased" => {
+            let stream = doc.resolve_object(arr.get(1)?).ok()?;
+            stream.as_dict()?.get("N").and_then(|o| o.as_integer()).map(|n| n as usize)
+        },
+        _ => None,
+    }
+}
+
+/// Resolve an Indexed colour space `[/Indexed base hival lookup]` (§8.6.6.3) at
+/// index `comps[0]` to RGB. The `lookup` table — a byte string or stream of
+/// `(hival + 1) × m` bytes (`m` = base component count) — is sliced at
+/// `index × m`, each byte normalised to `[0, 1]`, and the resulting base-space
+/// components converted via [`alternate_space_to_rgb`]. Returns None if the
+/// table or base space can't be resolved.
+fn indexed_to_rgb(
+    doc: &crate::document::PdfDocument,
+    arr: &[Object],
+    comps: &[f32],
+) -> Option<(f32, f32, f32)> {
+    let base = arr.get(1)?;
+    let m = indexed_base_components(doc, base)?;
+    if m == 0 {
+        return None;
+    }
+    let lookup_obj = doc.resolve_object(arr.get(3)?).ok()?;
+    let table = lookup_obj
+        .as_string()
+        .map(|s| s.to_vec())
+        .or_else(|| lookup_obj.decode_stream_data().ok())?;
+
+    // The colour value for an Indexed space is the integer palette index.
+    let index = comps.first().copied()?.round().max(0.0) as usize;
+    let start = index.checked_mul(m)?;
+    let slice = table.get(start..start + m)?;
+    let base_comps: Vec<f32> = slice.iter().map(|&b| b as f32 / 255.0).collect();
+    alternate_space_to_rgb(doc, base, &base_comps)
+}
+
 /// Convert a CIE L*a*b* colour (ISO 32000-1:2008 §8.6.5.4) to sRGB. `dict` is
-/// the Lab colour-space dictionary, read for the required `/WhitePoint` and the
-/// optional `/Range` (a*/b* bounds, default `[-100 100 -100 100]`). `comps` is
-/// `[L*, a*, b*]` with L* ∈ [0,100]. The conversion is L*a*b* → CIE XYZ (using
-/// the white point) → linear sRGB → gamma. Chromatic adaptation for non-D65
-/// white points is omitted — a reasonable fallback when no CMM is in play; the
-/// white point defaults to D65 when the dict is missing or malformed.
+/// the Lab colour-space dictionary, read for `/WhitePoint` and the optional
+/// `/Range` (a*/b* bounds, default `[-100 100 -100 100]`); `comps` is
+/// `[L*, a*, b*]`, L* ∈ [0,100]. Path: L*a*b* → XYZ → linear sRGB → gamma.
+/// Chromatic adaptation for non-D65 white points is omitted (a reasonable
+/// no-CMM fallback); the white point defaults to D65 if absent or malformed.
 fn lab_to_rgb(
     dict: Option<&std::collections::HashMap<String, Object>>,
     comps: &[f32],
@@ -404,5 +492,27 @@ mod tests {
         // 4 components → CMYK path.
         let rgb = components_to_rgb(&[0.0, 0.0, 0.0, 0.0]).expect("cmyk white");
         assert_eq!(rgb, (1.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn test_device_name_to_rgb() {
+        assert_eq!(device_name_to_rgb("DeviceGray", &[0.5]), Some((0.5, 0.5, 0.5)));
+        assert_eq!(device_name_to_rgb("G", &[0.25]), Some((0.25, 0.25, 0.25)));
+        assert_eq!(
+            device_name_to_rgb("DeviceRGB", &[0.1, 0.2, 0.3]),
+            Some((0.1, 0.2, 0.3))
+        );
+        assert_eq!(device_name_to_rgb("RGB", &[1.0, 0.0, 0.0]), Some((1.0, 0.0, 0.0)));
+        // DeviceCMYK white (all zero) → RGB white.
+        assert_eq!(
+            device_name_to_rgb("DeviceCMYK", &[0.0, 0.0, 0.0, 0.0]),
+            Some((1.0, 1.0, 1.0))
+        );
+        // Too few components → None (caller falls back).
+        assert_eq!(device_name_to_rgb("DeviceRGB", &[0.5]), None);
+        assert_eq!(device_name_to_rgb("DeviceCMYK", &[0.5, 0.5, 0.5]), None);
+        // Non-device names need the resolved space object, not this fast path.
+        assert_eq!(device_name_to_rgb("Separation", &[1.0]), None);
+        assert_eq!(device_name_to_rgb("Cs1", &[1.0]), None);
     }
 }

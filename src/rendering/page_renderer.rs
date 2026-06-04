@@ -22,7 +22,7 @@ use crate::object::{Object, ObjectRef};
 use crate::rendering::ext_gstate::{parse_ext_g_state_inner, ParsedExtGState};
 use crate::rendering::path_rasterizer::PathRasterizer;
 use crate::rendering::text_rasterizer::TextRasterizer;
-use crate::tint::{cmyk_to_rgb, eval_separation_rgb};
+use crate::rendering::color_resolve::{cmyk_to_rgb, device_name_to_rgb, resolve_color_to_rgb};
 
 use crate::fonts::FontInfo;
 use std::collections::{HashMap, HashSet};
@@ -166,6 +166,31 @@ impl PageRenderer {
             color_spaces: HashMap::new(),
             excluded_layers_snapshot: None,
         }
+    }
+
+    /// Resolve a content-stream colour to RGB for the `sc`/`SC`/`scn`/`SCN`
+    /// operators, shared by fill and stroke. `space_name` is a device/Cal name
+    /// (resolved with no I/O) or a named resource (e.g. `Cs1`) whose resolved
+    /// object lives in `color_spaces`. Falls back to a grey approximation from
+    /// the first component when the space can't be classified.
+    fn resolve_op_color(
+        doc: &PdfDocument,
+        color_spaces: &HashMap<String, Object>,
+        space_name: &str,
+        components: &[f32],
+    ) -> (f32, f32, f32) {
+        device_name_to_rgb(space_name, components)
+            .or_else(|| {
+                color_spaces
+                    .get(space_name)
+                    .and_then(|space| resolve_color_to_rgb(doc, space, components))
+            })
+            .unwrap_or_else(|| {
+                components
+                    .first()
+                    .map(|&g| (g, g, g))
+                    .unwrap_or((0.0, 0.0, 0.0))
+            })
     }
 
     /// Render a page to a raster image.
@@ -556,366 +581,32 @@ impl PageRenderer {
                     gs_stack.current_mut().stroke_color_space = name.clone();
                 },
                 Operator::SetFillColor { components } => {
-                    let gs = gs_stack.current_mut();
-                    let space_name = gs.fill_color_space.clone();
-                    let resolved_space = self.color_spaces.get(&space_name);
-
-                    match space_name.as_str() {
-                        "DeviceGray" | "G" if !components.is_empty() => {
-                            let g = components[0];
-                            gs.fill_color_rgb = (g, g, g);
-                        },
-                        "DeviceRGB" | "RGB" if components.len() >= 3 => {
-                            gs.fill_color_rgb = (components[0], components[1], components[2]);
-                        },
-                        "DeviceCMYK" | "CMYK" if components.len() >= 4 => {
-                            gs.fill_color_rgb = cmyk_to_rgb(
-                                components[0],
-                                components[1],
-                                components[2],
-                                components[3],
-                            );
-                        },
-                        _ => {
-                            let mut handled = false;
-                            if let Some(rs) = resolved_space {
-                                if let Some(arr) = rs.as_array() {
-                                    if let Some(type_name) = arr.first().and_then(|o| o.as_name()) {
-                                        match type_name {
-                                            "ICCBased" if arr.len() > 1 => {
-                                                if let Ok(dict_obj) = doc.resolve_object(&arr[1]) {
-                                                    if let Some(dict) = dict_obj.as_dict() {
-                                                        let n = dict
-                                                            .get("N")
-                                                            .and_then(|o| o.as_integer())
-                                                            .unwrap_or(3);
-                                                        match n {
-                                                            1 if !components.is_empty() => {
-                                                                let g = components[0];
-                                                                gs.fill_color_rgb = (g, g, g);
-                                                                handled = true;
-                                                            },
-                                                            3 if components.len() >= 3 => {
-                                                                gs.fill_color_rgb = (
-                                                                    components[0],
-                                                                    components[1],
-                                                                    components[2],
-                                                                );
-                                                                handled = true;
-                                                            },
-                                                            4 if components.len() >= 4 => {
-                                                                gs.fill_color_rgb = cmyk_to_rgb(
-                                                                    components[0],
-                                                                    components[1],
-                                                                    components[2],
-                                                                    components[3],
-                                                                );
-                                                                handled = true;
-                                                            },
-                                                            _ => {},
-                                                        }
-                                                    }
-                                                }
-                                            },
-                                            "Separation" | "DeviceN" => {
-                                                // Separation = [/Separation name altCS tintTransform].
-                                                // Evaluate the tint transform (FunctionType 0 or 2)
-                                                // and map the alternate-space result to RGB. Falls
-                                                // back to a subtractive single-ink grey only when the
-                                                // function can't be evaluated.
-                                                if !components.is_empty() {
-                                                    if let Some(rgb) =
-                                                        eval_separation_rgb(doc, arr, &components)
-                                                    {
-                                                        gs.fill_color_rgb = rgb;
-                                                    } else {
-                                                        let g = 1.0 - components[0];
-                                                        gs.fill_color_rgb = (g, g, g);
-                                                    }
-                                                    handled = true;
-                                                }
-                                            },
-                                            "Indexed" => {
-                                                if !components.is_empty() {
-                                                    let g = components[0] / 255.0;
-                                                    gs.fill_color_rgb = (g, g, g);
-                                                    handled = true;
-                                                }
-                                            },
-                                            _ => {},
-                                        }
-                                    }
-                                }
-                            }
-
-                            if !handled && !components.is_empty() {
-                                let g = components[0];
-                                gs.fill_color_rgb = (g, g, g);
-                            }
-                        },
-                    }
-                    log::debug!(
-                        "SetFillColor: {} {:?} -> {:?}",
-                        space_name,
-                        components,
-                        gs.fill_color_rgb
-                    );
+                    let space_name = gs_stack.current().fill_color_space.clone();
+                    let rgb =
+                        Self::resolve_op_color(doc, &self.color_spaces, &space_name, components);
+                    gs_stack.current_mut().fill_color_rgb = rgb;
+                    log::debug!("SetFillColor: {} {:?} -> {:?}", space_name, components, rgb);
                 },
                 Operator::SetStrokeColor { components } => {
-                    let gs = gs_stack.current_mut();
-                    let space_name = gs.stroke_color_space.clone();
-                    let resolved_space = self.color_spaces.get(&space_name);
-
-                    match space_name.as_str() {
-                        "DeviceGray" | "G" if !components.is_empty() => {
-                            let g = components[0];
-                            gs.stroke_color_rgb = (g, g, g);
-                        },
-                        "DeviceRGB" | "RGB" if components.len() >= 3 => {
-                            gs.stroke_color_rgb = (components[0], components[1], components[2]);
-                        },
-                        "DeviceCMYK" | "CMYK" if components.len() >= 4 => {
-                            gs.stroke_color_rgb = cmyk_to_rgb(
-                                components[0],
-                                components[1],
-                                components[2],
-                                components[3],
-                            );
-                        },
-                        _ => {
-                            let mut handled = false;
-                            if let Some(rs) = resolved_space {
-                                if let Some(arr) = rs.as_array() {
-                                    if let Some(type_name) = arr.first().and_then(|o| o.as_name()) {
-                                        match type_name {
-                                            "ICCBased" if arr.len() > 1 => {
-                                                if let Ok(dict_obj) = doc.resolve_object(&arr[1]) {
-                                                    if let Some(dict) = dict_obj.as_dict() {
-                                                        let n = dict
-                                                            .get("N")
-                                                            .and_then(|o| o.as_integer())
-                                                            .unwrap_or(3);
-                                                        match n {
-                                                            1 if !components.is_empty() => {
-                                                                let g = components[0];
-                                                                gs.stroke_color_rgb = (g, g, g);
-                                                                handled = true;
-                                                            },
-                                                            3 if components.len() >= 3 => {
-                                                                gs.stroke_color_rgb = (
-                                                                    components[0],
-                                                                    components[1],
-                                                                    components[2],
-                                                                );
-                                                                handled = true;
-                                                            },
-                                                            4 if components.len() >= 4 => {
-                                                                gs.stroke_color_rgb = cmyk_to_rgb(
-                                                                    components[0],
-                                                                    components[1],
-                                                                    components[2],
-                                                                    components[3],
-                                                                );
-                                                                handled = true;
-                                                            },
-                                                            _ => {},
-                                                        }
-                                                    }
-                                                }
-                                            },
-                                            _ => {},
-                                        }
-                                    }
-                                }
-                            }
-                            if !handled && !components.is_empty() {
-                                let g = components[0];
-                                gs.stroke_color_rgb = (g, g, g);
-                            }
-                        },
-                    }
-                    log::debug!(
-                        "SetStrokeColor: {} {:?} -> {:?}",
-                        space_name,
-                        components,
-                        gs.stroke_color_rgb
-                    );
+                    let space_name = gs_stack.current().stroke_color_space.clone();
+                    let rgb =
+                        Self::resolve_op_color(doc, &self.color_spaces, &space_name, components);
+                    gs_stack.current_mut().stroke_color_rgb = rgb;
+                    log::debug!("SetStrokeColor: {} {:?} -> {:?}", space_name, components, rgb);
                 },
                 Operator::SetFillColorN { components, .. } => {
-                    let gs = gs_stack.current_mut();
-                    let space_name = gs.fill_color_space.clone();
-                    let resolved_space = self.color_spaces.get(&space_name);
-
-                    match space_name.as_str() {
-                        "DeviceGray" | "G" if !components.is_empty() => {
-                            let g = components[0];
-                            gs.fill_color_rgb = (g, g, g);
-                        },
-                        "DeviceRGB" | "RGB" if components.len() >= 3 => {
-                            gs.fill_color_rgb = (components[0], components[1], components[2]);
-                        },
-                        "DeviceCMYK" | "CMYK" if components.len() >= 4 => {
-                            gs.fill_color_rgb = cmyk_to_rgb(
-                                components[0],
-                                components[1],
-                                components[2],
-                                components[3],
-                            );
-                        },
-                        _ => {
-                            let mut handled = false;
-                            if let Some(rs) = resolved_space {
-                                if let Some(arr) = rs.as_array() {
-                                    if let Some(type_name) = arr.first().and_then(|o| o.as_name()) {
-                                        match type_name {
-                                            "ICCBased" if arr.len() > 1 => {
-                                                if let Ok(dict_obj) = doc.resolve_object(&arr[1]) {
-                                                    if let Some(dict) = dict_obj.as_dict() {
-                                                        let n = dict
-                                                            .get("N")
-                                                            .and_then(|o| o.as_integer())
-                                                            .unwrap_or(3);
-                                                        match n {
-                                                            1 if !components.is_empty() => {
-                                                                let g = components[0];
-                                                                gs.fill_color_rgb = (g, g, g);
-                                                                handled = true;
-                                                            },
-                                                            3 if components.len() >= 3 => {
-                                                                gs.fill_color_rgb = (
-                                                                    components[0],
-                                                                    components[1],
-                                                                    components[2],
-                                                                );
-                                                                handled = true;
-                                                            },
-                                                            4 if components.len() >= 4 => {
-                                                                gs.fill_color_rgb = cmyk_to_rgb(
-                                                                    components[0],
-                                                                    components[1],
-                                                                    components[2],
-                                                                    components[3],
-                                                                );
-                                                                handled = true;
-                                                            },
-                                                            _ => {},
-                                                        }
-                                                    }
-                                                }
-                                            },
-                                            "Separation" | "DeviceN" => {
-                                                // `scn` with a Separation/DeviceN space: evaluate the
-                                                // tint transform (FunctionType 0 or 2) -> alternate
-                                                // space -> RGB. The bare `grey = 1 - tint` fallback
-                                                // rendered a full-tint spot colour as solid black.
-                                                if !components.is_empty() {
-                                                    if let Some(rgb) =
-                                                        eval_separation_rgb(doc, arr, &components)
-                                                    {
-                                                        gs.fill_color_rgb = rgb;
-                                                    } else {
-                                                        let g = 1.0 - components[0];
-                                                        gs.fill_color_rgb = (g, g, g);
-                                                    }
-                                                    handled = true;
-                                                }
-                                            },
-                                            _ => {},
-                                        }
-                                    }
-                                }
-                            }
-                            if !handled && !components.is_empty() {
-                                let g = components[0];
-                                gs.fill_color_rgb = (g, g, g);
-                            }
-                        },
-                    }
-                    log::debug!(
-                        "SetFillColorN: {} {:?} -> {:?}",
-                        space_name,
-                        components,
-                        gs.fill_color_rgb
-                    );
+                    let space_name = gs_stack.current().fill_color_space.clone();
+                    let rgb =
+                        Self::resolve_op_color(doc, &self.color_spaces, &space_name, components);
+                    gs_stack.current_mut().fill_color_rgb = rgb;
+                    log::debug!("SetFillColorN: {} {:?} -> {:?}", space_name, components, rgb);
                 },
                 Operator::SetStrokeColorN { components, .. } => {
-                    let gs = gs_stack.current_mut();
-                    let space_name = gs.stroke_color_space.clone();
-                    let resolved_space = self.color_spaces.get(&space_name);
-                    match space_name.as_str() {
-                        "DeviceGray" | "G" if !components.is_empty() => {
-                            let g = components[0];
-                            gs.stroke_color_rgb = (g, g, g);
-                        },
-                        "DeviceRGB" | "RGB" if components.len() >= 3 => {
-                            gs.stroke_color_rgb = (components[0], components[1], components[2]);
-                        },
-                        "DeviceCMYK" | "CMYK" if components.len() >= 4 => {
-                            gs.stroke_color_rgb = cmyk_to_rgb(
-                                components[0],
-                                components[1],
-                                components[2],
-                                components[3],
-                            );
-                        },
-                        _ => {
-                            let mut handled = false;
-                            if let Some(rs) = resolved_space {
-                                if let Some(arr) = rs.as_array() {
-                                    if let Some(type_name) = arr.first().and_then(|o| o.as_name()) {
-                                        match type_name {
-                                            "ICCBased" if arr.len() > 1 => {
-                                                if let Ok(dict_obj) = doc.resolve_object(&arr[1]) {
-                                                    if let Some(dict) = dict_obj.as_dict() {
-                                                        let n = dict
-                                                            .get("N")
-                                                            .and_then(|o| o.as_integer())
-                                                            .unwrap_or(3);
-                                                        match n {
-                                                            1 if !components.is_empty() => {
-                                                                let g = components[0];
-                                                                gs.stroke_color_rgb = (g, g, g);
-                                                                handled = true;
-                                                            },
-                                                            3 if components.len() >= 3 => {
-                                                                gs.stroke_color_rgb = (
-                                                                    components[0],
-                                                                    components[1],
-                                                                    components[2],
-                                                                );
-                                                                handled = true;
-                                                            },
-                                                            4 if components.len() >= 4 => {
-                                                                gs.stroke_color_rgb = cmyk_to_rgb(
-                                                                    components[0],
-                                                                    components[1],
-                                                                    components[2],
-                                                                    components[3],
-                                                                );
-                                                                handled = true;
-                                                            },
-                                                            _ => {},
-                                                        }
-                                                    }
-                                                }
-                                            },
-                                            _ => {},
-                                        }
-                                    }
-                                }
-                            }
-                            if !handled && !components.is_empty() {
-                                let g = components[0];
-                                gs.stroke_color_rgb = (g, g, g);
-                            }
-                        },
-                    }
-                    log::debug!(
-                        "SetStrokeColorN: {} {:?} -> {:?}",
-                        space_name,
-                        components,
-                        gs.stroke_color_rgb
-                    );
+                    let space_name = gs_stack.current().stroke_color_space.clone();
+                    let rgb =
+                        Self::resolve_op_color(doc, &self.color_spaces, &space_name, components);
+                    gs_stack.current_mut().stroke_color_rgb = rgb;
+                    log::debug!("SetStrokeColorN: {} {:?} -> {:?}", space_name, components, rgb);
                 },
 
                 // Line style operators

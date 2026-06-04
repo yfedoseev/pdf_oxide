@@ -30,6 +30,9 @@
 //! 3. Rasterize paths, text, and images to tiny-skia pixmap
 //! 4. Convert to output format (PNG/JPEG)
 
+/// Content-stream colour resolution to RGB (device, ICC, Cal, Lab, Separation/
+/// DeviceN tint transforms, Indexed palettes).
+pub mod color_resolve;
 pub(crate) mod ext_gstate;
 pub(crate) mod page_renderer;
 mod path_rasterizer;
