@@ -182,7 +182,7 @@ pub(crate) struct TractBackend {
 
 #[cfg(feature = "ocr-tract")]
 #[cfg_attr(feature = "ocr", allow(dead_code))]
-type TractPlan = tract_onnx::prelude::TypedRunnableModel<tract_onnx::prelude::TypedModel>;
+type TractPlan = tract_onnx::prelude::TypedRunnableModel;
 
 #[cfg(feature = "ocr-tract")]
 #[cfg_attr(feature = "ocr", allow(dead_code))]
