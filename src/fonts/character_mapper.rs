@@ -154,7 +154,7 @@ impl CharacterMapper {
         // whose CIDs are insertion-ordered (not codepoint-aligned). See #363.
         if let Some(ref cmap) = self.tounicode_cmap {
             return match cmap.get(&code) {
-                Some(mapped) => Some(mapped.clone()),
+                Some(mapped) => Some(mapped.into_owned()),
                 None => Some("\u{FFFD}".to_string()),
             };
         }
@@ -204,6 +204,10 @@ impl CharacterMapper {
             "Japan1" => super::cid_mappings::lookup_adobe_japan1(cid),
             "CNS1" => super::cid_mappings::lookup_adobe_cns1(cid),
             "Korea1" => super::cid_mappings::lookup_adobe_korea1(cid),
+            // Adobe-Arabic-1 / Adobe-Persian-1 (Nazanin, Yagut, Mitra, Lotus)
+            // without /ToUnicode — §9.10.3 step-3 identity fallback over the
+            // Arabic block; without it these decode as Latin-Extended-B garbage.
+            "Arabic" | "Persian" => super::cid_mappings::lookup_adobe_arabic(cid),
             "Identity" => {
                 // Identity mapping: CID == Unicode code point
                 // Valid for BMP range (0x0000-0xFFFF)
@@ -564,6 +568,43 @@ mod internal_tests {
         assert_eq!(mapper.code_to_glyph_name(0x20), Some("space".to_string()));
         assert_eq!(mapper.code_to_glyph_name(0x41), Some("A".to_string()));
         assert_eq!(mapper.code_to_glyph_name(0x61), Some("a".to_string()));
+    }
+
+    // ==========================================================================
+    // Adobe-Arabic-1 / Adobe-Persian-1 /Ordering routing
+    // ==========================================================================
+
+    #[test]
+    fn test_arabic_persian_ordering_maps_to_arabic_block() {
+        let mapper = CharacterMapper::new();
+        let arabic = PredefinedCMapConfig {
+            ordering: "Arabic".to_string(),
+        };
+        let persian = PredefinedCMapConfig {
+            ordering: "Persian".to_string(),
+        };
+
+        // CID 0x0627 = ا (ARABIC LETTER ALEF), 0x0641 = ف (ARABIC LETTER FEH).
+        assert_eq!(
+            mapper.lookup_predefined_cmap(&arabic, 0x0627),
+            Some("\u{0627}".to_string()),
+            "Arabic ordering must map CID 0x0627 → U+0627"
+        );
+        assert_eq!(
+            mapper.lookup_predefined_cmap(&persian, 0x0641),
+            Some("\u{0641}".to_string()),
+            "Persian ordering must map CID 0x0641 → U+0641"
+        );
+    }
+
+    #[test]
+    fn test_cjk_orderings_unaffected_by_arabic_arm() {
+        // Regression: the new arm must not perturb the Identity path.
+        let mapper = CharacterMapper::new();
+        let identity = PredefinedCMapConfig {
+            ordering: "Identity".to_string(),
+        };
+        assert_eq!(mapper.lookup_predefined_cmap(&identity, 0x0041), Some("A".to_string()));
     }
 
     // ==========================================================================

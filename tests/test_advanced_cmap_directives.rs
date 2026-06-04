@@ -54,13 +54,13 @@ end
     let cmap = result.unwrap();
 
     // Should have mapping for 0x0041
-    assert_eq!(cmap.get(&0x0041), Some(&"A".to_string()), "Mapped character should be 'A'");
+    assert_eq!(cmap.get(&0x0041).as_deref(), Some("A"), "Mapped character should be 'A'");
 
     // Should have notdef mapping for undefined range
-    assert_eq!(cmap.get(&0x0000), Some(&"\u{FFFD}".to_string()), "Notdef should map to U+FFFD");
+    assert_eq!(cmap.get(&0x0000).as_deref(), Some("\u{FFFD}"), "Notdef should map to U+FFFD");
     assert_eq!(
-        cmap.get(&0x0020),
-        Some(&"\u{FFFD}".to_string()),
+        cmap.get(&0x0020).as_deref(),
+        Some("\u{FFFD}"),
         "Notdef range should map to U+FFFD"
     );
 }
@@ -108,20 +108,16 @@ end
     let cmap = result.unwrap();
 
     // Space escape should map to actual space character
-    assert_eq!(cmap.get(&0x0001), Some(&" ".to_string()), "space escape should map to space");
+    assert_eq!(cmap.get(&0x0001).as_deref(), Some(" "), "space escape should map to space");
 
     // Tab escape should map to actual tab
-    assert_eq!(cmap.get(&0x0002), Some(&"\t".to_string()), "tab escape should map to tab");
+    assert_eq!(cmap.get(&0x0002).as_deref(), Some("\t"), "tab escape should map to tab");
 
     // Newline escape should map to actual newline
-    assert_eq!(
-        cmap.get(&0x0003),
-        Some(&"\n".to_string()),
-        "newline escape should map to newline"
-    );
+    assert_eq!(cmap.get(&0x0003).as_deref(), Some("\n"), "newline escape should map to newline");
 
     // Regular hex should still work
-    assert_eq!(cmap.get(&0x0020), Some(&" ".to_string()), "hex 0020 should map to space");
+    assert_eq!(cmap.get(&0x0020).as_deref(), Some(" "), "hex 0020 should map to space");
 }
 
 #[test]
@@ -165,9 +161,9 @@ end
     let cmap = result.unwrap();
 
     // All three should parse correctly despite whitespace variations
-    assert_eq!(cmap.get(&0x0041), Some(&"A".to_string()), "Normal spacing should work");
-    assert_eq!(cmap.get(&0x0042), Some(&"B".to_string()), "Extra spaces should work");
-    assert_eq!(cmap.get(&0x0043), Some(&"C".to_string()), "No spaces should work");
+    assert_eq!(cmap.get(&0x0041).as_deref(), Some("A"), "Normal spacing should work");
+    assert_eq!(cmap.get(&0x0042).as_deref(), Some("B"), "Extra spaces should work");
+    assert_eq!(cmap.get(&0x0043).as_deref(), Some("C"), "No spaces should work");
 }
 
 #[test]
@@ -212,10 +208,10 @@ end
     let cmap = result.unwrap();
 
     // Hex 000A should map to newline
-    assert_eq!(cmap.get(&0x0001), Some(&"\n".to_string()), "Hex 000A should map to newline");
+    assert_eq!(cmap.get(&0x0001).as_deref(), Some("\n"), "Hex 000A should map to newline");
 
     // Hex 0009 should map to tab
-    assert_eq!(cmap.get(&0x0002), Some(&"\t".to_string()), "Hex 0009 should map to tab");
+    assert_eq!(cmap.get(&0x0002).as_deref(), Some("\t"), "Hex 0009 should map to tab");
 }
 
 #[test]
@@ -264,16 +260,16 @@ end
     let cmap = result.unwrap();
 
     // Explicit bfchar should work
-    assert_eq!(cmap.get(&0x0041), Some(&"A".to_string()), "bfchar mapping should work");
+    assert_eq!(cmap.get(&0x0041).as_deref(), Some("A"), "bfchar mapping should work");
 
     // bfrange should work
-    assert_eq!(cmap.get(&0x0050), Some(&"P".to_string()), "bfrange sequential should work");
-    assert_eq!(cmap.get(&0x0061), Some(&"a".to_string()), "bfrange sequential should work");
+    assert_eq!(cmap.get(&0x0050).as_deref(), Some("P"), "bfrange sequential should work");
+    assert_eq!(cmap.get(&0x0061).as_deref(), Some("a"), "bfrange sequential should work");
 
     // notdefrange should provide fallback
     assert_eq!(
-        cmap.get(&0x0001),
-        Some(&"\u{FFFD}".to_string()),
+        cmap.get(&0x0001).as_deref(),
+        Some("\u{FFFD}"),
         "notdefrange should provide fallback"
     );
 }

@@ -339,6 +339,7 @@ mod tests {
                 primary_detected: false,
                 char_widths: vec![],
                 heading_level: None,
+                rotation_degrees: 0.0,
             },
             TextSpan {
                 artifact_type: None,
@@ -364,6 +365,7 @@ mod tests {
                 primary_detected: false,
                 char_widths: vec![],
                 heading_level: None,
+                rotation_degrees: 0.0,
             },
         ];
 

@@ -386,6 +386,64 @@ fn collect_table_elements<'a>(
     }
 }
 
+/// Walk the structure tree once and bucket every `Table` element by each page
+/// it has content on (owned clones), so the converter table path can do an
+/// O(1) per-page lookup instead of `find_table_elements`'s per-page walk
+/// (≈ O(pages²) on a tagged document). For a given page the result matches
+/// `find_table_elements(tree, page)`: same DFS pre-order, and like
+/// `collect_table_elements` it does not recurse into a Table's children.
+pub fn find_table_elements_all_pages(
+    struct_tree: &crate::structure::types::StructTreeRoot,
+) -> std::collections::HashMap<u32, Vec<StructElem>> {
+    let mut by_page: std::collections::HashMap<u32, Vec<StructElem>> =
+        std::collections::HashMap::new();
+    for elem in &struct_tree.root_elements {
+        collect_table_elements_all_pages(elem, &mut by_page);
+    }
+    by_page
+}
+
+fn collect_table_elements_all_pages(
+    elem: &StructElem,
+    by_page: &mut std::collections::HashMap<u32, Vec<StructElem>>,
+) {
+    if elem.struct_type == StructType::Table {
+        // Pages this table (or any descendant) has content on — the exact set
+        // for which `element_has_page_content(elem, page)` is true.
+        let mut pages = std::collections::BTreeSet::new();
+        collect_content_pages(elem, &mut pages);
+        for p in pages {
+            by_page.entry(p).or_default().push(elem.clone());
+        }
+        return; // mirror collect_table_elements: don't recurse into table children
+    }
+
+    for child in &elem.children {
+        if let StructChild::StructElem(child_elem) = child {
+            collect_table_elements_all_pages(child_elem, by_page);
+        }
+    }
+}
+
+/// Collect the set of pages on which `elem` (or any descendant) has content.
+/// Mirrors the truth set of [`element_has_page_content`] across all pages.
+fn collect_content_pages(elem: &StructElem, pages: &mut std::collections::BTreeSet<u32>) {
+    if let Some(p) = elem.page {
+        pages.insert(p);
+    }
+    for child in &elem.children {
+        match child {
+            StructChild::MarkedContentRef { page, .. } => {
+                pages.insert(*page);
+            },
+            StructChild::StructElem(child_elem) => {
+                collect_content_pages(child_elem, pages);
+            },
+            StructChild::ObjectRef(_, _) => {},
+        }
+    }
+}
+
 /// Check if a structure element or any descendant has marked content on the given page.
 fn element_has_page_content(elem: &StructElem, page_num: u32) -> bool {
     // Check the element's own page attribute
@@ -757,6 +815,7 @@ fn extract_cell(
                         primary_detected: false,
                         char_widths: vec![],
                         heading_level: None,
+                        rotation_degrees: 0.0,
                     });
                     prev_block = Some(block);
                     break;
@@ -977,6 +1036,50 @@ mod tests {
     }
 
     // ============================================================================
+    // find_table_elements_all_pages() — equivalence with the per-page walk
+    // ============================================================================
+
+    /// The single-walk all-pages bucketing must match, per page, the per-page
+    /// `find_table_elements` walk it replaces.
+    #[test]
+    fn test_find_table_elements_all_pages_matches_per_page() {
+        let mut tree = StructTreeRoot::new();
+        // page 0: two tables (one nested in a section), page 1: one table,
+        // plus a page-attribute-only table on page 2.
+        tree.add_root_element(make_table_elem(0, &[1, 2]));
+        let mut sect = StructElem::new(StructType::Sect);
+        sect.add_child(StructChild::StructElem(Box::new(make_table_elem(0, &[3]))));
+        tree.add_root_element(sect);
+        tree.add_root_element(make_table_elem(1, &[4]));
+        let mut page_attr_table = StructElem::new(StructType::Table);
+        page_attr_table.page = Some(2);
+        tree.add_root_element(page_attr_table);
+
+        let all = find_table_elements_all_pages(&tree);
+        for page in 0..4u32 {
+            let per_page = find_table_elements(&tree, page);
+            let bucket = all.get(&page).cloned().unwrap_or_default();
+            assert_eq!(
+                bucket.len(),
+                per_page.len(),
+                "page {page}: bucket count must match per-page walk"
+            );
+            for (b, p) in bucket.iter().zip(per_page.iter()) {
+                // same DFS pre-order ⇒ structurally identical elements
+                assert_eq!(b.struct_type, p.struct_type);
+                assert_eq!(b.page, p.page);
+                assert_eq!(b.children.len(), p.children.len());
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_table_elements_all_pages_empty_tree() {
+        let tree = StructTreeRoot::new();
+        assert!(find_table_elements_all_pages(&tree).is_empty());
+    }
+
+    // ============================================================================
     // element_has_page_content() tests
     // ============================================================================
 
@@ -1049,6 +1152,7 @@ mod tests {
             primary_detected: false,
             char_widths: vec![],
             heading_level: None,
+            rotation_degrees: 0.0,
         }
     }
 
@@ -1202,6 +1306,7 @@ mod tests {
             primary_detected: false,
             char_widths: vec![],
             heading_level: None,
+            rotation_degrees: 0.0,
         };
         let spans = vec![
             crate::layout::TextSpan {
@@ -1262,6 +1367,7 @@ mod tests {
             primary_detected: false,
             char_widths: vec![],
             heading_level: None,
+            rotation_degrees: 0.0,
         };
         // Line 1: "Hello" ends at x=100, y=200.  Line 2: "World" starts at x=10, y=188.
         // y_diff = 12 > line_h * 0.5 = 6 → different lines → space inserted.
@@ -1322,6 +1428,7 @@ mod tests {
             primary_detected: false,
             char_widths: vec![],
             heading_level: None,
+            rotation_degrees: 0.0,
         };
         // Line 1: bold "Bold" (y=200).  Line 2 (wrapped): italic "Italic" (y=188).
         let spans = vec![
@@ -1404,6 +1511,7 @@ mod tests {
             primary_detected: false,
             char_widths: vec![],
             heading_level: None,
+            rotation_degrees: 0.0,
         };
         // "数" ends at x=10+10=20; "≤" starts at x=23 → gap=3.0 > 1.5 → gap branch fires
         // CJK("数")→math_op("≤") with at least one CJK side → suppress space
@@ -1472,6 +1580,7 @@ mod tests {
             primary_detected: false,
             char_widths: vec![],
             heading_level: None,
+            rotation_degrees: 0.0,
         };
         // "Hello" ends at 50; "world" starts at 53 → gap=3.0 > 1.5 → space inserted
         // Neither side is CJK, so the CJK suppression must NOT fire.

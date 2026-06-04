@@ -76,6 +76,7 @@ impl OcrSpan {
             primary_detected: false,
             char_widths: Vec::new(),
             heading_level: None,
+            rotation_degrees: 0.0,
         }
     }
 
@@ -122,24 +123,33 @@ impl OcrOutput {
             .join(" ")
     }
 
+    /// Total-order reading-order comparison for two detection boxes: group by a
+    /// fixed 10-px Y band (top→bottom), then left→right by X, then raw Y as a
+    /// stable tiebreaker.
+    ///
+    /// The band must be quantised from each box's own Y. The earlier rule
+    /// ("compare X when |Δy| < 10, else compare Y") is **not transitive** — for
+    /// near-aligned boxes A≈B and B≈C share a band and sort by X, but A vs C can
+    /// fall outside the band and sort by Y, yielding a cycle. Rust's sort detects
+    /// that and panics ("comparison function does not correctly implement a total
+    /// order"), aborting the host process on image_text slides with a few labels
+    /// on near-identical baselines. Quantising removes the relativity, so
+    /// this is a genuine total order (integer band cmp, then the total-order
+    /// `safe_float_cmp` on X then Y).
+    fn reading_order_cmp(a: &[[f32; 2]; 4], b: &[[f32; 2]; 4]) -> std::cmp::Ordering {
+        const Y_BAND: f32 = 10.0;
+        let band = |y: f32| (y / Y_BAND).round() as i64;
+        band(a[0][1])
+            .cmp(&band(b[0][1]))
+            .then_with(|| crate::utils::safe_float_cmp(a[0][0], b[0][0]))
+            .then_with(|| crate::utils::safe_float_cmp(a[0][1], b[0][1]))
+    }
+
     /// Get text spans sorted by reading order (top-to-bottom, left-to-right).
     pub fn text_in_reading_order(&self) -> String {
         let mut spans: Vec<_> = self.spans.iter().collect();
 
-        // Sort by Y position (top to bottom), then X (left to right)
-        spans.sort_by(|a, b| {
-            let y_a = a.polygon[0][1];
-            let y_b = b.polygon[0][1];
-
-            // If Y positions are similar (within 10 pixels), sort by X
-            if (y_a - y_b).abs() < 10.0 {
-                let x_a = a.polygon[0][0];
-                let x_b = b.polygon[0][0];
-                crate::utils::safe_float_cmp(x_a, x_b)
-            } else {
-                crate::utils::safe_float_cmp(y_a, y_b)
-            }
-        });
+        spans.sort_by(|a, b| Self::reading_order_cmp(&a.polygon, &b.polygon));
 
         spans
             .iter()
@@ -161,19 +171,8 @@ impl OcrOutput {
     pub fn to_text_spans(&self, scale: f32) -> Vec<crate::layout::text_block::TextSpan> {
         let mut spans_with_pos: Vec<_> = self.spans.iter().enumerate().collect();
 
-        // Sort by reading order (top to bottom, left to right)
-        spans_with_pos.sort_by(|(_, a), (_, b)| {
-            let y_a = a.polygon[0][1];
-            let y_b = b.polygon[0][1];
-
-            if (y_a - y_b).abs() < 10.0 {
-                let x_a = a.polygon[0][0];
-                let x_b = b.polygon[0][0];
-                crate::utils::safe_float_cmp(x_a, x_b)
-            } else {
-                crate::utils::safe_float_cmp(y_a, y_b)
-            }
-        });
+        // Sort by reading order (top to bottom, left to right) — total order.
+        spans_with_pos.sort_by(|(_, a), (_, b)| Self::reading_order_cmp(&a.polygon, &b.polygon));
 
         // Convert to TextSpans with sequence numbers
         spans_with_pos
@@ -364,6 +363,53 @@ mod tests {
         };
 
         assert_eq!(result.text(), "Hello World");
+    }
+
+    // The reading-order comparator must be a TOTAL ORDER. The old
+    // "compare X when |Δy| < 10, else compare Y" rule was intransitive on
+    // near-aligned boxes and made Rust's sort panic (aborting the host
+    // process). Brute-force antisymmetry + transitivity over a set that
+    // includes the cyclic triple, and confirm a real sort does not panic.
+    #[test]
+    fn test_reading_order_cmp_is_total_order() {
+        use std::cmp::Ordering;
+        let poly = |x: f32, y: f32| [[x, y], [x + 5.0, y], [x + 5.0, y + 2.0], [x, y + 2.0]];
+        // The cyclic triple under the old rule: A≈B and B≈C by X within 10px,
+        // but A vs C compared by Y → cycle. Plus assorted near/far boxes.
+        let pts = [
+            poly(10.0, 0.0),
+            poly(5.0, 8.0),
+            poly(0.0, 16.0),
+            poly(0.0, 0.0),
+            poly(100.0, 1.0),
+            poly(50.0, 9.0),
+            poly(7.0, 23.0),
+            poly(7.0, 24.0),
+            poly(7.0, 25.0),
+        ];
+        for a in &pts {
+            for b in &pts {
+                assert_eq!(
+                    OcrOutput::reading_order_cmp(a, b),
+                    OcrOutput::reading_order_cmp(b, a).reverse(),
+                    "antisymmetry"
+                );
+            }
+        }
+        let le = |x, y| OcrOutput::reading_order_cmp(x, y) != Ordering::Greater;
+        for a in &pts {
+            for b in &pts {
+                for c in &pts {
+                    if le(a, b) && le(b, c) {
+                        assert!(le(a, c), "transitivity violated");
+                    }
+                }
+            }
+        }
+        // The original symptom: sorting must not panic.
+        let mut v = pts.to_vec();
+        v.sort_by(|a, b| OcrOutput::reading_order_cmp(a, b));
+        assert_eq!(v.len(), pts.len());
     }
 
     #[test]

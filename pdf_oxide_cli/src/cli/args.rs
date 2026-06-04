@@ -48,8 +48,12 @@ pub enum Command {
         /// Input PDF file
         file: PathBuf,
 
-        /// Output format (plain, words, lines)
-        #[arg(long, value_parser = ["plain", "words", "lines"], default_value = "plain")]
+        /// Output format (plain, words, lines, structured)
+        ///
+        /// `structured` emits `StructuredPage` JSON per page — typed regions with
+        /// `kind` (RegionRole), `column_index` and bbox — so two-column layouts
+        /// come out as separate column blocks rather than line-interleaved.
+        #[arg(long, value_parser = ["plain", "words", "lines", "structured"], default_value = "plain")]
         format: String,
 
         /// Specific area to extract from as x,y,width,height (points)

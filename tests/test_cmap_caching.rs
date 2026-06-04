@@ -91,6 +91,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     let font2 = FontInfo {
@@ -123,6 +126,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // First font: triggers cache population (parse CMap)
@@ -226,6 +232,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     let font_b = FontInfo {
@@ -258,6 +267,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Font A should map 0x0001 to 'a'
@@ -347,6 +359,9 @@ end
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         })
         .collect();
 
@@ -437,6 +452,9 @@ end
             byte_to_char_table: std::sync::OnceLock::new(),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         })
         .collect();
 
@@ -516,6 +534,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Font should work correctly (cache metrics are internal)
@@ -597,6 +618,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     });
 
     let mut handles = vec![];

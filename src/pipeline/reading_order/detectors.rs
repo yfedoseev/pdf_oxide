@@ -115,35 +115,26 @@ pub fn detect_dense_single_line(glyphs: &[DetectorGlyph]) -> bool {
     if glyphs.len() < 8 {
         return false;
     }
-    // Find the dominant Y (mode within 0.5pt tolerance).
-    let mut y_counts: Vec<(f32, usize)> = Vec::new();
+    // Bin Y onto a 0.5 pt grid in one pass rather than a nested scan (O(n²) on
+    // all-distinct-Y pages). BTreeMap keeps tie-breaking deterministic; for
+    // dense single-line text the dominant bin matches the old clustering.
+    let mut bins: std::collections::BTreeMap<i32, usize> = std::collections::BTreeMap::new();
     for g in glyphs {
-        let mut found = false;
-        for (y, count) in y_counts.iter_mut() {
-            if (*y - g.y).abs() < 0.5 {
-                *count += 1;
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            y_counts.push((g.y, 1));
-        }
+        *bins.entry((g.y * 2.0).round() as i32).or_insert(0) += 1;
     }
     let total = glyphs.len();
-    let dominant = y_counts.iter().max_by_key(|(_, c)| *c);
-    let Some((dominant_y, dominant_count)) = dominant else {
+    let Some((&dominant_key, &dominant_count)) = bins.iter().max_by_key(|(_, c)| **c) else {
         return false;
     };
-    if (*dominant_count as f32) / (total as f32) < 0.8 {
+    if (dominant_count as f32) / (total as f32) < 0.8 {
         return false;
     }
-    // Among glyphs at the dominant Y, do the X positions form two
+    // Among glyphs in the dominant Y-bin, do the X positions form two
     // disjoint bands? Compute the gap distribution; bimodal means
     // one large gap stands out from the rest.
     let mut xs: Vec<f32> = glyphs
         .iter()
-        .filter(|g| (g.y - *dominant_y).abs() < 0.5)
+        .filter(|g| (g.y * 2.0).round() as i32 == dominant_key)
         .map(|g| g.x)
         .collect();
     xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -208,12 +199,15 @@ pub fn detect_narrow_tracked(glyphs: &[DetectorGlyph]) -> bool {
     if glyphs.len() < 6 {
         return false;
     }
-    // Sort by X, compute consecutive-glyph gaps.
-    let mut sorted = glyphs.to_vec();
-    sorted.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap());
-    let mut gaps: Vec<f32> = sorted
+    // Sort an index vector by X instead of cloning the glyph slice.
+    let mut order: Vec<usize> = (0..glyphs.len()).collect();
+    order.sort_by(|&a, &b| glyphs[a].x.partial_cmp(&glyphs[b].x).unwrap());
+    let mut gaps: Vec<f32> = order
         .windows(2)
-        .map(|w| (w[1].x - (w[0].x + w[0].width)).max(0.0))
+        .map(|w| {
+            let (prev, next) = (&glyphs[w[0]], &glyphs[w[1]]);
+            (next.x - (prev.x + prev.width)).max(0.0)
+        })
         .collect();
     if gaps.is_empty() {
         return false;
@@ -223,7 +217,7 @@ pub fn detect_narrow_tracked(glyphs: &[DetectorGlyph]) -> bool {
     let median = gaps[gaps.len() / 2];
     // Expected intra-word gap for proportional font @ avg font_size:
     // typically ~0.05-0.1 × font_size. For monospace, ~0.0.
-    let avg_fs: f32 = sorted.iter().map(|g| g.font_size).sum::<f32>() / sorted.len() as f32;
+    let avg_fs: f32 = glyphs.iter().map(|g| g.font_size).sum::<f32>() / glyphs.len() as f32;
     let expected_intra = 0.08 * avg_fs;
     // Narrow-tracked when median gap exceeds 1.5× expected.
     median > 1.5 * expected_intra

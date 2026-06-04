@@ -42,7 +42,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+          rustflags: ''
 
       - name: Cache Cargo registry
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
@@ -117,8 +120,10 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
+          cache: false
+          rustflags: ''
           components: rustfmt, clippy
 
       - name: Check formatting
@@ -385,7 +390,10 @@ jobs:
           python-version: '3.11'
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+          rustflags: ''
 
       - name: Install dependencies
         run: |

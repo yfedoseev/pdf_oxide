@@ -245,12 +245,43 @@ fn passes_spatial_quality_gate(table: &Table) -> bool {
     if non_empty.is_empty() {
         return true;
     }
+    // A genuine numeric data table (financial / metrics slides) is legitimately
+    // almost all single tokens — every cell is a *number* — so the generic
+    // single-word prose gate below would wrongly reject it and flatten it into a
+    // bold label plus run-on numbers. Bypass the gate
+    // ONLY when the table is clearly numeric-DOMINATED (≥50% of non-empty cells
+    // are data values). This is deliberately strict: number-heavy prose (an
+    // academic page with inline citations/equations whose words happen to align
+    // into columns) stays below 50% numeric and is still held to the prose gate,
+    // so the bypass does not manufacture false tables.
+    let data_values = non_empty.iter().filter(|t| is_data_value(t)).count();
+    if data_values * 2 >= non_empty.len() {
+        return true;
+    }
+    // Otherwise: high single-word density is the signature of prose split into
+    // one-word columns by aligned inter-word gaps — reject.
     let single_word_count = non_empty
         .iter()
         .filter(|t| t.split_whitespace().count() <= 1)
         .count();
     let ratio = single_word_count as f32 / non_empty.len() as f32;
     ratio <= 0.7
+}
+
+/// A numeric / data value token: digits plus the usual numeric punctuation
+/// (decimal point, thousands comma, percent, sign, currency). Requires at least
+/// one digit so a bare `+` or `$` is not treated as data. Used so numeric-table
+/// cells do not read as prose fragments in the spatial quality gate.
+fn is_data_value(t: &str) -> bool {
+    !t.is_empty()
+        && t.chars().any(|c| c.is_ascii_digit())
+        && t.chars().all(|c| {
+            c.is_ascii_digit()
+                || matches!(
+                    c,
+                    '.' | ',' | '%' | '+' | '-' | '\u{2212}' | '$' | '\u{20AC}' | '\u{00A3}'
+                )
+        })
 }
 
 /// Reject a spatial (no-rulings) "table" whose rows are wrapped paragraph
@@ -575,6 +606,47 @@ pub fn detect_tables_from_spans(spans: &[TextSpan], config: &TableDetectionConfi
         }
     }
 
+    // Borderless numeric lattice (ML / results tables). When the column gap
+    // is below `column_merge_threshold`, greedy clustering fuses a dense grid
+    // of short numeric cells laid out on a regular ~20pt pitch, so two values
+    // share one cell ("0.69 0.76"). The text-edge detector keeps only X edges
+    // that recur across >=3 rows, which on a numeric lattice recovers every
+    // column. Prefer it when the spans are predominantly numeric and it splits
+    // a coarser greedy set into more (still bounded) columns. The numeric-
+    // predominance gate keeps prose / label-value tables (e.g. Google-Docs
+    // exports) on the greedy path untouched.
+    let numeric_spans = spans
+        .iter()
+        .filter(|s| is_numeric_cell(s.text.trim()))
+        .count();
+    if numeric_spans >= 10 && columns.len() <= config.max_table_columns {
+        let te_columns = detect_text_edge_columns(spans, config);
+        if te_columns.len() > columns.len()
+            && te_columns.len() >= 5
+            && te_columns.len() <= config.max_table_columns
+            && is_regular_lattice(&te_columns)
+        {
+            // Adopt the finer lattice ONLY when it still forms a fully valid
+            // grid. A sparse split that fails the quality gate would otherwise
+            // drop the whole table to prose — worse than the merged-column
+            // baseline. Probing here means the refinement can only refine a
+            // table that stays valid, never demote one.
+            let probe_rows = detect_rows(spans, config.row_tolerance);
+            if probe_rows.len() >= 2 {
+                let probe_grid = assign_spans_to_cells(spans, &te_columns, &probe_rows);
+                if validate_table_structure_internal(&probe_grid, config) {
+                    let probe_table = grid_to_table(&probe_grid, spans, None);
+                    if is_valid_table(&probe_table)
+                        && passes_spatial_quality_gate(&probe_table)
+                        && !looks_like_prose_paragraph(&probe_table)
+                    {
+                        columns = te_columns;
+                    }
+                }
+            }
+        }
+    }
+
     if columns.len() < config.min_table_columns.max(2) || columns.len() > config.max_table_columns {
         return Vec::new();
     }
@@ -863,6 +935,51 @@ fn detect_columns(
 ///
 /// The resulting columns are fewer and more faithful to the visual grid of
 /// forms that have no vector lines.
+/// A short numeric cell: optional sign, digits with an optional single decimal
+/// point, optional trailing `%`. Accepts `0.69`, `100`, `-1.2`, `52%`; rejects
+/// words and identifiers. Used to recognise a borderless data grid.
+fn is_numeric_cell(t: &str) -> bool {
+    if t.is_empty() || t.len() > 8 {
+        return false;
+    }
+    let t = t.strip_suffix('%').unwrap_or(t);
+    let t = t.strip_prefix(['+', '-', '\u{2212}']).unwrap_or(t);
+    let mut seen_dot = false;
+    let mut seen_digit = false;
+    for c in t.chars() {
+        match c {
+            '0'..='9' => seen_digit = true,
+            '.' if !seen_dot => seen_dot = true,
+            _ => return false,
+        }
+    }
+    seen_digit
+}
+
+/// True when the column centres sit on a near-constant pitch — the signature of
+/// a numeric data lattice rather than prose that happened to align. Requires
+/// ≥5 columns and tolerates up to two off-pitch gaps (e.g. a wider row-label
+/// column at the left edge).
+fn is_regular_lattice(cols: &[ColumnCluster]) -> bool {
+    if cols.len() < 5 {
+        return false;
+    }
+    let mut centers: Vec<f32> = cols.iter().map(|c| c.x_center).collect();
+    centers.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+    let gaps: Vec<f32> = centers.windows(2).map(|w| w[1] - w[0]).collect();
+    let mut sorted = gaps.clone();
+    sorted.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+    let median = sorted[sorted.len() / 2];
+    if median <= 0.0 {
+        return false;
+    }
+    let on_pitch = gaps
+        .iter()
+        .filter(|&&g| g >= median * 0.6 && g <= median * 1.6)
+        .count();
+    on_pitch + 2 >= gaps.len()
+}
+
 fn detect_text_edge_columns(
     spans: &[TextSpan],
     config: &TableDetectionConfig,
@@ -3633,6 +3750,119 @@ mod tests {
     use crate::geometry::Rect;
     use crate::layout::text_block::{Color, FontWeight};
 
+    #[test]
+    fn test_is_numeric_cell() {
+        for ok in ["0.69", "100", "-1.2", "52%", "0", "1.00", "\u{2212}3.5"] {
+            assert!(is_numeric_cell(ok), "{ok:?} should be numeric");
+        }
+        for no in [
+            "Ours",
+            "GLUE",
+            "v3",
+            "1e9",
+            "0.6.6",
+            "",
+            "12345678.9",
+            "p<0.05",
+        ] {
+            assert!(!is_numeric_cell(no), "{no:?} should NOT be numeric");
+        }
+    }
+
+    fn col_at(x: f32) -> ColumnCluster {
+        ColumnCluster {
+            x_center: x,
+            x_min: x - 3.0,
+            x_max: x + 3.0,
+            span_indices: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_is_regular_lattice() {
+        // Regular ~20pt pitch with one wider row-label gap on the left.
+        let regular: Vec<ColumnCluster> = [113.0, 150.0, 170.0, 190.0, 210.0, 230.0]
+            .iter()
+            .map(|&x| col_at(x))
+            .collect();
+        assert!(is_regular_lattice(&regular));
+
+        // Fewer than 5 columns → not a lattice.
+        let small: Vec<ColumnCluster> = [100.0, 200.0, 300.0].iter().map(|&x| col_at(x)).collect();
+        assert!(!is_regular_lattice(&small));
+
+        // Irregular gaps (prose that happened to align) → rejected.
+        let irregular: Vec<ColumnCluster> = [100.0, 140.0, 320.0, 330.0, 500.0, 505.0]
+            .iter()
+            .map(|&x| col_at(x))
+            .collect();
+        assert!(!is_regular_lattice(&irregular));
+    }
+
+    #[test]
+    fn test_is_data_value() {
+        for v in ["5,012", "+2%", "240", "-1.5", "1,000.50", "67", "\u{2212}3"] {
+            assert!(is_data_value(v), "{v:?} should be a data value");
+        }
+        for w in ["FY22", "Mercury", "Body", "", "YoY", "$", "+", "Q1"] {
+            assert!(!is_data_value(w), "{w:?} should NOT be a data value");
+        }
+    }
+
+    #[test]
+    fn test_quality_gate_admits_numeric_table_rejects_prose_split() {
+        let row = |cells: &[&str]| TableRow {
+            cells: cells.iter().map(|c| prose_cell(c)).collect(),
+            is_header: false,
+        };
+        // A dense numeric metrics table: ~all single-token numeric cells. Must
+        // PASS (the prose ratio excludes data values).
+        let mut numeric = Table::new();
+        numeric.col_count = 8;
+        for r in [
+            ["Body", "FY22", "FY23", "FY24", "FY25", "YoY", "Plan", "Var"],
+            [
+                "Mercury Transits",
+                "5,012",
+                "5,210",
+                "5,488",
+                "5,612",
+                "+2%",
+                "5,600",
+                "+12",
+            ],
+            [
+                "Venus Phases",
+                "1,840",
+                "1,902",
+                "1,975",
+                "2,041",
+                "+3%",
+                "2,030",
+                "+11",
+            ],
+        ] {
+            numeric.rows.push(row(&r));
+        }
+        assert!(
+            passes_spatial_quality_gate(&numeric),
+            "dense numeric table must pass the spatial quality gate"
+        );
+
+        // Prose accidentally split into single-word columns must still be REJECTED.
+        let mut prose = Table::new();
+        prose.col_count = 6;
+        for _ in 0..3 {
+            prose
+                .rows
+                .push(row(&["the", "quick", "brown", "fox", "jumps", "over"]));
+        }
+        assert!(
+            !passes_spatial_quality_gate(&prose),
+            "word-dominated single-word split must still be rejected"
+        );
+    }
+
     fn prose_cell(text: &str) -> TableCell {
         TableCell {
             text: text.to_string(),
@@ -3734,6 +3964,7 @@ mod tests {
             primary_detected: false,
             char_widths: vec![],
             heading_level: None,
+            rotation_degrees: 0.0,
         }
     }
     fn make_h_line(x: f32, y: f32, width: f32) -> crate::elements::PathContent {
@@ -6079,6 +6310,7 @@ mod tests {
             primary_detected: false,
             char_widths: vec![],
             heading_level: None,
+            rotation_degrees: 0.0,
         }
     }
 

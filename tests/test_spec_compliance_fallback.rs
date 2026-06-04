@@ -70,6 +70,9 @@ fn test_type0_identity_encoding_no_tounicode_returns_replacement() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     let result = font.char_to_unicode(0x0041); // Try to map 'A'
@@ -117,6 +120,9 @@ fn test_type0_zero_byte_embedded_font_returns_replacement() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     let result = font.char_to_unicode(0x0020); // Try to map space character

@@ -69,6 +69,21 @@ pub struct TextSpan {
     /// outline panes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heading_level: Option<u8>,
+    /// Display rotation of the run in degrees, from `atan2(b, a)` of the composed
+    /// text rendering matrix (`T_m × CTM`, ISO 32000-1 §9.4.4), normalised so a
+    /// near-quadrant angle snaps to `0` / `90` / `180` / `-90`. `0.0` for ordinary
+    /// horizontal text. Reading order segregates non-zero-rotation runs out of the
+    /// horizontal flow so they are ordered as their own blocks rather than
+    /// interleaved (the axis-aligned assumptions in the row-band / XY-cut sort do
+    /// not hold for rotated text).
+    #[serde(skip_serializing_if = "is_zero_f32", default)]
+    pub rotation_degrees: f32,
+}
+
+/// serde skip helper: omit a `0.0` rotation (the overwhelming common case) from
+/// serialized output so existing fixtures stay unchanged.
+pub(crate) fn is_zero_f32(v: &f32) -> bool {
+    *v == 0.0
 }
 
 impl Default for TextSpan {
@@ -93,6 +108,7 @@ impl Default for TextSpan {
             artifact_type: None,
             char_widths: Vec::new(),
             heading_level: None,
+            rotation_degrees: 0.0,
         }
     }
 }

@@ -105,6 +105,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Verify: Predefined CMap mappings work
@@ -193,6 +196,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Verify: CNS1 mappings work
@@ -282,6 +288,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Verify: Hiragana characters
@@ -371,6 +380,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Verify: Hangul syllables
@@ -461,6 +473,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     let font2 = FontInfo {
@@ -497,6 +512,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Both fonts should access the same CMap
@@ -585,6 +603,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Verify: Vertical writing support
@@ -667,6 +688,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Verify: Supplement 2 extended characters
@@ -757,6 +781,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Verify: Text extraction works even without custom ToUnicode

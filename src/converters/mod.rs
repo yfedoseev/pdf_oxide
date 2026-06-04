@@ -333,6 +333,15 @@ pub struct ConversionOptions {
     ///
     /// Default: `false`.
     pub expand_ligatures: bool,
+
+    /// Emit a visible marker in the markdown/HTML for a page that produced no
+    /// extractable text but is a scanned / image page (rasterised content with
+    /// no usable text layer). Without it, ~half the pages of a scanned corpus
+    /// render as silently-blank, with no indication that content was lost and
+    /// OCR is required. The marker is a block-quote naming the page.
+    ///
+    /// Default: `true`. Set `false` to keep scanned pages blank.
+    pub annotate_skipped_pages: bool,
 }
 
 impl Default for ConversionOptions {
@@ -373,6 +382,7 @@ impl Default for ConversionOptions {
             exclude_regions_mode: crate::layout::RectFilterMode::Intersects,
             include_region: None,
             expand_ligatures: false,
+            annotate_skipped_pages: true,
         }
     }
 }

@@ -11,7 +11,7 @@ require 'tmpdir'
 RSpec.describe 'libpdf_oxide cdylib smoke' do
   it 'loads the gem with the expected version' do
     expect(defined?(PdfOxide)).to eq('constant')
-    expect(PdfOxide::VERSION).to eq('0.3.59')
+    expect(PdfOxide::VERSION).to eq('0.3.60')
   end
 
   it 'exposes every public-API class' do

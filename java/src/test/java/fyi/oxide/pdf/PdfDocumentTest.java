@@ -98,15 +98,15 @@ class PdfDocumentTest {
 
     @Test
     @org.junit.jupiter.api.Tag("legacy-crypto")
-    void encryptedPdfThrowsPdfEncryptedException() {
+    void encryptedPdfExtractsEmptyTextGracefully() {
         Path enc = fixturesDir.resolve("encrypted_needs_password.pdf");
         org.junit.jupiter.api.Assumptions.assumeTrue(Files.exists(enc), "encrypted fixture not present");
         try (PdfDocument doc = PdfDocument.open(enc)) {
-            // open succeeded (it just parsed metadata); content
-            // extraction requires the password.
-            assertThatThrownBy(() -> doc.extractText(0))
-                    .isInstanceOf(PdfEncryptedException.class)
-                    .hasMessageContaining("password");
+            // open succeeded (it just parsed metadata). As of v0.3.60, content
+            // extraction on a PDF that cannot be decrypted with the empty
+            // password degrades gracefully to empty text (matching
+            // pdftotext / PyMuPDF) rather than throwing.
+            assertThat(doc.extractText(0)).isEmpty();
         }
     }
 

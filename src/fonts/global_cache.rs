@@ -29,114 +29,90 @@
 //! ```
 
 use super::FontInfo;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, OnceLock, RwLock};
 
 /// Default maximum number of entries in the global font cache.
 /// 1024 fonts covers typical batch processing workloads (most documents use
 /// 5-15 fonts, so this handles ~70-200 unique documents before eviction).
 const DEFAULT_MAX_ENTRIES: usize = 1024;
 
-/// A simple LRU cache for font entries.
+/// A bounded font cache with FIFO eviction.
 ///
-/// Uses a generation counter to track access recency. When the cache exceeds
-/// `max_entries`, the least-recently-used entry is evicted.
-struct LruFontCache {
-    /// Map from font identity hash to (font, access generation).
-    entries: HashMap<u64, (Arc<FontInfo>, u64)>,
-    /// Monotonically increasing generation counter, incremented on every access.
-    generation: u64,
-    /// Maximum number of entries before LRU eviction kicks in.
+/// Lookups are read-only (`&self`) so the cache can live behind an `RwLock`
+/// and serve concurrent readers without contention — font loading is read-heavy
+/// (one insert per unique font, many hits). Eviction is first-in-first-out
+/// rather than LRU; the cache is correctness-neutral (a miss just re-parses the
+/// same font to the same result), so the policy only affects memory/perf.
+struct FifoFontCache {
+    entries: HashMap<u64, Arc<FontInfo>>,
+    /// Keys in insertion order, for FIFO eviction.
+    order: VecDeque<u64>,
     max_entries: usize,
 }
 
-impl LruFontCache {
+impl FifoFontCache {
     fn new(max_entries: usize) -> Self {
         Self {
             entries: HashMap::with_capacity(max_entries / 2),
-            generation: 0,
+            order: VecDeque::new(),
             max_entries,
         }
     }
 
-    /// Look up a font by identity hash. Returns `Some(Arc<FontInfo>)` on hit
-    /// and updates the entry's access generation (marking it as recently used).
-    fn get(&mut self, key: u64) -> Option<Arc<FontInfo>> {
-        if let Some((font, gen)) = self.entries.get_mut(&key) {
-            self.generation += 1;
-            *gen = self.generation;
-            Some(Arc::clone(font))
-        } else {
-            None
-        }
+    fn get(&self, key: u64) -> Option<Arc<FontInfo>> {
+        self.entries.get(&key).map(Arc::clone)
     }
 
-    /// Insert a font into the cache. If the cache is full, the least-recently-used
-    /// entry is evicted first.
     fn insert(&mut self, key: u64, font: Arc<FontInfo>) {
-        // If key already exists, just update it
-        if self.entries.contains_key(&key) {
-            self.generation += 1;
-            self.entries.insert(key, (font, self.generation));
+        // A present key is replaced in place, keeping its FIFO position; a new
+        // key gets an `order` entry and may evict the oldest if over capacity.
+        if self.entries.insert(key, font).is_some() {
             return;
         }
-
-        // Evict LRU entry if at capacity
-        if self.entries.len() >= self.max_entries {
-            self.evict_lru();
-        }
-
-        self.generation += 1;
-        self.entries.insert(key, (font, self.generation));
-    }
-
-    /// Evict the least-recently-used entry (lowest generation number).
-    fn evict_lru(&mut self) {
-        if self.entries.is_empty() {
-            return;
-        }
-        let lru_key = self
-            .entries
-            .iter()
-            .min_by_key(|(_, (_, gen))| *gen)
-            .map(|(k, _)| *k);
-        if let Some(key) = lru_key {
-            self.entries.remove(&key);
+        self.order.push_back(key);
+        while self.entries.len() > self.max_entries {
+            match self.order.pop_front() {
+                Some(old) => {
+                    self.entries.remove(&old);
+                },
+                None => break,
+            }
         }
     }
 
-    /// Return the current number of cached entries.
     fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Return the maximum capacity.
     fn capacity(&self) -> usize {
         self.max_entries
     }
 
-    /// Remove all entries.
     fn clear(&mut self) {
         self.entries.clear();
-        self.generation = 0;
+        self.order.clear();
     }
 
-    /// Update the maximum capacity. If the new capacity is smaller, evict
-    /// entries until the cache fits.
     fn set_capacity(&mut self, new_max: usize) {
         self.max_entries = new_max;
         while self.entries.len() > self.max_entries {
-            self.evict_lru();
+            match self.order.pop_front() {
+                Some(old) => {
+                    self.entries.remove(&old);
+                },
+                None => break,
+            }
         }
     }
 }
 
 /// Global singleton font cache, initialized on first access.
-static GLOBAL_FONT_CACHE: OnceLock<Mutex<LruFontCache>> = OnceLock::new();
+static GLOBAL_FONT_CACHE: OnceLock<RwLock<FifoFontCache>> = OnceLock::new();
 
 /// Get or initialize the global font cache.
-fn cache() -> &'static Mutex<LruFontCache> {
-    GLOBAL_FONT_CACHE.get_or_init(|| Mutex::new(LruFontCache::new(DEFAULT_MAX_ENTRIES)))
+fn cache() -> &'static RwLock<FifoFontCache> {
+    GLOBAL_FONT_CACHE.get_or_init(|| RwLock::new(FifoFontCache::new(DEFAULT_MAX_ENTRIES)))
 }
 
 /// Look up a font in the global cross-document cache.
@@ -147,9 +123,9 @@ fn cache() -> &'static Mutex<LruFontCache> {
 /// This is called from `PdfDocument::load_fonts()` before attempting to parse
 /// a font from its dictionary.
 pub fn global_font_cache_get(identity_hash: u64) -> Option<Arc<FontInfo>> {
-    // If the lock is poisoned (another thread panicked), skip the cache
+    // Concurrent read lock; on poison (another thread panicked) skip the cache
     // rather than propagating the panic — font loading should still work.
-    cache().lock().ok()?.get(identity_hash)
+    cache().read().ok()?.get(identity_hash)
 }
 
 /// Insert a parsed font into the global cross-document cache.
@@ -158,7 +134,7 @@ pub fn global_font_cache_get(identity_hash: u64) -> Option<Arc<FontInfo>> {
 /// The font is keyed by its identity hash so that structurally identical fonts
 /// in other documents will get a cache hit.
 pub fn global_font_cache_insert(identity_hash: u64, font: Arc<FontInfo>) {
-    if let Ok(mut guard) = cache().lock() {
+    if let Ok(mut guard) = cache().write() {
         guard.insert(identity_hash, font);
     }
 }
@@ -178,7 +154,7 @@ pub fn global_font_cache_insert(identity_hash: u64, font: Arc<FontInfo>) {
 /// clear_global_font_cache();
 /// ```
 pub fn clear_global_font_cache() {
-    if let Ok(mut guard) = cache().lock() {
+    if let Ok(mut guard) = cache().write() {
         guard.clear();
     }
 }
@@ -197,7 +173,7 @@ pub fn clear_global_font_cache() {
 /// ```
 pub fn global_font_cache_stats() -> (usize, usize) {
     cache()
-        .lock()
+        .read()
         .map(|guard| (guard.len(), guard.capacity()))
         .unwrap_or((0, 0))
 }
@@ -217,7 +193,7 @@ pub fn global_font_cache_stats() -> (usize, usize) {
 /// set_global_font_cache_capacity(4096);
 /// ```
 pub fn set_global_font_cache_capacity(max_entries: usize) {
-    if let Ok(mut guard) = cache().lock() {
+    if let Ok(mut guard) = cache().write() {
         guard.set_capacity(max_entries);
     }
 }
@@ -258,16 +234,19 @@ mod tests {
             cff_gid_map: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
+            type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
         }
     }
 
-    // ---- Unit tests for LruFontCache (no global state, safe for parallel execution) ----
+    // ---- Unit tests for FifoFontCache (no global state, safe for parallel execution) ----
 
     #[test]
-    fn test_lru_cache_insert_and_get() {
-        let mut cache = LruFontCache::new(16);
+    fn test_fifo_cache_insert_and_get() {
+        let mut cache = FifoFontCache::new(16);
         let font = Arc::new(make_test_font("Helvetica"));
 
         assert!(cache.get(100).is_none());
@@ -279,28 +258,28 @@ mod tests {
     }
 
     #[test]
-    fn test_lru_cache_eviction() {
-        let mut cache = LruFontCache::new(3);
+    fn test_fifo_cache_eviction() {
+        let mut cache = FifoFontCache::new(3);
 
         cache.insert(10, Arc::new(make_test_font("F1")));
         cache.insert(20, Arc::new(make_test_font("F2")));
         cache.insert(30, Arc::new(make_test_font("F3")));
 
-        // Access F1 to make it recently used (F2 becomes LRU)
+        // Reads do not affect eviction order (FIFO, not LRU).
         cache.get(10);
 
-        // Insert F4 — should evict F2 (least recently used)
+        // Insert F4 — evicts F1 (first in).
         cache.insert(40, Arc::new(make_test_font("F4")));
 
-        assert!(cache.get(10).is_some(), "F1 should still be cached");
-        assert!(cache.get(20).is_none(), "F2 should have been evicted");
+        assert!(cache.get(10).is_none(), "F1 (oldest) should have been evicted");
+        assert!(cache.get(20).is_some(), "F2 should still be cached");
         assert!(cache.get(30).is_some(), "F3 should still be cached");
         assert!(cache.get(40).is_some(), "F4 should be cached");
     }
 
     #[test]
-    fn test_lru_cache_clear() {
-        let mut cache = LruFontCache::new(16);
+    fn test_fifo_cache_clear() {
+        let mut cache = FifoFontCache::new(16);
         cache.insert(1, Arc::new(make_test_font("A")));
         cache.insert(2, Arc::new(make_test_font("B")));
         assert_eq!(cache.len(), 2);
@@ -311,23 +290,25 @@ mod tests {
     }
 
     #[test]
-    fn test_lru_cache_set_capacity() {
-        let mut cache = LruFontCache::new(16);
+    fn test_fifo_cache_set_capacity() {
+        let mut cache = FifoFontCache::new(16);
 
         for i in 0..5 {
             cache.insert(i, Arc::new(make_test_font(&format!("Font{}", i))));
         }
         assert_eq!(cache.len(), 5);
 
-        // Shrink to 2 — should evict 3 LRU entries
+        // Shrink to 2 — evicts the 3 oldest entries (0,1,2); 3,4 survive.
         cache.set_capacity(2);
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.capacity(), 2);
+        assert!(cache.get(3).is_some());
+        assert!(cache.get(4).is_some());
     }
 
     #[test]
-    fn test_lru_cache_duplicate_key_update() {
-        let mut cache = LruFontCache::new(16);
+    fn test_fifo_cache_duplicate_key_update() {
+        let mut cache = FifoFontCache::new(16);
 
         cache.insert(50, Arc::new(make_test_font("OldFont")));
         assert_eq!(cache.get(50).unwrap().base_font, "OldFont");
@@ -338,22 +319,18 @@ mod tests {
     }
 
     #[test]
-    fn test_lru_cache_generation_ordering() {
-        // Verify that get() updates generation, affecting eviction order
-        let mut cache = LruFontCache::new(3);
+    fn test_fifo_cache_eviction_order_is_insertion_order() {
+        let mut cache = FifoFontCache::new(3);
+        cache.insert(1, Arc::new(make_test_font("A")));
+        cache.insert(2, Arc::new(make_test_font("B")));
+        cache.insert(3, Arc::new(make_test_font("C")));
 
-        cache.insert(1, Arc::new(make_test_font("A"))); // gen 1
-        cache.insert(2, Arc::new(make_test_font("B"))); // gen 2
-        cache.insert(3, Arc::new(make_test_font("C"))); // gen 3
-
-        // Touch keys 1 and 3 (making 2 the LRU)
-        cache.get(1); // gen 4
-        cache.get(3); // gen 5
-
-        // Insert 4th — should evict key 2 (gen 2 is lowest)
+        // Reads don't change order; inserting evicts the first-inserted key.
+        cache.get(1);
+        cache.get(3);
         cache.insert(4, Arc::new(make_test_font("D")));
-        assert!(cache.get(2).is_none(), "Key 2 should be evicted");
-        assert!(cache.get(1).is_some());
+        assert!(cache.get(1).is_none(), "Key 1 (first in) should be evicted");
+        assert!(cache.get(2).is_some());
         assert!(cache.get(3).is_some());
         assert!(cache.get(4).is_some());
     }

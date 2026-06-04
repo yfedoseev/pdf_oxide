@@ -128,6 +128,12 @@ pub struct XYCutStrategy {
     pub prefer_horizontal: bool,
 }
 
+/// Cap on `partition_indexed` recursion depth. Real layouts nest only a few
+/// splits deep; this bound only fires on the singleton-peel pathology (many
+/// distinct-Y header/footer strips) where unbounded depth is O(n² log n). Set
+/// high enough that no real document reaches it.
+const MAX_PARTITION_DEPTH: u32 = 64;
+
 impl Default for XYCutStrategy {
     fn default() -> Self {
         Self {
@@ -489,12 +495,30 @@ impl XYCutStrategy {
     /// Avoids cloning TextSpan at every recursive split level. Spans are only
     /// read through shared reference; indices are partitioned instead.
     fn partition_indexed(&self, all_spans: &[TextSpan], indices: &[usize]) -> Vec<Vec<usize>> {
+        self.partition_indexed_depth(all_spans, indices, 0)
+    }
+
+    /// Depth-bounded recursive partition. `find_vertical_split_indexed` permits
+    /// singleton peels, so without a cap a page with many distinct-Y
+    /// header/footer strips can recurse O(n) deep (O(n² log n) work);
+    /// `MAX_PARTITION_DEPTH` bounds it.
+    fn partition_indexed_depth(
+        &self,
+        all_spans: &[TextSpan],
+        indices: &[usize],
+        depth: u32,
+    ) -> Vec<Vec<usize>> {
         if indices.is_empty() {
             return Vec::new();
         }
 
         // Base case: small region, don't split further
         if indices.len() < self.min_spans_for_split {
+            return vec![self.sort_indices(all_spans, indices)];
+        }
+
+        // Depth cap: bail to a flat sort rather than recurse unbounded.
+        if depth >= MAX_PARTITION_DEPTH {
             return vec![self.sort_indices(all_spans, indices)];
         }
 
@@ -529,15 +553,19 @@ impl XYCutStrategy {
         // column cut, so they don't get fragmented across columns.
         // Each peeled band is re-classified inside the recursive
         // call.
-        if let Some(gutter_x) = self.detect_two_column_prose(all_spans, indices) {
+        //
+        // Classify once and pass to both prose detectors below; each gated on
+        // `classify_region_kind == Prose` and re-ran the same line clustering.
+        let region_kind = self.classify_region_kind(all_spans, indices);
+        if let Some(gutter_x) = self.detect_two_column_prose(all_spans, indices, region_kind) {
             if let Some((above, below)) = self.find_vertical_split_indexed(all_spans, indices) {
                 log::debug!(
                     "XY-cut: peeling Y-band before column cut, above={} below={}",
                     above.len(),
                     below.len()
                 );
-                let mut result = self.partition_indexed(all_spans, &above);
-                result.extend(self.partition_indexed(all_spans, &below));
+                let mut result = self.partition_indexed_depth(all_spans, &above, depth + 1);
+                result.extend(self.partition_indexed_depth(all_spans, &below, depth + 1));
                 return result;
             }
             let (left, right): (Vec<usize>, Vec<usize>) = indices
@@ -551,8 +579,8 @@ impl XYCutStrategy {
                     left.len(),
                     right.len()
                 );
-                let mut result = self.partition_indexed(all_spans, &left);
-                result.extend(self.partition_indexed(all_spans, &right));
+                let mut result = self.partition_indexed_depth(all_spans, &left, depth + 1);
+                result.extend(self.partition_indexed_depth(all_spans, &right, depth + 1));
                 return result;
             }
         }
@@ -567,7 +595,7 @@ impl XYCutStrategy {
         // the body across the peel — both halves then lose
         // enough gutter signal that the column cut never reaches
         // them on recursion.
-        if let Some(gutter_x) = self.detect_narrow_gutter_prose(all_spans, indices) {
+        if let Some(gutter_x) = self.detect_narrow_gutter_prose(all_spans, indices, region_kind) {
             let (left, right): (Vec<usize>, Vec<usize>) = indices
                 .iter()
                 .copied()
@@ -579,8 +607,8 @@ impl XYCutStrategy {
                     left.len(),
                     right.len()
                 );
-                let mut result = self.partition_indexed(all_spans, &left);
-                result.extend(self.partition_indexed(all_spans, &right));
+                let mut result = self.partition_indexed_depth(all_spans, &left, depth + 1);
+                result.extend(self.partition_indexed_depth(all_spans, &right, depth + 1));
                 return result;
             }
         }
@@ -612,14 +640,14 @@ impl XYCutStrategy {
         };
 
         if let Some((a, b)) = first_split(self, all_spans, indices) {
-            let mut result = self.partition_indexed(all_spans, &a);
-            result.extend(self.partition_indexed(all_spans, &b));
+            let mut result = self.partition_indexed_depth(all_spans, &a, depth + 1);
+            result.extend(self.partition_indexed_depth(all_spans, &b, depth + 1));
             return result;
         }
 
         if let Some((a, b)) = second_split(self, all_spans, indices) {
-            let mut result = self.partition_indexed(all_spans, &a);
-            result.extend(self.partition_indexed(all_spans, &b));
+            let mut result = self.partition_indexed_depth(all_spans, &a, depth + 1);
+            result.extend(self.partition_indexed_depth(all_spans, &b, depth + 1));
             return result;
         }
 
@@ -941,7 +969,12 @@ impl XYCutStrategy {
     /// Returns `Some(gutter_x)` when a 2-column prose layout is
     /// detected — the caller treats that as a non-single-column verdict
     /// and lets `find_horizontal_split_indexed` cut at the gutter.
-    fn detect_two_column_prose(&self, all_spans: &[TextSpan], indices: &[usize]) -> Option<f32> {
+    fn detect_two_column_prose(
+        &self,
+        all_spans: &[TextSpan],
+        indices: &[usize],
+        region_kind: RegionKind,
+    ) -> Option<f32> {
         // Cheap shape check first.
         if indices.len() < 8 {
             return None;
@@ -1087,7 +1120,7 @@ impl XYCutStrategy {
         // Positive identification of prose — required by the
         // classifier to avoid the google_doc 2-col table
         // sub-region false positive.
-        if self.classify_region_kind(all_spans, indices) != RegionKind::Prose {
+        if region_kind != RegionKind::Prose {
             return None;
         }
 
@@ -1129,7 +1162,12 @@ impl XYCutStrategy {
     /// The Prose-classifier gate keeps tables out: table rows have
     /// their largest gap at variable X across rows (different cell
     /// widths), so the gap-position cluster never dominates.
-    fn detect_narrow_gutter_prose(&self, all_spans: &[TextSpan], indices: &[usize]) -> Option<f32> {
+    fn detect_narrow_gutter_prose(
+        &self,
+        all_spans: &[TextSpan],
+        indices: &[usize],
+        region_kind: RegionKind,
+    ) -> Option<f32> {
         if indices.len() < 24 {
             return None;
         }
@@ -1253,7 +1291,8 @@ impl XYCutStrategy {
         // their `mean_chars <= 20`, `classify_region_kind`'s short-line
         // central-corridor admission arm returns `Prose` for them, so a
         // routed short-verse body is cut here rather than re-collapsed.
-        if self.classify_region_kind(all_spans, indices) != RegionKind::Prose {
+        //
+        if region_kind != RegionKind::Prose {
             return None;
         }
 
@@ -1550,53 +1589,62 @@ impl XYCutStrategy {
         // average out individual narrow peaks before finding mass centres.
         let smooth_window = (self.min_valley_width as usize).max(3);
         let half = smooth_window / 2;
-        let smoothed: Vec<f32> = (0..n)
-            .map(|i| {
+
+        // Smooth into a reused thread-local buffer instead of a fresh `Vec` per
+        // failed-valley node. Window-mean is unchanged.
+        thread_local! {
+            static SMOOTH_SCRATCH: std::cell::RefCell<Vec<f32>> =
+                const { std::cell::RefCell::new(Vec::new()) };
+        }
+        SMOOTH_SCRATCH.with(|cell| {
+            let mut smoothed = cell.borrow_mut();
+            smoothed.clear();
+            smoothed.extend((0..n).map(|i| {
                 let s = i.saturating_sub(half);
                 let e = (i + half + 1).min(n);
                 let sum: f32 = density[s..e].iter().sum();
                 sum / (e - s) as f32
-            })
-            .collect();
+            }));
 
-        // Find the strongest peak in each half. Use `safe_float_cmp` for
-        // NaN-safe total ordering — matches the comparator used elsewhere
-        // in the reading-order code so `density` sentinel values can't
-        // reach a `partial_cmp` that maps them to `Equal`.
-        let mid = n / 2;
-        let left_peak =
-            (0..mid).max_by(|&a, &b| crate::utils::safe_float_cmp(smoothed[a], smoothed[b]))?;
-        let right_peak =
-            (mid..n).max_by(|&a, &b| crate::utils::safe_float_cmp(smoothed[a], smoothed[b]))?;
+            // Find the strongest peak in each half. Use `safe_float_cmp` for
+            // NaN-safe total ordering — matches the comparator used elsewhere
+            // in the reading-order code so `density` sentinel values can't
+            // reach a `partial_cmp` that maps them to `Equal`.
+            let mid = n / 2;
+            let left_peak =
+                (0..mid).max_by(|&a, &b| crate::utils::safe_float_cmp(smoothed[a], smoothed[b]))?;
+            let right_peak =
+                (mid..n).max_by(|&a, &b| crate::utils::safe_float_cmp(smoothed[a], smoothed[b]))?;
 
-        if smoothed[left_peak] == 0.0 || smoothed[right_peak] == 0.0 {
-            return None;
-        }
+            if smoothed[left_peak] == 0.0 || smoothed[right_peak] == 0.0 {
+                return None;
+            }
 
-        // Find the minimum density in the interior between the two peaks.
-        let search_start = left_peak.min(right_peak) + 1;
-        let search_end = left_peak.max(right_peak);
-        if search_start >= search_end {
-            return None;
-        }
+            // Find the minimum density in the interior between the two peaks.
+            let search_start = left_peak.min(right_peak) + 1;
+            let search_end = left_peak.max(right_peak);
+            if search_start >= search_end {
+                return None;
+            }
 
-        let trough_pos = (search_start..search_end)
-            .min_by(|&a, &b| crate::utils::safe_float_cmp(smoothed[a], smoothed[b]))?;
+            let trough_pos = (search_start..search_end)
+                .min_by(|&a, &b| crate::utils::safe_float_cmp(smoothed[a], smoothed[b]))?;
 
-        // Only use if trough is a genuine valley: ≤ 50% of the weaker peak.
-        let weaker_peak = smoothed[left_peak].min(smoothed[right_peak]);
-        if smoothed[trough_pos] > weaker_peak * 0.5 {
-            return None;
-        }
+            // Only use if trough is a genuine valley: ≤ 50% of the weaker peak.
+            let weaker_peak = smoothed[left_peak].min(smoothed[right_peak]);
+            if smoothed[trough_pos] > weaker_peak * 0.5 {
+                return None;
+            }
 
-        // Trough must be at least min_valley_width from both edges.
-        if trough_pos < self.min_valley_width as usize
-            || trough_pos + self.min_valley_width as usize > n
-        {
-            return None;
-        }
+            // Trough must be at least min_valley_width from both edges.
+            if trough_pos < self.min_valley_width as usize
+                || trough_pos + self.min_valley_width as usize > n
+            {
+                return None;
+            }
 
-        Some(profile.x_min + trough_pos as f32)
+            Some(profile.x_min + trough_pos as f32)
+        })
     }
 
     /// Find horizontal line (Y-axis) split using index-based partitioning.
@@ -2040,6 +2088,7 @@ mod tests {
             primary_detected: false,
             char_widths: vec![],
             heading_level: None,
+            rotation_degrees: 0.0,
         }
     }
 
@@ -2959,7 +3008,11 @@ mod tests {
         );
         assert!(
             strategy
-                .detect_narrow_gutter_prose(&spans, &indices)
+                .detect_narrow_gutter_prose(
+                    &spans,
+                    &indices,
+                    strategy.classify_region_kind(&spans, &indices),
+                )
                 .is_some(),
             "detect_narrow_gutter_prose must accept the routed short-verse \
              body (gutter found) so it is cut at the gutter"
@@ -3010,7 +3063,11 @@ mod tests {
         );
         assert!(
             strategy
-                .detect_narrow_gutter_prose(&spans, &indices)
+                .detect_narrow_gutter_prose(
+                    &spans,
+                    &indices,
+                    strategy.classify_region_kind(&spans, &indices),
+                )
                 .is_none(),
             "detect_narrow_gutter_prose must reject the short-cell table \
              (no central-corridor Prose admission) so it is NOT cut"
@@ -3034,5 +3091,23 @@ mod tests {
         let groups = strategy.partition_region(&spans);
         let total: usize = groups.iter().map(|g| g.len()).sum();
         assert_eq!(total, spans.len(), "all spans must be preserved");
+    }
+
+    /// Many distinct-Y single spans is the singleton-peel pathology. With the
+    /// depth cap, `partition_region` must still terminate and preserve every
+    /// span (the cap falls back to a flat sort, which keeps all indices).
+    #[test]
+    fn test_partition_indexed_depth_guard_preserves_all_spans() {
+        let mut strategy = XYCutStrategy::new();
+        strategy.min_spans_for_split = 2; // force maximum splitting
+
+        // 300 spans, each on its own Y band — deeper than MAX_PARTITION_DEPTH.
+        let spans: Vec<TextSpan> = (0..300)
+            .map(|i| make_span(10.0, (i as f32) * 11.0, 30.0, 10.0))
+            .collect();
+
+        let groups = strategy.partition_region(&spans);
+        let total: usize = groups.iter().map(|g| g.len()).sum();
+        assert_eq!(total, spans.len(), "depth guard must not drop spans");
     }
 }

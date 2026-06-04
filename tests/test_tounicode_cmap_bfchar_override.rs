@@ -73,10 +73,10 @@ end\n";
     let cmap = parse_tounicode_cmap(cmap_data).expect("parse CMap");
 
     // Codes 0x42..0x45 have no bfchar override — bfrange value prevails.
-    assert_eq!(cmap.get(&0x42).map(|s| s.as_str()), Some("B"));
-    assert_eq!(cmap.get(&0x43).map(|s| s.as_str()), Some("C"));
-    assert_eq!(cmap.get(&0x44).map(|s| s.as_str()), Some("D"));
-    assert_eq!(cmap.get(&0x45).map(|s| s.as_str()), Some("E"));
+    assert_eq!(cmap.get(&0x42).as_deref(), Some("B"));
+    assert_eq!(cmap.get(&0x43).as_deref(), Some("C"));
+    assert_eq!(cmap.get(&0x44).as_deref(), Some("D"));
+    assert_eq!(cmap.get(&0x45).as_deref(), Some("E"));
 }
 
 /// bfchar entries that do not overlap with any bfrange are still mapped.
@@ -103,11 +103,7 @@ end\n";
     let cmap = parse_tounicode_cmap(cmap_data).expect("parse CMap");
 
     // Code 0x61 ('a' area) has only a bfchar entry → must resolve to 'x' (U+0078).
-    assert_eq!(
-        cmap.get(&0x61).map(|s| s.as_str()),
-        Some("x"),
-        "bfchar-only code 0x61 should map to 'x'"
-    );
+    assert_eq!(cmap.get(&0x61).as_deref(), Some("x"), "bfchar-only code 0x61 should map to 'x'");
 }
 
 /// When bfchar appears *before* bfrange in the stream and both map the same

@@ -26,9 +26,9 @@ fn test_bfrange_array_form_basic() {
     let data = b"beginbfrange\n<0041> <0043> [<FF21> <FF22> <FF23>]\nendbfrange";
     let cmap = parse_tounicode_cmap(data).unwrap();
 
-    assert_eq!(cmap.get(&0x0041), Some(&"\u{FF21}".to_string()), "0x41 → Fullwidth A (U+FF21)");
-    assert_eq!(cmap.get(&0x0042), Some(&"\u{FF22}".to_string()), "0x42 → Fullwidth B (U+FF22)");
-    assert_eq!(cmap.get(&0x0043), Some(&"\u{FF23}".to_string()), "0x43 → Fullwidth C (U+FF23)");
+    assert_eq!(cmap.get(&0x0041).as_deref(), Some("\u{FF21}"), "0x41 → Fullwidth A (U+FF21)");
+    assert_eq!(cmap.get(&0x0042).as_deref(), Some("\u{FF22}"), "0x42 → Fullwidth B (U+FF22)");
+    assert_eq!(cmap.get(&0x0043).as_deref(), Some("\u{FF23}"), "0x43 → Fullwidth C (U+FF23)");
 }
 
 #[test]
@@ -38,9 +38,9 @@ fn test_bfrange_array_form_ligatures() {
     let data = b"beginbfrange\n<005F> <0061> [<00660066> <00660069> <00660066006C>]\nendbfrange";
     let cmap = parse_tounicode_cmap(data).unwrap();
 
-    assert_eq!(cmap.get(&0x5F), Some(&"ff".to_string()), "code 0x5F → \"ff\"");
-    assert_eq!(cmap.get(&0x60), Some(&"fi".to_string()), "code 0x60 → \"fi\"");
-    assert_eq!(cmap.get(&0x61), Some(&"ffl".to_string()), "code 0x61 → \"ffl\"");
+    assert_eq!(cmap.get(&0x5F).as_deref(), Some("ff"), "code 0x5F → \"ff\"");
+    assert_eq!(cmap.get(&0x60).as_deref(), Some("fi"), "code 0x60 → \"fi\"");
+    assert_eq!(cmap.get(&0x61).as_deref(), Some("ffl"), "code 0x61 → \"ffl\"");
 }
 
 #[test]
@@ -50,9 +50,9 @@ fn test_bfrange_array_form_cjk() {
     let data = b"beginbfrange\n<4E00> <4E02> [<4E00> <4E01> <4E02>]\nendbfrange";
     let cmap = parse_tounicode_cmap(data).unwrap();
 
-    assert_eq!(cmap.get(&0x4E00), Some(&"\u{4E00}".to_string()), "一 identity");
-    assert_eq!(cmap.get(&0x4E01), Some(&"\u{4E01}".to_string()), "丁 identity");
-    assert_eq!(cmap.get(&0x4E02), Some(&"\u{4E02}".to_string()), "丂 identity");
+    assert_eq!(cmap.get(&0x4E00).as_deref(), Some("\u{4E00}"), "一 identity");
+    assert_eq!(cmap.get(&0x4E01).as_deref(), Some("\u{4E01}"), "丁 identity");
+    assert_eq!(cmap.get(&0x4E02).as_deref(), Some("\u{4E02}"), "丂 identity");
 }
 
 // ============================================================================
@@ -66,11 +66,11 @@ fn test_bfrange_linear_form_still_works() {
     let data = b"beginbfrange\n<0041> <0045> <0061>\nendbfrange";
     let cmap = parse_tounicode_cmap(data).unwrap();
 
-    assert_eq!(cmap.get(&0x41), Some(&"a".to_string()));
-    assert_eq!(cmap.get(&0x42), Some(&"b".to_string()));
-    assert_eq!(cmap.get(&0x43), Some(&"c".to_string()));
-    assert_eq!(cmap.get(&0x44), Some(&"d".to_string()));
-    assert_eq!(cmap.get(&0x45), Some(&"e".to_string()));
+    assert_eq!(cmap.get(&0x41).as_deref(), Some("a"));
+    assert_eq!(cmap.get(&0x42).as_deref(), Some("b"));
+    assert_eq!(cmap.get(&0x43).as_deref(), Some("c"));
+    assert_eq!(cmap.get(&0x44).as_deref(), Some("d"));
+    assert_eq!(cmap.get(&0x45).as_deref(), Some("e"));
 }
 
 // ============================================================================
@@ -84,11 +84,11 @@ fn test_bfchar_two_byte_src_code() {
     let data = b"beginbfchar\n<4E2D> <4E2D>\nendbfchar";
     let cmap = parse_tounicode_cmap(data).unwrap();
 
-    assert_eq!(cmap.get(&0x4E2D), Some(&"\u{4E2D}".to_string()), "code 0x4E2D → U+4E2D (中)");
+    assert_eq!(cmap.get(&0x4E2D).as_deref(), Some("\u{4E2D}"), "code 0x4E2D → U+4E2D (中)");
     // Make sure we did NOT insert the individual bytes as separate entries
     // (would happen if the src hex `4E2D` were split into bytes 0x4E and 0x2D)
     assert!(
-        cmap.get(&0x4E).is_none() || cmap.get(&0x4E) != Some(&"\u{4E2D}".to_string()),
+        cmap.get(&0x4E).is_none() || cmap.get(&0x4E).as_deref() != Some("\u{4E2D}"),
         "byte 0x4E must not produce 中"
     );
 }
@@ -99,7 +99,7 @@ fn test_bfchar_two_byte_src_hiragana() {
     let data = b"beginbfchar\n<3042> <3042>\nendbfchar";
     let cmap = parse_tounicode_cmap(data).unwrap();
 
-    assert_eq!(cmap.get(&0x3042), Some(&"\u{3042}".to_string()), "code 0x3042 → U+3042 (あ)");
+    assert_eq!(cmap.get(&0x3042).as_deref(), Some("\u{3042}"), "code 0x3042 → U+3042 (あ)");
 }
 
 #[test]
@@ -108,9 +108,9 @@ fn test_bfchar_two_byte_multiple_cjk() {
     let data = b"beginbfchar\n<4E2D> <4E2D>\n<6587> <6587>\n<5B66> <5B66>\nendbfchar";
     let cmap = parse_tounicode_cmap(data).unwrap();
 
-    assert_eq!(cmap.get(&0x4E2D), Some(&"\u{4E2D}".to_string()), "中 (0x4E2D)");
-    assert_eq!(cmap.get(&0x6587), Some(&"\u{6587}".to_string()), "文 (0x6587)");
-    assert_eq!(cmap.get(&0x5B66), Some(&"\u{5B66}".to_string()), "学 (0x5B66)");
+    assert_eq!(cmap.get(&0x4E2D).as_deref(), Some("\u{4E2D}"), "中 (0x4E2D)");
+    assert_eq!(cmap.get(&0x6587).as_deref(), Some("\u{6587}"), "文 (0x6587)");
+    assert_eq!(cmap.get(&0x5B66).as_deref(), Some("\u{5B66}"), "学 (0x5B66)");
 }
 
 // ============================================================================
@@ -128,7 +128,7 @@ fn test_codespacerange_two_byte_sets_code_width() {
     assert_eq!(cmap.code_width, 2, "2-byte codespace must set code_width = 2");
 
     // Lookup still works
-    assert_eq!(cmap.get(&0x3042), Some(&"\u{3042}".to_string()), "あ lookup");
+    assert_eq!(cmap.get(&0x3042).as_deref(), Some("\u{3042}"), "あ lookup");
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn test_codespacerange_one_byte_keeps_default() {
 
     let cmap = parse_tounicode_cmap(data).unwrap();
     assert_eq!(cmap.code_width, 1, "1-byte codespace keeps code_width = 1");
-    assert_eq!(cmap.get(&0x41), Some(&"A".to_string()), "A lookup");
+    assert_eq!(cmap.get(&0x41).as_deref(), Some("A"), "A lookup");
 }
 
 #[test]
@@ -216,12 +216,12 @@ end
     let cmap = lazy.get().expect("CMap must parse");
 
     // bfchar lookups
-    assert_eq!(cmap.get(&0x4E2D), Some(&"\u{4E2D}".to_string()), "中");
-    assert_eq!(cmap.get(&0x6587), Some(&"\u{6587}".to_string()), "文");
-    assert_eq!(cmap.get(&0x3042), Some(&"\u{3042}".to_string()), "あ");
+    assert_eq!(cmap.get(&0x4E2D).as_deref(), Some("\u{4E2D}"), "中");
+    assert_eq!(cmap.get(&0x6587).as_deref(), Some("\u{6587}"), "文");
+    assert_eq!(cmap.get(&0x3042).as_deref(), Some("\u{3042}"), "あ");
 
     // bfrange lookups
-    assert_eq!(cmap.get(&0x4E00), Some(&"\u{4E00}".to_string()), "一");
-    assert_eq!(cmap.get(&0x4E03), Some(&"\u{4E03}".to_string()), "七");
-    assert_eq!(cmap.get(&0x4E05), Some(&"\u{4E05}".to_string()), "丅");
+    assert_eq!(cmap.get(&0x4E00).as_deref(), Some("\u{4E00}"), "一");
+    assert_eq!(cmap.get(&0x4E03).as_deref(), Some("\u{4E03}"), "七");
+    assert_eq!(cmap.get(&0x4E05).as_deref(), Some("\u{4E05}"), "丅");
 }

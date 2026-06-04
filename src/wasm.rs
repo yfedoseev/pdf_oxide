@@ -1672,7 +1672,7 @@ pub struct WasmRevocationMaterial {
 }
 
 #[cfg(feature = "signatures")]
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = "RevocationMaterial")]
 impl WasmRevocationMaterial {
     /// Create an empty revocation-material set.
     #[wasm_bindgen(constructor)]
@@ -1706,7 +1706,7 @@ pub struct WasmDss {
 }
 
 #[cfg(feature = "signatures")]
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = "Dss")]
 impl WasmDss {
     /// Number of DER X.509 certificates in the DSS.
     #[wasm_bindgen(getter, js_name = "certCount")]
@@ -3209,7 +3209,7 @@ impl Default for WasmArtifactStyle {
     }
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = "ArtifactStyle")]
 impl WasmArtifactStyle {
     /// Create a new artifact style.
     #[wasm_bindgen(constructor)]

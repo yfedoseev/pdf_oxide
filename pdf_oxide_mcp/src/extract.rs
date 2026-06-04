@@ -31,8 +31,11 @@ pub fn run(args: &Value) -> Result<Value, (i32, String)> {
         .unwrap_or(true);
 
     // Validate format
-    if !matches!(format, "text" | "markdown" | "html") {
-        return Err((-32602, format!("Invalid format: {format}. Must be text, markdown, or html")));
+    if !matches!(format, "text" | "markdown" | "html" | "structured") {
+        return Err((
+            -32602,
+            format!("Invalid format: {format}. Must be text, markdown, html, or structured"),
+        ));
     }
 
     // Open document
@@ -144,6 +147,22 @@ fn extract_pages(
     format: &str,
     opts: &ConversionOptions,
 ) -> Result<String, (i32, String)> {
+    // `structured` returns one JSON document for the whole request (an array of
+    // per-page StructuredPage), not concatenated text — handle it up front.
+    if format == "structured" {
+        let mut pages = Vec::with_capacity(page_indices.len());
+        for &idx in page_indices {
+            let structured = doc.extract_structured(idx).map_err(|e| {
+                (-32603, format!("Structured extraction failed on page {}: {e}", idx + 1))
+            })?;
+            pages.push(json!({
+                "page": idx + 1,
+                "structured": serde_json::to_value(&structured).unwrap(),
+            }));
+        }
+        return Ok(serde_json::to_string_pretty(&json!({ "pages": pages })).unwrap());
+    }
+
     let mut parts = Vec::with_capacity(page_indices.len());
 
     for &idx in page_indices {
@@ -361,6 +380,53 @@ mod tests {
             .unwrap()
             .contains("1 page(s)"));
         assert!(out.exists());
+    }
+
+    // The `structured` format must expose `extract_structured` —
+    // StructuredPage JSON with typed regions and per-region column_index.
+    #[test]
+    fn test_extract_structured_to_file() {
+        let pdf = fixture_path("multi_column_table.pdf");
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.json");
+
+        let args = json!({
+            "file_path": pdf.to_str().unwrap(),
+            "output_path": out.to_str().unwrap(),
+            "format": "structured"
+        });
+
+        run(&args).expect("structured extract should succeed");
+        assert!(out.exists());
+        let written = std::fs::read_to_string(&out).unwrap();
+        let parsed: Value = serde_json::from_str(&written).expect("output is valid JSON");
+        let pages = parsed["pages"].as_array().expect("pages array");
+        assert!(!pages.is_empty(), "at least one page");
+        // The StructuredPage shape: regions carrying kind + column_index.
+        let regions = pages[0]["structured"]["regions"]
+            .as_array()
+            .expect("regions array");
+        assert!(!regions.is_empty(), "page has typed regions");
+        assert!(regions[0].get("kind").is_some(), "region has a RegionRole kind");
+        assert!(
+            regions
+                .iter()
+                .all(|r| r.as_object().unwrap().contains_key("column_index")),
+            "every region carries a column_index field"
+        );
+    }
+
+    #[test]
+    fn test_extract_rejects_unknown_format() {
+        let pdf = fixture_path("simple.pdf");
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.txt");
+        let args = json!({
+            "file_path": pdf.to_str().unwrap(),
+            "output_path": out.to_str().unwrap(),
+            "format": "bogus"
+        });
+        assert!(run(&args).is_err(), "unknown format must be rejected");
     }
 
     #[test]

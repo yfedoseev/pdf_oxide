@@ -88,6 +88,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Verify: Single-byte codes still work
@@ -181,6 +184,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Verify: Range 1 (0x0001-0x000F → 0x4E00-0x4E0E)
@@ -276,6 +282,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Verify: Typical GB1 characters
@@ -351,6 +360,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Verify: Range 1 (Traditional Chinese characters)
@@ -431,6 +443,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Verify: Hiragana range
@@ -526,6 +541,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Verify: ASCII range (0x0020-0x007E)
@@ -607,6 +625,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Verify: Large CID values

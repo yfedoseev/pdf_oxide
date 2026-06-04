@@ -21,6 +21,27 @@ pub fn run(
         None
     };
 
+    // `structured` is inherently structured JSON (typed regions with column
+    // assignment), so it is emitted as JSON regardless of the `--json` flag and
+    // ignores `--area` (it operates on the whole page).
+    if format == "structured" {
+        let mut all_pages = Vec::new();
+        for &page_idx in &page_indices {
+            let structured = doc.extract_structured(page_idx)?;
+            all_pages.push(serde_json::json!({
+                "page": page_idx + 1,
+                "structured": serde_json::to_value(&structured).unwrap(),
+            }));
+        }
+        let json_out = serde_json::json!({
+            "file": file.display().to_string(),
+            "format": "structured",
+            "pages": all_pages,
+        });
+        super::write_output(&serde_json::to_string_pretty(&json_out).unwrap(), output)?;
+        return Ok(());
+    }
+
     if json {
         let mut all_pages = Vec::new();
         for &page_idx in &page_indices {

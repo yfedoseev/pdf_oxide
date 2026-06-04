@@ -1996,12 +1996,24 @@ impl DocumentEditor {
         let mut field_name_to_ref: HashMap<String, ObjectRef> = HashMap::new();
 
         if self.acroform_modified && !self.remove_acroform {
-            // Collect all modified form fields (new AND modified existing)
-            // FIX: Previously filtered only is_new(), missing modified existing fields
+            // Existing (already-in-document) modified fields are updated IN
+            // PLACE: load the original field/widget object, override /V (and
+            // /AS for buttons), and stage it in `modified_objects` so the graph
+            // copy re-emits it with its full dictionary intact. This is
+            // essential for a *merged* field+widget — where the field dict IS
+            // the widget annotation (ISO 32000-1 §12.7.4.1): allocating a fresh
+            // object for it instead would strand a bare `<< /FT /V >>` (no
+            // /T, /Subtype, /Rect) and leave the real widget with an empty
+            // value. Also sets /NeedAppearances on the existing AcroForm.
+            self.flush_form_fields_to_modified_objects()?;
+
+            // Only genuinely NEW fields need freshly-allocated objects plus
+            // /Fields and /Annots entries. Existing fields keep their object
+            // ids and their place in /Fields/Annots (updated in place above).
             let mut all_wrappers: Vec<_> = self
                 .modified_form_fields
                 .values()
-                .filter(|w| w.is_new() || w.is_modified())
+                .filter(|w| w.is_new())
                 .cloned()
                 .collect();
 
@@ -2072,7 +2084,33 @@ impl DocumentEditor {
 
                 let mut acroform_builder = AcroFormBuilder::new();
 
-                // Only add ROOT fields (no parent) to AcroForm's /Fields array
+                // Preserve the existing AcroForm /Fields entries — those fields
+                // keep their object ids and were updated in place above, so they
+                // must stay referenced (otherwise a fill that also adds a new
+                // field would drop every pre-existing field from /Fields).
+                if let Ok(cat) = self.source.catalog() {
+                    if let Some(af_ref) = cat
+                        .as_dict()
+                        .and_then(|d| d.get("AcroForm"))
+                        .and_then(|o| o.as_reference())
+                    {
+                        if let Ok(af) = self.source.load_object(af_ref) {
+                            if let Some(orig_fields) = af
+                                .as_dict()
+                                .and_then(|d| d.get("Fields"))
+                                .and_then(|o| o.as_array())
+                            {
+                                for r in orig_fields {
+                                    if let Some(rf) = r.as_reference() {
+                                        acroform_builder.add_field(rf);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Add ROOT new fields (no parent) to AcroForm's /Fields array
                 for (_, field_id, _, is_root) in &all_form_field_data {
                     if *is_root {
                         acroform_builder.add_field(ObjectRef::new(*field_id, 0));

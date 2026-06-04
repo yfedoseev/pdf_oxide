@@ -179,9 +179,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: ${{ matrix.target }}
+          cache: false
+          rustflags: ''
+          target: ${{ matrix.target }}
 
       - name: Cache cargo registry
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
@@ -261,9 +263,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: wasm32-unknown-unknown
+          cache: false
+          rustflags: ''
+          target: wasm32-unknown-unknown
 
       - name: Cache cargo registry
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
@@ -375,9 +379,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: ${{ matrix.target }}
+          cache: false
+          rustflags: ''
+          target: ${{ matrix.target }}
 
       - name: Cache cargo registry
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
@@ -523,9 +529,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: ${{ matrix.target }}
+          cache: false
+          rustflags: ''
+          target: ${{ matrix.target }}
 
       - name: Cache cargo registry
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
@@ -1310,9 +1318,11 @@ jobs:
           python-version: '3.11'
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: ${{ matrix.target }}
+          cache: false
+          rustflags: ''
+          target: ${{ matrix.target }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -1492,7 +1502,12 @@ jobs:
         run: cargo cyclonedx --format json --spec-version 1.5 --override-filename sbom.cdx
 
       - name: Upload SBOM to release
-        run: gh release upload "${{ github.ref_name }}" sbom.cdx.json
+        # --clobber overwrites an existing asset of the same name instead of
+        # erroring, so a `gh run rerun --failed` of Create GitHub Release stays
+        # idempotent and does not cascade-skip the publish jobs (#548). Matches
+        # the overwrite behaviour softprops/action-gh-release already uses for
+        # the main release assets.
+        run: gh release upload "${{ github.ref_name }}" sbom.cdx.json --clobber
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -1513,7 +1528,10 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+          rustflags: ''
 
       - name: Verify crates.io readiness
         run: cargo publish -p pdf_oxide --dry-run
@@ -1854,9 +1872,11 @@ jobs:
           bundler-cache: true
 
       - name: Set up Rust (target ${{ matrix.cargo_target }})
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: ${{ matrix.cargo_target }}
+          cache: false
+          rustflags: ''
+          target: ${{ matrix.cargo_target }}
 
       - name: Build cdylib (release, target ${{ matrix.cargo_target }})
         # Mirror ruby.yml's feature set — must match the cdylib that

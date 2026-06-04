@@ -10,7 +10,8 @@
 //!
 //! * Correct error surfacing on pathological inputs:
 //!   - Encrypted PDFs must return `Err(EncryptedPdf)` from `page_count()`,
-//!     not `Ok(0)` (which silently produced empty output).
+//!     not `Ok(0)` (which silently produced empty output). Text extraction,
+//!     by contrast, degrades to empty output rather than erroring.
 //!   - Rotated pages and annotation-heavy pages must not panic.
 
 use pdf_oxide::document::PdfDocument;
@@ -278,6 +279,15 @@ fn encrypted_pdf_page_count_returns_encrypted_error() {
             let _ = e;
         },
     }
+
+    // Text extraction degrades to empty output (warn + empty) rather than
+    // erroring, matching pdftotext/PyMuPDF. `page_count` (above) still surfaces
+    // the encryption to callers that ask for the structure.
+    assert_eq!(
+        doc.extract_text(0).ok(),
+        Some(String::new()),
+        "extract_text on an undecryptable PDF returns empty, not an error"
+    );
 }
 
 // ---------------------------------------------------------------------------

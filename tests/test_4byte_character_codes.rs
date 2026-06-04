@@ -69,15 +69,15 @@ end
     // Verify: 4-byte entries are accessible
     // 0x00000041 should map to U+0041 (A)
     assert_eq!(
-        cmap.get(&0x00000041),
-        Some(&"A".to_string()),
+        cmap.get(&0x00000041).as_deref(),
+        Some("A"),
         "4-byte code 0x00000041 should map to 'A'"
     );
 
     // 0x00010041 should map to U+4E00 (CJK character)
     assert_eq!(
-        cmap.get(&0x00010041),
-        Some(&"\u{4E00}".to_string()),
+        cmap.get(&0x00010041).as_deref(),
+        Some("\u{4E00}"),
         "4-byte code 0x00010041 should map to CJK character"
     );
 }
@@ -125,13 +125,13 @@ end
     let cmap = result.unwrap();
 
     // Test: CID 0x00008000 (32768)
-    assert_eq!(cmap.get(&0x00008000), Some(&"\u{8000}".to_string()));
+    assert_eq!(cmap.get(&0x00008000).as_deref(), Some("\u{8000}"));
 
     // Test: CID 0xFFFFFFFF (u32::MAX) -> maps to U+FFFD (replacement char)
-    assert_eq!(cmap.get(&0xFFFFFFFF), Some(&"\u{FFFD}".to_string()));
+    assert_eq!(cmap.get(&0xFFFFFFFF).as_deref(), Some("\u{FFFD}"));
 
     // Test: CID 0xFFFFFFFE (u32::MAX - 1)
-    assert_eq!(cmap.get(&0xFFFFFFFE), Some(&"\u{FFFE}".to_string()));
+    assert_eq!(cmap.get(&0xFFFFFFFE).as_deref(), Some("\u{FFFE}"));
 }
 
 #[test]
@@ -173,9 +173,9 @@ end
     let cmap = result.unwrap();
 
     // Test: Range 0x00010000-0x0001000F maps to 0x4E00-0x4E0F
-    assert_eq!(cmap.get(&0x00010000), Some(&"\u{4E00}".to_string())); // Start of range
-    assert_eq!(cmap.get(&0x00010005), Some(&"\u{4E05}".to_string())); // Middle
-    assert_eq!(cmap.get(&0x0001000F), Some(&"\u{4E0F}".to_string())); // End of range
+    assert_eq!(cmap.get(&0x00010000).as_deref(), Some("\u{4E00}")); // Start of range
+    assert_eq!(cmap.get(&0x00010005).as_deref(), Some("\u{4E05}")); // Middle
+    assert_eq!(cmap.get(&0x0001000F).as_deref(), Some("\u{4E0F}")); // End of range
 }
 
 #[test]
@@ -218,10 +218,10 @@ end
     let cmap = result.unwrap();
 
     // Explicit mapping takes precedence
-    assert_eq!(cmap.get(&0x00010000), Some(&"\u{4E00}".to_string()));
+    assert_eq!(cmap.get(&0x00010000).as_deref(), Some("\u{4E00}"));
 
     // Fallback for unmapped codes in range
-    assert_eq!(cmap.get(&0x00000001), Some(&"\u{FFFD}".to_string()));
+    assert_eq!(cmap.get(&0x00000001).as_deref(), Some("\u{FFFD}"));
 }
 
 #[test]
@@ -266,7 +266,7 @@ end
     let cmap = result.unwrap();
 
     // Valid code should work
-    assert_eq!(cmap.get(&0x00000041), Some(&"A".to_string()));
+    assert_eq!(cmap.get(&0x00000041).as_deref(), Some("A"));
 
     // Code > U+10FFFF may be handled as-is or converted to U+FFFD
     // depending on implementation (will test actual behavior)
@@ -339,6 +339,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // First access triggers lazy parsing
@@ -394,11 +397,11 @@ end
     let cmap = result.unwrap();
 
     // 1-byte: 0x41 -> 'A'
-    assert_eq!(cmap.get(&0x41), Some(&"A".to_string()));
+    assert_eq!(cmap.get(&0x41).as_deref(), Some("A"));
 
     // 2-byte: 0x0042 -> 'B'
-    assert_eq!(cmap.get(&0x42), Some(&"B".to_string()));
+    assert_eq!(cmap.get(&0x42).as_deref(), Some("B"));
 
     // 4-byte: 0x00000043 -> 'C'
-    assert_eq!(cmap.get(&0x43), Some(&"C".to_string()));
+    assert_eq!(cmap.get(&0x43).as_deref(), Some("C"));
 }

@@ -100,9 +100,9 @@ pub(crate) fn build_context(doc: &PdfDocument, page_index: usize) -> ReadingOrde
         return ctx;
     };
 
-    let ordered =
-        crate::structure::traverse_structure_tree(&tree, page_index as u32).unwrap_or_default();
-    let mcid_order: Vec<u32> = ordered.iter().filter_map(|c| c.mcid).collect();
+    // Use the all-pages traversal cache (O(1) per page) instead of re-walking
+    // the whole structure tree here (≈ O(pages²) across a tagged document).
+    let mcid_order: Vec<u32> = doc.cached_mcid_order_for_page(&tree, page_index as u32);
 
     if !mcid_order.is_empty() {
         ctx = ctx.with_mcid_order(mcid_order);

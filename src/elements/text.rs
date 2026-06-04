@@ -166,6 +166,7 @@ impl From<TextContent> for TextSpan {
             artifact_type: content.artifact_type,
             char_widths: vec![],
             heading_level: None,
+            rotation_degrees: 0.0,
         }
     }
 }
@@ -331,6 +332,7 @@ mod tests {
             primary_detected: false,
             char_widths: vec![],
             heading_level: None,
+            rotation_degrees: 0.0,
         };
 
         let content: TextContent = span.into();

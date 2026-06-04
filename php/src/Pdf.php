@@ -152,7 +152,7 @@ final class Pdf
      * pdf_oxide library version. Kept in sync with `Cargo.toml` by the
      * release tooling (see `docs/releases/RELEASE_PROCESS.md`).
      */
-    public const VERSION = '0.3.59';
+    public const VERSION = '0.3.60';
 
     /** Whether OCR-model prefetch + cache are available on this build. */
     public static function prefetchAvailable(): bool

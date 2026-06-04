@@ -82,9 +82,9 @@ fn handle_tools_list() -> Result<Value, (i32, String)> {
                         },
                         "format": {
                             "type": "string",
-                            "enum": ["text", "markdown", "html"],
+                            "enum": ["text", "markdown", "html", "structured"],
                             "default": "text",
-                            "description": "Output format: text (plain text), markdown, or html"
+                            "description": "Output format: text, markdown, html, or structured (StructuredPage JSON — typed regions with RegionRole kind and column_index, so two-column layouts come out as separate column blocks instead of line-interleaved)"
                         },
                         "pages": {
                             "type": "string",

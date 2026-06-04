@@ -52,7 +52,7 @@ const (
 	// taken from the build info and THIS constant is irrelevant. That's what
 	// lets `@latest` just work — each tagged release resolves to its own
 	// version automatically, without a sed step in release automation.
-	fallbackVersion = "0.3.59"
+	fallbackVersion = "0.3.60"
 	BaseURL         = "https://github.com/yfedoseev/pdf_oxide/releases/download"
 	// cacheSubdir lives under os.UserCacheDir() — XDG_CACHE_HOME on Linux,
 	// ~/Library/Caches on macOS (Time-Machine-excluded), %LocalAppData% on

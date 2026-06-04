@@ -339,6 +339,7 @@ tests/golden_files/
 .claude/
 .agents/
 .cursor/
+.antigravitycli/
 
 
 # pdm-python

@@ -60,22 +60,60 @@ download_file() {
     echo -e "${YELLOW}Downloading $name...${NC}"
 
     if command -v curl &> /dev/null; then
-        curl -L --progress-bar "$url" -o "$output"
+        # -f makes curl exit non-zero on an HTTP error so an error body is never
+        # saved as a model file; --retry* rides out transient Hugging Face
+        # 429/5xx/timeouts. Without these, a hiccup wrote the error page into
+        # det.onnx/rec.onnx, the step "succeeded", and ort later failed to load
+        # the bogus model so OCR silently fell back to empty text.
+        curl -fL --retry 5 --retry-delay 3 --retry-all-errors --max-time 600 \
+            --progress-bar "$url" -o "$output" || {
+            echo -e "${RED}ERROR: download failed for $name${NC}"
+            rm -f "$output"
+            return 1
+        }
     elif command -v wget &> /dev/null; then
-        wget --show-progress -q "$url" -O "$output"
+        wget --tries=5 --retry-connrefused --timeout=120 --show-progress -q "$url" -O "$output" || {
+            echo -e "${RED}ERROR: download failed for $name${NC}"
+            rm -f "$output"
+            return 1
+        }
     else
         echo -e "${RED}ERROR: Neither curl nor wget found.${NC}"
         return 1
     fi
 
-    if [ -f "$output" ]; then
-        local size=$(du -h "$output" | cut -f1)
-        echo -e "${GREEN}OK${NC} Downloaded $name ($size)"
-        return 0
-    else
-        echo -e "${RED}ERROR: Failed to download $name${NC}"
+    if [ ! -s "$output" ]; then
+        echo -e "${RED}ERROR: $name is empty${NC}"
+        rm -f "$output"
         return 1
     fi
+
+    # Integrity guard: reject an error page (HTML/JSON) or a truncated body that
+    # slipped through with a 200 status — otherwise it masquerades as a model and
+    # only surfaces as a silent OCR fallback at runtime.
+    case "$output" in
+        *.onnx)
+            local head_byte
+            head_byte=$(head -c 1 "$output")
+            if [ "$head_byte" = "<" ] || [ "$head_byte" = "{" ]; then
+                echo -e "${RED}ERROR: $name is not a valid ONNX model (got an error page)${NC}"
+                rm -f "$output"
+                return 1
+            fi
+            local bytes
+            bytes=$(wc -c < "$output")
+            if [ "$bytes" -lt 100000 ]; then
+                echo -e "${RED}ERROR: $name is implausibly small ($bytes bytes) — truncated download${NC}"
+                rm -f "$output"
+                return 1
+            fi
+            ;;
+    esac
+
+    local size
+    size=$(du -h "$output" | cut -f1)
+    echo -e "${GREEN}OK${NC} Downloaded $name ($size)"
+    return 0
 }
 
 # Download models

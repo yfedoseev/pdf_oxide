@@ -399,14 +399,27 @@ impl TextRasterizer {
                             && info.cid_font_type.as_deref() == Some("CIDFontType0"))
                     {
                         // CFF font — use direct GID rendering.
+                        //
+                        // For simple (non-Type0) CFF fonts the `cff_gid_map` is
+                        // built at load time by
+                        // [`crate::fonts::cff_encoding::parse_cff_gid_mapping_with_pdf_encoding`],
+                        // which uses the PDF font dictionary's `/Encoding`
+                        // (typically WinAnsi) as the byte → glyph-name source
+                        // and the CFF Charset as the glyph-name → GID resolver
+                        // (ISO 32000-1 §9.6.6). The subsetter's own CFF Encoding
+                        // table is *not* consulted directly — sparse subsetter
+                        // CFF Encoding tables would silently drop most content
+                        // bytes to `.notdef` otherwise.
+                        //
                         // Type0 + CIDFontType0 (CFF / OpenType-CFF): Identity-H
-                        // emission means the content-stream's 2-byte codes ARE the
-                        // GIDs in the CFF charset; bypass rustybuzz Unicode shaping
-                        // (which round-trips CID→Unicode→GID through the patched
-                        // cmap and can drift on CFF charset positions) and feed
-                        // the raw codes to render_cid_direct (G3-h). ttf-parser
-                        // handles CFF outlines for sfnt-wrapped OpenType-CFF (OTTO);
-                        // raw CFF streams were already wrapped by
+                        // emission means the content-stream's 2-byte codes ARE
+                        // the GIDs in the CFF charset; bypass rustybuzz Unicode
+                        // shaping (which round-trips CID→Unicode→GID through
+                        // the patched cmap and can drift on CFF charset
+                        // positions) and feed the raw codes to
+                        // render_cid_direct (G3-h). ttf-parser handles CFF
+                        // outlines for sfnt-wrapped OpenType-CFF (OTTO); raw
+                        // CFF streams were already wrapped by
                         // `font_dict::wrap_cff_in_opentype` at load time.
                         log::debug!(
                             "Using embedded CFF font '{}' with direct GID mapping",

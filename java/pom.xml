@@ -8,7 +8,7 @@
                                namespace verification under oxide.fyi)
   artifactId:  pdf-oxide      (the Maven artifact; matches the
                                package fyi.oxide.pdf)
-  version:     0.3.59         (lockstep with Cargo workspace /
+  version:     0.3.60         (lockstep with Cargo workspace /
                                js/package.json / .csproj /
                                pyproject.toml — release-preflight
                                from v0.3.51 #515 enforces parity)
@@ -33,7 +33,7 @@
 
     <groupId>fyi.oxide</groupId>
     <artifactId>pdf-oxide</artifactId>
-    <version>0.3.59</version>
+    <version>0.3.60</version>
     <packaging>jar</packaging>
 
     <name>pdf_oxide — Java binding</name>
@@ -72,7 +72,7 @@
         <connection>scm:git:https://github.com/yfedoseev/pdf_oxide.git</connection>
         <developerConnection>scm:git:git@github.com:yfedoseev/pdf_oxide.git</developerConnection>
         <url>https://github.com/yfedoseev/pdf_oxide</url>
-        <tag>v0.3.59</tag>
+        <tag>v0.3.60</tag>
     </scm>
 
     <issueManagement>

@@ -65,18 +65,28 @@ impl TextPostProcessor {
             let trimmed = line.trim_end();
 
             // Check if this line ends with a hyphen (soft or hard)
-            if (trimmed.ends_with('-') || trimmed.ends_with('\u{00AD}')) && i + 1 < lines.len() {
+            let soft = trimmed.ends_with('\u{00AD}');
+            if (trimmed.ends_with('-') || soft) && i + 1 < lines.len() {
                 let next_line = lines[i + 1].trim_start();
+                let without_hyphen = if soft {
+                    &trimmed[..trimmed.len() - '\u{00AD}'.len_utf8()]
+                } else {
+                    &trimmed[..trimmed.len() - 1]
+                };
 
-                // If next line starts with lowercase letter, likely word continuation
-                if next_line.chars().next().is_some_and(|c| c.is_lowercase()) {
-                    // Remove the hyphen/soft-hyphen and join words
-                    let without_hyphen = if trimmed.ends_with('\u{00AD}') {
-                        &trimmed[..trimmed.len() - '\u{00AD}'.len_utf8()]
-                    } else {
-                        &trimmed[..trimmed.len() - 1]
-                    };
+                // A soft hyphen (U+00AD) always marks a wrap point (§14.8.2.2.3),
+                // so rejoin on any lowercase continuation. A hard '-' is
+                // ambiguous (compound word vs label like "COVID-19" / "TYPE-A"),
+                // so only rejoin when BOTH fragments are lowercase-alpha — a
+                // plain line-wrapped word. Otherwise keep the hyphen.
+                let next_lower = next_line.chars().next().is_some_and(|c| c.is_lowercase());
+                let prev_lower = without_hyphen
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_lowercase());
+                let should_rejoin = next_lower && (soft || prev_lower);
 
+                if should_rejoin {
                     result.push_str(without_hyphen);
                     result.push_str(next_line);
 
@@ -838,6 +848,20 @@ mod tests {
         let input = "phenom-\nenal\n\nmodali-\nties";
         let output = TextPostProcessor::rejoin_hyphenated_words(input);
         assert_eq!(output, "phenomenal\n\nmodalities");
+    }
+
+    #[test]
+    fn test_rejoin_hard_hyphen_requires_lowercase_both_sides() {
+        // Lowercase wrap → rejoined.
+        assert_eq!(TextPostProcessor::rejoin_hyphenated_words("modali-\nties"), "modalities");
+        // Label/compound with a non-lowercase fragment → hyphen kept (not merged).
+        assert_eq!(TextPostProcessor::rejoin_hyphenated_words("COVID-\n19"), "COVID-\n19");
+        assert_eq!(TextPostProcessor::rejoin_hyphenated_words("well-\nKnown"), "well-\nKnown");
+        // Soft hyphen (U+00AD) always rejoins on a lowercase continuation.
+        assert_eq!(
+            TextPostProcessor::rejoin_hyphenated_words("modali\u{00AD}\nties"),
+            "modalities"
+        );
     }
 
     #[test]

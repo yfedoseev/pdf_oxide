@@ -71,48 +71,104 @@ pub struct CMap {
 }
 
 impl CMap {
-    /// Get a reference to a Unicode string for a character code.
+    /// Unicode string for a character code.
     ///
-    /// Uses three-level lookup strategy:
-    /// 1. Check HashMap for bfchar entries (O(1))
-    /// 2. Linear search ranges for bfrange entries (O(n) - suitable when ranges << chars)
-    /// 3. Linear search notdef_ranges for fallback (O(n))
+    /// 1. `chars` (bfchar + non-contiguous bfrange entries) — O(1), borrowed.
+    /// 2. `ranges` (compressed contiguous bfranges) — O(log n) binary search;
+    ///    the value is computed (`target + (code - start)`), so owned.
+    /// 3. `notdef_ranges` fallback.
     ///
-    /// Note: Range lookups use linear search due to computed values requiring
-    /// offset calculation on each range. For very large range counts (>1000),
-    /// consider using binary search optimization.
-    pub fn get(&self, code: &u32) -> Option<&String> {
-        // Level 1: Check direct character mappings (fast O(1))
+    /// `chars` is checked first and holds the document-order-correct value for
+    /// any code a later `bfchar` redefined (§9.10.3); `ranges` only holds
+    /// runs that were contiguous in the final `chars` state.
+    pub fn get(&self, code: &u32) -> Option<std::borrow::Cow<'_, str>> {
         if let Some(s) = self.chars.get(code) {
-            return Some(s);
+            return Some(std::borrow::Cow::Borrowed(s));
         }
 
-        // Level 2: Linear search regular ranges for computed Unicode values
-        // For each range in list, check if code falls in [start, end]
-        // If yes, compute: target_unicode = range.target + (code - range.start)
-        for range in &self.ranges {
-            if range.start <= *code && *code <= range.end {
-                // This code is in range, but we need to compute and return the Unicode
-                // Since we can't cache the computed value here (no mutable ref),
-                // we return a dummy string temporarily. In practice, ranges are stored as
-                // individual entries for compatibility. See insert_bfrange_entries().
-                // This branch shouldn't be hit for properly parsed CMaps.
-                return None;
+        if let Ok(pos) = self.ranges.binary_search_by(|r| {
+            if r.end < *code {
+                std::cmp::Ordering::Less
+            } else if r.start > *code {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        }) {
+            let r = &self.ranges[pos];
+            let cp = r.target.wrapping_add(*code - r.start);
+            if let Some(ch) = char::from_u32(cp) {
+                return Some(std::borrow::Cow::Owned(ch.to_string()));
             }
         }
 
-        // Level 3: Check notdef ranges as fallback
         for range in &self.notdef_ranges {
             if range.start <= *code && *code <= range.end {
-                // Notdef ranges map to a single target Unicode
-                // Look up the target in chars map if available
                 if let Some(s) = self.chars.get(&range.target) {
-                    return Some(s);
+                    return Some(std::borrow::Cow::Borrowed(s));
                 }
             }
         }
 
         None
+    }
+
+    /// Collapse long contiguous runs in `chars` into `ranges`, cutting the
+    /// persistent memory of large sequential bfranges (e.g. `<0000><FFFF>`
+    /// expands to ~65 536 `String`s, shared via `Arc` in the global cache).
+    ///
+    /// Operates on the *final* `chars` state, so any code a later definition
+    /// redefined already holds the document-order-correct value (§9.10.3)
+    /// — compressing it cannot change semantics. A run is collapsed only when
+    /// both the code and its single-char codepoint are contiguous and the run
+    /// is long enough to be worth it; multi-char (ligature) values and
+    /// notdef-range targets are left in `chars`.
+    fn compress_sequential_ranges(&mut self) {
+        const MIN_RUN: usize = 256;
+
+        let notdef_targets: std::collections::HashSet<u32> =
+            self.notdef_ranges.iter().map(|r| r.target).collect();
+
+        // (code, codepoint) for single-char entries, sorted by code.
+        let mut singles: Vec<(u32, u32)> = self
+            .chars
+            .iter()
+            .filter(|(c, _)| !notdef_targets.contains(c))
+            .filter_map(|(&c, s)| {
+                let mut it = s.chars();
+                match (it.next(), it.next()) {
+                    (Some(ch), None) => Some((c, ch as u32)),
+                    _ => None,
+                }
+            })
+            .collect();
+        if singles.len() < MIN_RUN {
+            return;
+        }
+        singles.sort_unstable_by_key(|&(c, _)| c);
+
+        let mut i = 0;
+        while i < singles.len() {
+            let mut j = i;
+            while j + 1 < singles.len()
+                && singles[j + 1].0 == singles[j].0 + 1
+                && singles[j + 1].1 == singles[j].1 + 1
+            {
+                j += 1;
+            }
+            if j - i + 1 >= MIN_RUN {
+                self.ranges.push(RangeEntry {
+                    start: singles[i].0,
+                    end: singles[j].0,
+                    target: singles[i].1,
+                });
+                for &(c, _) in &singles[i..=j] {
+                    self.chars.remove(&c);
+                }
+            }
+            i = j + 1;
+        }
+        self.ranges.sort_unstable_by_key(|r| r.start);
     }
 
     /// Check if the CMap is empty.
@@ -457,7 +513,7 @@ fn decode_utf16_surrogate_pair(value: u32) -> Option<String> {
 ///
 /// let cmap_data = b"beginbfchar\n<0041> <0041>\nendbfchar";
 /// let cmap = parse_tounicode_cmap(cmap_data).unwrap();
-/// assert_eq!(cmap.get(&0x41), Some(&"A".to_string()));
+/// assert_eq!(cmap.get(&0x41).as_deref(), Some("A"));
 /// ```
 pub fn parse_tounicode_cmap(data: &[u8]) -> Result<CMap> {
     let mut cmap = CMap::new();
@@ -531,6 +587,7 @@ pub fn parse_tounicode_cmap(data: &[u8]) -> Result<CMap> {
         }
     }
 
+    cmap.compress_sequential_ranges();
     Ok(cmap)
 }
 
@@ -927,32 +984,58 @@ mod tests {
     fn test_parse_bfchar_single() {
         let data = b"beginbfchar\n<0041> <0041>\nendbfchar";
         let cmap = parse_tounicode_cmap(data).unwrap();
-        assert_eq!(cmap.get(&0x41), Some(&"A".to_string()));
+        assert_eq!(cmap.get(&0x41).as_deref(), Some("A"));
     }
 
     #[test]
     fn test_parse_bfchar_multiple() {
         let data = b"beginbfchar\n<0041> <0041>\n<0042> <0042>\n<0043> <0043>\nendbfchar";
         let cmap = parse_tounicode_cmap(data).unwrap();
-        assert_eq!(cmap.get(&0x41), Some(&"A".to_string()));
-        assert_eq!(cmap.get(&0x42), Some(&"B".to_string()));
-        assert_eq!(cmap.get(&0x43), Some(&"C".to_string()));
+        assert_eq!(cmap.get(&0x41).as_deref(), Some("A"));
+        assert_eq!(cmap.get(&0x42).as_deref(), Some("B"));
+        assert_eq!(cmap.get(&0x43).as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn test_large_bfrange_compresses_and_resolves() {
+        // A 513-code contiguous range collapses into `ranges`, leaving `chars`
+        // empty, and still resolves via computed range lookup.
+        let data = b"beginbfrange\n<0100> <0300> <0500>\nendbfrange";
+        let cmap = parse_tounicode_cmap(data).unwrap();
+        assert!(!cmap.ranges.is_empty(), "large contiguous range should compress");
+        assert!(cmap.chars.is_empty(), "compressed codes should leave `chars`");
+        assert_eq!(cmap.get(&0x100).as_deref(), Some("\u{0500}"));
+        assert_eq!(cmap.get(&0x300).as_deref(), Some("\u{0700}"));
+        assert_eq!(cmap.get(&0x0FF), None);
+        assert_eq!(cmap.get(&0x301), None);
+    }
+
+    #[test]
+    fn test_bfchar_override_survives_range_compression() {
+        // A bfchar after a bfrange wins for that code (§9.10.3); compression must
+        // not swallow it (it breaks contiguity and stays in `chars`).
+        let data = b"beginbfrange\n<0100> <0300> <0500>\nendbfrange\n\
+                     beginbfchar\n<0200> <0041>\nendbfchar";
+        let cmap = parse_tounicode_cmap(data).unwrap();
+        assert_eq!(cmap.get(&0x200).as_deref(), Some("A"), "later bfchar must win");
+        assert_eq!(cmap.get(&0x1FF).as_deref(), Some("\u{05FF}"));
+        assert_eq!(cmap.get(&0x201).as_deref(), Some("\u{0601}"));
     }
 
     #[test]
     fn test_parse_bfchar_non_ascii() {
         let data = b"beginbfchar\n<00E9> <00E9>\nendbfchar"; // é
         let cmap = parse_tounicode_cmap(data).unwrap();
-        assert_eq!(cmap.get(&0xE9), Some(&"é".to_string()));
+        assert_eq!(cmap.get(&0xE9).as_deref(), Some("é"));
     }
 
     #[test]
     fn test_parse_bfrange_simple() {
         let data = b"beginbfrange\n<0041> <0043> <0041>\nendbfrange";
         let cmap = parse_tounicode_cmap(data).unwrap();
-        assert_eq!(cmap.get(&0x41), Some(&"A".to_string()));
-        assert_eq!(cmap.get(&0x42), Some(&"B".to_string()));
-        assert_eq!(cmap.get(&0x43), Some(&"C".to_string()));
+        assert_eq!(cmap.get(&0x41).as_deref(), Some("A"));
+        assert_eq!(cmap.get(&0x42).as_deref(), Some("B"));
+        assert_eq!(cmap.get(&0x43).as_deref(), Some("C"));
     }
 
     #[test]
@@ -961,15 +1044,15 @@ mod tests {
         let cmap = parse_tounicode_cmap(data).unwrap();
 
         // Check space
-        assert_eq!(cmap.get(&0x20), Some(&" ".to_string()));
+        assert_eq!(cmap.get(&0x20).as_deref(), Some(" "));
         // Check '0'
-        assert_eq!(cmap.get(&0x30), Some(&"0".to_string()));
+        assert_eq!(cmap.get(&0x30).as_deref(), Some("0"));
         // Check 'A'
-        assert_eq!(cmap.get(&0x41), Some(&"A".to_string()));
+        assert_eq!(cmap.get(&0x41).as_deref(), Some("A"));
         // Check 'z'
-        assert_eq!(cmap.get(&0x7A), Some(&"z".to_string()));
+        assert_eq!(cmap.get(&0x7A).as_deref(), Some("z"));
         // Check '~'
-        assert_eq!(cmap.get(&0x7E), Some(&"~".to_string()));
+        assert_eq!(cmap.get(&0x7E).as_deref(), Some("~"));
     }
 
     #[test]
@@ -977,10 +1060,10 @@ mod tests {
         let data = b"beginbfchar\n<0041> <0058>\nendbfchar\nbeginbfrange\n<0042> <0044> <0042>\nendbfrange";
         let cmap = parse_tounicode_cmap(data).unwrap();
 
-        assert_eq!(cmap.get(&0x41), Some(&"X".to_string())); // Custom mapping
-        assert_eq!(cmap.get(&0x42), Some(&"B".to_string())); // Range mapping
-        assert_eq!(cmap.get(&0x43), Some(&"C".to_string()));
-        assert_eq!(cmap.get(&0x44), Some(&"D".to_string()));
+        assert_eq!(cmap.get(&0x41).as_deref(), Some("X")); // Custom mapping
+        assert_eq!(cmap.get(&0x42).as_deref(), Some("B")); // Range mapping
+        assert_eq!(cmap.get(&0x43).as_deref(), Some("C"));
+        assert_eq!(cmap.get(&0x44).as_deref(), Some("D"));
     }
 
     #[test]
@@ -994,8 +1077,8 @@ mod tests {
     fn test_parse_cmap_with_whitespace() {
         let data = b"beginbfchar\n  <0041>    <0041>  \n  <0042>  <0042>\nendbfchar";
         let cmap = parse_tounicode_cmap(data).unwrap();
-        assert_eq!(cmap.get(&0x41), Some(&"A".to_string()));
-        assert_eq!(cmap.get(&0x42), Some(&"B".to_string()));
+        assert_eq!(cmap.get(&0x41).as_deref(), Some("A"));
+        assert_eq!(cmap.get(&0x42).as_deref(), Some("B"));
     }
 
     #[test]
@@ -1056,14 +1139,14 @@ mod tests {
     fn test_parse_cid_to_unicode() {
         let data = b"beginbfchar\n<0041> <0041>\nendbfchar";
         let cmap = parse_cid_to_unicode(data).unwrap();
-        assert_eq!(cmap.get(&0x41), Some(&"A".to_string()));
+        assert_eq!(cmap.get(&0x41).as_deref(), Some("A"));
     }
 
     #[test]
     fn test_parse_hex_case_insensitive() {
         let data = b"beginbfchar\n<00aB> <00Ab>\nendbfchar";
         let cmap = parse_tounicode_cmap(data).unwrap();
-        assert_eq!(cmap.get(&0xAB), Some(&"«".to_string()));
+        assert_eq!(cmap.get(&0xAB).as_deref(), Some("«"));
     }
 
     #[test]
@@ -1071,8 +1154,8 @@ mod tests {
         let data = b"beginbfchar\n<0041> <0041>\nendbfchar\nbeginbfchar\n<0042> <0042>\nendbfchar";
         let cmap = parse_tounicode_cmap(data).unwrap();
         assert_eq!(cmap.len(), 2);
-        assert_eq!(cmap.get(&0x41), Some(&"A".to_string()));
-        assert_eq!(cmap.get(&0x42), Some(&"B".to_string()));
+        assert_eq!(cmap.get(&0x41).as_deref(), Some("A"));
+        assert_eq!(cmap.get(&0x42).as_deref(), Some("B"));
     }
 
     #[test]
@@ -1080,7 +1163,7 @@ mod tests {
         // Test single glyph to multiple characters (ligature expansion)
         let data = b"beginbfchar\n<000C> <00660069>\nendbfchar"; // fi ligature
         let cmap = parse_tounicode_cmap(data).unwrap();
-        assert_eq!(cmap.get(&0x0C), Some(&"fi".to_string()));
+        assert_eq!(cmap.get(&0x0C).as_deref(), Some("fi"));
     }
 
     #[test]
@@ -1089,9 +1172,9 @@ mod tests {
         let data =
             b"beginbfchar\n<000B> <00660066>\n<000C> <00660069>\n<000D> <0066006C>\nendbfchar";
         let cmap = parse_tounicode_cmap(data).unwrap();
-        assert_eq!(cmap.get(&0x0B), Some(&"ff".to_string())); // ff
-        assert_eq!(cmap.get(&0x0C), Some(&"fi".to_string())); // fi
-        assert_eq!(cmap.get(&0x0D), Some(&"fl".to_string())); // fl
+        assert_eq!(cmap.get(&0x0B).as_deref(), Some("ff")); // ff
+        assert_eq!(cmap.get(&0x0C).as_deref(), Some("fi")); // fi
+        assert_eq!(cmap.get(&0x0D).as_deref(), Some("fl")); // fl
     }
 
     #[test]
@@ -1101,9 +1184,9 @@ mod tests {
         let data =
             b"beginbfrange\n<005F> <0061> [<00660066> <00660069> <00660066006C>]\nendbfrange";
         let cmap = parse_tounicode_cmap(data).unwrap();
-        assert_eq!(cmap.get(&0x5F), Some(&"ff".to_string())); // code 0x5F -> "ff"
-        assert_eq!(cmap.get(&0x60), Some(&"fi".to_string())); // code 0x60 -> "fi"
-        assert_eq!(cmap.get(&0x61), Some(&"ffl".to_string())); // code 0x61 -> "ffl"
+        assert_eq!(cmap.get(&0x5F).as_deref(), Some("ff")); // code 0x5F -> "ff"
+        assert_eq!(cmap.get(&0x60).as_deref(), Some("fi")); // code 0x60 -> "fi"
+        assert_eq!(cmap.get(&0x61).as_deref(), Some("ffl")); // code 0x61 -> "ffl"
     }
 
     #[test]
@@ -1111,9 +1194,9 @@ mod tests {
         // Test bfrange with array containing both single and multi-character mappings
         let data = b"beginbfrange\n<0010> <0012> [<0041> <00660069> <0043>]\nendbfrange";
         let cmap = parse_tounicode_cmap(data).unwrap();
-        assert_eq!(cmap.get(&0x10), Some(&"A".to_string())); // code 0x10 -> "A"
-        assert_eq!(cmap.get(&0x11), Some(&"fi".to_string())); // code 0x11 -> "fi"
-        assert_eq!(cmap.get(&0x12), Some(&"C".to_string())); // code 0x12 -> "C"
+        assert_eq!(cmap.get(&0x10).as_deref(), Some("A")); // code 0x10 -> "A"
+        assert_eq!(cmap.get(&0x11).as_deref(), Some("fi")); // code 0x11 -> "fi"
+        assert_eq!(cmap.get(&0x12).as_deref(), Some("C")); // code 0x12 -> "C"
     }
 
     #[test]
@@ -1188,8 +1271,8 @@ end
         let cmap = parse_tounicode_cmap(cmap_data).expect("Failed to parse CMap");
 
         // ZEKAT check
-        assert_eq!(cmap.get(&0x3D), Some(&"Z".to_string()));
-        assert_eq!(cmap.get(&0x24), Some(&"A".to_string()));
-        assert_eq!(cmap.get(&0xC6), Some(&"\u{00C2}".to_string())); // Â
+        assert_eq!(cmap.get(&0x3D).as_deref(), Some("Z"));
+        assert_eq!(cmap.get(&0x24).as_deref(), Some("A"));
+        assert_eq!(cmap.get(&0xC6).as_deref(), Some("\u{00C2}")); // Â
     }
 }

@@ -57,6 +57,9 @@ fn test_identity_h_cmap_simple_cid_to_unicode() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // CID 0x4E00 should map to Unicode U+4E00 via Identity-H
@@ -111,6 +114,9 @@ fn test_unigb_ucs2_h_cmap_simplified_chinese() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // For UCS2 encoding, char_to_unicode receives the raw character code from the
@@ -169,6 +175,9 @@ fn test_unijis_ucs2_h_cmap_japanese() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Japanese Hiragana character "あ" (U+3042)
@@ -222,6 +231,9 @@ fn test_unicns_ucs2_h_cmap_traditional_chinese() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Traditional Chinese character "一" (U+4E00)
@@ -275,6 +287,9 @@ fn test_uniks_ucs2_h_cmap_korean() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     // Korean Hangul character "가" (U+AC00)

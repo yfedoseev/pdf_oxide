@@ -455,9 +455,75 @@ pub(crate) mod utils {
         }
     }
 
+    /// Sort `items` into row-band reading order, computing each element's band
+    /// key once instead of re-quantizing on every `row_aware_span_cmp`
+    /// comparison.
+    ///
+    /// When all `y`/`x` are finite this is a cached-key stable sort with the
+    /// same order as `sort_by(row_aware_span_cmp)` (band descending, then `x`
+    /// ascending — `f32::total_cmp` equals `safe_float_cmp` for finite values,
+    /// and both are stable on ties). Otherwise it falls back to the comparator
+    /// so the NaN/±∞ policy is unchanged.
+    pub fn sort_by_row_band<T>(
+        items: &mut [T],
+        get_y: impl Fn(&T) -> f32,
+        get_x: impl Fn(&T) -> f32,
+    ) {
+        let all_finite = items
+            .iter()
+            .all(|it| get_y(it).is_finite() && get_x(it).is_finite());
+        if !all_finite {
+            items.sort_by(|a, b| row_aware_span_cmp(get_y(a), get_x(a), get_y(b), get_x(b)));
+            return;
+        }
+        // Cached-key stable sort. `total_cmp` matches `safe_float_cmp` for the
+        // finite values we gated on above.
+        items.sort_by_cached_key(|it| {
+            let band = (get_y(it) / ROW_BAND_TOLERANCE_PT).round() as i32;
+            // Reverse band → larger Y (higher on page) first, matching the
+            // comparator's `band_b.cmp(&band_a)`.
+            (std::cmp::Reverse(band), F32Ord(get_x(it)))
+        });
+    }
+
+    /// Total-order wrapper over `f32` for use as a sort key. For finite values
+    /// `total_cmp` is identical to `safe_float_cmp` / `partial_cmp`.
+    #[derive(Clone, Copy, PartialEq)]
+    struct F32Ord(f32);
+    impl Eq for F32Ord {}
+    impl PartialOrd for F32Ord {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+    impl Ord for F32Ord {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.0.total_cmp(&other.0)
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        /// The cached-key sort must produce the identical permutation to
+        /// `sort_by(row_aware_span_cmp)` on finite inputs.
+        #[test]
+        fn test_sort_by_row_band_matches_comparator() {
+            // Deterministic pseudo-random spans (no rng in tests).
+            let raw: Vec<(f32, f32)> = (0..500)
+                .map(|i| {
+                    let y = ((i * 37 % 113) as f32) * 1.3;
+                    let x = ((i * 71 % 97) as f32) * 2.1;
+                    (y, x)
+                })
+                .collect();
+            let mut a = raw.clone();
+            let mut b = raw.clone();
+            sort_by_row_band(&mut a, |t| t.0, |t| t.1);
+            b.sort_by(|p, q| row_aware_span_cmp(p.0, p.1, q.0, q.1));
+            assert_eq!(a, b, "cached-key sort must match the comparator permutation");
+        }
 
         #[test]
         fn test_safe_float_cmp_normal() {

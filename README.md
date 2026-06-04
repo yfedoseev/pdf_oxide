@@ -284,19 +284,19 @@ cargo install pdf_oxide_mcp             # Cargo
 - **Go** — `go get github.com/yfedoseev/pdf_oxide/go` — see [go/README.md](go/README.md)
 - **JavaScript / TypeScript (Node.js)** — `npm install pdf-oxide` — see [js/README.md](js/README.md)
 - **C# / .NET** — `dotnet add package PdfOxide` — see [csharp/README.md](csharp/README.md)
-- **Java / Kotlin (JDK 11+)** — Maven coords `fyi.oxide:pdf-oxide:0.3.59` — see [java/README.md](java/README.md)
+- **Java / Kotlin (JDK 11+)** — Maven coords `fyi.oxide:pdf-oxide:0.3.60` — see [java/README.md](java/README.md)
 
   ```xml
   <dependency>
     <groupId>fyi.oxide</groupId>
     <artifactId>pdf-oxide</artifactId>
-    <version>0.3.59</version>
+    <version>0.3.60</version>
   </dependency>
   ```
 
   ```gradle
   // Gradle (Kotlin DSL)
-  implementation("fyi.oxide:pdf-oxide:0.3.59")
+  implementation("fyi.oxide:pdf-oxide:0.3.60")
   ```
 
 All four share the same Rust core as the Python and WASM bindings, so everything you read in this README applies to them as well — just with each language's native naming conventions.
