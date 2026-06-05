@@ -12,6 +12,7 @@
 //! near-white/green; with the old fallback it collapsed to black. The two
 //! fixtures exercise the two supported tint-transform function types:
 //! FunctionType 2 (exponential) and FunctionType 0 (sampled).
+#![cfg(feature = "rendering")]
 
 use pdf_oxide::document::PdfDocument;
 use pdf_oxide::rendering::{render_page_fit, ImageFormat, RenderOptions};

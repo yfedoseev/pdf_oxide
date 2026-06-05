@@ -11,6 +11,7 @@
 //!
 //! The PDFs are built in-memory at a tiny 10×10 MediaBox (no committed binary
 //! fixtures) so the tests stay self-contained and cheap to render.
+#![cfg(feature = "rendering")]
 
 use pdf_oxide::document::PdfDocument;
 use pdf_oxide::rendering::{render_page_fit, ImageFormat, RenderOptions};
