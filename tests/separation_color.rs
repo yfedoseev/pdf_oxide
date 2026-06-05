@@ -39,10 +39,7 @@ fn assert_light_green(name: &str, (r, g, b): (u8, u8, u8)) {
         r > 150 && g > 150 && b > 150,
         "{name}: Separation fill rendered dark (r={r}, g={g}, b={b}) — tint transform not applied?",
     );
-    assert!(
-        g >= r && g >= b,
-        "{name}: expected green-dominant tint, got ({r},{g},{b})",
-    );
+    assert!(g >= r && g >= b, "{name}: expected green-dominant tint, got ({r},{g},{b})",);
 }
 
 #[test]
@@ -78,10 +75,7 @@ fn devicen_scn_fill_type4_multicolorant() {
         g > 150 && g >= r && g >= b,
         "DeviceN Type 4: expected green-dominant, got ({r},{g},{b})",
     );
-    assert!(
-        r < 130,
-        "DeviceN Type 4: expected low red from C=0.8, got r={r} ({r},{g},{b})",
-    );
+    assert!(r < 130, "DeviceN Type 4: expected low red from C=0.8, got r={r} ({r},{g},{b})",);
 }
 
 /// Separation whose alternate space is `[/Lab …]`. The tint transform maps

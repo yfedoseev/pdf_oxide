@@ -14,7 +14,9 @@ use pdf_oxide::document::PdfDocument;
 use pdf_oxide::rendering::{render_page_fit, ImageFormat, RenderOptions};
 
 fn main() {
-    let label = std::env::args().nth(1).unwrap_or_else(|| "rendered".to_string());
+    let label = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "rendered".to_string());
     let dir = Path::new("examples/separation-blackout");
 
     for name in [
@@ -42,8 +44,8 @@ fn main() {
         );
 
         // PNG for the README.
-        let png = render_page_fit(&doc, 0, 200, 200, &RenderOptions::with_dpi(72))
-            .expect("render png");
+        let png =
+            render_page_fit(&doc, 0, 200, 200, &RenderOptions::with_dpi(72)).expect("render png");
         let png_path = dir.join(format!("{name}-{label}.png"));
         png.save(&png_path).expect("save png");
         println!("wrote {}", png_path.display());

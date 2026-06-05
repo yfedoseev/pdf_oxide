@@ -19,10 +19,10 @@ use crate::content::parser::parse_content_stream;
 use crate::document::PdfDocument;
 use crate::error::{Error, Result};
 use crate::object::{Object, ObjectRef};
+use crate::rendering::color_resolve::{cmyk_to_rgb, device_name_to_rgb, resolve_color_to_rgb};
 use crate::rendering::ext_gstate::{parse_ext_g_state_inner, ParsedExtGState};
 use crate::rendering::path_rasterizer::PathRasterizer;
 use crate::rendering::text_rasterizer::TextRasterizer;
-use crate::rendering::color_resolve::{cmyk_to_rgb, device_name_to_rgb, resolve_color_to_rgb};
 
 use crate::fonts::FontInfo;
 use std::collections::{HashMap, HashSet};

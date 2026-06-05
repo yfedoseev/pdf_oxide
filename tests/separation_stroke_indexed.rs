@@ -45,10 +45,7 @@ fn build_pdf(objects: &[String]) -> Vec<u8> {
 /// A content stream object (`<</Length N>>stream … endstream`) with the byte
 /// length computed from `content`.
 fn stream_obj(content: &str) -> String {
-    format!(
-        "<</Length {}>>\nstream\n{content}\nendstream",
-        content.len()
-    )
+    format!("<</Length {}>>\nstream\n{content}\nendstream", content.len())
 }
 
 /// Render the given PDF into a 50×50 raster and return its centre pixel RGB.

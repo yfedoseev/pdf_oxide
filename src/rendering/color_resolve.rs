@@ -21,10 +21,7 @@ fn obj_to_f32(o: &Object) -> Option<f32> {
 }
 
 /// Read a dictionary entry as a Vec<f32> (numeric array), or empty.
-fn dict_f32_array(
-    dict: &std::collections::HashMap<String, Object>,
-    key: &str,
-) -> Vec<f32> {
+fn dict_f32_array(dict: &std::collections::HashMap<String, Object>, key: &str) -> Vec<f32> {
     dict.get(key)
         .and_then(|o| o.as_array())
         .map(|a| a.iter().filter_map(obj_to_f32).collect())
@@ -137,9 +134,8 @@ fn eval_pdf_function(
         let domain = f32_pairs_to_f64(&dict_f32_array(dict, "Domain"));
         let range = f32_pairs_to_f64(&dict_f32_array(dict, "Range"));
         let inputs_f64: Vec<f64> = inputs.iter().map(|&v| v as f64).collect();
-        let out =
-            crate::functions::evaluate_type4_clamped(&program, &inputs_f64, &domain, &range)
-                .ok()?;
+        let out = crate::functions::evaluate_type4_clamped(&program, &inputs_f64, &domain, &range)
+            .ok()?;
         return Some(out.into_iter().map(|v| v as f32).collect());
     }
 
@@ -153,18 +149,12 @@ fn eval_pdf_function(
 
     // Clip the input to Domain (default [0, 1]).
     let domain = dict_f32_array(dict, "Domain");
-    let (d0, d1) = (
-        domain.first().copied().unwrap_or(0.0),
-        domain.get(1).copied().unwrap_or(1.0),
-    );
+    let (d0, d1) = (domain.first().copied().unwrap_or(0.0), domain.get(1).copied().unwrap_or(1.0));
     let x = input.clamp(d0.min(d1), d0.max(d1));
 
     match ftype {
         2 => {
-            let n = dict
-                .get("N")
-                .and_then(obj_to_f32)
-                .unwrap_or(1.0);
+            let n = dict.get("N").and_then(obj_to_f32).unwrap_or(1.0);
             let c0 = dict_f32_array(dict, "C0");
             let c1 = dict_f32_array(dict, "C1");
             // Defaults per spec: C0 = [0.0], C1 = [1.0].
@@ -178,7 +168,7 @@ fn eval_pdf_function(
                 })
                 .collect();
             Some(out)
-        }
+        },
         0 => {
             let size = dict
                 .get("Size")
@@ -194,7 +184,7 @@ fn eval_pdf_function(
                 return None;
             }
             let m = range.len() / 2; // number of output components
-            // Encode default [0, size-1]; Decode default = Range.
+                                     // Encode default [0, size-1]; Decode default = Range.
             let encode = {
                 let e = dict_f32_array(dict, "Encode");
                 if e.len() >= 2 {
@@ -234,7 +224,7 @@ fn eval_pdf_function(
                 out.push(dlo + s * (dhi - dlo));
             }
             Some(out)
-        }
+        },
         _ => None,
     }
 }
@@ -311,9 +301,7 @@ fn alternate_space_to_rgb(
             match n {
                 1 => comps.first().map(|&g| (g, g, g)),
                 3 if comps.len() >= 3 => Some((comps[0], comps[1], comps[2])),
-                4 if comps.len() >= 4 => {
-                    Some(cmyk_to_rgb(comps[0], comps[1], comps[2], comps[3]))
-                },
+                4 if comps.len() >= 4 => Some(cmyk_to_rgb(comps[0], comps[1], comps[2], comps[3])),
                 _ => None,
             }
         },
@@ -349,7 +337,11 @@ fn indexed_base_components(doc: &crate::document::PdfDocument, base: &Object) ->
         "CalRGB" | "Lab" => Some(3),
         "ICCBased" => {
             let stream = doc.resolve_object(arr.get(1)?).ok()?;
-            stream.as_dict()?.get("N").and_then(|o| o.as_integer()).map(|n| n as usize)
+            stream
+                .as_dict()?
+                .get("N")
+                .and_then(|o| o.as_integer())
+                .map(|n| n as usize)
         },
         _ => None,
     }
@@ -401,7 +393,9 @@ fn lab_to_rgb(
     };
 
     // D65 white point, used as the default and as the sRGB reference white.
-    let wp = dict.map(|d| dict_f32_array(d, "WhitePoint")).unwrap_or_default();
+    let wp = dict
+        .map(|d| dict_f32_array(d, "WhitePoint"))
+        .unwrap_or_default();
     let (xn, yn, zn) = match wp.as_slice() {
         [x, y, z, ..] => (*x, *y, *z),
         _ => (0.9505, 1.0, 1.089),
@@ -498,16 +492,10 @@ mod tests {
     fn test_device_name_to_rgb() {
         assert_eq!(device_name_to_rgb("DeviceGray", &[0.5]), Some((0.5, 0.5, 0.5)));
         assert_eq!(device_name_to_rgb("G", &[0.25]), Some((0.25, 0.25, 0.25)));
-        assert_eq!(
-            device_name_to_rgb("DeviceRGB", &[0.1, 0.2, 0.3]),
-            Some((0.1, 0.2, 0.3))
-        );
+        assert_eq!(device_name_to_rgb("DeviceRGB", &[0.1, 0.2, 0.3]), Some((0.1, 0.2, 0.3)));
         assert_eq!(device_name_to_rgb("RGB", &[1.0, 0.0, 0.0]), Some((1.0, 0.0, 0.0)));
         // DeviceCMYK white (all zero) → RGB white.
-        assert_eq!(
-            device_name_to_rgb("DeviceCMYK", &[0.0, 0.0, 0.0, 0.0]),
-            Some((1.0, 1.0, 1.0))
-        );
+        assert_eq!(device_name_to_rgb("DeviceCMYK", &[0.0, 0.0, 0.0, 0.0]), Some((1.0, 1.0, 1.0)));
         // Too few components → None (caller falls back).
         assert_eq!(device_name_to_rgb("DeviceRGB", &[0.5]), None);
         assert_eq!(device_name_to_rgb("DeviceCMYK", &[0.5, 0.5, 0.5]), None);
