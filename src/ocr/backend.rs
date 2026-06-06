@@ -223,7 +223,9 @@ impl TractBackend {
             .map_err(|e| OcrError::InferenceError(format!("tract: optimize: {}", e)))?
             .into_runnable()
             .map_err(|e| OcrError::InferenceError(format!("tract: runnable: {}", e)))?;
-        let arc = std::sync::Arc::new(runnable);
+        // tract 0.23's `into_runnable()` already yields an `Arc<RunnableModel>`,
+        // so the plan is wrapped exactly once (0.22 returned the bare model).
+        let arc = runnable;
         plans.insert(key, arc.clone());
         Ok(arc)
     }
@@ -256,7 +258,10 @@ impl InferenceBackend for TractBackend {
             .ok_or_else(|| OcrError::InferenceError("tract: no output tensor".to_string()))?;
 
         let out_shape: Vec<usize> = out.shape().to_vec();
-        let out_data = out
+        // tract 0.23 moved `as_slice` off `Tensor` onto `TensorView`; `out` is a
+        // `TValue` (derefs to `Tensor`), so view it then borrow the flat data.
+        let out_view = out.view();
+        let out_data = out_view
             .as_slice::<f32>()
             .map_err(|e| OcrError::InferenceError(format!("tract: extract output: {}", e)))?;
         ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&out_shape), out_data.to_vec())
