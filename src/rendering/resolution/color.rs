@@ -57,11 +57,90 @@ impl ColorResolver {
         alpha: f32,
     ) -> Result<ResolvedColor> {
         match color {
-            LogicalColor::Device(dev) => Ok(device_to_rgba(*dev, alpha)),
+            LogicalColor::Device(dev) => {
+                // ISO 32000-1:2008 §8.6.5.6: when the page declares a
+                // /DefaultGray, /DefaultRGB, or /DefaultCMYK entry in
+                // its /Resources /ColorSpace dict, any bare device-family
+                // paint operator (the canonical `g`/`rg`/`k`/`K` and
+                // their stroking siblings) MUST be interpreted as if it
+                // had named the override colour space instead of the
+                // device family. The override therefore takes
+                // precedence over the document /OutputIntents profile
+                // for bare device paint — OutputIntent is only the
+                // fallback default when no override has been declared.
+                if let Some(resolved) = self.resolve_device_default_override(*dev, ctx, alpha)? {
+                    return Ok(resolved);
+                }
+                Ok(device_to_rgba(*dev, alpha))
+            },
             LogicalColor::Spaced { space, components } => {
                 self.resolve_spaced(space, components, ctx, alpha)
             },
         }
+    }
+
+    /// §8.6.5.6 dispatch for bare device-family paint. Returns `Some`
+    /// when the active page has declared a matching `/Default<Family>`
+    /// override AND that override resolves successfully; otherwise
+    /// returns `None` so the caller emits the device-family default.
+    ///
+    /// The override is resolved by recursively calling `resolve_spaced`
+    /// on the override object with the original paint components. That
+    /// reuses the existing colour-space machinery (ICCBased N=3/N=4,
+    /// Separation, DeviceN, …) so a `/DefaultCMYK [/ICCBased ...]`
+    /// override goes through the embedded-ICC path, picks up the
+    /// per-page transform cache via `ctx.icc_transform_cache`, and
+    /// emits `ResolvedColor::IccCmyk` exactly as for an explicit
+    /// `[/ICCBased N=4]` colour space paint.
+    ///
+    /// Precedence note: this fires BEFORE the OutputIntent-aware CMYK
+    /// projection at `cmyk_to_rgb_via_intent` because the override is
+    /// the page's declared colour space and OutputIntent only fills
+    /// in for the device family when no override is present.
+    fn resolve_device_default_override(
+        &self,
+        dev: DeviceColor,
+        ctx: &ResolutionContext,
+        alpha: f32,
+    ) -> Result<Option<ResolvedColor>> {
+        let (override_obj, components): (Option<&Object>, smallvec::SmallVec<[f32; 4]>) = match dev
+        {
+            DeviceColor::Gray(g) => (ctx.default_gray, smallvec::smallvec![g]),
+            DeviceColor::Rgb(r, g, b) => (ctx.default_rgb, smallvec::smallvec![r, g, b]),
+            DeviceColor::Cmyk(c, m, y, k) => (ctx.default_cmyk, smallvec::smallvec![c, m, y, k]),
+        };
+        let Some(space) = override_obj else {
+            return Ok(None);
+        };
+
+        // §8.6.5.6 requires the override entry to be a colour space:
+        // either a Name (device-family alias such as `/DeviceCMYK`,
+        // `/CalGray`) or an Array (`[/ICCBased ...]`, `[/Separation
+        // ...]`, etc.). A malformed entry (string, integer, bool,
+        // dictionary…) is structurally indistinguishable from the
+        // entry being absent — honouring it would silently
+        // mis-render through `resolve_spaced`'s `first_as_gray`
+        // catch-all (a quarter-tint CMYK paint coming out as 25%
+        // gray is worse than the spec-fallback / OutputIntent
+        // render). Return None so the caller falls through to the
+        // device-family path (`device_to_rgba`), which routes CMYK
+        // through `cmyk_to_rgb_via_intent` and so consults
+        // `/OutputIntents` when present, or §10.3.5 additive-clamp
+        // when not.
+        if space.as_name().is_none() && space.as_array().is_none() {
+            return Ok(None);
+        }
+
+        // The override resolves via the same colour-space pipeline
+        // as an explicit `cs <space>` paint — that's the whole point
+        // of §8.6.5.6: the override colour space stands in for the
+        // device family. If the override object is just another Name
+        // (e.g. `/DefaultCMYK /DeviceCMYK`, an identity declaration),
+        // resolve_spaced's Name arm folds back to the device-family
+        // default — returning Some is still correct because we've
+        // honoured the override; it just produces the same value as
+        // the no-override path.
+        Ok(Some(self.resolve_spaced(space, &components, ctx, alpha)?))
     }
 
     fn resolve_spaced(
@@ -124,15 +203,179 @@ impl ColorResolver {
         };
         let n = dict.get("N").and_then(|o| o.as_integer()).unwrap_or(3);
 
-        // Without the `icc` feature we have no CMM at all — fall back to the
-        // §10.3.5 formula via the device-family path. With the feature, we
-        // could materialise a `crate::color::Transform` and route through
-        // qcms, but this branch only fires on per-operator colour change
-        // (not per-pixel) and the source profile is rarely set at this
-        // call site — the typical case is "DeviceCMYK lookalike ICCBased
-        // with N=4 and the OutputIntent profile already covering it".
-        // We keep parity with the existing inline behaviour by treating N
-        // as the channel-count hint and falling through to device families.
+        // §8.6.5.5 precedence: an ICCBased colour space carries its own
+        // conversion source. The embedded profile wins over the document
+        // /OutputIntents profile when CMYK→RGB is requested. Decode the
+        // stream, parse the bytes through IccProfile::parse (which
+        // cross-checks the dict's /N against the ICC header signature),
+        // and compile a qcms Transform against the active rendering
+        // intent. On any failure (no `icc` feature, decode error,
+        // mismatched header, qcms refusal) we fall through to the
+        // device-family path — that path emits ResolvedColor::Cmyk for
+        // N=4, which the composite projection then converts through
+        // ctx.output_intent_cmyk: the document OutputIntent becomes the
+        // default when the embedded profile can't actually drive a CMM.
+        //
+        // We emit the dual-payload `IccCmyk` variant so the per-plate
+        // router still sees the four channel decomposition. The composite
+        // backend reads the pre-computed RGB; the separation backend
+        // reads the original CMYK quadruple. The ICC conversion is a
+        // composite-surface concern — the plates ARE the press-target
+        // ink coverage, so dropping the CMYK channel values for a
+        // monolithic Rgba would zero out every plate.
+        #[cfg(feature = "icc")]
+        if n == 4 && components.len() >= 4 {
+            if let Ok(bytes) = resolved_stream.decode_stream_data() {
+                if let Some(profile) = crate::color::IccProfile::parse(bytes, 4) {
+                    let profile = std::sync::Arc::new(profile);
+                    // Per-page transform cache keyed on profile content
+                    // hash + intent (see IccTransformCache). The
+                    // embedded /ICCBased profile is parsed afresh on
+                    // every paint operator (the decode + parse happens
+                    // above), but the qcms CMM is the heavy bit and
+                    // gets reused across paints whose ICCBased stream
+                    // hashes identically. Unit tests skip the cache
+                    // (ctx.icc_transform_cache is None) and pay the
+                    // per-call build cost.
+                    let transform: std::sync::Arc<crate::color::Transform> =
+                        if let Some(cache) = ctx.icc_transform_cache {
+                            cache.get_or_build(&profile, ctx.rendering_intent)
+                        } else {
+                            std::sync::Arc::new(crate::color::Transform::new_srgb_target(
+                                std::sync::Arc::clone(&profile),
+                                ctx.rendering_intent,
+                            ))
+                        };
+                    if transform.has_cmm() {
+                        let c = components[0].clamp(0.0, 1.0);
+                        let m = components[1].clamp(0.0, 1.0);
+                        let y = components[2].clamp(0.0, 1.0);
+                        let k = components[3].clamp(0.0, 1.0);
+                        let c_u8 = (c * 255.0).round() as u8;
+                        let m_u8 = (m * 255.0).round() as u8;
+                        let y_u8 = (y * 255.0).round() as u8;
+                        let k_u8 = (k * 255.0).round() as u8;
+                        let rgb = transform.convert_cmyk_pixel(c_u8, m_u8, y_u8, k_u8);
+                        return Ok(ResolvedColor::IccCmyk {
+                            r: rgb[0] as f32 / 255.0,
+                            g: rgb[1] as f32 / 255.0,
+                            b: rgb[2] as f32 / 255.0,
+                            c,
+                            m,
+                            y,
+                            k,
+                            a: alpha,
+                        });
+                    }
+                }
+            }
+        }
+
+        // ICCBased N=3 — RGB source profile. The embedded profile
+        // drives the conversion (§8.6.5.5); the §10.3.5 fallback only
+        // fires when qcms refuses to compile the profile. This branch
+        // is also the path the §8.6.5.6 /DefaultRGB override consumes:
+        // declaring `/DefaultRGB [/ICCBased <N=3 stream>]` and painting
+        // bare /DeviceRGB sends the three components through this arm.
+        //
+        // No per-plate routing complication here — RGB never lands on
+        // CMYK plates — so we emit ResolvedColor::Rgba directly. The
+        // per-page transform cache (originally introduced for CMYK,
+        // but n_components-agnostic at the key level — see
+        // `IccTransformCache` docstring) is consulted here too: an
+        // /ICCBased N=3 profile used by a /DefaultRGB override gets
+        // hit by every bare /DeviceRGB paint on the page, so caching
+        // the compiled qcms transform pays back for the same reason
+        // the CMYK arm above does.
+        #[cfg(feature = "icc")]
+        if n == 3 && components.len() >= 3 {
+            if let Ok(bytes) = resolved_stream.decode_stream_data() {
+                if let Some(profile) = crate::color::IccProfile::parse(bytes, 3) {
+                    let profile = std::sync::Arc::new(profile);
+                    let transform: std::sync::Arc<crate::color::Transform> =
+                        if let Some(cache) = ctx.icc_transform_cache {
+                            cache.get_or_build(&profile, ctx.rendering_intent)
+                        } else {
+                            std::sync::Arc::new(crate::color::Transform::new_srgb_target(
+                                std::sync::Arc::clone(&profile),
+                                ctx.rendering_intent,
+                            ))
+                        };
+                    if transform.has_cmm() {
+                        let r = components[0].clamp(0.0, 1.0);
+                        let g = components[1].clamp(0.0, 1.0);
+                        let b = components[2].clamp(0.0, 1.0);
+                        let r_u8 = (r * 255.0).round() as u8;
+                        let g_u8 = (g * 255.0).round() as u8;
+                        let b_u8 = (b * 255.0).round() as u8;
+                        let rgb = transform.convert_rgb_buffer(&[r_u8, g_u8, b_u8]);
+                        if rgb.len() >= 3 {
+                            return Ok(ResolvedColor::Rgba {
+                                r: rgb[0] as f32 / 255.0,
+                                g: rgb[1] as f32 / 255.0,
+                                b: rgb[2] as f32 / 255.0,
+                                a: alpha,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // ICCBased N=1 — Gray source profile. The embedded profile
+        // drives the conversion (§8.6.5.5) and is the path
+        // /DefaultGray [/ICCBased <N=1 TRC stream>] consumes for bare
+        // /DeviceGray paint. qcms 0.3.0 reads Gray ICC profiles via
+        // the `kTRC` (gray Tone Reproduction Curve) tag —
+        // `iccread.rs:1712-1714` — and runs a dedicated
+        // gray-to-RGB transform path at `transform.rs:437-475`. The
+        // input is one byte, the output is three RGB bytes; we read
+        // the first three of `convert_gray_buffer`'s output.
+        //
+        // No per-plate routing complication — a Gray override emits
+        // a single ink and lands on the K plate via the InkRouter's
+        // gray-as-K handling; the composite RGB is what consumers
+        // see, so ResolvedColor::Rgba is the right variant. The
+        // per-page transform cache is consulted exactly as for N=3
+        // and N=4 — the key is (profile.content_hash(), intent), no
+        // n_components in the key, so the same cache amortises Gray
+        // ICC alongside RGB and CMYK.
+        #[cfg(feature = "icc")]
+        if n == 1 && !components.is_empty() {
+            if let Ok(bytes) = resolved_stream.decode_stream_data() {
+                if let Some(profile) = crate::color::IccProfile::parse(bytes, 1) {
+                    let profile = std::sync::Arc::new(profile);
+                    let transform: std::sync::Arc<crate::color::Transform> =
+                        if let Some(cache) = ctx.icc_transform_cache {
+                            cache.get_or_build(&profile, ctx.rendering_intent)
+                        } else {
+                            std::sync::Arc::new(crate::color::Transform::new_srgb_target(
+                                std::sync::Arc::clone(&profile),
+                                ctx.rendering_intent,
+                            ))
+                        };
+                    if transform.has_cmm() {
+                        let g = components[0].clamp(0.0, 1.0);
+                        let g_u8 = (g * 255.0).round() as u8;
+                        let rgb = transform.convert_gray_buffer(&[g_u8]);
+                        if rgb.len() >= 3 {
+                            return Ok(ResolvedColor::Rgba {
+                                r: rgb[0] as f32 / 255.0,
+                                g: rgb[1] as f32 / 255.0,
+                                b: rgb[2] as f32 / 255.0,
+                                a: alpha,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // No usable embedded profile — fall through to the device-family
+        // hint. For N=4 this emits ResolvedColor::Cmyk so per-plate
+        // backends still see the channel decomposition, and the
+        // composite projection routes through ctx.output_intent_cmyk
+        // (which is the spec default when no embedded ICC is available).
         match n {
             1 if !components.is_empty() => Ok(first_as_gray(components, alpha)),
             3 if components.len() >= 3 => Ok(three_as_rgb(components, alpha)),
@@ -261,7 +504,7 @@ impl ColorResolver {
         // the per-plate path.
         match alt_cs_name {
             Some("DeviceCMYK") | Some("CMYK") if altspace_values.len() >= 4 => {
-                Ok(four_as_cmyk(&altspace_values, alpha))
+                Ok(four_as_cmyk(&altspace_values, alpha, ctx))
             },
             Some("DeviceRGB") | Some("RGB") if altspace_values.len() >= 3 => {
                 Ok(three_as_rgb(&altspace_values, alpha))
@@ -370,13 +613,16 @@ fn three_as_rgb(components: &[f32], alpha: f32) -> ResolvedColor {
     }
 }
 
-/// Emit `ResolvedColor::Rgba` from a 4-component CMYK via §10.3.5
-/// additive-clamp. Used by the Separation / DeviceN alternate-CMYK
-/// projection — the per-plate routing for those sources is governed
-/// by the source colour space, not the alternate's CMYK decomposition,
-/// so the alt is composite-only.
-fn four_as_cmyk(components: &[f32], alpha: f32) -> ResolvedColor {
-    let (r, g, b) = cmyk_to_rgb(components[0], components[1], components[2], components[3]);
+/// Emit `ResolvedColor::Rgba` from a 4-component CMYK via the
+/// context-aware CMYK→RGB path: the document's `/OutputIntents` CMYK
+/// profile when present, otherwise §10.3.5 additive-clamp. Used by
+/// the Separation / DeviceN alternate-CMYK projection — the per-plate
+/// routing for those sources is governed by the source colour space,
+/// not the alternate's CMYK decomposition, so the alt is composite-
+/// only.
+fn four_as_cmyk(components: &[f32], alpha: f32, ctx: &ResolutionContext) -> ResolvedColor {
+    let (r, g, b) =
+        cmyk_to_rgb_via_intent(components[0], components[1], components[2], components[3], ctx);
     ResolvedColor::Rgba { r, g, b, a: alpha }
 }
 
@@ -406,6 +652,89 @@ fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
     let g = 1.0 - (m + k).min(1.0);
     let b = 1.0 - (y + k).min(1.0);
     (r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0))
+}
+
+/// Context-aware CMYK → RGB convergence.
+///
+/// Precedence inside this function (callers handle the embedded-ICC
+/// case before reaching here — those paths route through
+/// `ColorResolver::resolve_iccbased` instead, and the §8.6.5.6
+/// `/DefaultCMYK` override fires inside `ColorResolver::resolve` before
+/// any device-CMYK reaches this helper):
+///
+/// 1. `ctx.output_intent_cmyk` — when the document declares an
+///    `/OutputIntents` array with a `/N=4` `/DestOutputProfile`,
+///    convert the CMYK quadruple through that profile via the
+///    `crate::color::Transform` wrapper. The active rendering intent
+///    (`ctx.rendering_intent`, §10.7.3) gates which qcms intent the
+///    transform is built for. The 8-bit round-trip (quantise CMYK to
+///    `[u8; 4]`, run qcms, decode the resulting RGB to `f32`) is the
+///    same encoding the rest of `crate::color` uses — going wider
+///    here would diverge from the image-decoder path that already
+///    funnels through this CMM.
+///
+/// 2. `ctx.output_intent_cmyk` is `None` — the document didn't
+///    declare a CMYK OutputIntent (or one is present but couldn't be
+///    parsed). Falls through to the spec's §10.3.5 additive-clamp
+///    formula. This is the byte-for-byte fallback the renderer
+///    shipped before OutputIntent threading landed.
+///
+/// **Black-Point Compensation (BPC) and rendering-intent caveats:**
+/// qcms 0.3.0 does not implement BPC and, for CMYK sources, silently
+/// drops the rendering-intent parameter (see qcms `lib.rs:29-36` and
+/// `transform.rs:1283-1289`). The intent value is threaded through the
+/// cache key here so a future CMM upgrade that honours intent doesn't
+/// silently collapse cache entries; the byte-level output, however, is
+/// CURRENTLY intent-invariant for any CMYK input. The HONEST_GAP probe
+/// `qa_round4_bpc_paper_white_preservation_under_relative_colorimetric`
+/// in `tests/test_render_output_intent.rs` pins this — a CMM upgrade
+/// will turn the probe RED at the new per-intent expected references.
+///
+/// Without the `icc` feature `convert_cmyk_pixel` already devolves to
+/// §10.3.5 inside the CMM wrapper, so the OutputIntent path is
+/// non-destructive when no real CMM is linked in. The explicit
+/// `cfg(feature = "icc")` gate here is a micro-optimisation: skip
+/// building the `Transform` wrapper altogether when there's no
+/// chance of a real conversion.
+pub(crate) fn cmyk_to_rgb_via_intent(
+    c: f32,
+    m: f32,
+    y: f32,
+    k: f32,
+    ctx: &ResolutionContext<'_>,
+) -> (f32, f32, f32) {
+    #[cfg(feature = "icc")]
+    if let Some(profile) = ctx.output_intent_cmyk {
+        let c_u8 = (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let m_u8 = (m.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let y_u8 = (y.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let k_u8 = (k.clamp(0.0, 1.0) * 255.0).round() as u8;
+        // The per-page IccTransformCache holds the compiled qcms
+        // transform across the many `ResolutionContext` instances the
+        // operator dispatcher builds inside one render. Without the
+        // cache, every CMYK paint operator rebuilds the 17⁴ CLUT
+        // (qcms::Transform::new_to) — that's the perf trap the cache
+        // exists to eliminate. The unit-test path skips the cache
+        // (`with_icc_transform_cache` is the renderer-only opt-in)
+        // and pays the per-call build cost; integration tests cover
+        // the cached path through render_page.
+        let rgb = if let Some(cache) = ctx.icc_transform_cache {
+            let transform = cache.get_or_build(profile, ctx.rendering_intent);
+            transform.convert_cmyk_pixel(c_u8, m_u8, y_u8, k_u8)
+        } else {
+            let transform = crate::color::Transform::new_srgb_target(
+                std::sync::Arc::clone(profile),
+                ctx.rendering_intent,
+            );
+            transform.convert_cmyk_pixel(c_u8, m_u8, y_u8, k_u8)
+        };
+        return (rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0);
+    }
+    // No OutputIntent → spec fallback. The `ctx` borrow is held through
+    // the cfg-gated branch above; under the no-icc build we explicitly
+    // discard it here so the compiler doesn't flag an unused parameter.
+    let _ = ctx;
+    cmyk_to_rgb(c, m, y, k)
 }
 
 /// Evaluate a Type 2 (exponential interpolation) function at a single input.
@@ -831,5 +1160,54 @@ mod tests {
             ResolvedColor::Rgba { a, .. } => assert!((a - 0.3).abs() < 1e-6),
             _ => panic!("expected Rgba"),
         }
+    }
+
+    #[test]
+    fn cmyk_to_rgb_via_intent_with_no_output_intent_matches_additive_clamp() {
+        // The fallback arm is the spec's §10.3.5 formula. Pin one
+        // representative quadruple byte-exact so a regression that
+        // re-routed the no-OutputIntent path through some other
+        // conversion would surface here.
+        let doc = fixture_doc();
+        let spaces = HashMap::new();
+        let ctx = ResolutionContext::new(&doc, &spaces);
+        // CMYK(0.25, 0, 0, 0) → R=0.75, G=1.0, B=1.0.
+        let (r, g, b) = super::cmyk_to_rgb_via_intent(0.25, 0.0, 0.0, 0.0, &ctx);
+        assert!((r - 0.75).abs() < 1e-6);
+        assert!((g - 1.0).abs() < 1e-6);
+        assert!((b - 1.0).abs() < 1e-6);
+    }
+
+    #[cfg(feature = "icc")]
+    #[test]
+    fn cmyk_to_rgb_via_intent_falls_back_when_profile_has_no_cmm() {
+        // The header-only stub profile parses (IccProfile::parse accepts
+        // the 128-byte header) but qcms refuses to build a Transform
+        // from it because there's no tag table. The wrapper devolves to
+        // §10.3.5 internally — the helper must agree byte-for-byte with
+        // the no-OutputIntent path on the same input. This is the
+        // shape a real but malformed /OutputIntents profile would take.
+        let doc = fixture_doc();
+        let spaces = HashMap::new();
+        let mut header_only = vec![0u8; 128];
+        header_only[8..12].copy_from_slice(&0x04000000u32.to_be_bytes());
+        header_only[12..16].copy_from_slice(b"prtr");
+        header_only[16..20].copy_from_slice(b"CMYK");
+        header_only[20..24].copy_from_slice(b"Lab ");
+        header_only[36..40].copy_from_slice(b"acsp");
+        let profile = std::sync::Arc::new(
+            crate::color::IccProfile::parse(header_only, 4).expect("stub parses"),
+        );
+        let ctx = ResolutionContext::new(&doc, &spaces).with_output_intent(Some(&profile));
+        let (r, g, b) = super::cmyk_to_rgb_via_intent(0.25, 0.0, 0.0, 0.0, &ctx);
+        // HONEST_GAP: this byte-exact agreement depends on
+        // crate::color::Transform::convert_cmyk_pixel matching
+        // crate::extractors::images::cmyk_pixel_to_rgb on the §10.3.5
+        // path. If those two diverge in the future the helper here
+        // could disagree with the no-OutputIntent arm even though
+        // both intended to run the spec fallback.
+        assert!((r - 0.75).abs() < 0.01, "got r={r}");
+        assert!((g - 1.0).abs() < 0.01, "got g={g}");
+        assert!((b - 1.0).abs() < 0.01, "got b={b}");
     }
 }

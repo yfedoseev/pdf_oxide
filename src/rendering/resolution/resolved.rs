@@ -59,6 +59,36 @@ pub(crate) enum ResolvedColor {
         k: f32,
         a: f32,
     },
+    /// Dual-payload variant for `/ICCBased` N=4 sources whose embedded
+    /// profile compiled into a usable CMM. Carries both the composite-
+    /// ready RGB (pre-converted via the embedded profile per
+    /// ISO 32000-1:2008 §8.6.5.5) and the raw CMYK quadruple from the
+    /// operator, so:
+    ///
+    /// - Composite consumers paint `(r, g, b, a)` as-is; the embedded
+    ///   profile already drove the CMYK→RGB conversion. No further
+    ///   OutputIntent-aware projection is needed (and would be wrong —
+    ///   §8.6.5.5 says the embedded profile is the conversion source).
+    /// - Per-plate consumers route the four CMYK components by named
+    ///   channel exactly as for the `Cmyk` variant. The ICC conversion
+    ///   is composite-only — the plates ARE the press-target ink
+    ///   coverage, so the original CMYK is what each C/M/Y/K plate must
+    ///   carry.
+    ///
+    /// The two payloads describe the same logical paint command for
+    /// two different surfaces. Keeping them on a single variant means
+    /// the resolver still has a single emit site for ICCBased N=4 and
+    /// every downstream consumer reads the field it needs.
+    IccCmyk {
+        r: f32,
+        g: f32,
+        b: f32,
+        c: f32,
+        m: f32,
+        y: f32,
+        k: f32,
+        a: f32,
+    },
     /// Per-channel tints for separation / DeviceN backends. The pipeline
     /// orders the channels to match the source colour space's declared
     /// colorant order.
