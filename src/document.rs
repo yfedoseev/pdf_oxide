@@ -9415,8 +9415,10 @@ impl PdfDocument {
 
     /// Replace a `¬` (U+00AC) that a math subset drew from its `logicalnot`
     /// slot as a decimal point. Two shapes are recovered:
-    ///   * `digit ¬ digit`        → `digit.digit`         (e.g. `1¬00` → `1.00`)
-    ///   * `digit ¬ <space> digit`→ `digit.digit`         (e.g. `1¬ 00` → `1.00`)
+    ///
+    ///   - `digit ¬ digit`         → `digit.digit` (e.g. `1¬00` → `1.00`)
+    ///   - `digit ¬ <space> digit` → `digit.digit` (e.g. `1¬ 00` → `1.00`)
+    ///
     /// The second form covers subsets that emit a single space between the
     /// decimal glyph and the fractional digits; the lone separating space is
     /// dropped so the number reads as one token. The leading digit must abut
@@ -22504,10 +22506,7 @@ mod tests {
         assert_eq!(PdfDocument::fix_digit_logicalnot_decimal("5 \u{00AC} 3"), "5 \u{00AC} 3");
         // Only a single separating space is absorbed; two spaces is not a
         // decimal rendering and is left alone.
-        assert_eq!(
-            PdfDocument::fix_digit_logicalnot_decimal("1\u{00AC}  00"),
-            "1\u{00AC}  00"
-        );
+        assert_eq!(PdfDocument::fix_digit_logicalnot_decimal("1\u{00AC}  00"), "1\u{00AC}  00");
     }
 
     #[test]

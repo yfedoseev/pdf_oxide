@@ -70,7 +70,7 @@ fn parse_rect(arr: &[Object]) -> Option<Rect> {
 ///
 /// Best-effort and panic-free: malformed threads/beads are skipped, dangling
 /// references are tolerated, and non-circular `/N` chains are bounded by
-/// [`MAX_BEADS_PER_THREAD`]. Returns an empty vector when the document declares
+/// `MAX_BEADS_PER_THREAD`. Returns an empty vector when the document declares
 /// no threads.
 pub fn parse_article_threads(doc: &PdfDocument) -> Vec<ArticleThread> {
     let Ok(catalog) = doc.catalog() else {

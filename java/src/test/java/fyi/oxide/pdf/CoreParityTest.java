@@ -21,8 +21,7 @@ import org.junit.jupiter.api.Test;
  */
 class CoreParityTest {
 
-    private static final String MARKDOWN =
-            "# Core Parity\n\nFunctional parity across all language bindings.\n";
+    private static final String MARKDOWN = "# Core Parity\n\nFunctional parity across all language bindings.\n";
 
     private static byte[] buildBytes() {
         try (Pdf pdf = Pdf.fromMarkdown(MARKDOWN)) {

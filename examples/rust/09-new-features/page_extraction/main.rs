@@ -27,7 +27,11 @@ fn main() -> Result<()> {
             .done();
     }
     let bytes = builder.build()?;
-    println!("Built {}-page PDF ({} bytes)", PdfDocument::from_bytes(bytes.clone())?.page_count()?, bytes.len());
+    println!(
+        "Built {}-page PDF ({} bytes)",
+        PdfDocument::from_bytes(bytes.clone())?.page_count()?,
+        bytes.len()
+    );
 
     // Extract pages 1 and 3 (0-based indices 0 and 2) into a new PDF.
     let mut editor = DocumentEditor::from_bytes(bytes)?;

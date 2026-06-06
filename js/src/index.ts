@@ -372,7 +372,7 @@ class PdfDocumentImpl {
   constructor(handle: any) {
     if (typeof handle === 'string') {
       throw new Error(
-        `PdfDocument constructor takes an internal handle, not a path. Use PdfDocument.open(${JSON.stringify(handle)}) to open a file.`,
+        `PdfDocument constructor takes an internal handle, not a path. Use PdfDocument.open(${JSON.stringify(handle)}) to open a file.`
       );
     }
     if (!handle) throw new Error('Failed to open document');

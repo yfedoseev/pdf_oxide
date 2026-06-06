@@ -35,20 +35,12 @@ fn main() -> Result<()> {
     println!("Validating PDF/X-4 compliance...");
     let mut doc = PdfDocument::from_bytes(pdf_bytes.clone())?;
     let x = validate_pdf_x(&mut doc, PdfXLevel::X4)?;
-    println!(
-        "  is_compliant: {}  errors: {}",
-        x.is_compliant,
-        x.errors.len()
-    );
+    println!("  is_compliant: {}  errors: {}", x.is_compliant, x.errors.len());
 
     println!("Validating PDF/UA-1 compliance...");
     let mut doc = PdfDocument::from_bytes(pdf_bytes)?;
     let ua = validate_pdf_ua(&mut doc, PdfUaLevel::Ua1)?;
-    println!(
-        "  is_compliant: {}  errors: {}",
-        ua.is_compliant,
-        ua.errors.len()
-    );
+    println!("  is_compliant: {}  errors: {}", ua.is_compliant, ua.errors.len());
 
     Ok(())
 }

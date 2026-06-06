@@ -22,10 +22,7 @@ fn main() -> Result<()> {
 
     // AES-256 encryption with user + owner passwords (ISO 32000-1 §7.6).
     let encrypted = builder.to_bytes_encrypted("user123", "owner123")?;
-    assert!(
-        encrypted.starts_with(b"%PDF"),
-        "encrypted output must start with %PDF"
-    );
+    assert!(encrypted.starts_with(b"%PDF"), "encrypted output must start with %PDF");
 
     let path = out_dir.join("encrypted.pdf");
     std::fs::write(&path, &encrypted)?;

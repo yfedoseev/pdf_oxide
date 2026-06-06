@@ -1463,10 +1463,17 @@ jobs:
           case "${{ runner.os }}" in Windows) SEP=';' ;; *) SEP=':' ;; esac
           JAR=$(ls target/pdf-oxide-*.jar | head -n1)
           PDF="$GITHUB_WORKSPACE/tests/fixtures/simple.pdf"
+          # Runtime deps (slf4j-api, org.json) are declared compile-scope and
+          # reach real Maven/Gradle consumers transitively, but the bare JAR
+          # does not bundle them. Resolve the runtime classpath the same way a
+          # consumer would so the smoke test exercises the JAR as published.
+          mvn -B -P!dev -q dependency:build-classpath \
+            -DincludeScope=runtime -Dmdep.outputFile="$RUNNER_TEMP/cp.txt"
+          DEPS=$(cat "$RUNNER_TEMP/cp.txt")
           mkdir -p "$RUNNER_TEMP/javaex"
           javac -cp "$JAR" -d "$RUNNER_TEMP/javaex" \
             "$GITHUB_WORKSPACE/examples/java/01-extract-text/ExtractText.java"
-          out="$(java -cp "$JAR$SEP$RUNNER_TEMP/javaex" ExtractText "$PDF" 2>&1)" \
+          out="$(java -cp "$JAR$SEP$RUNNER_TEMP/javaex$SEP$DEPS" ExtractText "$PDF" 2>&1)" \
             || { echo "$out"; echo "ASSERT FAILED (exit)"; exit 1; }
           echo "$out"
           echo "$out" | grep -q "Pages:" || { echo "ASSERT FAILED: missing 'Pages:'"; exit 1; }
