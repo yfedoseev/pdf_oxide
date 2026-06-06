@@ -56,7 +56,11 @@ impl OverprintResolver {
                 // backends that act on composite RGB ignore the plan.
                 SmallVec::new()
             },
-            ResolvedColor::Cmyk { c, m, y, k, .. } => {
+            ResolvedColor::Cmyk { c, m, y, k, .. } | ResolvedColor::IccCmyk { c, m, y, k, .. } => {
+                // `IccCmyk` carries the same four-channel decomposition
+                // as `Cmyk` for the per-plate path; the only difference
+                // is the side-payload `(r, g, b)` the composite path
+                // reads. The plate router doesn't care about RGB.
                 let mut v = SmallVec::new();
                 v.push(ParticipatingChannel {
                     ink: InkName::new("Cyan"),

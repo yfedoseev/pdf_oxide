@@ -1027,7 +1027,35 @@ fn paint_through_pipeline(
         color: logical,
         ctm: gs.ctm,
     };
-    let ctx = ResolutionContext::new(doc, color_spaces);
+    // Thread the same colour-policy borrows as the composite path
+    // (page_renderer's run_pipeline_for_logical). The per-plate backend
+    // consumes ResolvedColor::Cmyk channel-by-channel for plate routing
+    // and never projects to RGBA, so the document /OutputIntents CMYK
+    // profile carried here is effectively no-op for separations — the
+    // plates ARE the press-target ink coverage. Threading it uniformly
+    // keeps the resolver call surface symmetric with the composite path
+    // so a single ColorResolver change can't silently diverge between
+    // the two renderers.
+    //
+    // HONEST_GAP: the per-page `IccTransformCache` that amortises qcms
+    // transform construction across paint operators lives on
+    // `PageRenderer`. The separation walker is a free function — it
+    // would need a SeparationRendererState struct to hold the cache
+    // across paint operators within a page. That's a separate refactor;
+    // the per-plate path doesn't actually invoke `cmyk_to_rgb_via_intent`
+    // (the per-plate router consumes `ResolvedColor::Cmyk` directly),
+    // so the only Transform construction here is on `/ICCBased` N=4
+    // paint, and only when the embedded profile has a working CMM —
+    // which is the design's expected (cold-path) case.
+    let output_intent = doc.output_intent_cmyk_profile();
+    let ctx = ResolutionContext::new(doc, color_spaces)
+        .with_output_intent(output_intent.as_ref())
+        .with_rendering_intent(crate::color::RenderingIntent::from_pdf_name(&gs.rendering_intent))
+        .with_defaults(
+            color_spaces.get("DefaultGray"),
+            color_spaces.get("DefaultRGB"),
+            color_spaces.get("DefaultCMYK"),
+        );
     let cmd = pipeline.resolve(&intent, &ctx, None)?;
     // Wrap the clip mask back into a borrowed ClipPlan-equivalent via
     // the SeparationSurface's externally-visible state. The
@@ -1411,6 +1439,15 @@ fn execute_separation_operators(
             },
             Operator::SetDash { array, phase } => {
                 gs_stack.current_mut().dash_pattern = (array.clone(), *phase);
+            },
+            Operator::SetRenderingIntent { intent } => {
+                // §10.7.3 — mirror the composite renderer's dispatch.
+                // The per-plate path doesn't consult OutputIntent for
+                // its CMYK channels (the plates ARE the press target),
+                // but `gs.rendering_intent` still flows through the
+                // resolver's ICCBased N=4 path, so keeping it current
+                // matches the composite path's behaviour.
+                gs_stack.current_mut().rendering_intent = intent.clone();
             },
 
             Operator::MoveTo { x, y } => {

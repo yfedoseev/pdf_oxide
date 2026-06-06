@@ -156,7 +156,7 @@ pub(crate) mod separation_backend;
 pub(crate) mod test_support;
 
 pub(crate) use backend::PaintBackend;
-pub(crate) use context::ResolutionContext;
+pub(crate) use context::{IccTransformCache, ResolutionContext};
 pub(crate) use intent::{DeviceColor, LogicalColor, PaintIntent, PaintKind, PaintSide};
 pub(crate) use pipeline::ResolutionPipeline;
 pub(crate) use resolved::{ClipPlan, InkName, ResolvedColor};

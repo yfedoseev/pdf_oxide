@@ -90,8 +90,11 @@ impl InkRouter {
             // OPM=1 "Adobe nonzero overprint": a zero channel value on
             // DeviceCMYK means "colorant not specified" → skip.
             // §11.7.4.3 limits OPM=1 to DeviceCMYK sources; we identify
-            // those by the colour variant.
-            let is_cmyk = matches!(color, ResolvedColor::Cmyk { .. });
+            // those by the colour variant. `IccCmyk` is a CMYK source
+            // for OPM purposes — the embedded ICC profile only changes
+            // the composite-RGB path; the per-plate model is identical.
+            let is_cmyk =
+                matches!(color, ResolvedColor::Cmyk { .. } | ResolvedColor::IccCmyk { .. });
             if overprint.enabled && overprint.mode == 1 && is_cmyk && ch.value == 0.0 {
                 return InkAction::Skip;
             }
