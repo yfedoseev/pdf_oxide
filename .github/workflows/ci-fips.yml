@@ -55,7 +55,7 @@ jobs:
 
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake nasm golang-go
+        run: sudo apt-get -o Acquire::Retries=3 update && sudo apt-get -o Acquire::Retries=3 install -y cmake nasm golang-go
 
       - name: Install build deps (macOS)
         if: runner.os == 'macOS'
@@ -66,7 +66,7 @@ jobs:
         run: choco install nasm -y
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -86,6 +86,36 @@ jobs:
 
       - name: Test --no-default-features --features fips,icc
         run: cargo test --no-default-features --features fips,icc
+
+      # FIPS-safe example run (cross-OS): the core scenarios use no weak crypto,
+      # so they must work under the FIPS build. Demonstrates extraction /
+      # conversion / create / search / edit / forms on Linux/macOS/Windows.
+      # The FIPS *rejection* path (Standard Security R≤4 needs MD5+RC4 → refused;
+      # only AES-256/SHA-2 R=6 is permitted, ISO 32000-1 §7.6) is covered by the
+      # `cargo test --features fips,icc` step above (encryption handler unit tests).
+      - name: Run FIPS-safe Rust examples (cross-OS, with assertions)
+        shell: bash
+        run: |
+          set -uo pipefail
+          PDF=tests/fixtures/simple.pdf
+          out_dir="${RUNNER_TEMP:-/tmp}"
+          FEAT="--no-default-features --features fips,icc"
+          fail() { echo "ASSERT FAILED: $1"; exit 1; }
+          run() { # run <expect> -- <cargo-run-args...>
+            local expect="$1"; shift; [ "$1" = "--" ] && shift
+            echo "::group::$*"
+            local out; out="$("$@" 2>&1)" || { echo "$out"; fail "non-zero exit: $*"; }
+            echo "$out"
+            [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ] || fail "empty output: $*"
+            [ -z "$expect" ] || printf '%s' "$out" | grep -qF "$expect" || fail "missing '$expect': $*"
+            echo "::endgroup::"
+          }
+          run "Pages:" -- cargo run $FEAT --quiet --example tutorial_extract_text -- "$PDF"
+          run ""       -- cargo run $FEAT --quiet --example tutorial_convert_formats -- "$PDF"
+          run ""       -- cargo run $FEAT --quiet --example tutorial_create_pdf
+          run ""       -- cargo run $FEAT --quiet --example tutorial_search_text -- "$PDF" "PDF"
+          run ""       -- cargo run $FEAT --quiet --example tutorial_edit_document -- "$PDF" "$out_dir/fips_edited.pdf"
+          run ""       -- cargo run $FEAT --quiet --example tutorial_forms_annotations -- "$PDF"
 
   # ─── Java binding FIPS build (v0.3.53 #NNN). Validates the
   # `pdf_oxide_jni` cdylib compiles under --features fips and that
@@ -116,14 +146,14 @@ jobs:
 
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake nasm golang-go
+        run: sudo apt-get -o Acquire::Retries=3 update && sudo apt-get -o Acquire::Retries=3 install -y cmake nasm golang-go
 
       - name: Install build deps (macOS)
         if: runner.os == 'macOS'
         run: brew install cmake nasm go
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -232,7 +262,7 @@ jobs:
 
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake nasm golang-go
+        run: sudo apt-get -o Acquire::Retries=3 update && sudo apt-get -o Acquire::Retries=3 install -y cmake nasm golang-go
 
       - name: Install build deps (macOS)
         if: runner.os == 'macOS'
@@ -251,7 +281,7 @@ jobs:
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''

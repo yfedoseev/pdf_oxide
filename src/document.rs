@@ -9413,22 +9413,39 @@ impl PdfDocument {
         lower.starts_with("cm") || lower.contains("symbol")
     }
 
-    /// Replace a `¬` (U+00AC) that sits directly between two ASCII digits with
-    /// `.` (the decimal point a math subset drew from its `logicalnot` slot).
-    /// Leaves every other `¬` untouched.
+    /// Replace a `¬` (U+00AC) that a math subset drew from its `logicalnot`
+    /// slot as a decimal point. Two shapes are recovered:
+    ///   * `digit ¬ digit`        → `digit.digit`         (e.g. `1¬00` → `1.00`)
+    ///   * `digit ¬ <space> digit`→ `digit.digit`         (e.g. `1¬ 00` → `1.00`)
+    /// The second form covers subsets that emit a single space between the
+    /// decimal glyph and the fractional digits; the lone separating space is
+    /// dropped so the number reads as one token. The leading digit must abut
+    /// `¬` directly in both shapes, so a genuinely spaced negation (`5 ¬ 3`,
+    /// `A ¬ B`) is left untouched. Every other `¬` is preserved.
     fn fix_digit_logicalnot_decimal(text: &str) -> String {
         let chars: Vec<char> = text.chars().collect();
         let mut out = String::with_capacity(text.len());
-        for (i, &c) in chars.iter().enumerate() {
-            if c == '\u{00AC}'
-                && i > 0
-                && chars[i - 1].is_ascii_digit()
-                && chars.get(i + 1).is_some_and(|n| n.is_ascii_digit())
-            {
-                out.push('.');
-            } else {
-                out.push(c);
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if c == '\u{00AC}' && i > 0 && chars[i - 1].is_ascii_digit() {
+                // Unspaced: digit ¬ digit.
+                if chars.get(i + 1).is_some_and(|n| n.is_ascii_digit()) {
+                    out.push('.');
+                    i += 1;
+                    continue;
+                }
+                // Spaced: digit ¬ <single space> digit — drop the lone space.
+                if chars.get(i + 1) == Some(&' ')
+                    && chars.get(i + 2).is_some_and(|n| n.is_ascii_digit())
+                {
+                    out.push('.');
+                    i += 2; // skip the ¬ and the single separating space
+                    continue;
+                }
             }
+            out.push(c);
+            i += 1;
         }
         out
     }
@@ -15245,6 +15262,16 @@ impl PdfDocument {
         page_index: usize,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
+        // Encrypted-and-undecryptable parity: extract_text / to_markdown / to_html
+        // all short-circuit to an empty string here (ISO 32000-1:2008 §7.6); the
+        // geometric plain-text path below would also yield empty (no decryptable
+        // content) but went through the full pipeline first. Guard explicitly so
+        // every text surface returns the same empty result on the same input.
+        if self.is_encrypted_unreadable() {
+            log::warn!("PDF is encrypted and could not be decrypted; returning empty text");
+            return Ok(String::new());
+        }
+
         // #608: for a trustworthy tagged PDF, read in logical structure order
         // (§14.8.2.3.1) by assembling directly from the structure tree — the
         // same path `extract_text` uses. The geometric plain-text converter
@@ -22464,6 +22491,23 @@ mod tests {
         assert_eq!(PdfDocument::fix_digit_logicalnot_decimal("5 \u{00AC} 3"), "5 \u{00AC} 3");
         // Leading/trailing `¬` with only one digit neighbour: untouched.
         assert_eq!(PdfDocument::fix_digit_logicalnot_decimal("\u{00AC}5"), "\u{00AC}5");
+        // Spaced decimal: a subset that emits a single space between the decimal
+        // glyph and the fractional digits → drop the lone space, recover `.`.
+        assert_eq!(PdfDocument::fix_digit_logicalnot_decimal("1\u{00AC} 00"), "1.00");
+        assert_eq!(
+            PdfDocument::fix_digit_logicalnot_decimal("0\u{00AC} 75 1\u{00AC} 00"),
+            "0.75 1.00"
+        );
+        // Still NOT a decimal when the leading digit does not abut `¬`
+        // (genuine spaced negation): `5 ¬ 3` stays untouched even though a
+        // digit follows the space.
+        assert_eq!(PdfDocument::fix_digit_logicalnot_decimal("5 \u{00AC} 3"), "5 \u{00AC} 3");
+        // Only a single separating space is absorbed; two spaces is not a
+        // decimal rendering and is left alone.
+        assert_eq!(
+            PdfDocument::fix_digit_logicalnot_decimal("1\u{00AC}  00"),
+            "1\u{00AC}  00"
+        );
     }
 
     #[test]

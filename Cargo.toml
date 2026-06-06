@@ -58,7 +58,7 @@ manual_checked_ops = "allow"
 
 [package]
 name = "pdf_oxide"
-version = "0.3.60"
+version = "0.3.61"
 # MSRV — driven up from 1.82 for v0.3.38. Transitive deps pulled in
 # this release push the floor to 1.88:
 #   - hybrid-array 0.4.10 (via RustCrypto) → edition 2024 → 1.85
@@ -505,6 +505,22 @@ path = "bench/rust_bench.rs"
 name = "showcase_barcode_svg"
 path = "examples/rust/09-new-features/barcode_svg/main.rs"
 required-features = ["barcodes"]
+
+[[example]]
+name = "showcase_compliance_validation"
+path = "examples/rust/09-new-features/compliance_validation/main.rs"
+
+[[example]]
+name = "showcase_dashed_stroke"
+path = "examples/rust/09-new-features/dashed_stroke/main.rs"
+
+[[example]]
+name = "showcase_encrypted_bytes"
+path = "examples/rust/09-new-features/encrypted_bytes/main.rs"
+
+[[example]]
+name = "showcase_page_extraction"
+path = "examples/rust/09-new-features/page_extraction/main.rs"
 
 [[example]]
 name = "showcase_streaming_table"

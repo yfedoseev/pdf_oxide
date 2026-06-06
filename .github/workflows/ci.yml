@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -89,7 +89,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -135,7 +135,7 @@ jobs:
         uses: ./.github/actions/free-disk-space
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -199,7 +199,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -228,10 +228,10 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install build deps for aws-lc-rs
-        run: sudo apt-get update && sudo apt-get install -y cmake nasm
+        run: sudo apt-get -o Acquire::Retries=3 update && sudo apt-get -o Acquire::Retries=3 install -y cmake nasm
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -253,15 +253,20 @@ jobs:
       - name: Clippy under FIPS feature
         run: cargo clippy --no-default-features --features python,fips,icc --lib --tests -- -D warnings
 
-  # Rust examples smoke-test
+  # Rust examples — core scenarios run + assert output on Linux/macOS/Windows
+  # (#648 class: a Linux-only run would miss per-OS path/CRLF/loader regressions).
   rust-examples:
     name: Rust Examples
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -269,27 +274,52 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          key: rust-examples
+          key: rust-examples-${{ matrix.os }}
 
       - name: Build examples (default features)
         run: cargo build --examples
 
-      - name: Build examples (signatures feature)
-        run: cargo build --examples --features signatures
-
-      - name: Run Rust examples
+      # Core tutorial scenarios (01–07): run on every OS and assert real output,
+      # not just exit code, so a silent empty/garbage regression fails CI.
+      - name: Run core Rust examples (cross-OS, with assertions)
         shell: bash
         run: |
+          set -uo pipefail
           PDF=tests/fixtures/simple.pdf
-          cargo run --example tutorial_extract_text -- "$PDF"
-          cargo run --example tutorial_convert_formats -- "$PDF"
-          cargo run --example tutorial_create_pdf
-          cargo run --example tutorial_search_text -- "$PDF" "PDF"
-          cargo run --example tutorial_extract_structured -- "$PDF"
-          cargo run --example tutorial_edit_document -- "$PDF" /tmp/edited.pdf
-          cargo run --example tutorial_forms_annotations -- "$PDF"
+          out_dir="${RUNNER_TEMP:-/tmp}"
+          fail() { echo "ASSERT FAILED: $1"; exit 1; }
+          run() { # run <expect-substring> -- <cmd...>
+            local expect="$1"; shift; [ "$1" = "--" ] && shift
+            echo "::group::$*"
+            local out; out="$("$@" 2>&1)" || { echo "$out"; fail "non-zero exit: $*"; }
+            echo "$out"
+            [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ] || fail "empty output: $*"
+            if [ -n "$expect" ]; then printf '%s' "$out" | grep -qF "$expect" || fail "missing '$expect': $*"; fi
+            echo "::endgroup::"
+          }
+          run "Pages:" -- cargo run --quiet --example tutorial_extract_text -- "$PDF"
+          run ""       -- cargo run --quiet --example tutorial_convert_formats -- "$PDF"
+          run ""       -- cargo run --quiet --example tutorial_create_pdf
+          run ""       -- cargo run --quiet --example tutorial_search_text -- "$PDF" "PDF"
+          run ""       -- cargo run --quiet --example tutorial_extract_structured -- "$PDF"
+          run ""       -- cargo run --quiet --example tutorial_edit_document -- "$PDF" "$out_dir/edited.pdf"
+          run ""       -- cargo run --quiet --example tutorial_forms_annotations -- "$PDF"
+
+      # Batch + feature showcases are OS-independent (pure-Rust core) — run once
+      # on Linux to bound CI minutes.
+      - name: Run showcase Rust examples (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PDF=tests/fixtures/simple.pdf
+          cargo build --examples --features signatures
           cargo run --example tutorial_batch_processing -- "$PDF" "$PDF"
           cargo run --example showcase_barcode_svg --features barcodes
+          cargo run --example showcase_compliance_validation
+          cargo run --example showcase_dashed_stroke
+          cargo run --example showcase_encrypted_bytes
+          cargo run --example showcase_page_extraction
           cargo run --example showcase_streaming_table
           cargo run --example showcase_image_embedding
           cargo run --example showcase_pdf_ua_image
@@ -310,7 +340,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -335,7 +365,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -357,7 +387,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -405,7 +435,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -465,6 +495,71 @@ jobs:
           cd "$GITHUB_WORKSPACE/examples/python/09-new-features/office_conversion"  && uv run python main.py
           cd "$GITHUB_WORKSPACE/examples/python/09-new-features/ocr_scanned_pdf"  && uv run python main.py
 
+  # Python examples — core scenarios run + assert output on Linux/macOS/Windows
+  # (the version-matrixed `python` job above runs the full suite on Linux only).
+  python-examples:
+    name: Python Examples (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: false
+          rustflags: ''
+
+      - name: Cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: python-examples-${{ matrix.os }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+
+      - name: Build + install wheel
+        shell: bash
+        run: |
+          uv venv
+          uv pip install maturin
+          uv run maturin build --release --features python,barcodes --out dist
+          wheel=$(ls dist/*.whl | head -n1)
+          uv pip install "$wheel"
+
+      # Core scenarios (01–07): run + assert output on every OS.
+      - name: Run Python examples (core, cross-OS, with assertions)
+        shell: bash
+        run: |
+          set -uo pipefail
+          PDF="$GITHUB_WORKSPACE/tests/fixtures/simple.pdf"
+          out_dir="${RUNNER_TEMP:-/tmp}"
+          fail() { echo "ASSERT FAILED: $1"; exit 1; }
+          run() { # run <dir> -- <args...>
+            local dir="$1"; shift; [ "$1" = "--" ] && shift
+            echo "::group::python $dir"
+            local out; out="$(cd "$GITHUB_WORKSPACE/examples/python/$dir" && uv run --project "$GITHUB_WORKSPACE" python main.py "$@" 2>&1)" \
+              || { echo "$out"; fail "exit: $dir"; }
+            echo "$out"
+            [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ] || fail "empty output: $dir"
+            echo "::endgroup::"
+          }
+          run 01-extract-text       -- "$PDF"
+          run 02-convert-formats    -- "$PDF"
+          run 03-create-pdf         --
+          run 04-search-text        -- "$PDF" "PDF"
+          run 05-extract-structured -- "$PDF"
+          run 06-edit-document      -- "$PDF" "$out_dir/py_edited.pdf"
+          run 07-forms-annotations  -- "$PDF"
+
   # WASM build check
   wasm-build:
     name: WASM Build
@@ -478,7 +573,7 @@ jobs:
           tool-cache: 'false'
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -493,6 +588,28 @@ jobs:
 
       - name: Clippy WASM
         run: cargo clippy --target wasm32-unknown-unknown --no-default-features --features wasm,rendering,barcodes --lib -- -D warnings
+
+      # Generate the Node.js bindings from the debug wasm build and run the
+      # WASM consumer example + the core functional test-parity suite. This is
+      # the WASM leg of the cross-language example/parity verification: it
+      # proves the wasm-bindgen surface actually loads and the same core
+      # behaviors hold as in every other binding. wasm-bindgen-cli is pinned to
+      # the exact `wasm-bindgen` crate version (matching release.yml).
+      - name: Install matching wasm-bindgen-cli
+        run: |
+          WASM_BINDGEN_VERSION=$(grep -A1 'name = "wasm-bindgen"' Cargo.lock | grep version | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "Installing wasm-bindgen-cli@${WASM_BINDGEN_VERSION}"
+          cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
+
+      - name: WASM example + core-parity suite (Node consumer)
+        run: |
+          set -eux
+          wasm-bindgen --target nodejs \
+            --out-dir examples/wasm_node/ \
+            target/wasm32-unknown-unknown/debug/pdf_oxide.wasm
+          cd examples/wasm_node
+          node extract_text.mjs
+          node --test core_parity.test.mjs
 
       # WASI build target (issue #214). Used by sandboxed agent /
       # serverless deployments via wasmtime / wasmer / Deno. We only
@@ -515,7 +632,7 @@ jobs:
         run: |
           set -eux
           ver="120"
-          curl -fL -o binaryen.tar.gz "https://github.com/WebAssembly/binaryen/releases/download/version_${ver}/binaryen-version_${ver}-x86_64-linux.tar.gz"
+          curl --retry 3 --retry-all-errors -fL -o binaryen.tar.gz "https://github.com/WebAssembly/binaryen/releases/download/version_${ver}/binaryen-version_${ver}-x86_64-linux.tar.gz"
           tar -xzf binaryen.tar.gz
           echo "$PWD/binaryen-version_${ver}/bin" >> "$GITHUB_PATH"
 
@@ -626,10 +743,19 @@ jobs:
           # Java JNI shim crate (`pdf_oxide_jni`) — cdylib that exports
           # `Java_fyi_oxide_pdf_*` symbols. Built with the same
           # extended feature set so Java tests can exercise rendering /
-          # signatures / TSA. Linux only in PR CI; release.yml fans
-          # out to the five JAR-bundled arches (linux x86_64/aarch64,
-          # macOS x86_64/aarch64, windows x86_64).
+          # signatures / TSA. Built on all three host OSes so the Java
+          # binding's JNI surface is exercised cross-OS in PR CI (#458
+          # follow-up: previously Linux-only). release.yml still fans out
+          # to the five JAR-bundled arches for publishing.
           - os: ubuntu-latest
+            variant: java-jni
+            features: "rendering,signatures,tsa-client"
+            extra-target: ""
+          - os: macos-latest
+            variant: java-jni
+            features: "rendering,signatures,tsa-client"
+            extra-target: ""
+          - os: windows-latest
             variant: java-jni
             features: "rendering,signatures,tsa-client"
             extra-target: ""
@@ -637,7 +763,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -772,22 +898,40 @@ jobs:
         working-directory: go
         run: go test -race -count=1 -p 1 -tags pdf_oxide_dev ./...
 
-      - name: Run Go examples
+      # Core scenarios (01–07): run + assert output on Linux/macOS/Windows.
+      - name: Run Go examples (core, cross-OS, with assertions)
+        shell: bash
+        run: |
+          set -uo pipefail
+          PDF="$GITHUB_WORKSPACE/tests/fixtures/simple.pdf"
+          out_dir="${RUNNER_TEMP:-/tmp}"
+          fail() { echo "ASSERT FAILED: $1"; exit 1; }
+          run() { # run <dir> -- <args...>
+            local dir="$1"; shift; [ "$1" = "--" ] && shift
+            cd "$GITHUB_WORKSPACE/examples/go/$dir"
+            echo "::group::go $dir"
+            local out; out="$(go run -tags pdf_oxide_dev main.go "$@" 2>&1)" || { echo "$out"; fail "exit: $dir"; }
+            echo "$out"
+            [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ] || fail "empty output: $dir"
+            echo "::endgroup::"
+          }
+          run 01-extract-text       -- "$PDF"
+          run 02-convert-formats    -- "$PDF"
+          run 03-create-pdf         --
+          run 04-search-text        -- "$PDF" "PDF"
+          run 05-extract-structured -- "$PDF"
+          run 06-edit-document      -- "$PDF" "$out_dir/go_edited.pdf"
+          run 07-forms-annotations  -- "$PDF"
+
+      # Batch + feature showcases are OS-independent — run once on Linux.
+      - name: Run Go showcase examples (Linux only)
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
+          set -euo pipefail
           PDF="$GITHUB_WORKSPACE/tests/fixtures/simple.pdf"
-          for dir in 01-extract-text 02-convert-formats \
-                     05-extract-structured 07-forms-annotations 08-batch-processing; do
-            cd "$GITHUB_WORKSPACE/examples/go/$dir"
-            go run -tags pdf_oxide_dev main.go "$PDF"
-          done
-          cd "$GITHUB_WORKSPACE/examples/go/04-search-text"
-          go run -tags pdf_oxide_dev main.go "$PDF" "PDF"
-          cd "$GITHUB_WORKSPACE/examples/go/03-create-pdf"
-          go run -tags pdf_oxide_dev main.go
-          cd "$GITHUB_WORKSPACE/examples/go/06-edit-document"
-          go run -tags pdf_oxide_dev main.go "$PDF" /tmp/go_edited.pdf
+          cd "$GITHUB_WORKSPACE/examples/go/08-batch-processing"
+          go run -tags pdf_oxide_dev main.go "$PDF" "$PDF"
           for feat in barcode_svg streaming_table pdf_ua_image in_memory_roundtrip pkcs12_signing rfc3161_timestamp dashed_stroke encrypted_bytes page_extraction pdfa_conversion compliance_validation image_embedding office_conversion; do
             cd "$GITHUB_WORKSPACE/examples/go/09-new-features/$feat"
             go run -tags pdf_oxide_dev main.go
@@ -926,47 +1070,81 @@ jobs:
         working-directory: js
         run: npm test
 
+      # Stage the freshly-built addon into the per-OS prebuilds dir the package
+      # resolves at runtime (linux-x64 / darwin-arm64 / win32-x64), so examples
+      # load it on every OS — not just Linux.
       - name: Stage node-gyp build as prebuilt for examples
-        if: matrix.os == 'ubuntu-latest'
         working-directory: js
         shell: bash
         run: |
-          mkdir -p prebuilds/linux-x64
-          cp build/Release/pdf_oxide.node prebuilds/linux-x64/pdf_oxide.node
+          dir="prebuilds/$(node -e "process.stdout.write(process.platform + '-' + process.arch)")"
+          mkdir -p "$dir"
+          cp build/Release/pdf_oxide.node "$dir/pdf_oxide.node"
+          ls -la "$dir"
 
       - name: Install examples workspace dependencies
-        if: matrix.os == 'ubuntu-latest'
         working-directory: examples/javascript
         run: npm install --ignore-scripts
 
-      - name: Run JavaScript examples
+      # Core scenarios (01–07): run + assert output on Linux/macOS/Windows. This
+      # is the direct #648 guard (a Windows-Node ESM/loader regression must fail
+      # CI). No `timeout` — macOS/Windows git-bash lack it; the job timeout covers
+      # hangs.
+      - name: Run JavaScript examples (core, cross-OS, with assertions)
+        shell: bash
+        env:
+          NODE_PATH: "${{ github.workspace }}/examples/javascript/node_modules"
+        run: |
+          set -uo pipefail
+          PDF="$GITHUB_WORKSPACE/tests/fixtures/simple.pdf"
+          cd "$GITHUB_WORKSPACE/examples/javascript"
+          fail() { echo "ASSERT FAILED: $1"; exit 1; }
+          run() { # run <expect> -- node script args...
+            local expect="$1"; shift; [ "$1" = "--" ] && shift
+            echo "::group::$*"
+            local out; out="$("$@" 2>&1)" || { echo "$out"; fail "non-zero exit: $*"; }
+            echo "$out"
+            [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ] || fail "empty output: $*"
+            [ -z "$expect" ] || printf '%s' "$out" | grep -qF "$expect" || fail "missing '$expect': $*"
+            echo "::endgroup::"
+          }
+          run "" -- node 01-extract-text/index.js "$PDF"
+          run "" -- node 02-convert-formats/index.js "$PDF"
+          run "" -- node 03-create-pdf/index.js
+          run "" -- node 04-search-text/index.js "$PDF" "PDF"
+          run "" -- node 05-extract-structured/index.js "$PDF"
+          # 06 deletes a page, so it needs a multi-page input (simple.pdf is 1 page).
+          run "Deleted" -- node 06-edit-document/index.js "$GITHUB_WORKSPACE/tests/fixtures/hello_structure.pdf" "${TMPDIR:-/tmp}/js_edited.pdf"
+          run "" -- node 07-forms-annotations/index.js "$PDF"
+
+      # Batch + feature showcases are OS-independent — run once on Linux.
+      - name: Run JavaScript showcase examples (Linux only)
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         env:
           NODE_PATH: "${{ github.workspace }}/examples/javascript/node_modules"
         run: |
+          set -euo pipefail
           PDF="$GITHUB_WORKSPACE/tests/fixtures/simple.pdf"
           cd "$GITHUB_WORKSPACE/examples/javascript"
-          echo "--- 01-extract-text ---"       && timeout 120 node 01-extract-text/index.js "$PDF"
-          echo "--- 02-convert-formats ---"    && timeout 120 node 02-convert-formats/index.js "$PDF"
-          echo "--- 03-create-pdf ---"         && timeout 120 node 03-create-pdf/index.js
-          echo "--- 04-search-text ---"        && timeout 120 node 04-search-text/index.js "$PDF" "PDF"
-          echo "--- 05-extract-structured ---" && timeout 120 node 05-extract-structured/index.js "$PDF"
-          echo "--- 07-forms-annotations ---"  && timeout 120 node 07-forms-annotations/index.js "$PDF"
-          echo "--- 08-batch-processing ---"   && timeout 120 node 08-batch-processing/index.js "$PDF" "$PDF"
-          echo "--- barcode_svg ---"           && timeout 120 node 09-new-features/barcode_svg/index.js
-          echo "--- streaming_table ---"       && timeout 120 node 09-new-features/streaming_table/index.js
-          echo "--- pdf_ua_image ---"          && timeout 120 node 09-new-features/pdf_ua_image/index.js
-          echo "--- in_memory_roundtrip ---"   && timeout 120 node 09-new-features/in_memory_roundtrip/index.js
-          echo "--- pkcs12_signing ---"        && timeout 120 node 09-new-features/pkcs12_signing/index.js
-          echo "--- rfc3161_timestamp ---"     && timeout 120 node 09-new-features/rfc3161_timestamp/index.js
-          echo "--- dashed_stroke ---"         && timeout 120 node 09-new-features/dashed_stroke/index.js
-          echo "--- encrypted_bytes ---"        && timeout 120 node 09-new-features/encrypted_bytes/index.js
-          echo "--- page_extraction ---"        && timeout 120 node 09-new-features/page_extraction/index.js
-          echo "--- compliance_validation ---"  && timeout 120 node 09-new-features/compliance_validation/index.js
-          echo "--- pdfa_conversion ---"        && timeout 120 node 09-new-features/pdfa_conversion/index.js
-          echo "--- image_embedding ---"        && timeout 120 node 09-new-features/image_embedding/index.js
-          echo "--- office_conversion ---"      && timeout 120 node 09-new-features/office_conversion/index.js
+          for ex in \
+            "08-batch-processing/index.js $PDF $PDF" \
+            09-new-features/barcode_svg/index.js \
+            09-new-features/streaming_table/index.js \
+            09-new-features/pdf_ua_image/index.js \
+            09-new-features/in_memory_roundtrip/index.js \
+            09-new-features/pkcs12_signing/index.js \
+            09-new-features/rfc3161_timestamp/index.js \
+            09-new-features/dashed_stroke/index.js \
+            09-new-features/encrypted_bytes/index.js \
+            09-new-features/page_extraction/index.js \
+            09-new-features/compliance_validation/index.js \
+            09-new-features/pdfa_conversion/index.js \
+            09-new-features/image_embedding/index.js \
+            09-new-features/office_conversion/index.js; do
+            echo "--- $ex ---"
+            timeout 120 node $ex
+          done
 
       - name: Compile TypeScript examples
         if: matrix.os == 'ubuntu-latest'
@@ -1062,23 +1240,45 @@ jobs:
         working-directory: csharp/PdfOxide.Tests
         run: dotnet test -c Release --no-build --verbosity normal
 
-      - name: Run C# examples
+      # Core scenarios (01–07): run + assert output on Linux/macOS/Windows. The
+      # native lib is resolved per-OS (LD/DYLD_LIBRARY_PATH on Linux/macOS, PATH
+      # on Windows).
+      - name: Run C# examples (core, cross-OS, with assertions)
+        shell: bash
+        env:
+          LD_LIBRARY_PATH: "${{ github.workspace }}/target/release"
+          DYLD_LIBRARY_PATH: "${{ github.workspace }}/target/release"
+        run: |
+          set -uo pipefail
+          PDF="$GITHUB_WORKSPACE/tests/fixtures/simple.pdf"
+          out_dir="${RUNNER_TEMP:-/tmp}"
+          export PATH="$GITHUB_WORKSPACE/target/release:$PATH" # Windows dll search
+          fail() { echo "ASSERT FAILED: $1"; exit 1; }
+          run() { # run <csproj> -- <args...>
+            local proj="$1"; shift; [ "$1" = "--" ] && shift
+            echo "::group::$proj"
+            local out; out="$(dotnet run --project "$proj" -- "$@" 2>&1)" || { echo "$out"; fail "exit: $proj"; }
+            echo "$out"
+            [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ] || fail "empty output: $proj"
+            echo "::endgroup::"
+          }
+          run examples/csharp/01-extract-text/ExtractText.csproj         -- "$PDF"
+          run examples/csharp/02-convert-formats/ConvertFormats.csproj   -- "$PDF"
+          run examples/csharp/03-create-pdf/CreatePdf.csproj             --
+          run examples/csharp/04-search-text/SearchText.csproj           -- "$PDF" "PDF"
+          run examples/csharp/05-extract-structured/ExtractStructured.csproj -- "$PDF"
+          run examples/csharp/06-edit-document/EditDocument.csproj       -- "$PDF" "$out_dir/cs_edited.pdf"
+          run examples/csharp/07-forms-annotations/FormsAnnotations.csproj -- "$PDF"
+
+      # Batch + feature showcases are OS-independent — run once on Linux.
+      - name: Run C# showcase examples (Linux only)
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         env:
           LD_LIBRARY_PATH: "${{ github.workspace }}/target/release"
         run: |
+          set -euo pipefail
           PDF="$GITHUB_WORKSPACE/tests/fixtures/simple.pdf"
-          for proj in \
-            examples/csharp/01-extract-text/ExtractText.csproj \
-            examples/csharp/02-convert-formats/ConvertFormats.csproj \
-            examples/csharp/05-extract-structured/ExtractStructured.csproj \
-            examples/csharp/07-forms-annotations/FormsAnnotations.csproj; do
-            dotnet run --project "$proj" -- "$PDF"
-          done
-          dotnet run --project examples/csharp/04-search-text/SearchText.csproj -- "$PDF" "PDF"
-          dotnet run --project examples/csharp/03-create-pdf/CreatePdf.csproj
-          dotnet run --project examples/csharp/06-edit-document/EditDocument.csproj -- "$PDF" /tmp/cs_edited.pdf
           dotnet run --project examples/csharp/08-batch-processing/BatchProcessing.csproj -- "$PDF" "$PDF"
           for proj in \
             examples/csharp/09-new-features/BarcodeSvg/BarcodeSvg.csproj \
@@ -1147,12 +1347,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Linux exercises the full JDK range (11/17/21); macOS + Windows add
+        # one JDK each so the JNI surface is verified on every host OS without
+        # tripling the JDK matrix on every platform.
         include:
           - os: ubuntu-latest
             jdk: '11'
           - os: ubuntu-latest
             jdk: '17'
           - os: ubuntu-latest
+            jdk: '21'
+          - os: macos-latest
+            jdk: '21'
+          - os: windows-latest
             jdk: '21'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -1174,18 +1381,32 @@ jobs:
       - name: Download Java JNI native lib artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: native-lib-ubuntu-latest-java-jni
+          name: native-lib-${{ matrix.os }}-java-jni
 
       - name: Stage native lib into Maven resources
         shell: bash
         run: |
           # The Java NativeLoader resolves
-          # /fyi/oxide/pdf/native/{OS}/{ARCH}/<libname> from the JAR.
-          # Stage the cdylib at that path before mvn package so it
-          # gets embedded into the published JAR.
-          DEST="java/src/main/resources/fyi/oxide/pdf/native/Linux/x86_64"
+          # /fyi/oxide/pdf/native/{OS}/{ARCH}/<libname> from the JAR
+          # (see internal/NativeLoader.java). Stage the freshly-built JNI
+          # cdylib at the path matching THIS runner's OS/arch before mvn
+          # package so the embedded-native + JNI tests run cross-OS.
+          case "${{ runner.os }}" in
+            Linux)   OSDIR=Linux;   LIB=libpdf_oxide_jni.so ;;
+            macOS)   OSDIR=Mac;     LIB=libpdf_oxide_jni.dylib ;;
+            Windows) OSDIR=Windows; LIB=pdf_oxide_jni.dll ;;
+            *) echo "::error::unsupported runner.os ${{ runner.os }}"; exit 1 ;;
+          esac
+          # GitHub runners: ubuntu/windows are x86_64; macos-latest is arm64.
+          case "${{ runner.arch }}" in
+            X64)   ARCHDIR=x86_64 ;;
+            ARM64) ARCHDIR=aarch64 ;;
+            *) echo "::error::unsupported runner.arch ${{ runner.arch }}"; exit 1 ;;
+          esac
+          DEST="java/src/main/resources/fyi/oxide/pdf/native/$OSDIR/$ARCHDIR"
           mkdir -p "$DEST"
-          cp target/release/libpdf_oxide_jni.so "$DEST/libpdf_oxide_jni.so"
+          # The artifact preserves the original target/release/ layout.
+          cp "target/release/$LIB" "$DEST/$LIB"
           ls -la "$DEST"
 
       - name: mvn compile
@@ -1211,14 +1432,47 @@ jobs:
           shopt -u nullglob
           [ "${#jars[@]}" -eq 1 ] || { echo "::error::expected exactly one target/pdf-oxide-*.jar, found: ${jars[*]:-<none>}"; exit 1; }
           JAR="${jars[0]}"
-          jar tf "$JAR" | grep -q "fyi/oxide/pdf/native/Linux/x86_64/libpdf_oxide_jni.so" \
-            || { echo "::error::Native lib missing from JAR"; exit 1; }
+          # The embedded native path matches THIS runner's OS/arch (the JAR
+          # built on each host bundles only that host's native; release.yml
+          # builds the all-arch fat JAR).
+          case "${{ runner.os }}" in
+            Linux)   NATIVE=fyi/oxide/pdf/native/Linux/x86_64/libpdf_oxide_jni.so ;;
+            macOS)   NATIVE=fyi/oxide/pdf/native/Mac/aarch64/libpdf_oxide_jni.dylib ;;
+            Windows) NATIVE=fyi/oxide/pdf/native/Windows/x86_64/pdf_oxide_jni.dll ;;
+          esac
+          jar tf "$JAR" | grep -q "$NATIVE" \
+            || { echo "::error::Native lib ($NATIVE) missing from JAR"; exit 1; }
           unzip -p "$JAR" META-INF/MANIFEST.MF | grep -q "Automatic-Module-Name: fyi.oxide.pdf" \
             || { echo "::error::Manifest missing Automatic-Module-Name"; exit 1; }
-          echo "::notice::JAR validated: $JAR ($(stat -c%s "$JAR") bytes)"
+          # Portable file size: GNU stat (-c%s) on Linux, BSD stat (-f%z) on macOS.
+          SIZE=$(stat -c%s "$JAR" 2>/dev/null || stat -f%z "$JAR")
+          echo "::notice::JAR validated: $JAR ($SIZE bytes, native $NATIVE)"
+
+      # Core example (01-extract-text): compile + run against the built JAR
+      # (which self-loads its embedded JNI native lib) and assert output.
+      # Runs once per host OS (Linux's JDK 11 row + the single macOS/Windows
+      # rows) so the JNI load path is exercised on Linux, macOS, and Windows.
+      - name: Run Java example (01-extract-text, with assertion)
+        if: matrix.jdk == '11' || matrix.os != 'ubuntu-latest'
+        shell: bash
+        working-directory: java
+        run: |
+          set -uo pipefail
+          # Classpath separator: ':' on Unix, ';' on Windows (the JDK there is
+          # native Windows even under git-bash).
+          case "${{ runner.os }}" in Windows) SEP=';' ;; *) SEP=':' ;; esac
+          JAR=$(ls target/pdf-oxide-*.jar | head -n1)
+          PDF="$GITHUB_WORKSPACE/tests/fixtures/simple.pdf"
+          mkdir -p "$RUNNER_TEMP/javaex"
+          javac -cp "$JAR" -d "$RUNNER_TEMP/javaex" \
+            "$GITHUB_WORKSPACE/examples/java/01-extract-text/ExtractText.java"
+          out="$(java -cp "$JAR$SEP$RUNNER_TEMP/javaex" ExtractText "$PDF" 2>&1)" \
+            || { echo "$out"; echo "ASSERT FAILED (exit)"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -q "Pages:" || { echo "ASSERT FAILED: missing 'Pages:'"; exit 1; }
 
       - name: Upload Java JAR artifact
-        if: matrix.jdk == '11'
+        if: matrix.jdk == '11' || matrix.os != 'ubuntu-latest'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: java-jar-${{ matrix.os }}
@@ -1278,7 +1532,7 @@ jobs:
         uses: ./.github/actions/free-disk-space
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -1326,7 +1580,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -1365,7 +1619,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -1385,7 +1639,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -1405,7 +1659,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -1432,7 +1686,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -1490,7 +1744,7 @@ jobs:
         run: |
           v=$(grep -E '^rust-version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "version=${v:-1.82}" >> "$GITHUB_OUTPUT"
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''

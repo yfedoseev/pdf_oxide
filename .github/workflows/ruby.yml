@@ -240,7 +240,7 @@ jobs:
           bundler-cache: true
 
       - name: Set up Rust (target ${{ matrix.cargo_target }})
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -318,6 +318,22 @@ jobs:
           # Emit lcov for the Codecov upload (one cell only).
           COVERAGE_LCOV: ${{ matrix.coverage && '1' || '' }}
         run: bundle exec rspec spec/
+
+      # Core example (01-extract-text) runs on every native-arch cell
+      # (Linux/macOS/Windows) with an output assertion — the cross-language
+      # cross-OS guard.
+      - name: Run Ruby example (01-extract-text, with assertion)
+        if: ${{ ! matrix.cross_compiled }}
+        working-directory: ruby
+        shell: bash
+        run: |
+          set -uo pipefail
+          PDF="$GITHUB_WORKSPACE/tests/fixtures/simple.pdf"
+          out="$(bundle exec ruby -rbundler/setup -Ilib \
+            "$GITHUB_WORKSPACE/examples/ruby/01-extract-text/main.rb" "$PDF" 2>&1)" \
+            || { echo "$out"; echo "ASSERT FAILED (exit)"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -q "Pages:" || { echo "ASSERT FAILED: missing 'Pages:'"; exit 1; }
 
       - name: Upload coverage to Codecov
         if: matrix.coverage == true

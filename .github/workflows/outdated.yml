@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -26,7 +26,7 @@ jobs:
           key: outdated
 
       - name: Install libgit2 (required by cargo-outdated)
-        run: sudo apt-get install -y libgit2-dev pkg-config
+        run: sudo apt-get -o Acquire::Retries=3 install -y libgit2-dev pkg-config
 
       - name: Install cargo-outdated
         run: cargo install --locked cargo-outdated

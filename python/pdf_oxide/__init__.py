@@ -47,6 +47,29 @@ import os as _os
 from typing import NamedTuple
 
 
+def _is_ort_lib(name: str) -> bool:
+    """True if ``name`` is an onnxruntime shared-library filename.
+
+    Mirrors onnxruntime's own packaging globs across platforms:
+
+    * Linux   ``libonnxruntime.so`` / ``libonnxruntime.so.1.20.1`` (version
+      *after* the extension)
+    * macOS   ``libonnxruntime.dylib`` / ``libonnxruntime.1.16.0.dylib``
+      (version *before* the extension — the case missed by #632)
+    * Windows ``onnxruntime.dll``
+
+    Auxiliary provider libraries (``libonnxruntime_providers_*``) are excluded:
+    the version separator is required to be ``.`` immediately after
+    ``libonnxruntime``, which ``_providers`` does not satisfy.
+    """
+    if name == "onnxruntime.dll":
+        return True
+    if name.startswith("libonnxruntime.so"):
+        return True
+    # macOS versions the library before the extension: libonnxruntime[.<ver>].dylib
+    return name.startswith("libonnxruntime.") and name.endswith(".dylib")
+
+
 def _setup_ort_dylib_path() -> None:
     """Point ort's dynamic loader at the onnxruntime library shipped by the
     Python ``onnxruntime`` package, if installed and not already overridden.
@@ -73,15 +96,11 @@ def _setup_ort_dylib_path() -> None:
             capi_dir / "libonnxruntime.dylib",
             capi_dir / "onnxruntime.dll",
         ]
-        # Also match versioned names like libonnxruntime.so.1.20.1
+        # Also match versioned names: libonnxruntime.so.1.20.1 (Linux) and
+        # libonnxruntime.1.16.0.dylib (macOS — version before the extension).
         if capi_dir.is_dir():
             for f in capi_dir.iterdir():
-                name = f.name
-                if (
-                    name.startswith("libonnxruntime.so")
-                    or name.startswith("libonnxruntime.dylib")
-                    or name == "onnxruntime.dll"
-                ):
+                if _is_ort_lib(f.name):
                     candidates.insert(0, f)
         for candidate in candidates:
             if candidate.exists():

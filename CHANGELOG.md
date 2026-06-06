@@ -2,6 +2,34 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.61] - 2026-06-07
+
+> Separation-plate image rendering and ActualText extraction, Node.js quickstart and form-display fixes, macOS OCR detection, faster table-heavy extraction, cross-OS + cross-language CI verification, and an article-thread reading-order foundation
+
+### Added
+
+- **Separation-plate image rendering (#631)** — raster Image XObjects are now routed to the matching ink plates in the separation renderer (previously only Form XObjects were handled, so photo content, gradients, and sample-based artwork were absent from per-ink output). Per-pixel routing dispatches by image colour space (ISO 32000-1:2008 §8.9). Thanks @RayVR.
+- **`/ActualText` extraction for structure-tree spans (#646)** — `/ActualText` on a `StructElem` (the form InDesign emits for drop caps, ligature spans, and stylized text in tagged PDFs, §14.9.4) is now applied correctly in `extract_text` / `to_markdown` / `to_html` — emitting the replacement text once, at the right position, instead of duplicating it with the raw descendant glyphs. Marked-content-scope `/ActualText` already worked. Thanks @RayVR.
+- **Article-thread (`/Threads`) parsing (#458)** — a new parser reads a document's article threads (ISO 32000-1:2008 §12.4.3) into per-page bead rectangles, with an accompanying reading-order strategy, shipped as tested public building blocks. The default reading order is unchanged; auto-wiring threads into it is tracked for a future release.
+- **Cross-language test-parity suite** — one shared functional spec (open, extract, convert, search, structured extraction, create, encrypt, version) is now implemented idiomatically in all nine bindings (Rust, Python, Node, Go, Java, Ruby, PHP, C#, WASM), so every binding is verified to expose the same core behavior.
+
+### Changed
+
+- **Faster extraction on table-heavy pages** — an output-preserving optimization to the table detector cuts ~30% off extraction time for large, dense documents (e.g. regulatory volumes) with byte-identical results.
+- **Cross-OS + FIPS example verification in CI** — the core example scenarios for every language binding now run **and assert their output** on Linux, macOS, and Windows (previously Linux-only — the gap that let #648 reach users), including a FIPS-safe run. This is the guard that prevents another platform-specific quickstart regression.
+- **Renderer resolution pipeline refactor (#649)** — the copy-pasted paint-resolution arms in `page_renderer` and `separation_renderer` are unified into a single layered `rendering/resolution` module (colour resolution, overprint, blend-mode, clip, per-plate routing), removing quiet divergence between the two renderers. This also fixes PostScript Type 4 calculator tint transforms for `/Separation` and `/DeviceN` spot colours over `DeviceCMYK`/`ICCBased` alternates, which previously fell through to a flat fallback. Thanks @RayVR.
+- **CI reliability hardening (#544)** — SHA-pinned the remaining floating GitHub Action and added network retries to reduce transient CI failures.
+- **Dependency & CI-action updates** — `imageproc` 0.27, `subsetter` 0.2.6, `log` 0.4.32, and the `actions/checkout`, `taiki-e/install-action`, and `astral-sh/setup-uv` actions were bumped (dependabot, #639/#637/#636/#643/#641/#640).
+
+### Fixed
+
+- **Node.js quickstart (#648)** — the documented Quick Start used CommonJS `require` (the package is ESM-only) and `new PdfDocument(path)` (not a public constructor), so the first example threw. Samples now use `import` + `PdfDocument.open(path)`, and the constructor gives an actionable error if handed a path. Thanks @abeq for the report and @lihouwenbin for the docs fix (#651).
+- **Form fields filled but not displayed (#647)** — for PDFs with an inline AcroForm, a filled field's value was written but the `/NeedAppearances` flag was dropped on full-rewrite save, so viewers showed the field blank (ISO 32000-1:2008 §12.7.3.3). The flag now survives, and viewers render the filled value. Thanks @mitslabo.
+- **macOS OCR engine detection (#632)** — `onnxruntime` auto-discovery missed the versioned `libonnxruntime.<version>.dylib` macOS actually ships, so OCR was silently skipped; detection is now version-tolerant across Linux/macOS/Windows. Thanks @paliwalvimal.
+- **Deterministic table detection** — several table-detection steps could order results by per-process hash iteration, yielding run-to-run differences on table-heavy pages; these are now deterministic.
+- **Decimal points in `CMSY`/Symbol math fonts** — numbers whose decimal point is drawn from a math font's `logicalnot` glyph (e.g. `1¬00`, and the spaced `1¬ 00`) now extract as `1.00`.
+- **Consistent empty output for unreadable encrypted PDFs** — all text surfaces (`extract_text`, markdown, HTML, plain text) now uniformly return empty for an encrypted PDF that can't be decrypted, instead of one surface diverging (ISO 32000-1:2008 §7.6).
+
 ## [0.3.60] - 2026-06-03
 
 > Converter performance sweep (no double per-page extraction, cached structure-tree traversal) + Arabic/Persian CIDFont extraction, ZapfDingbats coverage, graceful encrypted-PDF text extraction, and an `extract_tables` opt-out for speed-first text extraction

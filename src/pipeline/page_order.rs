@@ -69,7 +69,17 @@ fn page_reading_order_inner(
         return Ok(Vec::new());
     }
 
+    // Article threads (#458): the parser (`crate::structure::parse_article_threads`)
+    // and `ArticleThreadStrategy` ship as a tested foundation, but are NOT yet
+    // auto-wired into this default path. The v0.3.61 corpus sweep showed the
+    // ≥80%-bead-coverage gate activated on regular technical books (single-column,
+    // where geometric order is already correct) and reordered content
+    // non-improvingly. Until the activation gate can be proven to *only improve*
+    // on true multi-column magazine threads (deferred → v0.3.62), the default
+    // reading order stays geometric so the corpus is byte-identical. Callers can
+    // still use the parser/strategy directly.
     let context = build_context(doc, page_index);
+
     let pipeline = TextPipeline::with_config(TextPipelineConfig::default());
     pipeline.process(spans, context)
 }

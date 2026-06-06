@@ -39,6 +39,7 @@
 //! }
 //! ```
 
+pub mod article_threads;
 pub mod converter;
 mod parser;
 pub mod spatial_table_detector;
@@ -46,6 +47,7 @@ pub mod table_extractor;
 pub mod traversal;
 pub mod types;
 
+pub use article_threads::{parse_article_threads, ArticleThread, Bead};
 pub use converter::StructureConverter;
 pub use parser::parse_structure_tree;
 pub use spatial_table_detector::{

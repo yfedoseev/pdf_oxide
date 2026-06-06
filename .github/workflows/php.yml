@@ -59,7 +59,7 @@ jobs:
           tools: composer:v2
 
       - name: Set up Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           cache: false
           rustflags: ''
@@ -148,6 +148,20 @@ jobs:
         env:
           PDF_OXIDE_CDYLIB_PATH: ${{ env.PDF_OXIDE_CDYLIB_PATH }}
         run: vendor/bin/phpunit --testsuite=Integration
+
+      # Core example (01-extract-text) runs on Linux/macOS/Windows with an
+      # output assertion — the cross-language cross-OS guard.
+      - name: Run PHP example (01-extract-text, with assertion)
+        shell: bash
+        env:
+          PDF_OXIDE_CDYLIB_PATH: ${{ env.PDF_OXIDE_CDYLIB_PATH }}
+        run: |
+          set -uo pipefail
+          PDF="$GITHUB_WORKSPACE/tests/fixtures/simple.pdf"
+          out="$(php "$GITHUB_WORKSPACE/examples/php/01-extract-text/main.php" "$PDF" 2>&1)" \
+            || { echo "$out"; echo "ASSERT FAILED (exit)"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -q "Pages:" || { echo "ASSERT FAILED: missing 'Pages:'"; exit 1; }
 
       - name: Upload test artifacts on failure
         if: failure()

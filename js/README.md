@@ -24,6 +24,11 @@ const markdown = doc.toMarkdown(0);
 doc.close();
 ```
 
+> `pdf-oxide` is an ES module. Use `import` (shown above). From CommonJS, load it
+> with a dynamic import: `const { PdfDocument } = await import("pdf-oxide");`.
+> Open a file with the `PdfDocument.open(path)` factory — the constructor is
+> internal and does not take a path.
+
 TypeScript:
 
 ```typescript

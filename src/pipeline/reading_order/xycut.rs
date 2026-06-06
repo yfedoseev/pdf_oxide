@@ -1591,7 +1591,9 @@ impl XYCutStrategy {
         let half = smooth_window / 2;
 
         // Smooth into a reused thread-local buffer instead of a fresh `Vec` per
-        // failed-valley node. Window-mean is unchanged.
+        // failed-valley node. Window-mean is unchanged. (Confirmed not a source
+        // of the p.692 non-determinism: the buffer is cleared+refilled to exactly
+        // `n` each call and never read out of range.)
         thread_local! {
             static SMOOTH_SCRATCH: std::cell::RefCell<Vec<f32>> =
                 const { std::cell::RefCell::new(Vec::new()) };

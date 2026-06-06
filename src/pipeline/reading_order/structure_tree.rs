@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::layout::TextSpan;
 use crate::pipeline::{OrderedTextSpan, ReadingOrderInfo};
 
-use super::{ReadingOrderContext, ReadingOrderStrategy, XYCutStrategy};
+use super::{ArticleThreadStrategy, ReadingOrderContext, ReadingOrderStrategy, XYCutStrategy};
 
 /// Structure tree-based reading order strategy.
 ///
@@ -29,6 +29,23 @@ impl StructureTreeStrategy {
         Self {
             fallback: XYCutStrategy::new(),
         }
+    }
+
+    /// Order spans when the structure tree cannot be trusted for this page.
+    ///
+    /// Prefers article-thread order (`/Threads`, §12.4.3) when the canonical
+    /// helper supplied bead rectangles for the page; otherwise uses the
+    /// geometric XY-cut fallback. With no bead rects this is exactly the prior
+    /// behaviour (fails closed).
+    fn fallback_order(
+        &self,
+        spans: Vec<TextSpan>,
+        context: &ReadingOrderContext,
+    ) -> Result<Vec<OrderedTextSpan>> {
+        if context.bead_rects.as_ref().is_some_and(|b| !b.is_empty()) {
+            return ArticleThreadStrategy::new().apply(spans, context);
+        }
+        self.fallback.apply(spans, context)
     }
 }
 
@@ -119,13 +136,14 @@ impl ReadingOrderStrategy for StructureTreeStrategy {
         // tree may contain errors or unreliable content.
         if context.suspects {
             log::debug!("Structure tree marked as suspect, falling back to geometric ordering");
-            return self.fallback.apply(spans, context);
+            return self.fallback_order(spans, context);
         }
 
-        // If no structure tree or MCID order, fall back to geometric strategy
+        // If no structure tree or MCID order, fall back (article threads first,
+        // then geometric) — see `fallback_order`.
         let mcid_order = match &context.mcid_order {
             Some(order) if !order.is_empty() => order,
-            _ => return self.fallback.apply(spans, context),
+            _ => return self.fallback_order(spans, context),
         };
 
         // Trust-check: if the MCID ordering would zigzag horizontally
@@ -135,7 +153,7 @@ impl ReadingOrderStrategy for StructureTreeStrategy {
         // respecting column visual order). Fall back to geometric.
         if mcid_order_zigzags_columns(&spans, mcid_order) {
             log::debug!("MCID order zigzags across columns, falling back to geometric ordering");
-            return self.fallback.apply(spans, context);
+            return self.fallback_order(spans, context);
         }
 
         // Create MCID -> reading order mapping

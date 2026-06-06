@@ -1,6 +1,6 @@
 {
   "name": "pdf-oxide",
-  "version": "0.3.60",
+  "version": "0.3.61",
   "type": "module",
   "description": "High-performance PDF parsing and text extraction library — prebuilt native bindings, no build toolchain required",
   "main": "lib/index.js",
@@ -20,7 +20,7 @@
     "check:publint": "publint",
     "check:types": "attw --pack . --ignore-rules=cjs-resolves-to-esm",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
-    "test": "node --test tests/smoke.test.mjs tests/feature-guard.test.mjs tests/api-coverage.test.mjs tests/html-css.test.mjs tests/document-builder.test.mjs tests/document-editor.test.mjs tests/render-options.test.mjs tests/tables.test.mjs tests/worker-threads-safety.test.mjs"
+    "test": "node --test tests/smoke.test.mjs tests/feature-guard.test.mjs tests/api-coverage.test.mjs tests/html-css.test.mjs tests/document-builder.test.mjs tests/document-editor.test.mjs tests/render-options.test.mjs tests/tables.test.mjs tests/worker-threads-safety.test.mjs tests/readme-quickstart.test.mjs tests/core-parity.test.mjs"
   },
   "files": [
     "lib/",

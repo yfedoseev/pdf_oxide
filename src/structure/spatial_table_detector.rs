@@ -1503,7 +1503,12 @@ fn group_lines_into_clusters(
     // Post-processing: split clusters whose vertical lines occupy distinct Y-ranges.
     // This prevents a small bordered table (e.g. an invoice header) from merging
     // with a large main table that happens to be nearby vertically.
-    let raw_clusters: Vec<LineCluster> = cluster_map.into_values().collect();
+    // Deterministic order: `cluster_map` is a HashMap (per-process-randomized
+    // iteration), so sort clusters by their first (smallest) line index — each
+    // cluster's `lines` Vec is already ascending — to keep downstream table
+    // boundary order stable across runs.
+    let mut raw_clusters: Vec<LineCluster> = cluster_map.into_values().collect();
+    raw_clusters.sort_by_key(|c| c.lines.first().copied().unwrap_or(usize::MAX));
     let mut result: Vec<LineCluster> = Vec::with_capacity(raw_clusters.len());
     const LINE_AXIS_TOL: f32 = 2.0;
     let v_split_gap = config.v_split_gap;
@@ -2014,7 +2019,15 @@ fn reconstitute_dotted_lines(edges: &mut Vec<Edge>) {
         }
     }
 
-    for segments in dotted_groups.values() {
+    // Iterate in sorted key order: `dotted_groups` is a HashMap (per-process-
+    // randomized), and the reconstituted edges are appended to `long_edges`
+    // (which becomes `*edges`), so HashMap order would leak into edge order and,
+    // downstream, table-cell/region order. Sorting the snapped-coordinate keys
+    // makes it deterministic.
+    let mut dotted_keys: Vec<i32> = dotted_groups.keys().copied().collect();
+    dotted_keys.sort_unstable();
+    for key in dotted_keys {
+        let segments = &dotted_groups[&key];
         if segments.len() >= DOTTED_MIN_SEGMENTS {
             let min_start = segments
                 .iter()
@@ -2215,11 +2228,27 @@ fn group_cells_into_tables(cells: &[IntersectionCell]) -> Vec<Vec<usize>> {
     let n = cells.len();
     let mut uf = UnionFind::new(n);
 
-    // Two cells share an edge if they share two corners.
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let ci = &cells[i];
+    // Sweep-line prune for the O(n²) edge-adjacency scan (the hot loop on dense
+    // ruled pages — CFR regulatory megafiles, #26). BOTH adjacency tests below
+    // require the cells' y-extents to touch within SNAP_TOL: horizontal
+    // adjacency needs y1≈y1 (so cj.y1 ≤ ci.y2 + SNAP_TOL), and vertical
+    // adjacency needs cj.y1 ≈ ci.y2 (also ≤ ci.y2 + SNAP_TOL). Iterating cells
+    // in ascending-y1 order lets us `break` the inner loop once a candidate's
+    // y1 clears ci.y2 + SNAP_TOL — every later candidate has an even larger y1
+    // and cannot share an edge. We `union` by ORIGINAL index, and union is
+    // order-independent, so the resulting partition is byte-identical to the
+    // full O(n²) scan; only provably-non-adjacent pairs are skipped.
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| crate::utils::safe_float_cmp(cells[a].y1, cells[b].y1));
+    for a in 0..n {
+        let i = order[a];
+        let ci = &cells[i];
+        let y_limit = ci.y2 + SNAP_TOL;
+        for &j in order.iter().skip(a + 1) {
             let cj = &cells[j];
+            if cj.y1 > y_limit {
+                break; // sorted by y1 → no later cell can touch ci's y-extent
+            }
             let shares_edge = // Horizontal adjacency (share a vertical edge)
                 (((ci.x2 - cj.x1).abs() <= SNAP_TOL || (ci.x1 - cj.x2).abs() <= SNAP_TOL)
                     && (ci.y1 - cj.y1).abs() <= SNAP_TOL
@@ -2234,8 +2263,16 @@ fn group_cells_into_tables(cells: &[IntersectionCell]) -> Vec<Vec<usize>> {
         }
     }
 
-    // Collect groups.
-    uf.groups().into_values().collect()
+    // Collect groups in a DETERMINISTIC order. `groups()` returns a HashMap
+    // whose iteration order is randomized per-process (Rust `RandomState`), so
+    // `into_values().collect()` would yield table clusters in a different order
+    // each run — leaking non-deterministic reading order on multi-table / figure
+    // pages (e.g. matrix-figure pages with several detected regions). Each
+    // group's `Vec` is already ascending (built `for i in 0..n`); sort the outer
+    // list by each group's first (smallest) cell index so table order is stable.
+    let mut groups: Vec<Vec<usize>> = uf.groups().into_values().collect();
+    groups.sort_by_key(|g| g.first().copied().unwrap_or(usize::MAX));
+    groups
 }
 
 /// Split table rows that contain text spans at multiple distinct Y positions into sub-rows.

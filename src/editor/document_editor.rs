@@ -2007,6 +2007,23 @@ impl DocumentEditor {
             // value. Also sets /NeedAppearances on the existing AcroForm.
             self.flush_form_fields_to_modified_objects()?;
 
+            // #647: for an *inline* AcroForm the flush above sets
+            // /NeedAppearances true by re-writing the catalog into
+            // `modified_objects`, but `catalog_obj` was snapshotted before the
+            // flush — so without this the patch is silently dropped and viewers
+            // honour the field's pre-existing empty /AP /N over /DA, rendering
+            // the field blank (ISO 32000-1 §12.7.3.3, Table 226 — AP takes
+            // precedence over DA). Re-adopt the patched catalog. Guarded to the
+            // pure-fill case: the flatten branches above already rebuild the
+            // catalog's AcroForm in-place (and must not be clobbered), and the
+            // new-fields branch below emits an AcroForm with NeedAppearances via
+            // AcroFormBuilder.
+            if !self.remove_acroform && self.flatten_forms_pages.is_empty() {
+                if let Some(patched) = self.modified_objects.get(&catalog_ref.id) {
+                    catalog_obj = patched.clone();
+                }
+            }
+
             // Only genuinely NEW fields need freshly-allocated objects plus
             // /Fields and /Annots entries. Existing fields keep their object
             // ids and their place in /Fields/Annots (updated in place above).
