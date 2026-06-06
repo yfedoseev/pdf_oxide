@@ -33,7 +33,8 @@
 pub(crate) mod ext_gstate;
 pub(crate) mod page_renderer;
 mod path_rasterizer;
-mod separation_renderer;
+pub(crate) mod resolution;
+pub(crate) mod separation_renderer;
 mod text_rasterizer;
 
 pub use page_renderer::{ImageFormat, PageRenderer, RenderOptions, RenderedImage};

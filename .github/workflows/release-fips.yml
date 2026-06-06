@@ -75,7 +75,7 @@ jobs:
     name: Validate Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
@@ -159,7 +159,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: pdf_oxide_fips-python-windows-x86_64
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
@@ -183,7 +183,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -359,7 +359,7 @@ jobs:
             prebuild_dir: win32-x64
             node_arch: x64
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
@@ -470,7 +470,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
@@ -612,7 +612,7 @@ jobs:
             rid: win-x64
             lib_name: pdf_oxide.dll
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
@@ -667,7 +667,7 @@ jobs:
     needs: [build-fips-nuget-libs]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
@@ -782,7 +782,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             go_dir: windows_amd64
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 
@@ -842,7 +842,7 @@ jobs:
     needs: [build-fips-go]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.version || (github.event_name != 'pull_request' && github.ref_name || github.sha) }}
 

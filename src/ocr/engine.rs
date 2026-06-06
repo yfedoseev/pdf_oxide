@@ -67,6 +67,7 @@ impl OcrSpan {
             is_monospace: false,
             color: Color::black(),
             mcid: None,
+            mcid_scope: None,
             sequence,
             split_boundary_before: false,
             offset_semantic: false,

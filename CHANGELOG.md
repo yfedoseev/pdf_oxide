@@ -2,6 +2,31 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [Unreleased]
+
+> Press-accurate CMYK→RGB on the composite render path via the document `/OutputIntents` ICC profile
+
+### Added
+
+- **Press-accurate CMYK→RGB via document `/OutputIntents` ICC profile** — the composite render path now consumes the document's `/OutputIntents` CMYK `DestOutputProfile` and routes `/DeviceCMYK` paint, `/Separation` / `/DeviceN` colourants resolving to a `/DeviceCMYK` alternate, and `/ICCBased N=4` spaces lacking a usable embedded profile through `qcms` (ISO 32000-1:2008 §14.11.5, §10). The conversion is built as `qcms::Transform::new_to(src = OutputIntent, dst = sRGB)`, so it uses the OutputIntent profile's AToB ("device-to-PCS") direction into the CIE PCS and then the sRGB profile's PCS-to-device direction out — composite direction CMYK → CIE PCS → sRGB. Closes the press-vs-screen colour divergence on heavy-yellow / saturated-mid-tone branding artwork that previously rendered through the §10.3.5 additive-clamp fallback. When no `/OutputIntents` is declared, §10.3.5 is preserved byte-for-byte.
+- **Page-level `/DefaultGray` / `/DefaultRGB` / `/DefaultCMYK` overrides (§8.6.5.6)** — when a page or Form XObject's `/Resources /ColorSpace` declares these defaults, the canonical `g` / `rg` / `k` / `K` operators (and their stroking siblings) are routed through the override colour space before any document-level `/OutputIntents` lookup. A `/DefaultCMYK [/ICCBased <N=4 stream>]` override drives the conversion through its embedded profile; the override takes precedence over the document `/OutputIntents` for bare device-family paint. Form XObject overrides take precedence inside the form's scope (§7.8.3).
+- **Rendering-intent operator (`/RI`) honoured in the render path (§10.7.3)** — the `/RI` operator was being parsed but its value never reached the colour conversion. The graphics-state intent (`/AbsoluteColorimetric` / `/RelativeColorimetric` / `/Saturation` / `/Perceptual`, defaulting to `/RelativeColorimetric`) now flows into every qcms `Transform::new_srgb_target` build. Two `/RI` settings on the same page now compile two distinct transforms instead of silently sharing one.
+- **ICC v2 and ICC v4 `DestOutputProfile` profiles both supported** through qcms 0.3.0's unconditional header-version check. A v4 LUT8-tag-form profile compiles through the same code path as the v2 equivalent and produces byte-identical RGB.
+- **Per-page compiled-transform cache** (`IccTransformCache`, lives on `PageRenderer`) keyed on `(profile.content_hash, intent)`. Amortises the 17⁴ CLUT precomputation `qcms::Transform::new_to` runs for CMYK input across paint operators that share a profile and intent: a page emitting 1 000 identical CMYK paints builds one transform, not one thousand. The cache is dropped per page so memory stays bounded across renders.
+
+### Changed
+
+- **`ResolvedColor` gains an `IccCmyk { rgba, cmyk }` dual-payload variant** — `/ICCBased N=4` paint with a parseable embedded profile (and `/DefaultCMYK [/ICCBased N=4]` overrides) emits both the pre-converted RGBA (consumed by the composite backend) and the original CMYK quadruple (consumed by the per-plate separation router). Source-breaking for downstream code that exhaustively matches on `ResolvedColor`; add the new arm to fix. The type is not `#[non_exhaustive]`.
+- **`/ICCBased N=4` with an embedded profile now wins over document `/OutputIntents`** (§8.6.5.5). Pre-this-change, an embedded `/ICCBased N=4` colour space with a parseable qcms profile emitted `ResolvedColor::Cmyk` and was projected through the document `/OutputIntents` ICC profile by the composite pipeline — inverting the spec's "embedded ICC trumps OutputIntent". The four components are now routed through the embedded profile directly and the OutputIntent is consulted only when the embedded profile fails to parse or qcms refuses to build a CMM.
+
+### Known limitations
+
+These are intentional gaps the test suite documents with `HONEST_GAP_*` markers so a future engineer (or a qcms upgrade) flips them RED on landing:
+
+- **qcms 0.3.0 ignores the CMYK rendering intent**. The end-to-end intent chain inside pdf_oxide is correct — `gs.rendering_intent` → `ResolutionContext::rendering_intent` → `Transform::new_srgb_target`'s `intent` parameter → qcms — but qcms 0.3.0 declares the intent as `_intent` for CLUT-based CMYK conversion (`transform.rs:1283-1289`) and dispatches the same CLUT for every PDF intent. A qcms upgrade that honours the parameter, or a CMM swap, will surface intent-sensitive behaviour without further code changes; the test `qa_round3_qcms_030_treats_cmyk_intent_as_informational` is the upgrade gate.
+- **qcms 0.3.0 has no Black-Point Compensation** (`lib.rs:29-36` — upstream documents the choice as intentional). `qa_round4_bpc_paper_white_preservation_under_relative_colorimetric` is `#[ignore]`-marked with `HONEST_GAP_QCMS_030_NO_BPC`.
+- **No real-corpus branding-logo regression fixture** (`HONEST_GAP_NO_REAL_BRANDING_FIXTURE`). The synthetic green-mark probe (`qa_round4_branding_green_mark_routes_through_output_intent`) pins the press-target direction-of-shift through saturation collapse; a vendor-issued press profile plus a CIEDE2000 ΔE assertion against a commercial-viewer baseline would tighten the bound.
+
 ## [0.3.60] - 2026-06-03
 
 > Converter performance sweep (no double per-page extraction, cached structure-tree traversal) + Arabic/Persian CIDFont extraction, ZapfDingbats coverage, graceful encrypted-PDF text extraction, and an `extract_tables` opt-out for speed-first text extraction

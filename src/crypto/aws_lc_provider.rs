@@ -29,8 +29,6 @@
 //!
 //! Issue #236.
 
-#![cfg(feature = "fips")]
-
 use aws_lc_rs::cipher::{
     DecryptingKey, EncryptingKey, EncryptionContext, PaddedBlockDecryptingKey,
     PaddedBlockEncryptingKey, UnboundCipherKey, AES_128, AES_256,

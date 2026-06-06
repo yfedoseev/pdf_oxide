@@ -311,6 +311,14 @@ impl TextRasterizer {
 
     /// Render a text string (Tj operator).
     /// Returns the total horizontal advance in PDF points.
+    ///
+    /// `color_override` carries the resolution-pipeline output: the
+    /// fill RGBA replaces the value `gs` would supply when present, so
+    /// the operator arm doesn't have to clone `gs` purely to splice a
+    /// colour. Stroke override is accepted for forward compatibility —
+    /// the text rasteriser does not currently paint stroked glyphs, so
+    /// the stroke channel is recorded but not yet observable on the
+    /// pixmap.
     #[allow(unused_variables)]
     pub fn render_text(
         &self,
@@ -318,6 +326,7 @@ impl TextRasterizer {
         text: &[u8],
         base_transform: Transform,
         gs: &GraphicsState,
+        color_override: Option<&crate::rendering::page_renderer::ResolvedColors>,
         _resources: &Object,
         doc: &PdfDocument,
         clip_mask: Option<&tiny_skia::Mask>,
@@ -334,8 +343,18 @@ impl TextRasterizer {
         let unicode_text = self.decode_text_to_unicode(text, font_info.as_deref());
         log::debug!("Decoded text: '{}' (font={:?})", unicode_text, gs.font_name);
 
-        // Create paint from fill color
+        // Create paint from fill color, then apply the pipeline-resolved
+        // override when present. `create_fill_paint` reads gs.fill_*
+        // unconditionally; the override stamp afterwards is the only
+        // place the resolved RGBA needs to land for visible-glyph paint.
         let mut paint = create_fill_paint(gs, "Normal");
+        if let Some(overrides) = color_override {
+            if let Some((r, g, b, a)) = overrides.fill {
+                paint.set_color(
+                    tiny_skia::Color::from_rgba(r, g, b, a).unwrap_or(tiny_skia::Color::BLACK),
+                );
+            }
+        }
         // Text rendering mode 3 = invisible text (used for searchable OCR layers)
         if gs.render_mode == 3 {
             paint.set_color(tiny_skia::Color::from_rgba(0.0, 0.0, 0.0, 0.0).unwrap());
@@ -645,12 +664,21 @@ impl TextRasterizer {
 
     /// Render a TJ array (text with positioning adjustments).
     /// Returns the total horizontal advance in PDF points.
+    ///
+    /// `color_override` carries the resolution-pipeline output. It is
+    /// threaded into each inner `render_text` call so the per-element
+    /// paint colour is the resolved RGBA rather than the `gs.fill_*`
+    /// field the operator stack carried. The existing per-call
+    /// `current_gs.clone()` (needed to advance `text_matrix` between TJ
+    /// elements) is the only `GraphicsState` allocation on the TJ path
+    /// — the operator-arm-side clone is eliminated.
     pub fn render_tj_array(
         &self,
         pixmap: &mut Pixmap,
         array: &[TextElement],
         base_transform: Transform,
         gs: &GraphicsState,
+        color_override: Option<&crate::rendering::page_renderer::ResolvedColors>,
         resources: &Object,
         doc: &PdfDocument,
         clip_mask: Option<&tiny_skia::Mask>,
@@ -667,6 +695,7 @@ impl TextRasterizer {
                         text,
                         base_transform,
                         &current_gs,
+                        color_override,
                         resources,
                         doc,
                         clip_mask,

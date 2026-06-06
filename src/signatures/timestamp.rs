@@ -10,8 +10,6 @@
 //! All accessors surface through the `pdf_timestamp_*` FFI and, in
 //! turn, every binding's idiomatic `Timestamp` type.
 
-#![cfg(feature = "signatures")]
-
 use crate::error::{Error, Result};
 use cms::cert::x509::ext::pkix::name::GeneralName;
 use cms::signed_data::SignedData;

@@ -63,7 +63,7 @@ impl StructureConverter {
                     let nested_structure = self.convert_struct_elem(nested)?;
                     children.push(ContentElement::Structure(nested_structure));
                 },
-                StructChild::MarkedContentRef { mcid, page: _ } => {
+                StructChild::MarkedContentRef { mcid, page: _, .. } => {
                     // Lookup content by MCID
                     if let Some(content_elements) = self.mcid_map.get(mcid) {
                         children.extend(content_elements.clone());
@@ -333,7 +333,11 @@ mod tests {
         let converter = StructureConverter::new(mcid_map);
 
         let mut elem = StructElem::new(StructType::P);
-        elem.add_child(StructChild::MarkedContentRef { mcid: 0, page: 0 });
+        elem.add_child(StructChild::MarkedContentRef {
+            mcid: 0,
+            page: 0,
+            scope: crate::structure::McidScope::Page(0),
+        });
 
         let result = converter.convert_struct_elem(&elem).unwrap();
         assert_eq!(result.structure_type, "P");
@@ -374,7 +378,11 @@ mod tests {
         let converter = StructureConverter::new(mcid_map);
 
         let mut elem = StructElem::new(StructType::Span);
-        elem.add_child(StructChild::MarkedContentRef { mcid: 999, page: 0 });
+        elem.add_child(StructChild::MarkedContentRef {
+            mcid: 999,
+            page: 0,
+            scope: crate::structure::McidScope::Page(0),
+        });
 
         let result = converter.convert_struct_elem(&elem).unwrap();
         // Missing MCIDs are silently skipped

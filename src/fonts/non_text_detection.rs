@@ -423,6 +423,7 @@ mod tests {
             font_weight: FontWeight::Normal,
             color: Color::black(),
             mcid: None,
+            mcid_scope: None,
             sequence: 0,
             split_boundary_before: false,
             offset_semantic: false,

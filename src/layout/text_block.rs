@@ -5,6 +5,7 @@
 
 use crate::extractors::text::ArtifactType;
 use crate::geometry::{Point, Rect};
+use crate::structure::McidScope;
 use std::collections::HashMap;
 
 /// A text span (complete string from a Tj/TJ operator).
@@ -39,6 +40,26 @@ pub struct TextSpan {
     pub color: Color,
     /// Marked Content ID (for Tagged PDFs)
     pub mcid: Option<u32>,
+    /// Content-stream scope of [`Self::mcid`] (ISO 32000-1:2008 §14.7.4.3).
+    ///
+    /// MCIDs are scoped to a single content stream — page, Form
+    /// XObject, or Tiling Pattern — not to a page globally. When this
+    /// span's `mcid` was emitted inside a Form XObject's content
+    /// stream, `mcid_scope` is `Form(<form_ref>)`; inside a Tiling
+    /// Pattern, `Pattern(<pattern_ref>)`; otherwise `Page(page_index)`
+    /// for the page that owns the top-level content stream the span
+    /// came from.
+    ///
+    /// The struct-tree `/ActualText` applier keys lookups by
+    /// `(mcid_scope, mcid)` so two Form XObjects on the same page that
+    /// each carry MCID 0 do not collide and overwrite each other's
+    /// replacements.
+    ///
+    /// `None` for spans extracted before page-index attribution
+    /// completes (e.g. mid-extraction internal spans) or for synthetic
+    /// test fixtures.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub mcid_scope: Option<McidScope>,
     /// Extraction sequence number
     pub sequence: usize,
     /// If true, this span was created by splitting fused words
@@ -98,6 +119,7 @@ impl Default for TextSpan {
             is_monospace: false,
             color: Color::black(),
             mcid: None,
+            mcid_scope: None,
             sequence: 0,
             split_boundary_before: false,
             offset_semantic: false,

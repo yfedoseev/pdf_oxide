@@ -272,8 +272,16 @@ mod tests {
         let elem = StructElem {
             struct_type: StructType::Formula,
             children: vec![
-                StructChild::MarkedContentRef { mcid: 10, page: 0 },
-                StructChild::MarkedContentRef { mcid: 11, page: 0 },
+                StructChild::MarkedContentRef {
+                    mcid: 10,
+                    page: 0,
+                    scope: crate::structure::McidScope::Page(0),
+                },
+                StructChild::MarkedContentRef {
+                    mcid: 11,
+                    page: 0,
+                    scope: crate::structure::McidScope::Page(0),
+                },
             ],
             page: Some(0),
             attributes: HashMap::new(),

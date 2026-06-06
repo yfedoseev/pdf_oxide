@@ -32,6 +32,7 @@ fn create_test_span(text: &str, x: f32, y: f32, width: f32, height: f32) -> Text
         is_monospace: false,
         color: Color::black(),
         mcid: None,
+        mcid_scope: None,
         sequence: 0,
         split_boundary_before: false,
         offset_semantic: false,

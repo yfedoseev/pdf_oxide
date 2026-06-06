@@ -2079,6 +2079,7 @@ mod tests {
                 b: 0.0,
             },
             mcid: None,
+            mcid_scope: None,
             sequence: 0,
             split_boundary_before: false,
             offset_semantic: false,

@@ -33,7 +33,7 @@ pub enum Object {
 }
 
 /// Reference to an indirect object.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct ObjectRef {
     /// Object number
     pub id: u32,

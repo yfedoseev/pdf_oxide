@@ -1408,26 +1408,66 @@ pub fn cmyk_to_rgb_with_transform(
 }
 
 /// Decode a CMYK-colourspace JPEG to straight RGB bytes, applying Adobe's
-/// inverted-CMYK convention when the APP14 marker requests it.
-///
-/// Adobe-authored CMYK / YCCK JPEGs (which most real-world producers emit
-/// for print-targeted PDFs) store channel values inverted: 0 means "full
-/// ink" and 255 means "no ink". Naive CMYK→RGB conversion on those raw
-/// bytes yields near-black output — exactly the symptom of the issue this
-/// handles. Detecting the APP14 color-transform and inverting per channel
-/// before applying the standard CMYK→RGB math produces bright, correct
-/// images for Adobe JPEGs while still producing correct output for
-/// non-Adobe CMYK JPEGs that store values directly.
-///
-/// This is still a naive (non-ICC) conversion — it ignores any embedded
-/// ICC profile and therefore cannot produce print-accurate colour. Proper
-/// ICC handling (qcms / lcms) is a follow-up; this path is purely about
-/// emitting sRGB that viewers can display without mis-interpreting the
-/// channel polarity.
 /// Thin wrapper that falls back to the intent-less, profile-less
 /// variant — kept as the public, backwards-compatible entry point.
 pub fn decode_cmyk_jpeg_to_rgb(jpeg_data: &[u8]) -> Result<Vec<u8>> {
     decode_cmyk_jpeg_to_rgb_with_profile(jpeg_data, None)
+}
+
+/// Decode a DeviceCMYK JPEG to raw 8-bpc CMYK samples (W*H*4 bytes,
+/// channel order C, M, Y, K). Output is straight CMYK: 0 = no ink, 255 =
+/// full coverage.
+///
+/// Handling depends on the Adobe APP14 marker (if present):
+///
+/// - `color_transform = 0` (plain CMYK, Photoshop default) or no APP14 —
+///   `jpeg-decoder` 0.3's `color_convert_line_cmyk` already inverts the
+///   Adobe-stored bytes back to straight CMYK. No further work needed.
+/// - `color_transform = 2` (YCCK, Adobe Illustrator default) —
+///   `jpeg-decoder` runs `color_convert_line_ycck` which converts YCbCr
+///   to RGB and applies `255 - K`. For Adobe YCCK the YCbCr was derived
+///   from `(255-C, 255-M, 255-Y)` so the decoder's output bytes are the
+///   *inverted* CMYK form. Apply `255 - x` to all four channels to
+///   recover straight CMYK.
+///
+/// The dependency contract for plain CMYK (transform=0) is pinned by
+/// `tests/test_jpeg_decoder_cmyk_contract.rs`; the YCCK fixture path is
+/// covered by `tests/test_cmyk_jpeg_adobe_inversion.rs`. If a future
+/// jpeg-decoder release changes either behaviour, those tests fire
+/// before real fixtures regress.
+///
+/// Used by the separation pipeline to route CMYK image channels directly
+/// to the matching ink plates without going through a colour-space
+/// conversion to RGB and back. Only the rendering feature consumes this;
+/// without it the function would be dead code under `-D warnings`.
+#[cfg(feature = "rendering")]
+pub(crate) fn decode_cmyk_jpeg_to_raw_cmyk(jpeg_data: &[u8]) -> Result<Vec<u8>> {
+    let mut decoder = jpeg_decoder::Decoder::new(std::io::Cursor::new(jpeg_data));
+    let cmyk = decoder
+        .decode()
+        .map_err(|e| Error::Decode(format!("Failed to decode CMYK JPEG: {}", e)))?;
+    let info = decoder
+        .info()
+        .ok_or_else(|| Error::Decode("JPEG info unavailable".to_string()))?;
+
+    let pixel_count = (info.width as usize) * (info.height as usize);
+    let expected = pixel_count * 4;
+    if cmyk.len() < expected {
+        return Err(Error::Decode(format!(
+            "CMYK JPEG decoded {} bytes, expected {}",
+            cmyk.len(),
+            expected
+        )));
+    }
+
+    let mut raw = cmyk;
+    raw.truncate(expected);
+    if scan_app14_color_transform(jpeg_data) == Some(2) {
+        for b in raw.iter_mut() {
+            *b = 255 - *b;
+        }
+    }
+    Ok(raw)
 }
 
 /// Like [`decode_cmyk_jpeg_to_rgb`] but applies the given ICC transform
@@ -1435,6 +1475,10 @@ pub fn decode_cmyk_jpeg_to_rgb(jpeg_data: &[u8]) -> Result<Vec<u8>> {
 /// `PdfImage::save_as_*` when the source image carries an ICCBased
 /// colour space (or when the document's `OutputIntents` supplied a
 /// default CMYK profile).
+///
+/// APP14 handling matches `decode_cmyk_jpeg_to_raw_cmyk`: plain CMYK
+/// passes through, YCCK is inverted on all four channels to recover
+/// straight CMYK before the colour-space conversion.
 pub fn decode_cmyk_jpeg_to_rgb_with_profile(
     jpeg_data: &[u8],
     transform: Option<&crate::color::Transform>,
@@ -1447,15 +1491,6 @@ pub fn decode_cmyk_jpeg_to_rgb_with_profile(
         .info()
         .ok_or_else(|| Error::Decode("JPEG info unavailable".to_string()))?;
 
-    // Adobe APP14 marker contains a `color_transform` byte that tells
-    // decoders how the channels are laid out. Value 0 on a 4-channel image
-    // means "CMYK stored inverted" (the Photoshop convention); value 2
-    // means "YCCK", which decoders convert to CMYK but the resulting values
-    // are still inverted. Value 1 (YCbCr) only appears on 3-channel images.
-    // When no APP14 is present we assume non-inverted CMYK, matching what
-    // Poppler / pdfium do for bare CMYK JPEGs.
-    let adobe_inverted = scan_adobe_inverted(jpeg_data);
-
     let pixel_count = (info.width as usize) * (info.height as usize);
     let expected = pixel_count * 4;
     if cmyk.len() < expected {
@@ -1466,21 +1501,10 @@ pub fn decode_cmyk_jpeg_to_rgb_with_profile(
         )));
     }
 
-    // Normalize Adobe-inverted CMYK into straight CMYK first; the CMM
-    // (or §10.3.5 fallback) always expects non-inverted input.
-    let straight_cmyk: Vec<u8> = if adobe_inverted {
-        let mut buf = Vec::with_capacity(pixel_count * 4);
-        for chunk in cmyk.chunks_exact(4).take(pixel_count) {
-            buf.extend_from_slice(&[
-                255 - chunk[0],
-                255 - chunk[1],
-                255 - chunk[2],
-                255 - chunk[3],
-            ]);
-        }
-        buf
+    let straight_cmyk: Vec<u8> = if scan_app14_color_transform(jpeg_data) == Some(2) {
+        cmyk[..expected].iter().map(|b| 255 - *b).collect()
     } else {
-        cmyk[..pixel_count * 4].to_vec()
+        cmyk[..expected].to_vec()
     };
 
     if let Some(t) = transform {
@@ -1498,11 +1522,10 @@ pub fn decode_cmyk_jpeg_to_rgb_with_profile(
     Ok(rgb)
 }
 
-/// Walk the JPEG marker stream looking for an APP14 "Adobe" segment, and
-/// return true if its `color_transform` byte indicates inverted CMYK
-/// (values 0 on 4-channel, or 2 = YCCK). Returns false if no APP14 marker
-/// is present or if it reports a non-inverted layout.
-fn scan_adobe_inverted(jpeg_data: &[u8]) -> bool {
+/// Walk the JPEG marker stream for an Adobe APP14 ("Adobe") segment and
+/// return its `color_transform` byte. The byte is 0 for plain CMYK
+/// (Photoshop), 1 for YCbCr (3-channel), 2 for YCCK (Adobe Illustrator).
+fn scan_app14_color_transform(jpeg_data: &[u8]) -> Option<u8> {
     let mut i = 0;
     while i + 1 < jpeg_data.len() {
         if jpeg_data[i] != 0xFF {
@@ -1511,7 +1534,6 @@ fn scan_adobe_inverted(jpeg_data: &[u8]) -> bool {
         }
         let marker = jpeg_data[i + 1];
         i += 2;
-        // Standalone markers (SOI, EOI, RSTn, TEM, fill bytes) have no length.
         if marker == 0x00 || marker == 0xFF {
             continue;
         }
@@ -1528,17 +1550,15 @@ fn scan_adobe_inverted(jpeg_data: &[u8]) -> bool {
         if marker == 0xEE && seg_len >= 14 {
             let payload = &jpeg_data[i + 2..i + seg_len];
             if payload.len() >= 12 && payload.starts_with(b"Adobe") {
-                let transform = payload[11];
-                return transform == 0 || transform == 2;
+                return Some(payload[11]);
             }
         }
         if marker == 0xDA {
-            // Start of Scan — image data follows; no more APP markers.
             break;
         }
         i += seg_len;
     }
-    false
+    None
 }
 
 fn save_jpeg_as_png(jpeg_data: &[u8], path: impl AsRef<Path>) -> Result<()> {

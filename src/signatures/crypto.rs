@@ -12,8 +12,6 @@
 //! (`pub(super)`) lets us keep churning the API shape without a
 //! backcompat concern.
 
-#![cfg(feature = "signatures")]
-
 use der::oid::db::rfc5912::{ID_SHA_1, ID_SHA_256, ID_SHA_384, ID_SHA_512};
 use der::oid::ObjectIdentifier;
 use sha1::Sha1;

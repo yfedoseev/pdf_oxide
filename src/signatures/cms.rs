@@ -15,8 +15,6 @@
 //! inspection accessors that Certificate already offers
 //! (subject / issuer / serial / validity / is_valid).
 
-#![cfg(feature = "signatures")]
-
 use crate::error::{Error, Result};
 use cms::cert::CertificateChoices;
 use cms::content_info::ContentInfo;

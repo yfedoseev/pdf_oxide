@@ -1,14 +1,16 @@
-//! Regression test: CMYK JPEGs with the Adobe APP14 marker must have their
-//! channel values inverted before CMYK→RGB conversion, otherwise the output
-//! is near-black (the Photoshop inversion convention is the opposite polarity
-//! from the naive interpretation our code applied).
+//! Adobe YCCK CMYK JPEG (APP14 `color_transform = 2`) decode.
 //!
-//! We also verify that `[/ICCBased <ref>]` with the profile stream passed as
-//! an indirect reference is resolved so that the `N` component count reaches
-//! `parse_color_space`. Previously the reference fell through and the CMYK
-//! image was labelled `ICCBased(3)`, which bypassed the whole CMYK save path
-//! and left the file on disk as an unaltered 4-channel JPEG that most viewers
-//! render with inverted colour.
+//! Per Adobe convention, YCCK JPEGs store YCbCr derived from the inverted
+//! CMY (i.e. `rgb_to_ycbcr(255-C, 255-M, 255-Y)`) plus an inverted K. When
+//! `jpeg-decoder` 0.3 reverses the transform via `color_convert_line_ycck`,
+//! its output is the **inverted** CMYK form: `255 - actual_value` per
+//! channel for the first three components, and straight K. pdf_oxide must
+//! apply `255 - x` to the first three channels (the K channel was already
+//! inverted by jpeg-decoder) to recover straight CMYK.
+//!
+//! This differs from the APP14 `transform = 0` (plain CMYK) case, where
+//! `jpeg-decoder`'s `color_convert_line_cmyk` already returns straight
+//! CMYK — see `tests/test_jpeg_decoder_cmyk_contract.rs`.
 
 use pdf_oxide::extractors::images::decode_cmyk_jpeg_to_rgb;
 

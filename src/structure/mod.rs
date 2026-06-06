@@ -59,4 +59,7 @@ pub use traversal::{
     extract_reading_order, traverse_structure_tree, traverse_structure_tree_all_pages, ListRole,
     OrderedContent,
 };
-pub use types::{MarkInfo, ParentTree, StructChild, StructElem, StructTreeRoot, StructType};
+pub use types::{
+    ActualTextIndex, MarkInfo, McidScope, ParentTree, StructChild, StructElem, StructTreeRoot,
+    StructType,
+};

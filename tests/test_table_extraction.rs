@@ -24,7 +24,11 @@ fn mock_text_block(text: &str, mcid: u32) -> TextBlock {
 
 /// Helper to create marked content reference in structure element
 fn add_mcid_ref(elem: &mut StructElem, mcid: u32, page: u32) {
-    elem.add_child(StructChild::MarkedContentRef { mcid, page });
+    elem.add_child(StructChild::MarkedContentRef {
+        mcid,
+        page,
+        scope: pdf_oxide::structure::McidScope::Page(page),
+    });
 }
 
 #[test]

@@ -525,10 +525,14 @@ fn parse_k_children(
 ) -> Result<(), Error> {
     match k_obj {
         Object::Integer(mcid) => {
-            // Single MCID
+            // Single MCID — bare integer child references the page's
+            // own content stream (ISO 32000-1:2008 §14.7.5.4.2 "MCR"
+            // form is reserved for cross-stream refs).
+            let page = parent.page.unwrap_or(0);
             parent.add_child(StructChild::MarkedContentRef {
                 mcid: *mcid as u32,
-                page: parent.page.unwrap_or(0), // Use parent's page if available
+                page,
+                scope: crate::structure::McidScope::Page(page),
             });
         },
 
@@ -558,10 +562,12 @@ fn parse_k_children(
 
                 match &child_obj {
                     Object::Integer(mcid) => {
-                        // MCID
+                        // Bare integer MCID — page's own content stream.
+                        let page = parent.page.unwrap_or(0);
                         parent.add_child(StructChild::MarkedContentRef {
                             mcid: *mcid as u32,
-                            page: parent.page.unwrap_or(0),
+                            page,
+                            scope: crate::structure::McidScope::Page(page),
                         });
                     },
 
@@ -579,7 +585,9 @@ fn parse_k_children(
                             parent.add_child(StructChild::StructElem(Box::new(child_elem)));
                         } else {
                             // Try parsing as marked content reference
-                            if let Some(mcr) = parse_marked_content_ref(&child_obj, page_map)? {
+                            if let Some(mcr) =
+                                parse_marked_content_ref(document, &child_obj, page_map)?
+                            {
                                 parent.add_child(mcr);
                             }
                         }
@@ -608,7 +616,7 @@ fn parse_k_children(
                                 )? {
                                     parent.add_child(StructChild::StructElem(Box::new(child_elem)));
                                 } else if let Some(mcr) =
-                                    parse_marked_content_ref(&resolved, page_map)?
+                                    parse_marked_content_ref(document, &resolved, page_map)?
                                 {
                                     parent.add_child(mcr);
                                 }
@@ -645,7 +653,7 @@ fn parse_k_children(
                 parent.add_child(StructChild::StructElem(Box::new(child_elem)));
             } else {
                 // Try parsing as marked content reference
-                if let Some(mcr) = parse_marked_content_ref(k_obj, page_map)? {
+                if let Some(mcr) = parse_marked_content_ref(document, k_obj, page_map)? {
                     parent.add_child(mcr);
                 }
             }
@@ -673,7 +681,9 @@ fn parse_k_children(
                         visited,
                     )? {
                         parent.add_child(StructChild::StructElem(Box::new(child_elem)));
-                    } else if let Some(mcr) = parse_marked_content_ref(&resolved, page_map)? {
+                    } else if let Some(mcr) =
+                        parse_marked_content_ref(document, &resolved, page_map)?
+                    {
                         parent.add_child(mcr);
                     }
                 },
@@ -693,11 +703,22 @@ fn parse_k_children(
 
 /// Parse a marked content reference dictionary.
 ///
-/// According to PDF spec, a marked content reference has:
-/// - /Type /MCR
-/// - /Pg - Page containing the marked content
-/// - /MCID - Marked content ID
+/// According to ISO 32000-1:2008 §14.7.5.4.2, a marked content reference
+/// (MCR) dictionary has:
+/// - `/Type /MCR` (optional but, when present, fixes the dict's identity)
+/// - `/Pg` — page reference (optional; inherits enclosing StructElem
+///   `/Pg` when absent)
+/// - `/MCID` — required marked-content identifier
+/// - `/Stm` — optional reference to the content stream that holds the
+///   MCID. When absent, the MCID lives in the page's own content
+///   stream. When present, the stream's dictionary determines the
+///   scope:
+///     - `/Subtype /Form` → Form XObject scope
+///     - `/PatternType 1` → Tiling Pattern scope
+///     - anything else → falls back to Page scope with a debug log,
+///       since we can't classify the stream.
 fn parse_marked_content_ref(
+    document: &PdfDocument,
     obj: &Object,
     page_map: &HashMap<u32, u32>,
 ) -> Result<Option<StructChild>, Error> {
@@ -721,7 +742,7 @@ fn parse_marked_content_ref(
         None => return Ok(None), // Missing /MCID, skip gracefully
     };
 
-    // Get /Pg (page reference) and resolve to page number
+    // Get /Pg (page reference) and resolve to page number.
     let page = dict
         .get("Pg")
         .and_then(|pg_obj| {
@@ -733,10 +754,101 @@ fn parse_marked_content_ref(
         })
         .unwrap_or(0); // Default to page 0 if no /Pg
 
+    // Resolve /Stm to determine the MCID's content-stream scope.
+    // `/StmOwn` is the "inline image" form (§14.7.5.4.2) — out of
+    // scope here since inline images do not carry their own MCID
+    // namespace.
+    let scope = resolve_mcr_scope(document, dict, page);
+
     Ok(Some(StructChild::MarkedContentRef {
         mcid: mcid as u32,
         page,
+        scope,
     }))
+}
+
+/// Determine the `McidScope` for a marked-content reference dict.
+///
+/// When `/Stm` is absent the MCID belongs to the enclosing page's
+/// content stream; the scope is `Page(page)`. When `/Stm` is present
+/// the referenced stream's dictionary classifies the scope: Form
+/// XObjects produce `Form(ref)`, Tiling Patterns produce
+/// `Pattern(ref)`. An unclassifiable `/Stm` (unresolved, missing
+/// subtype, or unrecognised type) falls back to `Page(page)` with a
+/// debug log so the assembler still has *some* lookup key — at worst
+/// the lookup misses and the raw glyphs flow through unchanged, which
+/// is strictly safer than a collision.
+fn resolve_mcr_scope(
+    document: &PdfDocument,
+    mcr_dict: &HashMap<String, Object>,
+    page: u32,
+) -> crate::structure::McidScope {
+    use crate::structure::McidScope;
+
+    let stm = match mcr_dict.get("Stm") {
+        Some(s) => s,
+        None => return McidScope::Page(page),
+    };
+
+    let stm_ref = match stm {
+        Object::Reference(r) => *r,
+        _ => {
+            log::debug!("MCR /Stm is not an indirect reference; defaulting to page scope");
+            return McidScope::Page(page);
+        },
+    };
+
+    let stm_obj = match document.load_object(stm_ref) {
+        Ok(o) => o,
+        Err(e) => {
+            log::debug!(
+                "MCR /Stm {} {} could not be resolved ({}); defaulting to page scope",
+                stm_ref.id,
+                stm_ref.gen,
+                e
+            );
+            return McidScope::Page(page);
+        },
+    };
+
+    // For both streams and dictionaries, locate the dict-half.
+    let stream_dict: &HashMap<String, Object> = match &stm_obj {
+        Object::Stream { dict, .. } => dict,
+        Object::Dictionary(d) => d,
+        _ => {
+            log::debug!(
+                "MCR /Stm {} {} resolves to non-stream/non-dict; defaulting to page scope",
+                stm_ref.id,
+                stm_ref.gen
+            );
+            return McidScope::Page(page);
+        },
+    };
+
+    // Form XObject: /Type /XObject /Subtype /Form (or /Subtype /Form
+    // alone — producers sometimes omit /Type because it is optional on
+    // an XObject stream per §8.8).
+    if let Some(subtype) = stream_dict.get("Subtype").and_then(|o| o.as_name()) {
+        if subtype == "Form" {
+            return McidScope::Form(stm_ref);
+        }
+    }
+
+    // Tiling Pattern: /PatternType 1 (per §8.7.3.3). Shading patterns
+    // (PatternType 2) do not have a content stream of their own and
+    // cannot host MCIDs.
+    if let Some(pt) = stream_dict.get("PatternType").and_then(|o| o.as_integer()) {
+        if pt == 1 {
+            return McidScope::Pattern(stm_ref);
+        }
+    }
+
+    log::debug!(
+        "MCR /Stm {} {} has unknown subtype/pattern type; defaulting to page scope",
+        stm_ref.id,
+        stm_ref.gen
+    );
+    McidScope::Page(page)
 }
 
 #[cfg(test)]
@@ -798,52 +910,63 @@ mod tests {
         assert_eq!(result, Object::Integer(42));
     }
 
+    fn minimal_test_doc() -> PdfDocument {
+        let pdf = build_test_pdf();
+        PdfDocument::from_bytes(pdf).unwrap()
+    }
+
     #[test]
     fn test_parse_marked_content_ref_not_dict() {
+        let doc = minimal_test_doc();
         let obj = Object::Integer(5);
         let page_map = HashMap::new();
-        let result = parse_marked_content_ref(&obj, &page_map).unwrap();
+        let result = parse_marked_content_ref(&doc, &obj, &page_map).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn test_parse_marked_content_ref_wrong_type() {
+        let doc = minimal_test_doc();
         let mut dict = HashMap::new();
         dict.insert("Type".to_string(), Object::Name("NotMCR".to_string()));
         dict.insert("MCID".to_string(), Object::Integer(5));
         let obj = Object::Dictionary(dict);
         let page_map = HashMap::new();
-        let result = parse_marked_content_ref(&obj, &page_map).unwrap();
+        let result = parse_marked_content_ref(&doc, &obj, &page_map).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn test_parse_marked_content_ref_missing_mcid() {
+        let doc = minimal_test_doc();
         let mut dict = HashMap::new();
         dict.insert("Type".to_string(), Object::Name("MCR".to_string()));
         let obj = Object::Dictionary(dict);
         let page_map = HashMap::new();
-        let result = parse_marked_content_ref(&obj, &page_map).unwrap();
+        let result = parse_marked_content_ref(&doc, &obj, &page_map).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn test_parse_marked_content_ref_valid() {
+        let doc = minimal_test_doc();
         let mut dict = HashMap::new();
         dict.insert("Type".to_string(), Object::Name("MCR".to_string()));
         dict.insert("MCID".to_string(), Object::Integer(7));
         let obj = Object::Dictionary(dict);
         let page_map = HashMap::new();
-        let result = parse_marked_content_ref(&obj, &page_map).unwrap();
+        let result = parse_marked_content_ref(&doc, &obj, &page_map).unwrap();
         assert!(result.is_some());
-        if let Some(StructChild::MarkedContentRef { mcid, page }) = result {
+        if let Some(StructChild::MarkedContentRef { mcid, page, scope }) = result {
             assert_eq!(mcid, 7);
             assert_eq!(page, 0); // default
+            assert_eq!(scope, crate::structure::McidScope::Page(0));
         }
     }
 
     #[test]
     fn test_parse_marked_content_ref_with_page() {
+        let doc = minimal_test_doc();
         let mut page_map = HashMap::new();
         page_map.insert(10, 2u32); // object 10 -> page 2
 
@@ -855,10 +978,11 @@ mod tests {
             Object::Reference(crate::object::ObjectRef { id: 10, gen: 0 }),
         );
         let obj = Object::Dictionary(dict);
-        let result = parse_marked_content_ref(&obj, &page_map).unwrap();
-        if let Some(StructChild::MarkedContentRef { mcid, page }) = result {
+        let result = parse_marked_content_ref(&doc, &obj, &page_map).unwrap();
+        if let Some(StructChild::MarkedContentRef { mcid, page, scope }) = result {
             assert_eq!(mcid, 3);
             assert_eq!(page, 2);
+            assert_eq!(scope, crate::structure::McidScope::Page(2));
         } else {
             panic!("Expected MarkedContentRef");
         }

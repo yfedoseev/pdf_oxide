@@ -19,8 +19,6 @@
 //! 5. Extract the two signed byte ranges; call `PdfSigner::sign`; insert
 //!    the hex-encoded signature into the `/Contents` placeholder.
 
-#![cfg(feature = "signatures")]
-
 use super::signer::PdfSigner;
 use super::types::{SignOptions, SigningCredentials};
 use crate::error::{Error, Result};
@@ -955,9 +953,9 @@ mod tests {
         let tail_str = std::str::from_utf8(tail).unwrap();
 
         // Must contain hex string syntax (angle brackets) for /Reason.
-        let reason_hex = tail_str.find("/Reason <").is_some();
-        let location_hex = tail_str.find("/Location <").is_some();
-        let name_hex = tail_str.find("/Name <").is_some();
+        let reason_hex = tail_str.contains("/Reason <");
+        let location_hex = tail_str.contains("/Location <");
+        let name_hex = tail_str.contains("/Name <");
         assert!(reason_hex, "/Reason must use hex string syntax");
         assert!(location_hex, "/Location must use hex string syntax");
         assert!(name_hex, "/Name must use hex string syntax");

@@ -156,6 +156,7 @@ mod tests {
             is_monospace: false,
             color: Color::new(0.0, 0.0, 0.0),
             mcid: None,
+            mcid_scope: None,
             sequence: 0,
             split_boundary_before: false,
             offset_semantic: false,

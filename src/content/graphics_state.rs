@@ -229,6 +229,22 @@ pub struct GraphicsState {
     pub fill_color_cmyk: Option<(f32, f32, f32, f32)>,
     /// Stroke color (CMYK) - optional, if CMYK color space is used
     pub stroke_color_cmyk: Option<(f32, f32, f32, f32)>,
+    /// Raw fill-colour components from the most recent `sc`/`scn`/`g`/`rg`/`k`
+    /// operator. The renderer's inline match arms always evaluate these to
+    /// RGB eagerly; this field retains the originals so the renderer's
+    /// resolution pipeline can re-evaluate them through a richer path
+    /// (e.g. PostScript Type 4 tint transforms) when the pilot operator
+    /// is routed through it. The pipeline itself lives under the
+    /// `rendering` feature so it cannot be linked from here without
+    /// breaking no-default-features doc builds.
+    ///
+    /// Empty means "no explicit fill colour set yet" (the implicit PDF
+    /// default is DeviceGray black, which the dispatcher records by setting
+    /// `fill_color_rgb = (0,0,0)`).
+    pub fill_color_components: smallvec::SmallVec<[f32; 8]>,
+    /// Raw stroke-colour components from the most recent `SC`/`SCN`/`G`/`RG`/`K`
+    /// operator. See [`Self::fill_color_components`] for rationale.
+    pub stroke_color_components: smallvec::SmallVec<[f32; 8]>,
 
     // Line parameters (for completeness, though mainly used for graphics)
     /// Line width
@@ -296,6 +312,8 @@ impl GraphicsState {
             stroke_color_rgb: (0.0, 0.0, 0.0),          // Black
             fill_color_cmyk: None,                      // No CMYK color set initially
             stroke_color_cmyk: None,                    // No CMYK color set initially
+            fill_color_components: smallvec::SmallVec::new(), // No explicit fill colour yet
+            stroke_color_components: smallvec::SmallVec::new(), // No explicit stroke colour yet
             line_width: 1.0,
             dash_pattern: (Vec::new(), 0.0), // Solid line
             line_cap: 0,                     // Butt cap (PDF default)

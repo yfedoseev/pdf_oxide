@@ -88,6 +88,7 @@ impl StructureTreeBuilder {
                     elem.add_child(StructChild::MarkedContentRef {
                         mcid,
                         page: _page_index as u32,
+                        scope: crate::structure::McidScope::Page(_page_index as u32),
                     });
                 }
             }

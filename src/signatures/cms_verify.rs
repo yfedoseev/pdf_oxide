@@ -23,8 +23,6 @@
 //! P-256+SHA-256 and P-384+SHA-384. Other ECDSA curves/hash combinations
 //! return `VerificationStatus::Unknown`.
 
-#![cfg(feature = "signatures")]
-
 use super::crypto::{
     hash_with_oid, is_rsa_pkcs1v15_sig_oid, OID_ECDSA_SHA256, OID_ECDSA_SHA384, OID_ECDSA_SHA512,
     OID_EC_PUBLIC_KEY, OID_P256, OID_P384, OID_RSASSA_PSS, OID_RSA_ENCRYPTION,

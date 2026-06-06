@@ -193,7 +193,11 @@ mod tests {
         for elem in elems {
             for child in &elem.children {
                 match child {
-                    pdf_oxide::structure::types::StructChild::MarkedContentRef { mcid, page } => {
+                    pdf_oxide::structure::types::StructChild::MarkedContentRef {
+                        mcid,
+                        page,
+                        ..
+                    } => {
                         out.push((*page, *mcid));
                     },
                     pdf_oxide::structure::types::StructChild::StructElem(child_elem) => {

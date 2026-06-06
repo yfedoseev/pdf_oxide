@@ -19,32 +19,67 @@
 //! scope for this renderer; they are rare in prepress workflows that
 //! ship separated artwork.
 //!
+//! # Images
+//!
+//! Raster image XObjects (`Do` with `Subtype /Image`) are routed into
+//! separation plates per ISO 32000-1 §8.9:
+//!
+//! - **DeviceCMYK** and **ICCBased N=4** images: per-pixel C / M / Y / K
+//!   samples route to the Cyan / Magenta / Yellow / Black plates. JPEG-
+//!   encoded streams decode through
+//!   `crate::extractors::images::decode_cmyk_jpeg_to_raw_cmyk` which
+//!   preserves the Adobe APP14 inversion semantics so plate values are
+//!   physical ink coverage (0 = no ink, 255 = full).
+//! - **Separation /\<spot-ink\>**: the single sample channel routes to
+//!   the named spot plate.
+//! - **DeviceN [\<ink1\> \<ink2\> …]**: each sample channel routes to its
+//!   named plate; the `tintTransform` function is not consulted —
+//!   samples go directly to plates, which is the standard prepress
+//!   per-plate routing convention.
+//! - **Image masks** (`/ImageMask true`): the 1-bpc samples are a
+//!   stencil through which the current non-stroking colour is painted.
+//!   Per-plate routing uses the same `tint_for_ink` decision tree as
+//!   vector fills, so `/All`, `/None`, and spot/process semantics match
+//!   the rest of the renderer.
+//! - **DeviceRGB / DeviceGray / ICCBased N∈{1,3}** images: skipped.
+//!   RGB/Gray have no declared ink-coverage intent in the subtractive
+//!   output model, so they neither paint nor knock out plates. Matches
+//!   `tint_for_ink`'s vector handling.
+//! - **JPX (JPEG 2000) image XObjects**: logged and skipped. No pure-
+//!   Rust JP2 decoder is bundled.
+//! - **Indexed images** (`[/Indexed …]`): expanded to RGB upstream and
+//!   therefore skipped by separation routing for now. Indexed CMYK
+//!   palettes would need a separate `expand_indexed_to_cmyk` path.
+//!
+//! ICC profiles (per-image and document `/OutputIntents`) and TRC /
+//! BG / UCR functions are **not** consulted when routing image samples
+//! to plates; samples are written verbatim. The plate is an absolute
+//! ink-coverage measurement independent of any colour-management
+//! transform.
+//!
+//! Spot / DeviceN ink *declarations* in nested Form XObject `/Resources`
+//! are surfaced as plates via
+//! [`crate::document::PdfDocument::get_page_inks_deep`] even when the
+//! form's local content stream doesn't paint them.
+//!
 //! # Limitations
 //!
 //! The following classes of content are recognised by the operator
 //! walker but not actually painted into the plate:
 //!
-//! - **Raster image XObjects** (`Do` with `Subtype /Image`), including
-//!   DeviceN / Separation-encoded TIFFs and CMYK photographs. The
-//!   sample data is dropped. Vector artwork inside Form XObjects is
-//!   recursed into and rendered normally; spot / DeviceN ink
-//!   *declarations* in nested Form XObject `/Resources` are also
-//!   surfaced as plates via
-//!   [`crate::document::PdfDocument::get_page_inks_deep`] even when the
-//!   form's local content stream doesn't paint them.
 //! - **Shading patterns** (`sh` operator) — gradients used as fills.
 //! - **Tiling and shading patterns** invoked via `scn` / `SCN` with a
 //!   `/Pattern` colour space.
-//! - **Inline images** (`BI` / `ID` / `EI`).
+//! - **Inline images** (`BI` / `ID` / `EI`) — prepress artwork uses
+//!   XObjects exclusively.
 //! - **Page annotations.** [`render_separations`] renders only the
 //!   page's content stream; annotation appearance streams are not
 //!   walked, in contrast to [`super::page_renderer`] which composites
 //!   annotation appearances on top of the page.
 //!
 //! These are intentional v1 omissions: the primary use case is
-//! vector-based prepress artwork (dielines, varnish layers, spot-PMS
-//! text and shapes). PDFs that rely on raster spot-channel data will
-//! produce incomplete plates and should be flagged at the caller.
+//! vector and image-based prepress artwork (dielines, varnish layers,
+//! spot-PMS text and shapes, CMYK photographs, spot-ink-tinted images).
 //!
 //! # Transparency
 //!
@@ -107,7 +142,13 @@ use crate::fonts::FontInfo;
 use crate::object::Object;
 
 use super::ext_gstate::{parse_ext_g_state_inner, ParsedExtGState};
+use super::resolution::{
+    InkName, PaintBackend, PaintIntent, PaintKind, PaintSide, ResolutionContext,
+    ResolutionPipeline, SeparationBackend, SeparationSurface,
+};
 use super::text_rasterizer::TextRasterizer;
+use crate::rendering::resolution::{DeviceColor, LogicalColor};
+use smallvec::SmallVec;
 
 /// A rendered separation plate for a single ink.
 ///
@@ -396,6 +437,57 @@ fn scan_operators_for_inks(
                                             referenced,
                                             visited,
                                         )?;
+                                    }
+                                } else if subtype == Some("Image") {
+                                    // §8.9: image XObjects carry their own
+                                    // /ColorSpace declaration and contribute
+                                    // their colorants without needing a
+                                    // colour-setting operator in the content
+                                    // stream. Surface those inks so the
+                                    // per-plate short-circuit doesn't drop
+                                    // the image's plates as empty.
+                                    let resolved = resolve_image_color_space(
+                                        dict,
+                                        color_spaces,
+                                        resources,
+                                        doc,
+                                    );
+                                    match resolved {
+                                        ResolvedSpace::Cmyk | ResolvedSpace::IccCmyk => {
+                                            push(referenced, "Cyan");
+                                            push(referenced, "Magenta");
+                                            push(referenced, "Yellow");
+                                            push(referenced, "Black");
+                                        },
+                                        ResolvedSpace::Separation(ink) => {
+                                            if ink != "None" && !ink.is_empty() {
+                                                if ink == "All" {
+                                                    push(referenced, "Cyan");
+                                                    push(referenced, "Magenta");
+                                                    push(referenced, "Yellow");
+                                                    push(referenced, "Black");
+                                                } else {
+                                                    push(referenced, &ink);
+                                                }
+                                            }
+                                        },
+                                        ResolvedSpace::DeviceN(names) => {
+                                            for n in names {
+                                                if n != "None" && !n.is_empty() {
+                                                    if n == "All" {
+                                                        push(referenced, "Cyan");
+                                                        push(referenced, "Magenta");
+                                                        push(referenced, "Yellow");
+                                                        push(referenced, "Black");
+                                                    } else {
+                                                        push(referenced, &n);
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        // RGB / Gray / Unknown contribute no
+                                        // plates per the renderer's policy.
+                                        _ => {},
                                     }
                                 }
                             }
@@ -821,6 +913,215 @@ fn tint_for_ink(
     }
 }
 
+/// Build a [`LogicalColor`] for the per-plate path from the current
+/// graphics-state colour space and component values. Mirrors the
+/// resolution the composite-side `build_logical_color` does, but
+/// keyed on the separation walker's `gs.fill_color_space` /
+/// `gs.stroke_color_space` strings and the parallel
+/// `SeparationColorState` components vectors.
+///
+/// Returns `None` when the colour space can't be resolved or is empty.
+fn logical_color_for_side<'a>(
+    fill: bool,
+    gs: &'a GraphicsState,
+    cs: &'a SeparationColorState,
+    color_spaces: &'a HashMap<String, Object>,
+) -> Option<LogicalColor<'a>> {
+    let space_name = if fill {
+        &gs.fill_color_space
+    } else {
+        &gs.stroke_color_space
+    };
+    let components = if fill {
+        &cs.fill_components
+    } else {
+        &cs.stroke_components
+    };
+    let cmyk_state = if fill {
+        gs.fill_color_cmyk
+    } else {
+        gs.stroke_color_cmyk
+    };
+
+    // Device-family aliases: emit the operator-side LogicalColor::Device
+    // so the resolver passes straight through to the right channel
+    // decomposition.
+    match space_name.as_str() {
+        "DeviceCMYK" | "CMYK" => {
+            let (c, m, y, k) = cmyk_state.or_else(|| {
+                if components.len() >= 4 {
+                    Some((components[0], components[1], components[2], components[3]))
+                } else {
+                    None
+                }
+            })?;
+            return Some(LogicalColor::Device(DeviceColor::Cmyk(c, m, y, k)));
+        },
+        "DeviceRGB" | "RGB" => {
+            if components.len() >= 3 {
+                return Some(LogicalColor::Device(DeviceColor::Rgb(
+                    components[0],
+                    components[1],
+                    components[2],
+                )));
+            }
+            return None;
+        },
+        "DeviceGray" | "G" => {
+            if !components.is_empty() {
+                return Some(LogicalColor::Device(DeviceColor::Gray(components[0])));
+            }
+            return None;
+        },
+        _ => {},
+    }
+
+    // Spaced: needs a borrow into the page-resource colour-space map.
+    let space = color_spaces.get(space_name)?;
+    let comps: SmallVec<[f32; 8]> = components.iter().copied().collect();
+    Some(LogicalColor::Spaced {
+        space,
+        components: comps,
+    })
+}
+
+/// Dispatch a single paint operation through the resolution pipeline
+/// and the [`SeparationBackend`]. Used for the spot / DeviceN / ICCBased
+/// cases the inline `tint_for_ink` path can't resolve (notably Type-4
+/// tint transforms on Separation/DeviceN sources). Returns `true` on a
+/// successful pipeline dispatch; `false` if the colour can't be made
+/// into a logical colour (caller falls back to the inline path).
+#[allow(clippy::too_many_arguments)]
+fn paint_through_pipeline(
+    fill: bool,
+    fill_rule: Option<FillRule>,
+    path: &tiny_skia::Path,
+    pixmaps: &mut [Pixmap],
+    target_inks: &[InkName],
+    base_transform: Transform,
+    gs: &GraphicsState,
+    cs: &SeparationColorState,
+    color_spaces: &HashMap<String, Object>,
+    resources: &Object,
+    doc: &PdfDocument,
+    clip: Option<&Mask>,
+    pipeline: &ResolutionPipeline,
+    backend: &mut SeparationBackend,
+) -> Result<()> {
+    let _ = resources; // ResolutionContext consumes (doc, color_spaces); kept for future audits.
+    let Some(logical) = logical_color_for_side(fill, gs, cs, color_spaces) else {
+        return Ok(());
+    };
+    let side = if fill {
+        PaintSide::Fill
+    } else {
+        PaintSide::Stroke
+    };
+    let intent = PaintIntent {
+        kind: PaintKind::Path {
+            path,
+            fill_rule: fill_rule.unwrap_or(FillRule::Winding),
+        },
+        side,
+        gs,
+        color: logical,
+        ctm: gs.ctm,
+    };
+    // Thread the same colour-policy borrows as the composite path
+    // (page_renderer's run_pipeline_for_logical). The per-plate backend
+    // consumes ResolvedColor::Cmyk channel-by-channel for plate routing
+    // and never projects to RGBA, so the document /OutputIntents CMYK
+    // profile carried here is effectively no-op for separations — the
+    // plates ARE the press-target ink coverage. Threading it uniformly
+    // keeps the resolver call surface symmetric with the composite path
+    // so a single ColorResolver change can't silently diverge between
+    // the two renderers.
+    //
+    // HONEST_GAP: the per-page `IccTransformCache` that amortises qcms
+    // transform construction across paint operators lives on
+    // `PageRenderer`. The separation walker is a free function — it
+    // would need a SeparationRendererState struct to hold the cache
+    // across paint operators within a page. That's a separate refactor;
+    // the per-plate path doesn't actually invoke `cmyk_to_rgb_via_intent`
+    // (the per-plate router consumes `ResolvedColor::Cmyk` directly),
+    // so the only Transform construction here is on `/ICCBased` N=4
+    // paint, and only when the embedded profile has a working CMM —
+    // which is the design's expected (cold-path) case.
+    let output_intent = doc.output_intent_cmyk_profile();
+    let ctx = ResolutionContext::new(doc, color_spaces)
+        .with_output_intent(output_intent.as_ref())
+        .with_rendering_intent(crate::color::RenderingIntent::from_pdf_name(&gs.rendering_intent))
+        .with_defaults(
+            color_spaces.get("DefaultGray"),
+            color_spaces.get("DefaultRGB"),
+            color_spaces.get("DefaultCMYK"),
+        );
+    let cmd = pipeline.resolve(&intent, &ctx, None)?;
+    // Wrap the clip mask back into a borrowed ClipPlan-equivalent via
+    // the SeparationSurface's externally-visible state. The
+    // SeparationBackend reads cmd.clip; build the cmd with an Arc-wrapped
+    // mask only when one is present.
+    let surface = SeparationSurface {
+        pixmaps,
+        inks: target_inks,
+        base_transform,
+    };
+    // The pipeline currently produces ClipPlan::None because we passed
+    // None into resolve(); for the separation walker the active clip
+    // lives on `clip_stack` and is the same mask for every plate. Hand
+    // it through by rebuilding the cmd with a wrapped Arc when present.
+    let cmd = if let Some(mask) = clip {
+        let mut new = cmd;
+        new.clip = crate::rendering::resolution::ClipPlan::Mask(std::sync::Arc::new(mask.clone()));
+        new
+    } else {
+        cmd
+    };
+    backend.paint(&cmd, surface)?;
+    Ok(())
+}
+
+/// Decide whether the current paint at `gs.{fill,stroke}_color_space`
+/// should route through the [`ResolutionPipeline`] or stay on the
+/// inline `tint_for_ink` fast path.
+///
+/// The pipeline is the only path that handles Type-4 tint transforms,
+/// Separation reserved colorant names (`/All`, `/None`), and the OPM=1
+/// zero-component rule via [`InkRouter`]. Process colour direct
+/// (`DeviceCMYK`, `DeviceGray`) and `DeviceRGB` (which the per-plate
+/// path skips entirely) keep the existing inline behaviour — it's
+/// cheaper and the inline arms are already correct for those cases.
+fn side_uses_pipeline(
+    fill: bool,
+    gs: &GraphicsState,
+    color_spaces: &HashMap<String, Object>,
+    resources: &Object,
+    doc: &PdfDocument,
+) -> bool {
+    let space_name = if fill {
+        &gs.fill_color_space
+    } else {
+        &gs.stroke_color_space
+    };
+    // Plain Device-* names take the inline path.
+    if matches!(
+        space_name.as_str(),
+        "DeviceCMYK" | "CMYK" | "DeviceRGB" | "RGB" | "DeviceGray" | "G"
+    ) {
+        return false;
+    }
+    // Anything else: classify, and route compound spaces through the
+    // pipeline so Type-4 / DeviceN / ICCBased N=4 evaluations land.
+    matches!(
+        resolve_color_space(space_name, color_spaces, resources, doc),
+        ResolvedSpace::Separation(_)
+            | ResolvedSpace::DeviceN(_)
+            | ResolvedSpace::IccCmyk
+            | ResolvedSpace::IccRgb
+            | ResolvedSpace::IccGray
+    )
+}
+
 /// Per-render shared context (read-only) passed through the operator
 /// walk and into recursive Form XObject invocations.
 ///
@@ -975,6 +1276,17 @@ fn execute_separation_operators(
     let pixmap_width = pixmaps.first().map(|p| p.width()).unwrap_or(0);
     let pixmap_height = pixmaps.first().map(|p| p.height()).unwrap_or(0);
 
+    // Pipeline-driven dispatch state. The pipeline replaces the inline
+    // `tint_for_ink` decision tree for Separation / DeviceN / ICCBased
+    // sources — it's the only path that evaluates Type-4 tint
+    // transforms, honours §8.6.6.3 `/All` and `/None`, and routes via
+    // the §11.7.4 / §11.7.4.3 InkRouter rules. Process colour direct
+    // (DeviceCMYK / DeviceGray) and DeviceRGB keep the inline fast
+    // path because the inline arms are already correct for those.
+    let pipeline = ResolutionPipeline::new();
+    let mut backend = SeparationBackend::new();
+    let target_inks_owned: Vec<InkName> = target_inks.iter().map(|s| InkName::new(*s)).collect();
+
     for op in operators {
         match op {
             Operator::SaveState => {
@@ -1128,6 +1440,15 @@ fn execute_separation_operators(
             Operator::SetDash { array, phase } => {
                 gs_stack.current_mut().dash_pattern = (array.clone(), *phase);
             },
+            Operator::SetRenderingIntent { intent } => {
+                // §10.7.3 — mirror the composite renderer's dispatch.
+                // The per-plate path doesn't consult OutputIntent for
+                // its CMYK channels (the plates ARE the press target),
+                // but `gs.rendering_intent` still flows through the
+                // resolver's ICCBased N=4 path, so keeping it current
+                // matches the composite path's behaviour.
+                gs_stack.current_mut().rendering_intent = intent.clone();
+            },
 
             Operator::MoveTo { x, y } => {
                 current_path.move_to(*x, *y);
@@ -1192,18 +1513,44 @@ fn execute_separation_operators(
                     let cs = color_state_stack.last().unwrap_or(&empty);
                     let transform = combine_transforms(base_transform, &gs.ctm);
                     let clip = clip_stack.last().and_then(|c| c.as_ref());
-                    for (i, &ink) in target_inks.iter().enumerate() {
-                        if let PaintAction::Paint(tint) = tint_for_ink(
+                    if side_uses_pipeline(false, gs, color_spaces, resources, ctx.doc) {
+                        paint_through_pipeline(
                             false,
+                            None,
+                            &path,
+                            pixmaps,
+                            &target_inks_owned,
+                            base_transform,
                             gs,
+                            cs,
                             color_spaces,
                             resources,
                             ctx.doc,
-                            ink,
-                            &cs.fill_components,
-                            &cs.stroke_components,
-                        ) {
-                            stroke_separation(&mut pixmaps[i], &path, transform, gs, tint, clip);
+                            clip,
+                            &pipeline,
+                            &mut backend,
+                        )?;
+                    } else {
+                        for (i, &ink) in target_inks.iter().enumerate() {
+                            if let PaintAction::Paint(tint) = tint_for_ink(
+                                false,
+                                gs,
+                                color_spaces,
+                                resources,
+                                ctx.doc,
+                                ink,
+                                &cs.fill_components,
+                                &cs.stroke_components,
+                            ) {
+                                stroke_separation(
+                                    &mut pixmaps[i],
+                                    &path,
+                                    transform,
+                                    gs,
+                                    tint,
+                                    clip,
+                                );
+                            }
                         }
                     }
                 }
@@ -1224,25 +1571,44 @@ fn execute_separation_operators(
                     let cs = color_state_stack.last().unwrap_or(&empty);
                     let transform = combine_transforms(base_transform, &gs.ctm);
                     let clip = clip_stack.last().and_then(|c| c.as_ref());
-                    for (i, &ink) in target_inks.iter().enumerate() {
-                        if let PaintAction::Paint(tint) = tint_for_ink(
+                    if side_uses_pipeline(true, gs, color_spaces, resources, ctx.doc) {
+                        paint_through_pipeline(
                             true,
+                            Some(FillRule::Winding),
+                            &path,
+                            pixmaps,
+                            &target_inks_owned,
+                            base_transform,
                             gs,
+                            cs,
                             color_spaces,
                             resources,
                             ctx.doc,
-                            ink,
-                            &cs.fill_components,
-                            &cs.stroke_components,
-                        ) {
-                            fill_separation(
-                                &mut pixmaps[i],
-                                &path,
-                                transform,
-                                tint,
-                                FillRule::Winding,
-                                clip,
-                            );
+                            clip,
+                            &pipeline,
+                            &mut backend,
+                        )?;
+                    } else {
+                        for (i, &ink) in target_inks.iter().enumerate() {
+                            if let PaintAction::Paint(tint) = tint_for_ink(
+                                true,
+                                gs,
+                                color_spaces,
+                                resources,
+                                ctx.doc,
+                                ink,
+                                &cs.fill_components,
+                                &cs.stroke_components,
+                            ) {
+                                fill_separation(
+                                    &mut pixmaps[i],
+                                    &path,
+                                    transform,
+                                    tint,
+                                    FillRule::Winding,
+                                    clip,
+                                );
+                            }
                         }
                     }
                 }
@@ -1263,25 +1629,44 @@ fn execute_separation_operators(
                     let cs = color_state_stack.last().unwrap_or(&empty);
                     let transform = combine_transforms(base_transform, &gs.ctm);
                     let clip = clip_stack.last().and_then(|c| c.as_ref());
-                    for (i, &ink) in target_inks.iter().enumerate() {
-                        if let PaintAction::Paint(tint) = tint_for_ink(
+                    if side_uses_pipeline(true, gs, color_spaces, resources, ctx.doc) {
+                        paint_through_pipeline(
                             true,
+                            Some(FillRule::EvenOdd),
+                            &path,
+                            pixmaps,
+                            &target_inks_owned,
+                            base_transform,
                             gs,
+                            cs,
                             color_spaces,
                             resources,
                             ctx.doc,
-                            ink,
-                            &cs.fill_components,
-                            &cs.stroke_components,
-                        ) {
-                            fill_separation(
-                                &mut pixmaps[i],
-                                &path,
-                                transform,
-                                tint,
-                                FillRule::EvenOdd,
-                                clip,
-                            );
+                            clip,
+                            &pipeline,
+                            &mut backend,
+                        )?;
+                    } else {
+                        for (i, &ink) in target_inks.iter().enumerate() {
+                            if let PaintAction::Paint(tint) = tint_for_ink(
+                                true,
+                                gs,
+                                color_spaces,
+                                resources,
+                                ctx.doc,
+                                ink,
+                                &cs.fill_components,
+                                &cs.stroke_components,
+                            ) {
+                                fill_separation(
+                                    &mut pixmaps[i],
+                                    &path,
+                                    transform,
+                                    tint,
+                                    FillRule::EvenOdd,
+                                    clip,
+                                );
+                            }
                         }
                     }
                 }
@@ -1302,37 +1687,86 @@ fn execute_separation_operators(
                     let cs = color_state_stack.last().unwrap_or(&empty);
                     let transform = combine_transforms(base_transform, &gs.ctm);
                     let clip = clip_stack.last().and_then(|c| c.as_ref());
-                    for (i, &ink) in target_inks.iter().enumerate() {
-                        if let PaintAction::Paint(tint) = tint_for_ink(
+                    // Fill side.
+                    if side_uses_pipeline(true, gs, color_spaces, resources, ctx.doc) {
+                        paint_through_pipeline(
                             true,
+                            Some(FillRule::Winding),
+                            &path,
+                            pixmaps,
+                            &target_inks_owned,
+                            base_transform,
                             gs,
+                            cs,
                             color_spaces,
                             resources,
                             ctx.doc,
-                            ink,
-                            &cs.fill_components,
-                            &cs.stroke_components,
-                        ) {
-                            fill_separation(
-                                &mut pixmaps[i],
-                                &path,
-                                transform,
-                                tint,
-                                FillRule::Winding,
-                                clip,
-                            );
+                            clip,
+                            &pipeline,
+                            &mut backend,
+                        )?;
+                    } else {
+                        for (i, &ink) in target_inks.iter().enumerate() {
+                            if let PaintAction::Paint(tint) = tint_for_ink(
+                                true,
+                                gs,
+                                color_spaces,
+                                resources,
+                                ctx.doc,
+                                ink,
+                                &cs.fill_components,
+                                &cs.stroke_components,
+                            ) {
+                                fill_separation(
+                                    &mut pixmaps[i],
+                                    &path,
+                                    transform,
+                                    tint,
+                                    FillRule::Winding,
+                                    clip,
+                                );
+                            }
                         }
-                        if let PaintAction::Paint(tint) = tint_for_ink(
+                    }
+                    // Stroke side.
+                    if side_uses_pipeline(false, gs, color_spaces, resources, ctx.doc) {
+                        paint_through_pipeline(
                             false,
+                            None,
+                            &path,
+                            pixmaps,
+                            &target_inks_owned,
+                            base_transform,
                             gs,
+                            cs,
                             color_spaces,
                             resources,
                             ctx.doc,
-                            ink,
-                            &cs.fill_components,
-                            &cs.stroke_components,
-                        ) {
-                            stroke_separation(&mut pixmaps[i], &path, transform, gs, tint, clip);
+                            clip,
+                            &pipeline,
+                            &mut backend,
+                        )?;
+                    } else {
+                        for (i, &ink) in target_inks.iter().enumerate() {
+                            if let PaintAction::Paint(tint) = tint_for_ink(
+                                false,
+                                gs,
+                                color_spaces,
+                                resources,
+                                ctx.doc,
+                                ink,
+                                &cs.fill_components,
+                                &cs.stroke_components,
+                            ) {
+                                stroke_separation(
+                                    &mut pixmaps[i],
+                                    &path,
+                                    transform,
+                                    gs,
+                                    tint,
+                                    clip,
+                                );
+                            }
                         }
                     }
                 }
@@ -1353,37 +1787,86 @@ fn execute_separation_operators(
                     let cs = color_state_stack.last().unwrap_or(&empty);
                     let transform = combine_transforms(base_transform, &gs.ctm);
                     let clip = clip_stack.last().and_then(|c| c.as_ref());
-                    for (i, &ink) in target_inks.iter().enumerate() {
-                        if let PaintAction::Paint(tint) = tint_for_ink(
+                    // Fill side.
+                    if side_uses_pipeline(true, gs, color_spaces, resources, ctx.doc) {
+                        paint_through_pipeline(
                             true,
+                            Some(FillRule::EvenOdd),
+                            &path,
+                            pixmaps,
+                            &target_inks_owned,
+                            base_transform,
                             gs,
+                            cs,
                             color_spaces,
                             resources,
                             ctx.doc,
-                            ink,
-                            &cs.fill_components,
-                            &cs.stroke_components,
-                        ) {
-                            fill_separation(
-                                &mut pixmaps[i],
-                                &path,
-                                transform,
-                                tint,
-                                FillRule::EvenOdd,
-                                clip,
-                            );
+                            clip,
+                            &pipeline,
+                            &mut backend,
+                        )?;
+                    } else {
+                        for (i, &ink) in target_inks.iter().enumerate() {
+                            if let PaintAction::Paint(tint) = tint_for_ink(
+                                true,
+                                gs,
+                                color_spaces,
+                                resources,
+                                ctx.doc,
+                                ink,
+                                &cs.fill_components,
+                                &cs.stroke_components,
+                            ) {
+                                fill_separation(
+                                    &mut pixmaps[i],
+                                    &path,
+                                    transform,
+                                    tint,
+                                    FillRule::EvenOdd,
+                                    clip,
+                                );
+                            }
                         }
-                        if let PaintAction::Paint(tint) = tint_for_ink(
+                    }
+                    // Stroke side.
+                    if side_uses_pipeline(false, gs, color_spaces, resources, ctx.doc) {
+                        paint_through_pipeline(
                             false,
+                            None,
+                            &path,
+                            pixmaps,
+                            &target_inks_owned,
+                            base_transform,
                             gs,
+                            cs,
                             color_spaces,
                             resources,
                             ctx.doc,
-                            ink,
-                            &cs.fill_components,
-                            &cs.stroke_components,
-                        ) {
-                            stroke_separation(&mut pixmaps[i], &path, transform, gs, tint, clip);
+                            clip,
+                            &pipeline,
+                            &mut backend,
+                        )?;
+                    } else {
+                        for (i, &ink) in target_inks.iter().enumerate() {
+                            if let PaintAction::Paint(tint) = tint_for_ink(
+                                false,
+                                gs,
+                                color_spaces,
+                                resources,
+                                ctx.doc,
+                                ink,
+                                &cs.fill_components,
+                                &cs.stroke_components,
+                            ) {
+                                stroke_separation(
+                                    &mut pixmaps[i],
+                                    &path,
+                                    transform,
+                                    gs,
+                                    tint,
+                                    clip,
+                                );
+                            }
                         }
                     }
                 }
@@ -1602,8 +2085,9 @@ fn execute_separation_operators(
                 entry.apply(gs_stack.current_mut());
             },
 
-            // XObject (Form XObjects may contain ink-bearing content).
-            // Image XObjects are dropped — see module-level Limitations.
+            // XObject — Form XObjects recurse into their content stream;
+            // Image XObjects route per-channel samples to the matching ink
+            // plates (§8.9, §11.7.4 default routing).
             Operator::Do { name } => {
                 if let Some(xobjects) = xobjects_resolved.as_ref().and_then(|o| o.as_dict()) {
                     if let Some(xobj_ref_obj) = xobjects.get(name) {
@@ -1611,7 +2095,23 @@ fn execute_separation_operators(
                             if let Object::Stream { ref dict, .. } = xobj {
                                 if let Some(subtype) = dict.get("Subtype").and_then(|o| o.as_name())
                                 {
-                                    if subtype == "Form" {
+                                    if subtype == "Image" {
+                                        let xobj_ref = xobj_ref_obj.as_reference();
+                                        paint_image_to_plates(
+                                            pixmaps,
+                                            name,
+                                            &xobj,
+                                            xobj_ref,
+                                            base_transform,
+                                            &gs_stack,
+                                            color_state_stack.last(),
+                                            color_spaces,
+                                            resources,
+                                            ctx,
+                                            clip_stack.last().and_then(|c| c.as_ref()),
+                                            target_inks,
+                                        )?;
+                                    } else if subtype == "Form" {
                                         let xobj_ref = xobj_ref_obj.as_reference();
                                         let stream_data = if let Some(r) = xobj_ref {
                                             ctx.doc.decode_stream_with_encryption(&xobj, r)?
@@ -1740,6 +2240,10 @@ fn render_text_to_plate(
             text,
             transform,
             &faux,
+            // The separation backend bakes its own faux grayscale into
+            // `faux.fill_color_rgb`; the composite-side resolution pipeline
+            // is not in play here, so no colour override is needed.
+            None,
             resources,
             ctx.doc,
             clip,
@@ -1855,7 +2359,12 @@ fn measure_text_advance(
 }
 
 /// Fill a path into the separation pixmap with the given tint value.
-fn fill_separation(
+///
+/// `pub(crate)` so the resolution pipeline's [`super::resolution::SeparationBackend`]
+/// can take it as a parity reference in its byte-for-byte equivalence test.
+/// The shipping per-plate walker calls it directly; production callers
+/// outside the renderer should not.
+pub(crate) fn fill_separation(
     pixmap: &mut Pixmap,
     path: &tiny_skia::Path,
     transform: Transform,
@@ -1980,4 +2489,521 @@ fn parse_form_matrix(dict: &HashMap<String, Object>) -> Transform {
 /// Combine two transformations (base + CTM).
 fn combine_transforms(base: Transform, ctm: &Matrix) -> Transform {
     base.pre_concat(Transform::from_row(ctm.a, ctm.b, ctm.c, ctm.d, ctm.e, ctm.f))
+}
+
+/// Resolve the image XObject's declared `/ColorSpace` to a [`ResolvedSpace`].
+///
+/// Handles all three syntactic shapes the spec allows:
+/// - `/DeviceCMYK` (a name) — direct, honouring `Default*` remap from the
+///   page's `/Resources/ColorSpace` per §8.6.5.6.
+/// - `[/Separation /InkName /Alt /Tint]` (inline array) — classified directly.
+/// - An indirect reference to either of the above — resolved first.
+fn resolve_image_color_space(
+    image_dict: &HashMap<String, Object>,
+    color_spaces: &HashMap<String, Object>,
+    resources: &Object,
+    doc: &PdfDocument,
+) -> ResolvedSpace {
+    let cs_obj = match image_dict.get("ColorSpace") {
+        Some(o) => o,
+        None => return ResolvedSpace::Unknown,
+    };
+    let resolved_obj = match cs_obj.as_reference() {
+        Some(r) => match doc.load_object(r) {
+            Ok(o) => o,
+            Err(_) => return ResolvedSpace::Unknown,
+        },
+        None => cs_obj.clone(),
+    };
+    if let Some(name) = resolved_obj.as_name() {
+        return resolve_color_space(name, color_spaces, resources, doc);
+    }
+    classify_resolved(&resolved_obj, color_spaces, resources, doc)
+}
+
+/// For a given source colour space and target ink, return the index of the
+/// channel that contributes to that ink, or `None` when the ink is outside
+/// the source's colorant set.
+///
+/// Matching mirrors `tint_for_ink`:
+/// - DeviceCMYK / IccCmyk: Cyan/Magenta/Yellow/Black → 0/1/2/3, spots → None
+/// - Separation(name): match against the named ink (and `/All`); else None
+/// - DeviceN(names): position of the matching name (or `/All`)
+/// - RGB / Gray / Unknown: None (no plate intent)
+fn image_channel_for_ink(space: &ResolvedSpace, ink: &str) -> Option<usize> {
+    match space {
+        ResolvedSpace::Cmyk | ResolvedSpace::IccCmyk => match ink {
+            "Cyan" => Some(0),
+            "Magenta" => Some(1),
+            "Yellow" => Some(2),
+            "Black" => Some(3),
+            _ => None,
+        },
+        ResolvedSpace::Separation(name) => {
+            if name == "None" {
+                None
+            } else if name == "All" || name == ink {
+                Some(0)
+            } else {
+                None
+            }
+        },
+        ResolvedSpace::DeviceN(names) => names
+            .iter()
+            .position(|n| n.as_str() != "None" && (n == "All" || n == ink)),
+        ResolvedSpace::Rgb
+        | ResolvedSpace::Gray
+        | ResolvedSpace::IccRgb
+        | ResolvedSpace::IccGray
+        | ResolvedSpace::Unknown => None,
+    }
+}
+
+/// Pull samples for `target_channel` out of an interleaved 8-bpc image buffer
+/// (`stride` bytes per pixel). Returns a `W*H` byte plane suitable for blitting
+/// as the R channel of an opaque grayscale RGBA pixmap.
+fn extract_image_channel(
+    samples: &[u8],
+    pixel_count: usize,
+    stride: usize,
+    target_channel: usize,
+) -> Vec<u8> {
+    let mut plane = Vec::with_capacity(pixel_count);
+    for p in 0..pixel_count {
+        let off = p * stride + target_channel;
+        plane.push(samples.get(off).copied().unwrap_or(0));
+    }
+    plane
+}
+
+/// Blit a single-channel ink-coverage plane (`W*H` bytes, 0 = no ink, 255 =
+/// full ink) into the destination separation pixmap at the image's
+/// CTM-derived transform. The image is treated as occupying the PDF unit
+/// square in user space; the formula mirrors `page_renderer.rs:2146-2148`
+/// (pre-translate y by 1, pre-scale 1/w by -1/h to flip the row order).
+fn blit_image_plane_to_plate(
+    dst: &mut Pixmap,
+    plane: &[u8],
+    src_w: u32,
+    src_h: u32,
+    transform: Transform,
+    clip: Option<&Mask>,
+) {
+    // Build an opaque RGBA buffer where every channel carries the plane
+    // value. `Pixmap::draw_pixmap` then composites with SourceOver at
+    // alpha 255 (opaque replacement), so the R channel at the destination
+    // ends up equal to the source value — the same convention as
+    // `fill_separation`.
+    let n = (src_w as usize) * (src_h as usize);
+    if plane.len() < n {
+        return;
+    }
+    let mut rgba = Vec::with_capacity(n * 4);
+    for &v in &plane[..n] {
+        rgba.extend_from_slice(&[v, v, v, 255]);
+    }
+    let Some(size) = tiny_skia::IntSize::from_wh(src_w, src_h) else {
+        return;
+    };
+    let Some(src) = Pixmap::from_vec(rgba, size) else {
+        return;
+    };
+    let image_transform = transform
+        .pre_translate(0.0, 1.0)
+        .pre_scale(1.0 / src_w as f32, -1.0 / src_h as f32);
+    let mut paint = tiny_skia::PixmapPaint::default();
+    paint.blend_mode = tiny_skia::BlendMode::SourceOver;
+    paint.quality = tiny_skia::FilterQuality::Bilinear;
+    dst.draw_pixmap(0, 0, src.as_ref(), &paint, image_transform, clip);
+}
+
+/// Returns true if the image XObject's `/Filter` chain contains a filter we
+/// can't decode (currently only `/JPXDecode` — JPEG 2000 decoder not bundled).
+fn image_has_unsupported_filter(image_dict: &HashMap<String, Object>) -> bool {
+    let filter = match image_dict.get("Filter") {
+        Some(f) => f,
+        None => return false,
+    };
+    let names: Vec<&str> = match filter {
+        Object::Name(n) => vec![n.as_str()],
+        Object::Array(arr) => arr.iter().filter_map(|o| o.as_name()).collect(),
+        _ => vec![],
+    };
+    names.iter().any(|f| matches!(*f, "JPXDecode" | "J2"))
+}
+
+/// Paint an image XObject into the separation plates.
+///
+/// Per ISO 32000-1 §11.7.4 image samples are routed channel-by-channel to
+/// the matching ink plates. §11.7.4.3 explicitly carves images out of the
+/// `OPM` rule — this function never consults `gs.overprint_mode`.
+///
+/// Currently in scope:
+/// - DeviceCMYK / ICCBased(N=4) images → C/M/Y/K plates
+/// - Separation images → the named spot plate
+/// - DeviceN images → per-channel routing by colorant name
+/// - Image masks (`/ImageMask true`) → paint the current fill colour through
+///   the 1-bit stencil (delegates to `tint_for_ink` for spot/process logic)
+/// - JPX-filtered images logged and skipped (no decoder bundled)
+///
+/// Out of scope, dropped silently for now: RGB/Gray images, indexed images,
+/// inline images. See module-level Limitations.
+#[allow(clippy::too_many_arguments)]
+fn paint_image_to_plates(
+    pixmaps: &mut [Pixmap],
+    name: &str,
+    xobject: &Object,
+    obj_ref: Option<crate::object::ObjectRef>,
+    base_transform: Transform,
+    gs_stack: &GraphicsStateStack,
+    color_state: Option<&SeparationColorState>,
+    color_spaces: &HashMap<String, Object>,
+    resources: &Object,
+    ctx: &SeparationContext<'_>,
+    clip: Option<&Mask>,
+    target_inks: &[&str],
+) -> Result<()> {
+    use crate::extractors::images::{
+        extract_image_from_xobject, ColorSpace as PdfCs, ImageData, PixelFormat,
+    };
+
+    let dict = match xobject {
+        Object::Stream { dict, .. } => dict,
+        _ => return Ok(()),
+    };
+
+    // §8.9.6.2: image masks are 1-bpc stencils painted with the current
+    // non-stroking colour, not channel-bearing images. Route through the
+    // same per-plate logic as a vector fill.
+    let is_image_mask = dict
+        .get("ImageMask")
+        .map(|o| matches!(o, Object::Boolean(true)))
+        .unwrap_or(false);
+    if is_image_mask {
+        return paint_image_mask_to_plates(
+            pixmaps,
+            name,
+            xobject,
+            obj_ref,
+            base_transform,
+            gs_stack,
+            color_state,
+            color_spaces,
+            resources,
+            ctx,
+            clip,
+            target_inks,
+        );
+    }
+
+    // §D3: JPX images get a debug log and are dropped — no pure-Rust JP2
+    // decoder is bundled.
+    if image_has_unsupported_filter(dict) {
+        log::warn!(
+            "Skipping image XObject '{name}' on separation plates: \
+             unsupported filter (JPXDecode — JPEG 2000 decoder not bundled)"
+        );
+        return Ok(());
+    }
+
+    // Resolve the image's declared colour space, honouring DefaultCMYK etc.
+    let resolved_space = resolve_image_color_space(dict, color_spaces, resources, ctx.doc);
+
+    // For RGB / Gray / Unknown the image carries no ink-coverage intent.
+    // Skip entirely; underlying plates are left untouched. pdf_oxide does
+    // not synthesise CMYK from RGB because no deterministic UCR/BG
+    // strategy is in place. Matches tint_for_ink's vector treatment.
+    let needs_4ch = matches!(resolved_space, ResolvedSpace::Cmyk | ResolvedSpace::IccCmyk);
+    let needs_separation = matches!(resolved_space, ResolvedSpace::Separation(_));
+    let needs_devicen = matches!(resolved_space, ResolvedSpace::DeviceN(_));
+    if !(needs_4ch || needs_separation || needs_devicen) {
+        log::debug!(
+            "Skipping image XObject '{name}' on separation plates: \
+             source colour space has no subtractive-ink intent"
+        );
+        return Ok(());
+    }
+
+    let pdf_image =
+        match extract_image_from_xobject(Some(ctx.doc), xobject, obj_ref, Some(color_spaces)) {
+            Ok(img) => img,
+            Err(e) => {
+                log::warn!("Skipping image XObject '{name}': {e}");
+                return Ok(());
+            },
+        };
+    let w = pdf_image.width() as usize;
+    let h = pdf_image.height() as usize;
+    let pixel_count = w * h;
+    if pixel_count == 0 {
+        return Ok(());
+    }
+
+    // §8.9.5: BitsPerComponent ∈ {1, 2, 4, 8, 16}. Channel extraction below
+    // assumes 8 bits per sample (one byte per channel per pixel) and would
+    // mis-read packed sub-byte or 16-bit streams. Until the routing path
+    // supports full BPC expansion, skip with a log entry — matching the
+    // JPX carve-out.
+    let bpc = pdf_image.bits_per_component();
+    if bpc != 8 {
+        log::warn!(
+            "Skipping image XObject '{name}' on separation plates: \
+             BitsPerComponent={bpc} not supported (only 8-bpc channel \
+             routing is implemented; 1/2/4/16-bpc expansion pending)"
+        );
+        return Ok(());
+    }
+
+    let extractor_cs = pdf_image.color_space();
+
+    // Extract interleaved raw samples in the source colour space. The
+    // extractor exposes RGB after Indexed expansion; for separation
+    // routing we only consume CMYK / Separation / DeviceN paths (the
+    // shapes above), so anything else falls through to skip.
+    let (samples, stride) = match (resolved_space.clone(), extractor_cs, pdf_image.data()) {
+        // Raw CMYK pixel buffer (Flate / CCITT / etc. on a DeviceCMYK image).
+        (
+            ResolvedSpace::Cmyk | ResolvedSpace::IccCmyk,
+            PdfCs::DeviceCMYK | PdfCs::ICCBased(4),
+            ImageData::Raw {
+                pixels,
+                format: PixelFormat::CMYK,
+            },
+        ) => (pixels.clone(), 4usize),
+        // JPEG-encoded DeviceCMYK image — decode to raw CMYK preserving APP14 inversion.
+        (
+            ResolvedSpace::Cmyk | ResolvedSpace::IccCmyk,
+            PdfCs::DeviceCMYK | PdfCs::ICCBased(4),
+            ImageData::Jpeg(bytes),
+        ) => (crate::extractors::images::decode_cmyk_jpeg_to_raw_cmyk(bytes)?, 4),
+        // Separation: 1 channel.
+        (ResolvedSpace::Separation(_), PdfCs::Separation, ImageData::Raw { pixels, .. }) => {
+            (pixels.clone(), 1)
+        },
+        // DeviceN: N channels (extractor reports DeviceN with N components).
+        (ResolvedSpace::DeviceN(ref names), PdfCs::DeviceN, ImageData::Raw { pixels, .. }) => {
+            (pixels.clone(), names.len().max(1))
+        },
+        // Shape mismatch (e.g. extractor reports a different colour space than
+        // the dict declared after our resolver ran). Drop silently — the
+        // resolver result wins for routing semantics but we won't fabricate
+        // channels we don't have.
+        _ => {
+            log::debug!(
+                "Image XObject '{name}': shape mismatch between resolved colour space \
+                 and extractor sample format; skipping"
+            );
+            return Ok(());
+        },
+    };
+    let _ = color_state; // currently unused outside the image-mask path
+
+    // §8.9.5.2: /Decode maps raw sample values into the colour space's range.
+    // For per-plate routing the colour space is treated as identity, so the
+    // only effect that matters is inversion (`/Decode [1 0]` on a Separation
+    // image, etc.). Default identity is `[0 1]` per channel.
+    let decode = read_decode_array(dict, stride);
+
+    let gs = gs_stack.current();
+    let transform = combine_transforms(base_transform, &gs.ctm);
+
+    for (i, &ink) in target_inks.iter().enumerate() {
+        let Some(channel_idx) = image_channel_for_ink(&resolved_space, ink) else {
+            continue;
+        };
+        if channel_idx >= stride {
+            continue;
+        }
+        let mut plane = extract_image_channel(&samples, pixel_count, stride, channel_idx);
+        if let Some(decode_pairs) = decode.as_ref() {
+            if let Some(&(dmin, dmax)) = decode_pairs.get(channel_idx) {
+                apply_decode_to_plane(&mut plane, dmin, dmax);
+            }
+        }
+        blit_image_plane_to_plate(&mut pixmaps[i], &plane, w as u32, h as u32, transform, clip);
+    }
+    Ok(())
+}
+
+/// Expand a 1-bpc packed bitmap into one byte per pixel (0 or 255).
+///
+/// Per §8.9.5.1 each row is packed MSB-first into `ceil(width / 8)` bytes;
+/// trailing bits in the final byte of each row are padding. Used to
+/// normalise `/ImageMask true` stencils before they're blitted onto plates.
+fn expand_1bpc_to_8bpc(packed: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let row_bytes = width.div_ceil(8) as usize;
+    let w = width as usize;
+    let h = height as usize;
+    let mut out = Vec::with_capacity(w * h);
+    for row in 0..h {
+        let row_start = row * row_bytes;
+        for col in 0..w {
+            let byte_idx = row_start + col / 8;
+            let bit_idx = 7 - (col % 8);
+            let bit = packed
+                .get(byte_idx)
+                .map(|b| (*b >> bit_idx) & 1)
+                .unwrap_or(0);
+            out.push(if bit == 1 { 255 } else { 0 });
+        }
+    }
+    out
+}
+
+/// Read the image's `/Decode` array as per-channel `(dmin, dmax)` pairs.
+/// Returns `None` if the entry is absent or malformed; callers fall back
+/// to the identity mapping (no remap).
+fn read_decode_array(
+    dict: &HashMap<String, Object>,
+    num_components: usize,
+) -> Option<Vec<(f32, f32)>> {
+    let decode = dict.get("Decode")?;
+    let arr = decode.as_array()?;
+    if arr.len() < num_components * 2 {
+        return None;
+    }
+    let to_f32 = |o: &Object| -> Option<f32> {
+        match o {
+            Object::Real(r) => Some(*r as f32),
+            Object::Integer(i) => Some(*i as f32),
+            _ => None,
+        }
+    };
+    let mut out = Vec::with_capacity(num_components);
+    for i in 0..num_components {
+        let dmin = to_f32(&arr[i * 2])?;
+        let dmax = to_f32(&arr[i * 2 + 1])?;
+        out.push((dmin, dmax));
+    }
+    Some(out)
+}
+
+/// Apply a single channel's `/Decode` pair to an extracted 8-bpc plane.
+///
+/// For the identity mapping (`dmin = 0`, `dmax = 1`) this is a no-op. For
+/// `[1 0]` this inverts the plane (raw 0 → 1.0 → 255, raw 255 → 0.0 → 0).
+fn apply_decode_to_plane(plane: &mut [u8], dmin: f32, dmax: f32) {
+    if dmin == 0.0 && dmax == 1.0 {
+        return;
+    }
+    for byte in plane.iter_mut() {
+        let raw = *byte as f32 / 255.0;
+        let decoded = (dmin + raw * (dmax - dmin)).clamp(0.0, 1.0);
+        *byte = (decoded * 255.0).round() as u8;
+    }
+}
+
+/// Paint an image mask (`/ImageMask true`) into the separation plates.
+///
+/// §8.9.6.2: the image samples are a 1-bpc stencil. The colour comes from
+/// the current non-stroking graphics state, exactly as a vector fill would.
+/// Each plate's tint comes from `tint_for_ink` for the current fill colour;
+/// the stencil's alpha multiplies the paint into the destination.
+#[allow(clippy::too_many_arguments)]
+fn paint_image_mask_to_plates(
+    pixmaps: &mut [Pixmap],
+    name: &str,
+    xobject: &Object,
+    obj_ref: Option<crate::object::ObjectRef>,
+    base_transform: Transform,
+    gs_stack: &GraphicsStateStack,
+    color_state: Option<&SeparationColorState>,
+    color_spaces: &HashMap<String, Object>,
+    resources: &Object,
+    ctx: &SeparationContext<'_>,
+    clip: Option<&Mask>,
+    target_inks: &[&str],
+) -> Result<()> {
+    // §8.9.6.2 ImageMask: the dict has no /ColorSpace, so the standard
+    // image-extraction path rejects it. Read width/height/bpc directly from
+    // the dict and decode the stream ourselves.
+    let dict = match xobject {
+        Object::Stream { dict, .. } => dict,
+        _ => return Ok(()),
+    };
+    let w = dict.get("Width").and_then(|o| o.as_integer()).unwrap_or(0) as usize;
+    let h = dict.get("Height").and_then(|o| o.as_integer()).unwrap_or(0) as usize;
+    let pixel_count = w * h;
+    if pixel_count == 0 {
+        return Ok(());
+    }
+    let bpc = dict
+        .get("BitsPerComponent")
+        .and_then(|o| o.as_integer())
+        .unwrap_or(1) as u8;
+    if bpc != 1 {
+        log::warn!(
+            "Skipping image mask '{name}': BitsPerComponent={bpc} out of spec \
+             (§8.9.6.2 mandates 1-bpc)"
+        );
+        return Ok(());
+    }
+
+    let packed = if let Some(r) = obj_ref {
+        ctx.doc.decode_stream_with_encryption(xobject, r)?
+    } else {
+        xobject.decode_stream_data()?
+    };
+    let mut stencil = expand_1bpc_to_8bpc(&packed, w as u32, h as u32);
+    if stencil.len() < pixel_count {
+        return Ok(());
+    }
+
+    // §8.9.6.2: decoded sample value 0 marks the pixel with the current
+    // colour; value 1 leaves it transparent. /Decode defaults to [0 1] —
+    // applied here so /Decode [1 0] correctly inverts the stencil — then we
+    // map decoded → alpha as `255 - decoded` so the existing SourceOver
+    // composite paints where the spec says to paint.
+    if let Some(decode_pairs) = read_decode_array(dict, 1) {
+        if let Some(&(dmin, dmax)) = decode_pairs.first() {
+            apply_decode_to_plane(&mut stencil, dmin, dmax);
+        }
+    }
+    for byte in stencil.iter_mut() {
+        *byte = 255 - *byte;
+    }
+
+    let gs = gs_stack.current();
+    let transform = combine_transforms(base_transform, &gs.ctm);
+    let empty = SeparationColorState::new();
+    let cs = color_state.unwrap_or(&empty);
+
+    for (i, &ink) in target_inks.iter().enumerate() {
+        let PaintAction::Paint(tint) = tint_for_ink(
+            true,
+            gs,
+            color_spaces,
+            resources,
+            ctx.doc,
+            ink,
+            &cs.fill_components,
+            &cs.stroke_components,
+        ) else {
+            continue;
+        };
+        let gray = (tint.clamp(0.0, 1.0) * 255.0).round() as u8;
+
+        // Build an RGBA buffer where R=G=B=gray and A=stencil_byte. SourceOver
+        // composites this against the destination so opaque-stencil pixels
+        // replace the plate value with `gray`; transparent-stencil pixels
+        // leave the plate untouched.
+        let mut rgba = Vec::with_capacity(pixel_count * 4);
+        for &alpha in &stencil[..pixel_count] {
+            rgba.extend_from_slice(&[gray, gray, gray, alpha]);
+        }
+        let Some(size) = tiny_skia::IntSize::from_wh(w as u32, h as u32) else {
+            continue;
+        };
+        let Some(src) = Pixmap::from_vec(rgba, size) else {
+            continue;
+        };
+        let image_transform = transform
+            .pre_translate(0.0, 1.0)
+            .pre_scale(1.0 / w as f32, -1.0 / h as f32);
+        let mut paint = tiny_skia::PixmapPaint::default();
+        paint.blend_mode = tiny_skia::BlendMode::SourceOver;
+        paint.quality = tiny_skia::FilterQuality::Bilinear;
+        pixmaps[i].draw_pixmap(0, 0, src.as_ref(), &paint, image_transform, clip);
+    }
+    Ok(())
 }

@@ -2303,6 +2303,14 @@ struct MarkedContentContext {
     /// Used to replace extracted text with correct representation
     /// e.g., ligatures (fi, fl, ffi, ffl), decorated glyphs
     actual_text: Option<String>,
+    /// True once an ActualText replacement has been emitted from this
+    /// MC scope. Per ISO 32000-1:2008 §14.9.4 the `/ActualText` of a
+    /// marked-content sequence is the replacement for the ENTIRE
+    /// sequence — even if it contains multiple `Tj` / `TJ` operators
+    /// the replacement is emitted ONCE. The first Tj inside a scope
+    /// flips this flag; subsequent Tj operators see it and skip the
+    /// replacement path.
+    actual_text_emitted: bool,
     /// Expansion text for abbreviations (PDF Spec Section 14.9.5)
     /// The /E entry provides the expansion of an abbreviation or acronym.
     /// e.g., "PDF" might expand to "Portable Document Format"
@@ -2311,6 +2319,14 @@ struct MarkedContentContext {
     ///
     /// Set when tag is "OC" and the OCG /Name matches one of the excluded layers.
     is_excluded_layer: bool,
+    /// MCID declared by this BDC (only BDC; BMC carries no /MCID).
+    ///
+    /// Stored here so EMC can restore the outer scope's MCID instead
+    /// of blanking `current_mcid` unconditionally. A `Tj` issued
+    /// AFTER an inner EMC must still attribute to its enclosing
+    /// MCID-bearing scope (the PDF spec specifies marked-content
+    /// nesting at §14.6).
+    own_mcid: Option<u32>,
 }
 
 /// Text extractor that processes content streams.
@@ -2359,6 +2375,17 @@ pub struct TextExtractor<'doc> {
     /// Tracks the MCID of the currently active marked content sequence.
     /// Used to associate extracted text with structure tree elements.
     current_mcid: Option<u32>,
+    /// Set of MCIDs whose BDC carried inline `/ActualText` on this
+    /// page.
+    ///
+    /// Populated by the BDC handler whenever it observes
+    /// `/ActualText` on the properties dictionary. The struct-tree-
+    /// scope ActualText applier (in `document.rs`) uses this set to
+    /// honour MC-scope-wins precedence: an ancestor StructElem's
+    /// `/ActualText` must NOT override an MCID whose in-stream
+    /// /ActualText has already been applied at extraction time
+    /// (ISO 32000-1:2008 §14.6, §14.9.4).
+    mc_actualtext_mcids: HashSet<u32>,
     /// Stack of marked content contexts (per PDF Spec Section 14.6)
     ///
     /// Tracks nested marked content tags to enable artifact filtering.
@@ -2435,6 +2462,18 @@ pub struct TextExtractor<'doc> {
     /// Cached current font (updated on Tf). Avoids per-Tj HashMap lookup
     /// in advance_position_for_string.
     cached_current_font: Option<Arc<FontInfo>>,
+    /// Stack of MCID content-stream scopes (ISO 32000-1:2008 §14.7.4.3).
+    ///
+    /// Bottom of the stack is the page's own content-stream scope
+    /// (`McidScope::Page(page_index)`). Each entry into a Form XObject
+    /// via `Do` pushes a `McidScope::Form(form_ref)`; the matching
+    /// pop restores the outer scope. The top of the stack stamps every
+    /// `TextSpan` emitted while it is active. Tiling-Pattern walks are
+    /// not currently traversed by the extractor (patterns rasterize
+    /// independently); the spec-strict three-variant scope still
+    /// covers `Pattern(_)` in the data model so future pattern-content
+    /// walks can populate it.
+    mcid_scope_stack: Vec<crate::structure::McidScope>,
 }
 
 impl<'doc> TextExtractor<'doc> {
@@ -2500,6 +2539,7 @@ impl<'doc> TextExtractor<'doc> {
             config,
             merging_config: SpanMergingConfig::default(),
             current_mcid: None,
+            mc_actualtext_mcids: HashSet::new(),
             extract_spans: true,      // Default to span mode (PDF spec compliant)
             tj_span_buffer: None,     // No buffer initially
             span_sequence_counter: 0, // Initialize sequence counter
@@ -2517,7 +2557,37 @@ impl<'doc> TextExtractor<'doc> {
             current_x_position: 0.0,        // Start at origin
             word_boundary_mode,             // Word boundary detection mode
             cached_current_font: None,      // Set on first Tf
+            // Default to Page(0); `set_page_index` overrides before
+            // extraction. Form XObject `Do` invocations push their
+            // own scope on top.
+            mcid_scope_stack: vec![crate::structure::McidScope::Page(0)],
         }
+    }
+
+    /// Stamp this extractor with the page index it is processing.
+    ///
+    /// Used so spans (and the lookup keys for `/ActualText`) carry the
+    /// correct `McidScope::Page(page_index)` when the extractor is not
+    /// currently inside a Form XObject.
+    pub fn set_page_index(&mut self, page_index: u32) {
+        // The first entry is always the page scope (Form scopes are
+        // pushed on top by `Do` and popped before the extractor
+        // finishes); update it in place.
+        if let Some(first) = self.mcid_scope_stack.first_mut() {
+            *first = crate::structure::McidScope::Page(page_index);
+        } else {
+            self.mcid_scope_stack
+                .push(crate::structure::McidScope::Page(page_index));
+        }
+    }
+
+    /// Current MCID scope (top of the stack) — what should be stamped
+    /// on every new `TextSpan`.
+    fn current_mcid_scope(&self) -> crate::structure::McidScope {
+        self.mcid_scope_stack
+            .last()
+            .cloned()
+            .unwrap_or(crate::structure::McidScope::Page(0))
     }
 
     /// Create a new text extractor with custom merging configuration.
@@ -2553,6 +2623,17 @@ impl<'doc> TextExtractor<'doc> {
     /// Set the document reference for loading XObjects.
     pub fn set_document(&mut self, document: &'doc crate::document::PdfDocument) {
         self.document = Some(document);
+    }
+
+    /// Take ownership of the set of MCIDs whose marked-content
+    /// sequence carried an inline `/ActualText` property on this
+    /// extraction.
+    ///
+    /// The set is observed by the BDC handler; this method drains it
+    /// out so the document layer can stash it on a per-page side
+    /// channel for the struct-tree-scope ActualText applier.
+    pub fn take_mc_actualtext_mcids(&mut self) -> HashSet<u32> {
+        std::mem::take(&mut self.mc_actualtext_mcids)
     }
 
     /// Set layer names (Optional Content Groups) to exclude from extraction.
@@ -2998,11 +3079,51 @@ impl<'doc> TextExtractor<'doc> {
     /// ActualText provides the exact text representation for content that's
     /// represented non-standardly, such as ligatures (fi, fl, ffi, ffl) or
     /// decorated glyphs.
+    #[cfg(test)]
     fn get_current_actual_text(&self) -> Option<String> {
         self.marked_content_stack
             .iter()
-            .rev()  // Search from innermost (most recent) context
+            .rev() // Search from innermost (most recent) context
             .find_map(|ctx| ctx.actual_text.clone())
+    }
+
+    /// Return the innermost active `/ActualText`, alongside a flag
+    /// indicating whether it has ALREADY been emitted in the current
+    /// MC scope.
+    ///
+    /// Per ISO 32000-1:2008 §14.9.4 the `/ActualText` of a marked-
+    /// content sequence replaces the ENTIRE sequence — even if the
+    /// sequence contains multiple `Tj` / `TJ` operators the replacement
+    /// is emitted ONCE.
+    ///
+    /// Returns `(text, already_emitted)`:
+    /// - `(Some(text), false)` on the FIRST show-text inside a scope
+    ///   that carries `/ActualText` — the caller should emit `text`
+    ///   AND mark the scope's `actual_text_emitted` via
+    ///   [`Self::mark_actual_text_emitted`].
+    /// - `(Some(text), true)` on subsequent show-text operators inside
+    ///   the same scope — the caller must suppress emission entirely
+    ///   (no raw glyphs, no replacement). The text matrix advance
+    ///   still runs so positioning stays consistent.
+    /// - `(None, _)` when no `/ActualText` is active.
+    fn peek_current_actual_text(&self) -> (Option<String>, bool) {
+        for ctx in self.marked_content_stack.iter().rev() {
+            if let Some(ref text) = ctx.actual_text {
+                return (Some(text.clone()), ctx.actual_text_emitted);
+            }
+        }
+        (None, false)
+    }
+
+    /// Mark the innermost scope's `/ActualText` as emitted. See
+    /// [`Self::peek_current_actual_text`].
+    fn mark_actual_text_emitted(&mut self) {
+        for ctx in self.marked_content_stack.iter_mut().rev() {
+            if ctx.actual_text.is_some() {
+                ctx.actual_text_emitted = true;
+                return;
+            }
+        }
     }
 
     /// Calculate the average glyph width for a font.
@@ -3991,6 +4112,18 @@ impl<'doc> TextExtractor<'doc> {
                 && current.font_weight == span.font_weight
                 && current.is_italic == span.is_italic;
 
+            // MCID identity: per ISO 32000-1:2008 §14.6, two adjacent
+            // Tj operators that sit in different marked-content
+            // sequences belong to different *structure elements*.
+            // Merging them would silently fuse their identities (the
+            // merged span keeps `current.mcid`) and lose the
+            // boundary that downstream consumers — structure-tree
+            // reading order, tree-scope ActualText suppression,
+            // table-cell membership — rely on. Adjacent spans whose
+            // MCIDs differ (including one `None` ↔ one `Some(_)`)
+            // are kept separate.
+            let same_mcid = current.mcid == span.mcid;
+
             // Cross-font word glue: same-baseline spans in different
             // fonts/weights, tight gap (<0.25em), both sides alphabetic,
             // and one side is a single character. Targets the drop-cap /
@@ -4082,14 +4215,15 @@ impl<'doc> TextExtractor<'doc> {
                 0.5
             };
 
-            let should_merge = same_line
+            let should_merge = (same_line
                 && is_same_font
+                && same_mcid
                 && (self.merging_config.severe_overlap_threshold_pt..merge_threshold_pt)
                     .contains(&gap)
-                && !large_gap_indicates_column
-                || (same_line && has_split_boundary)
-                || cross_font_word_glue
-                || small_caps_glue;
+                && !large_gap_indicates_column)
+                || (same_line && has_split_boundary && same_mcid)
+                || (cross_font_word_glue && same_mcid)
+                || (small_caps_glue && same_mcid);
 
             // DECIMAL VALUE MERGE: Some forms place integer and decimal parts
             // of dollar amounts in separate fixed-width boxes.
@@ -4107,6 +4241,7 @@ impl<'doc> TextExtractor<'doc> {
             // a gap > ~half the font size; tight letter spacing is < 0.1 em.
             let min_decimal_gap = current.font_size * 0.4;
             let decimal_merge = same_line
+                && same_mcid
                 && gap > min_decimal_gap
                 && gap < current.font_size * 2.0
                 && !current.text.is_empty()
@@ -4579,36 +4714,50 @@ impl<'doc> TextExtractor<'doc> {
 
                 // ActualText override
                 // Per PDF Spec ISO 32000-1:2008, Section 14.9.4:
-                // ActualText provides replacement text for content that cannot be
-                // automatically extracted (e.g., figures, symbols, decorative text).
-                if let Some(actual_text) = self.get_current_actual_text() {
-                    log::debug!("Tj operator: Using ActualText override: '{}'", actual_text);
-
-                    if self.extract_spans {
-                        // Use ActualText in span mode — push pre-decoded Unicode directly
-                        // into the buffer, bypassing font character mapping (the text is
-                        // already decoded from the BDC /ActualText property).
-                        if self.tj_span_buffer.is_none() {
-                            self.tj_span_buffer = Some(TjBuffer::new(
-                                self.state_stack.current(),
-                                self.current_mcid,
-                                self.cached_current_font.clone(),
-                            ));
-                        }
-
+                // ActualText provides replacement text for the marked-content
+                // SEQUENCE — emitted ONCE, no matter how many Tj operators
+                // sit inside. The peek/mark pair below handles both first-Tj
+                // (emit replacement) and subsequent-Tj (suppress entirely,
+                // advance only) cases.
+                let (current_at, already_emitted) = self.peek_current_actual_text();
+                if let Some(actual_text) = current_at {
+                    if already_emitted {
+                        // Subsequent show-text inside the same MC scope:
+                        // glyphs are already covered by the one replacement
+                        // that fired on the first Tj. Advance positioning so
+                        // any later, OUTER-scope show-text lands correctly,
+                        // but emit nothing.
+                        let w = self.advance_position_for_string(&text)?;
                         if let Some(ref mut buffer) = self.tj_span_buffer {
-                            buffer.unicode.push_str(&actual_text);
+                            buffer.accumulated_width += w;
                         }
                     } else {
-                        // Character mode: show_text maps through font, but ActualText
-                        // is already decoded. Fall back to show_text for positioning.
-                        self.show_text(actual_text.as_bytes())?;
-                    }
-
-                    // Advance position for the original text (to maintain layout)
-                    let w = self.advance_position_for_string(&text)?;
-                    if let Some(ref mut buffer) = self.tj_span_buffer {
-                        buffer.accumulated_width += w;
+                        log::debug!("Tj operator: emitting MC-scope ActualText '{}'", actual_text);
+                        self.mark_actual_text_emitted();
+                        if self.extract_spans {
+                            // Use ActualText in span mode — push pre-decoded
+                            // Unicode directly into the buffer, bypassing
+                            // font character mapping.
+                            if self.tj_span_buffer.is_none() {
+                                self.tj_span_buffer = Some(TjBuffer::new(
+                                    self.state_stack.current(),
+                                    self.current_mcid,
+                                    self.cached_current_font.clone(),
+                                ));
+                            }
+                            if let Some(ref mut buffer) = self.tj_span_buffer {
+                                buffer.unicode.push_str(&actual_text);
+                            }
+                        } else {
+                            // Character mode: show_text maps through font, but ActualText
+                            // is already decoded. Fall back to show_text for positioning.
+                            self.show_text(actual_text.as_bytes())?;
+                        }
+                        // Advance position for the original text (to maintain layout)
+                        let w = self.advance_position_for_string(&text)?;
+                        if let Some(ref mut buffer) = self.tj_span_buffer {
+                            buffer.accumulated_width += w;
+                        }
                     }
                 } else {
                     // No ActualText - use standard text extraction
@@ -4641,31 +4790,33 @@ impl<'doc> TextExtractor<'doc> {
 
                 // ActualText override
                 // Per PDF Spec ISO 32000-1:2008, Section 14.9.4:
-                // When ActualText is present, use it instead of the TJ array contents.
-                // The entire TJ array is replaced with the ActualText string.
-                if let Some(actual_text) = self.get_current_actual_text() {
-                    log::debug!(
-                        "TJ operator: Using ActualText override: '{}' (replacing {} elements)",
-                        actual_text,
-                        array.len()
-                    );
-
-                    if self.extract_spans {
-                        // Use ActualText in span mode — push pre-decoded Unicode directly
-                        let mut buffer = TjBuffer::new(
-                            self.state_stack.current(),
-                            self.current_mcid,
-                            self.cached_current_font.clone(),
+                // The MC-scope `/ActualText` replaces the ENTIRE sequence
+                // exactly once — see the Tj path above for the per-scope
+                // peek/mark protocol that handles both first and
+                // subsequent show-text operators inside the same scope.
+                let (current_at, already_emitted) = self.peek_current_actual_text();
+                if let Some(actual_text) = current_at {
+                    if !already_emitted {
+                        log::debug!(
+                            "TJ operator: emitting MC-scope ActualText '{}' (replacing {} elements)",
+                            actual_text,
+                            array.len()
                         );
-                        buffer.unicode.push_str(&actual_text);
-                        self.flush_tj_buffer(buffer)?;
-                    } else {
-                        // Character mode: fall back to show_text for positioning
-                        self.show_text(actual_text.as_bytes())?;
+                        self.mark_actual_text_emitted();
+                        if self.extract_spans {
+                            let mut buffer = TjBuffer::new(
+                                self.state_stack.current(),
+                                self.current_mcid,
+                                self.cached_current_font.clone(),
+                            );
+                            buffer.unicode.push_str(&actual_text);
+                            self.flush_tj_buffer(buffer)?;
+                        } else {
+                            self.show_text(actual_text.as_bytes())?;
+                        }
                     }
-
-                    // Advance position for the entire TJ array (to maintain layout)
-                    // Calculate the total displacement the array would have caused
+                    // First or subsequent: advance position for the
+                    // entire TJ array so layout stays consistent.
                     for element in array {
                         match element {
                             TextElement::String(s) => {
@@ -5552,6 +5703,16 @@ impl<'doc> TextExtractor<'doc> {
             // Per PDF Spec Section 14.6, we track artifact status to filter out
             // non-text content (headers, footers, watermarks, resource paths).
             Operator::BeginMarkedContent { tag } => {
+                // Flush the Tj span buffer at the marked-content boundary
+                // (ISO 32000-1:2008 §14.6). Without this, consecutive Tj
+                // operators that straddle a BMC/BDC/EMC boundary get
+                // glued into a single span whose `mcid` reflects only
+                // the FIRST Tj — fusing two structurally-distinct
+                // elements and breaking every downstream consumer that
+                // relies on MCID identity (structure-tree reading
+                // order, tree-scope ActualText suppression,
+                // table-cell membership).
+                self.flush_tj_span_buffer()?;
                 // BMC doesn't have properties, but the tag can indicate artifacts
                 let is_artifact = tag == "Artifact";
                 self.marked_content_stack.push(MarkedContentContext {
@@ -5559,8 +5720,10 @@ impl<'doc> TextExtractor<'doc> {
                     is_artifact,
                     artifact_type: None, // No artifact classification; None for backward compatibility
                     actual_text: None,   // BMC doesn't have ActualText
-                    expansion: None,     // BMC doesn't have expansion
+                    actual_text_emitted: false,
+                    expansion: None,          // BMC doesn't have expansion
                     is_excluded_layer: false, // BMC cannot carry OCG properties
+                    own_mcid: None,           // BMC carries no MCID
                 });
                 self.update_artifact_state();
 
@@ -5570,17 +5733,22 @@ impl<'doc> TextExtractor<'doc> {
             },
 
             Operator::BeginMarkedContentDict { tag, properties } => {
+                // See `BeginMarkedContent` for the rationale; same
+                // reasoning applies to BDC.
+                self.flush_tj_span_buffer()?;
                 // BDC can have properties including MCID, artifact indicators, ActualText, and expansion
                 // Properties can be an inline dictionary or a name referencing /Properties resource
                 let mut actual_text = None;
                 let mut artifact_type = None;
                 let mut expansion = None;
+                let mut own_mcid: Option<u32> = None;
 
                 let mut is_excluded_layer = false;
 
                 if let Some(props_dict) = self.resolve_bdc_properties(&properties) {
                     if let Some(mcid_obj) = props_dict.get("MCID") {
                         if let Some(mcid) = mcid_obj.as_integer() {
+                            own_mcid = Some(mcid as u32);
                             self.current_mcid = Some(mcid as u32);
                             log::debug!("Entered marked content with MCID: {}", mcid);
                         }
@@ -5590,6 +5758,14 @@ impl<'doc> TextExtractor<'doc> {
                         if let Some(text_bytes) = actual_text_obj.as_string() {
                             actual_text = Some(Self::decode_pdf_text_string(text_bytes));
                             log::debug!("Marked content has ActualText: {:?}", actual_text);
+                            // Record that this MCID's in-stream
+                            // /ActualText is the authoritative
+                            // replacement (MC-scope wins over any
+                            // ancestor's struct-tree-scope
+                            // /ActualText).
+                            if let Some(mcid) = self.current_mcid {
+                                self.mc_actualtext_mcids.insert(mcid);
+                            }
                         }
                     }
 
@@ -5620,8 +5796,10 @@ impl<'doc> TextExtractor<'doc> {
                     is_artifact,
                     artifact_type: artifact_type.clone(),
                     actual_text,
+                    actual_text_emitted: false,
                     expansion,
                     is_excluded_layer,
+                    own_mcid,
                 });
                 self.update_artifact_state();
                 self.update_layer_state();
@@ -5636,18 +5814,36 @@ impl<'doc> TextExtractor<'doc> {
             },
 
             Operator::EndMarkedContent => {
-                // EMC ends the current marked content sequence
-                if let Some(mcid) = self.current_mcid {
-                    log::debug!("Exited marked content with MCID: {}", mcid);
-                }
-                self.current_mcid = None;
-
-                // Pop from marked content stack and update artifact/layer state
+                // Flush the Tj span buffer at the marked-content
+                // boundary; see `BeginMarkedContent` for the
+                // rationale.
+                self.flush_tj_span_buffer()?;
+                // EMC ends the current marked content sequence.
+                // Pop the stack THEN restore `current_mcid` from the
+                // nearest enclosing BDC that carried `/MCID` — per
+                // ISO 32000-1:2008 §14.6, marked-content sequences
+                // nest, and a `Tj` issued after an inner EMC must
+                // attribute to its enclosing scope. Blanking
+                // `current_mcid` here would orphan that `Tj`'s span
+                // (MAJOR-1 regression #...).
                 if !self.marked_content_stack.is_empty() {
                     self.marked_content_stack.pop();
                     self.update_artifact_state();
                     self.update_layer_state();
                 }
+                let restored = self
+                    .marked_content_stack
+                    .iter()
+                    .rev()
+                    .find_map(|ctx| ctx.own_mcid);
+                if let Some(prev) = self.current_mcid {
+                    log::debug!(
+                        "Exited marked content with MCID: {} -> restoring to {:?}",
+                        prev,
+                        restored
+                    );
+                }
+                self.current_mcid = restored;
             },
 
             // XObject operator - Process Form XObjects for text extraction
@@ -6033,6 +6229,15 @@ impl<'doc> TextExtractor<'doc> {
                 let state = self.state_stack.current_mut();
                 state.ctm = form_matrix.multiply(&state.ctm);
 
+                // Push the Form XObject scope (ISO 32000-1:2008
+                // §14.7.4.3). Every MCID emitted inside this form's
+                // content stream lives in the form's MCID namespace,
+                // *not* the page's. Two distinct forms on the same
+                // page that both emit MCID 0 stay distinct because
+                // they push different `Form(form_ref)` scopes.
+                self.mcid_scope_stack
+                    .push(crate::structure::McidScope::Form(xobject_ref));
+
                 self.xobject_depth += 1;
                 let parse_result = if self.excluded_inks.is_empty() {
                     parse_and_execute_text_only(&stream_data, |op| self.execute_operator(op))
@@ -6049,6 +6254,11 @@ impl<'doc> TextExtractor<'doc> {
                     }
                 };
                 self.xobject_depth -= 1;
+                // Pop the Form XObject scope pushed before the
+                // content-stream walk. Cleared regardless of parse
+                // success so the parent stream's scope is correctly
+                // restored even on errors.
+                self.mcid_scope_stack.pop();
                 if let Err(e) = parse_result {
                     log::debug!(
                         "Error parsing Form XObject '{}' content stream: {}, partial text may be extracted",
@@ -6197,6 +6407,7 @@ impl<'doc> TextExtractor<'doc> {
                 buffer.fill_color_rgb.2,
             ),
             mcid: buffer.mcid,
+            mcid_scope: Some(self.current_mcid_scope()),
             sequence: self.span_sequence_counter,
             split_boundary_before: false,
             offset_semantic: false,
@@ -6555,6 +6766,10 @@ impl<'doc> TextExtractor<'doc> {
             return Ok(());
         }
 
+        // Snapshot the current MCID scope before borrowing graphics
+        // state so the borrow checker doesn't reject the
+        // `current_mcid_scope()` call at span construction time.
+        let mcid_scope = self.current_mcid_scope();
         let state = self.state_stack.current();
 
         // Step 1: Calculate bounding box from character positions in text space
@@ -6717,6 +6932,7 @@ impl<'doc> TextExtractor<'doc> {
                 state.fill_color_rgb.2,
             ),
             mcid: self.current_mcid,
+            mcid_scope: Some(mcid_scope),
             sequence: self.span_sequence_counter,
             split_boundary_before: false,
             offset_semantic: false,
@@ -7286,6 +7502,7 @@ impl<'doc> TextExtractor<'doc> {
 
     /// Insert a space character as a separate span.
     fn insert_space_as_span(&mut self) -> Result<()> {
+        let mcid_scope = self.current_mcid_scope();
         let state = self.state_stack.current();
         let font_size = state.font_size;
         let text_matrix = state.text_matrix;
@@ -7337,6 +7554,7 @@ impl<'doc> TextExtractor<'doc> {
                 state.fill_color_rgb.2,
             ),
             mcid: self.current_mcid,
+            mcid_scope: Some(mcid_scope),
             sequence: self.span_sequence_counter,
             split_boundary_before: false,
             offset_semantic: true,
@@ -7487,6 +7705,7 @@ impl<'doc> TextExtractor<'doc> {
                         buffer.fill_color_rgb.2,
                     ),
                     mcid: buffer.mcid,
+                    mcid_scope: Some(self.current_mcid_scope()),
                     sequence: self.span_sequence_counter,
                     split_boundary_before: false,
                     offset_semantic: false,
@@ -7496,7 +7715,7 @@ impl<'doc> TextExtractor<'doc> {
                     is_italic: is_italic_buf,
                     is_monospace: buffer.is_monospace,
                     primary_detected: false,
-                    artifact_type: None,
+                    artifact_type: self.current_artifact_type(),
                     char_widths: {
                         let mut cw = std::mem::take(&mut buffer.char_widths);
                         let h = buffer.user_h_scale;
@@ -8268,6 +8487,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -8295,6 +8515,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: true, // Marks this as part of a split boundary
                 offset_semantic: false,
@@ -9173,6 +9394,7 @@ mod tests {
             font_weight: FontWeight::Normal,
             color: Color::black(),
             mcid: None,
+            mcid_scope: None,
             sequence: seq,
             split_boundary_before: false,
             offset_semantic: false,
@@ -9404,6 +9626,8 @@ mod tests {
             actual_text: None,
             expansion: None,
             is_excluded_layer: false,
+            actual_text_emitted: false,
+            own_mcid: None,
         });
         extractor.update_artifact_state();
         assert!(extractor.inside_artifact);
@@ -9419,6 +9643,8 @@ mod tests {
             actual_text: None,
             expansion: None,
             is_excluded_layer: false,
+            actual_text_emitted: false,
+            own_mcid: None,
         });
         extractor.marked_content_stack.push(MarkedContentContext {
             artifact_type: None,
@@ -9427,6 +9653,8 @@ mod tests {
             actual_text: None,
             expansion: None,
             is_excluded_layer: false,
+            actual_text_emitted: false,
+            own_mcid: None,
         });
         extractor.update_artifact_state();
         // Should still be inside artifact because parent is artifact
@@ -10048,6 +10276,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -10070,6 +10299,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -10117,6 +10347,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: seq,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -10172,6 +10403,7 @@ mod tests {
             font_weight: FontWeight::Normal,
             color: Color::black(),
             mcid: None,
+            mcid_scope: None,
             sequence: seq,
             split_boundary_before: false,
             offset_semantic: false,
@@ -10223,6 +10455,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: i,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -10416,6 +10649,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -10438,6 +10672,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -10474,6 +10709,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -10496,6 +10732,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -10537,6 +10774,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -10559,6 +10797,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -10593,6 +10832,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -10615,6 +10855,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: true, // TJ offset space
@@ -10637,6 +10878,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 2,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -13002,6 +13244,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -13024,6 +13267,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -13056,6 +13300,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -13078,6 +13323,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -13170,6 +13416,7 @@ mod tests {
             font_weight: FontWeight::Normal,
             color: Color::black(),
             mcid: None,
+            mcid_scope: None,
             sequence: 0,
             split_boundary_before: false,
             offset_semantic: false,
@@ -13203,6 +13450,7 @@ mod tests {
             font_weight: FontWeight::Normal,
             color: Color::black(),
             mcid: None,
+            mcid_scope: None,
             sequence: 0,
             split_boundary_before: false,
             offset_semantic: false,
@@ -13383,6 +13631,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -13405,6 +13654,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -13483,6 +13733,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -13505,6 +13756,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: true, // forces merge-with-space path
                 offset_semantic: false,
@@ -13653,6 +13905,8 @@ mod tests {
             actual_text: None,
             expansion: None,
             is_excluded_layer: false,
+            actual_text_emitted: false,
+            own_mcid: None,
         });
 
         extractor
@@ -13800,6 +14054,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -13822,6 +14077,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -13997,6 +14253,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -14019,6 +14276,7 @@ mod tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: true, // forcing merge path
                 offset_semantic: true,
@@ -14189,6 +14447,8 @@ fn test_marked_content_context_with_actual_text() {
         actual_text: Some("fi".to_string()), // Ligature expansion
         expansion: None,
         is_excluded_layer: false,
+        actual_text_emitted: false,
+        own_mcid: None,
     };
 
     assert_eq!(ctx.actual_text, Some("fi".to_string()));
@@ -14205,6 +14465,8 @@ fn test_marked_content_context_with_expansion() {
         actual_text: None,
         expansion: Some("Portable Document Format".to_string()),
         is_excluded_layer: false,
+        actual_text_emitted: false,
+        own_mcid: None,
     };
 
     assert_eq!(ctx.expansion, Some("Portable Document Format".to_string()));
@@ -14220,6 +14482,8 @@ fn test_marked_content_context_artifact_with_actual_text() {
         actual_text: Some("Header text".to_string()),
         expansion: None,
         is_excluded_layer: false,
+        actual_text_emitted: false,
+        own_mcid: None,
     };
 
     assert!(ctx.is_artifact);
@@ -14239,6 +14503,8 @@ fn test_get_current_actual_text_finds_first() {
         actual_text: Some("outer text".to_string()),
         expansion: None,
         is_excluded_layer: false,
+        actual_text_emitted: false,
+        own_mcid: None,
     });
 
     extractor.marked_content_stack.push(MarkedContentContext {
@@ -14248,6 +14514,8 @@ fn test_get_current_actual_text_finds_first() {
         actual_text: Some("inner text".to_string()),
         expansion: None,
         is_excluded_layer: false,
+        actual_text_emitted: false,
+        own_mcid: None,
     });
 
     // Should return innermost (most recent) ActualText
@@ -14268,6 +14536,8 @@ fn test_get_current_actual_text_skips_none() {
         actual_text: Some("replacement text".to_string()),
         expansion: None,
         is_excluded_layer: false,
+        actual_text_emitted: false,
+        own_mcid: None,
     });
 
     // Push context without ActualText
@@ -14278,6 +14548,8 @@ fn test_get_current_actual_text_skips_none() {
         actual_text: None,
         expansion: None,
         is_excluded_layer: false,
+        actual_text_emitted: false,
+        own_mcid: None,
     });
 
     // Should find the ActualText from outer context
@@ -14537,6 +14809,7 @@ mod profile_based_space_tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -14559,6 +14832,7 @@ mod profile_based_space_tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -14600,6 +14874,7 @@ mod profile_based_space_tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -14622,6 +14897,7 @@ mod profile_based_space_tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -14663,6 +14939,7 @@ mod profile_based_space_tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -14685,6 +14962,7 @@ mod profile_based_space_tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -14732,6 +15010,7 @@ mod profile_based_space_tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -14754,6 +15033,7 @@ mod profile_based_space_tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -14793,6 +15073,7 @@ mod profile_based_space_tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -14815,6 +15096,7 @@ mod profile_based_space_tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -14851,6 +15133,7 @@ mod profile_based_space_tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -14873,6 +15156,7 @@ mod profile_based_space_tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -14913,6 +15197,7 @@ mod profile_based_space_tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 0,
                 split_boundary_before: false,
                 offset_semantic: false,
@@ -14935,6 +15220,7 @@ mod profile_based_space_tests {
                 font_weight: FontWeight::Normal,
                 color: Color::black(),
                 mcid: None,
+                mcid_scope: None,
                 sequence: 1,
                 split_boundary_before: false,
                 offset_semantic: false,
