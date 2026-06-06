@@ -39,7 +39,7 @@ All notable changes to PDFOxide are documented here.
 
 ### Known limitations
 
-These are intentional gaps the test suite documents with `HONEST_GAP_*` markers so a future engineer (or a qcms upgrade) flips them RED on landing:
+These are limitations of the upstream `qcms` 0.3.0 colour engine (items 1–2) and one test-coverage gap (item 3), tracked in #655. The test suite documents each with a `HONEST_GAP_*` marker wired as an upgrade gate, so a future engineer (or a qcms upgrade) flips the gated test RED on landing:
 
 - **qcms 0.3.0 ignores the CMYK rendering intent**. The end-to-end intent chain inside pdf_oxide is correct — `gs.rendering_intent` → `ResolutionContext::rendering_intent` → `Transform::new_srgb_target`'s `intent` parameter → qcms — but qcms 0.3.0 declares the intent as `_intent` for CLUT-based CMYK conversion (`transform.rs:1283-1289`) and dispatches the same CLUT for every PDF intent. A qcms upgrade that honours the parameter, or a CMM swap, will surface intent-sensitive behaviour without further code changes; the test `qa_round3_qcms_030_treats_cmyk_intent_as_informational` is the upgrade gate.
 - **qcms 0.3.0 has no Black-Point Compensation** (`lib.rs:29-36` — upstream documents the choice as intentional). `qa_round4_bpc_paper_white_preservation_under_relative_colorimetric` is `#[ignore]`-marked with `HONEST_GAP_QCMS_030_NO_BPC`.
