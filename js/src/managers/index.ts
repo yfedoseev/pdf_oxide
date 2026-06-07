@@ -46,6 +46,20 @@ export {
   FormFieldManager,
   FormFieldType,
 } from '../form-field-manager.js';
+// Hybrid ML page-analysis manager and its enums. Re-exported here so the
+// barrel matches the symbols `../index.ts` (and the ESM package entry) pull
+// from `./managers/index.js` — `ContentType` in particular is consumed by the
+// cross-language core-parity test, which failed at import time when the
+// managers barrel omitted it.
+export {
+  type ColumnRegion,
+  ContentType,
+  type ExtractionStrategy,
+  HybridMLManager,
+  type PageAnalysisResult,
+  PageComplexity,
+  type TableRegion,
+} from '../hybrid-ml-manager.js';
 // Phase 1 Expansion: Result Accessors and Forms
 export {
   type AnnotationProperties,
@@ -54,6 +68,18 @@ export {
   ResultAccessorsManager,
   type SearchResultProperties,
 } from '../result-accessors-manager.js';
+// Thumbnail manager and its enums. Same rationale: `../index.ts` and the ESM
+// entry re-export `ThumbnailManager` / `ThumbnailSize` / `ImageFormat` from this
+// barrel, which previously omitted the whole module (the CJS require path
+// tolerated the gap silently; the strict ESM parity test does not).
+export {
+  ImageFormat,
+  type ThumbnailConfig,
+  type ThumbnailInfo,
+  ThumbnailManager,
+  ThumbnailSize,
+  type ThumbnailStatistics,
+} from '../thumbnail-manager.js';
 export {
   AccessibilityManager,
   type AutoTagResult,
@@ -134,12 +160,18 @@ export {
   MetadataManager,
   type ValidationResult,
 } from './metadata-manager.js';
-
 // Canonical Managers (Phase 9 consolidation)
+// Upper-case `OCR*` aliases. The package's public surface exposes the
+// historical `OCRDetectionMode` / `OCRLanguage` spellings (alongside the
+// canonical `Ocr*` ones), and `../index.ts` re-exports them through this
+// barrel. `OCRManager` already had its alias in `ocr-manager.ts`; the enum
+// aliases were missing, so the strict ESM core-parity import failed on them.
 export {
   OCRManager,
   type OcrConfig,
   OcrDetectionMode,
+  OcrDetectionMode as OCRDetectionMode,
+  OcrLanguage as OCRLanguage,
   OcrManager,
   type OcrPageAnalysis,
   type OcrSpan,
@@ -234,41 +266,3 @@ export {
   type XfaTemplateConfig,
   XfaValidationType,
 } from './xfa-manager.js';
-
-// Hybrid ML page-analysis manager and its enums. Re-exported here so the
-// barrel matches the symbols `../index.ts` (and the ESM package entry) pull
-// from `./managers/index.js` — `ContentType` in particular is consumed by the
-// cross-language core-parity test, which failed at import time when the
-// managers barrel omitted it.
-export {
-  type ColumnRegion,
-  ContentType,
-  type ExtractionStrategy,
-  HybridMLManager,
-  type PageAnalysisResult,
-  PageComplexity,
-  type TableRegion,
-} from '../hybrid-ml-manager.js';
-
-// Thumbnail manager and its enums. Same rationale: `../index.ts` and the ESM
-// entry re-export `ThumbnailManager` / `ThumbnailSize` / `ImageFormat` from this
-// barrel, which previously omitted the whole module (the CJS require path
-// tolerated the gap silently; the strict ESM parity test does not).
-export {
-  ImageFormat,
-  type ThumbnailConfig,
-  type ThumbnailInfo,
-  ThumbnailManager,
-  ThumbnailSize,
-  type ThumbnailStatistics,
-} from '../thumbnail-manager.js';
-
-// Upper-case `OCR*` aliases. The package's public surface exposes the
-// historical `OCRDetectionMode` / `OCRLanguage` spellings (alongside the
-// canonical `Ocr*` ones), and `../index.ts` re-exports them through this
-// barrel. `OCRManager` already had its alias in `ocr-manager.ts`; the enum
-// aliases were missing, so the strict ESM core-parity import failed on them.
-export {
-  OcrDetectionMode as OCRDetectionMode,
-  OcrLanguage as OCRLanguage,
-} from './ocr-manager.js';

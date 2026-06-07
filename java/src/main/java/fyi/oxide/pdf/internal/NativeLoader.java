@@ -131,9 +131,7 @@ public final class NativeLoader {
                 return;
             }
             LOG.debug(
-                "Override -D{}={} does not exist; falling through to bundled native",
-                PROP_LIB_PATH,
-                overridePath);
+                    "Override -D{}={} does not exist; falling through to bundled native", PROP_LIB_PATH, overridePath);
         }
 
         // 2. System library opt-in.
