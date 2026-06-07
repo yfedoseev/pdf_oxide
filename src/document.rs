@@ -7075,13 +7075,34 @@ impl PdfDocument {
             }
         }
         if rtl >= 2 && !has_latin {
-            let reversed: String = span.text.chars().rev().collect();
             let mut tmp = span.clone();
-            tmp.text = reversed;
+            tmp.text = Self::reverse_rtl_keeping_marks(&span.text);
             Self::push_span_text(out, &tmp);
         } else {
             Self::push_span_text(out, span);
         }
+    }
+
+    /// Reverse a pure-RTL run from visual to logical order while keeping each
+    /// Arabic/Hebrew combining mark attached to its base letter (#656).
+    ///
+    /// A naive `chars().rev()` reverses by Unicode scalar value, so a base
+    /// letter's diacritics (which follow it in logical order — kasra/shadda
+    /// U+0650/U+0651, Hebrew points U+05B0..) jump *in front* of the base and
+    /// float off as standalone marks. Grouping each base char with the
+    /// combining marks that trail it, then reversing the group order (each
+    /// group's internal order preserved), keeps marks bound to their base.
+    fn reverse_rtl_keeping_marks(text: &str) -> String {
+        use crate::text::rtl_detector::is_rtl_diacritic;
+        let mut groups: Vec<Vec<char>> = Vec::new();
+        for c in text.chars() {
+            if is_rtl_diacritic(c as u32) && !groups.is_empty() {
+                groups.last_mut().unwrap().push(c);
+            } else {
+                groups.push(vec![c]);
+            }
+        }
+        groups.iter().rev().flatten().collect()
     }
 
     /// Parse font size from a /DA (Default Appearance) string.
@@ -19324,6 +19345,29 @@ mod tests {
             vec!["אחת", "שתיים", "שלוש"],
             "pure-RTL MCID spans must emit rightmost-first (logical RTL order), got {texts:?}"
         );
+    }
+
+    // #656: grapheme-aware RTL reversal keeps Arabic combining marks bound to
+    // their base letter (vs. a naive chars().rev() that floats them off).
+    #[test]
+    fn test_reverse_rtl_keeping_marks_keeps_diacritics_attached() {
+        // قِطّ = QAF + KASRA(U+0650) + TAH + SHADDA(U+0651). Reversing must
+        // keep each mark immediately after its base, not lead the string.
+        let src = "\u{0642}\u{0650}\u{0637}\u{0651}"; // قِطّ
+        let out = PdfDocument::reverse_rtl_keeping_marks(src);
+        // Expected: base order reversed (TAH+SHADDA group, then QAF+KASRA group).
+        assert_eq!(out, "\u{0637}\u{0651}\u{0642}\u{0650}");
+        // No combining mark ever leads a base it doesn't belong to: every
+        // diacritic is immediately preceded by a non-diacritic.
+        let chars: Vec<char> = out.chars().collect();
+        for (i, c) in chars.iter().enumerate() {
+            if crate::text::rtl_detector::is_rtl_diacritic(*c as u32) {
+                assert!(
+                    i > 0 && !crate::text::rtl_detector::is_rtl_diacritic(chars[i - 1] as u32),
+                    "diacritic at {i} is detached from its base"
+                );
+            }
+        }
     }
 
     // Mixed RTL+Latin MCIDs are left in raw order (full UAX #9 deferred) —
