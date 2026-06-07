@@ -15,6 +15,8 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 // otherwise skip font-cascade tests.
 async function loadFont() {
   const candidates = [
+    // Git-tracked font — available on every OS runner (ubuntu/macOS/windows).
+    join(__dir, '../../tests/fixtures/fonts/DejaVuSans.ttf'),
     join(__dir, '../../tools/benchmark-harness/fixtures/fonts/DejaVuSans.ttf'),
     join(__dir, '../fixtures/DejaVuSans.ttf'),
     '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
