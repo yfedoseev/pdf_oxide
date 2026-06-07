@@ -412,6 +412,19 @@ typedef struct Pdf Pdf;
  */
 typedef struct PdfDocument PdfDocument;
 
+/**
+ * Per-CID vertical-writing metrics from a CIDFont's `/W2` array.
+ *
+ * Per ISO 32000-1:2008 §9.7.4.3 and the Adobe CMap & CIDFont Files
+ * Specification §9.7. In vertical writing mode the glyph advances along the
+ * y-axis (not the x-axis) and is shifted from its default horizontal origin
+ * to a vertical origin so that the glyph stacks correctly within a column.
+ *
+ * All values are in 1000ths-of-em (glyph-space units), matching the
+ * convention used throughout PDF font dictionaries.
+ */
+typedef struct VerticalMetrics VerticalMetrics;
+
 #if !defined(PDF_OXIDE_TARGET_WASM32)
 /**
  * Options for [`pdf_sign_bytes_pades_opts`] — the same parameters as
@@ -453,6 +466,8 @@ typedef uint32_t NodeId;
  * Index into [`BoxTree::boxes`].
  */
 typedef uint32_t BoxId;
+
+
 
 
 

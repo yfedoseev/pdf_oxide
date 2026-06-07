@@ -78,6 +78,7 @@ impl OcrSpan {
             char_widths: Vec::new(),
             heading_level: None,
             rotation_degrees: 0.0,
+            wmode: 0,
         }
     }
 

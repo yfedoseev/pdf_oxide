@@ -57,7 +57,9 @@ pub use ordered_span::{
     OrderedSpans, OrderedTextSpan, ReadingOrderInfo, ReadingOrderSource, StructRole,
 };
 pub use page_order::{page_reading_order, page_reading_order_no_artifacts};
-pub use reading_order::{ReadingOrderContext, ReadingOrderStrategy, XYCutStrategy};
+pub use reading_order::{
+    ReadingOrderContext, ReadingOrderStrategy, TategakiStrategy, XYCutStrategy,
+};
 pub use text_processing::WhitespaceNormalizer;
 
 use crate::error::Result;
@@ -91,14 +93,30 @@ impl TextPipeline {
 
     /// Process spans through the pipeline.
     ///
-    /// 1. Apply reading order strategy
-    /// 2. Return ordered spans ready for conversion
+    /// 1. Detect vertical-majority (tategaki) pages from the per-span
+    ///    `wmode` tag and route them through [`TategakiStrategy`]. The
+    ///    four horizontal LTR strategies (Simple, Geometric, XYCut,
+    ///    StructureTree) are unchanged; tategaki always wins when the
+    ///    page is vertical because none of the LTR strategies can
+    ///    produce right-to-left column ordering correctly.
+    /// 2. Otherwise apply the configured reading-order strategy.
+    /// 3. Reverse RTL word runs (#557b) and return ordered spans.
     pub fn process(
         &self,
         spans: Vec<TextSpan>,
         context: ReadingOrderContext,
     ) -> Result<Vec<OrderedTextSpan>> {
-        let mut ordered = self.reading_order_strategy.apply(spans, &context)?;
+        let mut ordered = if is_vertical_majority(&spans) {
+            log::trace!(
+                "TextPipeline: vertical-majority page detected ({}/{} spans wmode=1) — \
+                 routing through TategakiStrategy regardless of configured strategy.",
+                spans.iter().filter(|s| s.wmode == 1).count(),
+                spans.len()
+            );
+            reading_order::TategakiStrategy.apply(spans, &context)?
+        } else {
+            self.reading_order_strategy.apply(spans, &context)?
+        };
         reorder_rtl_word_runs(&mut ordered);
         Ok(ordered)
     }
@@ -113,6 +131,20 @@ impl Default for TextPipeline {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Vertical-majority detection: at least half the spans carry
+/// `wmode == 1`. Mixed-mode pages with a horizontal majority keep their
+/// configured strategy; the rare pure-vertical mixed-page case stays
+/// governed by the dominant mode here. Per-span wmode is preserved on
+/// every span either way, so downstream consumers (export, search) can
+/// still distinguish them.
+fn is_vertical_majority(spans: &[TextSpan]) -> bool {
+    if spans.is_empty() {
+        return false;
+    }
+    let vertical_count = spans.iter().filter(|s| s.wmode == 1).count();
+    vertical_count * 2 >= spans.len()
 }
 
 /// #557b: right-to-left scripts read their words in the opposite direction

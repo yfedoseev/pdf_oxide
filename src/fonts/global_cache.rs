@@ -239,6 +239,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: crate::fonts::VerticalMetrics::SPEC_DEFAULT,
         }
     }
 

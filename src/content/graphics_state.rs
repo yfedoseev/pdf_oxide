@@ -215,6 +215,15 @@ pub struct GraphicsState {
     pub text_rise: f32,
     /// Text rendering mode (Tr)
     pub render_mode: u8,
+    /// Writing mode for the currently selected font (0 = horizontal, 1 = vertical).
+    ///
+    /// Cached here rather than dereferenced from the font on every Tj/TJ so
+    /// the advance helpers in the extractor and rasterizer can branch on a
+    /// single primitive field read. Refreshed whenever the operator loop
+    /// processes a Tf (font selection) operator. Defaults to `0` so the
+    /// horizontal fast path stays cold on every existing document and
+    /// hot-path test that constructs a fresh state without calling Tf.
+    pub text_wmode: u8,
 
     // Color parameters
     /// Fill color space name (DeviceRGB, DeviceCMYK, DeviceGray, etc.)
@@ -306,6 +315,7 @@ impl GraphicsState {
             font_size: 12.0,
             text_rise: 0.0,
             render_mode: 0,
+            text_wmode: 0,
             fill_color_space: "DeviceGray".to_string(), // PDF default
             stroke_color_space: "DeviceGray".to_string(), // PDF default
             fill_color_rgb: (0.0, 0.0, 0.0),            // Black
@@ -328,6 +338,33 @@ impl GraphicsState {
             stroke_overprint: false,         // §11.7.4 default
             overprint_mode: 0,               // §11.7.4 default (standard mode)
         }
+    }
+
+    /// Apply a text-space displacement to the text matrix on the active
+    /// writing axis. Returns the resulting `(Δe, Δf)` user-space deltas.
+    ///
+    /// Per ISO 32000-1:2008 §9.4.4 the show-text operator updates
+    /// `Tm := [1 0 0 1 tx 0] × Tm` after horizontal advancement, which by
+    /// matrix-multiplication identity adds `tx*a` to `Tm.e` and `tx*b` to
+    /// `Tm.f`. In vertical writing mode (WMode 1) the same paragraph of the
+    /// spec routes the displacement into the y-column of the pre-multiplier:
+    /// `Tm := [1 0 0 1 0 ty] × Tm`, which adds `ty*c` to `Tm.e` and
+    /// `ty*d` to `Tm.f`.
+    ///
+    /// This is the single axis-swap site for the extractor's advance
+    /// helpers and the rasterizer's measure path. Horizontal callers pay
+    /// only one branch (predicted not-taken) per Tj/TJ operator.
+    #[inline]
+    pub fn advance_text_matrix(&mut self, displacement: f32) -> (f32, f32) {
+        let tm = self.text_matrix;
+        let (de, df) = if self.text_wmode == 0 {
+            (displacement * tm.a, displacement * tm.b)
+        } else {
+            (displacement * tm.c, displacement * tm.d)
+        };
+        self.text_matrix.e += de;
+        self.text_matrix.f += df;
+        (de, df)
     }
 
     /// Check if the current line style is dashed (not solid).
@@ -562,6 +599,79 @@ mod tests {
             f: 0.0,
         };
         assert!(!m_degenerate.is_invertible());
+    }
+
+    /// `advance_text_matrix` in horizontal mode adds `displacement * (a, b)`
+    /// to the text matrix translation. This is the single hot-path math
+    /// used by every Tj/TJ operator extractor + measure-only path.
+    #[test]
+    fn test_advance_text_matrix_horizontal() {
+        let mut gs = GraphicsState::new();
+        gs.text_wmode = 0;
+        gs.text_matrix = Matrix {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 100.0,
+            f: 200.0,
+        };
+        let (de, df) = gs.advance_text_matrix(15.0);
+        assert_eq!(de, 15.0);
+        assert_eq!(df, 0.0);
+        assert_eq!(gs.text_matrix.e, 115.0);
+        assert_eq!(gs.text_matrix.f, 200.0);
+    }
+
+    /// In vertical mode the displacement multiplies `(c, d)` instead of
+    /// `(a, b)` per ISO 32000-1 §9.4.4. With an identity Tm `c = 0`, `d = 1`,
+    /// the cursor moves only in y.
+    #[test]
+    fn test_advance_text_matrix_vertical() {
+        let mut gs = GraphicsState::new();
+        gs.text_wmode = 1;
+        gs.text_matrix = Matrix {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 100.0,
+            f: 200.0,
+        };
+        let (de, df) = gs.advance_text_matrix(-12.0);
+        assert_eq!(de, 0.0);
+        assert_eq!(df, -12.0);
+        assert_eq!(gs.text_matrix.e, 100.0);
+        assert_eq!(gs.text_matrix.f, 188.0);
+    }
+
+    /// Sanity: a 90° rotation Tm in horizontal mode and the same `Tm` in
+    /// vertical mode produce different deltas. This is the math that
+    /// guarantees the rasterizer + extractor lay glyphs out along the
+    /// correct axis when the CTM is itself rotated (e.g., a label that
+    /// uses CTM rotation to stand text up vertically — that case must NOT
+    /// be conflated with WMode 1, which is a font-level signal).
+    #[test]
+    fn test_advance_text_matrix_rotated_matrix() {
+        let rotated = Matrix {
+            a: 0.0,
+            b: 1.0,
+            c: -1.0,
+            d: 0.0,
+            e: 0.0,
+            f: 0.0,
+        };
+        let mut h = GraphicsState::new();
+        h.text_wmode = 0;
+        h.text_matrix = rotated;
+        let (he, hf) = h.advance_text_matrix(10.0);
+        assert_eq!((he, hf), (0.0, 10.0));
+
+        let mut v = GraphicsState::new();
+        v.text_wmode = 1;
+        v.text_matrix = rotated;
+        let (ve, vf) = v.advance_text_matrix(10.0);
+        assert_eq!((ve, vf), (-10.0, 0.0));
     }
 
     #[test]

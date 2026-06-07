@@ -7459,6 +7459,7 @@ impl PdfDocument {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             });
         }
 
@@ -7625,6 +7626,7 @@ impl PdfDocument {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             });
         }
 
@@ -9571,14 +9573,41 @@ impl PdfDocument {
             }
         }
 
-        // Reading order: XY-cut when the page has multiple columns (B4);
-        // otherwise the cheap row-aware sort. XY-cut is spatial recursion
-        // that correctly orders multi-column layouts (newspapers, academic
-        // papers, dashboards) but is overkill for single-column pages
-        // doesn't handle tabular rowspan labels specifically. Heuristic:
-        // count distinct X-center clusters with vertical overlap; ≥2
-        // clusters → multi-column.
-        if Self::is_multi_column_page(&spans) {
+        // Tategaki (vertical writing) intercept. Pages whose majority of
+        // spans were emitted under WMode 1 (font /Encoding ends in -V or
+        // the CMap declares /WMode 1) need right-to-left, top-to-bottom
+        // ordering. Row-aware / XY-cut sorts assume horizontal flow and
+        // scramble vertical text; per-span wmode lets us route just those
+        // pages through a tategaki comparator while leaving every existing
+        // horizontal corpus untouched.
+        let vertical_count = spans.iter().filter(|s| s.wmode == 1).count();
+        if !spans.is_empty() && vertical_count * 2 >= spans.len() {
+            // Cluster tolerance: median span width. Wide enough to keep one
+            // vertical column together, narrow enough to separate adjacent
+            // columns. Robust to single rotated outliers.
+            //
+            // Assumption (M7): tategaki CJK body text is functionally
+            // monospaced (full-width kanji/kana, half-width digits all
+            // advance by similar widths), so the median span width
+            // approximates the column pitch. Mixed-pitch tategaki (rare —
+            // typically only ruby annotations) may overcluster; that
+            // would be an explicit follow-up if it shows up in real
+            // corpora.
+            let mut widths: Vec<f32> = spans.iter().map(|s| s.bbox.width.max(1.0)).collect();
+            widths.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+            let tol = widths[widths.len() / 2].max(1.0);
+            spans.sort_by(|a, b| {
+                let ax = a.bbox.x + a.bbox.width * 0.5;
+                let bx = b.bbox.x + b.bbox.width * 0.5;
+                if (ax - bx).abs() <= tol {
+                    // Same column: top first (descending y in PDF user space).
+                    crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y)
+                } else {
+                    // Different column: rightmost first.
+                    crate::utils::safe_float_cmp(bx, ax)
+                }
+            });
+        } else if Self::is_multi_column_page(&spans) {
             use crate::pipeline::reading_order::{
                 ReadingOrderContext as ROContext, ReadingOrderStrategy, XYCutStrategy,
             };
@@ -12977,6 +13006,7 @@ impl PdfDocument {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             })
             .collect();
 
@@ -13762,11 +13792,175 @@ impl PdfDocument {
             return Some(h);
         }
         let font = self.load_object(font_ref).ok()?;
-        let h = Self::font_identity_hash_cheap(&font);
+        let h = self.font_identity_hash_with_descendants(&font);
         self.font_id_hash_cache
             .lock_or_recover()
             .insert(font_ref, h);
         Some(h)
+    }
+
+    /// Document-aware extension of `font_identity_hash_cheap` that resolves
+    /// `/DescendantFonts` references on Type0 fonts and folds the descendant
+    /// CIDFont's width metrics (`/DW`, `/DW2`, `/W`, `/W2`) into the hash.
+    ///
+    /// Without this, two Type0 fonts whose Type0 dicts have identical inline
+    /// shape (same BaseFont, Encoding, ToUnicode/DescendantFonts refs) but
+    /// whose referenced CIDFonts carry different vertical metrics collide on
+    /// the Layer 5/6 caches — the second document silently inherits the
+    /// first's `w1y` and renders vertical text at the wrong advance. This is
+    /// the same bug class as the ToUnicode-stream poisoning fixed in
+    /// `a327bcd` and the `/Widths` poisoning fixed in #598, applied to the
+    /// descendant CIDFont's horizontal AND vertical width arrays.
+    ///
+    /// Cost: one `load_object` per descendant CIDFont (typically one) on the
+    /// first call; subsequent calls hit `font_id_hash_cache`. The descendant
+    /// load is the same work `FontInfo::from_dict` will do later, so the
+    /// marginal cost when a font actually needs parsing is zero; the only
+    /// new work is on cache *hits* that previously skipped descendant
+    /// resolution entirely. In return we trade off one indirect-ref load per
+    /// unique Type0 font per process for correctness on /W2 + /DW2.
+    fn font_identity_hash_with_descendants(&self, font_obj: &Object) -> u64 {
+        use std::hash::{Hash, Hasher};
+        // Seed with the cheap inline hash so existing identity coverage is
+        // preserved bit-for-bit when there are no descendants to fold in.
+        let base = Self::font_identity_hash_cheap(font_obj);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        base.hash(&mut hasher);
+
+        if let Some(d) = font_obj.as_dict() {
+            if let Some(Object::Array(arr)) = d.get("DescendantFonts") {
+                // Domain separator for the descendant section.
+                11u8.hash(&mut hasher);
+                for item in arr {
+                    let resolved = match item {
+                        Object::Reference(r) => self.load_object(*r).ok(),
+                        Object::Dictionary(_) => Some(item.clone()),
+                        _ => None,
+                    };
+                    let desc = match resolved {
+                        Some(d) => d,
+                        None => continue,
+                    };
+                    let dd = match desc.as_dict() {
+                        Some(dd) => dd,
+                        None => continue,
+                    };
+
+                    // /DW — default horizontal width on the CIDFont. Always
+                    // int in well-formed PDFs; we accept Real defensively.
+                    if let Some(dw) = dd.get("DW") {
+                        12u8.hash(&mut hasher);
+                        Self::hash_pdf_object_deterministic(dw, &mut hasher);
+                    }
+                    // /DW2 — default vertical metrics [v_y w1y]. Two-element
+                    // numeric array per ISO 32000-1 §9.7.4.3.
+                    if let Some(dw2) = dd.get("DW2") {
+                        13u8.hash(&mut hasher);
+                        Self::hash_pdf_object_deterministic(dw2, &mut hasher);
+                    }
+                    // /W — per-CID horizontal widths, may use form-a
+                    // (c [w1 w2 …]) or form-b (c_first c_last w).
+                    if let Some(w) = dd.get("W") {
+                        14u8.hash(&mut hasher);
+                        Self::hash_pdf_object_deterministic(w, &mut hasher);
+                    }
+                    // /W2 — per-CID vertical metrics, analogous to /W.
+                    if let Some(w2) = dd.get("W2") {
+                        15u8.hash(&mut hasher);
+                        Self::hash_pdf_object_deterministic(w2, &mut hasher);
+                    }
+                    // /CIDSystemInfo — folded so otherwise-identical dicts
+                    // targeting different registries don't collide.
+                    if let Some(csi) = dd.get("CIDSystemInfo") {
+                        16u8.hash(&mut hasher);
+                        Self::hash_pdf_object_deterministic(csi, &mut hasher);
+                    }
+                }
+            }
+        }
+
+        hasher.finish()
+    }
+
+    /// Hash a PDF `Object` deterministically. Used by the descendant-aware
+    /// font identity hash to fold raw width-array content into the key.
+    ///
+    /// Cycles are not possible for /W, /W2, /DW2 or /CIDSystemInfo content
+    /// in any conformant PDF: these are pure data subtrees (numbers,
+    /// arrays of numbers, occasional name/integer dicts), never indirect
+    /// references back to a font dict. We still avoid recursing into
+    /// streams (whose data we deliberately exclude from the cheap hash)
+    /// and into unresolved references (we hash the ref's id/gen, not the
+    /// pointed-to bytes — the per-font cache key already covers the
+    /// referenced descendant CIDFont).
+    fn hash_pdf_object_deterministic<H: std::hash::Hasher>(obj: &Object, hasher: &mut H) {
+        use std::hash::Hash;
+        match obj {
+            Object::Null => 0u8.hash(hasher),
+            Object::Boolean(b) => {
+                1u8.hash(hasher);
+                b.hash(hasher);
+            },
+            Object::Integer(i) => {
+                2u8.hash(hasher);
+                i.hash(hasher);
+            },
+            // Bit-pattern hash so two equal values hash identically without
+            // tripping over f64's missing `Hash` impl. NaN is not produced
+            // by PDF parsers from numeric tokens.
+            Object::Real(r) => {
+                3u8.hash(hasher);
+                r.to_bits().hash(hasher);
+            },
+            Object::String(s) => {
+                4u8.hash(hasher);
+                s.hash(hasher);
+            },
+            Object::Name(n) => {
+                5u8.hash(hasher);
+                n.hash(hasher);
+            },
+            Object::Array(arr) => {
+                6u8.hash(hasher);
+                (arr.len() as u64).hash(hasher);
+                for item in arr {
+                    Self::hash_pdf_object_deterministic(item, hasher);
+                }
+            },
+            Object::Dictionary(d) => {
+                7u8.hash(hasher);
+                // Sort keys for deterministic ordering — HashMap iteration
+                // is randomized per process.
+                let mut keys: Vec<&str> = d.keys().map(|k| k.as_str()).collect();
+                keys.sort_unstable();
+                (keys.len() as u64).hash(hasher);
+                for k in keys {
+                    k.hash(hasher);
+                    if let Some(v) = d.get(k) {
+                        Self::hash_pdf_object_deterministic(v, hasher);
+                    }
+                }
+            },
+            Object::Reference(r) => {
+                8u8.hash(hasher);
+                r.id.hash(hasher);
+                r.gen.hash(hasher);
+            },
+            // Streams: dict shape only; we do not pull stream data into
+            // the font identity hash (kept consistent with the cheap path).
+            Object::Stream { dict, .. } => {
+                9u8.hash(hasher);
+                let mut keys: Vec<&str> = dict.keys().map(|k| k.as_str()).collect();
+                keys.sort_unstable();
+                (keys.len() as u64).hash(hasher);
+                for k in keys {
+                    k.hash(hasher);
+                    if let Some(v) = dict.get(k) {
+                        Self::hash_pdf_object_deterministic(v, hasher);
+                    }
+                }
+            },
+        }
     }
 
     fn font_identity_hash_cheap(font_obj: &Object) -> u64 {
@@ -14079,8 +14273,14 @@ impl PdfDocument {
                         all_from_cache = false;
                         let font = self.load_object(font_ref)?;
 
-                        // Compute identity hash (cheap: 3-6 dict lookups, ~200ns)
-                        let id_hash = Self::font_identity_hash_cheap(&font);
+                        // Compute identity hash. For Type0 fonts this also
+                        // resolves the descendant CIDFont and folds its
+                        // /DW, /DW2, /W, /W2 into the key — otherwise two
+                        // Type0 fonts whose top-level dicts have identical
+                        // inline shape but whose CIDFonts ship different
+                        // horizontal or vertical metrics would collide on
+                        // the Layer 5/6 caches.
+                        let id_hash = self.font_identity_hash_with_descendants(&font);
 
                         // Type 3 fonts and subset fonts must not cross
                         // PdfDocument boundaries via the global cache — their
@@ -14420,6 +14620,7 @@ impl PdfDocument {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             })
             .collect();
 
@@ -18760,6 +18961,7 @@ mod tests {
             char_widths: vec![],
             heading_level: None,
             rotation_degrees: 0.0,
+            wmode: 0,
         }
     }
 
@@ -18970,6 +19172,7 @@ mod tests {
             char_widths,
             heading_level: None,
             rotation_degrees: 0.0,
+            wmode: 0,
         }
     }
 
@@ -22253,6 +22456,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             }
         }
 
@@ -22317,6 +22521,7 @@ mod tests {
             char_widths: vec![],
             heading_level: None,
             rotation_degrees: 0.0,
+            wmode: 0,
         }
     }
 
@@ -22704,6 +22909,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             }
         }
 
@@ -22774,6 +22980,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             }
         }
 

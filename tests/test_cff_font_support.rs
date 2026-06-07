@@ -67,6 +67,9 @@ fn test_cff_font_detection_in_type0_fonts() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -127,6 +130,9 @@ fn test_cff_charstrings_glyph_lookup() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -212,6 +218,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -275,6 +284,9 @@ fn test_cff_fdselect_array_font_program_selection() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -331,6 +343,9 @@ fn test_cff_glyph_name_to_unicode_mapping() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -386,6 +401,9 @@ fn test_cff_fallback_to_identity_mapping() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -471,6 +489,9 @@ end
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),

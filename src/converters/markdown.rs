@@ -924,6 +924,7 @@ impl MarkdownConverter {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             })
             .collect();
 
@@ -1569,6 +1570,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -1592,6 +1594,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -1615,6 +1618,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -1660,6 +1664,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -1683,6 +1688,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -1706,6 +1712,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -1755,6 +1762,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -1778,6 +1786,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -1826,6 +1835,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -1849,6 +1859,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -1872,6 +1883,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -1895,6 +1907,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -1918,6 +1931,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -2096,6 +2110,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -2119,6 +2134,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -2142,6 +2158,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 

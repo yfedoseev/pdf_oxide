@@ -1722,6 +1722,11 @@ struct TjBuffer {
     /// Display rotation of this run in degrees, snapped to a quadrant when near
     /// one; `0.0` for ordinary horizontal text (see `snap_run_rotation`).
     rotation_degrees: f32,
+    /// Writing mode (0 = horizontal, 1 = vertical) captured from the
+    /// graphics state when the buffer started, so each emitted span
+    /// carries the wmode it was rendered under. A font change flushes the
+    /// buffer, so a single buffer never spans mixed writing modes.
+    wmode: u8,
 }
 
 /// Snap a run's display rotation (from the composed `CTM × T_m` rotation block,
@@ -1811,6 +1816,7 @@ impl TjBuffer {
             user_pos_y: user_pos.y,
             user_h_scale,
             rotation_degrees,
+            wmode: state.text_wmode,
         }
     }
 
@@ -3660,6 +3666,27 @@ impl<'doc> TextExtractor<'doc> {
             return;
         }
 
+        // Vertical-mode (tategaki) routing. Each span carries the writing
+        // mode it was emitted under (`wmode == 1` for vertical text). When
+        // the page is *predominantly* vertical we apply column-aware
+        // top-to-bottom + right-to-left ordering. When the page is
+        // predominantly horizontal we fall through to the existing
+        // horizontal sort; the rare mixed-mode case stays governed by the
+        // dominant mode here. Per-span wmode is preserved on every span
+        // either way, so downstream consumers (export, search) can still
+        // distinguish them.
+        let vertical_count = self.spans.iter().filter(|s| s.wmode == 1).count();
+        let total = self.spans.len();
+        if total > 0 && vertical_count * 2 >= total {
+            log::trace!(
+                "Reading order: {}/{} spans are vertical — using tategaki sort",
+                vertical_count,
+                total
+            );
+            self.sort_spans_vertical_tategaki();
+            return;
+        }
+
         // Detect columns first
         let columns = self.detect_span_columns();
 
@@ -3687,6 +3714,59 @@ impl<'doc> TextExtractor<'doc> {
             log::trace!("Using column-aware sorting ({} columns)", columns.len());
             self.sort_spans_by_columns(&columns);
         }
+    }
+
+    /// Sort spans in vertical writing (tategaki) order: right-to-left
+    /// across columns, top-to-bottom within each column. Spans whose
+    /// horizontal X-centers cluster together belong to the same column.
+    ///
+    /// The cluster tolerance is the median span width — wide enough to keep
+    /// glyphs of one body column together, narrow enough to separate
+    /// adjacent columns. PDF user-space y increases upward, so within a
+    /// column we sort by descending y (top first).
+    fn sort_spans_vertical_tategaki(&mut self) {
+        if self.spans.is_empty() {
+            return;
+        }
+
+        // Estimate a per-column-grouping tolerance from the median span
+        // width (cheap, robust to outliers from rotated annotations).
+        //
+        // Assumption (M7): tategaki CJK body text is functionally
+        // monospaced — every glyph occupies roughly one em (full-width
+        // kanji, hiragana, katakana, halfwidth digits all advance by
+        // similar widths). The median span width therefore approximates
+        // the column pitch, and `tol = median_w` cleanly separates a
+        // column whose glyphs cluster around one X-center from an
+        // adjacent column shifted by another median width. Mixed-pitch
+        // tategaki (rare — typically only ruby annotations) may
+        // overcluster; that is an explicit follow-up if it shows up in
+        // real corpora.
+        let mut widths: Vec<f32> = self.spans.iter().map(|s| s.bbox.width.max(1.0)).collect();
+        widths.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+        let median_w = widths[widths.len() / 2].max(1.0);
+        let tol = median_w; // ±median width groups glyphs of the same vertical run
+
+        // Compute each span's X center, then cluster centers by proximity.
+        let mut sorted_idx: Vec<usize> = (0..self.spans.len()).collect();
+        let x_center = |i: usize| -> f32 { self.spans[i].bbox.x + self.spans[i].bbox.width * 0.5 };
+        // Right-to-left primary: descending x_center, then descending y.
+        sorted_idx.sort_by(|&a, &b| {
+            let ax = x_center(a);
+            let bx = x_center(b);
+            if (ax - bx).abs() <= tol {
+                // Same column: top first (PDF user space — descending y).
+                crate::utils::safe_float_cmp(self.spans[b].bbox.y, self.spans[a].bbox.y)
+            } else {
+                crate::utils::safe_float_cmp(bx, ax) // descending x_center
+            }
+        });
+
+        let new_spans: Vec<TextSpan> = sorted_idx
+            .into_iter()
+            .map(|i| self.spans[i].clone())
+            .collect();
+        self.spans = new_spans;
     }
 
     /// Simple Y-then-X sorting for single-column layouts.
@@ -4064,9 +4144,23 @@ impl<'doc> TextExtractor<'doc> {
                 },
             };
 
-            // Check if this span should be merged with the current one
+            // Spans drawn under different writing modes must never merge,
+            // even when their baselines coincide. A horizontal (`wmode=0`)
+            // span advances along x; a vertical (`wmode=1`) span advances
+            // along y. The text-level merge semantics (same word, same line,
+            // gap small enough to glue) all assume a single advance axis,
+            // and the bbox-extension at the end of the merge branch grows
+            // a horizontal bbox even if the right-hand side was a vertical
+            // column. Fold per-span wmode into the line-equality test
+            // up-front so all downstream merge variants (same-font,
+            // cross-font glue, small-caps, decimal-merge) inherit the
+            // gate. Without this, `BT 100 700 Td /F1 12 Tf (A) Tj
+            // /F2 12 Tf (B) Tj ET` with F1 horizontal + F2 vertical glues
+            // the two glyphs into a single horizontal span and clobbers
+            // the wmode metadata for the vertical glyph.
+            let wmode_compatible = current.wmode == span.wmode;
             let y_diff = (span.bbox.y - current.bbox.y).abs();
-            let same_line = y_diff < 1.0;
+            let same_line = y_diff < 1.0 && wmode_compatible;
 
             // Gap between end of current span and start of next span
             let current_end_x = current.bbox.x + current.bbox.width;
@@ -4646,10 +4740,19 @@ impl<'doc> TextExtractor<'doc> {
 
                     // Cache font reference for advance_position_for_string
                     self.cached_current_font = self.fonts.get(&font).cloned();
+                    // Cache wmode on the graphics state so the advance hot
+                    // path branches on a single primitive read instead of
+                    // dereferencing the FontInfo every glyph.
+                    let new_wmode = self
+                        .cached_current_font
+                        .as_deref()
+                        .map(|f| f.wmode)
+                        .unwrap_or(0);
 
                     let state = self.state_stack.current_mut();
                     state.font_name = Some(font);
                     state.font_size = size;
+                    state.text_wmode = new_wmode;
                 }
             },
 
@@ -4989,10 +5092,12 @@ impl<'doc> TextExtractor<'doc> {
                                         }
                                     }
 
-                                    let state_mut = self.state_stack.current_mut();
-                                    let tm = state_mut.text_matrix;
-                                    state_mut.text_matrix.e += tx * tm.a;
-                                    state_mut.text_matrix.f += tx * tm.b;
+                                    // Route through advance_text_matrix so the
+                                    // axis swap (H vs V) lives in one place.
+                                    // Per ISO 32000-1 §9.4.4 a TJ numeric
+                                    // offset shifts along the active writing
+                                    // axis: x for WMode 0, y for WMode 1.
+                                    self.state_stack.current_mut().advance_text_matrix(tx);
                                 },
                             }
                         }
@@ -6466,6 +6571,7 @@ impl<'doc> TextExtractor<'doc> {
             },
             heading_level: None,
             rotation_degrees: buffer.rotation_degrees,
+            wmode: buffer.wmode,
         };
         self.span_sequence_counter += 1;
 
@@ -6984,6 +7090,7 @@ impl<'doc> TextExtractor<'doc> {
             char_widths: vec![],
             heading_level: None,
             rotation_degrees: snap_run_rotation(&state.ctm.multiply(&state.text_matrix)),
+            wmode: state.text_wmode,
         };
 
         // Step 6: Increment sequence counter and add to spans
@@ -7119,6 +7226,7 @@ impl<'doc> TextExtractor<'doc> {
         let horizontal_scaling = state.horizontal_scaling;
         let char_space = state.char_space;
         let word_space = state.word_space;
+        let wmode = state.text_wmode;
 
         let font = self.cached_current_font.as_deref();
 
@@ -7148,10 +7256,10 @@ impl<'doc> TextExtractor<'doc> {
                     w_sum += w;
                 }
                 w_sum
-            } else {
-                // Type0/CID font: use TextCharIter so that the byte-width (1 or 2)
-                // is determined by the font's encoding / ToUnicode CMap codespace,
-                // not hardcoded to 2. Per ISO 32000-1:2008 §9.7.6.2.
+            } else if wmode == 0 {
+                // Type0/CID font, horizontal: use TextCharIter so that the byte-width
+                // (1 or 2) is determined by the font's encoding / ToUnicode CMap
+                // codespace, not hardcoded to 2. Per ISO 32000-1:2008 §9.7.6.2.
                 let mut w_sum = 0.0f32;
                 for (cid, _) in TextCharIter::new(text, Some(font)) {
                     let mut w = font.get_glyph_width(cid) * fs_factor * hs_factor;
@@ -7159,6 +7267,26 @@ impl<'doc> TextExtractor<'doc> {
                     // Per ISO 32000-1:2008 Section 9.3.3: Tw applied when CID == 32
                     if cid == 32 {
                         w += ws_hs;
+                    }
+                    w_sum += w;
+                }
+                w_sum
+            } else {
+                // Type0/CID font, vertical (WMode 1): per-glyph displacement
+                // is `w1y` (from /W2 or /DW2 default), in 1000ths-of-em.
+                //
+                // Per ISO 32000-1:2008 §9.4.4 the vertical formula is
+                //     ty = (w1y * Tfs) + Tc + Tw
+                // with NO Th factor. §9.3.4 defines Tz as the horizontal
+                // glyph-stretching axis — it does not scale w1y, Tc, or
+                // Tw in vertical mode.
+                let mut w_sum = 0.0f32;
+                for (cid, _) in TextCharIter::new(text, Some(font)) {
+                    let w1y = font.get_vertical_metrics(cid).w1y;
+                    let mut w = w1y * fs_factor;
+                    w += char_space;
+                    if cid == 32 {
+                        w += word_space;
                     }
                     w_sum += w;
                 }
@@ -7175,12 +7303,12 @@ impl<'doc> TextExtractor<'doc> {
             w_sum
         };
 
-        // Update text matrix position per ISO 32000-1:2008 §9.4.4:
-        // Tm_new = [1 0 0 1 tx 0] × Tm_old, where tx = total_width (text-space displacement)
-        let state = self.state_stack.current_mut();
-        let text_matrix = state.text_matrix;
-        state.text_matrix.e += total_width * text_matrix.a;
-        state.text_matrix.f += total_width * text_matrix.b;
+        // Update text matrix position per ISO 32000-1:2008 §9.4.4. The
+        // axis-swap (horizontal vs vertical) is encapsulated in
+        // GraphicsState::advance_text_matrix so this site does not branch.
+        self.state_stack
+            .current_mut()
+            .advance_text_matrix(total_width);
 
         Ok(total_width)
     }
@@ -7200,6 +7328,7 @@ impl<'doc> TextExtractor<'doc> {
         let horizontal_scaling = state.horizontal_scaling;
         let char_space = state.char_space;
         let word_space = state.word_space;
+        let wmode = state.text_wmode;
 
         // Disjoint field borrows: cached_current_font (immutable) + tj_span_buffer (mutable)
         let font = self.cached_current_font.as_deref();
@@ -7253,11 +7382,9 @@ impl<'doc> TextExtractor<'doc> {
                                     }
                                 }
                                 // Fall through to the matrix update at the
-                                // bottom of the function via `w_sum`.
-                                let state = self.state_stack.current_mut();
-                                let text_matrix = state.text_matrix;
-                                state.text_matrix.e += w_sum * text_matrix.a;
-                                state.text_matrix.f += w_sum * text_matrix.b;
+                                // bottom of the function via `w_sum`. Vertical
+                                // mode flips the axis inside the helper.
+                                self.state_stack.current_mut().advance_text_matrix(w_sum);
                                 return Ok(());
                             }
                         }
@@ -7314,8 +7441,9 @@ impl<'doc> TextExtractor<'doc> {
                     }
                 }
                 w_sum
-            } else {
-                // Type0/CID font: use unified iterator for robust multi-byte decoding and widths
+            } else if wmode == 0 {
+                // Type0/CID font, horizontal: unified iterator handles 1- or
+                // 2-byte codes per ToUnicode codespace.
                 buffer.append(text)?;
                 let mut w_sum = 0.0f32;
                 for (char_code, _) in TextCharIter::new(text, Some(font)) {
@@ -7324,6 +7452,26 @@ impl<'doc> TextExtractor<'doc> {
                     // Standard PDF space character (code 32) triggers word spacing
                     if char_code == 32 {
                         w += ws_hs;
+                    }
+                    w_sum += w;
+                    buffer.char_widths.push(w);
+                }
+                w_sum
+            } else {
+                // Type0/CID font, vertical (WMode 1): per-glyph displacement
+                // is `w1y` (from /W2 or /DW2), in 1000ths-of-em.
+                //
+                // Per ISO 32000-1:2008 §9.4.4: `ty = (w1y * Tfs) + Tc + Tw`,
+                // with no Th (Tz only stretches glyphs along the horizontal
+                // axis per §9.3.4).
+                buffer.append(text)?;
+                let mut w_sum = 0.0f32;
+                for (char_code, _) in TextCharIter::new(text, Some(font)) {
+                    let w1y = font.get_vertical_metrics(char_code).w1y;
+                    let mut w = w1y * fs_factor;
+                    w += char_space;
+                    if char_code == 32 {
+                        w += word_space;
                     }
                     w_sum += w;
                     buffer.char_widths.push(w);
@@ -7346,11 +7494,11 @@ impl<'doc> TextExtractor<'doc> {
 
         buffer.accumulated_width += total_width;
 
-        // Update text matrix position per ISO 32000-1:2008 §9.4.4
-        let state = self.state_stack.current_mut();
-        let text_matrix = state.text_matrix;
-        state.text_matrix.e += total_width * text_matrix.a;
-        state.text_matrix.f += total_width * text_matrix.b;
+        // Update text matrix position per ISO 32000-1:2008 §9.4.4. The
+        // axis-swap (H vs V) is encapsulated in advance_text_matrix.
+        self.state_stack
+            .current_mut()
+            .advance_text_matrix(total_width);
 
         Ok(())
     }
@@ -7370,6 +7518,7 @@ impl<'doc> TextExtractor<'doc> {
         let horizontal_scaling = state.horizontal_scaling;
         let char_space = state.char_space;
         let word_space = state.word_space;
+        let wmode = state.text_wmode;
 
         let font = self.cached_current_font.as_deref();
         // font_matrix_a converts glyph-space widths to text-space units.
@@ -7446,10 +7595,7 @@ impl<'doc> TextExtractor<'doc> {
                 };
                 if let Some(w) = utf8_width {
                     buffer.accumulated_width += w;
-                    let state = self.state_stack.current_mut();
-                    let text_matrix = state.text_matrix;
-                    state.text_matrix.e += w * text_matrix.a;
-                    state.text_matrix.f += w * text_matrix.b;
+                    self.state_stack.current_mut().advance_text_matrix(w);
                     return Ok(());
                 }
 
@@ -7496,7 +7642,7 @@ impl<'doc> TextExtractor<'doc> {
                     }
                 }
                 w_sum
-            } else {
+            } else if wmode == 0 {
                 buffer.append(text)?;
                 // Width calculation: use TextCharIter so byte-width respects the
                 // CMap codespace (1 or 2 bytes per character). Fixes CJK fonts
@@ -7509,6 +7655,25 @@ impl<'doc> TextExtractor<'doc> {
                     w += cs_hs;
                     if cid == 32 {
                         w += ws_hs;
+                    }
+                    w_sum += w;
+                    buffer.char_widths.push(w);
+                }
+                w_sum
+            } else {
+                // Type0/CID font, vertical mode: per-glyph displacement is
+                // /W2 `w1y` (or /DW2 default), in 1000ths-of-em. The
+                // vertical formula `ty = (w1y * Tfs) + Tc + Tw` (§9.4.4)
+                // does NOT apply Th — Tz only scales glyphs horizontally
+                // (§9.3.4).
+                buffer.append(text)?;
+                let mut w_sum = 0.0f32;
+                for (cid, _) in TextCharIter::new(text, Some(font)) {
+                    let w1y = font.get_vertical_metrics(cid).w1y;
+                    let mut w = w1y * fs_factor;
+                    w += char_space;
+                    if cid == 32 {
+                        w += word_space;
                     }
                     w_sum += w;
                     buffer.char_widths.push(w);
@@ -7530,10 +7695,9 @@ impl<'doc> TextExtractor<'doc> {
 
         buffer.accumulated_width += total_width;
 
-        let state = self.state_stack.current_mut();
-        let text_matrix = state.text_matrix;
-        state.text_matrix.e += total_width * text_matrix.a;
-        state.text_matrix.f += total_width * text_matrix.b;
+        self.state_stack
+            .current_mut()
+            .advance_text_matrix(total_width);
 
         Ok(())
     }
@@ -7550,9 +7714,18 @@ impl<'doc> TextExtractor<'doc> {
             font_size * (combined.d * combined.d + combined.b * combined.b).sqrt();
         let word_space = state.word_space;
         let horizontal_scaling = state.horizontal_scaling;
+        let wmode = state.text_wmode;
 
-        // Calculate space width
-        let space_width = (250.0 * font_size / 1000.0 + word_space) * horizontal_scaling / 100.0;
+        // Calculate space displacement along the active writing axis. In
+        // horizontal mode this is the glyph width (250/1000 em ≈ quarter
+        // em) plus Tw, scaled by Th. In vertical mode Tz does not apply
+        // (§9.3.4) and we use the same magnitude as a writing-axis step
+        // — the synthetic gap a TJ offset stands in for.
+        let space_advance = if wmode == 0 {
+            (250.0 * font_size / 1000.0 + word_space) * horizontal_scaling / 100.0
+        } else {
+            250.0 * font_size / 1000.0 + word_space
+        };
 
         // Apply CTM to get position in user space
         // Per PDF Spec ISO 32000-1:2008 Section 9.4.4
@@ -7575,13 +7748,24 @@ impl<'doc> TextExtractor<'doc> {
             .and_then(|name| self.fonts.get(name))
             .map(|font| font.is_italic())
             .unwrap_or(false);
+        // Bbox geometry follows the writing axis: a horizontal gap is
+        // wide and font-tall; a vertical gap is glyph-em-wide and tall
+        // along the writing direction. Downstream layout heuristics
+        // (column detection, line breaking) read width vs height to
+        // decide orientation, so labeling the synthetic-space geometry
+        // correctly keeps them honest.
+        let (space_width, space_height) = if wmode == 0 {
+            (space_advance, effective_font_size)
+        } else {
+            (effective_font_size, space_advance.abs())
+        };
         let span = TextSpan {
             text: " ".to_string(),
             bbox: Rect {
                 x: user_pos.x,
                 y: user_pos.y,
                 width: space_width,
-                height: effective_font_size,
+                height: space_height,
             },
             font_name: font_name_space,
             font_size: effective_font_size,
@@ -7606,6 +7790,7 @@ impl<'doc> TextExtractor<'doc> {
             char_widths: vec![],
             heading_level: None,
             rotation_degrees: snap_run_rotation(&state.ctm.multiply(&state.text_matrix)),
+            wmode: state.text_wmode,
         };
         self.span_sequence_counter += 1;
 
@@ -7627,20 +7812,27 @@ impl<'doc> TextExtractor<'doc> {
     }
 
     /// Advance text position for a TJ offset value.
+    ///
+    /// Per ISO 32000-1:2008 §9.4.4 a number element in a TJ array shifts
+    /// the position along the **active** writing axis:
+    ///   horizontal: tx = -offset / 1000 * font_size * Th
+    ///   vertical:   ty = -offset / 1000 * font_size     (NO Th)
+    /// Th (Tz) is the horizontal glyph-stretching axis (§9.3.4) and does
+    /// not apply in vertical mode. The matrix-side axis-swap lives in
+    /// `advance_text_matrix`.
     fn advance_position_for_offset(&mut self, offset: f32) -> Result<()> {
         let state = self.state_stack.current();
         let font_size = state.font_size;
         let horizontal_scaling = state.horizontal_scaling;
+        let wmode = state.text_wmode;
 
-        // Calculate horizontal displacement per PDF spec §9.4.4
-        // tx = -offset / 1000.0 * font_size * horizontal_scaling / 100.0
-        let tx = -offset / 1000.0 * font_size * horizontal_scaling / 100.0;
+        let tx = if wmode == 0 {
+            -offset / 1000.0 * font_size * horizontal_scaling / 100.0
+        } else {
+            -offset / 1000.0 * font_size
+        };
 
-        // Update text matrix: Tm_new = [1 0 0 1 tx 0] × Tm_old
-        let state = self.state_stack.current_mut();
-        let text_matrix = state.text_matrix;
-        state.text_matrix.e += tx * text_matrix.a;
-        state.text_matrix.f += tx * text_matrix.b;
+        self.state_stack.current_mut().advance_text_matrix(tx);
 
         Ok(())
     }
@@ -7764,6 +7956,7 @@ impl<'doc> TextExtractor<'doc> {
                     },
                     heading_level: None,
                     rotation_degrees: buffer.rotation_degrees,
+                    wmode: buffer.wmode,
                 };
                 self.span_sequence_counter += 1;
 
@@ -7805,6 +7998,7 @@ impl<'doc> TextExtractor<'doc> {
         let word_space = state.word_space;
         let fill_color_rgb = state.fill_color_rgb;
         let ctm = state.ctm;
+        let wmode = state.text_wmode;
 
         // Get current font from cached reference
         let font = self.cached_current_font.as_deref();
@@ -7850,17 +8044,32 @@ impl<'doc> TextExtractor<'doc> {
             let hs_factor = horizontal_scaling / 100.0;
             let glyph_width_user_space = glyph_width_font_units * fs_factor * hs_factor;
 
-            // Advance position: Tx = (w0 * Tfs + Tc + Tw) * Th
-            let mut tx = glyph_width_user_space;
-            tx += char_space * hs_factor;
-            if char_code == 32 {
-                tx += word_space * hs_factor;
-            }
+            // Advance along the active writing axis per ISO 32000-1 §9.4.4:
+            //   horizontal: tx = (w0 * Tfs + Tc + Tw) * Th
+            //   vertical:   ty = w1y * Tfs + Tc + Tw    (NO Th — Tz is a
+            //               glyph-stretching factor on the X axis only;
+            //               see §9.3.4).
+            let mut tx = if wmode == 0 {
+                glyph_width_user_space
+                    + char_space * hs_factor
+                    + if char_code == 32 {
+                        word_space * hs_factor
+                    } else {
+                        0.0
+                    }
+            } else {
+                let w1y = font
+                    .map(|f| f.get_vertical_metrics(char_code).w1y)
+                    .unwrap_or(crate::fonts::VerticalMetrics::SPEC_DEFAULT.w1y);
+                w1y * fs_factor + char_space + if char_code == 32 { word_space } else { 0.0 }
+            };
 
             // For TextChar, we use the device-space width
             let glyph_width_device_space = glyph_width_user_space * combined_char.a.abs();
             let tx_device_space = tx * combined_char.a.abs();
             let height_device_space = effective_font_size;
+            // Quiet unused-mut warning when wmode != 0 and tx is read-only after this point.
+            let _ = &mut tx;
 
             // Determine font weight and style
             let (font_weight, is_italic_char) = if let Some(font) = font {
@@ -7965,11 +8174,10 @@ impl<'doc> TextExtractor<'doc> {
                 }
             }
 
-            // Update text matrix in current state per ISO 32000-1:2008 §9.4.4
-            let state_mut = self.state_stack.current_mut();
-            let tm = state_mut.text_matrix;
-            state_mut.text_matrix.e += tx * tm.a;
-            state_mut.text_matrix.f += tx * tm.b;
+            // Update text matrix per ISO 32000-1:2008 §9.4.4. The axis swap
+            // (x for WMode 0, y for WMode 1) is encapsulated in
+            // advance_text_matrix so this site does not branch.
+            self.state_stack.current_mut().advance_text_matrix(tx);
         }
 
         Ok(())
@@ -8112,6 +8320,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: crate::fonts::VerticalMetrics::SPEC_DEFAULT,
         }
     }
 
@@ -8538,6 +8749,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -8566,6 +8778,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -9445,6 +9658,7 @@ mod tests {
             char_widths: vec![],
             heading_level: None,
             rotation_degrees: 0.0,
+            wmode: 0,
         }
     }
 
@@ -10327,6 +10541,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -10350,6 +10565,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -10398,6 +10614,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             };
 
         // (glyph, Helvetica per-em advance width)
@@ -10454,6 +10671,7 @@ mod tests {
             char_widths: vec![],
             heading_level: None,
             rotation_degrees: 0.0,
+            wmode: 0,
         };
 
         // Stroke pass + fill pass at ~2 % of advance apart.
@@ -10506,6 +10724,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             });
         }
 
@@ -10700,6 +10919,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -10723,6 +10943,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -10760,6 +10981,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -10783,6 +11005,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -10825,6 +11048,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -10848,6 +11072,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -10883,6 +11108,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -10906,6 +11132,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -10929,6 +11156,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -13295,6 +13523,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -13318,6 +13547,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -13351,6 +13581,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -13374,6 +13605,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -13467,6 +13699,7 @@ mod tests {
             char_widths: vec![],
             heading_level: None,
             rotation_degrees: 0.0,
+            wmode: 0,
         }];
 
         extractor.split_fused_words();
@@ -13501,6 +13734,7 @@ mod tests {
             char_widths: vec![],
             heading_level: None,
             rotation_degrees: 0.0,
+            wmode: 0,
         }];
 
         extractor.split_fused_words();
@@ -13682,6 +13916,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -13705,6 +13940,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -13784,6 +14020,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -13807,6 +14044,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -14105,6 +14343,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -14128,6 +14367,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -14304,6 +14544,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -14327,6 +14568,7 @@ mod tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -14860,6 +15102,7 @@ mod profile_based_space_tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -14883,6 +15126,7 @@ mod profile_based_space_tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -14925,6 +15169,7 @@ mod profile_based_space_tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -14948,6 +15193,7 @@ mod profile_based_space_tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -14990,6 +15236,7 @@ mod profile_based_space_tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -15013,6 +15260,7 @@ mod profile_based_space_tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -15061,6 +15309,7 @@ mod profile_based_space_tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -15084,6 +15333,7 @@ mod profile_based_space_tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -15124,6 +15374,7 @@ mod profile_based_space_tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -15147,6 +15398,7 @@ mod profile_based_space_tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -15184,6 +15436,7 @@ mod profile_based_space_tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -15207,6 +15460,7 @@ mod profile_based_space_tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 
@@ -15248,6 +15502,7 @@ mod profile_based_space_tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
             TextSpan {
                 artifact_type: None,
@@ -15271,6 +15526,7 @@ mod profile_based_space_tests {
                 char_widths: vec![],
                 heading_level: None,
                 rotation_degrees: 0.0,
+                wmode: 0,
             },
         ];
 

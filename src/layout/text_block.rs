@@ -99,6 +99,24 @@ pub struct TextSpan {
     /// not hold for rotated text).
     #[serde(skip_serializing_if = "is_zero_f32", default)]
     pub rotation_degrees: f32,
+    /// Writing mode under which the glyphs in this span were emitted.
+    ///
+    /// `0` = horizontal (the overwhelming default), `1` = vertical (tategaki
+    /// / lateral CJK). Set from `GraphicsState::text_wmode` when the span
+    /// is constructed, so each span carries its own writing-mode metadata
+    /// even on mixed-mode pages (e.g. horizontal headings above vertical
+    /// body copy). The reading-order sort consults this to advance
+    /// downward-then-right-to-left within blocks of vertical spans while
+    /// leaving horizontal spans on their existing top-to-bottom,
+    /// left-to-right path.
+    #[serde(skip_serializing_if = "is_zero_u8", default)]
+    pub wmode: u8,
+}
+
+/// serde skip helper: omit a `0` writing mode (horizontal, the common case)
+/// from serialized output so existing fixtures stay unchanged.
+pub(crate) fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
 }
 
 /// serde skip helper: omit a `0.0` rotation (the overwhelming common case) from
@@ -131,6 +149,7 @@ impl Default for TextSpan {
             char_widths: Vec::new(),
             heading_level: None,
             rotation_degrees: 0.0,
+            wmode: 0,
         }
     }
 }

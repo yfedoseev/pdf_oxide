@@ -365,6 +365,110 @@ impl PathContent {
         Self::from_operations(ops)
     }
 
+    /// Flatten this path into polylines — one `Vec<(x, y)>` per subpath.
+    ///
+    /// Straight segments (`MoveTo`/`LineTo`) pass through unchanged; cubic
+    /// Béziers (`CurveTo`) are adaptively subdivided so the resulting polyline
+    /// stays within `tolerance` of the true curve. A `Rectangle` becomes its
+    /// own closed 5-point subpath, and `ClosePath` appends the subpath's start
+    /// point. A new subpath begins at every `MoveTo` (and every `Rectangle`).
+    ///
+    /// `tolerance` is expressed in the same coordinate space as the path's own
+    /// points, and the returned points are in that space verbatim. For paths
+    /// from [`crate::document::PdfDocument::extract_paths`] that is the page's
+    /// default user space (PDF points, y-up), with any content-stream `cm` and
+    /// Form-XObject `/Matrix` transforms already folded in — so a path drawn
+    /// under a scaling transform is returned (and flattened) at its final
+    /// on-page size, and no tolerance rescaling is needed. It is *not* device or
+    /// pixel space: page `/Rotate` and rendering DPI are not applied. Smaller
+    /// values yield more, finer points. A non-positive or non-finite tolerance
+    /// is floored to a small epsilon so subdivision always terminates.
+    ///
+    /// This is intended for consumers that need sampled coordinates rather than
+    /// drawing operators — e.g. digitising chart/ECG/CAD traces from vector PDFs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::elements::{PathContent, PathOperation};
+    ///
+    /// let path = PathContent::from_operations(vec![
+    ///     PathOperation::MoveTo(0.0, 0.0),
+    ///     PathOperation::CurveTo(0.0, 10.0, 10.0, 10.0, 10.0, 0.0),
+    /// ]);
+    /// let subpaths = path.to_points(0.25);
+    /// assert_eq!(subpaths.len(), 1);
+    /// assert_eq!(subpaths[0][0], (0.0, 0.0)); // starts at P0
+    /// ```
+    pub fn to_points(&self, tolerance: f32) -> Vec<Vec<(f32, f32)>> {
+        // A non-finite or non-positive tolerance would make the flatness test
+        // never pass, recursing to the depth cap on every curve. Floor it.
+        let tol = if tolerance.is_finite() && tolerance > 0.0 {
+            tolerance
+        } else {
+            FLATTEN_TOLERANCE_FLOOR
+        };
+
+        let mut subpaths: Vec<Vec<(f32, f32)>> = Vec::new();
+        let mut current: Vec<(f32, f32)> = Vec::new();
+        let mut pos = (0.0_f32, 0.0_f32);
+        let mut start = (0.0_f32, 0.0_f32);
+
+        for op in &self.operations {
+            match *op {
+                PathOperation::MoveTo(x, y) => {
+                    // `m` begins a new subpath; a consecutive `m` overrides the
+                    // previous one with "no vestige" (§8.5.2, Table 59), which
+                    // flush_subpath honours by dropping the lone start point.
+                    flush_subpath(&mut current, &mut subpaths);
+                    pos = (x, y);
+                    start = pos;
+                    current.push(pos);
+                },
+                PathOperation::LineTo(x, y) => {
+                    // A segment with no open subpath (e.g. right after `re`/`h`,
+                    // or a malformed leading `l`) starts at the current point.
+                    if current.is_empty() {
+                        start = pos;
+                        current.push(pos);
+                    }
+                    pos = (x, y);
+                    current.push(pos);
+                },
+                PathOperation::CurveTo(c1x, c1y, c2x, c2y, ex, ey) => {
+                    if current.is_empty() {
+                        start = pos;
+                        current.push(pos);
+                    }
+                    flatten_cubic(pos, (c1x, c1y), (c2x, c2y), (ex, ey), tol, 0, &mut current);
+                    pos = (ex, ey);
+                },
+                PathOperation::Rectangle(x, y, w, h) => {
+                    flush_subpath(&mut current, &mut subpaths);
+                    // `re` is a complete closed subpath equivalent to
+                    // `x y m / (x+w) y l / (x+w) (y+h) l / x (y+h) l / h`
+                    // (§8.5.2, Table 59). The current point afterwards is (x, y).
+                    subpaths.push(vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h), (x, y)]);
+                    pos = (x, y);
+                    start = pos;
+                },
+                PathOperation::ClosePath => {
+                    // `h` appends a segment back to the subpath start and
+                    // terminates the subpath; a following segment begins a new
+                    // one (§8.5.2, Table 59). On an already-closed/empty subpath
+                    // it does nothing.
+                    if !current.is_empty() {
+                        current.push(start);
+                        flush_subpath(&mut current, &mut subpaths);
+                        pos = start;
+                    }
+                },
+            }
+        }
+        flush_subpath(&mut current, &mut subpaths);
+        subpaths
+    }
+
     /// Compute bounding box from path operations.
     fn compute_bbox(operations: &[PathOperation]) -> Rect {
         let mut min_x = f32::MAX;
@@ -404,6 +508,80 @@ impl PathContent {
             Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
         }
     }
+}
+
+/// Minimum flattening tolerance (path units) used by [`PathContent::to_points`]
+/// when given a non-positive or non-finite value, so subdivision terminates.
+const FLATTEN_TOLERANCE_FLOOR: f32 = 1e-3;
+
+/// Hard recursion-depth backstop for adaptive cubic subdivision. The flatness
+/// test halts long before this in practice; it only guards pathological input.
+const FLATTEN_MAX_DEPTH: u8 = 24;
+
+/// Move a finished subpath from `current` into `out`, discarding it if it has
+/// fewer than two points. A lone point is a subpath that adds no segment and
+/// paints nothing (§8.5.2: construction operators place no marks), e.g. a
+/// trailing `m` or the first of two consecutive `m` operators ("no vestige").
+fn flush_subpath(current: &mut Vec<(f32, f32)>, out: &mut Vec<Vec<(f32, f32)>>) {
+    if current.len() >= 2 {
+        out.push(std::mem::take(current));
+    } else {
+        current.clear();
+    }
+}
+
+/// Adaptively subdivide a cubic Bézier (`p0`→`p3`, controls `p1`,`p2`),
+/// appending flattened vertices to `out`. The start point `p0` is assumed to
+/// already be the last element of `out`, so only intermediate vertices and the
+/// endpoint `p3` are pushed.
+fn flatten_cubic(
+    p0: (f32, f32),
+    p1: (f32, f32),
+    p2: (f32, f32),
+    p3: (f32, f32),
+    tol: f32,
+    depth: u8,
+    out: &mut Vec<(f32, f32)>,
+) {
+    // The curve lies inside the convex hull of its control points; since p0 and
+    // p3 are on the chord, the curve's deviation from the chord is bounded by
+    // the larger control-point offset. When that is within `tol`, a single
+    // straight segment is a good-enough approximation.
+    if depth >= FLATTEN_MAX_DEPTH || cubic_is_flat(p0, p1, p2, p3, tol) {
+        out.push(p3);
+        return;
+    }
+    // de Casteljau split at t = 0.5; the split point lies on the true curve.
+    let p01 = midpoint(p0, p1);
+    let p12 = midpoint(p1, p2);
+    let p23 = midpoint(p2, p3);
+    let p012 = midpoint(p01, p12);
+    let p123 = midpoint(p12, p23);
+    let mid = midpoint(p012, p123);
+    flatten_cubic(p0, p01, p012, mid, tol, depth + 1, out);
+    flatten_cubic(mid, p123, p23, p3, tol, depth + 1, out);
+}
+
+fn midpoint(a: (f32, f32), b: (f32, f32)) -> (f32, f32) {
+    ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5)
+}
+
+/// True when both control points lie within `tol` of the chord `p0`→`p3`.
+fn cubic_is_flat(p0: (f32, f32), p1: (f32, f32), p2: (f32, f32), p3: (f32, f32), tol: f32) -> bool {
+    dist_point_to_segment(p1, p0, p3).max(dist_point_to_segment(p2, p0, p3)) <= tol
+}
+
+/// Shortest distance from point `p` to the line segment `a`→`b`.
+fn dist_point_to_segment(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len2 = dx * dx + dy * dy;
+    if len2 == 0.0 {
+        // Degenerate chord (a == b): distance to the single point.
+        return ((p.0 - a.0).powi(2) + (p.1 - a.1).powi(2)).sqrt();
+    }
+    let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0);
+    let (cx, cy) = (a.0 + t * dx, a.1 + t * dy);
+    ((p.0 - cx).powi(2) + (p.1 - cy).powi(2)).sqrt()
 }
 
 impl Default for PathContent {
@@ -517,5 +695,251 @@ mod tests {
         assert_eq!(path.bbox.y, 30.0);
         assert_eq!(path.bbox.width, 100.0);
         assert_eq!(path.bbox.height, 50.0);
+    }
+
+    // === to_points (issue #147) ===
+
+    /// Ground-truth cubic Bézier evaluation, used to validate flattening.
+    fn cubic_at(
+        p0: (f32, f32),
+        p1: (f32, f32),
+        p2: (f32, f32),
+        p3: (f32, f32),
+        t: f32,
+    ) -> (f32, f32) {
+        let mt = 1.0 - t;
+        let x = mt * mt * mt * p0.0
+            + 3.0 * mt * mt * t * p1.0
+            + 3.0 * mt * t * t * p2.0
+            + t * t * t * p3.0;
+        let y = mt * mt * mt * p0.1
+            + 3.0 * mt * mt * t * p1.1
+            + 3.0 * mt * t * t * p2.1
+            + t * t * t * p3.1;
+        (x, y)
+    }
+
+    /// Shortest distance from a point to a polyline (min over its segments),
+    /// reusing the production segment-distance helper.
+    fn dist_to_polyline(p: (f32, f32), poly: &[(f32, f32)]) -> f32 {
+        poly.windows(2)
+            .map(|s| dist_point_to_segment(p, s[0], s[1]))
+            .fold(f32::MAX, f32::min)
+    }
+
+    #[test]
+    fn test_to_points_straight_line_passthrough() {
+        let path = PathContent::from_operations(vec![
+            PathOperation::MoveTo(10.0, 10.0),
+            PathOperation::LineTo(100.0, 40.0),
+        ]);
+        let pts = path.to_points(0.5);
+        assert_eq!(pts, vec![vec![(10.0, 10.0), (100.0, 40.0)]]);
+    }
+
+    #[test]
+    fn test_to_points_curve_endpoints_preserved() {
+        let path = PathContent::from_operations(vec![
+            PathOperation::MoveTo(0.0, 0.0),
+            PathOperation::CurveTo(0.0, 100.0, 100.0, 100.0, 100.0, 0.0),
+        ]);
+        let sub = &path.to_points(0.1)[0];
+        assert_eq!(sub.first().copied(), Some((0.0, 0.0)), "must start at P0");
+        let last = sub.last().copied().unwrap();
+        assert!(
+            (last.0 - 100.0).abs() < 1e-3 && (last.1 - 0.0).abs() < 1e-3,
+            "must end at P3, got {last:?}"
+        );
+    }
+
+    #[test]
+    fn test_to_points_curve_within_tolerance() {
+        let p0 = (0.0, 0.0);
+        let p1 = (0.0, 100.0);
+        let p2 = (100.0, 100.0);
+        let p3 = (100.0, 0.0);
+        let tol = 0.5;
+        let path = PathContent::from_operations(vec![
+            PathOperation::MoveTo(p0.0, p0.1),
+            PathOperation::CurveTo(p1.0, p1.1, p2.0, p2.1, p3.0, p3.1),
+        ]);
+        let poly = &path.to_points(tol)[0];
+        // Every point on the true curve must lie within `tol` of the polyline.
+        for i in 0..=200 {
+            let t = i as f32 / 200.0;
+            let truth = cubic_at(p0, p1, p2, p3, t);
+            let d = dist_to_polyline(truth, poly);
+            assert!(d <= tol + 1e-3, "curve point at t={t} is {d} from polyline (tol={tol})");
+        }
+    }
+
+    #[test]
+    fn test_to_points_tolerance_monotonic() {
+        let path = PathContent::from_operations(vec![
+            PathOperation::MoveTo(0.0, 0.0),
+            PathOperation::CurveTo(0.0, 100.0, 100.0, 100.0, 100.0, 0.0),
+        ]);
+        let coarse = path.to_points(10.0)[0].len();
+        let fine = path.to_points(0.05)[0].len();
+        assert!(
+            fine >= coarse,
+            "finer tolerance must not reduce point count ({fine} < {coarse})"
+        );
+        assert!(fine > 2, "fine flattening must densify the curve, got {fine}");
+    }
+
+    #[test]
+    fn test_to_points_rectangle_is_closed_subpath() {
+        let path =
+            PathContent::from_operations(vec![PathOperation::Rectangle(10.0, 20.0, 30.0, 40.0)]);
+        let pts = path.to_points(1.0);
+        assert_eq!(
+            pts,
+            vec![vec![
+                (10.0, 20.0),
+                (40.0, 20.0),
+                (40.0, 60.0),
+                (10.0, 60.0),
+                (10.0, 20.0)
+            ]]
+        );
+    }
+
+    #[test]
+    fn test_to_points_segment_after_rectangle_continues_from_current_point() {
+        // Per PDF §8.5.2 the current point after `re` is the rectangle's
+        // lower-left; a following segment continues from there as a new subpath.
+        let path = PathContent::from_operations(vec![
+            PathOperation::Rectangle(0.0, 0.0, 10.0, 10.0),
+            PathOperation::LineTo(20.0, 20.0),
+        ]);
+        let pts = path.to_points(1.0);
+        assert_eq!(pts.len(), 2);
+        assert_eq!(
+            pts[0],
+            vec![
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0)
+            ]
+        );
+        assert_eq!(pts[1], vec![(0.0, 0.0), (20.0, 20.0)]);
+    }
+
+    #[test]
+    fn test_to_points_closepath_appends_start() {
+        let path = PathContent::from_operations(vec![
+            PathOperation::MoveTo(0.0, 0.0),
+            PathOperation::LineTo(10.0, 0.0),
+            PathOperation::LineTo(10.0, 10.0),
+            PathOperation::ClosePath,
+        ]);
+        assert_eq!(
+            path.to_points(1.0),
+            vec![vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 0.0)]]
+        );
+    }
+
+    #[test]
+    fn test_to_points_closepath_terminates_subpath() {
+        // Per §8.5.2 Table 59, `h` terminates the subpath; a following segment
+        // begins a NEW subpath (seeded from the subpath start = current point),
+        // rather than extending the closed loop.
+        let path = PathContent::from_operations(vec![
+            PathOperation::MoveTo(0.0, 0.0),
+            PathOperation::LineTo(10.0, 0.0),
+            PathOperation::ClosePath,
+            PathOperation::LineTo(5.0, 5.0),
+        ]);
+        let pts = path.to_points(1.0);
+        assert_eq!(pts.len(), 2, "h must terminate the subpath");
+        assert_eq!(pts[0], vec![(0.0, 0.0), (10.0, 0.0), (0.0, 0.0)]);
+        assert_eq!(pts[1], vec![(0.0, 0.0), (5.0, 5.0)]);
+    }
+
+    #[test]
+    fn test_to_points_consecutive_moveto_leaves_no_vestige() {
+        // Per §8.5.2 Table 59, a consecutive `m` overrides the previous one with
+        // no vestige; the orphaned start point must not appear as a subpath.
+        let path = PathContent::from_operations(vec![
+            PathOperation::MoveTo(1.0, 1.0),
+            PathOperation::MoveTo(2.0, 2.0),
+            PathOperation::LineTo(3.0, 3.0),
+        ]);
+        assert_eq!(path.to_points(1.0), vec![vec![(2.0, 2.0), (3.0, 3.0)]]);
+    }
+
+    #[test]
+    fn test_to_points_lone_moveto_is_dropped() {
+        // A subpath that adds no segment paints nothing and yields no polyline.
+        let path = PathContent::from_operations(vec![PathOperation::MoveTo(5.0, 5.0)]);
+        assert!(path.to_points(1.0).is_empty());
+    }
+
+    #[test]
+    fn test_to_points_multiple_subpaths() {
+        let path = PathContent::from_operations(vec![
+            PathOperation::MoveTo(0.0, 0.0),
+            PathOperation::LineTo(1.0, 0.0),
+            PathOperation::MoveTo(5.0, 5.0),
+            PathOperation::LineTo(6.0, 5.0),
+        ]);
+        assert_eq!(
+            path.to_points(1.0),
+            vec![vec![(0.0, 0.0), (1.0, 0.0)], vec![(5.0, 5.0), (6.0, 5.0)]]
+        );
+    }
+
+    #[test]
+    fn test_to_points_empty() {
+        let path = PathContent::from_operations(vec![]);
+        assert!(path.to_points(1.0).is_empty());
+    }
+
+    #[test]
+    fn test_to_points_nonpositive_tolerance_terminates() {
+        let path = PathContent::from_operations(vec![
+            PathOperation::MoveTo(0.0, 0.0),
+            PathOperation::CurveTo(0.0, 100.0, 100.0, 100.0, 100.0, 0.0),
+        ]);
+        for tol in [0.0, -1.0, f32::NAN] {
+            let pts = path.to_points(tol);
+            assert_eq!(pts.len(), 1);
+            let n = pts[0].len();
+            assert!((2..100_000).contains(&n), "tol={tol} produced {n} points (expected bounded)");
+            assert!(pts[0].iter().all(|(x, y)| x.is_finite() && y.is_finite()));
+        }
+    }
+
+    #[test]
+    fn test_to_points_curve_starts_at_current_point() {
+        // The curve's implicit P0 is the current point (here the LineTo endpoint),
+        // not the path origin. Guards against using the wrong start point.
+        let path = PathContent::from_operations(vec![
+            PathOperation::MoveTo(0.0, 0.0),
+            PathOperation::LineTo(50.0, 0.0),
+            PathOperation::CurveTo(60.0, 20.0, 70.0, 20.0, 80.0, 0.0),
+        ]);
+        let sub = &path.to_points(0.5)[0];
+        assert_eq!(sub[0], (0.0, 0.0));
+        assert_eq!(sub[1], (50.0, 0.0));
+        // First flattened curve vertex departs from the LineTo endpoint (50,0),
+        // so it must sit to its right (x > 50), never back near the origin.
+        assert!(sub[2].0 > 50.0, "curve did not start at current point; sub[2]={:?}", sub[2]);
+        assert!((sub.last().unwrap().0 - 80.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_to_points_degenerate_curve() {
+        // All control points coincide: a zero-length curve must not subdivide forever.
+        let path = PathContent::from_operations(vec![
+            PathOperation::MoveTo(5.0, 5.0),
+            PathOperation::CurveTo(5.0, 5.0, 5.0, 5.0, 5.0, 5.0),
+        ]);
+        let sub = &path.to_points(0.1)[0];
+        assert!(sub.len() < 10, "degenerate curve over-subdivided: {} points", sub.len());
+        assert!(sub.iter().all(|&p| p == (5.0, 5.0)));
     }
 }

@@ -15,6 +15,7 @@ pub mod detectors;
 pub mod geometric;
 pub mod simple;
 pub mod structure_tree;
+pub mod tategaki;
 pub mod xycut;
 
 pub use article_thread::ArticleThreadStrategy;
@@ -25,6 +26,7 @@ pub use detectors::{
 pub use geometric::GeometricStrategy;
 pub use simple::SimpleStrategy;
 pub use structure_tree::StructureTreeStrategy;
+pub use tategaki::TategakiStrategy;
 pub use xycut::XYCutStrategy;
 
 use crate::error::Result;

@@ -44,6 +44,7 @@ fn make_span(text: &str, x: f32, y: f32, font_size: f32, weight: FontWeight) -> 
             char_widths: vec![],
             heading_level: None,
             rotation_degrees: 0.0,
+            wmode: 0,
         },
         0,
     )
@@ -81,6 +82,7 @@ fn make_span_with_color(
             char_widths: vec![],
             heading_level: None,
             rotation_degrees: 0.0,
+            wmode: 0,
         },
         0,
     )
@@ -118,6 +120,7 @@ fn make_span_italic(
             char_widths: vec![],
             heading_level: None,
             rotation_degrees: 0.0,
+            wmode: 0,
         },
         0,
     )

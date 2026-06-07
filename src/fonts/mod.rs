@@ -39,7 +39,7 @@ pub use character_mapper::{CharacterMapper, PredefinedCMapConfig};
 pub use cmap::{parse_tounicode_cmap, CMap, LazyCMap};
 pub use encoding::UnicodeEncoder;
 pub use encoding_normalizer::EncodingNormalizer;
-pub use font_dict::{CIDSystemInfo, CIDToGIDMap, Encoding, FontInfo};
+pub use font_dict::{CIDSystemInfo, CIDToGIDMap, Encoding, FontInfo, VerticalMetrics};
 pub use font_subsetter::{subset_font_bytes, FontSubsetter, GlyphRemapper, SubsetError};
 pub use non_text_detection::{
     CharacterConfidence, ConfidenceReason, NonTextDetector, NonTextStats,

@@ -68,6 +68,22 @@ pub struct CMap {
     /// Used by the text extractor to decide whether to read 1 or 2 bytes per character
     /// from the PDF content stream (§9.7.5 "CMaps").
     pub code_width: u8,
+    /// Writing mode declared by the CMap stream via `/WMode 0 def` or `/WMode 1 def`.
+    ///
+    /// - `0` (default): horizontal writing — per-glyph advance is along the x-axis.
+    /// - `1`: vertical writing — per-glyph advance is along the y-axis and the
+    ///   per-CID vertical-origin offset `(v_x, v_y)` shifts the glyph from its
+    ///   horizontal origin to its vertical origin before painting.
+    ///
+    /// Populated by `parse_tounicode_cmap` when the CMap source contains a
+    /// `/WMode <int> def` directive (ISO 32000-1:2008 §9.7.5.4 / Adobe CMap and
+    /// CIDFont Files Specification §7.2). Predefined PDF CMaps whose names end
+    /// in `-V` (Identity-V, UniJIS-UTF16-V, UniGB-UTF16-V, UniCNS-UTF16-V,
+    /// UniKS-UTF16-V) and the bare legacy `V` are detected separately on
+    /// `FontInfo` from the encoding name; this field is the authoritative
+    /// signal for *embedded* CMap streams which may carry `/WMode 1` even when
+    /// their `/CMapName` does not advertise a `-V` suffix.
+    pub wmode: u8,
 }
 
 impl CMap {
@@ -188,6 +204,7 @@ impl CMap {
             ranges: Vec::new(),
             notdef_ranges: Vec::new(),
             code_width: 1,
+            wmode: 0,
         }
     }
 
@@ -352,6 +369,16 @@ impl LazyCMap {
     /// whose content stream must be read two bytes at a time.
     pub fn code_width(&self) -> u8 {
         self.get().map(|cmap| cmap.code_width).unwrap_or(1)
+    }
+
+    /// Return the writing mode declared by the underlying CMap stream.
+    ///
+    /// Parses and caches the CMap if not already done.
+    /// Returns `0` (horizontal) when the CMap is missing, unparseable, or does
+    /// not contain an explicit `/WMode` directive — matching the spec default.
+    /// Returns `1` when the CMap declares `/WMode 1 def` (vertical writing).
+    pub fn wmode(&self) -> u8 {
+        self.get().map(|cmap| cmap.wmode).unwrap_or(0)
     }
 
     /// Returns the parsed CMap, loading and caching it on first access.
@@ -519,6 +546,18 @@ pub fn parse_tounicode_cmap(data: &[u8]) -> Result<CMap> {
     let mut cmap = CMap::new();
     let content = String::from_utf8_lossy(data);
 
+    // Parse `/WMode N def` directive (Adobe CMap & CIDFont Files Spec §7.2, ISO
+    // 32000-1 §9.7.5.4). `N` is `0` (horizontal) or `1` (vertical). The
+    // directive appears at the top level of the CMap stream, outside any
+    // `begin…end` block, so a substring + integer scan is sufficient and
+    // avoids a second tokenizer pass.
+    if let Some(parsed_wmode) = parse_wmode_directive(&content) {
+        cmap.wmode = parsed_wmode;
+        if parsed_wmode == 1 {
+            log::trace!("CMap declares /WMode 1 (vertical writing)");
+        }
+    }
+
     // Parse begincodespacerange sections (PDF Spec §9.7.5 / §9.10.3)
     //
     // The codespace range declares the valid domain of character codes and,
@@ -639,6 +678,56 @@ fn extract_sections<'a>(content: &'a str, begin: &str, end: &str) -> Vec<&'a str
     }
 
     sections
+}
+
+/// Parse a `/WMode N def` directive from a CMap source string.
+///
+/// Returns `Some(0)` for explicit horizontal, `Some(1)` for explicit vertical,
+/// and `None` when no directive is present (caller keeps the spec default of
+/// `0`). Per Adobe CMap & CIDFont Files Spec §7.2 and ISO 32000-1 §9.7.5.4,
+/// `/WMode` must precede `begincmap` but in practice all writers we have seen
+/// place it within the prologue before `begincodespacerange`. A direct lexical
+/// scan is robust to either ordering.
+///
+/// Only matches values `0` or `1`; any other integer is treated as a malformed
+/// directive and ignored (returns `None`).
+pub(crate) fn parse_wmode_directive_public(content: &str) -> Option<u8> {
+    parse_wmode_directive(content)
+}
+
+fn parse_wmode_directive(content: &str) -> Option<u8> {
+    static RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"/WMode\s+([0-9]+)\s+def").unwrap());
+    // PostScript comments run from `%` to end-of-line (Adobe PostScript
+    // Language Reference §3.3.1). Strip them so a commented-out directive
+    // like `% /WMode 1 def` does not flip the writing mode. Keep newlines
+    // intact so any subsequent legitimate `/WMode` on a later line is
+    // still matched.
+    let cleaned: String = content
+        .lines()
+        .map(|line| match line.find('%') {
+            Some(idx) => &line[..idx],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let caps = RE.captures(&cleaned)?;
+    let value: u32 = caps[1].parse().ok()?;
+    match value {
+        0 => Some(0),
+        1 => Some(1),
+        // M6: non-spec values (e.g. `/WMode 2 def`) surface a warning so
+        // producer bugs are diagnosable. We still return None and let
+        // the caller fall back to the horizontal default — the spec
+        // (§9.7.5.4) only defines values 0 and 1.
+        other => {
+            log::warn!(
+                "Non-standard /WMode {} in CMap stream; falling back to horizontal (WMode 0)",
+                other
+            );
+            None
+        },
+    }
 }
 
 /// Parse a `begincodespacerange` line and return the maximum code byte-width found.
@@ -1274,5 +1363,133 @@ end
         assert_eq!(cmap.get(&0x3D).as_deref(), Some("Z"));
         assert_eq!(cmap.get(&0x24).as_deref(), Some("A"));
         assert_eq!(cmap.get(&0xC6).as_deref(), Some("\u{00C2}")); // Â
+    }
+
+    /// `/WMode 1 def` on a CMap stream marks the font as vertical writing,
+    /// even when the CMap name does not advertise a `-V` suffix. This is the
+    /// authoritative signal per ISO 32000-1 §9.7.5.4 and is required for
+    /// embedded CMap streams used by tategaki layouts where the writer keeps
+    /// a horizontal-shaped CMap name but flips the writing mode internally.
+    #[test]
+    fn test_parse_wmode_vertical() {
+        let data = b"\
+/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+/CMapName /Adobe-Identity-UCS def
+/CMapType 2 def
+/WMode 1 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+1 beginbfchar
+<0041> <0041>
+endbfchar
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end
+";
+        let cmap = parse_tounicode_cmap(data).unwrap();
+        assert_eq!(cmap.wmode, 1, "explicit /WMode 1 def must set vertical writing");
+        // Sanity: rest of the CMap still parses correctly.
+        assert_eq!(cmap.get(&0x41).as_deref(), Some("A"));
+        assert_eq!(cmap.code_width, 2);
+    }
+
+    /// Default WMode is `0` (horizontal) when the directive is absent. Most
+    /// ToUnicode CMaps for horizontal text omit `/WMode` entirely; this
+    /// guards the dominant code path.
+    #[test]
+    fn test_parse_wmode_default_horizontal() {
+        let data = b"beginbfchar\n<0041> <0041>\nendbfchar";
+        let cmap = parse_tounicode_cmap(data).unwrap();
+        assert_eq!(cmap.wmode, 0, "missing /WMode must default to horizontal");
+    }
+
+    /// `/WMode 0 def` is a no-op but must be parsed without warning.
+    #[test]
+    fn test_parse_wmode_explicit_horizontal() {
+        let data = b"\
+begincmap
+/WMode 0 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+1 beginbfchar
+<0041> <0041>
+endbfchar
+endcmap
+";
+        let cmap = parse_tounicode_cmap(data).unwrap();
+        assert_eq!(cmap.wmode, 0);
+    }
+
+    /// M5: a `/WMode N def` directive that lives inside a PostScript
+    /// comment (`%` to end-of-line, §3.3.1) must NOT flip the writing
+    /// mode. Without comment-stripping, this commented-out producer
+    /// debug line would silently switch a horizontal CMap to vertical.
+    #[test]
+    fn test_parse_wmode_ignored_inside_postscript_comment() {
+        // First-line commented-out directive — must be ignored.
+        let data = b"\
+begincmap
+% /WMode 1 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+1 beginbfchar
+<0041> <0041>
+endbfchar
+endcmap
+";
+        let cmap = parse_tounicode_cmap(data).unwrap();
+        assert_eq!(cmap.wmode, 0, "/WMode 1 def inside a PostScript comment must be ignored");
+    }
+
+    /// M5 corollary: a legitimate `/WMode 1 def` on a later line is
+    /// still picked up even when an earlier line carries an unrelated
+    /// comment.
+    #[test]
+    fn test_parse_wmode_after_comment_still_seen() {
+        let data = b"\
+begincmap
+% some prologue comment unrelated to wmode
+/WMode 1 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+1 beginbfchar
+<0041> <0041>
+endbfchar
+endcmap
+";
+        let cmap = parse_tounicode_cmap(data).unwrap();
+        assert_eq!(cmap.wmode, 1);
+    }
+
+    /// M6: a non-standard `/WMode 2 def` must NOT silently flip writing
+    /// mode; the spec only defines 0 and 1 (§9.7.5.4). Parser returns
+    /// None (callers fall back to horizontal default) and emits a warn
+    /// log so producer bugs are diagnosable.
+    #[test]
+    fn test_parse_wmode_non_standard_value_falls_back() {
+        let data = b"\
+begincmap
+/WMode 2 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+1 beginbfchar
+<0041> <0041>
+endbfchar
+endcmap
+";
+        let cmap = parse_tounicode_cmap(data).unwrap();
+        assert_eq!(
+            cmap.wmode, 0,
+            "/WMode 2 def is non-standard; parser must fall back to horizontal"
+        );
     }
 }

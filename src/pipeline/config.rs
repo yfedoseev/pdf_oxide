@@ -986,7 +986,21 @@ impl Default for TjThresholdConfig {
 /// Configuration for reading order strategy.
 #[derive(Debug, Clone)]
 pub struct ReadingOrderConfig {
-    /// The reading order strategy to use.
+    /// The reading order strategy to use for horizontal (left-to-right,
+    /// top-to-bottom) pages.
+    ///
+    /// **Vertical-writing override.** When a page is detected as
+    /// vertical-majority — at least half of the page's spans carry
+    /// `wmode == 1` from a `/WMode 1` CMap or a `-V`-suffixed encoding
+    /// (Identity-V, UniJIS-UTF16-V, …) — the configured strategy is
+    /// bypassed and the page is routed through a tategaki-aware
+    /// right-to-left column ordering instead. None of the four
+    /// horizontal strategies (`Simple`, `Geometric`, `XYCut`,
+    /// `StructureTreeFirst`) can produce correct right-to-left column
+    /// order for vertical writing, so the override is unconditional.
+    /// Per-span `wmode` is preserved on every output span regardless of
+    /// which path the page took, so downstream consumers can still
+    /// distinguish the two modes.
     pub strategy: ReadingOrderStrategyType,
 }
 
@@ -999,6 +1013,11 @@ impl Default for ReadingOrderConfig {
 }
 
 /// Available reading order strategy types.
+///
+/// All four variants are horizontal (left-to-right, top-to-bottom)
+/// strategies. Vertical-majority (tategaki) pages bypass the configured
+/// variant entirely — see [`ReadingOrderConfig::strategy`] for the
+/// override rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadingOrderStrategyType {
     /// Use structure tree MCIDs for reading order, fallback to geometric.

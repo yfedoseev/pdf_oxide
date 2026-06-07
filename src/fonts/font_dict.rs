@@ -133,6 +133,31 @@ pub struct FontInfo {
     /// `minus`) when an upstream decode yields a non-sensible symbol — see the
     /// glyph-name-gated interceptions in `char_to_unicode`.
     pub diff_glyph_names: HashMap<u8, String>,
+    /// Writing mode resolved from this font's encoding and (when available)
+    /// from the embedded CMap stream's `/WMode` directive.
+    ///
+    /// - `0` (default): horizontal writing — glyph advance along x-axis.
+    /// - `1`: vertical writing (tategaki) — glyph advance along y-axis with
+    ///   per-CID vertical-origin offset applied per glyph.
+    ///
+    /// Resolution rules (highest precedence first):
+    /// 1. The embedded CMap stream's `/WMode` directive when one is parsed
+    ///    (via `LazyCMap::wmode()` on the encoding's CMap).
+    /// 2. Predefined PDF CMap name ending in `-V` (Identity-V, UniJIS-UTF16-V,
+    ///    UniGB-UTF16-V, UniCNS-UTF16-V, UniKS-UTF16-V) or the bare legacy
+    ///    `V`. The original encoding name is retained even when the
+    ///    `Encoding` enum collapses `Identity-H`/`Identity-V` into
+    ///    `Encoding::Identity`.
+    /// 3. Otherwise `0`.
+    pub wmode: u8,
+    /// Per-CID vertical-writing metrics parsed from the CIDFont's `/W2`
+    /// array (ISO 32000-1 §9.7.4.3). `None` for horizontal-only fonts so
+    /// they pay no allocation/hash-lookup cost.
+    pub cid_vertical_metrics: Option<HashMap<u16, VerticalMetrics>>,
+    /// Default vertical metrics for CIDs not covered by `cid_vertical_metrics`.
+    /// Parsed from `/DW2` (defaults to [`VerticalMetrics::SPEC_DEFAULT`] when
+    /// `/DW2` is absent). Held by value because the struct is `Copy`.
+    pub cid_default_vertical_metrics: VerticalMetrics,
 }
 
 /// Font encoding types.
@@ -210,6 +235,69 @@ pub struct CIDSystemInfo {
 
     /// Supplement number (version of the character collection)
     pub supplement: i32,
+}
+
+/// Per-CID vertical-writing metrics from a CIDFont's `/W2` array.
+///
+/// Per ISO 32000-1:2008 §9.7.4.3 and the Adobe CMap & CIDFont Files
+/// Specification §9.7. In vertical writing mode the glyph advances along the
+/// y-axis (not the x-axis) and is shifted from its default horizontal origin
+/// to a vertical origin so that the glyph stacks correctly within a column.
+///
+/// All values are in 1000ths-of-em (glyph-space units), matching the
+/// convention used throughout PDF font dictionaries.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VerticalMetrics {
+    /// `w1y`: vertical displacement (advance) of the glyph along the y-axis.
+    ///
+    /// Typically negative (around `-1000` for a full-em CJK glyph) because PDF
+    /// user space has y increasing upward, while vertical text advances
+    /// downward. The text matrix is translated by `w1y * font_size / 1000`
+    /// after the glyph is painted.
+    pub w1y: f32,
+
+    /// `v_x`: x-component of the vector from the default (horizontal) origin
+    /// to the vertical origin, in 1000ths-of-em.
+    ///
+    /// Spec default `500` (half-em) places the vertical origin at the glyph's
+    /// horizontal center, which is correct for monospaced full-width CJK
+    /// glyphs.
+    pub v_x: f32,
+
+    /// `v_y`: y-component of the vertical-origin offset, in 1000ths-of-em.
+    ///
+    /// Spec default `880` places the vertical origin near the top of the em.
+    pub v_y: f32,
+}
+
+impl VerticalMetrics {
+    /// Spec default per ISO 32000-1 §9.7.4.3: vertical origin at
+    /// `(500, 880)` and glyph displacement `-1000` (one full em downward).
+    pub const SPEC_DEFAULT: VerticalMetrics = VerticalMetrics {
+        w1y: -1000.0,
+        v_x: 500.0,
+        v_y: 880.0,
+    };
+}
+
+/// Decide writing mode from a predefined PDF CMap name.
+///
+/// Per ISO 32000-1 §9.7.5.2 (Table 118) and the Adobe CMap & CIDFont Files
+/// Specification, predefined CMap names whose suffix is `-V` (e.g.
+/// `Identity-V`, `UniJIS-UTF16-V`, `UniGB-UTF16-V`, `UniCNS-UTF16-V`,
+/// `UniKS-UTF16-V`, `GBK-EUC-V`, `90ms-RKSJ-V`, …) and the bare legacy `V`
+/// declare vertical writing (`/WMode 1`). Every other name implies
+/// horizontal writing (`/WMode 0`).
+///
+/// This function is the canonical name-to-wmode decision used by both
+/// `FontInfo::resolve_encoding_writing_mode` and the encoding-name fallback
+/// inside `FontInfo::from_dict`.
+pub(crate) fn wmode_from_predefined_cmap_name(name: &str) -> u8 {
+    if name == "V" || name.ends_with("-V") {
+        1
+    } else {
+        0
+    }
 }
 
 impl FontInfo {
@@ -636,6 +724,12 @@ impl FontInfo {
                 None
             };
 
+        // Writing-mode signal sourced from the encoding object. Resolved
+        // here because the `Encoding` enum collapses `Identity-H` and
+        // `Identity-V` to the same `Encoding::Identity` variant — we need
+        // the original name to recover wmode. Defaults to `0` (horizontal)
+        // when no encoding object is present.
+        let mut encoding_wmode: u8 = 0;
         let (encoding, diff_multi_char_map, diff_glyph_names) = if let Some(enc_obj) =
             font_dict.get("Encoding")
         {
@@ -644,6 +738,11 @@ impl FontInfo {
             } else {
                 enc_obj.clone()
             };
+
+            // Inspect for `-V` predefined name or embedded `/WMode 1 def`
+            // before parse_encoding flattens the variant.
+            let (_enc_name, wm) = Self::resolve_encoding_writing_mode(&resolved_enc_obj, doc);
+            encoding_wmode = wm;
 
             if is_symbolic_font(flags) {
                 log::debug!(
@@ -896,6 +995,8 @@ impl FontInfo {
             descendant_tt_cmap,
             desc_raw_ascent,
             desc_raw_descent,
+            cid_vertical_metrics,
+            cid_default_vertical_metrics,
         ) = if subtype == "Type0" {
             match Self::parse_descendant_fonts(font_dict, &base_font, doc) {
                 Ok((
@@ -909,6 +1010,8 @@ impl FontInfo {
                     desc_embedded,
                     d_ascent,
                     d_descent,
+                    vmetrics,
+                    dvmetrics,
                 )) => {
                     log::info!(
                             "Font '{}': Parsed DescendantFonts - CIDFontType={}, CIDSystemInfo={}-{}, widths={}, embedded={}",
@@ -927,7 +1030,19 @@ impl FontInfo {
                     if desc_embedded.is_some() && embedded_font_data.is_none() {
                         embedded_font_data = desc_embedded;
                     }
-                    (map, info, ftype, widths, dw, explicit_dw, tt_cmap, d_ascent, d_descent)
+                    (
+                        map,
+                        info,
+                        ftype,
+                        widths,
+                        dw,
+                        explicit_dw,
+                        tt_cmap,
+                        d_ascent,
+                        d_descent,
+                        vmetrics,
+                        dvmetrics,
+                    )
                 },
                 Err(e) => {
                     log::warn!(
@@ -935,11 +1050,35 @@ impl FontInfo {
                         base_font,
                         e
                     );
-                    (Some(CIDToGIDMap::Identity), None, None, None, 1000.0, false, None, None, None)
+                    (
+                        Some(CIDToGIDMap::Identity),
+                        None,
+                        None,
+                        None,
+                        1000.0,
+                        false,
+                        None,
+                        None,
+                        None,
+                        None,
+                        VerticalMetrics::SPEC_DEFAULT,
+                    )
                 },
             }
         } else {
-            (None, None, None, None, 1000.0, false, None, None, None)
+            (
+                None,
+                None,
+                None,
+                None,
+                1000.0,
+                false,
+                None,
+                None,
+                None,
+                None,
+                VerticalMetrics::SPEC_DEFAULT,
+            )
         };
 
         // For Type0 fonts the /FontDescriptor lives on the CIDFont descendant (§9.7.4).
@@ -1004,6 +1143,33 @@ impl FontInfo {
             })
             .unwrap_or(default_descent);
 
+        // Final writing-mode resolution.
+        //
+        // Per ISO 32000-1:2008 §9.10.2 the ToUnicode CMap is for
+        // extraction-time character → Unicode mapping ONLY. The active
+        // writing mode is determined by the /Encoding CMap (§9.7.5):
+        // either an embedded `/WMode 1 def` directive or a predefined
+        // encoding name whose suffix is `-V`. Consulting the ToUnicode
+        // CMap's `/WMode` here would silently flip a horizontal document
+        // to vertical whenever a producer left a stale `/WMode 1 def`
+        // in the ToUnicode prologue — a real-world tooling failure mode.
+        //
+        // We still emit a debug log when ToUnicode disagrees with the
+        // /Encoding so producer bugs are diagnosable.
+        let wmode = encoding_wmode;
+        if let Some(tu) = to_unicode.as_ref() {
+            let tu_wmode = tu.wmode();
+            if tu_wmode != encoding_wmode {
+                log::debug!(
+                    "Font '{}': ToUnicode CMap declares /WMode {} but /Encoding wmode is {}. \
+                     Honoring /Encoding per ISO 32000-1 §9.10.2.",
+                    base_font,
+                    tu_wmode,
+                    encoding_wmode
+                );
+            }
+        }
+
         Ok(FontInfo {
             base_font,
             subtype,
@@ -1037,6 +1203,9 @@ impl FontInfo {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names,
+            wmode,
+            cid_vertical_metrics,
+            cid_default_vertical_metrics,
         })
     }
 
@@ -1104,7 +1273,9 @@ impl FontInfo {
     /// Per PDF Spec ISO 32000-1:2008, Section 9.7.1
     ///
     /// Returns: (CIDToGIDMap, CIDSystemInfo, CIDFontType, CIDWidths, DefaultWidth,
-    ///          has_explicit_dw, TrueTypeCMap, EmbeddedFontData, raw_ascent, raw_descent)
+    ///          has_explicit_dw, TrueTypeCMap, EmbeddedFontData, raw_ascent,
+    ///          raw_descent, vertical_metrics, dw2)
+    #[allow(clippy::type_complexity)] // tuple grew incrementally; refactor deferred to a follow-up
     fn parse_descendant_fonts(
         font_dict: &HashMap<String, Object>,
         base_font: &str,
@@ -1114,12 +1285,14 @@ impl FontInfo {
         Option<CIDSystemInfo>,
         Option<String>,
         Option<HashMap<u16, f32>>,
-        f32,                  // cid_default_width
-        bool,                 // has_explicit_dw (F14/F15 fix)
-        Option<TrueTypeCMap>, // TrueType cmap from descendant's embedded font
-        Option<Arc<Vec<u8>>>, // Embedded font data from CIDFont's FontDescriptor
-        Option<f32>,          // raw_ascent from descendant FontDescriptor
-        Option<f32>,          // raw_descent from descendant FontDescriptor
+        f32,                                   // cid_default_width
+        bool,                                  // has_explicit_dw (F14/F15 fix)
+        Option<TrueTypeCMap>,                  // TrueType cmap from descendant's embedded font
+        Option<Arc<Vec<u8>>>,                  // Embedded font data from CIDFont's FontDescriptor
+        Option<f32>,                           // raw_ascent from descendant FontDescriptor
+        Option<f32>,                           // raw_descent from descendant FontDescriptor
+        Option<HashMap<u16, VerticalMetrics>>, // /W2 per-CID vertical metrics
+        VerticalMetrics,                       // /DW2 default vertical metrics (or spec defaults)
     )> {
         let descendant_obj = font_dict
             .get("DescendantFonts")
@@ -1390,6 +1563,41 @@ impl FontInfo {
             );
         }
 
+        // Parse /W2 (per-CID vertical metrics) and /DW2 (default vertical
+        // metrics) — ISO 32000-1 §9.7.4.3. Most fonts ship horizontal-only;
+        // when /W2 is absent the per-CID HashMap is never allocated.
+        let resolved_for_w2 = if let Some(w2_obj) = cidfont_dict.get("W2") {
+            if let Some(r) = w2_obj.as_reference() {
+                match doc.load_object(r) {
+                    Ok(resolved) => {
+                        let mut dict_clone = resolved_cidfont_dict.clone().into_owned();
+                        dict_clone.insert("W2".to_string(), resolved);
+                        std::borrow::Cow::Owned(dict_clone)
+                    },
+                    Err(e) => {
+                        log::warn!("Font '{}': Failed to resolve /W2 reference: {}", base_font, e);
+                        resolved_cidfont_dict.clone()
+                    },
+                }
+            } else {
+                resolved_cidfont_dict.clone()
+            }
+        } else {
+            resolved_cidfont_dict.clone()
+        };
+        let cid_vertical_metrics = Self::parse_cid_vertical_metrics(&resolved_for_w2, base_font);
+        let cid_default_vertical_metrics = Self::parse_dw2(&resolved_for_w2);
+        if cid_vertical_metrics.is_some() {
+            log::debug!(
+                "Font '{}': Parsed /W2 vertical metrics - {} entries, /DW2 defaults w1y={} v_x={} v_y={}",
+                base_font,
+                cid_vertical_metrics.as_ref().map(|m| m.len()).unwrap_or(0),
+                cid_default_vertical_metrics.w1y,
+                cid_default_vertical_metrics.v_x,
+                cid_default_vertical_metrics.v_y,
+            );
+        }
+
         // Extract TrueType cmap from descendant's FontDescriptor if available.
         // Type0 parent fonts often have no embedded data — it's on the CIDFont.
         let descendant_tt_cmap = if cid_font_type == "CIDFontType2" {
@@ -1421,6 +1629,8 @@ impl FontInfo {
             descendant_embedded,
             desc_raw_ascent,
             desc_raw_descent,
+            cid_vertical_metrics,
+            cid_default_vertical_metrics,
         ))
     }
 
@@ -1741,6 +1951,263 @@ impl FontInfo {
     ///   100 200 300 % CIDs 100-200 all have width 300
     /// ]
     /// ```
+    /// Inspect a Type0 font's `/Encoding` object and resolve the writing
+    /// mode it implies, plus the encoding name preserved for diagnostics.
+    ///
+    /// Returns a pair `(name, wmode)` where:
+    /// - `name` is the predefined-CMap name when `/Encoding` is a `/Name`
+    ///   atom (`Identity-H`, `Identity-V`, `UniJIS-UTF16-V`, …) or the
+    ///   embedded CMap stream's `/CMapName` value when `/Encoding` is a
+    ///   stream/dict reference.
+    /// - `wmode` is `1` when the resolved name ends in `-V` or equals the
+    ///   bare legacy `V`, or when the embedded CMap stream contains a
+    ///   `/WMode 1 def` directive. `0` otherwise (including unknown).
+    ///
+    /// The two signals are surfaced separately so callers can apply the
+    /// precedence rules from ISO 32000-1 §9.7.5.4: an embedded CMap stream's
+    /// explicit `/WMode` overrides what the name might suggest.
+    fn resolve_encoding_writing_mode(enc_obj: &Object, doc: &PdfDocument) -> (Option<String>, u8) {
+        // Case 1: /Encoding is a /Name atom — predefined CMap name.
+        if let Some(name) = enc_obj.as_name() {
+            let wmode = wmode_from_predefined_cmap_name(name);
+            return (Some(name.to_string()), wmode);
+        }
+
+        // Case 2: /Encoding is a stream/dict — embedded CMap. The dict may
+        // expose a /CMapName and the stream body may carry /WMode N def.
+        let dict = enc_obj.as_dict();
+        let name = dict
+            .and_then(|d| d.get("CMapName"))
+            .and_then(|n| n.as_name())
+            .map(|s| s.to_string());
+
+        // Try to decode the CMap stream and scan for /WMode. We swallow
+        // decode errors here — if the stream cannot be decoded, the existing
+        // `parse_encoding` path will eventually log it; for wmode detection
+        // we silently fall back to the name-based signal.
+        let stream_wmode = match enc_obj.decode_stream_data() {
+            Ok(bytes) => {
+                let content = String::from_utf8_lossy(&bytes);
+                crate::fonts::cmap::parse_wmode_directive_public(&content)
+            },
+            Err(_) => None,
+        };
+        let _ = doc; // doc reserved for future use (e.g. resolving /UseCMap refs).
+
+        let name_wmode = name
+            .as_deref()
+            .map(wmode_from_predefined_cmap_name)
+            .unwrap_or(0);
+        let wmode = stream_wmode.unwrap_or(name_wmode);
+        (name, wmode)
+    }
+
+    /// Parse `/DW2` from a CIDFont dictionary.
+    ///
+    /// Per ISO 32000-1 §9.7.4.3 the value is an array of two numbers:
+    /// `[v_y_default w1y_default]`. Spec default when `/DW2` is absent is
+    /// `[880 -1000]`. The default `v_x` is always `500` (half-em) — the spec
+    /// does not provide a way to override it via `/DW2`.
+    ///
+    /// Returns the parsed defaults, or [`VerticalMetrics::SPEC_DEFAULT`] when
+    /// `/DW2` is missing or malformed.
+    fn parse_dw2(cidfont_dict: &HashMap<String, Object>) -> VerticalMetrics {
+        let Some(dw2_obj) = cidfont_dict.get("DW2") else {
+            return VerticalMetrics::SPEC_DEFAULT;
+        };
+        let Some(arr) = dw2_obj.as_array() else {
+            return VerticalMetrics::SPEC_DEFAULT;
+        };
+        if arr.len() < 2 {
+            return VerticalMetrics::SPEC_DEFAULT;
+        }
+        let v_y = match &arr[0] {
+            Object::Integer(i) => *i as f32,
+            Object::Real(r) => *r as f32,
+            _ => return VerticalMetrics::SPEC_DEFAULT,
+        };
+        let w1y = match &arr[1] {
+            Object::Integer(i) => *i as f32,
+            Object::Real(r) => *r as f32,
+            _ => return VerticalMetrics::SPEC_DEFAULT,
+        };
+        VerticalMetrics {
+            w1y,
+            v_x: 500.0,
+            v_y,
+        }
+    }
+
+    /// Parse `/W2` (per-CID vertical metrics) from a CIDFont dictionary.
+    ///
+    /// Per ISO 32000-1 §9.7.4.3 the `/W2` array uses two forms, both of which
+    /// may be intermixed within a single `/W2`:
+    ///
+    /// - Form A — explicit per-CID metrics:
+    ///   `c [ w1y v_x v_y w1y v_x v_y … ]` — the inner array holds successive
+    ///   `(w1y, v_x, v_y)` triples assigned to CIDs `c, c+1, c+2, …`.
+    ///
+    /// - Form B — range:
+    ///   `c_first c_last w1y v_x v_y` — every CID in `c_first..=c_last`
+    ///   shares the same `(w1y, v_x, v_y)`.
+    ///
+    /// Returns `None` when `/W2` is absent or empty, allowing callers to skip
+    /// the HashMap allocation entirely on horizontal fonts.
+    fn parse_cid_vertical_metrics(
+        cidfont_dict: &HashMap<String, Object>,
+        base_font: &str,
+    ) -> Option<HashMap<u16, VerticalMetrics>> {
+        let w2_obj = cidfont_dict.get("W2")?;
+        let w2_array = w2_obj.as_array()?;
+
+        if w2_array.is_empty() {
+            return None;
+        }
+
+        let mut metrics: HashMap<u16, VerticalMetrics> = HashMap::new();
+        let mut i = 0;
+
+        while i < w2_array.len() {
+            let cid_start = match &w2_array[i] {
+                Object::Integer(c) => *c as u16,
+                _ => {
+                    log::warn!(
+                        "Font '{}': /W2 array element {} is not an integer, skipping",
+                        base_font,
+                        i
+                    );
+                    i += 1;
+                    continue;
+                },
+            };
+            i += 1;
+
+            if i >= w2_array.len() {
+                break;
+            }
+
+            match &w2_array[i] {
+                Object::Array(triples) => {
+                    // Form A: c [ w1y v_x v_y w1y v_x v_y … ]
+                    // Walk the inner array in groups of three. A triple is
+                    // atomic: if any of its three elements is non-numeric
+                    // we drop the WHOLE triple (advance j+=3, emitted+=1)
+                    // so the CID alignment of the rest of the inner array
+                    // is preserved. The original implementation advanced
+                    // j by 1 on a malformed element, which silently
+                    // shifted every subsequent CID by one slot.
+                    let mut j = 0;
+                    let mut emitted: u32 = 0;
+                    let read_num = |obj: &Object| -> Option<f32> {
+                        match obj {
+                            Object::Integer(v) => Some(*v as f32),
+                            Object::Real(v) => Some(*v as f32),
+                            _ => None,
+                        }
+                    };
+                    while j + 2 < triples.len() {
+                        let triple = (
+                            read_num(&triples[j]),
+                            read_num(&triples[j + 1]),
+                            read_num(&triples[j + 2]),
+                        );
+                        // Compute CID with overflow detection BEFORE writing.
+                        // saturating_add(emitted) would collapse every
+                        // overflowing slot onto u16::MAX; instead we stop.
+                        let Some(cid) = (cid_start as u32).checked_add(emitted) else {
+                            log::warn!(
+                                "Font '{}': /W2 Form A starting at CID {} overflowed u32 \
+                                 at emitted offset {}; stopping",
+                                base_font,
+                                cid_start,
+                                emitted
+                            );
+                            break;
+                        };
+                        if cid > u16::MAX as u32 {
+                            log::warn!(
+                                "Font '{}': /W2 Form A starting at CID {} would assign \
+                                 beyond u16::MAX at emitted offset {}; stopping",
+                                base_font,
+                                cid_start,
+                                emitted
+                            );
+                            break;
+                        }
+                        match triple {
+                            (Some(w1y), Some(v_x), Some(v_y)) => {
+                                metrics.insert(cid as u16, VerticalMetrics { w1y, v_x, v_y });
+                            },
+                            _ => {
+                                log::warn!(
+                                    "Font '{}': /W2 Form A triple starting at CID {} (offset \
+                                     {}) is malformed; dropping it (keeping CID alignment)",
+                                    base_font,
+                                    cid_start,
+                                    emitted
+                                );
+                            },
+                        }
+                        emitted += 1;
+                        j += 3;
+                    }
+                    i += 1;
+                },
+                Object::Integer(cid_end_int) => {
+                    // Form B: c_first c_last w1y v_x v_y
+                    let cid_end = *cid_end_int as u16;
+                    i += 1;
+                    if i + 2 >= w2_array.len() {
+                        log::warn!(
+                            "Font '{}': /W2 range starting at CID {} truncated",
+                            base_font,
+                            cid_start
+                        );
+                        break;
+                    }
+                    let read = |obj: &Object| -> Option<f32> {
+                        match obj {
+                            Object::Integer(v) => Some(*v as f32),
+                            Object::Real(v) => Some(*v as f32),
+                            _ => None,
+                        }
+                    };
+                    let Some(w1y) = read(&w2_array[i]) else {
+                        i += 3;
+                        continue;
+                    };
+                    let Some(v_x) = read(&w2_array[i + 1]) else {
+                        i += 3;
+                        continue;
+                    };
+                    let Some(v_y) = read(&w2_array[i + 2]) else {
+                        i += 3;
+                        continue;
+                    };
+                    i += 3;
+                    let metric = VerticalMetrics { w1y, v_x, v_y };
+                    for cid in cid_start..=cid_end {
+                        metrics.insert(cid, metric);
+                    }
+                },
+                _ => {
+                    log::warn!(
+                        "Font '{}': /W2 array has unexpected element type after CID {}",
+                        base_font,
+                        cid_start
+                    );
+                    i += 1;
+                },
+            }
+        }
+
+        if metrics.is_empty() {
+            None
+        } else {
+            Some(metrics)
+        }
+    }
+
     fn parse_cid_widths(
         cidfont_dict: &HashMap<String, Object>,
         base_font: &str,
@@ -1844,6 +2311,29 @@ impl FontInfo {
         } else {
             Some(widths)
         }
+    }
+
+    /// Vertical advance and origin offset for a CID, in 1000ths-of-em.
+    ///
+    /// Lookup order:
+    /// 1. Per-CID entry from `/W2` (if `cid_vertical_metrics` is populated).
+    /// 2. `/DW2` defaults (`cid_default_vertical_metrics`).
+    /// 3. Spec defaults from [`VerticalMetrics::SPEC_DEFAULT`] when the font
+    ///    is not a CIDFont (e.g. simple Type1/TrueType): callers that
+    ///    reach this with a non-Type0 font are degenerate, but returning
+    ///    spec defaults is safe.
+    ///
+    /// This is the vertical counterpart to [`FontInfo::get_glyph_width`] and
+    /// is read on the hot path of the renderer / extractor whenever
+    /// `self.wmode == 1`.
+    #[inline]
+    pub fn get_vertical_metrics(&self, cid: u16) -> VerticalMetrics {
+        if let Some(map) = &self.cid_vertical_metrics {
+            if let Some(&m) = map.get(&cid) {
+                return m;
+            }
+        }
+        self.cid_default_vertical_metrics
     }
 
     /// Handles both named encodings (e.g., /WinAnsiEncoding) and encoding dictionaries
@@ -5464,6 +5954,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
         assert!(font.is_bold());
 
@@ -5500,6 +5993,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
         assert!(!font2.is_bold());
     }
@@ -5539,6 +6035,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
         assert!(font.is_italic());
 
@@ -5575,6 +6074,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
         assert!(font2.is_italic());
     }
@@ -5617,6 +6119,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         // Should use ToUnicode mapping (priority)
@@ -5660,6 +6165,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         assert_eq!(font.char_to_unicode(0x41), Some("A".to_string()));
@@ -5702,6 +6210,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         // Type0 without ToUnicode should use CID-as-Unicode fallback
@@ -5742,6 +6253,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         // Simple fonts (Type1) CAN use Identity encoding for valid Unicode codes
@@ -5880,6 +6394,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         let font2 = font.clone();
@@ -6008,6 +6525,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         // Should use custom encoding
@@ -6054,6 +6574,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         assert_eq!(font_with_force_bold.get_font_weight(), FontWeight::Bold);
@@ -6093,6 +6616,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         assert_eq!(font_without_force_bold.get_font_weight(), FontWeight::Normal);
@@ -6136,6 +6662,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         assert_eq!(font_heavy_stem.get_font_weight(), FontWeight::Bold);
@@ -6175,6 +6704,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         assert_eq!(font_medium_stem.get_font_weight(), FontWeight::Medium);
@@ -6214,6 +6746,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         assert_eq!(font_light_stem.get_font_weight(), FontWeight::Normal);
@@ -6257,6 +6792,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         assert_eq!(font_explicit.get_font_weight(), FontWeight::Light);
@@ -6296,6 +6834,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         assert_eq!(font_force_bold.get_font_weight(), FontWeight::Bold);
@@ -6335,6 +6876,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         assert_eq!(font_name.get_font_weight(), FontWeight::Bold);
@@ -6378,6 +6922,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
         assert_eq!(font_black.get_font_weight(), FontWeight::Black);
         assert!(font_black.is_bold());
@@ -6416,6 +6963,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
         assert_eq!(font_extrabold.get_font_weight(), FontWeight::ExtraBold);
         assert!(font_extrabold.is_bold());
@@ -6454,6 +7004,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
         assert_eq!(font_bold.get_font_weight(), FontWeight::Bold);
         assert!(font_bold.is_bold());
@@ -6492,6 +7045,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
         assert_eq!(font_semibold.get_font_weight(), FontWeight::SemiBold);
         assert!(font_semibold.is_bold());
@@ -6530,6 +7086,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
         assert_eq!(font_medium.get_font_weight(), FontWeight::Medium);
         assert!(!font_medium.is_bold());
@@ -6568,6 +7127,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
         assert_eq!(font_light.get_font_weight(), FontWeight::Light);
         assert!(!font_light.is_bold());
@@ -6606,6 +7168,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
         assert_eq!(font_extralight.get_font_weight(), FontWeight::ExtraLight);
         assert!(!font_extralight.is_bold());
@@ -6644,6 +7209,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
         assert_eq!(font_thin.get_font_weight(), FontWeight::Thin);
         assert!(!font_thin.is_bold());
@@ -6682,6 +7250,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
         assert_eq!(font_normal.get_font_weight(), FontWeight::Normal);
         assert!(!font_normal.is_bold());
@@ -6968,6 +7539,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         // Widths from cid_widths
@@ -7018,6 +7592,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         // CID 1 has explicit width
@@ -7064,6 +7641,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         // All CIDs use default_width when no cid_widths and no widths array
@@ -7120,6 +7700,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         // Range test
@@ -7173,6 +7756,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
         overrides(&mut f);
         f
@@ -7346,6 +7932,455 @@ mod tests {
         assert_eq!(widths.get(&10), Some(&750.5));
         assert_eq!(widths.get(&11), Some(&750.5));
         assert_eq!(widths.get(&12), Some(&750.5));
+    }
+
+    // =========================================================================
+    // parse_cid_vertical_metrics + parse_dw2 — /W2 and /DW2 (vertical writing)
+    // =========================================================================
+
+    /// `/W2` Form A: `c [ w1y v_x v_y w1y v_x v_y … ]` assigns successive
+    /// triples to CIDs `c`, `c+1`, `c+2`, … Drives per-CID lookups for
+    /// vertical advance and vertical-origin offset on tategaki layouts.
+    #[test]
+    fn test_parse_w2_explicit_array_form() {
+        let mut dict: HashMap<String, Object> = HashMap::new();
+        dict.insert(
+            "W2".to_string(),
+            Object::Array(vec![
+                Object::Integer(10),
+                Object::Array(vec![
+                    // CID 10: w1y=-880 v_x=500 v_y=900
+                    Object::Integer(-880),
+                    Object::Integer(500),
+                    Object::Integer(900),
+                    // CID 11: w1y=-1000 v_x=520 v_y=850
+                    Object::Integer(-1000),
+                    Object::Integer(520),
+                    Object::Integer(850),
+                ]),
+            ]),
+        );
+        let metrics = FontInfo::parse_cid_vertical_metrics(&dict, "Test").unwrap();
+        assert_eq!(
+            metrics.get(&10),
+            Some(&VerticalMetrics {
+                w1y: -880.0,
+                v_x: 500.0,
+                v_y: 900.0
+            })
+        );
+        assert_eq!(
+            metrics.get(&11),
+            Some(&VerticalMetrics {
+                w1y: -1000.0,
+                v_x: 520.0,
+                v_y: 850.0
+            })
+        );
+        assert_eq!(metrics.get(&12), None);
+    }
+
+    /// `/W2` Form B: `c_first c_last w1y v_x v_y` assigns the same metrics
+    /// to every CID in the inclusive range.
+    #[test]
+    fn test_parse_w2_range_form() {
+        let mut dict: HashMap<String, Object> = HashMap::new();
+        dict.insert(
+            "W2".to_string(),
+            Object::Array(vec![
+                Object::Integer(100),
+                Object::Integer(102),
+                Object::Integer(-1000),
+                Object::Integer(500),
+                Object::Integer(880),
+            ]),
+        );
+        let metrics = FontInfo::parse_cid_vertical_metrics(&dict, "Test").unwrap();
+        let expected = VerticalMetrics {
+            w1y: -1000.0,
+            v_x: 500.0,
+            v_y: 880.0,
+        };
+        assert_eq!(metrics.get(&100), Some(&expected));
+        assert_eq!(metrics.get(&101), Some(&expected));
+        assert_eq!(metrics.get(&102), Some(&expected));
+        assert_eq!(metrics.get(&103), None);
+        assert_eq!(metrics.get(&99), None);
+    }
+
+    /// `/W2` Form A and Form B can be intermixed in a single array. Real
+    /// CIDFonts use this routinely — explicit triples for outliers and
+    /// ranges for runs of full-width CJK glyphs.
+    #[test]
+    fn test_parse_w2_mixed_forms() {
+        let mut dict: HashMap<String, Object> = HashMap::new();
+        dict.insert(
+            "W2".to_string(),
+            Object::Array(vec![
+                // Form A: CID 5 explicit triple
+                Object::Integer(5),
+                Object::Array(vec![
+                    Object::Integer(-900),
+                    Object::Integer(490),
+                    Object::Integer(870),
+                ]),
+                // Form B: CIDs 200..=201
+                Object::Integer(200),
+                Object::Integer(201),
+                Object::Integer(-1000),
+                Object::Integer(500),
+                Object::Integer(880),
+            ]),
+        );
+        let metrics = FontInfo::parse_cid_vertical_metrics(&dict, "Test").unwrap();
+        assert_eq!(
+            metrics.get(&5),
+            Some(&VerticalMetrics {
+                w1y: -900.0,
+                v_x: 490.0,
+                v_y: 870.0
+            })
+        );
+        let range_default = VerticalMetrics {
+            w1y: -1000.0,
+            v_x: 500.0,
+            v_y: 880.0,
+        };
+        assert_eq!(metrics.get(&200), Some(&range_default));
+        assert_eq!(metrics.get(&201), Some(&range_default));
+        assert_eq!(metrics.get(&202), None);
+    }
+
+    /// Missing `/W2` ⇒ `None`. Horizontal-only fonts must skip the HashMap
+    /// allocation so they pay no per-glyph lookup cost in the hot path.
+    #[test]
+    fn test_parse_w2_missing_returns_none() {
+        let dict: HashMap<String, Object> = HashMap::new();
+        assert!(FontInfo::parse_cid_vertical_metrics(&dict, "Test").is_none());
+    }
+
+    /// Empty `/W2` array ⇒ `None`.
+    #[test]
+    fn test_parse_w2_empty_returns_none() {
+        let mut dict: HashMap<String, Object> = HashMap::new();
+        dict.insert("W2".to_string(), Object::Array(vec![]));
+        assert!(FontInfo::parse_cid_vertical_metrics(&dict, "Test").is_none());
+    }
+
+    /// `/W2` accepts real-valued metrics (some writers use floats for
+    /// fine-tuned vertical adjustments).
+    #[test]
+    fn test_parse_w2_real_values() {
+        let mut dict: HashMap<String, Object> = HashMap::new();
+        dict.insert(
+            "W2".to_string(),
+            Object::Array(vec![
+                Object::Integer(1),
+                Object::Integer(1),
+                Object::Real(-987.5),
+                Object::Real(501.25),
+                Object::Real(879.75),
+            ]),
+        );
+        let metrics = FontInfo::parse_cid_vertical_metrics(&dict, "Test").unwrap();
+        assert_eq!(
+            metrics.get(&1),
+            Some(&VerticalMetrics {
+                w1y: -987.5,
+                v_x: 501.25,
+                v_y: 879.75
+            })
+        );
+    }
+
+    /// `/W2` Form A with a malformed inner triple must not desynchronise
+    /// the CID assignment of subsequent triples. The original
+    /// implementation advanced `j` by 1 on a non-numeric element without
+    /// touching `emitted`, so every following triple was shifted up by
+    /// one CID. Spec stance: a triple is atomic — drop the whole triple
+    /// (advance `j` by 3 and `emitted` by 1) so the CID alignment of the
+    /// rest of the inner array is preserved.
+    #[test]
+    fn test_parse_w2_form_a_skips_malformed_triple_without_desync() {
+        let mut dict: HashMap<String, Object> = HashMap::new();
+        // CID 10 is intentionally malformed (a name where w1y should be).
+        // CID 11 must remain aligned to its proper triple, not slide into
+        // CID 10's slot.
+        dict.insert(
+            "W2".to_string(),
+            Object::Array(vec![
+                Object::Integer(10),
+                Object::Array(vec![
+                    // CID 10: malformed (name instead of number).
+                    Object::Name("Bogus".to_string()),
+                    Object::Integer(500),
+                    Object::Integer(880),
+                    // CID 11: well-formed (-1000, 500, 880).
+                    Object::Integer(-1000),
+                    Object::Integer(500),
+                    Object::Integer(880),
+                ]),
+            ]),
+        );
+        let metrics = FontInfo::parse_cid_vertical_metrics(&dict, "Test").unwrap();
+        // CID 10 was malformed: must NOT carry the metrics that belong to CID 11.
+        assert!(
+            !metrics.contains_key(&10),
+            "malformed CID 10 must not appear in metrics; got {:?}",
+            metrics.get(&10)
+        );
+        // CID 11 must carry its own metrics — not collapsed onto CID 10 or
+        // shifted into a different CID slot.
+        assert_eq!(
+            metrics.get(&11),
+            Some(&VerticalMetrics {
+                w1y: -1000.0,
+                v_x: 500.0,
+                v_y: 880.0
+            })
+        );
+    }
+
+    /// `/W2` Form B near the top of the u16 range must not silently
+    /// collapse every overflowing CID onto u16::MAX via saturating
+    /// arithmetic. The loop must break (with a warning log) when the
+    /// requested range would wrap past 0xFFFF.
+    #[test]
+    fn test_parse_w2_form_b_overflow_does_not_collapse() {
+        // c_first = 0xFFFB, c_last = 0xFFFF — fits exactly within u16 so
+        // every CID in 65531..=65535 must be inserted distinctly. A
+        // saturating-add bug would collapse them all onto u16::MAX (and
+        // an unchecked-add bug would wrap around to 0).
+        let mut dict: HashMap<String, Object> = HashMap::new();
+        dict.insert(
+            "W2".to_string(),
+            Object::Array(vec![
+                Object::Integer(0xFFFB),
+                Object::Integer(0xFFFF),
+                Object::Integer(-1000),
+                Object::Integer(500),
+                Object::Integer(880),
+            ]),
+        );
+        let metrics = FontInfo::parse_cid_vertical_metrics(&dict, "Test").unwrap();
+        let expected = VerticalMetrics {
+            w1y: -1000.0,
+            v_x: 500.0,
+            v_y: 880.0,
+        };
+        for cid in 0xFFFBu16..=0xFFFFu16 {
+            assert_eq!(
+                metrics.get(&cid),
+                Some(&expected),
+                "CID 0x{:04X} must carry the range metrics",
+                cid
+            );
+        }
+        // Exactly five distinct CIDs were inserted; nothing else.
+        assert_eq!(
+            metrics.len(),
+            5,
+            "Form B near u16::MAX should insert 5 distinct entries; got {}",
+            metrics.len()
+        );
+    }
+
+    /// `/W2` Form A with a CID start near u16::MAX and an inner array
+    /// long enough to overflow MUST stop emitting on overflow rather than
+    /// silently collapsing every subsequent CID onto u16::MAX via
+    /// saturating arithmetic.
+    #[test]
+    fn test_parse_w2_form_a_stops_on_overflow() {
+        let mut dict: HashMap<String, Object> = HashMap::new();
+        // cid_start = 0xFFFE — only two slots remain (0xFFFE, 0xFFFF) so
+        // the third triple would wrap. Confirm we emit exactly two
+        // distinct CIDs, not three (which would imply two metrics
+        // collapsed onto u16::MAX) and not zero (which would imply a
+        // panic-on-overflow bug).
+        dict.insert(
+            "W2".to_string(),
+            Object::Array(vec![
+                Object::Integer(0xFFFE),
+                Object::Array(vec![
+                    // CID 0xFFFE
+                    Object::Integer(-1000),
+                    Object::Integer(500),
+                    Object::Integer(880),
+                    // CID 0xFFFF
+                    Object::Integer(-900),
+                    Object::Integer(510),
+                    Object::Integer(870),
+                    // CID 0x10000 — overflows; must be DROPPED.
+                    Object::Integer(-800),
+                    Object::Integer(520),
+                    Object::Integer(860),
+                ]),
+            ]),
+        );
+        let metrics = FontInfo::parse_cid_vertical_metrics(&dict, "Test").unwrap();
+        assert_eq!(
+            metrics.get(&0xFFFE),
+            Some(&VerticalMetrics {
+                w1y: -1000.0,
+                v_x: 500.0,
+                v_y: 880.0
+            })
+        );
+        assert_eq!(
+            metrics.get(&0xFFFF),
+            Some(&VerticalMetrics {
+                w1y: -900.0,
+                v_x: 510.0,
+                v_y: 870.0
+            })
+        );
+        assert_eq!(
+            metrics.len(),
+            2,
+            "Form A overflow must drop overflowing triples; got {} entries",
+            metrics.len()
+        );
+    }
+
+    /// `/DW2` overrides only `v_y` and `w1y`; `v_x` always defaults to
+    /// `500` per spec (§9.7.4.3 — only two numbers are settable via /DW2).
+    #[test]
+    fn test_parse_dw2_overrides_defaults() {
+        let mut dict: HashMap<String, Object> = HashMap::new();
+        dict.insert(
+            "DW2".to_string(),
+            Object::Array(vec![Object::Integer(850), Object::Integer(-1100)]),
+        );
+        let dw2 = FontInfo::parse_dw2(&dict);
+        assert_eq!(dw2.v_y, 850.0);
+        assert_eq!(dw2.w1y, -1100.0);
+        assert_eq!(dw2.v_x, 500.0, "v_x is not settable via /DW2");
+    }
+
+    /// Missing `/DW2` ⇒ spec defaults `(w1y=-1000, v_x=500, v_y=880)`.
+    #[test]
+    fn test_parse_dw2_missing_uses_spec_default() {
+        let dict: HashMap<String, Object> = HashMap::new();
+        assert_eq!(FontInfo::parse_dw2(&dict), VerticalMetrics::SPEC_DEFAULT);
+    }
+
+    /// Malformed `/DW2` (single element instead of two) ⇒ spec defaults.
+    /// Better to use safe defaults than expose half-parsed metrics that
+    /// would shift glyph positions in unpredictable ways.
+    #[test]
+    fn test_parse_dw2_short_array_uses_spec_default() {
+        let mut dict: HashMap<String, Object> = HashMap::new();
+        dict.insert("DW2".to_string(), Object::Array(vec![Object::Integer(800)]));
+        assert_eq!(FontInfo::parse_dw2(&dict), VerticalMetrics::SPEC_DEFAULT);
+    }
+
+    /// `/DW2` with real-valued numbers parses cleanly.
+    #[test]
+    fn test_parse_dw2_real_values() {
+        let mut dict: HashMap<String, Object> = HashMap::new();
+        dict.insert(
+            "DW2".to_string(),
+            Object::Array(vec![Object::Real(875.5), Object::Real(-990.25)]),
+        );
+        let dw2 = FontInfo::parse_dw2(&dict);
+        assert_eq!(dw2.v_y, 875.5);
+        assert_eq!(dw2.w1y, -990.25);
+        assert_eq!(dw2.v_x, 500.0);
+    }
+
+    /// `wmode_from_predefined_cmap_name` returns 1 for any name with a `-V`
+    /// suffix and for the bare legacy `V`. This is the cheap fast path that
+    /// avoids parsing the encoding CMap stream when we already know the name
+    /// declares vertical writing.
+    #[test]
+    fn test_wmode_from_predefined_cmap_name_vertical() {
+        assert_eq!(wmode_from_predefined_cmap_name("Identity-V"), 1);
+        assert_eq!(wmode_from_predefined_cmap_name("UniJIS-UTF16-V"), 1);
+        assert_eq!(wmode_from_predefined_cmap_name("UniGB-UTF16-V"), 1);
+        assert_eq!(wmode_from_predefined_cmap_name("UniCNS-UTF16-V"), 1);
+        assert_eq!(wmode_from_predefined_cmap_name("UniKS-UTF16-V"), 1);
+        assert_eq!(wmode_from_predefined_cmap_name("GBK-EUC-V"), 1);
+        assert_eq!(wmode_from_predefined_cmap_name("90ms-RKSJ-V"), 1);
+        assert_eq!(wmode_from_predefined_cmap_name("V"), 1);
+    }
+
+    /// Horizontal-mode names (the overwhelming majority) must return 0 so
+    /// the wmode flag stays cold for normal documents.
+    #[test]
+    fn test_wmode_from_predefined_cmap_name_horizontal() {
+        assert_eq!(wmode_from_predefined_cmap_name("Identity-H"), 0);
+        assert_eq!(wmode_from_predefined_cmap_name("UniJIS-UTF16-H"), 0);
+        assert_eq!(wmode_from_predefined_cmap_name("UniGB-UTF16-H"), 0);
+        assert_eq!(wmode_from_predefined_cmap_name("H"), 0);
+        assert_eq!(wmode_from_predefined_cmap_name("WinAnsiEncoding"), 0);
+        assert_eq!(wmode_from_predefined_cmap_name("MacRomanEncoding"), 0);
+        assert_eq!(wmode_from_predefined_cmap_name("Adobe-Japan1-6"), 0);
+        // Edge case: the substring `-V` appears inside but not as a suffix.
+        assert_eq!(wmode_from_predefined_cmap_name("V-foo"), 0);
+        assert_eq!(wmode_from_predefined_cmap_name("Volt"), 0);
+    }
+
+    /// `FontInfo::get_vertical_metrics` returns per-CID metrics when
+    /// available, falls back to `/DW2` defaults otherwise. This is the
+    /// accessor the rasterizer and extractor call on the hot path of every
+    /// vertical-mode glyph.
+    #[test]
+    fn test_get_vertical_metrics_lookup_precedence() {
+        let mut per_cid: HashMap<u16, VerticalMetrics> = HashMap::new();
+        per_cid.insert(
+            7,
+            VerticalMetrics {
+                w1y: -900.0,
+                v_x: 480.0,
+                v_y: 870.0,
+            },
+        );
+
+        let font = make_font(|f| {
+            f.subtype = "Type0".to_string();
+            f.cid_vertical_metrics = Some(per_cid);
+            f.cid_default_vertical_metrics = VerticalMetrics {
+                w1y: -1050.0,
+                v_x: 500.0,
+                v_y: 900.0,
+            };
+        });
+
+        // Per-CID hit
+        assert_eq!(
+            font.get_vertical_metrics(7),
+            VerticalMetrics {
+                w1y: -900.0,
+                v_x: 480.0,
+                v_y: 870.0
+            }
+        );
+        // Per-CID miss → /DW2 defaults
+        assert_eq!(
+            font.get_vertical_metrics(99),
+            VerticalMetrics {
+                w1y: -1050.0,
+                v_x: 500.0,
+                v_y: 900.0
+            }
+        );
+    }
+
+    /// When neither `/W2` nor `/DW2` is parsed, `get_vertical_metrics`
+    /// returns the spec defaults — keeping rendering correct for the common
+    /// case of a CIDFont that ships only horizontal metrics but is used in
+    /// a vertical context (caller has already established wmode=1 by name).
+    #[test]
+    fn test_get_vertical_metrics_spec_default_fallback() {
+        let font = make_font(|f| {
+            f.subtype = "Type0".to_string();
+            f.cid_vertical_metrics = None;
+            f.cid_default_vertical_metrics = VerticalMetrics::SPEC_DEFAULT;
+        });
+        assert_eq!(font.get_vertical_metrics(0x4E00), VerticalMetrics::SPEC_DEFAULT);
+        assert_eq!(VerticalMetrics::SPEC_DEFAULT.w1y, -1000.0);
+        assert_eq!(VerticalMetrics::SPEC_DEFAULT.v_x, 500.0);
+        assert_eq!(VerticalMetrics::SPEC_DEFAULT.v_y, 880.0);
     }
 
     // =========================================================================
@@ -8764,6 +9799,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         // 'A' = 722 in Times-Roman (not the default 500)
@@ -8811,6 +9849,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         // Courier is monospace — all chars 600
@@ -8854,6 +9895,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         // Should use explicit width (999), not standard Times width (722)
@@ -8895,6 +9939,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         // Unknown font → should fall back to default_width (500)
@@ -8942,6 +9989,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         };
 
         let table = font.get_byte_to_width_table();
@@ -9086,6 +10136,9 @@ mod tests {
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
+            wmode: 0,
+            cid_vertical_metrics: None,
+            cid_default_vertical_metrics: VerticalMetrics::SPEC_DEFAULT,
         }
     }
 

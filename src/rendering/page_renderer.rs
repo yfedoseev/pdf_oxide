@@ -1395,9 +1395,11 @@ impl PageRenderer {
                             self.text_rasterizer.measure_text(text, gs, &self.fonts)
                         };
 
-                        let gs_mut = gs_stack.current_mut();
-                        let advance_matrix = Matrix::translation(advance, 0.0);
-                        gs_mut.text_matrix = advance_matrix.multiply(&gs_mut.text_matrix);
+                        // The rasterizer returns a scalar magnitude along the
+                        // active writing axis. advance_text_matrix routes it
+                        // to x (WMode 0) or y (WMode 1), keeping the axis
+                        // swap in exactly one place.
+                        gs_stack.current_mut().advance_text_matrix(advance);
                     }
                 },
                 Operator::Quote { text } => {
@@ -1442,9 +1444,8 @@ impl PageRenderer {
                             self.text_rasterizer.measure_text(text, gs, &self.fonts)
                         };
 
-                        let gs_mut = gs_stack.current_mut();
-                        let advance_matrix = Matrix::translation(advance, 0.0);
-                        gs_mut.text_matrix = advance_matrix.multiply(&gs_mut.text_matrix);
+                        // Axis swap encapsulated in advance_text_matrix.
+                        gs_stack.current_mut().advance_text_matrix(advance);
                     }
                 },
                 Operator::TJ { array } => {
@@ -1486,9 +1487,8 @@ impl PageRenderer {
                                 .measure_tj_array(array, gs, &self.fonts)
                         };
 
-                        let gs_mut = gs_stack.current_mut();
-                        let advance_matrix = Matrix::translation(advance, 0.0);
-                        gs_mut.text_matrix = advance_matrix.multiply(&gs_mut.text_matrix);
+                        // Axis swap encapsulated in advance_text_matrix.
+                        gs_stack.current_mut().advance_text_matrix(advance);
                     }
                 },
                 Operator::DoubleQuote {
@@ -1541,9 +1541,8 @@ impl PageRenderer {
                             self.text_rasterizer.measure_text(text, gs, &self.fonts)
                         };
 
-                        let gs_mut = gs_stack.current_mut();
-                        let advance_matrix = Matrix::translation(advance, 0.0);
-                        gs_mut.text_matrix = advance_matrix.multiply(&gs_mut.text_matrix);
+                        // Axis swap encapsulated in advance_text_matrix.
+                        gs_stack.current_mut().advance_text_matrix(advance);
                     }
                 },
 
@@ -1615,9 +1614,15 @@ impl PageRenderer {
                     }
                 },
                 Operator::Tf { font, size } => {
+                    // Cache the font's writing mode on the graphics state so
+                    // the rasterizer hot path can branch on a single
+                    // primitive read instead of dereferencing the FontInfo
+                    // through the cache for every glyph.
+                    let wmode = self.fonts.get(font).map(|f| f.wmode).unwrap_or(0);
                     let gs = gs_stack.current_mut();
                     gs.font_name = Some(font.clone());
                     gs.font_size = *size;
+                    gs.text_wmode = wmode;
                 },
 
                 // Extended graphics state

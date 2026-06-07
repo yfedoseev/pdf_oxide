@@ -49,6 +49,9 @@ fn test_type0_identity_encoding_without_tounicode_returns_none() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -101,6 +104,9 @@ fn test_simple_font_identity_encoding_works_for_valid_codes() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -166,6 +172,9 @@ fn test_type0_missing_tounicode_is_an_error() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -221,6 +230,9 @@ fn test_tounicode_with_valid_mappings_works() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -270,6 +282,9 @@ fn test_multi_byte_character_codes_are_processed() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -329,6 +344,9 @@ fn test_extraction_priority_chain() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -382,6 +400,9 @@ fn test_symbolic_font_encoding() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -434,6 +455,9 @@ fn test_pdf_without_tounicode_doesnt_scramble_text() {
         byte_to_char_table: std::sync::OnceLock::new(),
         byte_to_width_table: std::sync::OnceLock::new(),
         diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
