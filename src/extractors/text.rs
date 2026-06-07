@@ -1052,6 +1052,23 @@ fn should_insert_space(
         return SpaceDecision::no_space(SpaceSource::AlreadyPresent, 1.0);
     }
 
+    // Rule 0.3: Complex-script combining-mark guard (#656-class Indic gap).
+    // A Brahmic/Thai/Khmer dependent vowel sign, virama, or tone mark followed
+    // by another character of a complex script is intra-word — the mark carries
+    // its own advance, so the geometric gap and consensus paths below would
+    // otherwise emit a spurious word space (the dominant matra→consonant error
+    // for Tamil/Bengali/Devanagari). Genuine word breaks carry an explicit
+    // space glyph, already handled by Rule 0. This guards the strong-geometric
+    // and consensus branches, which never consult `WordBoundaryDetector`.
+    if let (Some(pc), Some(nc)) =
+        (preceding_text.chars().next_back(), following_text.chars().next())
+    {
+        use crate::text::complex_script_detector::{detect_complex_script, is_complex_script_mark};
+        if is_complex_script_mark(pc as u32) && detect_complex_script(nc as u32).is_some() {
+            return SpaceDecision::no_space(SpaceSource::NoSpace, 0.9);
+        }
+    }
+
     // Rule 0.4: Emoji / pictographic → letter boundary.
     // A wide pictographic glyph (e.g. 📄) advances far, so the residual gap to
     // the next token falls below the proportional-font space threshold and the

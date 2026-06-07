@@ -197,6 +197,14 @@ pub fn handle_devanagari_boundary(
         return Some(false);
     }
 
+    // Rule 6: No boundary AFTER a matra / dependent sign when the next glyph is
+    // another Devanagari character. matra→consonant is intra-word continuation;
+    // real word breaks carry an explicit space glyph. Mirrors `handle_indic_
+    // boundary` Rule 3 (the dominant spurious-space direction).
+    if is_devanagari_diacritic(prev_code) && matches!(curr_code, 0x0900..=0x097F) {
+        return Some(false);
+    }
+
     // Not a Devanagari-specific case - let other signals decide
     None
 }
@@ -437,6 +445,16 @@ pub fn handle_indic_boundary(prev_char: &CharacterInfo, curr_char: &CharacterInf
 
     // Rule 2: No boundary between multiple diacritics
     if is_indic_diacritic(prev_code) && is_indic_diacritic(curr_code) {
+        return Some(false);
+    }
+
+    // Rule 3: No boundary AFTER a matra / dependent vowel sign / virama when the
+    // next glyph is another character of the same Brahmic script. A dependent
+    // vowel sign followed by a base consonant is always intra-word — real word
+    // breaks carry an explicit space glyph (U+0020), handled upstream. This is
+    // the dominant spurious-space direction (matra→consonant) that a purely
+    // geometric gap test inserts because the matra carries its own advance.
+    if is_indic_diacritic(prev_code) && detect_complex_script(curr_code).is_some() {
         return Some(false);
     }
 

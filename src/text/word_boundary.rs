@@ -172,8 +172,18 @@ impl DocumentScript {
                 has_cjk = true;
             }
 
-            // Check for complex scripts
+            // Check for complex scripts. The Brahmic South-Asian blocks
+            // (Bengali, Tamil, Telugu, Kannada, Malayalam) were previously
+            // absent, so those docs classified as Latin/Mixed and never reached
+            // the complex-script boundary rules — leaking spurious spaces after
+            // matras (#656-class Indic gap). They share the same matra/virama
+            // boundary semantics as Devanagari.
             if (0x0900..=0x097F).contains(&ch.code) // Devanagari
+                || (0x0980..=0x09FF).contains(&ch.code) // Bengali
+                || (0x0B80..=0x0BFF).contains(&ch.code) // Tamil
+                || (0x0C00..=0x0C7F).contains(&ch.code) // Telugu
+                || (0x0C80..=0x0CFF).contains(&ch.code) // Kannada
+                || (0x0D00..=0x0D7F).contains(&ch.code) // Malayalam
                 || (0x0E00..=0x0E7F).contains(&ch.code) // Thai
                 || (0x1780..=0x17FF).contains(&ch.code)
             {
