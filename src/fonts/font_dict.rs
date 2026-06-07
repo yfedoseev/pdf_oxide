@@ -2785,8 +2785,21 @@ impl FontInfo {
     /// The width of the space character (code 0x20) in 1000ths of em,
     /// or the font's default width if the space glyph is not defined.
     pub fn get_space_glyph_width(&self) -> f32 {
-        // Space character is always code 0x20 (32) in PDF
-        self.get_glyph_width(0x20)
+        // Space character is always code 0x20 (32) in PDF.
+        let w = self.get_glyph_width(0x20);
+        // Many CID-keyed subset fonts (notably shaped Arabic from Chrome /
+        // browser print) omit a glyph for code 0x20 entirely, so this returns
+        // ~0. Callers derive their geometric word-gap threshold from this
+        // width (threshold = space_width × ratio); a zero width collapses the
+        // threshold to 0, so *every* inter-glyph kerning gap is read as a word
+        // boundary and cursive Arabic words shatter into single letters (#656).
+        // Fall back to a typographic default of 0.25 em (250 font units) — the
+        // same value `should_insert_space` uses when the font is absent.
+        if w < 50.0 {
+            250.0
+        } else {
+            w
+        }
     }
 
     /// Map a Glyph ID (GID) to a standard PostScript glyph name.
