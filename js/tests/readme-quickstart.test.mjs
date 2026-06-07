@@ -5,7 +5,7 @@ import assert from 'node:assert';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { PdfDocument } from '../index.js';
+import { PdfDocument } from '../lib/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = join(here, '..', '..', 'tests', 'fixtures', 'simple.pdf');

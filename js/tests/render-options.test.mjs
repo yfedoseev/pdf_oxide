@@ -108,9 +108,12 @@ test('renderToPixmap dimensions match renderPageWithOptions at same DPI', { skip
   const doc = makeDoc();
   const pngBytes = doc.renderPageWithOptions(0, { dpi: 72 });
   const px = doc.renderToPixmap(0, 72);
+  // renderPageWithOptions returns a plain Uint8Array; wrap it (without copying)
+  // so the Buffer big-endian readers are available.
+  const png = Buffer.from(pngBytes.buffer, pngBytes.byteOffset, pngBytes.byteLength);
   // PNG IHDR: width at bytes 16-19, height at 20-23 (big-endian)
-  const pngW = pngBytes.readUInt32BE(16);
-  const pngH = pngBytes.readUInt32BE(20);
+  const pngW = png.readUInt32BE(16);
+  const pngH = png.readUInt32BE(20);
   assert.strictEqual(px.width, pngW, 'width must match PNG IHDR');
   assert.strictEqual(px.height, pngH, 'height must match PNG IHDR');
 });

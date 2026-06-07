@@ -986,14 +986,17 @@ jobs:
         working-directory: js
         run: npx tsc --noEmit
 
-      # Compile TypeScript to lib/ — publint / arethetypeswrong need
-      # the actual .js + .d.ts files that package.json's `main` /
-      # `types` / `exports` entries point at. `--noEmit` above only
-      # catches type errors, it doesn't write the output tree.
-      - name: TypeScript compile to lib/
-        if: matrix.os == 'ubuntu-latest'
+      # Build lib/ on every OS via the canonical build (tsc + fix-esm-imports).
+      # `lib/*.js` is gitignored and generated, and the test/example steps below
+      # import the package through it, so it must exist on macOS/Windows too —
+      # not just Linux. Bare `tsc` is NOT enough: the source uses extensionless
+      # relative imports, and `fix-esm-imports.js` rewrites them to explicit
+      # `.js` paths that Node's ESM resolver requires at runtime. publint /
+      # arethetypeswrong also need these real .js + .d.ts files that
+      # package.json's `main` / `types` / `exports` entries point at.
+      - name: Build lib/ (tsc + ESM import fixups)
         working-directory: js
-        run: npx tsc
+        run: npm run build:ts
 
       # Biome v2 replaces eslint + prettier with a single Rust-core tool.
       - name: Biome lint+format check
@@ -1066,14 +1069,12 @@ jobs:
           npx node-gyp rebuild
           ls -la build/Release/pdf_oxide.node
 
-      - name: Run Node.js tests
-        working-directory: js
-        run: npm test
-
       # Stage the freshly-built addon into the per-OS prebuilds dir the package
-      # resolves at runtime (linux-x64 / darwin-arm64 / win32-x64), so examples
-      # load it on every OS — not just Linux.
-      - name: Stage node-gyp build as prebuilt for examples
+      # resolves at runtime (linux-x64 / darwin-arm64 / win32-x64). This must
+      # run BEFORE the tests below: the compiled lib/ loads the native addon
+      # from prebuilds/, so the lib-backed tests (core-parity, readme-quickstart)
+      # can only load it once it's staged here — on every OS, not just Linux.
+      - name: Stage node-gyp build as prebuilt
         working-directory: js
         shell: bash
         run: |
@@ -1081,6 +1082,10 @@ jobs:
           mkdir -p "$dir"
           cp build/Release/pdf_oxide.node "$dir/pdf_oxide.node"
           ls -la "$dir"
+
+      - name: Run Node.js tests
+        working-directory: js
+        run: npm test
 
       - name: Install examples workspace dependencies
         working-directory: examples/javascript

@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { Pdf, PdfDocument } from '../index.js';
+import { Pdf, PdfDocument } from '../lib/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = join(here, '..', '..', 'tests', 'fixtures', 'simple.pdf');
@@ -46,7 +46,9 @@ describe('core parity (Node)', () => {
   it('search returns results without throwing', () => {
     const doc = open();
     try {
-      const res = doc.search('the');
+      // searchAll is the idiomatic doc-level search in the Node binding
+      // (mirrors Go's SearchAll / C#'s SearchAll in the parity spec).
+      const res = doc.searchAll('the');
       assert.ok(res !== undefined && res !== null);
     } finally {
       doc.close();
