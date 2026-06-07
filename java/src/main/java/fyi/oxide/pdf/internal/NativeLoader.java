@@ -117,12 +117,23 @@ public final class NativeLoader {
     }
 
     private static void doLoad() {
-        // 1. Explicit override.
+        // 1. Explicit override — only when the file actually exists. The Maven
+        // build sets this property to a Linux `.so` default (pom.xml); on macOS
+        // (`.dylib`) and Windows (`.dll`) that path is absent, so loading it
+        // would hard-fail with UnsatisfiedLinkError even though the correct
+        // platform native is bundled. Fall through to the bundled resource in
+        // that case instead of failing.
         final String overridePath = System.getProperty(PROP_LIB_PATH);
         if (overridePath != null && !overridePath.isEmpty()) {
-            LOG.debug("Loading pdf_oxide_jni from -D{}={}", PROP_LIB_PATH, overridePath);
-            System.load(overridePath);
-            return;
+            if (Files.exists(Paths.get(overridePath))) {
+                LOG.debug("Loading pdf_oxide_jni from -D{}={}", PROP_LIB_PATH, overridePath);
+                System.load(overridePath);
+                return;
+            }
+            LOG.debug(
+                "Override -D{}={} does not exist; falling through to bundled native",
+                PROP_LIB_PATH,
+                overridePath);
         }
 
         // 2. System library opt-in.
