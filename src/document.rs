@@ -8624,17 +8624,35 @@ impl PdfDocument {
     /// span MCIDs and for any MCID containing RTL text (whose span order is
     /// handled by the bidi passes) — both stay byte-identical.
     fn order_mcid_spans(spans: &[crate::layout::TextSpan]) -> Vec<&crate::layout::TextSpan> {
+        use crate::text::rtl_detector::is_rtl_text;
         let mut ordered: Vec<&crate::layout::TextSpan> = spans.iter().collect();
-        let has_rtl = |s: &crate::layout::TextSpan| {
-            s.text
-                .chars()
-                .any(|c| crate::text::rtl_detector::is_rtl_text(c as u32))
-        };
-        if spans.len() > 1 && !spans.iter().any(has_rtl) {
+        if spans.len() <= 1 {
+            return ordered;
+        }
+        let has_rtl = spans
+            .iter()
+            .any(|s| s.text.chars().any(|c| is_rtl_text(c as u32)));
+        let has_latin = spans
+            .iter()
+            .any(|s| s.text.chars().any(|c| c.is_ascii_alphabetic()));
+        if !has_rtl {
+            // LTR multi-span MCID: left-to-right row-aware reading order.
             ordered.sort_by(|a, b| {
                 crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
             });
+        } else if !has_latin {
+            // #656/#657: pure-RTL MCID. The tagged struct-tree path never
+            // reaches `reverse_rtl_visual_order_runs`, so without an explicit
+            // span-order pass the words emerge in visual (reversed) sequence.
+            // Emitting each row right-to-left (X descending) reconstructs
+            // logical reading order from geometry, independent of whether the
+            // producer stored the run visually or logically. Per-span glyph
+            // order is corrected separately by `push_span_text_bidi`.
+            ordered.sort_by(|a, b| {
+                crate::utils::row_aware_span_cmp_rtl(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
+            });
         }
+        // Mixed RTL+Latin MCIDs keep raw order (full UAX #9 bidi deferred).
         ordered
     }
 
@@ -19283,6 +19301,42 @@ mod tests {
             "#557: per-word RTL spans must be reordered into logical word order \
              without char-flipping (got {texts:?})"
         );
+    }
+
+    // #656/#657: the tagged struct-tree path collapses a page into one MCID
+    // whose pure-RTL word-spans are laid out left-to-right (visual, X
+    // ascending). `order_mcid_spans` must emit them right-to-left (logical)
+    // using geometry, since the tagged path never reaches the untagged
+    // `reverse_rtl_visual_order_runs`. (Per-span glyph order is handled
+    // separately by `push_span_text_bidi`; this test asserts span ORDER.)
+    #[test]
+    fn test_order_mcid_spans_pure_rtl_emitted_right_to_left() {
+        // One Hebrew row, three words placed left-to-right by X.
+        let spans = vec![
+            make_rtl_test_span("שלוש", 100.0, 700.0), // leftmost  → logically last
+            make_rtl_test_span("שתיים", 200.0, 700.0),
+            make_rtl_test_span("אחת", 300.0, 700.0), // rightmost → logically first
+        ];
+        let ordered = PdfDocument::order_mcid_spans(&spans);
+        let texts: Vec<&str> = ordered.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["אחת", "שתיים", "שלוש"],
+            "pure-RTL MCID spans must emit rightmost-first (logical RTL order), got {texts:?}"
+        );
+    }
+
+    // Mixed RTL+Latin MCIDs are left in raw order (full UAX #9 deferred) —
+    // guards against the pure-RTL reorder accidentally firing on mixed runs.
+    #[test]
+    fn test_order_mcid_spans_mixed_rtl_latin_kept_raw() {
+        let spans = vec![
+            make_rtl_test_span("שלום", 100.0, 700.0),
+            make_rtl_test_span("World", 200.0, 700.0),
+        ];
+        let ordered = PdfDocument::order_mcid_spans(&spans);
+        let texts: Vec<&str> = ordered.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, vec!["שלום", "World"], "mixed RTL+Latin must stay in raw order");
     }
 
     // #553: bare page-number detection (applied only inside the margin band).

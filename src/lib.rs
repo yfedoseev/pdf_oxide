@@ -423,6 +423,30 @@ pub(crate) mod utils {
         }
     }
 
+    /// Right-to-left variant of [`row_aware_span_cmp`] (issues #656/#657).
+    ///
+    /// Identical row banding (lines top-to-bottom), but orders spans
+    /// **right-to-left within a row** (X descending). A pure-RTL line's
+    /// logical reading order *is* its rightmost-first geometric order, so
+    /// sorting word-spans by descending X reconstructs logical order
+    /// directly from page geometry — independent of whether the producer
+    /// stored the run in visual or logical order. Used by the tagged
+    /// struct-tree assemblers, which otherwise have no span-order pass for
+    /// RTL (the untagged `reverse_rtl_visual_order_runs` is never reached
+    /// on tagged pages).
+    #[inline]
+    pub fn row_aware_span_cmp_rtl(a_y: f32, a_x: f32, b_y: f32, b_x: f32) -> Ordering {
+        if !a_y.is_finite() || !b_y.is_finite() {
+            return safe_float_cmp(b_y, a_y).then_with(|| safe_float_cmp(b_x, a_x));
+        }
+        let band_a = (a_y / ROW_BAND_TOLERANCE_PT).round() as i32;
+        let band_b = (b_y / ROW_BAND_TOLERANCE_PT).round() as i32;
+        match band_b.cmp(&band_a) {
+            Ordering::Equal => safe_float_cmp(b_x, a_x), // X descending = RTL
+            other => other,
+        }
+    }
+
     /// Safely compare two floating point numbers, handling NaN cases.
     ///
     /// NaN values are treated as equal to each other and greater than all other values.
@@ -655,6 +679,43 @@ pub(crate) mod utils {
                 .map(|i| ((i as f32) * 0.73, ((i * 17) % 500) as f32))
                 .collect();
             v.sort_by(|a, b| row_aware_span_cmp(a.0, a.1, b.0, b.1));
+        }
+
+        /// #656/#657: the RTL variant keeps rows top-to-bottom but orders
+        /// X *descending* (right-to-left) within a row — a pure-RTL line's
+        /// logical reading order.
+        #[test]
+        fn test_row_aware_span_cmp_rtl_within_row_is_descending() {
+            // Same row (Y within band), laid out left-to-right by X.
+            let mut row = [
+                (100.0f32, 10.0f32, "leftmost"),
+                (100.0, 50.0, "mid"),
+                (100.0, 90.0, "rightmost"),
+            ];
+            row.sort_by(|a, b| row_aware_span_cmp_rtl(a.0, a.1, b.0, b.1));
+            // Rightmost (highest X) reads first in RTL.
+            assert_eq!(["rightmost", "mid", "leftmost"], [row[0].2, row[1].2, row[2].2]);
+        }
+
+        /// Rows still order top-to-bottom regardless of the within-row flip.
+        #[test]
+        fn test_row_aware_span_cmp_rtl_rows_top_to_bottom() {
+            let mut rows = [
+                (10.0f32, 0.0f32, "bottom"),
+                (100.0, 0.0, "top"),
+                (50.0, 0.0, "middle"),
+            ];
+            rows.sort_by(|a, b| row_aware_span_cmp_rtl(a.0, a.1, b.0, b.1));
+            assert_eq!(["top", "middle", "bottom"], [rows[0].2, rows[1].2, rows[2].2]);
+        }
+
+        /// Must be a valid total order for `sort_by` (no transitivity panic).
+        #[test]
+        fn test_row_aware_span_cmp_rtl_is_total_order() {
+            let mut v: Vec<(f32, f32)> = (0..200)
+                .map(|i| ((i as f32) * 0.73, ((i * 17) % 500) as f32))
+                .collect();
+            v.sort_by(|a, b| row_aware_span_cmp_rtl(a.0, a.1, b.0, b.1));
         }
 
         /// Sort a large array with mixed NaN/normal values to stress-test.
