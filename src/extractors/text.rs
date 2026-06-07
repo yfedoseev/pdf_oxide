@@ -4352,6 +4352,27 @@ impl<'doc> TextExtractor<'doc> {
                 current.bbox.width = new_width;
                 current.bbox.height = new_height;
 
+                // Keep `char_widths` in lockstep with the merged text. The
+                // downstream width-based splitters `is_column_spanning_decimal`
+                // and `char_widths_boundary_split` (document.rs) fire when
+                // `char_widths.len() < char_count`, so a merged multi-glyph span
+                // (e.g. per-glyph `Td <hex> Tj` table cells like "0.99" / "Q1")
+                // would otherwise be wrongly split — dropping the decimal point
+                // ("0.99" → "0 99") or gluing a space at the letter→digit
+                // boundary ("Q1" → "Q 1"). Append this span's per-glyph widths,
+                // then pad to the exact char count to cover any inserted '.'/
+                // ' ' separator (or a source span whose widths were sparse).
+                current.char_widths.extend_from_slice(&span.char_widths);
+                let merged_char_count = current.text.chars().count();
+                if current.char_widths.len() != merged_char_count {
+                    let pad = if current.font_size > 0.0 {
+                        current.font_size * 0.25
+                    } else {
+                        1.0
+                    };
+                    current.char_widths.resize(merged_char_count, pad);
+                }
+
                 // After a cross-font glue, adopt the longer run's font
                 // metadata. The single-letter side was typographic
                 // decoration, not semantic emphasis, so the dominant-run
