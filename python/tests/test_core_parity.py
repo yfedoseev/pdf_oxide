@@ -10,6 +10,7 @@ import pytest
 
 import pdf_oxide
 
+
 HERE = os.path.dirname(__file__)
 FIXTURE = os.path.normpath(os.path.join(HERE, "..", "..", "tests", "fixtures", "simple.pdf"))
 
@@ -76,7 +77,7 @@ def test_encrypt_roundtrip():
 
 
 def test_open_error():
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017
         pdf_oxide.PdfDocument("/no/such/file/does/not/exist.pdf")
 
 
