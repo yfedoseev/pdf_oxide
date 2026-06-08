@@ -6667,6 +6667,30 @@ impl PdfDocument {
             return false;
         }
 
+        // Complex Brahmic / South-East-Asian scripts (Devanagari, Bengali,
+        // Tamil, Telugu, …, Thai, Khmer): an inter-glyph gap *inside* a word is
+        // not a word break. These scripts render dependent vowel signs
+        // (matras), conjuncts, and reordered glyphs with their own positional
+        // advances, so the Latin-tuned proportional-gap test below fires inside
+        // a syllable cluster (e.g. a Bengali consonant following a wide matra
+        // sits ~0.7em from it). Word boundaries in conforming text are carried
+        // by an explicit SPACE glyph — ISO 32000-1 §14.8.2.5 requires the
+        // spacing characters that separate words to be present — so a heuristic
+        // space here only double-counts a boundary the explicit space already
+        // marks. Suppress it when both sides are the *same* complex script;
+        // this mirrors the CJK guard above (CJK uses no inter-word space at
+        // all, these scripts carry it explicitly).
+        {
+            use crate::text::complex_script_detector::detect_complex_script;
+            let prev_script = prev_tail.and_then(|c| detect_complex_script(c as u32));
+            let curr_script = curr_head.and_then(|c| detect_complex_script(c as u32));
+            if let (Some(p), Some(c)) = (prev_script, curr_script) {
+                if p == c {
+                    return false;
+                }
+            }
+        }
+
         // Emoji / pictographic → letter boundary: a wide pictographic glyph
         // (e.g. 📄) abuts the next token, so the proportional-gap test below
         // would drop the inter-token space (`📄README` instead of `📄 README`).
@@ -19386,6 +19410,40 @@ mod tests {
         // spans without a separator and `3.80%` + `4.41%` came out as
         // `3.80%4.41%`. Large gap = different column = still a space.
         assert!(PdfDocument::should_insert_space(&prev, &current));
+    }
+
+    /// #667: two glyphs of the same complex Brahmic script with an intra-word
+    /// gap (a Bengali matra-cluster `ছো` followed by `ট`, ~9pt apart at 13pt)
+    /// must NOT get a heuristic space — word breaks in these scripts are
+    /// carried by explicit SPACE glyphs (§14.8.2.5), and the Latin-tuned gap
+    /// test otherwise splits syllables (`ছো ট`). Mirrors the CJK guard.
+    #[test]
+    fn test_should_insert_space_suppressed_within_complex_script() {
+        // Bengali: prev ends in matra ো (U+09CB), next is consonant ট (U+09AF…
+        // here U+099F) — same script, ~9pt gap.
+        let prev = make_test_span("\u{099B}\u{09CB}", 0.0, 100.0, 7.0, 13.0);
+        let current = make_test_span("\u{099F}", 16.0, 100.0, 5.0, 13.0);
+        assert!(
+            !PdfDocument::should_insert_space(&prev, &current),
+            "intra-word complex-script gap must not insert a space"
+        );
+        // Tamil likewise (prev ends in vowel sign ை U+0BC8, next consonant).
+        let p2 = make_test_span("\u{0B87}\u{0BA9}\u{0BC8}", 0.0, 100.0, 20.0, 13.0);
+        let c2 = make_test_span("\u{0B9A}\u{0BCD}", 30.0, 100.0, 8.0, 13.0);
+        assert!(!PdfDocument::should_insert_space(&p2, &c2));
+    }
+
+    /// The guard is script-specific: a complex-script glyph meeting a Latin
+    /// glyph across a real gap still gets its boundary space (only *same*-script
+    /// intra-word gaps are suppressed).
+    #[test]
+    fn test_should_insert_space_kept_across_script_boundary() {
+        let prev = make_test_span("\u{0B95}", 0.0, 100.0, 12.0, 13.0); // Tamil க
+        let current = make_test_span("A", 18.0, 100.0, 8.0, 13.0); // Latin
+        assert!(
+            PdfDocument::should_insert_space(&prev, &current),
+            "complex↔Latin boundary gap must keep its space"
+        );
     }
 
     // ========================================================================
