@@ -410,7 +410,7 @@ mod tests {
         }
         // The original symptom: sorting must not panic.
         let mut v = pts.to_vec();
-        v.sort_by(|a, b| OcrOutput::reading_order_cmp(a, b));
+        v.sort_by(OcrOutput::reading_order_cmp);
         assert_eq!(v.len(), pts.len());
     }
 

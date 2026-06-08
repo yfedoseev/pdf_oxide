@@ -130,7 +130,7 @@ fn run_ocr() -> Result<(), Box<dyn std::error::Error>> {
 
     // Open PDF
     println!("Opening PDF: {}", pdf_path);
-    let mut doc = PdfDocument::open(&pdf_path)?;
+    let doc = PdfDocument::open(&pdf_path)?;
     let page_count = doc.page_count()?;
     println!("PDF has {} pages", page_count);
 
@@ -141,11 +141,11 @@ fn run_ocr() -> Result<(), Box<dyn std::error::Error>> {
         println!("\n=== Page {} ===", page_idx + 1);
 
         // Check if page needs OCR
-        let needs_ocr = ocr::needs_ocr(&mut doc, page_idx)?;
+        let needs_ocr = ocr::needs_ocr(&doc, page_idx)?;
 
         if needs_ocr {
             println!("Page is scanned, running OCR...");
-            let text = ocr::ocr_page(&mut doc, page_idx, &engine, &options)?;
+            let text = ocr::ocr_page(&doc, page_idx, &engine, &options)?;
             println!("{}", text);
         } else {
             println!("Page has native text, using standard extraction...");

@@ -54,7 +54,7 @@ mod ocr_scanned_tests {
 
         println!("\n=== Opening Scanned PDF ===");
         match PdfDocument::open(SCANNED_PDF) {
-            Ok(mut doc) => match doc.page_count() {
+            Ok(doc) => match doc.page_count() {
                 Ok(count) => {
                     println!("✓ PDF opened successfully");
                     println!("  Pages: {}", count);
@@ -82,7 +82,7 @@ mod ocr_scanned_tests {
         println!("\n=== Scanned PDF Page Analysis ===");
 
         match PdfDocument::open(SCANNED_PDF) {
-            Ok(mut doc) => {
+            Ok(doc) => {
                 if let Ok(page_count) = doc.page_count() {
                     println!("Total pages: {}\n", page_count);
 
@@ -144,7 +144,7 @@ mod ocr_scanned_tests {
         println!("\n=== OCR Readiness Assessment ===");
 
         match PdfDocument::open(SCANNED_PDF) {
-            Ok(mut doc) => {
+            Ok(doc) => {
                 if let Ok(page_count) = doc.page_count() {
                     let mut ocr_candidates = 0;
                     let mut text_pages = 0;
@@ -191,7 +191,7 @@ mod ocr_scanned_tests {
         println!("\n=== Text Extraction Performance ===");
 
         match PdfDocument::open(SCANNED_PDF) {
-            Ok(mut doc) => {
+            Ok(doc) => {
                 let start = Instant::now();
 
                 if let Ok(page_count) = doc.page_count() {
@@ -270,7 +270,7 @@ mod ocr_scanned_tests {
         println!("\n=== Sample Page Extraction ===");
 
         match PdfDocument::open(SCANNED_PDF) {
-            Ok(mut doc) => match doc.extract_text(0) {
+            Ok(doc) => match doc.extract_text(0) {
                 Ok(text) => {
                     println!("✓ Successfully extracted text from page 0");
                     println!("  Length: {} characters", text.len());

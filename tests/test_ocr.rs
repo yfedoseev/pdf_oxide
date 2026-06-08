@@ -364,16 +364,15 @@ fn test_ocr_scanned_pdf() {
     let engine = OcrEngine::new(det_model, rec_model, dict_path, OcrConfig::default())
         .expect("Failed to create OCR engine");
 
-    let mut doc = PdfDocument::open("tests/fixtures/ocr/pdfs/scanned_sample.pdf")
+    let doc = PdfDocument::open("tests/fixtures/ocr/pdfs/scanned_sample.pdf")
         .expect("Failed to open PDF");
 
     // Check if page needs OCR
-    let needs_ocr = ocr::needs_ocr(&mut doc, 0).expect("Failed to check if OCR needed");
+    let needs_ocr = ocr::needs_ocr(&doc, 0).expect("Failed to check if OCR needed");
     assert!(needs_ocr, "Expected scanned PDF to need OCR");
 
     // Run OCR
-    let text =
-        ocr::ocr_page(&mut doc, 0, &engine, &OcrExtractOptions::default()).expect("OCR failed");
+    let text = ocr::ocr_page(&doc, 0, &engine, &OcrExtractOptions::default()).expect("OCR failed");
 
     assert!(!text.is_empty(), "No text extracted from scanned PDF");
 }
@@ -395,24 +394,20 @@ fn test_extract_text_with_ocr_auto() {
         .expect("Failed to create OCR engine");
 
     // Test with native PDF (should use native extraction)
-    let mut native_doc =
+    let native_doc =
         PdfDocument::open("tests/fixtures/simple.pdf").expect("Failed to open native PDF");
     let native_text =
-        ocr::extract_text_with_ocr(&mut native_doc, 0, Some(&engine), OcrExtractOptions::default())
+        ocr::extract_text_with_ocr(&native_doc, 0, Some(&engine), OcrExtractOptions::default())
             .expect("Failed to extract text");
     // Native PDF should have text without needing OCR
     assert!(!native_text.is_empty());
 
     // Test with scanned PDF (should use OCR)
-    let mut scanned_doc = PdfDocument::open("tests/fixtures/ocr/pdfs/scanned_sample.pdf")
+    let scanned_doc = PdfDocument::open("tests/fixtures/ocr/pdfs/scanned_sample.pdf")
         .expect("Failed to open scanned PDF");
-    let ocr_text = ocr::extract_text_with_ocr(
-        &mut scanned_doc,
-        0,
-        Some(&engine),
-        OcrExtractOptions::default(),
-    )
-    .expect("Failed to extract text with OCR");
+    let ocr_text =
+        ocr::extract_text_with_ocr(&scanned_doc, 0, Some(&engine), OcrExtractOptions::default())
+            .expect("Failed to extract text with OCR");
     assert!(!ocr_text.is_empty());
 }
 

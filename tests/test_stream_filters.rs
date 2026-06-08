@@ -16,7 +16,7 @@ mod stream_filters_test {
         println!("║  STREAM FILTERS INSPECTION TEST                              ║");
         println!("╚═══════════════════════════════════════════════════════════════╝\n");
 
-        let mut doc = match PdfDocument::open(pdf_path) {
+        let doc = match PdfDocument::open(pdf_path) {
             Ok(d) => d,
             Err(e) => {
                 println!("❌ Failed to open PDF: {}", e);

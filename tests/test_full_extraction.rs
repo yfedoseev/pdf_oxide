@@ -18,7 +18,7 @@ fn test_full_document_extraction() {
 
     println!("\n=== FULL DOCUMENT EXTRACTION TEST ===\n");
 
-    let mut doc = match PdfDocument::open(pdf_path) {
+    let doc = match PdfDocument::open(pdf_path) {
         Ok(d) => d,
         Err(e) => {
             println!("❌ Failed to open: {}", e);

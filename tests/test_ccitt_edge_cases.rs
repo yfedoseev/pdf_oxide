@@ -14,7 +14,7 @@ mod ccitt_edge_cases {
         println!("║  CCITT EDGE CASES TEST - Leading Zeros Handling              ║");
         println!("╚═══════════════════════════════════════════════════════════════╝\n");
 
-        let mut doc = match PdfDocument::open(pdf_path) {
+        let doc = match PdfDocument::open(pdf_path) {
             Ok(d) => d,
             Err(e) => {
                 println!("❌ Failed to open PDF: {}", e);
@@ -114,7 +114,7 @@ mod ccitt_edge_cases {
         println!("║  JBIG2/CCITT MISMATCH INVENTORY                             ║");
         println!("╚═══════════════════════════════════════════════════════════════╝\n");
 
-        let mut doc = match PdfDocument::open(pdf_path) {
+        let doc = match PdfDocument::open(pdf_path) {
             Ok(d) => d,
             Err(e) => {
                 println!("❌ Failed to open PDF: {}", e);

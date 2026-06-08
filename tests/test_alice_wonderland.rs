@@ -39,7 +39,7 @@ mod alice_tests {
         println!("\n=== Alice in Wonderland - Document Analysis ===");
 
         match PdfDocument::open(ALICE_PDF) {
-            Ok(mut doc) => match doc.page_count() {
+            Ok(doc) => match doc.page_count() {
                 Ok(count) => {
                     println!("✓ PDF opened successfully");
                     println!("  Pages: {}", count);
@@ -63,7 +63,7 @@ mod alice_tests {
         println!("\n=== Alice Page Analysis (first 10 pages) ===");
 
         match PdfDocument::open(ALICE_PDF) {
-            Ok(mut doc) => {
+            Ok(doc) => {
                 if let Ok(page_count) = doc.page_count() {
                     let pages_to_check = page_count.min(10);
 
@@ -116,7 +116,7 @@ mod alice_tests {
         println!("\n=== Alice OCR Readiness ===");
 
         match PdfDocument::open(ALICE_PDF) {
-            Ok(mut doc) => {
+            Ok(doc) => {
                 if let Ok(page_count) = doc.page_count() {
                     let mut images_found = 0;
                     let mut text_pages = 0;

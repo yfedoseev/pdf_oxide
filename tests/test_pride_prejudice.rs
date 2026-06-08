@@ -37,7 +37,7 @@ mod pride_tests {
         }
 
         match PdfDocument::open(PRIDE_PDF) {
-            Ok(mut doc) => match doc.page_count() {
+            Ok(doc) => match doc.page_count() {
                 Ok(count) => {
                     println!("\n✓ Pride and Prejudice opened successfully");
                     println!("  Pages: {}", count);
@@ -58,7 +58,7 @@ mod pride_tests {
         }
 
         match PdfDocument::open(PRIDE_PDF) {
-            Ok(mut doc) => {
+            Ok(doc) => {
                 println!("\n=== Pride and Prejudice - Page 0 Analysis ===");
 
                 // Get text
@@ -99,7 +99,7 @@ mod pride_tests {
         }
 
         match PdfDocument::open(PRIDE_PDF) {
-            Ok(mut doc) => {
+            Ok(doc) => {
                 match doc.page_count() {
                     Ok(page_count) => {
                         println!("\n=== Pride and Prejudice - OCR Readiness ===");

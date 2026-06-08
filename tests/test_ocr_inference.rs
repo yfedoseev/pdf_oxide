@@ -83,7 +83,7 @@ mod ocr_inference_tests {
         println!("\n=== PDF Image Extraction ===");
 
         match PdfDocument::open(SCANNED_PDF) {
-            Ok(mut doc) => {
+            Ok(doc) => {
                 // Try page 1 (image-only, no native text)
                 match doc.extract_images(1) {
                     Ok(images) => {
@@ -143,7 +143,7 @@ mod ocr_inference_tests {
 
         // Step 1: Open PDF
         println!("Step 1: Opening PDF...");
-        let mut doc = match PdfDocument::open(SCANNED_PDF) {
+        let doc = match PdfDocument::open(SCANNED_PDF) {
             Ok(doc) => {
                 println!("✅ PDF opened");
                 doc
@@ -339,7 +339,7 @@ mod ocr_inference_tests {
         println!("\n=== OCR Accuracy Baseline ===");
         println!("(Comparing page 0 native text with OCR result)\n");
 
-        let mut doc = match PdfDocument::open(SCANNED_PDF) {
+        let doc = match PdfDocument::open(SCANNED_PDF) {
             Ok(doc) => doc,
             Err(e) => {
                 println!("Error: {:?}", e);

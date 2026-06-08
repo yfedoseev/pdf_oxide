@@ -145,9 +145,9 @@ fn auto_hybrid_recovers_native_and_in_image_text_520() {
         0,
         Some(
             &pdf_oxide::ocr::OcrEngine::new(
-                &AutoExtractor::model_cache_dir().join("det.onnx"),
-                &AutoExtractor::model_cache_dir().join("rec.onnx"),
-                &AutoExtractor::model_cache_dir().join("en_dict.txt"),
+                AutoExtractor::model_cache_dir().join("det.onnx"),
+                AutoExtractor::model_cache_dir().join("rec.onnx"),
+                AutoExtractor::model_cache_dir().join("en_dict.txt"),
                 pdf_oxide::ocr::OcrConfig::default(),
             )
             .expect("engine"),

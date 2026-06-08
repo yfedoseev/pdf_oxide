@@ -5,8 +5,8 @@ use pdf_oxide::document::PdfDocument;
 #[test]
 fn test_detect_page_type_text_page() {
     use pdf_oxide::ocr::{detect_page_type, PageType};
-    let mut doc = PdfDocument::open("tests/fixtures/simple.pdf").unwrap();
-    let page_type = detect_page_type(&mut doc, 0).unwrap();
+    let doc = PdfDocument::open("tests/fixtures/simple.pdf").unwrap();
+    let page_type = detect_page_type(&doc, 0).unwrap();
     assert_eq!(page_type, PageType::NativeText);
 }
 
@@ -14,8 +14,8 @@ fn test_detect_page_type_text_page() {
 #[test]
 fn test_needs_ocr_text_page_false() {
     use pdf_oxide::ocr::needs_ocr;
-    let mut doc = PdfDocument::open("tests/fixtures/simple.pdf").unwrap();
-    let needs = needs_ocr(&mut doc, 0).unwrap();
+    let doc = PdfDocument::open("tests/fixtures/simple.pdf").unwrap();
+    let needs = needs_ocr(&doc, 0).unwrap();
     assert!(!needs, "Text-based PDF page should not need OCR");
 }
 
@@ -26,7 +26,7 @@ fn test_needs_ocr_text_page_false() {
 #[test]
 fn test_detect_page_type_no_infinite_recursion() {
     use pdf_oxide::ocr::{detect_page_type, needs_ocr};
-    let mut doc = PdfDocument::open("tests/fixtures/simple.pdf").unwrap();
-    let _page_type = detect_page_type(&mut doc, 0).unwrap();
-    let _needs = needs_ocr(&mut doc, 0).unwrap();
+    let doc = PdfDocument::open("tests/fixtures/simple.pdf").unwrap();
+    let _page_type = detect_page_type(&doc, 0).unwrap();
+    let _needs = needs_ocr(&doc, 0).unwrap();
 }

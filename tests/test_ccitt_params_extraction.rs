@@ -17,7 +17,7 @@ mod ccitt_extraction_tests {
         println!("║  CCITT PARAMETER EXTRACTION TEST - Pride & Prejudice PDF     ║");
         println!("╚═══════════════════════════════════════════════════════════════╝\n");
 
-        let mut doc = match PdfDocument::open(pdf_path) {
+        let doc = match PdfDocument::open(pdf_path) {
             Ok(d) => d,
             Err(e) => {
                 println!("❌ Failed to open PDF: {}", e);
@@ -106,7 +106,7 @@ mod ccitt_extraction_tests {
         println!("║  CCITT-T4-T6 DECOMPRESSION OUTPUT TEST                       ║");
         println!("╚═══════════════════════════════════════════════════════════════╝\n");
 
-        let mut doc = match PdfDocument::open(pdf_path) {
+        let doc = match PdfDocument::open(pdf_path) {
             Ok(d) => d,
             Err(e) => {
                 println!("❌ Failed to open PDF: {}", e);
