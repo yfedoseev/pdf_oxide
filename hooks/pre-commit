@@ -33,7 +33,9 @@ fi
 # 3. Clippy lints (exclude python feature to avoid libpython linking issues)
 echo "🔍 Running clippy..."
 # Use all features except python for local checks (Python tested in CI with proper env)
-FEATURES="rendering,barcodes,signatures,office,ocr"
+# Note: office conversion is unconditional since v0.3.48 (office_oxide is a
+# required dep), so there is no longer an "office" feature to enable here.
+FEATURES="rendering,barcodes,signatures,ocr"
 if ! cargo clippy --all-targets --features "$FEATURES" -- -D warnings; then
     echo "❌ Clippy found issues. Fix them before committing."
     exit 1
