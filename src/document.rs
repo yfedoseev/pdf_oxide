@@ -8886,6 +8886,103 @@ impl PdfDocument {
         out
     }
 
+    /// Port of the plain-text RTL reading-order correction to the converter
+    /// pipeline's [`crate::pipeline::OrderedTextSpan`] sequence, so `to_markdown`
+    /// and `to_html` produce logical-order Arabic/Hebrew.
+    ///
+    /// The plain-text path fixes RTL during structure assembly
+    /// ([`order_pure_rtl_spans`] for span order, [`push_span_text_bidi`] for
+    /// per-glyph order). The converter pipeline never reaches those — it orders
+    /// spans by MCID/geometry and the converters emit each span's text verbatim
+    /// — so visual-order Arabic leaked through reversed and scrambled. This pass
+    /// groups the reading-order sequence into visual lines by a font-relative Y
+    /// tolerance (matching the converters' own line-break test) and, for each
+    /// line that is purely right-to-left, emits the spans rightmost-first and
+    /// rewrites each span's text to logical order:
+    /// - a pure-RTL span: strip interior cursive-join spaces (§14.8.2.3.3) then
+    ///   reverse keeping combining marks attached ([`reverse_rtl_keeping_marks`]);
+    /// - a neutral-only span: reverse so trailing punctuation re-attaches to the
+    ///   preceding word (UAX #9 N1/N2, [`is_reversible_rtl_neutral_span`]).
+    /// Mixed RTL+Latin lines are left untouched (full UAX #9 deferred), and the
+    /// whole pass is skipped when the page has no RTL characters.
+    fn apply_rtl_logical_order_to_ordered_spans(spans: &mut [crate::pipeline::OrderedTextSpan]) {
+        use crate::text::rtl_detector::is_rtl_text;
+        use crate::utils::safe_float_cmp;
+
+        let has_any_rtl = |s: &crate::pipeline::OrderedTextSpan| {
+            s.span.text.chars().any(|c| is_rtl_text(c as u32))
+        };
+        if !spans.iter().any(has_any_rtl) {
+            return; // fast path: pure-LTR page is byte-identical
+        }
+
+        let n = spans.len();
+        let mut i = 0;
+        while i < n {
+            // Group the maximal run of spans on the same visual line, using the
+            // same font-relative tolerance the converters use for line breaks.
+            let anchor_y = spans[i].span.bbox.y;
+            let mut j = i + 1;
+            while j < n {
+                let fs = spans[i]
+                    .span
+                    .font_size
+                    .max(spans[j].span.font_size)
+                    .max(1.0);
+                if !spans[j].span.bbox.y.is_finite()
+                    || (spans[j].span.bbox.y - anchor_y).abs() > 0.5 * fs
+                {
+                    break;
+                }
+                j += 1;
+            }
+            let line = &mut spans[i..j];
+
+            let has_rtl = line.iter().any(has_any_rtl);
+            let has_latin = line
+                .iter()
+                .any(|s| s.span.text.chars().any(|c| c.is_ascii_alphabetic()));
+            if has_rtl && !has_latin {
+                // Logical RTL order is rightmost glyph first.
+                line.sort_by(|a, b| safe_float_cmp(b.span.bbox.x, a.span.bbox.x));
+                // Snap every span on this line to a single baseline. RTL
+                // producers jitter glyphs a few points off the baseline (hamza
+                // seats, marks), and the converters break a line whenever the
+                // Y delta between consecutive spans exceeds ~0.5em — which,
+                // after the X-descending reorder, would shatter one line into
+                // many spurious one-word "lines" (each then mis-promoted to a
+                // heading). Collapsing the jitter keeps the line intact.
+                for s in line.iter_mut() {
+                    s.span.bbox.y = anchor_y;
+                }
+                for s in line.iter_mut() {
+                    let mut rtl = 0usize;
+                    let mut latin = false;
+                    for c in s.span.text.chars() {
+                        if c.is_whitespace() {
+                            continue;
+                        }
+                        if c.is_ascii_alphabetic() {
+                            latin = true;
+                            break;
+                        }
+                        if is_rtl_text(c as u32) {
+                            rtl += 1;
+                        }
+                    }
+                    if rtl >= 2 && !latin {
+                        s.span.text = Self::reverse_rtl_keeping_marks(
+                            &Self::strip_interior_arabic_spaces(&s.span.text),
+                        );
+                    } else if Self::is_reversible_rtl_neutral_span(&s.span.text) {
+                        s.span.text = s.span.text.chars().rev().collect();
+                    }
+                }
+            }
+            i = j;
+        }
+    }
+
     ///
     /// Used by paths that operate on raw spans rather than ordered
     /// spans (`extract_page_text`, `extract_structured`,
@@ -15331,6 +15428,11 @@ impl PdfDocument {
         // Tag spans inside /Link annotations with their URI.
         self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans);
 
+        // Correct right-to-left reading order (Arabic/Hebrew) before the
+        // converter emits spans verbatim — the converter pipeline does not
+        // reach the plain-text path's RTL passes.
+        Self::apply_rtl_logical_order_to_ordered_spans(&mut ordered_spans);
+
         // Step 8: Use pipeline converter with tables
         let converter = MarkdownOutputConverter::new();
         let mut markdown =
@@ -15655,6 +15757,11 @@ impl PdfDocument {
         // Tag spans inside /Link annotations with their URI.
         self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans);
 
+        // Correct right-to-left reading order (Arabic/Hebrew) before the
+        // converter emits spans verbatim — the converter pipeline does not
+        // reach the plain-text path's RTL passes.
+        Self::apply_rtl_logical_order_to_ordered_spans(&mut ordered_spans);
+
         // Step 7: Use pipeline converter with tables
         let converter = HtmlOutputConverter::new();
         let mut html = converter.convert_with_tables(&ordered_spans, &tables, &pipeline_config)?;
@@ -15844,6 +15951,11 @@ impl PdfDocument {
 
         // Tag spans inside /Link annotations with their URI.
         self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans);
+
+        // Correct right-to-left reading order (Arabic/Hebrew) before the
+        // converter emits spans verbatim — the converter pipeline does not
+        // reach the plain-text path's RTL passes.
+        Self::apply_rtl_logical_order_to_ordered_spans(&mut ordered_spans);
 
         // Step 7: Use pipeline converter with tables
         let converter = PlainTextConverter::new();
@@ -19908,6 +20020,39 @@ mod tests {
             vec!["\u{0627}", "\u{0628}", "\u{062C}", "\u{062F}"],
             "distinct RTL lines must break (top first, each rightmost-first), got {texts:?}"
         );
+    }
+
+    /// The converter-pipeline RTL pass must reorder a pure-RTL line
+    /// rightmost-first and reverse each span's glyphs to logical order, so the
+    /// markdown/HTML converters (which emit spans verbatim) get logical Arabic
+    /// /Hebrew. Mirrors the plain-text path on `OrderedTextSpan`.
+    #[test]
+    fn test_apply_rtl_logical_order_to_ordered_spans() {
+        use crate::pipeline::OrderedTextSpan;
+        let mk = |t: &str, x: f32| OrderedTextSpan::new(make_rtl_test_span(t, x, 700.0), 0);
+        // Two Hebrew word-spans drawn left-to-right (visual), each with its
+        // glyphs in visual (reversed) order. Logical: rightmost span first,
+        // glyphs un-reversed.
+        let mut spans = vec![
+            mk("\u{05D2}\u{05D1}\u{05D0}", 100.0), // visual גבא  → logical אבג
+            mk("\u{05D5}\u{05D4}", 200.0),         // visual וה   → logical הו
+        ];
+        PdfDocument::apply_rtl_logical_order_to_ordered_spans(&mut spans);
+        assert_eq!(spans[0].span.text, "\u{05D4}\u{05D5}", "rightmost-first + glyphs logical");
+        assert_eq!(spans[1].span.text, "\u{05D0}\u{05D1}\u{05D2}");
+    }
+
+    /// Pure-LTR ordered spans are byte-identical after the pass (fast path).
+    #[test]
+    fn test_apply_rtl_logical_order_leaves_ltr_untouched() {
+        use crate::pipeline::OrderedTextSpan;
+        let mut spans = vec![
+            OrderedTextSpan::new(make_rtl_test_span("Hello", 100.0, 700.0), 0),
+            OrderedTextSpan::new(make_rtl_test_span("World", 200.0, 700.0), 1),
+        ];
+        PdfDocument::apply_rtl_logical_order_to_ordered_spans(&mut spans);
+        assert_eq!(spans[0].span.text, "Hello");
+        assert_eq!(spans[1].span.text, "World");
     }
 
     // #656: grapheme-aware RTL reversal keeps Arabic combining marks bound to
