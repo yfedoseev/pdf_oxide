@@ -7178,6 +7178,34 @@ impl PdfDocument {
         out
     }
 
+    /// Emit the inter-line newline(s) between two vertically separated spans in
+    /// the struct-order assembler. A normal line gap maps to one to three
+    /// newlines proportional to the vertical distance (`y_diff / line_height`,
+    /// clamped) so multi-line paragraph spacing survives. When `single_break`
+    /// is set — two consecutive cells of a tagged table on different rows — a
+    /// single newline is emitted instead: table rows are stacked block rows,
+    /// not free-leading paragraphs (ISO 32000-1 §14.8.4.3.4), and the geometric
+    /// row pitch (~1.7× leading) would otherwise insert a spurious blank line
+    /// between every row.
+    fn push_line_breaks(
+        text: &mut String,
+        prev: &TextSpan,
+        span: &TextSpan,
+        y_diff: f32,
+        single_break: bool,
+    ) {
+        if single_break {
+            text.push('\n');
+            return;
+        }
+        let font_size = prev.font_size.max(span.font_size).max(10.0);
+        let line_height = font_size * 1.2;
+        let num_breaks = (y_diff / line_height).round() as usize;
+        for _ in 0..num_breaks.clamp(1, 3) {
+            text.push('\n');
+        }
+    }
+
     /// Whether every span in this marked-content element is part of a *pure*
     /// right-to-left run: at least one Arabic/Hebrew letter is present and no
     /// Latin letter is. Mirrors the gating in [`order_mcid_spans`] (the branch
@@ -8667,6 +8695,9 @@ impl PdfDocument {
         // Step 4: Assemble text in structure order
         let mut text = String::with_capacity(mcid_map.len() * 50); // estimate
         let mut prev_span: Option<&TextSpan> = None;
+        // Whether the content element that emitted `prev_span` sat inside a
+        // table — used to collapse a table row boundary to a single newline.
+        let mut prev_in_table = false;
         let mut consumed_mcids: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
         for content in &ordered_content {
@@ -8714,12 +8745,13 @@ impl PdfDocument {
                         let y_diff = (prev.bbox.y - span.bbox.y).abs();
 
                         if y_diff > Self::same_line_threshold(prev, span) {
-                            let font_size = prev.font_size.max(span.font_size).max(10.0);
-                            let line_height = font_size * 1.2;
-                            let num_breaks = (y_diff / line_height).round() as usize;
-                            for _ in 0..num_breaks.clamp(1, 3) {
-                                text.push('\n');
-                            }
+                            Self::push_line_breaks(
+                                &mut text,
+                                prev,
+                                span,
+                                y_diff,
+                                content.in_table && prev_in_table,
+                            );
                         } else if Self::should_insert_space(prev, span) {
                             text.push(' ');
                         }
@@ -8727,6 +8759,7 @@ impl PdfDocument {
 
                     Self::push_span_text_bidi(&mut text, span, rtl_run);
                     prev_span = Some(span);
+                    prev_in_table = content.in_table;
                 }
             } else {
                 log::warn!(
@@ -9445,6 +9478,7 @@ impl PdfDocument {
         // Step 4: Assemble text in structure order
         let mut text = String::with_capacity(mcid_map.len() * 50);
         let mut prev_span: Option<&TextSpan> = None;
+        let mut prev_in_table = false;
         let mut consumed_mcids: HashSet<u32> = HashSet::new();
 
         for content in ordered_content {
@@ -9483,12 +9517,13 @@ impl PdfDocument {
                     if let Some(prev) = prev_span {
                         let y_diff = (prev.bbox.y - span.bbox.y).abs();
                         if y_diff > Self::same_line_threshold(prev, span) {
-                            let font_size = prev.font_size.max(span.font_size).max(10.0);
-                            let line_height = font_size * 1.2;
-                            let num_breaks = (y_diff / line_height).round() as usize;
-                            for _ in 0..num_breaks.clamp(1, 3) {
-                                text.push('\n');
-                            }
+                            Self::push_line_breaks(
+                                &mut text,
+                                prev,
+                                span,
+                                y_diff,
+                                content.in_table && prev_in_table,
+                            );
                         } else if Self::should_insert_space(prev, span) {
                             text.push(' ');
                         }
@@ -9496,6 +9531,7 @@ impl PdfDocument {
 
                     Self::push_span_text_bidi(&mut text, span, rtl_run);
                     prev_span = Some(span);
+                    prev_in_table = content.in_table;
                 }
             }
         }
@@ -19322,6 +19358,25 @@ mod tests {
     // ========================================================================
 
     /// Helper to create a TextSpan with minimal required fields for testing.
+    #[test]
+    fn test_push_line_breaks_table_row_single_newline() {
+        // A table-row boundary (single_break = true) emits exactly one newline
+        // regardless of the geometric row pitch.
+        let prev = make_test_span("North", 72.0, 700.0, 30.0, 12.0);
+        let span = make_test_span("South", 72.0, 676.0, 30.0, 12.0); // 24pt gap ≈ 1.7em
+        let mut out = String::new();
+        PdfDocument::push_line_breaks(&mut out, &prev, &span, 24.0, true);
+        assert_eq!(out, "\n", "table row boundary must be a single newline");
+        // The same gap WITHOUT the table flag rounds to a blank line (2).
+        let mut out2 = String::new();
+        PdfDocument::push_line_breaks(&mut out2, &prev, &span, 24.0, false);
+        assert_eq!(out2, "\n\n", "non-table ~1.7em gap keeps the geometric blank line");
+        // A single-line gap stays one newline either way.
+        let mut out3 = String::new();
+        PdfDocument::push_line_breaks(&mut out3, &prev, &span, 14.0, false);
+        assert_eq!(out3, "\n");
+    }
+
     fn make_test_span(text: &str, x: f32, y: f32, width: f32, font_size: f32) -> TextSpan {
         TextSpan {
             artifact_type: None,

@@ -77,6 +77,12 @@ pub struct OrderedContent {
     /// 0 means "no enclosing block element seen" (root-level Span).
     pub block_id: u32,
 
+    /// True when this MCR is nested under a table grouping element
+    /// (Table / THead / TBody / TFoot / TR / TH / TD). The plain-text
+    /// assembler separates consecutive table rows with a single newline
+    /// rather than the geometric multi-line gap.
+    pub in_table: bool,
+
     /// Actual text replacement from /ActualText (optional)
     /// Per PDF spec Section 14.9.4, when present this replaces all
     /// descendant content with the specified text.
@@ -108,6 +114,12 @@ struct InheritedContext {
     /// Identifier of the nearest block-level ancestor — see
     /// `OrderedContent::block_id`.
     block_id: u32,
+    /// True when the MCR is nested under a table grouping element
+    /// (Table / THead / TBody / TFoot / TR / TH / TD). Used by the
+    /// plain-text assembler to separate table rows with a single newline
+    /// instead of the geometric multi-line gap (ISO 32000-1 §14.8.4.3.4:
+    /// table rows are stacked block-level rows, not free-leading paragraphs).
+    in_table: bool,
 }
 
 impl InheritedContext {
@@ -168,10 +180,22 @@ impl InheritedContext {
         } else {
             self.block_id
         };
+        let in_table = self.in_table
+            || matches!(
+                child,
+                StructType::Table
+                    | StructType::THead
+                    | StructType::TBody
+                    | StructType::TFoot
+                    | StructType::TR
+                    | StructType::TH
+                    | StructType::TD
+            );
         Self {
             heading_level,
             list_role,
             block_id,
+            in_table,
         }
     }
 }
@@ -280,6 +304,7 @@ fn traverse_element_all_pages(
                     is_block,
                     is_word_break: false,
                     block_id: descended.block_id,
+                    in_table: descended.in_table,
                     actual_text: None,
                     mcid_scope: Some(mcid_scope.clone()),
                 });
@@ -301,6 +326,7 @@ fn traverse_element_all_pages(
                             is_block: false,
                             is_word_break: true,
                             block_id: descended.block_id,
+                            in_table: descended.in_table,
                             actual_text: None,
                             mcid_scope: None,
                         });
@@ -378,6 +404,7 @@ fn traverse_element(
             is_block: false,
             is_word_break: true,
             block_id: descended.block_id,
+            in_table: descended.in_table,
             actual_text: None,
             mcid_scope: None,
         });
@@ -405,6 +432,7 @@ fn traverse_element(
                         is_block,
                         is_word_break: false,
                         block_id: descended.block_id,
+                        in_table: descended.in_table,
                         actual_text: None,
                         mcid_scope: Some(mcid_scope.clone()),
                     });
