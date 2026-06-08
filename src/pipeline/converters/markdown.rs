@@ -737,58 +737,7 @@ impl MarkdownOutputConverter {
     /// like "1.1 Foo" and years like "1986" are not falsely promoted
     /// to numbered lists. See issue #377 D3.
     fn is_ordered_list_marker(text: &str) -> Option<u32> {
-        let t = text.trim_start();
-        let bytes = t.as_bytes();
-        if bytes.is_empty() {
-            return None;
-        }
-        // Find the marker token (digits, single ASCII letter, or short
-        // roman numeral) and the trailing punctuation `.` or `)`.
-        let mut idx = 0;
-        // Numeric form: `\d{1,3}`.
-        while idx < bytes.len() && bytes[idx].is_ascii_digit() && idx < 3 {
-            idx += 1;
-        }
-        let numeric_n = if idx > 0 {
-            std::str::from_utf8(&bytes[..idx])
-                .ok()
-                .and_then(|s| s.parse::<u32>().ok())
-        } else {
-            None
-        };
-        // Single ASCII letter form (a) / b. / I.).
-        if idx == 0 && bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() {
-            // Roman numerals up to 4 chars (i, ii, iii, iv).
-            let mut roman_end = 0;
-            while roman_end < bytes.len().min(4)
-                && matches!(bytes[roman_end], b'i' | b'v' | b'x' | b'I' | b'V' | b'X')
-            {
-                roman_end += 1;
-            }
-            if roman_end >= 1 && bytes.len() > roman_end {
-                let punct = bytes[roman_end];
-                if matches!(punct, b'.' | b')') && bytes.get(roman_end + 1).copied() == Some(b' ') {
-                    return Some(1); // unknown roman position
-                }
-            }
-            // Single letter: a) Foo, A. Bar.
-            if bytes.len() >= 3
-                && matches!(bytes[1], b'.' | b')')
-                && bytes[2] == b' '
-                && bytes[0].is_ascii_alphabetic()
-            {
-                return Some(1);
-            }
-            return None;
-        }
-        // For the numeric branch, check trailing `.` / `)` and a space.
-        if idx > 0 && bytes.len() > idx {
-            let punct = bytes[idx];
-            if matches!(punct, b'.' | b')') && bytes.get(idx + 1).copied() == Some(b' ') {
-                return numeric_n;
-            }
-        }
-        None
+        super::is_ordered_list_marker(text)
     }
 
     /// Check if a span consists of a single bullet character.
@@ -796,50 +745,12 @@ impl MarkdownOutputConverter {
     /// Common bullet characters used in PDF documents:
     /// ► • ▪ ▸ ‣ ◦ ● ■ ◆ ○ □ ❍ ❖ ✓ ✔ ➢ ➤ 
     fn is_bullet_span(text: &str) -> bool {
-        let t = text.trim();
-        matches!(
-            t,
-            "►" | "•"
-                | "▪"
-                | "▸"
-                | "‣"
-                | "◦"
-                | "●"
-                | "■"
-                | "◆"
-                | "○"
-                | "□"
-                | "❍"
-                | "❖"
-                | "✓"
-                | "✔"
-                | "➢"
-                | "➤"
-                | "\x7f"
-        )
+        super::is_bullet_span(text)
     }
 
     /// Check if text starts with a bullet character (for inline bullets).
     fn starts_with_bullet(text: &str) -> bool {
-        let t = text.trim_start();
-        t.starts_with('►')
-            || t.starts_with('•')
-            || t.starts_with('▪')
-            || t.starts_with('▸')
-            || t.starts_with('‣')
-            || t.starts_with('◦')
-            || t.starts_with('●')
-            || t.starts_with('■')
-            || t.starts_with('◆')
-            || t.starts_with('○')
-            || t.starts_with('□')
-            || t.starts_with('❍')
-            || t.starts_with('❖')
-            || t.starts_with('✓')
-            || t.starts_with('✔')
-            || t.starts_with('➢')
-            || t.starts_with('➤')
-            || t.starts_with('\x7f')
+        super::starts_with_bullet(text)
     }
 
     /// Validate that a string looks like a heading (not a paragraph or noise).
@@ -1148,27 +1059,7 @@ impl MarkdownOutputConverter {
         // mode bucketed to 0.5pt, with smaller-bucket tiebreak so body
         // text wins over headings when counts are close. Capped at 12pt
         // so that heading-only documents still produce sensible ratios.
-        let base_font_size = if config.output.detect_headings {
-            // Exclude sub-9pt spans (bullet glyphs, subscripts, footnotes)
-            // that would skew the mode downward.
-            let mut size_counts: std::collections::HashMap<u32, usize> =
-                std::collections::HashMap::new();
-            for s in sorted.iter() {
-                let sz = s.span.font_size;
-                if sz < 9.0 {
-                    continue;
-                }
-                *size_counts.entry((sz * 2.0).round() as u32).or_insert(0) += 1;
-            }
-            let mode = size_counts
-                .into_iter()
-                .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
-                .map(|(bucket, _)| bucket as f32 / 2.0)
-                .unwrap_or(12.0);
-            mode.min(12.0)
-        } else {
-            12.0
-        };
+        let base_font_size = super::base_heading_font_size(&sorted, config.output.detect_headings);
 
         // Track which tables have been rendered
         let mut tables_rendered = vec![false; tables.len()];
@@ -1313,6 +1204,31 @@ impl MarkdownOutputConverter {
                     | Some(StructRole::ListItemLabel)
             );
 
+            // Whether this span's own text already carries an ordered marker
+            // (`1.`, `a)`). Ordered items must not also get a `- ` prefix.
+            let span_is_ordered =
+                Self::is_ordered_list_marker(span.span.text.trim_start()).is_some();
+
+            // Force-flush an open heading before a list item begins, so a bullet
+            // or ordered marker never glues onto the heading line (#664).
+            let span_starts_list = is_list_item_role
+                || Self::is_bullet_span(&span.span.text)
+                || Self::starts_with_bullet(&span.span.text)
+                || span_is_ordered;
+            if span_starts_list && !current_line.trim().is_empty() {
+                if let Some(level) = current_heading_level {
+                    close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
+                    let prefix = "#".repeat(level as usize);
+                    result.push_str(&format!(
+                        "{} {}\n\n",
+                        prefix,
+                        strip_emphasis(current_line.trim())
+                    ));
+                    current_line.clear();
+                    current_heading_level = None;
+                }
+            }
+
             // Check for paragraph break or line break
             let same_line = prev_span
                 .map(|prev| (span.span.bbox.y - prev.span.bbox.y).abs() < span.span.font_size * 0.5)
@@ -1400,7 +1316,7 @@ impl MarkdownOutputConverter {
                         current_line.clear();
                     }
                     current_heading_level = span_heading_level;
-                    if is_list_item_role {
+                    if is_list_item_role && !span_is_ordered {
                         current_line.push_str("- ");
                     }
                 } else if !same_line {
@@ -1451,7 +1367,7 @@ impl MarkdownOutputConverter {
                             current_line.clear();
                         }
                         current_heading_level = span_heading_level;
-                        if starts_new_list_item {
+                        if starts_new_list_item && !span_is_ordered {
                             current_line.push_str("- ");
                         }
                     } else {
@@ -1471,7 +1387,7 @@ impl MarkdownOutputConverter {
                 }
             } else {
                 current_heading_level = span_heading_level;
-                if is_list_item_role {
+                if is_list_item_role && !span_is_ordered {
                     current_line.push_str("- ");
                 }
             }
@@ -2239,6 +2155,26 @@ mod tests {
                 first_line
             );
         }
+    }
+
+    /// #664 — a heading must not be glued to the first list item that
+    /// follows it (`## Highlights - Revenue…`).
+    #[test]
+    fn test_heading_not_glued_to_following_list() {
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let mut h = make_span("Highlights", 0.0, 100.0, 12.0, FontWeight::Normal);
+        h.struct_role = Some(StructRole::Heading(2));
+        let mut a = make_span("Revenue grew steadily.", 0.0, 80.0, 12.0, FontWeight::Normal);
+        a.struct_role = Some(StructRole::ListItemBody);
+        a.block_id = Some(1);
+        let mut b = make_span("Costs remained flat.", 0.0, 64.0, 12.0, FontWeight::Normal);
+        b.struct_role = Some(StructRole::ListItemBody);
+        b.block_id = Some(2);
+        let out = converter.convert(&[h, a, b], &config).unwrap();
+        eprintln!("--- heading/list output ---\n{out}\n---");
+        assert!(!out.contains("Highlights - "), "heading glued to list:\n{out}");
+        assert!(out.contains("- Revenue grew steadily."), "first item missing bullet:\n{out}");
     }
 
     /// D1 coverage — every list-role variant (LI / Lbl / LBody) on a

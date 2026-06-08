@@ -8,7 +8,7 @@
 
 use crate::error::Result;
 use crate::layout::FontWeight;
-use crate::pipeline::{OrderedTextSpan, TextPipelineConfig};
+use crate::pipeline::{OrderedTextSpan, StructRole, TextPipelineConfig};
 use crate::structure::table_extractor::Table;
 use crate::text::HyphenationHandler;
 
@@ -57,6 +57,13 @@ impl HtmlOutputConverter {
     /// - Text is short enough to be a heading (2-120 characters, ≤12 words)
     /// - Text does not look like non-heading content (addresses, currency, pure numbers, etc.)
     fn heading_level(&self, span: &OrderedTextSpan, base_font_size: f32) -> Option<u8> {
+        // A tagged heading from the structure tree is authoritative — honor its
+        // level directly rather than re-deriving one from font ratios (which
+        // bucketed a true H1 into <h2>). Mirrors markdown.rs.
+        if let Some(StructRole::Heading(level)) = span.struct_role {
+            return Some(level.clamp(1, 6));
+        }
+
         let text = span.span.text.trim();
         let text_len = text.len();
 
@@ -80,15 +87,37 @@ impl HtmlOutputConverter {
             FontWeight::Bold | FontWeight::Black | FontWeight::ExtraBold | FontWeight::SemiBold
         );
 
-        if size_ratio >= 2.0 {
+        // Thresholds aligned with the markdown converter's heading_level_ratio
+        // so the two formats agree on heading levels for untagged documents.
+        if size_ratio >= 1.8 {
             Some(1)
-        } else if size_ratio >= 1.5 {
+        } else if size_ratio >= 1.4 {
             Some(2)
-        } else if size_ratio >= 1.3 || (is_bold && size_ratio >= 1.15) {
+        } else if size_ratio >= 1.2 {
             Some(3)
+        } else if is_bold && size_ratio >= 1.05 {
+            Some(4)
         } else {
             None
         }
+    }
+
+    /// Strip a leading list marker (bullet glyph or ordered marker like `1.`,
+    /// `a)`) from a list-item span so the marker isn't duplicated inside the
+    /// `<li>` body (the `<ol>`/`<ul>` element supplies it).
+    fn strip_list_marker(text: &str) -> String {
+        let t = text.trim_start();
+        if super::is_ordered_list_marker(t).is_some() {
+            if let Some(pos) = t.find(['.', ')']) {
+                return t[pos + 1..].trim_start().to_string();
+            }
+        }
+        if super::starts_with_bullet(t) {
+            let mut chars = t.chars();
+            chars.next();
+            return chars.as_str().trim_start().to_string();
+        }
+        text.to_string()
     }
 
     /// Check if text looks like non-heading content that should not be promoted
@@ -180,10 +209,12 @@ impl HtmlOutputConverter {
             .replace('"', "&quot;")
     }
 
-    /// Format a span as styled HTML.
+    /// Escape a span's text for HTML without applying any emphasis tags.
     ///
-    /// Applies bold (<strong>) and italic (<em>) tags as needed.
-    fn format_span_with_styles(&self, span: &OrderedTextSpan, text: &str) -> String {
+    /// Runs the same `push_span_text` boundary split the extractor uses before
+    /// escaping. Used where emphasis must not be wrapped — e.g. heading text,
+    /// which would otherwise come out as `<h2><strong>…</strong></h2>`.
+    fn escaped_span_text(&self, span: &OrderedTextSpan, text: &str) -> String {
         // Apply the same column-spanning-decimal / char_widths-boundary
         // split that the text extractor's `push_span_text` uses.  For
         // sailing-score PDFs (issue 487 nougat_018) the producer emits two
@@ -196,9 +227,14 @@ impl HtmlOutputConverter {
             ..span.span.clone()
         };
         crate::document::PdfDocument::push_span_text(&mut processed, &synthetic);
-        let escaped = Self::escape_html(&processed);
+        Self::escape_html(&processed)
+    }
 
-        let mut result = escaped;
+    /// Format a span as styled HTML.
+    ///
+    /// Applies bold (<strong>) and italic (<em>) tags as needed.
+    fn format_span_with_styles(&self, span: &OrderedTextSpan, text: &str) -> String {
+        let mut result = self.escaped_span_text(span, text);
 
         // Apply italic tag if needed
         if self.is_italic(span) {
@@ -333,18 +369,8 @@ impl HtmlOutputConverter {
         let mut sorted: Vec<_> = spans.iter().collect();
         sorted.sort_by_key(|s| s.reading_order);
 
-        // Calculate base font size for heading detection
-        let base_font_size = if config.output.detect_headings {
-            let sizes: Vec<f32> = sorted.iter().map(|s| s.span.font_size).collect();
-            let mut sizes_sorted = sizes.clone();
-            sizes_sorted.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
-            sizes_sorted
-                .get(sizes_sorted.len() / 2)
-                .copied()
-                .unwrap_or(12.0)
-        } else {
-            12.0
-        };
+        // Calculate base font size for heading detection (shared with markdown).
+        let base_font_size = super::base_heading_font_size(&sorted, config.output.detect_headings);
 
         // Track which tables have been rendered
         let mut tables_rendered = vec![false; tables.len()];
@@ -354,17 +380,53 @@ impl HtmlOutputConverter {
         let mut in_paragraph = false;
         let mut current_content = String::new();
 
+        // List state: the open list element ("ul"/"ol") and the in-progress
+        // <li> body. Closes a paragraph/list cleanly whenever a non-list span,
+        // heading, or table is reached.
+        let mut list_kind: Option<&'static str> = None;
+        let mut current_li = String::new();
+        let mut prev_was_list = false;
+        let mut prev_block_id: Option<u32> = None;
+        // A heading run can span several glyph-split spans (e.g. "T" + "ea");
+        // accumulate them into one <hN> element rather than emitting one per
+        // span. (level, accumulated inner HTML)
+        let mut current_heading: Option<(u8, String)> = None;
+        let flush_heading = |result: &mut String, h: &mut Option<(u8, String)>| {
+            if let Some((lvl, buf)) = h.take() {
+                if !buf.trim().is_empty() {
+                    result.push_str(&format!("<h{}>{}</h{}>\n", lvl, buf.trim(), lvl));
+                }
+            }
+        };
+        let flush_list = |result: &mut String, kind: &mut Option<&'static str>, li: &mut String| {
+            if let Some(k) = *kind {
+                if !li.trim().is_empty() {
+                    result.push_str(&format!("<li>{}</li>\n", li.trim()));
+                }
+                li.clear();
+                result.push_str(&format!("</{}>\n", k));
+                *kind = None;
+            }
+        };
+        let close_paragraph = |result: &mut String, content: &mut String, in_p: &mut bool| {
+            if *in_p && !content.is_empty() {
+                result.push_str(&format!("<p>{}</p>\n", content.trim()));
+                content.clear();
+            }
+            *in_p = false;
+        };
+
         for span in &sorted {
+            let text_raw = span.span.text.as_str();
+
             // Check if span is in a table region
             if !tables.is_empty() {
                 if let Some(table_idx) = super::span_in_table(span, tables) {
                     if !tables_rendered[table_idx] {
-                        // Close any open paragraph
-                        if in_paragraph && !current_content.is_empty() {
-                            result.push_str(&format!("<p>{}</p>\n", current_content.trim()));
-                            current_content.clear();
-                            in_paragraph = false;
-                        }
+                        flush_heading(&mut result, &mut current_heading);
+                        flush_list(&mut result, &mut list_kind, &mut current_li);
+                        prev_was_list = false;
+                        close_paragraph(&mut result, &mut current_content, &mut in_paragraph);
 
                         // Render the table
                         result.push_str(&Self::render_table_html(&tables[table_idx]));
@@ -375,6 +437,92 @@ impl HtmlOutputConverter {
                 }
             }
 
+            // Heading (tagged role or font heuristic) takes priority over lists
+            // and paragraphs.
+            if config.output.detect_headings {
+                if let Some(level) = self.heading_level(span, base_font_size) {
+                    flush_list(&mut result, &mut list_kind, &mut current_li);
+                    prev_was_list = false;
+                    close_paragraph(&mut result, &mut current_content, &mut in_paragraph);
+
+                    // Heading text is emitted without emphasis wrapping — a bold
+                    // heading must be <h2>…</h2>, not <h2><strong>…</strong></h2>.
+                    let text = self.escaped_span_text(span, span.span.text.trim());
+                    let same_level = matches!(current_heading, Some((lvl, _)) if lvl == level);
+                    if same_level {
+                        // Continuation of the same heading run — join with the
+                        // previous span using the same gap rule as paragraphs so
+                        // a glyph split ("T"+"ea") rejoins as "Tea".
+                        let need_space = prev_span.is_some_and(|prev| {
+                            let y_diff = (span.span.bbox.y - prev.span.bbox.y).abs();
+                            let same_line = y_diff < span.span.font_size * 0.5;
+                            (!same_line && y_diff > 0.0)
+                                || (same_line && super::has_horizontal_gap(&prev.span, &span.span))
+                        });
+                        if let Some((_, ref mut buf)) = current_heading {
+                            if !buf.is_empty() && need_space && !buf.ends_with(' ') {
+                                buf.push(' ');
+                            }
+                            buf.push_str(&text);
+                        }
+                    } else {
+                        flush_heading(&mut result, &mut current_heading);
+                        current_heading = Some((level, text));
+                    }
+                    prev_span = Some(span);
+                    prev_block_id = span.block_id;
+                    continue;
+                }
+            }
+
+            // Any non-heading span ends an open heading run.
+            flush_heading(&mut result, &mut current_heading);
+
+            // List item? — a structure-tree list role, a bullet glyph, or an
+            // ordered marker (`1.`, `a)`) at the start.
+            let ordered = super::is_ordered_list_marker(text_raw.trim_start());
+            let is_marker = super::is_bullet_span(text_raw)
+                || super::starts_with_bullet(text_raw)
+                || ordered.is_some();
+            if is_marker || super::is_list_item_role(span.struct_role) {
+                close_paragraph(&mut result, &mut current_content, &mut in_paragraph);
+
+                if list_kind.is_none() {
+                    let kind = if ordered.is_some() { "ol" } else { "ul" };
+                    result.push_str(&format!("<{}>\n", kind));
+                    list_kind = Some(kind);
+                }
+
+                // Start a new <li> on a fresh marker, a structure block change,
+                // or the first list span; otherwise this is a wrapped body line.
+                let block_changed = span.block_id.is_some()
+                    && prev_block_id.is_some()
+                    && span.block_id != prev_block_id;
+                let new_item = !prev_was_list || is_marker || block_changed;
+                if new_item && !current_li.trim().is_empty() {
+                    result.push_str(&format!("<li>{}</li>\n", current_li.trim()));
+                    current_li.clear();
+                }
+
+                let body = Self::strip_list_marker(text_raw);
+                if !body.trim().is_empty() {
+                    let formatted = self.format_span_with_styles(span, &body);
+                    if !current_li.is_empty() && !current_li.ends_with(' ') {
+                        current_li.push(' ');
+                    }
+                    current_li.push_str(&formatted);
+                }
+                prev_span = Some(span);
+                prev_block_id = span.block_id;
+                prev_was_list = true;
+                continue;
+            }
+
+            // Non-list span: close any open list before paragraph handling.
+            flush_list(&mut result, &mut list_kind, &mut current_li);
+            prev_was_list = false;
+            prev_block_id = span.block_id;
+
             // Check for paragraph break
             if let Some(prev) = prev_span {
                 if self.is_paragraph_break(span, prev)
@@ -384,22 +532,6 @@ impl HtmlOutputConverter {
                     result.push_str(&format!("<p>{}</p>\n", current_content.trim()));
                     current_content.clear();
                     in_paragraph = false;
-                }
-            }
-
-            // Check for heading
-            if config.output.detect_headings {
-                if let Some(level) = self.heading_level(span, base_font_size) {
-                    if in_paragraph && !current_content.is_empty() {
-                        result.push_str(&format!("<p>{}</p>\n", current_content.trim()));
-                        current_content.clear();
-                        in_paragraph = false;
-                    }
-
-                    let text = self.format_span_with_styles(span, span.span.text.trim());
-                    result.push_str(&format!("<h{}>{}</h{}>\n", level, text, level));
-                    prev_span = Some(span);
-                    continue;
                 }
             }
 
@@ -440,6 +572,10 @@ impl HtmlOutputConverter {
 
             prev_span = Some(span);
         }
+
+        // Close any heading / list left open at end of document.
+        flush_heading(&mut result, &mut current_heading);
+        flush_list(&mut result, &mut list_kind, &mut current_li);
 
         // Render any tables that weren't matched to spans
         for (i, table) in tables.iter().enumerate() {
@@ -1142,5 +1278,49 @@ mod tests {
             "Should render bold cell via spans: {}",
             result
         );
+    }
+
+    #[test]
+    fn test_tagged_heading_honored_without_strong() {
+        let converter = HtmlOutputConverter::new();
+        let mut config = TextPipelineConfig::default();
+        config.output.detect_headings = true;
+        // Bold span, body-sized font, but tagged as a level-1 heading.
+        let mut span = make_span("Section Title", 0.0, 100.0, 12.0, FontWeight::Bold);
+        span.struct_role = Some(StructRole::Heading(1));
+        let out = converter.convert(&[span], &config).unwrap();
+        assert!(out.contains("<h1>Section Title</h1>"), "got: {out}");
+        assert!(!out.contains("<strong>"), "heading must not wrap text in <strong>: {out}");
+    }
+
+    #[test]
+    fn test_bullet_spans_emit_unordered_list() {
+        let converter = HtmlOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let spans = vec![
+            make_span("• First item", 0.0, 100.0, 12.0, FontWeight::Normal),
+            make_span("• Second item", 0.0, 80.0, 12.0, FontWeight::Normal),
+        ];
+        let out = converter.convert(&spans, &config).unwrap();
+        assert!(out.contains("<ul>"), "got: {out}");
+        assert!(out.contains("<li>First item</li>"), "got: {out}");
+        assert!(out.contains("<li>Second item</li>"), "got: {out}");
+        assert!(out.contains("</ul>"), "got: {out}");
+        assert!(!out.contains("<p>• "), "bullet must not survive as a paragraph: {out}");
+    }
+
+    #[test]
+    fn test_ordered_marker_spans_emit_ordered_list() {
+        let converter = HtmlOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let spans = vec![
+            make_span("1. Alpha", 0.0, 100.0, 12.0, FontWeight::Normal),
+            make_span("2. Beta", 0.0, 80.0, 12.0, FontWeight::Normal),
+        ];
+        let out = converter.convert(&spans, &config).unwrap();
+        assert!(out.contains("<ol>"), "got: {out}");
+        assert!(out.contains("<li>Alpha</li>"), "got: {out}");
+        assert!(out.contains("<li>Beta</li>"), "got: {out}");
+        assert!(out.contains("</ol>"), "got: {out}");
     }
 }

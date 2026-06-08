@@ -32,8 +32,109 @@ pub use toc_detector::{TocDetector, TocEntry};
 
 use crate::error::Result;
 use crate::layout::TextSpan;
-use crate::pipeline::{OrderedTextSpan, TextPipelineConfig};
+use crate::pipeline::{OrderedTextSpan, StructRole, TextPipelineConfig};
 use crate::structure::table_extractor::Table;
+
+/// Bullet glyphs commonly used as list markers in PDFs.
+const BULLET_CHARS: &[char] = &[
+    '►', '•', '▪', '▸', '‣', '◦', '●', '■', '◆', '○', '□', '❍', '❖', '✓', '✔', '➢', '➤', '\x7f',
+];
+
+/// Whether `text` is a lone bullet glyph (the whole span is the marker).
+pub(crate) fn is_bullet_span(text: &str) -> bool {
+    let t = text.trim();
+    let mut chars = t.chars();
+    matches!((chars.next(), chars.next()), (Some(c), None) if BULLET_CHARS.contains(&c))
+}
+
+/// Whether `text` begins with a bullet glyph (inline bullet + body).
+pub(crate) fn starts_with_bullet(text: &str) -> bool {
+    text.trim_start()
+        .chars()
+        .next()
+        .is_some_and(|c| BULLET_CHARS.contains(&c))
+}
+
+/// Parse an ordered-list marker (`1.`, `a)`, `iv.`) at the start of `text`,
+/// returning the numeric position when it is numeric. `Some(_)` means "this
+/// text starts a numbered/lettered list item".
+pub(crate) fn is_ordered_list_marker(text: &str) -> Option<u32> {
+    let t = text.trim_start();
+    let bytes = t.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut idx = 0;
+    while idx < bytes.len() && bytes[idx].is_ascii_digit() && idx < 3 {
+        idx += 1;
+    }
+    let numeric_n = if idx > 0 {
+        std::str::from_utf8(&bytes[..idx])
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+    } else {
+        None
+    };
+    // Single ASCII letter / roman-numeral form (a) / b. / iv.).
+    if idx == 0 && bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() {
+        let mut roman_end = 0;
+        while roman_end < bytes.len().min(4)
+            && matches!(bytes[roman_end], b'i' | b'v' | b'x' | b'I' | b'V' | b'X')
+        {
+            roman_end += 1;
+        }
+        if roman_end >= 1 && bytes.len() > roman_end {
+            let punct = bytes[roman_end];
+            if matches!(punct, b'.' | b')') && bytes.get(roman_end + 1).copied() == Some(b' ') {
+                return Some(1);
+            }
+        }
+        if bytes.len() >= 3 && matches!(bytes[1], b'.' | b')') && bytes[2] == b' ' {
+            return Some(1);
+        }
+        return None;
+    }
+    if idx > 0 && bytes.len() > idx {
+        let punct = bytes[idx];
+        if matches!(punct, b'.' | b')') && bytes.get(idx + 1).copied() == Some(b' ') {
+            return numeric_n;
+        }
+    }
+    None
+}
+
+/// The base (body) font size used to derive heading levels from font ratios.
+///
+/// Uses the mode of spans ≥9pt (excluding bullet glyphs / subscripts / footnote
+/// markers that would skew it down), capped at 12pt. Shared by the markdown and
+/// HTML converters so both agree on heading levels for untagged documents.
+pub(crate) fn base_heading_font_size(spans: &[&OrderedTextSpan], detect_headings: bool) -> f32 {
+    if !detect_headings {
+        return 12.0;
+    }
+    let mut size_counts: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    for s in spans {
+        let sz = s.span.font_size;
+        if sz < 9.0 {
+            continue;
+        }
+        *size_counts.entry((sz * 2.0).round() as u32).or_insert(0) += 1;
+    }
+    size_counts
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+        .map(|(bucket, _)| bucket as f32 / 2.0)
+        .unwrap_or(12.0)
+        .min(12.0)
+}
+
+/// Whether a structure-tree role marks the span as part of a list item.
+pub(crate) fn is_list_item_role(role: Option<StructRole>) -> bool {
+    matches!(
+        role,
+        Some(StructRole::ListItem | StructRole::ListItemLabel | StructRole::ListItemBody)
+    )
+}
 
 /// Trait for converting ordered text spans to output formats.
 ///
@@ -253,10 +354,22 @@ pub(crate) fn merge_key_value_pairs(text: &str) -> String {
         if trimmed.is_empty() || trimmed.len() > 30 {
             return false;
         }
-        let first = trimmed.chars().next().unwrap();
-        // Starts with digit, currency sign, open-paren (for negative numbers),
-        // minus/dash (for negative), or period (for .50 style decimals)
-        matches!(first, '0'..='9' | '$' | '€' | '£' | '¥' | '(' | '-' | '.')
+        // A markdown list item (bullet or ordered marker like "1. Finalize")
+        // is never a value — merging it into the line above would glue a list
+        // item onto a heading or label.
+        if is_ordered_list_marker(trimmed).is_some() || starts_with_bullet(trimmed) {
+            return false;
+        }
+        let mut chars = trimmed.chars();
+        let first = chars.next().unwrap();
+        match first {
+            '0'..='9' | '$' | '€' | '£' | '¥' | '(' => true,
+            // '-' / '.' indicate a value ("-$42.50", "-50", ".50") unless
+            // followed by a space — i.e. a markdown list bullet "- ", which must
+            // NOT merge a list item into the line above it (e.g. a heading).
+            '-' | '.' => !matches!(chars.next(), Some(' ') | None),
+            _ => false,
+        }
     }
 
     // A label line: non-empty, ends with a word character (letter or digit),
@@ -391,6 +504,16 @@ mod tests {
         let input = "Account Number\n434508032\n";
         let expected = "Account Number 434508032\n";
         assert_eq!(merge_key_value_pairs(input), expected);
+    }
+
+    #[test]
+    fn test_key_value_merge_does_not_glue_list_items_to_headings() {
+        // #664: a heading/label must not absorb the following list item, whether
+        // the item is a bullet ("- ...") or an ordered marker ("1. ...").
+        let bullet = "## Highlights\n- Revenue grew steadily.\n";
+        assert_eq!(merge_key_value_pairs(bullet), bullet, "bullet item glued");
+        let ordered = "## Next Steps\n1. Finalize the budget.\n";
+        assert_eq!(merge_key_value_pairs(ordered), ordered, "ordered item glued");
     }
 
     #[test]
