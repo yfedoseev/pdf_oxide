@@ -23,6 +23,7 @@ pub mod encoding;
 pub mod encoding_normalizer;
 pub mod font_dict; // Private module - only used internally by font_dict
 pub mod font_subsetter;
+pub mod form_fallback;
 /// Process-level cross-document font cache for batch processing.
 pub mod global_cache;
 pub mod non_text_detection;

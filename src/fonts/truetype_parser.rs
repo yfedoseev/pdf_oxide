@@ -86,8 +86,13 @@ impl<'a> TrueTypeFont<'a> {
 
     /// Build Unicode to glyph ID mapping from cmap table.
     fn build_unicode_map(&mut self) {
-        // Iterate through BMP (Basic Multilingual Plane)
-        for codepoint in 0..=0xFFFF_u32 {
+        // Basic Multilingual Plane (covers virtually all common scripts incl.
+        // CJK) plus the emoji supplementary range (U+1F000..=U+1FAFF). Scanning
+        // all 17 planes on every font parse would be wasteful and this runs in
+        // the extraction hot path; the emoji range is the one supplementary
+        // block that occurs routinely in user text (e.g. filled form fields).
+        let ranges = (0..=0xFFFF_u32).chain(0x1F000..=0x1FAFF);
+        for codepoint in ranges {
             if let Some(char) = char::from_u32(codepoint) {
                 if let Some(glyph_id) = self.face.glyph_index(char) {
                     self.unicode_to_glyph.insert(codepoint, glyph_id.0);

@@ -551,6 +551,10 @@ struct AnnotationAppearance {
     matrix: Option<[f32; 6]>,
     /// Resources used by the appearance
     resources: Option<Object>,
+    /// Extra indirect objects this appearance depends on (e.g. an embedded
+    /// fallback-font object graph), written verbatim alongside the appearance
+    /// XObject. Empty for self-contained appearances.
+    extra_objects: Vec<(u32, Object)>,
 }
 
 /// Information about an image on a page.
@@ -3495,6 +3499,21 @@ impl DocumentEditor {
                                         );
                                         writer.write_all(&bytes)?;
                                         xref_entries.push((*obj_id, offset, 0, true));
+
+                                        // Write any indirect objects this appearance depends
+                                        // on (e.g. an embedded fallback-font graph).
+                                        for (extra_id, extra_obj) in &appearance.extra_objects {
+                                            let off = writer.stream_position()?;
+                                            let b = serialize_obj(
+                                                &serializer,
+                                                *extra_id,
+                                                0,
+                                                extra_obj,
+                                                &encryption_handler,
+                                            );
+                                            writer.write_all(&b)?;
+                                            xref_entries.push((*extra_id, off, 0, true));
+                                        }
                                     }
 
                                     // Write the overlay content stream that invokes the XObjects
@@ -3634,6 +3653,21 @@ impl DocumentEditor {
                                         );
                                         writer.write_all(&bytes)?;
                                         xref_entries.push((*obj_id, offset, 0, true));
+
+                                        // Write any indirect objects this appearance depends
+                                        // on (e.g. an embedded fallback-font graph).
+                                        for (extra_id, extra_obj) in &appearance.extra_objects {
+                                            let off = writer.stream_position()?;
+                                            let b = serialize_obj(
+                                                &serializer,
+                                                *extra_id,
+                                                0,
+                                                extra_obj,
+                                                &encryption_handler,
+                                            );
+                                            writer.write_all(&b)?;
+                                            xref_entries.push((*extra_id, off, 0, true));
+                                        }
                                     }
 
                                     // Write the overlay content stream that invokes the XObjects
@@ -5712,6 +5746,41 @@ impl DocumentEditor {
                 None => continue,
             };
 
+            // If this widget's value was changed via set_form_field_value, the
+            // document's stored /AP is stale — it still renders the original
+            // value or the empty placeholder the form writer never refreshed.
+            // Regenerate the appearance from the new value so the flattened page
+            // shows what was set, instead of baking the blank placeholder.
+            if let Some(text) = self.modified_widget_text(&annotation) {
+                // Values with CJK/emoji glyphs the /DA font cannot render are
+                // regenerated with an embedded fallback font; pure-Latin values
+                // return None here and fall through to the plain /DA path.
+                if let Some(app) = self.regenerate_text_appearance_embedded(&annotation, &text)? {
+                    appearances.push(app);
+                    continue;
+                }
+                let mut updated = annotation.clone();
+                match updated.field_type {
+                    Some(crate::annotation_types::WidgetFieldType::Choice {
+                        ref options, ..
+                    }) => {
+                        let options = options.clone();
+                        updated.field_type =
+                            Some(crate::annotation_types::WidgetFieldType::Choice {
+                                options,
+                                selected: Some(text),
+                            });
+                    },
+                    _ => {
+                        updated.field_value = Some(text);
+                    },
+                }
+                if let Some(generated) = self.generate_widget_appearance(&updated)? {
+                    appearances.push(generated);
+                    continue;
+                }
+            }
+
             // Try to get appearance from AP dictionary
             let appearance_result = self.extract_widget_appearance(&annotation, raw_dict);
 
@@ -5744,6 +5813,143 @@ impl DocumentEditor {
         }
 
         Ok(appearances)
+    }
+
+    /// Look up the value set via `set_form_field_value` for the field that owns
+    /// `annotation`, if it was modified in this editing session. Used by the
+    /// flattener to regenerate a stale `/AP` from the new value.
+    fn modified_widget_text(&self, annotation: &crate::annotations::Annotation) -> Option<String> {
+        use crate::editor::form_fields::FormFieldValue;
+        let field_name = annotation.field_name.as_deref()?;
+        // The widget's /T is the partial name; match the modified field by exact
+        // name first, then by trailing segment for hierarchical fields.
+        let wrapper = self.modified_form_fields.get(field_name).or_else(|| {
+            self.modified_form_fields
+                .iter()
+                .find(|(full, _)| full.rsplit('.').next() == Some(field_name))
+                .map(|(_, w)| w)
+        })?;
+        match wrapper.value() {
+            FormFieldValue::Text(s) | FormFieldValue::Choice(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Resolve an object one level of indirection deep against the source.
+    fn resolve_obj(&self, o: &Object) -> Object {
+        match o {
+            Object::Reference(r) => self.source.load_object(*r).unwrap_or(Object::Null),
+            other => other.clone(),
+        }
+    }
+
+    /// The interactive form's default resource dictionary (`/DR`), resolved.
+    fn acroform_default_resources(&self) -> Option<Object> {
+        let cat = self.source.catalog().ok()?;
+        let af = self.resolve_obj(cat.as_dict()?.get("AcroForm")?);
+        let dr = af.as_dict()?.get("DR")?.clone();
+        Some(self.resolve_obj(&dr))
+    }
+
+    /// The field's effective default-appearance string: the widget's own `/DA`,
+    /// else the document-wide AcroForm `/DA` (ISO 32000-1 §12.7.3.3, inheritable).
+    fn effective_da(&self, annotation: &crate::annotations::Annotation) -> Option<String> {
+        if let Some(Object::String(s)) = annotation.raw_dict.as_ref().and_then(|d| d.get("DA")) {
+            return Some(String::from_utf8_lossy(s).into_owned());
+        }
+        let cat = self.source.catalog().ok()?;
+        let af = self.resolve_obj(cat.as_dict()?.get("AcroForm")?);
+        match af.as_dict()?.get("DA") {
+            Some(Object::String(s)) => Some(String::from_utf8_lossy(s).into_owned()),
+            _ => None,
+        }
+    }
+
+    /// Parse a `/DA` string into `(font resource name incl. '/', size, rgb)`.
+    /// A size of 0 means auto-size; colour defaults to black.
+    fn parse_da(da: &str) -> (String, f32, (f32, f32, f32)) {
+        let toks: Vec<&str> = da.split_whitespace().collect();
+        let mut font = "/Helv".to_string();
+        let mut size = 0.0f32;
+        let mut color = (0.0, 0.0, 0.0);
+        for i in 0..toks.len() {
+            match toks[i] {
+                "Tf" if i >= 2 => {
+                    if toks[i - 2].starts_with('/') {
+                        font = toks[i - 2].to_string();
+                    }
+                    if let Ok(s) = toks[i - 1].parse::<f32>() {
+                        size = s;
+                    }
+                },
+                "g" if i >= 1 => {
+                    if let Ok(v) = toks[i - 1].parse::<f32>() {
+                        color = (v, v, v);
+                    }
+                },
+                "rg" if i >= 3 => {
+                    if let (Ok(r), Ok(g), Ok(b)) = (
+                        toks[i - 3].parse::<f32>(),
+                        toks[i - 2].parse::<f32>(),
+                        toks[i - 1].parse::<f32>(),
+                    ) {
+                        color = (r, g, b);
+                    }
+                },
+                _ => {},
+            }
+        }
+        (font, size, color)
+    }
+
+    /// A self-contained standard-14 Helvetica font dictionary (no external
+    /// dependencies, so it survives the garbage-collected full rewrite).
+    fn helvetica_font_dict() -> Object {
+        let mut d = HashMap::new();
+        d.insert("Type".to_string(), Object::Name("Font".to_string()));
+        d.insert("Subtype".to_string(), Object::Name("Type1".to_string()));
+        d.insert("BaseFont".to_string(), Object::Name("Helvetica".to_string()));
+        d.insert("Encoding".to_string(), Object::Name("WinAnsiEncoding".to_string()));
+        Object::Dictionary(d)
+    }
+
+    /// Build the `/Resources` dict for a regenerated text appearance so the
+    /// `/DA` font name resolves inside the flattened form XObject.
+    ///
+    /// The form's `/DR` fonts are referenced from the AcroForm, which is dropped
+    /// when flattening (so its font objects are garbage-collected). We therefore
+    /// *inline* a self-contained font dict under the `/DA` name: the document's
+    /// own font when it is a standard-14 Type1 (no embedded program), otherwise
+    /// a Helvetica stand-in. Non-Latin fonts that need an embedded program are
+    /// handled by the fallback-embedding path.
+    fn build_text_appearance_resources(&self, da_font_name: &str) -> Object {
+        let name = da_font_name.trim_start_matches('/').to_string();
+
+        let font_dict = self
+            .acroform_default_resources()
+            .and_then(|dr| dr.as_dict()?.get("Font").map(|f| self.resolve_obj(f)))
+            .and_then(|fonts| fonts.as_dict()?.get(&name).map(|f| self.resolve_obj(f)))
+            .filter(Self::is_self_contained_simple_font)
+            .unwrap_or_else(Self::helvetica_font_dict);
+
+        let mut fonts = HashMap::new();
+        fonts.insert(name, font_dict);
+        let mut res = HashMap::new();
+        res.insert("Font".to_string(), Object::Dictionary(fonts));
+        Object::Dictionary(res)
+    }
+
+    /// True for a standard-14 Type1 font dict with no embedded font program,
+    /// i.e. one that can be inlined verbatim and stay self-contained.
+    fn is_self_contained_simple_font(font: &Object) -> bool {
+        let Some(d) = font.as_dict() else {
+            return false;
+        };
+        if d.get("Subtype").and_then(|s| s.as_name()) != Some("Type1") {
+            return false;
+        }
+        // A FontDescriptor implies an embedded program / extra object graph.
+        !d.contains_key("FontDescriptor")
     }
 
     /// Extract appearance stream from a widget annotation.
@@ -5889,6 +6095,192 @@ impl DocumentEditor {
             annot_rect,
             matrix,
             resources,
+            extra_objects: Vec::new(),
+        }))
+    }
+
+    /// Escape a string for a PDF literal `(...)` text operand.
+    fn escape_pdf_literal(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            match c {
+                '\\' => out.push_str("\\\\"),
+                '(' => out.push_str("\\("),
+                ')' => out.push_str("\\)"),
+                '\r' => out.push_str("\\r"),
+                '\n' => out.push_str("\\n"),
+                _ => out.push(c),
+            }
+        }
+        out
+    }
+
+    /// Regenerate a *text* widget appearance whose value contains non-Latin or
+    /// emoji characters by embedding bundled fallback fonts and emitting
+    /// CID-keyed text (ISO 32000-1 §12.7.3.3 + §9.7 composite fonts).
+    ///
+    /// Returns `Ok(None)` when no fallback is needed (pure Latin-1) or available
+    /// (the `cjk-form-fonts` feature is off, or a font fails to parse/embed), so
+    /// the caller falls back to the plain `/DA` appearance path.
+    fn regenerate_text_appearance_embedded(
+        &mut self,
+        annotation: &crate::annotations::Annotation,
+        text: &str,
+    ) -> Result<Option<AnnotationAppearance>> {
+        use crate::annotation_types::WidgetFieldType;
+        use crate::fonts::form_fallback;
+
+        match annotation.field_type {
+            Some(WidgetFieldType::Text)
+            | Some(WidgetFieldType::Choice { .. })
+            | Some(WidgetFieldType::Button) => {},
+            _ => return Ok(None),
+        }
+        if text.is_empty() || !text.chars().any(|c| form_fallback::classify(c).is_some()) {
+            return Ok(None);
+        }
+
+        #[cfg(not(feature = "cjk-form-fonts"))]
+        {
+            self.flatten_warnings.push(
+                "field value contains non-Latin/emoji characters the /DA font cannot render; \
+                 rebuild with the `cjk-form-fonts` feature to embed a fallback font when flattening"
+                    .to_string(),
+            );
+            Ok(None)
+        }
+
+        #[cfg(feature = "cjk-form-fonts")]
+        {
+            self.embed_fallback_text_appearance(annotation, text)
+        }
+    }
+
+    /// The `cjk-form-fonts`-gated body of [`Self::regenerate_text_appearance_embedded`].
+    #[cfg(feature = "cjk-form-fonts")]
+    fn embed_fallback_text_appearance(
+        &mut self,
+        annotation: &crate::annotations::Annotation,
+        text: &str,
+    ) -> Result<Option<AnnotationAppearance>> {
+        use crate::fonts::form_fallback::{self, Fallback};
+        use crate::writer::{build_embedded_font_objects, EmbeddedFont};
+        use std::collections::BTreeMap;
+
+        let rect = match annotation.rect {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        let width = (rect[2] - rect[0]) as f32;
+        let height = (rect[3] - rect[1]) as f32;
+
+        let (da_font, da_size, da_color) =
+            Self::parse_da(&self.effective_da(annotation).unwrap_or_default());
+        let font_size = if da_size > 0.0 {
+            da_size
+        } else {
+            (height * 0.7).clamp(6.0, 12.0)
+        };
+
+        // Resource dict seeded with the /DA font (used for any Latin runs).
+        let mut font_res: HashMap<String, Object> = HashMap::new();
+        if let Object::Dictionary(res) = self.build_text_appearance_resources(&da_font) {
+            if let Some(Object::Dictionary(f)) = res.get("Font") {
+                font_res = f.clone();
+            }
+        }
+
+        // Parse the value into runs, and build one EmbeddedFont per fallback
+        // kind present, recording the glyphs each run uses.
+        let runs = form_fallback::split_runs(text);
+        let mut fonts: BTreeMap<Fallback, EmbeddedFont> = BTreeMap::new();
+        for run in &runs {
+            if let Some(kind) = run.fallback {
+                if !fonts.contains_key(&kind) {
+                    match EmbeddedFont::from_data(None, form_fallback::font_bytes(kind).to_vec()) {
+                        Ok(f) => {
+                            fonts.insert(kind, f);
+                        },
+                        // A font that won't parse → give up, use the /DA path.
+                        Err(_) => return Ok(None),
+                    }
+                }
+            }
+        }
+        // Per run, the original-face glyph IDs (for fallback runs).
+        let mut run_gids: Vec<Vec<u16>> = Vec::with_capacity(runs.len());
+        for run in &runs {
+            match run.fallback {
+                Some(kind) => {
+                    let gids = fonts
+                        .get_mut(&kind)
+                        .expect("font present")
+                        .encode_string(&run.text);
+                    run_gids.push(gids);
+                },
+                None => run_gids.push(Vec::new()),
+            }
+        }
+
+        // Build the embedded-font object graph for each kind and remember the
+        // subset remapper + the resource name we registered it under.
+        let mut extra_objects: Vec<(u32, Object)> = Vec::new();
+        let mut placed: BTreeMap<Fallback, (String, crate::fonts::GlyphRemapper)> = BTreeMap::new();
+        for (kind, font) in fonts.iter_mut() {
+            let (ids, objs, remapper) =
+                build_embedded_font_objects(font, || self.allocate_object_id())?;
+            let res_name = match kind {
+                Fallback::Cjk => "FbCJK",
+                Fallback::Emoji => "FbEmoji",
+            };
+            font_res.insert(res_name.to_string(), Object::Reference(ObjectRef::new(ids.type0, 0)));
+            extra_objects.extend(objs);
+            placed.insert(*kind, (res_name.to_string(), remapper));
+        }
+
+        // Emit the appearance content per ISO 32000-1 §12.7.3.3.
+        let mut content = String::new();
+        content.push_str("/Tx BMC\nq\nBT\n");
+        let (r, g, b) = da_color;
+        content.push_str(&format!("{} {} {} rg\n", r, g, b));
+        let y = ((height - font_size) / 2.0).max(2.0);
+        content.push_str(&format!("2 {} Td\n", y));
+
+        for (run, gids) in runs.iter().zip(run_gids.iter()) {
+            match run.fallback {
+                None => {
+                    content.push_str(&format!("{} {} Tf\n", da_font, font_size));
+                    content.push_str(&format!("({}) Tj\n", Self::escape_pdf_literal(&run.text)));
+                },
+                Some(kind) => {
+                    let (res_name, remapper) = placed.get(&kind).expect("placed font");
+                    content.push_str(&format!("/{} {} Tf\n", res_name, font_size));
+                    content.push('<');
+                    for &orig in gids {
+                        let sub = remapper.get(orig).unwrap_or(orig);
+                        content.push_str(&format!("{:04X}", sub));
+                    }
+                    content.push_str("> Tj\n");
+                },
+            }
+        }
+        content.push_str("ET\nQ\nEMC\n");
+
+        let mut res = HashMap::new();
+        res.insert("Font".to_string(), Object::Dictionary(font_res));
+
+        Ok(Some(AnnotationAppearance {
+            content: content.into_bytes(),
+            bbox: [0.0, 0.0, width, height],
+            annot_rect: [
+                rect[0] as f32,
+                rect[1] as f32,
+                rect[2] as f32,
+                rect[3] as f32,
+            ],
+            matrix: None,
+            resources: Some(Object::Dictionary(res)),
+            extra_objects,
         }))
     }
 
@@ -5916,37 +6308,56 @@ impl DocumentEditor {
         let height = annot_rect[3] - annot_rect[1];
         let geom_rect = Rect::new(0.0, 0.0, width, height);
 
-        let generator = FormAppearanceGenerator::new()
+        // Text-bearing fields regenerate per ISO 32000-1 §12.7.3.3: the font
+        // name, size, and colour come from the field's /DA, and the appearance
+        // /Resources are built from the form's /DR. A text-only generator (no
+        // opaque background or border) avoids painting over page content the
+        // field rect may overlap.
+        let field_type = annotation.field_type.as_ref();
+        let shape_generator = FormAppearanceGenerator::new()
             .with_background(1.0, 1.0, 1.0)
             .with_border(1.0, 0.0, 0.0, 0.0);
+        let text_generator = FormAppearanceGenerator::new();
 
-        let field_type = annotation.field_type.as_ref();
+        let (da_font, da_size, da_color) =
+            Self::parse_da(&self.effective_da(annotation).unwrap_or_default());
+        // Auto-size (/DA size 0) → fit the annotation height with padding.
+        let font_size = if da_size > 0.0 {
+            da_size
+        } else {
+            (height * 0.7).clamp(6.0, 12.0)
+        };
+
+        let mut text_resources: Option<Object> = None;
         let content_str = match field_type {
             Some(WidgetFieldType::Text) => {
                 let text = annotation.field_value.as_deref().unwrap_or("");
-                generator.text_field_appearance(geom_rect, text, "/Helv", 10.0, (0.0, 0.0, 0.0))
+                text_resources = Some(self.build_text_appearance_resources(&da_font));
+                text_generator.text_field_appearance(geom_rect, text, &da_font, font_size, da_color)
             },
             Some(WidgetFieldType::Checkbox { checked }) => {
                 if *checked {
-                    generator.checkbox_on_appearance(geom_rect, (0.0, 0.0, 0.0))
+                    shape_generator.checkbox_on_appearance(geom_rect, (0.0, 0.0, 0.0))
                 } else {
-                    generator.checkbox_off_appearance(geom_rect)
+                    shape_generator.checkbox_off_appearance(geom_rect)
                 }
             },
             Some(WidgetFieldType::Radio { selected }) => {
                 if selected.is_some() {
-                    generator.radio_on_appearance(geom_rect, (0.0, 0.0, 0.0))
+                    shape_generator.radio_on_appearance(geom_rect, (0.0, 0.0, 0.0))
                 } else {
-                    generator.radio_off_appearance(geom_rect)
+                    shape_generator.radio_off_appearance(geom_rect)
                 }
             },
             Some(WidgetFieldType::Button) => {
                 let caption = annotation.field_value.as_deref().unwrap_or("");
-                generator.button_appearance(geom_rect, caption, "/Helv", 10.0, (0.0, 0.0, 0.0))
+                text_resources = Some(self.build_text_appearance_resources(&da_font));
+                text_generator.button_appearance(geom_rect, caption, &da_font, font_size, da_color)
             },
             Some(WidgetFieldType::Choice { selected, .. }) => {
                 let text = selected.as_deref().unwrap_or("");
-                generator.text_field_appearance(geom_rect, text, "/Helv", 10.0, (0.0, 0.0, 0.0))
+                text_resources = Some(self.build_text_appearance_resources(&da_font));
+                text_generator.text_field_appearance(geom_rect, text, &da_font, font_size, da_color)
             },
             Some(WidgetFieldType::Signature) | Some(WidgetFieldType::Unknown) | None => {
                 return Ok(None);
@@ -5961,7 +6372,8 @@ impl DocumentEditor {
             bbox,
             annot_rect,
             matrix: None,
-            resources: None,
+            resources: text_resources,
+            extra_objects: Vec::new(),
         }))
     }
 
@@ -6111,6 +6523,7 @@ impl DocumentEditor {
                 annot_rect,
                 matrix,
                 resources,
+                extra_objects: Vec::new(),
             });
         }
 
@@ -7920,6 +8333,7 @@ mod tests {
             annot_rect: [10.0, 20.0, 210.0, 70.0],
             matrix: None,
             resources: None,
+            extra_objects: Vec::new(),
         };
 
         let names = vec!["FlatAnnot0".to_string()];
@@ -7942,6 +8356,7 @@ mod tests {
             annot_rect: [0.0, 0.0, 100.0, 100.0],
             matrix: Some([1.0, 0.0, 0.0, 1.0, 5.0, 5.0]),
             resources: None,
+            extra_objects: Vec::new(),
         };
 
         let names = vec!["Xobj0".to_string()];
@@ -7962,6 +8377,7 @@ mod tests {
             annot_rect: [10.0, 20.0, 110.0, 120.0],
             matrix: None,
             resources: None,
+            extra_objects: Vec::new(),
         };
 
         let names = vec!["Xobj0".to_string()];
@@ -9211,6 +9627,7 @@ mod tests {
             annot_rect: [10.0, 20.0, 110.0, 70.0],
             matrix: Some([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
             resources: None,
+            extra_objects: Vec::new(),
         };
         assert_eq!(ap.bbox[2], 100.0);
         assert_eq!(ap.annot_rect[0], 10.0);
@@ -9226,6 +9643,7 @@ mod tests {
             annot_rect: [0.0, 0.0, 0.0, 0.0],
             matrix: None,
             resources: None,
+            extra_objects: Vec::new(),
         };
         assert!(ap.matrix.is_none());
         assert!(ap.content.is_empty());

@@ -316,6 +316,13 @@ default = ["icc", "legacy-crypto"]
 # Enable logging for the extraction pipeline
 logging = []
 
+# Bundle fallback fonts (Droid Sans Fallback for CJK + Noto Emoji) so that
+# flattening a filled form field can bake non-Latin / emoji values that the
+# field's own /DA font cannot render (ISO 32000-1 §12.7.3.3). Opt-in because
+# it adds ~4.5 MB of font data to the binary; when disabled, flattening such a
+# value falls back to the /DA font and emits a warning instead of embedding.
+cjk-form-fonts = []
+
 # FIPS 140-3 validated cryptographic backend (issue #236).
 # When enabled, opt into `AwsLcProvider` (Amazon's `aws-lc-rs` with
 # the `fips` feature) as an alternative to the default
