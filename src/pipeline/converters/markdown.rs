@@ -1210,7 +1210,7 @@ impl MarkdownOutputConverter {
                 Self::is_ordered_list_marker(span.span.text.trim_start()).is_some();
 
             // Force-flush an open heading before a list item begins, so a bullet
-            // or ordered marker never glues onto the heading line (#664).
+            // or ordered marker never glues onto the heading line.
             let span_starts_list = is_list_item_role
                 || Self::is_bullet_span(&span.span.text)
                 || Self::starts_with_bullet(&span.span.text)
@@ -1484,7 +1484,14 @@ impl MarkdownOutputConverter {
                 text = &normalized;
             }
 
-            let linkified = self.linkify(text);
+            // A span inside a /Link annotation becomes a markdown link
+            // `[text](uri)`. Otherwise fall back to autolinking bare URLs in the
+            // text. (Consecutive spans sharing a URI render as adjacent links.)
+            let linkified = if let Some(uri) = span.link_uri.as_deref() {
+                format!("[{}]({})", text.trim(), uri.replace(' ', "%20").replace(')', "%29"))
+            } else {
+                self.linkify(text)
+            };
 
             let is_bold = self.is_bold(span, config);
             let is_italic = self.is_italic(span);
@@ -2157,8 +2164,8 @@ mod tests {
         }
     }
 
-    /// #664 — a heading must not be glued to the first list item that
-    /// follows it (`## Highlights - Revenue…`).
+    /// A heading must not be glued to the first list item that follows it
+    /// (`## Highlights - Revenue…`).
     #[test]
     fn test_heading_not_glued_to_following_list() {
         let converter = MarkdownOutputConverter::new();

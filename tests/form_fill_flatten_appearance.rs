@@ -7,9 +7,9 @@
 //! non-flatten counterpart (`/NeedAppearances`) is covered separately in
 //! `form_fill_need_appearances.rs`.
 //!
-//! The synthetic tests hand-build a minimal PDF with the relevant structure
-//! (merged field+widget, empty AP, a page `/Contents` stream the overlay can
-//! append to); the fixture tests exercise a real CJK fillable form end to end.
+//! All tests hand-build their PDFs (single-field and a two-field CJK form) with
+//! the relevant structure — merged field+widget, empty AP, a page `/Contents`
+//! stream the overlay can append to — so no third-party fixture is needed.
 
 use pdf_oxide::editor::form_fields::FormFieldValue;
 use pdf_oxide::editor::DocumentEditor;
@@ -96,6 +96,79 @@ fn form_with_empty_ap(field_name: &str) -> Vec<u8> {
     buf
 }
 
+/// A minimal two-field fillable form (`full_name`, `city`) modelled on a
+/// typical CJK form: each widget has an empty `/AP /N`, a `/DA` of
+/// `(/He 8 Tf)`, and the AcroForm `/DR` defines `/He` as Helvetica. Hand-built
+/// so the test owns the fixture (no third-party PDF).
+fn cjk_form() -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut off = vec![0usize; 9]; // ids 1..=8
+
+    buf.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+
+    // 1: catalog with an inline AcroForm; fields carry their own /DA.
+    obj(
+        &mut buf,
+        &mut off,
+        1,
+        "<< /Type /Catalog /Pages 2 0 R \
+         /AcroForm << /Fields [4 0 R 5 0 R] \
+         /DR << /Font << /He 6 0 R >> >> >> >>",
+    );
+    // 2: page tree
+    obj(&mut buf, &mut off, 2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    // 3: page with /Contents + both widgets in /Annots
+    obj(
+        &mut buf,
+        &mut off,
+        3,
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /He 6 0 R >> >> /Contents 8 0 R /Annots [4 0 R 5 0 R] >>",
+    );
+    // 4: full_name field+widget
+    obj(
+        &mut buf,
+        &mut off,
+        4,
+        "<< /FT /Tx /T (full_name) /Type /Annot /Subtype /Widget \
+         /Rect [72 700 400 720] /DA (0 0 0 rg /He 8 Tf) /AP << /N 7 0 R >> >>",
+    );
+    // 5: city field+widget
+    obj(
+        &mut buf,
+        &mut off,
+        5,
+        "<< /FT /Tx /T (city) /Type /Annot /Subtype /Widget \
+         /Rect [72 650 400 670] /DA (0 0 0 rg /He 8 Tf) /AP << /N 7 0 R >> >>",
+    );
+    // 6: Helvetica font (/He) for /DR
+    obj(
+        &mut buf,
+        &mut off,
+        6,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    );
+    // 7: shared empty appearance stream
+    stream_obj(
+        &mut buf,
+        &mut off,
+        7,
+        "/Type /XObject /Subtype /Form /BBox [0 0 328 20]",
+        b"/Tx BMC\nEMC\n",
+    );
+    // 8: page content stream
+    stream_obj(&mut buf, &mut off, 8, "", b"q Q\n");
+
+    let xref_off = buf.len();
+    buf.extend_from_slice(b"xref\n0 9\n0000000000 65535 f \n");
+    for id in 1..=8 {
+        buf.extend_from_slice(format!("{:010} 00000 n \n", off[id]).as_bytes());
+    }
+    buf.extend_from_slice(b"trailer\n<< /Size 9 /Root 1 0 R >>\nstartxref\n");
+    buf.extend_from_slice(format!("{xref_off}\n%%EOF\n").as_bytes());
+    buf
+}
+
 fn contains_ascii(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
@@ -142,7 +215,7 @@ fn flatten_renders_filled_latin_value() {
 fn fixture_flatten_honors_da_font_and_size() {
     // The fixture's field /DA is "0 0 0 rg /He 8 Tf" — the regenerated
     // appearance must use that font name and size, not a hardcoded /Helv 10.
-    let bytes = std::fs::read(FIXTURE).expect("cjk fillable form fixture must be present");
+    let bytes = cjk_form();
     let mut ed = DocumentEditor::from_bytes(bytes).unwrap();
     ed.set_form_field_value("full_name", FormFieldValue::Text("Hello".into()))
         .unwrap();
@@ -200,16 +273,13 @@ fn flatten_renders_emoji_value() {
 }
 
 // ---------------------------------------------------------------------------
-// End-to-end tests against a real CJK fillable form: two CJK text fields,
-// filled, then flattened.
+// End-to-end tests against a hand-built two-field CJK fillable form: fill both
+// fields, then flatten.
 // ---------------------------------------------------------------------------
-
-const FIXTURE: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/forms/cjk_emoji_fillable_form.pdf");
 
 #[test]
 fn fixture_fill_and_flatten_renders_and_cleans_up() {
-    let bytes = std::fs::read(FIXTURE).expect("cjk fillable form fixture must be present");
+    let bytes = cjk_form();
 
     // The fixture exposes the two text fields.
     let doc = PdfDocument::from_bytes(bytes.clone()).unwrap();
@@ -250,7 +320,7 @@ fn fixture_fill_and_flatten_renders_and_cleans_up() {
 
 #[test]
 fn fixture_non_flatten_roundtrips_cjk_value() {
-    let bytes = std::fs::read(FIXTURE).expect("cjk fillable form fixture must be present");
+    let bytes = cjk_form();
     let mut ed = DocumentEditor::from_bytes(bytes).unwrap();
     ed.set_form_field_value("full_name", FormFieldValue::Text("やまだたろう".into()))
         .unwrap();
@@ -281,7 +351,7 @@ fn fixture_non_flatten_roundtrips_cjk_value() {
 #[cfg(feature = "cjk-form-fonts")]
 #[test]
 fn fixture_flatten_embeds_cjk_and_emoji_fonts() {
-    let bytes = std::fs::read(FIXTURE).expect("cjk fillable form fixture must be present");
+    let bytes = cjk_form();
     let mut ed = DocumentEditor::from_bytes(bytes).unwrap();
     ed.set_form_field_value("full_name", FormFieldValue::Text("やまだたろう🍺".into()))
         .unwrap();

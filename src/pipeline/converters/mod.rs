@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn test_key_value_merge_does_not_glue_list_items_to_headings() {
-        // #664: a heading/label must not absorb the following list item, whether
+        // A heading/label must not absorb the following list item, whether
         // the item is a bullet ("- ...") or an ordered marker ("1. ...").
         let bullet = "## Highlights\n- Revenue grew steadily.\n";
         assert_eq!(merge_key_value_pairs(bullet), bullet, "bullet item glued");

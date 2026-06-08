@@ -5077,7 +5077,7 @@ impl PdfDocument {
     /// inside `include_region` if one is set. Exclusion runs first so it takes
     /// precedence. Shared by the plain-text, markdown, and HTML conversion paths
     /// so `ConversionOptions` region filtering behaves identically across every
-    /// text surface (#609). A no-op when neither field is set.
+    /// text surface. A no-op when neither field is set.
     fn apply_region_filters(
         base_spans: Vec<crate::layout::TextSpan>,
         options: &crate::converters::ConversionOptions,
@@ -7084,7 +7084,7 @@ impl PdfDocument {
     }
 
     /// Reverse a pure-RTL run from visual to logical order while keeping each
-    /// Arabic/Hebrew combining mark attached to its base letter (#656).
+    /// Arabic/Hebrew combining mark attached to its base letter.
     ///
     /// A naive `chars().rev()` reverses by Unicode scalar value, so a base
     /// letter's diacritics (which follow it in logical order — kasra/shadda
@@ -8641,7 +8641,7 @@ impl PdfDocument {
     }
 
     /// Order one MCID's spans for emission in the structure-order assemblers
-    /// (#608). A single marked-content element can carry spans across several
+    ///. A single marked-content element can carry spans across several
     /// visual lines; emitting them in raw extraction order can mis-order them,
     /// so sort by the canonical reading-order comparator. Skipped for single-
     /// span MCIDs and for any MCID containing RTL text (whose span order is
@@ -8768,6 +8768,65 @@ impl PdfDocument {
     /// over the converters' [`crate::pipeline::OrderedTextSpan`]
     /// shape; renumbers `reading_order` after dropping suppressed
     /// spans so downstream converters see a contiguous sequence.
+    /// Tag ordered spans that fall within a `/Link` annotation's rectangle
+    /// with its resolved URI, so the markdown/HTML converters can emit
+    /// hyperlinks (ISO 32000-1 §12.5.6.5 Link annotations + §12.6.4.7 URI
+    /// actions). Spans and link rectangles share PDF user-space coordinates,
+    /// so a span is linked when its bbox centre lies inside the rectangle.
+    pub(crate) fn apply_link_annotations_to_ordered_spans(
+        &self,
+        page_index: usize,
+        ordered: &mut [crate::pipeline::OrderedTextSpan],
+    ) {
+        use crate::annotation_types::AnnotationSubtype;
+        use crate::annotations::LinkAction;
+
+        let annots = match self.get_annotations(page_index) {
+            Ok(a) => a,
+            Err(_) => return,
+        };
+        let mut links: Vec<([f32; 4], std::sync::Arc<str>)> = Vec::new();
+        for a in &annots {
+            if a.subtype_enum != AnnotationSubtype::Link {
+                continue;
+            }
+            let uri = match &a.action {
+                Some(LinkAction::Uri(u)) if !u.is_empty() => {
+                    std::sync::Arc::<str>::from(u.as_str())
+                },
+                _ => continue,
+            };
+            if let Some(r) = a.rect {
+                links.push((
+                    [
+                        r[0].min(r[2]) as f32,
+                        r[1].min(r[3]) as f32,
+                        r[0].max(r[2]) as f32,
+                        r[1].max(r[3]) as f32,
+                    ],
+                    uri,
+                ));
+            }
+        }
+        if links.is_empty() {
+            return;
+        }
+        for s in ordered.iter_mut() {
+            let b = &s.span.bbox;
+            let (sx0, sy0, sx1, sy1) = (b.x, b.y, b.x + b.width, b.y + b.height);
+            // A span is linked when its bbox overlaps the annotation rectangle.
+            // Overlap (rather than centre-in-rect) keeps the link when adjacent
+            // runs are merged into one wide span the small link rect only
+            // partially covers — the URL is preserved rather than lost.
+            if let Some((_, uri)) = links
+                .iter()
+                .find(|(r, _)| sx0 < r[2] && sx1 > r[0] && sy0 < r[3] && sy1 > r[1])
+            {
+                s.link_uri = Some(uri.clone());
+            }
+        }
+    }
+
     pub(crate) fn apply_actualtext_to_ordered_spans(
         &self,
         page_index: usize,
@@ -15060,6 +15119,9 @@ impl PdfDocument {
         // documents are no-ops.
         self.apply_actualtext_to_ordered_spans(page_index, &mut ordered_spans);
 
+        // Tag spans inside /Link annotations with their URI.
+        self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans);
+
         // Step 8: Use pipeline converter with tables
         let converter = MarkdownOutputConverter::new();
         let mut markdown =
@@ -15381,6 +15443,9 @@ impl PdfDocument {
         // the rationale.
         self.apply_actualtext_to_ordered_spans(page_index, &mut ordered_spans);
 
+        // Tag spans inside /Link annotations with their URI.
+        self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans);
+
         // Step 7: Use pipeline converter with tables
         let converter = HtmlOutputConverter::new();
         let mut html = converter.convert_with_tables(&ordered_spans, &tables, &pipeline_config)?;
@@ -15567,6 +15632,9 @@ impl PdfDocument {
         // Apply struct-tree-scope /ActualText; see `to_markdown` for
         // the rationale.
         self.apply_actualtext_to_ordered_spans(page_index, &mut ordered_spans);
+
+        // Tag spans inside /Link annotations with their URI.
+        self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans);
 
         // Step 7: Use pipeline converter with tables
         let converter = PlainTextConverter::new();

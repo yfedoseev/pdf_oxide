@@ -232,7 +232,8 @@ impl HtmlOutputConverter {
 
     /// Format a span as styled HTML.
     ///
-    /// Applies bold (<strong>) and italic (<em>) tags as needed.
+    /// Applies bold (<strong>) and italic (<em>) tags as needed, and wraps the
+    /// span in an `<a href>` when it falls within a /Link annotation.
     fn format_span_with_styles(&self, span: &OrderedTextSpan, text: &str) -> String {
         let mut result = self.escaped_span_text(span, text);
 
@@ -244,6 +245,11 @@ impl HtmlOutputConverter {
         // Apply bold tag if needed
         if self.is_bold(span) {
             result = format!("<strong>{}</strong>", result);
+        }
+
+        // Wrap in an anchor when the span carries a hyperlink target.
+        if let Some(uri) = span.link_uri.as_deref() {
+            result = format!("<a href=\"{}\">{}</a>", Self::escape_html(uri), result);
         }
 
         result
