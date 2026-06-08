@@ -434,7 +434,13 @@ pub(crate) mod utils {
     /// struct-tree assemblers, which otherwise have no span-order pass for
     /// RTL (the untagged `reverse_rtl_visual_order_runs` is never reached
     /// on tagged pages).
+    ///
+    /// Retained as a tested geometric utility: the tagged RTL assembler now
+    /// orders pure-RTL spans via `document::PdfDocument::order_pure_rtl_spans`
+    /// (font-relative line grouping), which subsumes the fixed-band comparator,
+    /// so this has no production caller at present.
     #[inline]
+    #[allow(dead_code)]
     pub fn row_aware_span_cmp_rtl(a_y: f32, a_x: f32, b_y: f32, b_x: f32) -> Ordering {
         if !a_y.is_finite() || !b_y.is_finite() {
             return safe_float_cmp(b_y, a_y).then_with(|| safe_float_cmp(b_x, a_x));
