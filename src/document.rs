@@ -7080,7 +7080,18 @@ impl PdfDocument {
         }
         if rtl >= 2 && !has_latin {
             let mut tmp = span.clone();
-            tmp.text = Self::reverse_rtl_keeping_marks(&span.text);
+            // Strip producer-inserted SPACEs that fall *between two Arabic
+            // letters* inside a single show string. ISO 32000-1 §14.8.2.3.3
+            // states a reverse-order show string "shall not contain interior
+            // SPACEs" — a word break is signalled by a SPACE at the string
+            // boundary (here, a separate span), never inside it. Arabic is
+            // cursive, so an interior space splits letters that the script
+            // joins; it is never a word boundary in the pure-text
+            // representation (§14.8.2.5). Restricted to Arabic (cursive): a
+            // non-cursive script such as Hebrew can legitimately carry a
+            // space-separated pair in one show string, so it is left alone.
+            tmp.text =
+                Self::reverse_rtl_keeping_marks(&Self::strip_interior_arabic_spaces(&span.text));
             Self::push_span_text(out, &tmp);
         } else if rtl_run && Self::is_reversible_rtl_neutral_span(&span.text) {
             // A neutral-only span (separator / terminator punctuation plus
@@ -7099,6 +7110,48 @@ impl PdfDocument {
         } else {
             Self::push_span_text(out, span);
         }
+    }
+
+    /// Remove ASCII SPACE (U+0020) characters that sit *between two Arabic
+    /// letters* within a single show string — producer-inserted spurious
+    /// spaces that split a cursive word (e.g. `قِ ل` inside `القِطّ`).
+    ///
+    /// Per ISO 32000-1 §14.8.2.3.3 a show string "shall not contain interior
+    /// SPACEs"; a genuine word break is a SPACE at a string boundary (a
+    /// separate span in this pipeline). Combining marks between the space and
+    /// its neighbouring base letter are seen through, so a mark sitting next to
+    /// the space does not hide the Arabic letter on that side. Leading and
+    /// trailing spaces (real word-break candidates) and spaces flanked by
+    /// anything other than two Arabic letters are preserved verbatim, so the
+    /// fast path returns the input unchanged when there is nothing to strip.
+    fn strip_interior_arabic_spaces(text: &str) -> String {
+        use crate::text::rtl_detector::{is_arabic_letter, is_rtl_diacritic};
+        if !text.contains(' ') {
+            return text.to_string();
+        }
+        // First non-mark char in `it` is an Arabic letter? (marks are seen
+        // through so a diacritic next to the space does not hide its base.)
+        fn arabic_letter_past_marks<'a>(it: impl Iterator<Item = &'a char>) -> bool {
+            for &c in it {
+                if is_rtl_diacritic(c as u32) {
+                    continue;
+                }
+                return is_arabic_letter(c as u32);
+            }
+            false
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let mut out = String::with_capacity(text.len());
+        for (i, &c) in chars.iter().enumerate() {
+            if c == ' '
+                && arabic_letter_past_marks(chars[..i].iter().rev())
+                && arabic_letter_past_marks(chars[i + 1..].iter())
+            {
+                continue; // interior cursive-join space → drop
+            }
+            out.push(c);
+        }
+        out
     }
 
     /// Whether every span in this marked-content element is part of a *pure*
@@ -19876,6 +19929,38 @@ mod tests {
         assert!(!PdfDocument::is_reversible_rtl_neutral_span(" )"));
         assert!(!PdfDocument::is_reversible_rtl_neutral_span(" \""));
         assert!(!PdfDocument::is_reversible_rtl_neutral_span("a,"));
+    }
+
+    #[test]
+    fn test_strip_interior_arabic_spaces() {
+        // Spurious space between two Arabic letters (cursive join) is dropped.
+        // قِ ل ا  →  قِلا  (space between kasra-marked qaf and lam removed).
+        assert_eq!(
+            PdfDocument::strip_interior_arabic_spaces("\u{0642}\u{0650} \u{0644}\u{0627}"),
+            "\u{0642}\u{0650}\u{0644}\u{0627}"
+        );
+        // A combining mark adjacent to the space does not hide the base letter.
+        assert_eq!(
+            PdfDocument::strip_interior_arabic_spaces("\u{0642} \u{0650}\u{0644}"),
+            "\u{0642}\u{0650}\u{0644}"
+        );
+        // Leading / trailing spaces (real word-break candidates) are preserved.
+        assert_eq!(
+            PdfDocument::strip_interior_arabic_spaces(" \u{0642}\u{0644} "),
+            " \u{0642}\u{0644} "
+        );
+        // Non-Arabic flanks are left alone: Hebrew (non-cursive) keeps its space.
+        assert_eq!(
+            PdfDocument::strip_interior_arabic_spaces("\u{05E9} \u{05DC}"),
+            "\u{05E9} \u{05DC}"
+        );
+        // Space between an Arabic letter and a digit is a real boundary — kept.
+        assert_eq!(PdfDocument::strip_interior_arabic_spaces("\u{0642} 5"), "\u{0642} 5");
+        // No spaces → fast path returns the input unchanged.
+        assert_eq!(
+            PdfDocument::strip_interior_arabic_spaces("\u{0642}\u{0644}"),
+            "\u{0642}\u{0644}"
+        );
     }
 
     #[test]

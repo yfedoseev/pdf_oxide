@@ -182,3 +182,44 @@ fn rtl_jittery_baseline_line_not_scattered() {
         "row-band scatter leaked into output: {text:?}"
     );
 }
+
+/// ISO 32000-1 §14.8.2.3.3: a show string "shall not contain interior SPACEs".
+/// A producer that draws a single cursive Arabic word with a stray space inside
+/// it (here `ق ل` between the letters of a four-letter run) must not surface
+/// that space — it splits letters the script joins and is never a word break.
+/// A space at a string boundary (a separate Tj → separate span) is a real word
+/// break and must survive.
+#[test]
+fn rtl_interior_arabic_space_is_stripped_real_break_kept() {
+    let pdf = TaggedRtlPdf {
+        tounicode_bfchars: "\
+<41> <0627>
+<42> <0644>
+<43> <0642>
+<44> <0645>
+<20> <0020>
+"
+        .to_string(),
+        // One Tj draws the cursive run with an interior space ("AB CD" →
+        // ا ل <space> ق م); a second, separate Tj after a real gap draws
+        // another word. Visual order (leftmost first): the second word, then
+        // the interior-space run to its right.
+        content_ops: "BT /F1 12 Tf\n\
+            100 700 Td (AB) Tj\n\
+            40 0 Td (AB CD) Tj\nET"
+            .to_string(),
+    };
+    let doc = PdfDocument::from_bytes(pdf.build()).unwrap();
+    let text = doc.extract_text(0).unwrap();
+
+    // The interior space inside the cursive run is gone: ا ل ق م contiguous.
+    assert!(
+        text.contains("\u{0627}\u{0644}\u{0642}\u{0645}"),
+        "interior cursive-join space not stripped: {text:?}"
+    );
+    // The four letters of the run carry no internal space.
+    assert!(
+        !text.contains("\u{0627}\u{0644} \u{0642}\u{0645}"),
+        "interior Arabic space leaked into output: {text:?}"
+    );
+}
