@@ -24,12 +24,17 @@ The fastest PDF library for text extraction, image extraction, and markdown conv
 ```python
 from pdf_oxide import PdfDocument
 
-# path can be str or pathlib.Path; use with for scoped access
+with PdfDocument("paper.pdf") as doc:
+    print(len(doc))                          # number of pages
+    for page in doc:
+        text = page.text                     # lazy property
+        chars = page.chars                   # lazy property
+        md = page.markdown(detect_headings=True)
+
+# Direct page access by index
 doc = PdfDocument("paper.pdf")
-# or: with PdfDocument("paper.pdf") as doc: ...
-text = doc.extract_text(0)
-chars = doc.extract_chars(0)
-markdown = doc.to_markdown(0, detect_headings=True)
+page = doc[0]
+text = page.text
 ```
 
 ```bash
@@ -139,53 +144,56 @@ Benchmarked on 3,830 PDFs from three independent public test suites (veraPDF, Mo
 
 ## Python API
 
+### Page-oriented API
+
 ```python
 from pdf_oxide import PdfDocument
 
-# Path can be str or pathlib.Path; use "with PdfDocument(...) as doc" for context manager
-doc = PdfDocument("report.pdf")
-print(f"Pages: {doc.page_count()}")
-print(f"Version: {doc.version()}")
+with PdfDocument("report.pdf") as doc:
+    print(len(doc))          # page count
+    print(doc.version())
 
-# 1. Scoped extraction (v0.3.14)
-# Extract only from a specific area: (x, y, width, height)
+    # Iterate or index pages
+    for page in doc:
+        text   = page.text                      # str, lazy
+        chars  = page.chars                     # list[TextChar], lazy
+        words  = page.words                     # list[Word], lazy
+        lines  = page.lines                     # list[TextLine], lazy
+        tables = page.tables                    # list[Table], lazy
+        images = page.images                    # list[Image], lazy
+        md     = page.markdown(detect_headings=True)
+        html   = page.html()
+        print(f"Page {page.index}: {page.width:.0f}×{page.height:.0f} pts")
+
+    # Direct index access (supports negative indices)
+    first = doc[0]
+    last  = doc[-1]
+```
+
+### Scoped extraction
+
+```python
+# Extract from a region: (x, y, width, height) in PDF points
 header = doc.within(0, (0, 700, 612, 92)).extract_text()
+region = doc.within(0, (50, 400, 500, 200))
+region_words  = region.extract_words()
+region_images = region.extract_images()
+```
 
-# 2. Word-level extraction (v0.3.14)
-words = doc.extract_words(0)
-for w in words:
-    print(f"{w.text} at {w.bbox}")
-    # Access individual characters in the word
-    # print(w.chars[0].font_name)
+### Extraction profiles
 
-# Optional: override the adaptive word gap threshold (in PDF points)
-words = doc.extract_words(0, word_gap_threshold=2.5)
-
-# 3. Line-level extraction (v0.3.14)
-lines = doc.extract_text_lines(0)
-for line in lines:
-    print(f"Line: {line.text}")
-
-# Optional: override word and/or line gap thresholds (in PDF points)
-lines = doc.extract_text_lines(0, word_gap_threshold=2.5, line_gap_threshold=4.0)
-
-# Inspect the adaptive thresholds before overriding
-params = doc.page_layout_params(0)
-print(f"word gap: {params.word_gap_threshold:.1f}, line gap: {params.line_gap_threshold:.1f}")
-
-# Use a pre-tuned extraction profile for specific document types
+```python
 from pdf_oxide import ExtractionProfile
+
+# Pre-tuned profiles for different document types
 words = doc.extract_words(0, profile=ExtractionProfile.form())
 lines = doc.extract_text_lines(0, profile=ExtractionProfile.academic())
 
-# 4. Table extraction (v0.3.14)
-tables = doc.extract_tables(0)
-for table in tables:
-    print(f"Table with {table.row_count} rows")
-
-# 5. Traditional extraction
-text = doc.extract_text(0)
-chars = doc.extract_chars(0)
+# Override adaptive thresholds (in PDF points)
+words = doc.extract_words(0, word_gap_threshold=2.5)
+lines = doc.extract_text_lines(0, word_gap_threshold=2.5, line_gap_threshold=4.0)
+params = doc.page_layout_params(0)
+print(f"word gap: {params.word_gap_threshold:.1f}")
 ```
 
 ### Form Fields

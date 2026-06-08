@@ -17,9 +17,11 @@ pip install pdf_oxide
 ```python
 from pdf_oxide import PdfDocument
 
-doc = PdfDocument("paper.pdf")
-text = doc.extract_text(0)
-markdown = doc.to_markdown(0, detect_headings=True)
+with PdfDocument("paper.pdf") as doc:
+    print(len(doc))                          # number of pages
+    for page in doc:
+        text = page.text                     # lazy property
+        md   = page.markdown(detect_headings=True)
 ```
 
 ## Why pdf_oxide?
@@ -66,19 +68,57 @@ from pdf_oxide import PdfDocument
 
 # Path can be str or pathlib.Path
 doc = PdfDocument("report.pdf")
-print(f"Pages: {doc.page_count()}")
+print(f"Pages: {len(doc)}")
 print(f"PDF version: {doc.version()}")
 
-# Or use as a context manager — closes automatically
+# Context manager — closes automatically
 with PdfDocument("report.pdf") as doc:
-    text = doc.extract_text(0)
+    for page in doc:
+        print(page.text)
 
 # From bytes or with a password
 doc = PdfDocument.from_bytes(pdf_bytes)
 doc = PdfDocument("encrypted.pdf", password="secret")
 ```
 
-### Text extraction
+### Page objects
+
+`PdfDocument` is a sequence of `Page` objects. Pages are cheap to create; all
+extraction is lazy and computed only when the property or method is accessed.
+
+```python
+with PdfDocument("report.pdf") as doc:
+    print(len(doc))                  # page count
+
+    # Iterate all pages
+    for page in doc:
+        print(f"Page {page.index}: {page.width:.0f}×{page.height:.0f} pts")
+        text   = page.text           # str
+        chars  = page.chars          # list[TextChar]
+        words  = page.words          # list[Word]
+        lines  = page.lines          # list[TextLine]
+        spans  = page.spans          # list[TextSpan]
+        tables = page.tables         # list[Table]
+        images = page.images         # list[Image]
+        annots = page.annotations    # list[Annotation]
+        paths  = page.paths          # list[Path]
+
+        md   = page.markdown(detect_headings=True)
+        html = page.html()
+        txt  = page.plain_text()
+
+        # Render to PNG/JPEG bytes
+        png_bytes = page.render(dpi=150, format="png")
+
+        # Search within this page
+        hits = page.search("revenue", case_insensitive=True)
+
+    # Index access (negative indices supported)
+    first = doc[0]
+    last  = doc[-1]
+```
+
+### Text extraction (document-level)
 
 ```python
 text = doc.extract_text(0)            # single page
@@ -104,7 +144,7 @@ words = doc.extract_words(0, word_gap_threshold=2.5)
 lines = doc.extract_text_lines(0, word_gap_threshold=2.5, line_gap_threshold=4.0)
 ```
 
-### Format conversion
+### Format conversion (document-level)
 
 ```python
 # Markdown with optional heading detection and form-field inclusion
