@@ -247,9 +247,17 @@ impl HtmlOutputConverter {
             result = format!("<strong>{}</strong>", result);
         }
 
-        // Wrap in an anchor when the span carries a hyperlink target.
+        // Wrap in an anchor when the span carries a safe hyperlink target.
+        // Unsafe schemes (javascript:, data:, …) are dropped to prevent XSS;
+        // the anchor text is still emitted. `rel` hardens the external link.
         if let Some(uri) = span.link_uri.as_deref() {
-            result = format!("<a href=\"{}\">{}</a>", Self::escape_html(uri), result);
+            if super::is_safe_link_uri(uri) {
+                result = format!(
+                    "<a href=\"{}\" rel=\"noopener noreferrer\">{}</a>",
+                    Self::escape_html(uri),
+                    result
+                );
+            }
         }
 
         result
@@ -1313,6 +1321,25 @@ mod tests {
         assert!(out.contains("<li>Second item</li>"), "got: {out}");
         assert!(out.contains("</ul>"), "got: {out}");
         assert!(!out.contains("<p>• "), "bullet must not survive as a paragraph: {out}");
+    }
+
+    #[test]
+    fn test_link_span_emits_anchor_but_rejects_active_content() {
+        let converter = HtmlOutputConverter::new();
+        let config = TextPipelineConfig::default();
+
+        let mut safe = make_span("docs", 0.0, 100.0, 12.0, FontWeight::Normal);
+        safe.link_uri = Some(std::sync::Arc::from("https://example.com"));
+        let out = converter.convert(&[safe], &config).unwrap();
+        assert!(out.contains("<a href=\"https://example.com\""), "safe link missing: {out}");
+        assert!(out.contains(">docs</a>"), "anchor text missing: {out}");
+
+        let mut evil = make_span("click", 0.0, 100.0, 12.0, FontWeight::Normal);
+        evil.link_uri = Some(std::sync::Arc::from("javascript:alert(1)"));
+        let out = converter.convert(&[evil], &config).unwrap();
+        assert!(!out.contains("<a "), "javascript: link must not produce an anchor: {out}");
+        assert!(!out.contains("javascript:"), "javascript: scheme must not appear: {out}");
+        assert!(out.contains("click"), "anchor text must survive: {out}");
     }
 
     #[test]

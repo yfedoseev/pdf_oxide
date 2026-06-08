@@ -128,6 +128,22 @@ pub(crate) fn base_heading_font_size(spans: &[&OrderedTextSpan], detect_headings
         .min(12.0)
 }
 
+/// Whether a `/Link` annotation URI is safe to emit as a hyperlink.
+///
+/// Only well-known navigable schemes are allowed; `javascript:`, `data:`,
+/// `vbscript:`, `file:` and any other/unknown scheme are rejected so a
+/// malicious PDF cannot inject an active-content link into the HTML/markdown
+/// output (XSS). Anchor text is still emitted for rejected URIs — only the
+/// link target is dropped.
+pub(crate) fn is_safe_link_uri(uri: &str) -> bool {
+    let lower = uri.trim_start().to_ascii_lowercase();
+    [
+        "http://", "https://", "mailto:", "tel:", "ftp://", "ftps://",
+    ]
+    .iter()
+    .any(|scheme| lower.starts_with(scheme))
+}
+
 /// Whether a structure-tree role marks the span as part of a list item.
 pub(crate) fn is_list_item_role(role: Option<StructRole>) -> bool {
     matches!(
@@ -504,6 +520,31 @@ mod tests {
         let input = "Account Number\n434508032\n";
         let expected = "Account Number 434508032\n";
         assert_eq!(merge_key_value_pairs(input), expected);
+    }
+
+    #[test]
+    fn test_is_safe_link_uri_allows_navigable_and_rejects_active_content() {
+        for ok in [
+            "https://example.com",
+            "http://x",
+            "mailto:a@b.com",
+            "tel:+15551234",
+            "FTP://h",
+        ] {
+            assert!(is_safe_link_uri(ok), "{ok} should be allowed");
+        }
+        for bad in [
+            "javascript:alert(1)",
+            "  javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "data:text/html,<script>",
+            "vbscript:msgbox",
+            "file:///etc/passwd",
+            "relative/path",
+            "",
+        ] {
+            assert!(!is_safe_link_uri(bad), "{bad} should be rejected");
+        }
     }
 
     #[test]

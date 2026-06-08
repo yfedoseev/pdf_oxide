@@ -1485,12 +1485,14 @@ impl MarkdownOutputConverter {
             }
 
             // A span inside a /Link annotation becomes a markdown link
-            // `[text](uri)`. Otherwise fall back to autolinking bare URLs in the
-            // text. (Consecutive spans sharing a URI render as adjacent links.)
-            let linkified = if let Some(uri) = span.link_uri.as_deref() {
-                format!("[{}]({})", text.trim(), uri.replace(' ', "%20").replace(')', "%29"))
-            } else {
-                self.linkify(text)
+            // `[text](uri)` — but only for safe schemes (reject javascript:,
+            // data:, … to avoid injecting active content). Otherwise fall back
+            // to autolinking bare URLs in the text.
+            let linkified = match span.link_uri.as_deref() {
+                Some(uri) if super::is_safe_link_uri(uri) => {
+                    format!("[{}]({})", text.trim(), uri.replace(' ', "%20").replace(')', "%29"))
+                },
+                _ => self.linkify(text),
             };
 
             let is_bold = self.is_bold(span, config);
