@@ -235,6 +235,54 @@ fn dedup_identical_header_cells(s: &str) -> String {
 /// logical heading. See `looks_like_heading_wrap` for the 2-fragment
 /// wrapped-heading rule; otherwise require 3+ fragments each <= 2
 /// words (canonical PowerPoint word-per-heading pattern).
+/// Is `line` a Markdown list-item marker line (`- `, `* `, `+ `, or an ordered
+/// `N.`/`N)` marker)? Used to tighten lists.
+fn is_md_list_item_line(line: &str) -> bool {
+    let t = line.trim_start();
+    if let Some(rest) = t
+        .strip_prefix("- ")
+        .or_else(|| t.strip_prefix("* "))
+        .or_else(|| t.strip_prefix("+ "))
+    {
+        return !rest.trim().is_empty() || rest.is_empty();
+    }
+    // Ordered marker: leading ASCII digits then '.' or ')' then a space.
+    let digits = t.bytes().take_while(|b| b.is_ascii_digit()).count();
+    digits > 0
+        && matches!(t.as_bytes().get(digits), Some(b'.') | Some(b')'))
+        && t.as_bytes().get(digits + 1) == Some(&b' ')
+}
+
+/// Collapse blank lines that sit between two consecutive list-item marker lines
+/// so the list renders tight (CommonMark §5.3) rather than loose. The span
+/// flush in [`MarkdownOutputConverter::convert`] always appends a blank line
+/// after each item, which would otherwise wrap every item in its own `<p>` and
+/// fragment the document's list structure. Blank lines that separate a list
+/// item from non-list content (the end of the list) are preserved.
+fn tighten_list_items(s: &str) -> String {
+    let lines: Vec<&str> = s.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        out.push(lines[i].to_string());
+        if is_md_list_item_line(lines[i]) {
+            // Look past blank lines to the next content line.
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].trim().is_empty() {
+                j += 1;
+            }
+            // Only collapse when the next content line is also a list item AND
+            // at least one blank line separated them (so we actually tighten).
+            if j > i + 1 && j < lines.len() && is_md_list_item_line(lines[j]) {
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.join("\n")
+}
+
 fn merge_consecutive_same_level_headings(s: &str) -> String {
     let lines: Vec<&str> = s.split('\n').collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
@@ -1684,6 +1732,11 @@ impl MarkdownOutputConverter {
         // and untagged documents.
         final_result = escape_stray_leading_pipes(&final_result);
         final_result = coalesce_camelcase_bold_fragments(&final_result);
+        // Tight lists: drop blank lines between consecutive list-item markers.
+        // The span flush always appends a blank line, which turns every list
+        // into a Markdown "loose" list (each item wrapped in <p>); the golden
+        // corpus and most renderers expect a "tight" list. CommonMark §5.3.
+        final_result = tighten_list_items(&final_result);
 
         // Structure-recovery heuristics — UNTAGGED documents only.
         // For tagged PDFs the structure tree is authoritative (§14.8.4)
@@ -2013,6 +2066,43 @@ mod tests {
     use crate::pipeline::converters::span_in_table;
     use crate::pipeline::StructRole;
     use crate::structure::table_extractor::{TableCell, TableRow};
+
+    #[test]
+    fn test_tighten_list_items_collapses_blank_lines_between_markers() {
+        // Loose list (blank lines between items) → tight list. CommonMark §5.3.
+        let loose = "- a\n\n- b\n\n- c\n\nNext paragraph.";
+        let tight = tighten_list_items(loose);
+        assert_eq!(tight, "- a\n- b\n- c\n\nNext paragraph.");
+
+        // Ordered list likewise.
+        let loose_ol = "1. one\n\n2. two\n\nDone.";
+        assert_eq!(tighten_list_items(loose_ol), "1. one\n2. two\n\nDone.");
+
+        // Blank line separating a list from following prose is preserved.
+        let mixed = "- only item\n\nA paragraph after the list.";
+        assert_eq!(tighten_list_items(mixed), mixed);
+
+        // Non-list content is untouched.
+        let prose = "# Title\n\nPara one.\n\nPara two.";
+        assert_eq!(tighten_list_items(prose), prose);
+    }
+
+    #[test]
+    fn test_is_md_list_item_line() {
+        for yes in ["- x", "* y", "+ z", "1. a", "2) b", "  - indented"] {
+            assert!(is_md_list_item_line(yes), "{yes:?} should be a list item");
+        }
+        for no in [
+            "text",
+            "-no space",
+            "1.no space",
+            "#- heading",
+            "",
+            "  plain",
+        ] {
+            assert!(!is_md_list_item_line(no), "{no:?} should NOT be a list item");
+        }
+    }
 
     #[test]
     fn test_bare_ordinal_suffix_is_not_a_heading() {
