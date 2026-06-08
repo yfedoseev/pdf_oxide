@@ -7062,7 +7062,7 @@ impl PdfDocument {
     /// so visually-stored RTL (e.g. issue10301 Hebrew "גבא") otherwise leaked
     /// out reversed. A single-direction run's logical order is just its reverse,
     /// so no glyph geometry is needed for the pure-RTL case.
-    fn push_span_text_bidi(out: &mut String, span: &TextSpan) {
+    fn push_span_text_bidi(out: &mut String, span: &TextSpan, rtl_run: bool) {
         use crate::text::rtl_detector::is_rtl_text;
         let mut rtl = 0usize;
         let mut has_latin = false;
@@ -7082,9 +7082,83 @@ impl PdfDocument {
             let mut tmp = span.clone();
             tmp.text = Self::reverse_rtl_keeping_marks(&span.text);
             Self::push_span_text(out, &tmp);
+        } else if rtl_run && Self::is_reversible_rtl_neutral_span(&span.text) {
+            // A neutral-only span (separator / terminator punctuation plus
+            // spaces — no strong letters and no digits) embedded in a pure-RTL
+            // run carries its glyphs in *visual* (content-stream draw) order.
+            // Per UAX #9 the neutrals inherit the surrounding right-to-left
+            // direction (rules N1/N2), so their logical order is the reverse of
+            // the visual sequence: a visual "<space><comma>" drawn between two
+            // Hebrew words becomes "<comma><space>", re-attaching the comma to
+            // the preceding word. The pure-RTL words around it are reversed by
+            // the branch above; without this the punctuation stayed stranded on
+            // the wrong side of the inter-word space.
+            let mut tmp = span.clone();
+            tmp.text = span.text.chars().rev().collect();
+            Self::push_span_text(out, &tmp);
         } else {
             Self::push_span_text(out, span);
         }
+    }
+
+    /// Whether every span in this marked-content element is part of a *pure*
+    /// right-to-left run: at least one Arabic/Hebrew letter is present and no
+    /// Latin letter is. Mirrors the gating in [`order_mcid_spans`] (the branch
+    /// that sorts pure-RTL spans right-to-left). Used to decide whether
+    /// neutral-only punctuation spans inside the run must be reversed from
+    /// visual to logical order by [`push_span_text_bidi`].
+    fn mcid_run_is_pure_rtl(spans: &[crate::layout::TextSpan]) -> bool {
+        use crate::text::rtl_detector::is_rtl_text;
+        let has_rtl = spans
+            .iter()
+            .any(|s| s.text.chars().any(|c| is_rtl_text(c as u32)));
+        let has_latin = spans
+            .iter()
+            .any(|s| s.text.chars().any(|c| c.is_ascii_alphabetic()));
+        has_rtl && !has_latin
+    }
+
+    /// Is `c` a direction-neutral punctuation mark whose order inside an RTL
+    /// run is a pure transposition — safe to reverse with the surrounding RTL
+    /// neutrals? Restricted to separators and terminators (comma, full stop,
+    /// semicolon, colon, exclamation, question, and their Arabic/Hebrew
+    /// equivalents). Deliberately excludes paired brackets and quotation marks
+    /// (which need UAX #9 L4 mirroring, handled elsewhere), digits, and any
+    /// character that anchors an embedded left-to-right sub-run.
+    fn is_rtl_reorderable_neutral(c: char) -> bool {
+        matches!(
+            c,
+            ',' | '.' | ';' | ':' | '!' | '?'
+                | '\u{05BE}' // Hebrew maqaf
+                | '\u{05C3}' // Hebrew sof pasuq
+                | '\u{060C}' // Arabic comma
+                | '\u{061B}' // Arabic semicolon
+                | '\u{061F}' // Arabic question mark
+                | '\u{06D4}' // Arabic full stop
+        )
+    }
+
+    /// Whether `text` is a neutral-only span eligible for the RTL visual→logical
+    /// reversal in [`push_span_text_bidi`]: every character is whitespace or a
+    /// [reorderable neutral](Self::is_rtl_reorderable_neutral), it contains at
+    /// least one such punctuation mark, and it is at least two characters long
+    /// (so there is an order to fix). A lone punctuation glyph or a bare space
+    /// run reverses to itself and is left untouched.
+    fn is_reversible_rtl_neutral_span(text: &str) -> bool {
+        let mut has_punct = false;
+        let mut count = 0usize;
+        for c in text.chars() {
+            count += 1;
+            if c.is_whitespace() {
+                continue;
+            }
+            if Self::is_rtl_reorderable_neutral(c) {
+                has_punct = true;
+                continue;
+            }
+            return false; // letter, digit, bracket, quote, or other → not eligible
+        }
+        has_punct && count >= 2
     }
 
     /// Reverse a pure-RTL run from visual to logical order while keeping each
@@ -8557,6 +8631,7 @@ impl PdfDocument {
 
             if let Some(spans) = mcid_map.get(&mcid) {
                 consumed_mcids.insert(mcid);
+                let rtl_run = Self::mcid_run_is_pure_rtl(spans);
                 for span in Self::order_mcid_spans(spans) {
                     if let Some(prev) = prev_span {
                         let y_diff = (prev.bbox.y - span.bbox.y).abs();
@@ -8573,7 +8648,7 @@ impl PdfDocument {
                         }
                     }
 
-                    Self::push_span_text_bidi(&mut text, span);
+                    Self::push_span_text_bidi(&mut text, span, rtl_run);
                     prev_span = Some(span);
                 }
             } else {
@@ -8602,6 +8677,7 @@ impl PdfDocument {
                 unconsumed.len()
             );
             for (_mcid, spans) in &unconsumed {
+                let rtl_run = Self::mcid_run_is_pure_rtl(spans);
                 for span in *spans {
                     if let Some(prev) = prev_span {
                         let y_diff = (prev.bbox.y - span.bbox.y).abs();
@@ -8611,7 +8687,7 @@ impl PdfDocument {
                             text.push(' ');
                         }
                     }
-                    Self::push_span_text_bidi(&mut text, span);
+                    Self::push_span_text_bidi(&mut text, span, rtl_run);
                     prev_span = Some(span);
                 }
             }
@@ -8632,7 +8708,7 @@ impl PdfDocument {
                         text.push(' ');
                     }
                 }
-                Self::push_span_text_bidi(&mut text, span);
+                Self::push_span_text_bidi(&mut text, span, false);
                 prev_span = Some(span);
             }
         }
@@ -8675,12 +8751,62 @@ impl PdfDocument {
             // logical reading order from geometry, independent of whether the
             // producer stored the run visually or logically. Per-span glyph
             // order is corrected separately by `push_span_text_bidi`.
-            ordered.sort_by(|a, b| {
-                crate::utils::row_aware_span_cmp_rtl(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
-            });
+            ordered = Self::order_pure_rtl_spans(spans);
         }
         // Mixed RTL+Latin MCIDs keep raw order (full UAX #9 bidi deferred).
         ordered
+    }
+
+    /// Order a pure-RTL MCID's spans into logical reading order: group spans
+    /// into visual lines using a **font-relative** vertical tolerance, then
+    /// emit each line right-to-left (X descending).
+    ///
+    /// A fixed quantized row band (`row_aware_span_cmp_rtl` with the global
+    /// `ROW_BAND_TOLERANCE_PT`) over-segments Arabic lines. Producers routinely
+    /// draw zero-advance glyphs — hamza seats, shadda/kasra marks, and even
+    /// whole consonants positioned by a separate zero-width show — 1–3 pt off
+    /// the baseline. A coarse fixed band rounds those into adjacent rows, which
+    /// then emit before or after the body of the line and scatter the run (the
+    /// telltale leading run of stray alef/hamza glyphs). Banding by a tolerance
+    /// proportional to the glyph size keeps one jittery line intact while still
+    /// separating genuinely distinct lines, whose leading is ~1.2× the font
+    /// size — comfortably beyond the tolerance. Per-span glyph order is fixed
+    /// separately by [`push_span_text_bidi`]; this function only fixes the order
+    /// in which spans are emitted.
+    fn order_pure_rtl_spans(spans: &[crate::layout::TextSpan]) -> Vec<&crate::layout::TextSpan> {
+        use crate::utils::safe_float_cmp;
+        let mut by_y: Vec<&crate::layout::TextSpan> = spans.iter().collect();
+        // Stable sort, Y descending (top of page first). Ties keep extraction
+        // (content-stream) order; the X-descending pass below refines each line.
+        by_y.sort_by(|a, b| safe_float_cmp(b.bbox.y, a.bbox.y));
+
+        let mut out: Vec<&crate::layout::TextSpan> = Vec::with_capacity(spans.len());
+        let mut line: Vec<&crate::layout::TextSpan> = Vec::new();
+        let mut anchor_y = f32::NAN;
+        let mut tol = 0.0f32;
+        for s in by_y {
+            let fs = if s.font_size.is_finite() && s.font_size > 1.0 {
+                s.font_size
+            } else {
+                10.0
+            };
+            let starts_new_line =
+                anchor_y.is_finite() && (!s.bbox.y.is_finite() || anchor_y - s.bbox.y > tol);
+            if anchor_y.is_nan() || starts_new_line {
+                if !line.is_empty() {
+                    line.sort_by(|a, b| safe_float_cmp(b.bbox.x, a.bbox.x));
+                    out.append(&mut line);
+                }
+                anchor_y = s.bbox.y;
+                tol = 0.5 * fs;
+            }
+            line.push(s);
+        }
+        if !line.is_empty() {
+            line.sort_by(|a, b| safe_float_cmp(b.bbox.x, a.bbox.x));
+            out.append(&mut line);
+        }
+        out
     }
 
     ///
@@ -9178,6 +9304,7 @@ impl PdfDocument {
 
             if let Some(spans) = mcid_map.get(&mcid) {
                 consumed_mcids.insert(mcid);
+                let rtl_run = Self::mcid_run_is_pure_rtl(spans);
                 for span in Self::order_mcid_spans(spans) {
                     if let Some(prev) = prev_span {
                         let y_diff = (prev.bbox.y - span.bbox.y).abs();
@@ -9193,7 +9320,7 @@ impl PdfDocument {
                         }
                     }
 
-                    Self::push_span_text_bidi(&mut text, span);
+                    Self::push_span_text_bidi(&mut text, span, rtl_run);
                     prev_span = Some(span);
                 }
             }
@@ -9211,6 +9338,7 @@ impl PdfDocument {
                 unconsumed.len()
             );
             for (_mcid, spans) in &unconsumed {
+                let rtl_run = Self::mcid_run_is_pure_rtl(spans);
                 for span in *spans {
                     if let Some(prev) = prev_span {
                         let y_diff = (prev.bbox.y - span.bbox.y).abs();
@@ -9220,7 +9348,7 @@ impl PdfDocument {
                             text.push(' ');
                         }
                     }
-                    Self::push_span_text_bidi(&mut text, span);
+                    Self::push_span_text_bidi(&mut text, span, rtl_run);
                     prev_span = Some(span);
                 }
             }
@@ -9243,7 +9371,7 @@ impl PdfDocument {
                         text.push(' ');
                     }
                 }
-                Self::push_span_text_bidi(&mut text, span);
+                Self::push_span_text_bidi(&mut text, span, false);
                 prev_span = Some(span);
             }
         }
@@ -19622,6 +19750,55 @@ mod tests {
         );
     }
 
+    /// #656: a pure-RTL line whose zero-advance glyphs (hamza seats, marks,
+    /// producer-positioned consonants) are drawn a couple of points off the
+    /// baseline must NOT be scattered into separate rows. The fixed quantized
+    /// row band split them out and emitted them first (the leading stray-alef
+    /// cluster); font-relative line grouping keeps the whole line together and
+    /// in rightmost-first order.
+    #[test]
+    fn test_order_pure_rtl_spans_keeps_jittery_baseline_in_one_line() {
+        // Five Arabic letters on ONE visual line at X = 300..100 (rightmost
+        // first is logical), but with ±2pt baseline jitter — two of them drawn
+        // above the baseline as a zero-width producer would. Font size 12 →
+        // tolerance 6pt, so the 4pt spread stays a single line.
+        let spans = vec![
+            make_rtl_test_span("\u{0627}", 300.0, 701.0), // ا  rightmost, +1
+            make_rtl_test_span("\u{0644}", 250.0, 703.0), // ل  above baseline
+            make_rtl_test_span("\u{0642}", 200.0, 700.0), // ق  baseline
+            make_rtl_test_span("\u{0637}", 150.0, 702.0), // ط
+            make_rtl_test_span("\u{0645}", 100.0, 699.0), // م  leftmost, -1
+        ];
+        let ordered = PdfDocument::order_pure_rtl_spans(&spans);
+        let texts: Vec<&str> = ordered.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["\u{0627}", "\u{0644}", "\u{0642}", "\u{0637}", "\u{0645}"],
+            "jittery-baseline RTL line must stay in one rightmost-first run, got {texts:?}"
+        );
+    }
+
+    /// Genuinely separate RTL lines (leading ~1.2x font size) must still break:
+    /// the font-relative tolerance groups jitter, not whole lines.
+    #[test]
+    fn test_order_pure_rtl_spans_breaks_distinct_lines() {
+        // Two lines, 14pt apart (font size 12 → tol 6pt, so they split). Each
+        // line emits rightmost-first; the top line precedes the bottom line.
+        let spans = vec![
+            make_rtl_test_span("\u{0628}", 200.0, 714.0), // top-left
+            make_rtl_test_span("\u{0627}", 300.0, 714.0), // top-right
+            make_rtl_test_span("\u{062F}", 200.0, 700.0), // bottom-left
+            make_rtl_test_span("\u{062C}", 300.0, 700.0), // bottom-right
+        ];
+        let ordered = PdfDocument::order_pure_rtl_spans(&spans);
+        let texts: Vec<&str> = ordered.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["\u{0627}", "\u{0628}", "\u{062C}", "\u{062F}"],
+            "distinct RTL lines must break (top first, each rightmost-first), got {texts:?}"
+        );
+    }
+
     // #656: grapheme-aware RTL reversal keeps Arabic combining marks bound to
     // their base letter (vs. a naive chars().rev() that floats them off).
     #[test]
@@ -19643,6 +19820,80 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ========================================================================
+    // RTL neutral-punctuation reversal (push_span_text_bidi / #669)
+    // ========================================================================
+
+    /// A neutral-only span ("<space><comma>") inside a pure-RTL run carries its
+    /// glyphs in visual draw order; emitting it under an RTL run must reverse it
+    /// to logical order ("<comma><space>") so the comma re-attaches to the word
+    /// it follows. Reproduces the wiki-cat-he `הטורפים, ממשפחת` case.
+    #[test]
+    fn test_push_span_text_bidi_reverses_neutral_span_in_rtl_run() {
+        let span = make_rtl_test_span(" ,", 270.0, 700.0);
+        let mut out = String::from("\u{05D4}\u{05D8}\u{05D5}\u{05E8}"); // a Hebrew word
+        PdfDocument::push_span_text_bidi(&mut out, &span, true);
+        assert!(out.ends_with(", "), "neutral span not reversed to logical: {out:?}");
+        assert!(!out.ends_with(" ,"), "visual order leaked into output: {out:?}");
+    }
+
+    /// The same neutral-only span in a non-RTL run (rtl_run = false) is emitted
+    /// verbatim — LTR text keeps visual == logical order, so reversal would be
+    /// wrong. Pins the no-regression contract for LTR documents.
+    #[test]
+    fn test_push_span_text_bidi_keeps_neutral_span_in_ltr_run() {
+        let span = make_rtl_test_span(" ,", 270.0, 700.0);
+        let mut out = String::from("word");
+        PdfDocument::push_span_text_bidi(&mut out, &span, false);
+        assert_eq!(out, "word ,", "LTR neutral span must be emitted verbatim");
+    }
+
+    /// A neutral span that embeds a digit (a left-to-right sub-run) must NOT be
+    /// reversed even inside an RTL run — reversing `2009` would corrupt the year
+    /// to `9002`. Guards the digit-exclusion in `is_reversible_rtl_neutral_span`.
+    #[test]
+    fn test_push_span_text_bidi_does_not_reverse_digit_bearing_span() {
+        let span = make_rtl_test_span("2009,", 270.0, 700.0);
+        let mut out = String::new();
+        PdfDocument::push_span_text_bidi(&mut out, &span, true);
+        assert_eq!(out, "2009,", "digit-bearing span must not be reversed");
+    }
+
+    #[test]
+    fn test_is_reversible_rtl_neutral_span_classification() {
+        // Reversible: at least one reorderable punctuation mark + ≥2 chars.
+        assert!(PdfDocument::is_reversible_rtl_neutral_span(" ,"));
+        assert!(PdfDocument::is_reversible_rtl_neutral_span(" ."));
+        assert!(PdfDocument::is_reversible_rtl_neutral_span(". "));
+        assert!(PdfDocument::is_reversible_rtl_neutral_span(" \u{060C}")); // Arabic comma
+                                                                           // Not reversible: single char (reverses to itself), bare spaces, or
+                                                                           // anything carrying a letter / digit / bracket / quote.
+        assert!(!PdfDocument::is_reversible_rtl_neutral_span(","));
+        assert!(!PdfDocument::is_reversible_rtl_neutral_span("  "));
+        assert!(!PdfDocument::is_reversible_rtl_neutral_span(" 9"));
+        assert!(!PdfDocument::is_reversible_rtl_neutral_span(" )"));
+        assert!(!PdfDocument::is_reversible_rtl_neutral_span(" \""));
+        assert!(!PdfDocument::is_reversible_rtl_neutral_span("a,"));
+    }
+
+    #[test]
+    fn test_mcid_run_is_pure_rtl() {
+        let pure_rtl = vec![
+            make_rtl_test_span("\u{05E9}\u{05DC}\u{05D5}\u{05DD}", 100.0, 700.0),
+            make_rtl_test_span(" ,", 90.0, 700.0),
+        ];
+        assert!(PdfDocument::mcid_run_is_pure_rtl(&pure_rtl));
+        // RTL + Latin → not pure-RTL (full UAX #9 deferred).
+        let mixed = vec![
+            make_rtl_test_span("\u{05E9}\u{05DC}\u{05D5}\u{05DD}", 100.0, 700.0),
+            make_rtl_test_span("World", 200.0, 700.0),
+        ];
+        assert!(!PdfDocument::mcid_run_is_pure_rtl(&mixed));
+        // No RTL at all → not pure-RTL.
+        let ltr = vec![make_rtl_test_span("Hello", 100.0, 700.0)];
+        assert!(!PdfDocument::mcid_run_is_pure_rtl(&ltr));
     }
 
     // Mixed RTL+Latin MCIDs are left in raw order (full UAX #9 deferred) —
