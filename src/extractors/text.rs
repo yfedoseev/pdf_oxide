@@ -1021,6 +1021,44 @@ pub(crate) fn is_pictographic(c: char) -> bool {
         | 0xFE0F) // VS16 emoji presentation selector
 }
 
+/// Remove an ASCII space sitting directly between a CJK ideograph/kana and an
+/// ASCII digit (either direction). In CJK writing an embedded number attaches to
+/// the surrounding ideographs with no space (e.g. "公元前1000年", "10,000年");
+/// some producers — notably headless-browser print-to-PDF — emit a stray space
+/// glyph at that script transition. CJK↔CJK and CJK↔letter spacing is left
+/// untouched, so genuine word/term spacing is preserved.
+pub(crate) fn strip_cjk_digit_boundary_spaces(text: &str) -> String {
+    if !text.contains(' ') {
+        return text.to_string();
+    }
+    let is_cjk = |c: char| {
+        matches!(c as u32,
+            0x3040..=0x30FF      // Hiragana + Katakana
+            | 0x3400..=0x4DBF    // CJK Ext A
+            | 0x4E00..=0x9FFF    // CJK Unified
+            | 0xAC00..=0xD7AF    // Hangul syllables
+            | 0x20000..=0x2A6DF  // CJK Ext B
+            | 0xFF66..=0xFF9F    // Halfwidth Katakana
+        )
+    };
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == ' ' && i > 0 && i + 1 < chars.len() {
+            let (p, n) = (chars[i - 1], chars[i + 1]);
+            if (is_cjk(p) && n.is_ascii_digit()) || (p.is_ascii_digit() && is_cjk(n)) {
+                i += 1; // drop the artifact space
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
 fn should_insert_space(
     preceding_text: &str,
     following_text: &str,
@@ -13203,6 +13241,24 @@ mod tests {
         assert_eq!(corrected_space_gap(0.0, false, 34.23, false), 0.0);
         // small positive raw gap (academic "XGBoostX"+"provides") untouched.
         assert_eq!(corrected_space_gap(0.47, false, 50.0, false), 0.47);
+    }
+
+    #[test]
+    fn test_strip_cjk_digit_boundary_spaces() {
+        // A space between a CJK ideograph and an embedded number is dropped at
+        // both ends; the number itself is preserved.
+        assert_eq!(strip_cjk_digit_boundary_spaces("公元前 1000 年"), "公元前1000年");
+        assert_eq!(strip_cjk_digit_boundary_spaces("追溯至 10,000 年前"), "追溯至10,000年前");
+        // Works for Japanese/Korean ideographs too.
+        assert_eq!(strip_cjk_digit_boundary_spaces("西暦 2024 年"), "西暦2024年");
+        assert_eq!(strip_cjk_digit_boundary_spaces("약 1 만년"), "약1만년");
+        // Legitimate spacing is preserved.
+        assert_eq!(strip_cjk_digit_boundary_spaces("貓 通常"), "貓 通常"); // CJK↔CJK
+        assert_eq!(strip_cjk_digit_boundary_spaces("catus 펠리스"), "catus 펠리스"); // letter↔CJK
+        assert_eq!(strip_cjk_digit_boundary_spaces("10 000"), "10 000"); // digit↔digit
+        assert_eq!(strip_cjk_digit_boundary_spaces("page 12 of 30"), "page 12 of 30"); // Latin
+                                                                                       // No-op fast path.
+        assert_eq!(strip_cjk_digit_boundary_spaces("中文"), "中文");
     }
 
     /// Overlap (raw_gap < 0) on a fallback-width font IS corrected — this is

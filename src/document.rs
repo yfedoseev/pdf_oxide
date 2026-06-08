@@ -5646,6 +5646,10 @@ impl PdfDocument {
             cleaned_text
         };
 
+        // Drop stray spaces a producer inserted between a CJK ideograph and an
+        // embedded ASCII number (e.g. "公元前 1000 年" → "公元前1000年").
+        let cleaned_text = crate::extractors::text::strip_cjk_digit_boundary_spaces(&cleaned_text);
+
         Ok(cleaned_text)
     }
 
