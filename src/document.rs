@@ -9078,6 +9078,7 @@ impl PdfDocument {
     ///   reverse keeping combining marks attached ([`reverse_rtl_keeping_marks`]);
     /// - a neutral-only span: reverse so trailing punctuation re-attaches to the
     ///   preceding word (UAX #9 N1/N2, [`is_reversible_rtl_neutral_span`]).
+    ///
     /// Mixed RTL+Latin lines are left untouched (full UAX #9 deferred), and the
     /// whole pass is skipped when the page has no RTL characters.
     fn apply_rtl_logical_order_to_ordered_spans(spans: &mut [crate::pipeline::OrderedTextSpan]) {

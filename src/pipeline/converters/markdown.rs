@@ -2139,6 +2139,7 @@ fn find_matching(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
 ///    starts the next, both at the same baseline. Without the
 ///    backward-wrap detection the converter joins them into the
 ///    nonsense token `constitutionAssailing`.
+///
 /// Marker wrapped around a fully-monospace plain paragraph at flush time so
 /// `fence_monospace_blocks` can recognise and fuse consecutive ones. NUL never
 /// occurs in extracted text, so it is unambiguous and is always removed.
