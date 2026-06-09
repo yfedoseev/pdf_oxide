@@ -1109,12 +1109,15 @@ impl MarkdownOutputConverter {
         // so that heading-only documents still produce sensible ratios.
         let base_font_size = super::base_heading_font_size(&sorted, config.output.detect_headings);
 
-        // Per-block right margin: the rightmost edge any span sharing a
-        // paragraph `block_id` reaches. A *wrapped* prose line runs to this
-        // margin; a deliberately short line (a shell command, a record row, a
-        // paragraph's last line) stops well short of it. Used to gate the
-        // structure-authoritative paragraph reflow below.
+        // Per-block margins: the rightmost edge and the leftmost edge any span
+        // sharing a paragraph `block_id` reaches. A *wrapped* prose line runs to
+        // the column margin (the right edge for left-to-right text, the LEFT
+        // edge for right-to-left text); a deliberately short line (a shell
+        // command, a record row, a paragraph's last line) stops well short of
+        // it. Used to gate the structure-authoritative paragraph reflow below.
         let mut block_right_max: std::collections::HashMap<u32, f32> =
+            std::collections::HashMap::new();
+        let mut block_left_min: std::collections::HashMap<u32, f32> =
             std::collections::HashMap::new();
         for s in &sorted {
             if let Some(b) = s.block_id {
@@ -1122,6 +1125,10 @@ impl MarkdownOutputConverter {
                 let e = block_right_max.entry(b).or_insert(f32::MIN);
                 if right > *e {
                     *e = right;
+                }
+                let l = block_left_min.entry(b).or_insert(f32::MAX);
+                if s.span.bbox.x < *l {
+                    *l = s.span.bbox.x;
                 }
             }
         }
@@ -1386,12 +1393,16 @@ impl MarkdownOutputConverter {
                     && !span.preformatted
                     && !prev.preformatted;
                 // The next line continues the sentence when it starts lowercase
-                // (`…downtown by\nnine…`) or with a number that is not an
-                // ordered-list marker (`…downtown by\n2028`). An ordered marker
-                // (`2.` / `3)`) is a deliberate new item and must not merge.
+                // (`…downtown by\nnine…`), with a caseless-script letter
+                // (Hebrew/Arabic/CJK/Indic have no capitalisation, so a letter
+                // at the line start is always a continuation, never a new
+                // sentence/field), or with a number that is not an ordered-list
+                // marker (`…downtown by\n2028`). An ordered marker (`2.` / `3)`)
+                // is a deliberate new item and must not merge.
                 let next_trim = span.span.text.trim_start();
                 let next_continues_lowercase = next_trim.chars().next().is_some_and(|c| {
                     c.is_lowercase()
+                        || (c.is_alphabetic() && !c.is_uppercase())
                         || (c.is_ascii_digit()
                             && super::is_ordered_list_marker(next_trim).is_none())
                 });
@@ -1405,30 +1416,41 @@ impl MarkdownOutputConverter {
                 // proper noun) — the trailing hyphen is the continuation signal.
                 let next_continues_lowercase =
                     next_continues_lowercase || prev_trimmed.ends_with('-');
-                // The previous line must have run to the block's right margin —
-                // a genuine wrap. A short ragged line (shell command, mis-tagged
+                // The previous line must have run to the column margin — a
+                // genuine wrap. A short ragged line (shell command, mis-tagged
                 // code, a record value) is a deliberate break and is preserved.
+                // Left-to-right lines fill toward the RIGHT margin; right-to-left
+                // lines (Arabic/Hebrew) start at the right and fill toward the
+                // LEFT margin, so the test is mirrored for them.
+                let tol = prev.span.font_size.max(8.0) * 1.5;
+                let prev_is_rtl = crate::text::bidi::looks_rtl(&prev.span.text);
                 let prev_fills_column = prev.block_id.is_some_and(|b| {
-                    block_right_max.get(&b).is_some_and(|&m| {
-                        let prev_right = prev.span.bbox.x + prev.span.bbox.width;
-                        prev_right >= m - prev.span.font_size.max(8.0) * 1.5
-                    })
+                    if prev_is_rtl {
+                        block_left_min
+                            .get(&b)
+                            .is_some_and(|&lo| prev.span.bbox.x <= lo + tol)
+                    } else {
+                        block_right_max
+                            .get(&b)
+                            .is_some_and(|&hi| prev.span.bbox.x + prev.span.bbox.width >= hi - tol)
+                    }
                 });
                 let merge_wrapped_line = same_block
                     && plain_para
                     && next_continues_lowercase
                     && prev_unterminated
                     && prev_fills_column;
-                let geometric_para_break =
-                    self.is_paragraph_break(span, prev) && !merge_wrapped_line;
-
-                if group_flush
-                    || geometric_para_break
+                // A genuine intra-paragraph wrap (same block, plain body text,
+                // previous line filled the column margin, next line continues)
+                // is one paragraph, so it suppresses every *soft* break — the
+                // geometric gap, a reading-order group change, and a structure
+                // block change (the same `<P>` re-entered). It does NOT override
+                // a list-item transition or a real column gutter.
+                let soft_break = group_flush
+                    || self.is_paragraph_break(span, prev)
                     || heading_changed_break
-                    || list_item_changed
-                    || block_changed
-                    || column_gap
-                {
+                    || block_changed;
+                if (soft_break && !merge_wrapped_line) || list_item_changed || column_gap {
                     close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
                     if !current_line.is_empty() {
                         if let Some(level) = current_heading_level {
@@ -2194,8 +2216,16 @@ fn is_column_gap(prev: &OrderedTextSpan, current: &OrderedTextSpan) -> bool {
     // paragraph/heading per word (Arabic/Hebrew titles and prose). The RTL
     // reading-order pass has already placed these spans correctly, so skip the
     // backward-X branch when both sides are RTL.
-    let both_rtl = crate::text::bidi::looks_rtl(&prev.span.text)
-        && crate::text::bidi::looks_rtl(&current.span.text);
+    // A whitespace / neutral span between two RTL words is part of the RTL
+    // flow (it has no direction of its own), so it must not break the RTL
+    // context — otherwise every word→space→word step inside a right-to-left
+    // line reads as a same-baseline column gap and the line shatters into one
+    // paragraph per word.
+    let rtl_friendly = |t: &str| crate::text::bidi::looks_rtl(t) || t.trim().is_empty();
+    let both_rtl = rtl_friendly(&prev.span.text)
+        && rtl_friendly(&current.span.text)
+        && (crate::text::bidi::looks_rtl(&prev.span.text)
+            || crate::text::bidi::looks_rtl(&current.span.text));
 
     // Backward wrap: x went meaningfully backwards. This is the signature of
     // BOTH a within-column line wrap (X resets to the column's left margin) and
@@ -3150,6 +3180,24 @@ mod tests {
         assert!(is_column_gap(&mk(976.7, 1013.2), &mk(192.6, 1011.7)));
         // Column jump UP (next column resumes far above). IS a column boundary.
         assert!(is_column_gap(&mk(500.0, 100.0), &mk(72.0, 700.0)));
+    }
+
+    /// Right-to-left flow steps left on every word, including across the space
+    /// spans between words — none of those steps is a column boundary, or an
+    /// Arabic/Hebrew line shatters into one paragraph per word.
+    #[test]
+    fn test_is_column_gap_rtl_word_and_space_steps_are_not_columns() {
+        let mk = |t: &str, x: f32| {
+            let mut s = make_span(t, x, 700.0, 13.0, FontWeight::Normal);
+            s.span.bbox.width = 30.0;
+            s
+        };
+        // Hebrew word (right) → space → Hebrew word (further left), same line.
+        let word_r = mk("\u{05D0}\u{05D1}", 300.0);
+        let space = mk(" ", 290.0);
+        let word_l = mk("\u{05D2}\u{05D3}", 250.0);
+        assert!(!is_column_gap(&word_r, &space), "RTL word→space read as a column gap");
+        assert!(!is_column_gap(&space, &word_l), "RTL space→word read as a column gap");
     }
 
     /// D5c RED — multi-column newspaper case. Two text spans on the
