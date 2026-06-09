@@ -2,6 +2,37 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.62] - 2026-06-08
+
+> Best-in-class text, Markdown and HTML extraction: right-to-left (Arabic/Hebrew) and vertical-CJK (tategaki) reading order across every format, untagged multi-column reading order, table / list / heading / hyperlink structure fidelity, paragraph reflow and fenced code blocks, correct display of flattened form fields (incl. CJK/emoji), hyperlink-URI XSS hardening, and an OCR-augmented `auto` extraction mode that is a strict superset of native output on text, Markdown and HTML.
+
+### Added
+
+- **`auto` extraction mode is now a true superset of native on every format — text, Markdown, and HTML (#661)** — `extract_text_auto` / `AutoExtractor::extract_text` / `extract_markdown` / `extract_html` keep the native text layer verbatim and **add** text recovered from image regions (a chart with rasterized data labels, a figure caption baked into a bitmap), never replacing good native text with a worse full-page OCR pass. The recovered text is positioned at the figure's reading-order slot, not appended after the page: it is wrapped in a synthetic span anchored to the image's page-space bounding box, borrowing the marked-content id (MCID) of the native line immediately above the figure so a tagged page (assembled in marked-content order, §14.7.4.3) drops it into the right place; an untagged page positions it geometrically by its y-centre. Recovered lines already present natively are de-duplicated. New reusable building blocks back this: `PdfDocument::extract_text_with_extra_spans`, `to_markdown_with_extra_spans`, and `to_html_with_extra_spans` (the converters were refactored to share an `*_inner` core). On the `figure-image-text` golden case this lifts `auto` from worse-than-native to best in class (text 0.508 → 0.074, Markdown 0.376 → 0.167, HTML 0.444 → 0.264 CER); across the golden corpus `auto` is never worse than native on any document.
+- **Hyperlinks in Markdown and HTML output (#670)** — `/Link` annotation URIs are now emitted as `[anchor](uri)` / `<a href>` instead of dropping the destination and keeping only the anchor text. URIs are tagged onto the covered spans in the converter pipeline and survive reading-order reassembly.
+
+### Changed
+
+- **Untagged multi-column reading order — short pages (#658)** — the multi-column detector gained a clean-gutter test (`has_clean_column_gutter`): a vertical channel that no text span crosses, with multi-line content of overlapping vertical extent on both sides, is the unambiguous geometric signature of side-by-side columns even on a short article the span-count histogram cannot classify. Such pages now route through the existing XY-Cut column ordering (recovered from layout because untagged pages carry no logical-structure reading-order hint, §14.8) instead of reading row-by-row across the gutter. `twocol-untagged` text CER 0.442 → 0.007, with zero change to single-column or already-detected layouts.
+
+### Fixed
+
+- **Right-to-left (Arabic / Hebrew) reading order across text, Markdown, and HTML (#656, #657, #669, #667)** — RTL runs are now reassembled in logical order on every surface: the tagged-extraction path, the plain-text assembler, and the Markdown/HTML converter pipeline (which previously emitted spans in visual order). Display headings and prose drawn right-to-left reconstruct as a single heading/paragraph rather than fragmenting; producer-inserted interior spaces inside cursive Arabic runs are stripped (§14.8.2.3.3 — a show string "shall not contain interior SPACEs"); neutral punctuation (the Hebrew comma case, #669) attaches to the correct word; and the word-gap heuristic no longer injects spurious spaces inside complex-script (Hangul/Indic) clusters (#667).
+- **Vertical CJK writing mode (tategaki) across all formats (#659)** — pages whose majority of spans are vertical (WMode 1, `-V` encodings) are read top-to-bottom, right-to-left in `extract_text` and now equally in `to_markdown` / `to_html` (the converter pipeline mirrors the plain-text column-major path instead of shredding columns). Vertical CJK prose is no longer mis-detected as a spatial table.
+- **Spurious spaces between CJK glyphs and embedded numbers (#665)** — a literal space glyph some producers emit at a CJK↔number script transition ("公元前 1000 年") is dropped at end of assembly, so the number attaches directly to the surrounding ideographs ("公元前1000年") as the script requires.
+- **Tagged two-column assembler — duplication and block reorder (#660)** — wrapped lines no longer split into one paragraph per visual line; a column line-wrap reflows into one paragraph, hyphenated words split across lines are rejoined, and a leading number is treated as a sentence continuation rather than a list marker.
+- **Table, list, and heading structure in Markdown / HTML (#668, #664, #671, #672)** — tagged table rows linearize with a single newline between cells (one row per line) instead of a newline per cell (#668); Markdown lists emit tight (no blank line between items) and with correct block boundaries for the structure score (#664); HTML list items render as `<ul>/<ol>/<li>` instead of `<p>` (#671); and HTML headings keep their level (no H1→H2 shift) without wrapping the heading text in a stray inline element (#672). Bulleted lists and monospace code are no longer mis-detected as spatial tables; monospace line runs render as fenced Markdown code blocks.
+- **Flattened form fields now display their filled values, including CJK and emoji (#647, #675)** — flattening a filled form regenerates each field's appearance from `/DA` + `/DR` so the value is actually painted (Latin), and an opt-in `cjk-form-fonts` feature embeds CJK + emoji fonts so non-Latin values (やまだたろう🍺) render too, instead of appearing blank. Thanks **@mitslabo**.
+
+### Security
+
+- **Hyperlink-URI allowlist in Markdown / HTML output** — the hyperlink emission added for #670 now passes destination URIs through a shared `is_safe_link_uri` scheme allowlist (http, https, mailto, tel, ftp, …), so a malicious `/Link` action such as `javascript:alert(1)` cannot reach a consumer-facing `<a href>` / `[text](uri)` as an XSS vector.
+
+### Maintenance
+
+- **Pre-commit hooks and pre-existing lint errors fixed (#677)** — Thanks **@norbusan**.
+- **Documentation for the page-oriented Python API (#678)** — Thanks **@SeanPedersen**.
+
 ## [0.3.61] - 2026-06-07
 
 > Press-accurate CMYK→RGB rendering via document `/OutputIntents` ICC profiles, vertical writing mode (WMode 1 / tategaki) support, RTL (Hebrew/Arabic) and Indic text-extraction fixes, separation-plate image rendering and ActualText extraction, path flattening (`PathContent::to_points`), Node.js quickstart and form-display fixes, macOS OCR detection, faster table-heavy extraction, and cross-OS + cross-language CI verification
