@@ -337,7 +337,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: matrix.coverage == true
-        uses: codecov/codecov-action@aa56896cf108bd10b5eb883cd1d24196da57f695 # v5.5.4
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v5.5.4
         with:
           files: ruby/coverage/lcov.info
           flags: ruby
