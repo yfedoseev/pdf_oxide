@@ -10859,6 +10859,37 @@ impl PdfDocument {
         }
         boxes.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
 
+        // Grid-row guard. A two-column body has exactly one text run per column
+        // on a line, so a row carries at most one wide internal gap (the
+        // gutter). A table / form row instead has several cells, i.e. two or
+        // more wide internal gaps. Group the (heading-excluded) boxes into rows
+        // by baseline and, when the majority of multi-box rows carry ≥ 2
+        // significant internal gaps, treat the page as a grid and bail — a
+        // single wide middle gap on a 2×N cell grid would otherwise read as a
+        // lone gutter. Mirrors the grid-row discriminator on the histogram path.
+        const MIN_GAP_PT: f32 = 6.0;
+        let mut rows: std::collections::BTreeMap<i32, Vec<(f32, f32)>> =
+            std::collections::BTreeMap::new();
+        for &(x0, x1, _y0, y1) in &boxes {
+            rows.entry(y1.round() as i32).or_default().push((x0, x1));
+        }
+        let (mut multi_gap_rows, mut counted_rows) = (0usize, 0usize);
+        for cells in rows.values() {
+            if cells.len() < 2 {
+                continue;
+            }
+            let mut s = cells.clone();
+            s.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
+            let gaps = s.windows(2).filter(|w| w[1].0 - w[0].1 >= MIN_GAP_PT).count();
+            counted_rows += 1;
+            if gaps >= 2 {
+                multi_gap_rows += 1;
+            }
+        }
+        if counted_rows > 0 && multi_gap_rows * 2 >= counted_rows {
+            return false; // grid / form, not a two-column body
+        }
+
         // Sweep-merge X extents and collect EVERY ≥ MIN_GUTTER_PT forward jump
         // (a vertical channel no span crosses). A genuine two-column body has
         // exactly ONE such corridor — the gutter; the lines inside each column
