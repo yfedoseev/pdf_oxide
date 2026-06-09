@@ -200,7 +200,7 @@ der = { version = "0.7", optional = true }            # DER encoding
 spki = { version = "0.7", optional = true }           # SubjectPublicKeyInfo — matches der 0.7
 pkcs1 = { version = "0.7", optional = true }          # PKCS#1 RSA format
 pkcs8 = { version = "0.10", optional = true }         # PKCS#8 private keys
-p12-keystore = { version = "0.2.1", optional = true } # PKCS#12 (.p12/.pfx) parsing
+p12-keystore = { version = "0.3.0", optional = true } # PKCS#12 (.p12/.pfx) parsing
 signature = { version = "2.2", optional = true }      # Signature traits
 sha1 = { version = "0.11", optional = true }          # SHA-1 for legacy signatures
 # sha2 v0.10 alias: rsa 0.9 and p256/p384 0.13 require digest 0.10 trait bounds.
