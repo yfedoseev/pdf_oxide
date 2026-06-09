@@ -1387,11 +1387,16 @@ impl MarkdownOutputConverter {
                         || (c.is_ascii_digit()
                             && super::is_ordered_list_marker(next_trim).is_none())
                 });
-                let prev_unterminated = current_line
-                    .trim_end()
+                let prev_trimmed = current_line.trim_end();
+                let prev_unterminated = prev_trimmed
                     .chars()
                     .last()
                     .is_none_or(|c| !matches!(c, '.' | '!' | '?' | ':' | ';'));
+                // A line broken mid-word at a hyphen (`…three sub-\nNeptune…`)
+                // is always a wrap, even when the continuation is capitalised (a
+                // proper noun) — the trailing hyphen is the continuation signal.
+                let next_continues_lowercase =
+                    next_continues_lowercase || prev_trimmed.ends_with('-');
                 // The previous line must have run to the block's right margin —
                 // a genuine wrap. A short ragged line (shell command, mis-tagged
                 // code, a record value) is a deliberate break and is preserved.
