@@ -1147,6 +1147,11 @@ impl MarkdownOutputConverter {
         let mut active_bold = false;
         let mut active_italic = false;
         let mut current_heading_level: Option<u8> = None;
+        // Whether every non-blank span accumulated into `current_line` so far is
+        // monospace (a fixed-pitch / code font). A plain paragraph that is all
+        // monospace is a code line; consecutive ones are fused into a fenced
+        // block by `fence_monospace_blocks` after rendering.
+        let mut current_line_all_mono = true;
 
         /// Close any open bold/italic markers on `line`.
         ///
@@ -1227,8 +1232,11 @@ impl MarkdownOutputConverter {
                         // Flush current line
                         close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
                         if !current_line.is_empty() {
-                            result.push_str(current_line.trim());
-                            result.push_str("\n\n");
+                            push_plain_paragraph(
+                                &mut result,
+                                current_line.trim(),
+                                current_line_all_mono,
+                            );
                             current_line.clear();
                         }
 
@@ -1431,8 +1439,11 @@ impl MarkdownOutputConverter {
                                 strip_emphasis(current_line.trim())
                             ));
                         } else {
-                            result.push_str(current_line.trim());
-                            result.push_str("\n\n");
+                            push_plain_paragraph(
+                                &mut result,
+                                current_line.trim(),
+                                current_line_all_mono,
+                            );
                         }
                         current_line.clear();
                     }
@@ -1674,6 +1685,17 @@ impl MarkdownOutputConverter {
                 }
             }
 
+            // Track whether the line being built is entirely monospace. At this
+            // point `current_line` reflects the post-flush state (a break above
+            // cleared it), so an empty / bullet-only line re-arms the flag before
+            // this span's content lands; each non-blank span then narrows it.
+            if current_line.trim_start_matches("- ").trim().is_empty() {
+                current_line_all_mono = true;
+            }
+            if span.span.text.chars().any(|c| !c.is_whitespace()) {
+                current_line_all_mono &= span.span.is_monospace;
+            }
+
             current_line.push_str(&linkified);
 
             prev_span = Some(span);
@@ -1724,8 +1746,11 @@ impl MarkdownOutputConverter {
                             strip_emphasis(current_line.trim())
                         ));
                     } else {
-                        result.push_str(current_line.trim());
-                        result.push_str("\n\n");
+                        push_plain_paragraph(
+                            &mut result,
+                            current_line.trim(),
+                            current_line_all_mono,
+                        );
                     }
                     current_line.clear();
                 }
@@ -1739,6 +1764,13 @@ impl MarkdownOutputConverter {
             if let Some(level) = current_heading_level {
                 let prefix = "#".repeat(level as usize);
                 result.push_str(&format!("{} {}\n", prefix, strip_emphasis(current_line.trim())));
+            } else if current_line_all_mono {
+                // Trailing monospace paragraph — sentinel-wrap so the fence pass
+                // fuses it with any preceding code lines.
+                result.push(MONO_SENTINEL);
+                result.push_str(current_line.trim());
+                result.push(MONO_SENTINEL);
+                result.push('\n');
             } else {
                 result.push_str(current_line.trim());
                 result.push('\n');
@@ -1805,6 +1837,10 @@ impl MarkdownOutputConverter {
         // and untagged documents.
         final_result = escape_stray_leading_pipes(&final_result);
         final_result = coalesce_camelcase_bold_fragments(&final_result);
+        // Fuse consecutive monospace (fixed-pitch / code-font) paragraphs into a
+        // fenced code block. A `Code` element renders its lines monospace even
+        // when the producer left the block untagged.
+        final_result = fence_monospace_blocks(&final_result);
         // Tight lists: drop blank lines between consecutive list-item markers.
         // The span flush always appends a blank line, which turns every list
         // into a Markdown "loose" list (each item wrapped in <p>); the golden
@@ -2081,6 +2117,71 @@ fn find_matching(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
 ///    starts the next, both at the same baseline. Without the
 ///    backward-wrap detection the converter joins them into the
 ///    nonsense token `constitutionAssailing`.
+/// Marker wrapped around a fully-monospace plain paragraph at flush time so
+/// `fence_monospace_blocks` can recognise and fuse consecutive ones. NUL never
+/// occurs in extracted text, so it is unambiguous and is always removed.
+const MONO_SENTINEL: char = '\u{0}';
+
+/// Emit a plain (non-heading, non-list) paragraph, wrapping it in
+/// [`MONO_SENTINEL`] markers when it is entirely monospace so the fence pass
+/// can fuse a run of them into one code block.
+fn push_plain_paragraph(result: &mut String, line: &str, mono: bool) {
+    if mono && !line.is_empty() {
+        result.push(MONO_SENTINEL);
+        result.push_str(line);
+        result.push(MONO_SENTINEL);
+    } else {
+        result.push_str(line);
+    }
+    result.push_str("\n\n");
+}
+
+/// Fuse consecutive monospace paragraphs (each flagged with [`MONO_SENTINEL`])
+/// into a single fenced code block, preserving their internal line breaks.
+/// A run of one or more sentinel-marked paragraphs becomes:
+/// ```text
+/// ```
+/// line 1
+/// line 2
+/// ```
+/// ```
+/// Non-marked paragraphs pass through unchanged; the markers are always
+/// stripped (so even a lone inline NUL, which never occurs anyway, is removed).
+fn fence_monospace_blocks(s: &str) -> String {
+    if !s.contains(MONO_SENTINEL) {
+        return s.to_string();
+    }
+    let paras: Vec<&str> = s.split("\n\n").collect();
+    let mut out: Vec<String> = Vec::with_capacity(paras.len());
+    let mut code: Vec<String> = Vec::new();
+    let flush_code = |code: &mut Vec<String>, out: &mut Vec<String>| {
+        if !code.is_empty() {
+            let body = code.join("\n");
+            out.push(format!("```\n{body}\n```"));
+            code.clear();
+        }
+    };
+    for p in paras {
+        let trimmed = p.trim();
+        if let Some(inner) = trimmed
+            .strip_prefix(MONO_SENTINEL)
+            .and_then(|t| t.strip_suffix(MONO_SENTINEL))
+        {
+            code.push(inner.to_string());
+        } else {
+            flush_code(&mut code, &mut out);
+            // Defensive: strip any stray sentinel from a normal paragraph.
+            if p.contains(MONO_SENTINEL) {
+                out.push(p.replace(MONO_SENTINEL, ""));
+            } else {
+                out.push(p.to_string());
+            }
+        }
+    }
+    flush_code(&mut code, &mut out);
+    out.join("\n\n")
+}
+
 fn is_column_gap(prev: &OrderedTextSpan, current: &OrderedTextSpan) -> bool {
     let prev_right = prev.span.bbox.x + prev.span.bbox.width;
     let cur_left = current.span.bbox.x;
@@ -2163,6 +2264,35 @@ mod tests {
     use crate::pipeline::converters::span_in_table;
     use crate::pipeline::StructRole;
     use crate::structure::table_extractor::{TableCell, TableRow};
+
+    #[test]
+    fn test_fence_monospace_blocks() {
+        let n = MONO_SENTINEL;
+        // Consecutive monospace paragraphs fuse into one fenced block, keeping
+        // their internal line breaks; surrounding prose is untouched.
+        let input = format!("Intro\n\n{n}line one{n}\n\n{n}line two{n}\n\nOutro");
+        assert_eq!(
+            fence_monospace_blocks(&input),
+            "Intro\n\n```\nline one\nline two\n```\n\nOutro"
+        );
+        // A lone monospace paragraph still fences.
+        assert_eq!(fence_monospace_blocks(&format!("{n}only{n}")), "```\nonly\n```");
+        // No sentinels → byte-identical.
+        assert_eq!(fence_monospace_blocks("plain\n\ntext"), "plain\n\ntext");
+        // A stray sentinel inside ordinary prose is stripped, not fenced.
+        assert_eq!(fence_monospace_blocks(&format!("a{n}b")), "ab");
+    }
+
+    #[test]
+    fn test_push_plain_paragraph_marks_monospace() {
+        let n = MONO_SENTINEL;
+        let mut out = String::new();
+        push_plain_paragraph(&mut out, "code", true);
+        assert_eq!(out, format!("{n}code{n}\n\n"));
+        let mut out2 = String::new();
+        push_plain_paragraph(&mut out2, "prose", false);
+        assert_eq!(out2, "prose\n\n");
+    }
 
     #[test]
     fn test_tighten_list_items_collapses_blank_lines_between_markers() {
