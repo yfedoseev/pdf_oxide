@@ -5061,6 +5061,28 @@ impl PdfDocument {
         Ok(Self::apply_mixed_rtl_line_pass(text))
     }
 
+    /// Assemble page text from the page's native spans **plus** caller-supplied
+    /// extra spans, positioned together in a single reading-order pass.
+    ///
+    /// The Auto extractor uses this to drop text recovered from an image region
+    /// (via OCR) into the page at the image's spatial location — so a chart
+    /// caption embedded in a figure reads in its correct place rather than being
+    /// appended after the whole page. The native spans are extracted and
+    /// assembled exactly as [`extract_text_with_options`](Self::extract_text_with_options)
+    /// would, so the native text is byte-for-byte preserved; the extra spans
+    /// only add content, sorted in by their bounding box.
+    pub(crate) fn extract_text_with_extra_spans(
+        &self,
+        page_index: usize,
+        extra: Vec<crate::layout::TextSpan>,
+        options: &crate::converters::ConversionOptions,
+    ) -> Result<String> {
+        let mut base_spans = self.extract_spans(page_index)?;
+        base_spans.extend(extra);
+        let text = self.assemble_text_from_spans(page_index, base_spans, options)?;
+        Ok(Self::apply_mixed_rtl_line_pass(text))
+    }
+
     /// Returns column-major text when the page is a vertical-CJK (tategaki)
     /// layout, or `None` for every other page (so horizontal documents are
     /// byte-for-byte unchanged).
@@ -10764,7 +10786,101 @@ impl PdfDocument {
     /// old reading order. False positives (single column routed through
     /// XY-cut) cost a bit of CPU but produce the same or better result.
     /// Both sides degrade gracefully.
+    /// True when the page splits into side-by-side columns separated by a clean
+    /// vertical gutter that no text span crosses.
+    ///
+    /// This is the small-page companion to the histogram detector in
+    /// [`Self::is_multi_column_page`]: a two-column page with only a handful of
+    /// wrapped lines per column (a short article, a synthetic fixture) carries
+    /// too few spans for a projection histogram to classify, yet the gutter is
+    /// perfectly unambiguous. We recover it directly:
+    ///
+    /// 1. Drop spans whose width exceeds 60 % of the content width — full-bleed
+    ///    headings/footers legitimately straddle the gutter and must not veto it
+    ///    (the recursive XY-Cut handles them with a horizontal cut first).
+    /// 2. Sweep the remaining boxes left-to-right merging their X extents; a
+    ///    forward jump of ≥ `MIN_GUTTER_PT` between the running right edge and
+    ///    the next box's left edge is an empty channel that no span crosses.
+    /// 3. Accept only when ≥ 2 spans sit on each side (genuine columns, not a
+    ///    stray indent or page number) and the two sides' vertical ranges
+    ///    overlap (columns sit beside each other, ruling out stacked blocks).
+    fn has_clean_column_gutter(spans: &[crate::layout::TextSpan]) -> bool {
+        /// Minimum empty-channel width. Real column gutters run ≥ 18pt; ordinary
+        /// inter-word/inter-cell gaps are both narrower and crossed by spans on
+        /// other lines, so they never survive the sweep.
+        const MIN_GUTTER_PT: f32 = 18.0;
+
+        // (x0, x1, y0, y1) for every non-empty, finite span.
+        let mut boxes: Vec<(f32, f32, f32, f32)> = spans
+            .iter()
+            .filter(|s| {
+                !s.text.trim().is_empty()
+                    && s.bbox.x.is_finite()
+                    && s.bbox.y.is_finite()
+                    && s.bbox.width.is_finite()
+                    && s.bbox.height.is_finite()
+                    && s.bbox.width > 0.0
+            })
+            .map(|s| (s.bbox.x, s.bbox.x + s.bbox.width, s.bbox.y, s.bbox.y + s.bbox.height))
+            .collect();
+        if boxes.len() < 4 {
+            return false;
+        }
+
+        let content_min_x = boxes.iter().map(|b| b.0).fold(f32::INFINITY, f32::min);
+        let content_max_x = boxes.iter().map(|b| b.1).fold(f32::NEG_INFINITY, f32::max);
+        let content_w = content_max_x - content_min_x;
+        if content_w < 100.0 {
+            return false; // a single narrow column cannot hold a gutter
+        }
+
+        // Exclude full-width headings/footers from the gutter sweep.
+        boxes.retain(|b| (b.1 - b.0) <= 0.6 * content_w);
+        if boxes.len() < 4 {
+            return false;
+        }
+        boxes.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
+
+        // Sweep-merge X extents; the first ≥ MIN_GUTTER_PT forward jump is a
+        // gutter splitting the (already x-sorted) boxes into left/right groups.
+        let mut cover_right = boxes[0].1;
+        for i in 1..boxes.len() {
+            let gap = boxes[i].0 - cover_right;
+            if gap >= MIN_GUTTER_PT {
+                let (left, right) = boxes.split_at(i);
+                if left.len() < 2 || right.len() < 2 {
+                    cover_right = cover_right.max(boxes[i].1);
+                    continue;
+                }
+                // Vertical ranges of the two sides must overlap — otherwise the
+                // "columns" are vertically stacked blocks (e.g. a body block
+                // above a sidebar), which read fine row-aware.
+                let l_y0 = left.iter().map(|b| b.2).fold(f32::INFINITY, f32::min);
+                let l_y1 = left.iter().map(|b| b.3).fold(f32::NEG_INFINITY, f32::max);
+                let r_y0 = right.iter().map(|b| b.2).fold(f32::INFINITY, f32::min);
+                let r_y1 = right.iter().map(|b| b.3).fold(f32::NEG_INFINITY, f32::max);
+                let overlap = l_y1.min(r_y1) - l_y0.max(r_y0);
+                let min_height = (l_y1 - l_y0).min(r_y1 - r_y0);
+                if min_height > 0.0 && overlap > 0.5 * min_height {
+                    return true;
+                }
+            }
+            cover_right = cover_right.max(boxes[i].1);
+        }
+        false
+    }
+
     fn is_multi_column_page(spans: &[crate::layout::TextSpan]) -> bool {
+        // Clean-gutter detector (handles short pages the histogram gates below
+        // reject for lack of spans). A genuine empty vertical channel that no
+        // span crosses, with multi-line content of overlapping vertical extent
+        // on both sides, is the unambiguous geometric signature of side-by-side
+        // columns — recoverable for untagged pages only from layout (XY-Cut,
+        // ISO 32000-1 §9.4, since there is no logical-structure hint).
+        if Self::has_clean_column_gutter(spans) {
+            return true;
+        }
+
         if spans.len() < 12 {
             return false; // too few to confidently split into columns
         }
@@ -15404,6 +15520,29 @@ impl PdfDocument {
         page_index: usize,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
+        self.to_markdown_inner(page_index, options, &[])
+    }
+
+    /// Convert a page to Markdown with caller-supplied extra spans merged into
+    /// the converter's reading-order pass — the structured-output companion to
+    /// [`extract_text_with_extra_spans`](Self::extract_text_with_extra_spans).
+    /// The Auto extractor uses this to drop OCR'd image text into its figure's
+    /// reading-order slot for Markdown, so auto markdown is a superset of native.
+    pub(crate) fn to_markdown_with_extra_spans(
+        &self,
+        page_index: usize,
+        extra_spans: &[crate::layout::TextSpan],
+        options: &crate::converters::ConversionOptions,
+    ) -> Result<String> {
+        self.to_markdown_inner(page_index, options, extra_spans)
+    }
+
+    fn to_markdown_inner(
+        &self,
+        page_index: usize,
+        options: &crate::converters::ConversionOptions,
+        extra_spans: &[crate::layout::TextSpan],
+    ) -> Result<String> {
         if self.is_encrypted_unreadable() {
             log::warn!("PDF is encrypted and could not be decrypted; returning empty markdown");
             return Ok(String::new());
@@ -15435,6 +15574,9 @@ impl PdfDocument {
         if options.include_form_fields {
             spans.extend(self.extract_widget_spans(page_index));
         }
+        // Caller-supplied spans (e.g. OCR'd image text from the Auto extractor),
+        // each carrying the MCID/position that drops it into reading order.
+        spans.extend_from_slice(extra_spans);
 
         let pipeline_config = TextPipelineConfig::from_conversion_options(options);
 
@@ -15899,6 +16041,28 @@ impl PdfDocument {
         page_index: usize,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
+        self.to_html_inner(page_index, options, &[])
+    }
+
+    /// Convert a page to HTML with caller-supplied extra spans merged into the
+    /// converter's reading-order pass — the HTML companion to
+    /// [`to_markdown_with_extra_spans`](Self::to_markdown_with_extra_spans).
+    pub(crate) fn to_html_with_extra_spans(
+        &self,
+        page_index: usize,
+        extra_spans: &[crate::layout::TextSpan],
+        options: &crate::converters::ConversionOptions,
+    ) -> Result<String> {
+        self.to_html_inner(page_index, options, extra_spans)
+    }
+
+    #[allow(clippy::wrong_self_convention)] // Needs mutable access for caching
+    fn to_html_inner(
+        &self,
+        page_index: usize,
+        options: &crate::converters::ConversionOptions,
+        extra_spans: &[crate::layout::TextSpan],
+    ) -> Result<String> {
         if self.is_encrypted_unreadable() {
             log::warn!("PDF is encrypted and could not be decrypted; returning empty HTML");
             return Ok(String::new());
@@ -15932,6 +16096,9 @@ impl PdfDocument {
         if options.include_form_fields {
             spans.extend(self.extract_widget_spans(page_index));
         }
+        // Caller-supplied spans (e.g. OCR'd image text from the Auto extractor),
+        // each carrying the MCID/position that drops it into reading order.
+        spans.extend_from_slice(extra_spans);
 
         let pipeline_config = TextPipelineConfig::from_conversion_options(options);
 
@@ -18651,6 +18818,112 @@ fn find_substring(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    /// A span injected into a tagged page via `extract_text_with_extra_spans`
+    /// and carrying the MCID of a middle block must be emitted at that block's
+    /// position in structure order — not appended after the page. This is the
+    /// primitive the Auto extractor uses to drop OCR'd image text into the
+    /// figure's reading-order slot instead of after the whole page.
+    #[test]
+    fn extra_span_with_borrowed_mcid_lands_in_structure_order() {
+        // Three tagged paragraphs (MCID 0/1/2) drawn top-to-bottom.
+        let content = b"BT /F1 12 Tf\n\
+            /P <</MCID 0>> BDC 1 0 0 1 72 700 Tm (ALPHA) Tj EMC\n\
+            /P <</MCID 1>> BDC 1 0 0 1 72 600 Tm (BRAVO) Tj EMC\n\
+            /P <</MCID 2>> BDC 1 0 0 1 72 500 Tm (CHARLIE) Tj EMC\n\
+            ET\n";
+        let mut buf: Vec<u8> = Vec::new();
+        let mut off = vec![0usize; 9];
+        let obj = |buf: &mut Vec<u8>, off: &mut Vec<usize>, id: usize, body: &str| {
+            off[id] = buf.len();
+            buf.extend_from_slice(format!("{id} 0 obj\n{body}\nendobj\n").as_bytes());
+        };
+        let stream = |buf: &mut Vec<u8>, off: &mut Vec<usize>, id: usize, data: &[u8]| {
+            off[id] = buf.len();
+            buf.extend_from_slice(
+                format!("{id} 0 obj\n<< /Length {} >>\nstream\n", data.len()).as_bytes(),
+            );
+            buf.extend_from_slice(data);
+            buf.extend_from_slice(b"\nendstream\nendobj\n");
+        };
+        buf.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+        obj(
+            &mut buf,
+            &mut off,
+            1,
+            "<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 7 0 R >>",
+        );
+        obj(&mut buf, &mut off, 2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        obj(
+            &mut buf,
+            &mut off,
+            3,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R /StructParents 0 >>",
+        );
+        stream(&mut buf, &mut off, 4, content);
+        obj(
+            &mut buf,
+            &mut off,
+            5,
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        );
+        // Minimal struct tree: three /P kids referencing MCID 0/1/2.
+        obj(&mut buf, &mut off, 7, "<< /Type /StructTreeRoot /K [8 0 R] >>");
+        obj(
+            &mut buf,
+            &mut off,
+            8,
+            "<< /Type /StructElem /S /Document /K [<< /Type /StructElem /S /P /Pg 3 0 R /K 0 >> \
+             << /Type /StructElem /S /P /Pg 3 0 R /K 1 >> \
+             << /Type /StructElem /S /P /Pg 3 0 R /K 2 >>] >>",
+        );
+        let xref = buf.len();
+        buf.extend_from_slice(b"xref\n0 9\n0000000000 65535 f \n");
+        for id in 1..=8 {
+            if id == 6 {
+                buf.extend_from_slice(b"0000000000 65535 f \n");
+                continue;
+            }
+            buf.extend_from_slice(format!("{:010} 00000 n \n", off[id]).as_bytes());
+        }
+        buf.extend_from_slice(b"trailer\n<< /Size 9 /Root 1 0 R >>\nstartxref\n");
+        buf.extend_from_slice(format!("{xref}\n%%EOF\n").as_bytes());
+
+        let doc = PdfDocument::from_bytes(buf).unwrap();
+        // Plain extraction reads ALPHA, BRAVO, CHARLIE in order.
+        let plain = doc.extract_text(0).unwrap();
+        assert!(
+            plain.find("ALPHA") < plain.find("BRAVO")
+                && plain.find("BRAVO") < plain.find("CHARLIE"),
+            "baseline structure order wrong: {plain:?}"
+        );
+
+        // Inject a span carrying MCID 1 (BRAVO's block) positioned at BRAVO's
+        // y. It must land within BRAVO's group — after BRAVO, before CHARLIE —
+        // NOT appended after CHARLIE.
+        let extra = crate::layout::TextSpan {
+            text: "INSERTED".to_string(),
+            bbox: crate::geometry::Rect::new(72.0, 590.0, 50.0, 12.0),
+            font_size: 12.0,
+            mcid: Some(1),
+            ..Default::default()
+        };
+        let opts = crate::converters::ConversionOptions {
+            extract_tables: true,
+            ..Default::default()
+        };
+        let out = doc
+            .extract_text_with_extra_spans(0, vec![extra], &opts)
+            .unwrap();
+        let (a, b, ins, c) =
+            (out.find("ALPHA"), out.find("BRAVO"), out.find("INSERTED"), out.find("CHARLIE"));
+        assert!(ins.is_some(), "injected span dropped: {out:?}");
+        assert!(
+            a < b && b < ins && ins < c,
+            "injected span not placed in MCID-1 slot (expected ALPHA<BRAVO<INSERTED<CHARLIE): {out:?}"
+        );
+    }
 
     #[test]
     fn test_rotate_span_bbox_identity_and_180() {

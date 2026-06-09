@@ -1317,24 +1317,46 @@ impl AutoExtractor {
             // model cache dir (`AutoExtractor::model_cache_dir()` —
             // `$PDF_OXIDE_MODEL_DIR` or the platform cache, populated by
             // `prefetch_models()` / `scripts/setup_ocr_models.sh`).
-            // Previously this passed `None`, so `extract_text_with_ocr`
-            // never actually OCR'd — the Auto surface silently always
-            // fell back to native text. Now OCR genuinely runs when
-            // models are provisioned; absent models stay graceful.
             // Language selection: explicit `ocr_languages` wins;
             // otherwise a cheap script heuristic on the document's own
             // native text picks the model (so a Chinese/Arabic/Cyrillic
             // scan is not OCR'd with the English model). Empty → the
             // loader's English fallback.
+            //
+            // A page that carries BOTH a usable native text layer AND
+            // image region(s) (ImageText / Mixed) must be the UNION of
+            // the two disjoint sources: the native layer (higher
+            // fidelity, already reading-ordered) PLUS any text recovered
+            // from the image — never the native text *replaced* by a
+            // full-page OCR pass that re-renders and garbles the clean
+            // vector glyphs. Only a genuinely scanned page (no usable
+            // native layer) is fully OCR-driven. `ForceOcr` keeps its
+            // "ignore native" contract and never merges.
+            let native_layer = doc.extract_text(page).unwrap_or_default();
+            let native_is_good =
+                !native_layer.trim().is_empty() && text_quality_gate(&native_layer).is_none();
+            let hybrid = !force
+                && native_is_good
+                && matches!(cls.kind, PageKind::ImageText | PageKind::Mixed);
             match self.build_ocr_engine(doc, page) {
-                Some(engine) => match crate::ocr::extract_text_with_ocr(
+                Some(engine) => match crate::ocr::ocr_page(
                     doc,
                     page,
-                    Some(&engine),
-                    crate::ocr::OcrExtractOptions::default(),
+                    &engine,
+                    &crate::ocr::OcrExtractOptions::default(),
                 ) {
-                    Ok(t) if !t.trim().is_empty() => {
-                        return Ok((t, ExtractSource::Ocr, ReasonCode::Ok))
+                    Ok(o) if !o.trim().is_empty() => {
+                        if hybrid {
+                            // Native preserved verbatim; the OCR'd image text is
+                            // positioned at the image's spatial location (so a
+                            // figure/chart caption reads in its correct place,
+                            // not appended after the page). Falls back to a plain
+                            // append-merge when the image bbox is unavailable.
+                            let placed =
+                                self.place_image_ocr_in_reading_order(doc, page, &native_layer, &o);
+                            return Ok((placed, ExtractSource::Ocr, ReasonCode::Ok));
+                        }
+                        return Ok((o, ExtractSource::Ocr, ReasonCode::Ok));
                     },
                     // OCR ran but yielded nothing / errored: warn
                     // precisely (attempted — NOT "unavailable").
@@ -1396,14 +1418,168 @@ impl AutoExtractor {
         }
     }
 
+    /// Build a single synthetic [`TextSpan`](crate::layout::TextSpan) carrying
+    /// the text OCR'd from a page's image region, positioned so the reading-order
+    /// pass drops it into the figure's slot. `None` when there is nothing new to
+    /// add (every OCR line already appears natively) or no image bbox to anchor
+    /// to.
+    ///
+    /// A tagged page is assembled in marked-content (MCID) order, so a span
+    /// carrying no MCID would land after the whole page; we borrow the MCID of
+    /// the native line immediately *above* the figure so the span is emitted
+    /// right after it. An untagged page is assembled geometrically, where the
+    /// span's y-centre alone places it (the borrowed MCID is `None` and
+    /// harmless). Shared by the text, Markdown and HTML auto paths so all three
+    /// position recovered image text identically.
+    #[cfg(feature = "ocr")]
+    fn build_image_ocr_span(
+        &self,
+        doc: &PdfDocument,
+        page: usize,
+        native: &str,
+        ocr: &str,
+    ) -> Option<crate::layout::TextSpan> {
+        // Drop OCR lines already represented in the native layer (a sparse
+        // invisible-text sidecar), mirroring `merge_native_and_ocr`.
+        let norm = |s: &str| {
+            s.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let native_norm = norm(native);
+        let mut extra_lines: Vec<&str> = Vec::new();
+        for line in ocr.lines() {
+            let lt = line.trim();
+            if lt.is_empty() {
+                continue;
+            }
+            let ln = norm(lt);
+            if ln.is_empty()
+                || native_norm.contains(&ln)
+                || extra_lines.iter().any(|e| norm(e) == ln)
+            {
+                continue;
+            }
+            extra_lines.push(lt);
+        }
+        if extra_lines.is_empty() {
+            return None;
+        }
+        let extra_text = extra_lines.join(" ");
+
+        // Page-space bbox of the largest image (the figure carrying the text).
+        let b = doc
+            .extract_images(page)
+            .ok()
+            .and_then(|imgs| {
+                imgs.into_iter()
+                    .max_by_key(|i| (i.width() as u64) * (i.height() as u64))
+            })
+            .and_then(|img| img.bbox().copied())?;
+
+        let fig_center_y = b.y + b.height * 0.5;
+        let anchor_mcid = doc
+            .extract_spans(page)
+            .unwrap_or_default()
+            .iter()
+            .filter(|s| !s.text.trim().is_empty() && s.bbox.y > fig_center_y)
+            .min_by(|a, c| crate::utils::safe_float_cmp(a.bbox.y, c.bbox.y))
+            .and_then(|s| s.mcid);
+
+        Some(crate::layout::TextSpan {
+            text: extra_text,
+            bbox: crate::geometry::Rect::new(b.x, fig_center_y, b.width.max(1.0), 12.0),
+            font_size: 12.0,
+            mcid: anchor_mcid,
+            ..Default::default()
+        })
+    }
+
+    /// Merge native text with OCR'd image text, placing the recovered text at
+    /// the image's **spatial** position in the page's reading order. Degrades to
+    /// the plain append-merge when the text cannot be positioned (no image bbox),
+    /// so the recovered text is never lost.
+    #[cfg(feature = "ocr")]
+    fn place_image_ocr_in_reading_order(
+        &self,
+        doc: &PdfDocument,
+        page: usize,
+        native: &str,
+        ocr: &str,
+    ) -> String {
+        let Some(span) = self.build_image_ocr_span(doc, page, native, ocr) else {
+            // Nothing new to add, or no geometry to place it — append-merge
+            // (returns native verbatim when there is no extra text).
+            return crate::ocr::merge_native_and_ocr(native, ocr);
+        };
+        // Match `extract_text`'s options (tables on) so the native portion is
+        // byte-for-byte what the plain path produces.
+        let opts = ConversionOptions {
+            extract_tables: true,
+            ..Default::default()
+        };
+        match doc.extract_text_with_extra_spans(page, vec![span], &opts) {
+            Ok(t) if !t.trim().is_empty() => t,
+            // Assembler hiccup — never lose the recovered text.
+            _ => crate::ocr::merge_native_and_ocr(native, ocr),
+        }
+    }
+
+    /// For a hybrid page (usable native text layer **and** an image region that
+    /// carries text), OCR the image and return a positioned synthetic span ready
+    /// to merge into any output format. `None` for non-hybrid pages, when OCR is
+    /// unavailable/empty, or when nothing new is recovered — callers then emit
+    /// pure native output. Gives the Markdown/HTML auto paths the same
+    /// native-plus-positioned-image-text behaviour as the text path.
+    #[cfg(feature = "ocr")]
+    fn hybrid_image_ocr_span(
+        &self,
+        doc: &PdfDocument,
+        page: usize,
+    ) -> Option<crate::layout::TextSpan> {
+        if matches!(self.opts.mode, ExtractMode::TextOnly) {
+            return None;
+        }
+        let cls = doc.classify_page(page).ok()?;
+        if !matches!(cls.kind, PageKind::ImageText | PageKind::Mixed) {
+            return None;
+        }
+        let native = doc.extract_text(page).ok()?;
+        if native.trim().is_empty() || text_quality_gate(&native).is_some() {
+            return None;
+        }
+        let engine = self.build_ocr_engine(doc, page)?;
+        let ocr =
+            crate::ocr::ocr_page(doc, page, &engine, &crate::ocr::OcrExtractOptions::default())
+                .ok()?;
+        if ocr.trim().is_empty() {
+            return None;
+        }
+        self.build_image_ocr_span(doc, page, &native, &ocr)
+    }
+
     /// Per-page Markdown (reuses the existing converter — DRY; no
     /// forked renderer). Mirrors the CLI `markdown` subcommand.
     pub fn extract_markdown(&self, doc: &PdfDocument, page: usize) -> crate::Result<String> {
+        // Auto mode: same contract as text — native Markdown PLUS text recovered
+        // from image regions, positioned in reading order (never replacing the
+        // native layer). Non-hybrid pages and the no-`ocr` build emit pure native.
+        #[cfg(feature = "ocr")]
+        if let Some(span) = self.hybrid_image_ocr_span(doc, page) {
+            return doc.to_markdown_with_extra_spans(page, &[span], &ConversionOptions::default());
+        }
         doc.to_markdown(page, &ConversionOptions::default())
     }
 
     /// Per-page HTML (reuses the existing converter — DRY).
     pub fn extract_html(&self, doc: &PdfDocument, page: usize) -> crate::Result<String> {
+        // Auto mode: native HTML PLUS positioned image-region OCR (see
+        // extract_markdown). Non-hybrid pages and the no-`ocr` build emit native.
+        #[cfg(feature = "ocr")]
+        if let Some(span) = self.hybrid_image_ocr_span(doc, page) {
+            return doc.to_html_with_extra_spans(page, &[span], &ConversionOptions::default());
+        }
         doc.to_html(page, &ConversionOptions::default())
     }
 

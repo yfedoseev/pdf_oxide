@@ -7,8 +7,8 @@
 //! the heading shattered into a heading-per-word. The PDF is hand-built tagged
 //! (no third-party fixture).
 
-use pdf_oxide::PdfDocument;
 use pdf_oxide::converters::ConversionOptions;
+use pdf_oxide::PdfDocument;
 
 /// One page, one `/H1` element holding three Hebrew word fragments (MCID 0..2)
 /// drawn left-to-right in VISUAL order on one line (so the rightmost word is
@@ -44,25 +44,44 @@ endcmap CMapName currentdict /CMap defineresource pop end end";
     };
     let stream = |buf: &mut Vec<u8>, off: &mut Vec<usize>, id: usize, dict: &str, data: &[u8]| {
         off[id] = buf.len();
-        buf.extend_from_slice(format!("{id} 0 obj\n<< {dict} /Length {} >>\nstream\n", data.len()).as_bytes());
+        buf.extend_from_slice(
+            format!("{id} 0 obj\n<< {dict} /Length {} >>\nstream\n", data.len()).as_bytes(),
+        );
         buf.extend_from_slice(data);
         buf.extend_from_slice(b"\nendstream\nendobj\n");
     };
 
     buf.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
-    obj(&mut buf, &mut off, 1,
-        "<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 7 0 R >>");
+    obj(
+        &mut buf,
+        &mut off,
+        1,
+        "<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 7 0 R >>",
+    );
     obj(&mut buf, &mut off, 2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
-    obj(&mut buf, &mut off, 3,
+    obj(
+        &mut buf,
+        &mut off,
+        3,
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
-         /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R /StructParents 0 >>");
+         /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R /StructParents 0 >>",
+    );
     stream(&mut buf, &mut off, 4, "", content);
-    obj(&mut buf, &mut off, 5,
+    obj(
+        &mut buf,
+        &mut off,
+        5,
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica \
-         /Encoding /WinAnsiEncoding /ToUnicode 6 0 R >>");
+         /Encoding /WinAnsiEncoding /ToUnicode 6 0 R >>",
+    );
     stream(&mut buf, &mut off, 6, "", tounicode);
     obj(&mut buf, &mut off, 7, "<< /Type /StructTreeRoot /K [8 0 R] >>");
-    obj(&mut buf, &mut off, 8, "<< /Type /StructElem /S /H1 /P 7 0 R /Pg 3 0 R /K [0 1 2] >>");
+    obj(
+        &mut buf,
+        &mut off,
+        8,
+        "<< /Type /StructElem /S /H1 /P 7 0 R /Pg 3 0 R /K [0 1 2] >>",
+    );
 
     let xref = buf.len();
     buf.extend_from_slice(b"xref\n0 9\n0000000000 65535 f \n");
@@ -80,11 +99,17 @@ fn rtl_heading_reconstructs_as_single_markdown_heading() {
     let md = doc.to_markdown(0, &ConversionOptions::default()).unwrap();
 
     // Exactly one heading line, not one per word fragment (the core fix).
-    let heading_lines = md.lines().filter(|l| l.trim_start().starts_with('#')).count();
+    let heading_lines = md
+        .lines()
+        .filter(|l| l.trim_start().starts_with('#'))
+        .count();
     assert_eq!(heading_lines, 1, "RTL heading fragmented into multiple headings:\n{md}");
     // All three words land on that single heading line, rightmost-first
     // (logical RTL reading order): word one (x=190) precedes word three (x=72).
-    let heading = md.lines().find(|l| l.trim_start().starts_with('#')).unwrap();
+    let heading = md
+        .lines()
+        .find(|l| l.trim_start().starts_with('#'))
+        .unwrap();
     for cp in 0x05D0u32..=0x05D5 {
         let c = char::from_u32(cp).unwrap();
         assert!(heading.contains(c), "letter U+{cp:04X} missing from heading: {heading:?}");
