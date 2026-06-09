@@ -324,6 +324,46 @@ fn looks_like_prose_paragraph(table: &Table) -> bool {
     false
 }
 
+/// Reject a spatial (no-rulings) "table" that is actually a bulleted list whose
+/// markers and bodies aligned into columns. A genuine data table never carries
+/// a cell that is *only* a bullet glyph; an untagged list rendered into two
+/// columns (`• | Ship the API.`) does. Catches the structured-document
+/// false-positive where a heading + bulleted list + prose are mis-fused into a
+/// grid. Ruled / author-marked tables never reach this path.
+fn looks_like_bulleted_list(table: &Table) -> bool {
+    /// An unambiguous bullet glyph (never a legitimate data value).
+    fn is_bullet_glyph(c: char) -> bool {
+        matches!(
+            c,
+            '\u{2022}'
+                | '\u{2023}'
+                | '\u{2043}'
+                | '\u{2219}'
+                | '\u{25AA}'
+                | '\u{25CF}'
+                | '\u{25E6}'
+                | '\u{00B7}'
+                | '\u{2024}'
+        )
+    }
+    fn is_list_item(t: &str) -> bool {
+        let mut chars = t.chars();
+        match chars.next() {
+            // Leads with a bullet glyph (lone "•" or "• item") → a list item.
+            Some(c) if is_bullet_glyph(c) => true,
+            // A lone "*" cell is also a marker (but "*5" footnote-data is not).
+            Some('*') => chars.next().is_none(),
+            _ => false,
+        }
+    }
+    table
+        .rows
+        .iter()
+        .flat_map(|r| &r.cells)
+        .filter(|c| !c.text.trim().is_empty())
+        .any(|c| is_list_item(c.text.trim()))
+}
+
 /// Detect page column regions from an X-projection histogram of text spans.
 ///
 /// Builds a histogram of horizontal coverage (2pt buckets), then identifies
@@ -674,6 +714,7 @@ pub fn detect_tables_from_spans(spans: &[TextSpan], config: &TableDetectionConfi
     if !is_valid_table(&orig_table)
         || !passes_spatial_quality_gate(&orig_table)
         || looks_like_prose_paragraph(&orig_table)
+        || looks_like_bulleted_list(&orig_table)
     {
         return Vec::new();
     }
@@ -703,6 +744,7 @@ pub fn detect_tables_from_spans(spans: &[TextSpan], config: &TableDetectionConfi
     if !is_valid_table(&table)
         || !passes_spatial_quality_gate(&table)
         || looks_like_prose_paragraph(&table)
+        || looks_like_bulleted_list(&table)
     {
         return Vec::new();
     }
@@ -3910,6 +3952,35 @@ mod tests {
             bbox: None,
             is_header: false,
         }
+    }
+
+    #[test]
+    fn test_looks_like_bulleted_list_rejects_bullet_cells() {
+        let row = |cells: &[&str]| TableRow {
+            cells: cells.iter().map(|c| prose_cell(c)).collect(),
+            is_header: false,
+        };
+        // A bulleted list mis-fused into two columns: lone bullet markers in
+        // the first column → recognise as a list, not a table.
+        let mut list = Table::new();
+        list.col_count = 2;
+        list.rows.push(row(&["\u{2022}", "Ship the API."]));
+        list.rows.push(row(&["\u{2022}", "Write the docs."]));
+        assert!(looks_like_bulleted_list(&list));
+
+        // A genuine two-column data table has no lone-bullet cell.
+        let mut table = Table::new();
+        table.col_count = 2;
+        table.rows.push(row(&["Region", "Q1"]));
+        table.rows.push(row(&["North", "120"]));
+        assert!(!looks_like_bulleted_list(&table));
+
+        // A cell that merely *starts* with a dash but carries text (a value or
+        // a negative number) is not a bullet marker.
+        let mut dash = Table::new();
+        dash.col_count = 2;
+        dash.rows.push(row(&["Delta", "-12"]));
+        assert!(!looks_like_bulleted_list(&dash));
     }
 
     /// #09 prose gate: a wrapped paragraph mis-split into a table — a row
