@@ -9052,6 +9052,27 @@ impl PdfDocument {
             return; // fast path: pure-LTR page is byte-identical
         }
 
+        // The converter pipeline's reading order can interleave the spans of a
+        // single RTL line (the MCID/XYCut order is not strictly top-to-bottom),
+        // which would break the consecutive line-grouping below — a display
+        // heading then scatters into one `#` per fragment. On a page that is
+        // dominantly right-to-left, re-sort by Y first so each visual line is
+        // contiguous; Y-descending IS the reading order there. Mixed / LTR-
+        // dominant pages keep the pipeline order so LTR runs are not disturbed.
+        let rtl_letters = spans
+            .iter()
+            .flat_map(|s| s.span.text.chars())
+            .filter(|c| is_rtl_text(*c as u32))
+            .count();
+        let latin_letters = spans
+            .iter()
+            .flat_map(|s| s.span.text.chars())
+            .filter(|c| c.is_ascii_alphabetic())
+            .count();
+        if rtl_letters > latin_letters.max(1) * 2 {
+            spans.sort_by(|a, b| safe_float_cmp(b.span.bbox.y, a.span.bbox.y));
+        }
+
         let n = spans.len();
         let mut i = 0;
         while i < n {
@@ -9116,6 +9137,13 @@ impl PdfDocument {
                 }
             }
             i = j;
+        }
+
+        // The converters re-sort by `reading_order` before emitting, so the
+        // span-order changes above (the Y pre-sort and the per-line X-descending
+        // reorder) only take effect once that field reflects the new sequence.
+        for (idx, s) in spans.iter_mut().enumerate() {
+            s.reading_order = idx;
         }
     }
 

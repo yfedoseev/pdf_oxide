@@ -2086,6 +2086,16 @@ fn is_column_gap(prev: &OrderedTextSpan, current: &OrderedTextSpan) -> bool {
     let cur_left = current.span.bbox.x;
     let font_size = current.span.font_size.max(prev.span.font_size).max(1.0);
 
+    // Right-to-left text reads with *decreasing* X, so the backward-X "column
+    // wrap" heuristic below (which assumes left-to-right flow) is inverted for
+    // it: an RTL line's spans, ordered into logical reading order, step left on
+    // every word. Treating that as a column boundary splits the line into one
+    // paragraph/heading per word (Arabic/Hebrew titles and prose). The RTL
+    // reading-order pass has already placed these spans correctly, so skip the
+    // backward-X branch when both sides are RTL.
+    let both_rtl = crate::text::bidi::looks_rtl(&prev.span.text)
+        && crate::text::bidi::looks_rtl(&current.span.text);
+
     // Backward wrap: x went meaningfully backwards. This is the signature of
     // BOTH a within-column line wrap (X resets to the column's left margin) and
     // a genuine column transition (X jumps to the next column). They are told
@@ -2094,7 +2104,7 @@ fn is_column_gap(prev: &OrderedTextSpan, current: &OrderedTextSpan) -> bool {
     // drops far more than a line. Only the latter is a column boundary —
     // treating a plain wrap as one splits every wrapped line in a narrow column
     // into its own paragraph (multi-column newspaper / journal bodies).
-    if cur_left + font_size * 2.0 < prev.span.bbox.x {
+    if !both_rtl && cur_left + font_size * 2.0 < prev.span.bbox.x {
         // A within-column line wrap drops by about ONE line; a column
         // transition either jumps back UP (Y increases), drops far more than a
         // line, or stays on roughly the SAME baseline (a balanced column whose
