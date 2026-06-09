@@ -3734,7 +3734,19 @@ impl PdfDocument {
 
         for entry in intents_arr {
             let entry = match entry {
-                Object::Reference(r) => self.load_object(r).ok()?,
+                // A broken entry must not abort the whole search: skip it and
+                // keep looking (parity with the profile-stream load below).
+                // The prior `?` returned None for the entire array on the first
+                // unloadable entry, hiding a valid CMYK profile declared later
+                // (#712). Missing references are already Null per §7.3.10; this
+                // covers entries whose object exists but fails to parse.
+                Object::Reference(r) => match self.load_object(r) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        log::warn!("OutputIntents entry {r} could not be loaded ({e:?}); skipping");
+                        continue;
+                    },
+                },
                 other => other,
             };
             let entry_dict = match entry.as_dict() {
@@ -3745,10 +3757,21 @@ impl PdfDocument {
                 Some(p) => p.clone(),
                 None => continue,
             };
+            // Identifier for diagnostics; a DestOutputProfile is normally an
+            // indirect stream reference (streams cannot be inline dict values).
+            let profile_label = match &profile_obj {
+                Object::Reference(r) => format!("DestOutputProfile {r}"),
+                _ => "inline DestOutputProfile".to_string(),
+            };
             let profile_stream = match profile_obj {
-                Object::Reference(r) => match self.load_object(r) {
-                    Ok(o) => o,
-                    Err(_) => continue,
+                Object::Reference(r) => {
+                    match self.load_object(r) {
+                        Ok(o) => o,
+                        Err(e) => {
+                            log::warn!("OutputIntent {profile_label} could not be loaded ({e:?}); skipping");
+                            continue;
+                        },
+                    }
                 },
                 other => other,
             };
@@ -3762,10 +3785,23 @@ impl PdfDocument {
             };
             let bytes = match profile_stream.decode_stream_data() {
                 Ok(b) => b,
-                Err(_) => continue,
+                Err(e) => {
+                    log::warn!(
+                        "OutputIntent {profile_label} stream failed to decode ({e:?}); skipping"
+                    );
+                    continue;
+                },
             };
-            if let Some(prof) = crate::color::IccProfile::parse(bytes, n) {
-                return Some(std::sync::Arc::new(prof));
+            // §8.6.5.5: N must match the profile's component count, enforced by
+            // IccProfile::parse. A declared-but-damaged press profile is dropped
+            // here; log it instead of silently falling back to §10.3.5.
+            match crate::color::IccProfile::parse(bytes, n) {
+                Some(prof) => return Some(std::sync::Arc::new(prof)),
+                None => {
+                    log::warn!(
+                        "OutputIntent {profile_label} is not a valid N=4 ICC profile; skipping"
+                    )
+                },
             }
         }
         None

@@ -2,6 +2,12 @@
 
 All notable changes to PDFOxide are documented here.
 
+## next-version
+
+### Fixed
+
+- **`/OutputIntents` parsing no longer aborts on the first broken entry, and logs damaged profiles (#712)** — `PdfDocument::output_intent_cmyk_profile` (the CMYK ICC fallback for `/DeviceCMYK` content, now load-bearing for the 0.3.61 press-accurate render path) returned `None` for the *entire* array if a single entry's object failed to load, hiding a valid CMYK `DestOutputProfile` declared later (ISO 32000-1:2008 §14.11.5). A failing entry is now skipped so the search continues — matching the resilient handling the spec already requires for missing references (§7.3.10) and the behaviour of the inner profile-stream load. Entries that fail to load, fail to decode, or are not a valid `N=4` ICC profile (§8.6.5.5) now emit a `log::warn!` naming the object instead of being dropped silently, so a declared-but-damaged press profile is diagnosable rather than mis-rendering through the §10.3.5 additive-clamp fallback with no trace. Thanks @mbeschastn0v.
+
 ## [0.3.62] - 2026-06-09
 
 > Best-in-class text, Markdown and HTML extraction: right-to-left (Arabic/Hebrew) and vertical-CJK (tategaki) reading order across every format, untagged multi-column reading order, table / list / heading / hyperlink structure fidelity, paragraph reflow and fenced code blocks, correct display of flattened form fields (incl. CJK/emoji), hyperlink-URI XSS hardening, and an OCR-augmented `auto` extraction mode that is a strict superset of native output on text, Markdown and HTML.
@@ -33,7 +39,6 @@ All notable changes to PDFOxide are documented here.
 
 - **Pre-commit hooks and pre-existing lint errors fixed (#677)** — Thanks **@norbusan**.
 - **Documentation for the page-oriented Python API (#678)** — Thanks **@SeanPedersen**.
-
 ## [0.3.61] - 2026-06-07
 
 > Press-accurate CMYK→RGB rendering via document `/OutputIntents` ICC profiles, vertical writing mode (WMode 1 / tategaki) support, RTL (Hebrew/Arabic) and Indic text-extraction fixes, separation-plate image rendering and ActualText extraction, path flattening (`PathContent::to_points`), Node.js quickstart and form-display fixes, macOS OCR detection, faster table-heavy extraction, and cross-OS + cross-language CI verification
