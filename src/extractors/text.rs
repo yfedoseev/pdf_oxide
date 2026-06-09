@@ -1338,12 +1338,23 @@ fn should_insert_space(
     // the cluster but no explicit TJ offset crossed the threshold).
     // See the sibling guard in `process_tj_array_tiebreaker` for the
     // upstream space-as-span insertion path.
-    // 1.2 × full space-glyph advance. Any gap below that, between two
-    // alphabetic runs, is far more likely to be inter-letter kerning
-    // emitted by LaTeX or a Word-style exporter than a real word
-    // boundary. Real producer word gaps either match the space-glyph
-    // width plus the producer's word-spacing pad, or sit next to
-    // non-letter characters that fall through this guard.
+    //
+    // Ceiling = 1.5 × `geometric_threshold` (= 0.75 × space-glyph width,
+    // ≈ 0.2 em for a typical 0.25-em space). Inter-letter kerning is a
+    // property of font size — realistic microtype / Word letter-spacing
+    // is a few percent of the em and sits just above the 0.5-space-width
+    // threshold, never far beyond it. The previous 2.4× ceiling
+    // (≈ 1.2 × a full space-glyph advance, ≈ 0.33 em for Helvetica) was
+    // far wider than any real kerning and swallowed genuine *tight* word
+    // gaps between lowercase words — the dominant cause of
+    // "MasterofScience" / "Resultsdriven" gluing on resume-style PDFs
+    // that position words via small Td offsets. 1.5× still clears
+    // worst-case ~0.19-em intra-word kerning (including the ~0.15-em
+    // LaTeX/microtype letter-spacing case) while letting a
+    // 0.2-em-and-wider word gap through to the consensus path — the same
+    // ~0.18-0.2-em word-break point PyMuPDF / poppler use. Gaps in the
+    // overlap zone (wide letter-tracking in titles, ~0.28 em) are not
+    // separable from real word gaps by magnitude alone and fall through.
     //
     // Only fires when the font is available so the threshold is
     // computed from the font's own space-glyph advance — the no-font
@@ -1351,7 +1362,7 @@ fn should_insert_space(
     // conservative value that already separates real word gaps from
     // kerning at the consensus level.
     let kerning_guard_threshold = if fonts.contains_key(font_name) {
-        Some(geometric_threshold * 2.4)
+        Some(geometric_threshold * 1.5)
     } else {
         None
     };
@@ -1367,7 +1378,7 @@ fn should_insert_space(
                 // path, avoiding word-gluing like "APPENDIXA" or "OLIVERA.".
                 if pc.is_lowercase() && nc.is_lowercase() {
                     log::debug!(
-                        "intra-word kerning guard: suppressing space between '{pc}' and '{nc}' (gap={gap_pt:.2}pt < {thr:.2}pt, threshold = 1.2× space-glyph width)"
+                        "intra-word kerning guard: suppressing space between '{pc}' and '{nc}' (gap={gap_pt:.2}pt < {thr:.2}pt, threshold = 0.75× space-glyph width)"
                     );
                     return SpaceDecision::no_space(SpaceSource::NoSpace, 0.9);
                 }

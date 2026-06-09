@@ -2,6 +2,12 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **Dropped inter-word spaces on tightly-typeset PDFs** — text drawn one glyph per `Tj` with incremental `Td` offsets and **no space glyph** (inter-word gaps are just slightly larger `Td` moves, ~0.3–0.8 × the glyph advance — common in résumé generators) was concatenated: `"JOHN DOE"` → `"JOHNDOE"`, `"Master of Science"` → `"MasterofScience"`. The characters were correct; only the word boundaries were lost, which breaks search/indexing (`"science"` can't be matched inside `"masterofscience"`). PyMuPDF and poppler `pdftotext` both infer these spaces, so oxide was the outlier against its own calibration reference. Two root causes, both fixed: (1) `FontInfo::get_space_glyph_width` returned a CID (Type0) font's `/DW` *default* width (often ≥ 0.5 em) as the "space advance" when code `0x20` has no explicit `/W` entry — the norm for Identity-H subsets, where the space glyph is rarely at `0x20` — inflating the geometric word-gap threshold above real word gaps; it now falls back to the 0.25 em typographic default unless `0x20` carries an explicit `/W` width (preserving the #656 Arabic-subset fallback). (2) the intra-word kerning guard in `should_insert_space` suppressed lowercase→lowercase boundaries up to 2.4 × the geometric threshold (≈ 0.33 em for Helvetica) — far wider than any real inter-letter kerning — swallowing genuine tight word gaps; the ceiling is lowered to 1.5 × (≈ 0.2 em), which still clears worst-case ~0.19 em intra-word kerning while admitting 0.2-em-and-wider word gaps, the same ~0.18–0.2 em word-break point PyMuPDF / poppler use. Measured on a 138-document PyMuPDF/poppler parity set, mean word-token Jaccard 0.7777 → 0.7850 with no broad regression.
+
 ## [0.3.62] - 2026-06-09
 
 > Best-in-class text, Markdown and HTML extraction: right-to-left (Arabic/Hebrew) and vertical-CJK (tategaki) reading order across every format, untagged multi-column reading order, table / list / heading / hyperlink structure fidelity, paragraph reflow and fenced code blocks, correct display of flattened form fields (incl. CJK/emoji), hyperlink-URI XSS hardening, and an OCR-augmented `auto` extraction mode that is a strict superset of native output on text, Markdown and HTML.

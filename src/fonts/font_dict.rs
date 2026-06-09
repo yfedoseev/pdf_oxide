@@ -3272,19 +3272,37 @@ impl FontInfo {
     ///
     /// # Returns
     ///
-    /// The width of the space character (code 0x20) in 1000ths of em,
-    /// or the font's default width if the space glyph is not defined.
+    /// The width of the space character (code 0x20) in 1000ths of em. When no
+    /// real space glyph is defined — a simple font with a near-zero 0x20, or a
+    /// CID font with no explicit /W entry for 0x20 — returns the 0.25 em (250)
+    /// typographic default rather than the font's (often much wider) /DW.
     pub fn get_space_glyph_width(&self) -> f32 {
+        // CID-keyed (Type0) fonts almost never place the space glyph at code
+        // 0x20 under Identity-H, so `get_glyph_width(0x20)` falls through to the
+        // font's *default* width (/DW) — commonly 0.5 em or wider. That default
+        // is NOT a space advance. Callers derive their geometric word-gap
+        // threshold from this width (threshold = space_width × ratio); feeding
+        // the inflated /DW in makes the threshold so large that tightly typeset
+        // word gaps — words positioned with incremental Td offsets and no space
+        // glyph — fall below it and glue together ("Master of Science" ->
+        // "MasterofScience"). PyMuPDF / poppler infer those spaces; oxide was
+        // the outlier. Trust code 0x20 only when it is an explicit /W entry;
+        // otherwise fall back to the 0.25 em typographic default.
+        if self.subtype == "Type0" {
+            return match self.cid_widths.as_ref().and_then(|w| w.get(&0x20)) {
+                Some(&w) if w >= 50.0 => w,
+                _ => 250.0,
+            };
+        }
         // Space character is always code 0x20 (32) in PDF.
         let w = self.get_glyph_width(0x20);
-        // Many CID-keyed subset fonts (notably shaped Arabic from Chrome /
+        // Many simple subset fonts (notably shaped Arabic from Chrome /
         // browser print) omit a glyph for code 0x20 entirely, so this returns
-        // ~0. Callers derive their geometric word-gap threshold from this
-        // width (threshold = space_width × ratio); a zero width collapses the
-        // threshold to 0, so *every* inter-glyph kerning gap is read as a word
-        // boundary and cursive Arabic words shatter into single letters (#656).
-        // Fall back to a typographic default of 0.25 em (250 font units) — the
-        // same value `should_insert_space` uses when the font is absent.
+        // ~0. A zero width collapses the threshold to 0, so *every* inter-glyph
+        // kerning gap is read as a word boundary and cursive Arabic words
+        // shatter into single letters. Fall back to a typographic
+        // default of 0.25 em (250 font units) — the same value
+        // `should_insert_space` uses when the font is absent.
         if w < 50.0 {
             250.0
         } else {
