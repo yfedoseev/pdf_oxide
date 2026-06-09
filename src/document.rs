@@ -5050,8 +5050,111 @@ impl PdfDocument {
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
         let base_spans = self.extract_spans(page_index)?;
+        // Vertical CJK (tategaki, ISO 32000-1 §9.7.4.3 vertical writing mode):
+        // glyphs run top-to-bottom in columns that progress right-to-left, so
+        // the horizontal row-major assembler shreds the reading order. When the
+        // page is geometrically vertical, read it column-major instead.
+        if let Some(vertical) = Self::try_assemble_vertical_cjk(&base_spans) {
+            return Ok(vertical);
+        }
         let text = self.assemble_text_from_spans(page_index, base_spans, options)?;
         Ok(Self::apply_mixed_rtl_line_pass(text))
+    }
+
+    /// Returns column-major text when the page is a vertical-CJK (tategaki)
+    /// layout, or `None` for every other page (so horizontal documents are
+    /// byte-for-byte unchanged).
+    ///
+    /// Detection is purely geometric: among CJK glyph spans, count how many
+    /// neighbour pairs are stacked *vertically* (same column, one glyph-height
+    /// apart) versus *horizontally* (same row, one glyph-width apart). Vertical
+    /// writing is declared only when CJK is the clear majority of the page and
+    /// vertical adjacencies dominate horizontal ones — so horizontal CJK
+    /// (Chinese/Japanese prose set left-to-right) never triggers it. Assembly
+    /// then orders spans by column right-to-left (X descending, banded to the
+    /// glyph width) and top-to-bottom within a column (Y descending), matching
+    /// how the script is read.
+    fn try_assemble_vertical_cjk(spans: &[TextSpan]) -> Option<String> {
+        fn is_cjk(c: char) -> bool {
+            matches!(
+                c as u32,
+                0x3040..=0x30FF      // Hiragana + Katakana
+                | 0x3400..=0x4DBF    // CJK Ext A
+                | 0x4E00..=0x9FFF    // CJK Unified
+                | 0xF900..=0xFAFF    // CJK Compatibility
+                | 0xFF66..=0xFF9F    // Halfwidth Katakana
+            )
+        }
+        let cjk: Vec<&TextSpan> = spans
+            .iter()
+            .filter(|s| s.text.chars().any(is_cjk))
+            .collect();
+        if cjk.len() < 8 {
+            return None;
+        }
+        // CJK must be the clear majority of the page's non-space glyphs.
+        let total_chars: usize = spans
+            .iter()
+            .map(|s| s.text.chars().filter(|c| !c.is_whitespace()).count())
+            .sum();
+        let cjk_chars: usize = cjk
+            .iter()
+            .map(|s| s.text.chars().filter(|c| is_cjk(*c)).count())
+            .sum();
+        if total_chars == 0 || cjk_chars * 2 < total_chars {
+            return None;
+        }
+
+        // Glyph cell size from the median-ish span box (CJK glyphs are square).
+        let mut widths: Vec<f32> = cjk
+            .iter()
+            .map(|s| s.bbox.width)
+            .filter(|w| *w > 0.0)
+            .collect();
+        let mut heights: Vec<f32> = cjk
+            .iter()
+            .map(|s| s.bbox.height)
+            .filter(|h| *h > 0.0)
+            .collect();
+        if widths.is_empty() || heights.is_empty() {
+            return None;
+        }
+        widths.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        heights.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let gw = widths[widths.len() / 2];
+        let gh = heights[heights.len() / 2];
+
+        // Count vertical vs horizontal neighbour pairs (capped for O(n²) cost).
+        let sample = &cjk[..cjk.len().min(250)];
+        let (mut vert, mut horiz) = (0usize, 0usize);
+        for (i, a) in sample.iter().enumerate() {
+            for b in sample.iter().skip(i + 1) {
+                let dx = (a.bbox.x - b.bbox.x).abs();
+                let dy = (a.bbox.y - b.bbox.y).abs();
+                if dx < gw * 0.5 && dy > gh * 0.5 && dy < gh * 1.5 {
+                    vert += 1;
+                } else if dy < gh * 0.5 && dx > gw * 0.5 && dx < gw * 1.5 {
+                    horiz += 1;
+                }
+            }
+        }
+        // Require a clear vertical majority; ambiguous or horizontal → None.
+        if vert == 0 || vert <= horiz {
+            return None;
+        }
+
+        // Column-major order: X descending (right-to-left), banded to the glyph
+        // width so a column's sub-pixel X jitter does not split it, then Y
+        // descending (top-to-bottom) within the column.
+        let band = (gw * 0.5).max(1.0);
+        let mut ordered: Vec<&TextSpan> = spans.iter().collect();
+        ordered.sort_by(|a, b| {
+            let ca = (a.bbox.x / band).round() as i32;
+            let cb = (b.bbox.x / band).round() as i32;
+            cb.cmp(&ca)
+                .then(crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y))
+        });
+        Some(ordered.iter().map(|s| s.text.as_str()).collect())
     }
 
     /// Per-line UAX #9 pass for mixed-direction lines (bidi item 4): for each
@@ -19374,6 +19477,57 @@ mod tests {
     // ========================================================================
 
     /// Helper to create a TextSpan with minimal required fields for testing.
+    #[test]
+    fn test_try_assemble_vertical_cjk_orders_columns_right_to_left() {
+        // Three columns of CJK glyphs; the right column (x=116) is read first,
+        // top-to-bottom, then the next column to the left, etc.
+        let mk = |t: &str, x: f32, y: f32| make_test_span(t, x, y, 18.0, 18.0);
+        let spans = vec![
+            mk("\u{4E00}", 116.0, 719.0),
+            mk("\u{4E8C}", 116.0, 701.0),
+            mk("\u{4E09}", 116.0, 683.0),
+            mk("\u{56DB}", 89.0, 719.0),
+            mk("\u{4E94}", 89.0, 701.0),
+            mk("\u{516D}", 89.0, 683.0),
+            mk("\u{4E03}", 62.0, 719.0),
+            mk("\u{516B}", 62.0, 701.0),
+            mk("\u{4E5D}", 62.0, 683.0),
+        ];
+        assert_eq!(
+            PdfDocument::try_assemble_vertical_cjk(&spans).as_deref(),
+            Some("\u{4E00}\u{4E8C}\u{4E09}\u{56DB}\u{4E94}\u{516D}\u{4E03}\u{516B}\u{4E5D}")
+        );
+    }
+
+    #[test]
+    fn test_try_assemble_vertical_cjk_horizontal_returns_none() {
+        // A horizontal CJK row (glyphs advance in X at a fixed Y) must NOT be
+        // detected as vertical — horizontal documents stay on the normal path.
+        let mk = |t: &str, x: f32| make_test_span(t, x, 700.0, 18.0, 18.0);
+        let spans = vec![
+            mk("\u{4E00}", 62.0),
+            mk("\u{4E8C}", 80.0),
+            mk("\u{4E09}", 98.0),
+            mk("\u{56DB}", 116.0),
+            mk("\u{4E94}", 134.0),
+            mk("\u{516D}", 152.0),
+            mk("\u{4E03}", 170.0),
+            mk("\u{516B}", 188.0),
+        ];
+        assert!(PdfDocument::try_assemble_vertical_cjk(&spans).is_none());
+    }
+
+    #[test]
+    fn test_try_assemble_vertical_cjk_latin_returns_none() {
+        // A Latin page is not CJK-majority → None (never vertical).
+        let spans: Vec<TextSpan> = "the quick brown fox jumps over a lazy dog today"
+            .split(' ')
+            .enumerate()
+            .map(|(i, w)| make_test_span(w, 60.0 + i as f32 * 40.0, 700.0, 30.0, 12.0))
+            .collect();
+        assert!(PdfDocument::try_assemble_vertical_cjk(&spans).is_none());
+    }
+
     #[test]
     fn test_push_line_breaks_table_row_single_newline() {
         // A table-row boundary (single_break = true) emits exactly one newline
