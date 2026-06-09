@@ -10880,7 +10880,10 @@ impl PdfDocument {
             }
             let mut s = cells.clone();
             s.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
-            let gaps = s.windows(2).filter(|w| w[1].0 - w[0].1 >= MIN_GAP_PT).count();
+            let gaps = s
+                .windows(2)
+                .filter(|w| w[1].0 - w[0].1 >= MIN_GAP_PT)
+                .count();
             counted_rows += 1;
             if gaps >= 2 {
                 multi_gap_rows += 1;
