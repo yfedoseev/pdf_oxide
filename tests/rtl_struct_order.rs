@@ -103,7 +103,7 @@ impl TaggedRtlPdf {
     }
 }
 
-/// #669: a Hebrew line drawn in visual order with the inter-word comma stored
+/// A Hebrew line drawn in visual order with the inter-word comma stored
 /// as a "<space><comma>" run. Codes: A,B → אב (word one), C,D → גד (word two),
 /// and the comma run is "<space><comma>". Drawn left-to-right (visual order):
 /// word two at the left, the comma run, then word one at the right.
@@ -143,7 +143,7 @@ fn rtl_inter_word_comma_attaches_to_preceding_word() {
     );
 }
 
-/// #656: an Arabic line whose glyphs jitter a few points off the baseline must
+/// An Arabic line whose glyphs jitter a few points off the baseline must
 /// be grouped into a single line and emitted rightmost-first, not scattered by
 /// a fixed row band. Codes A,B,C,D → ا ل ق م; the logical word is "القم". Drawn
 /// in visual order (leftmost first: م ق ل ا) with two glyphs jittered ±2-3pt.

@@ -2,7 +2,7 @@
 //! visual lines must reflow into ONE Markdown paragraph — matching the
 //! plain-text surface — not fragment into one paragraph per line/word.
 //!
-//! Cross-format alignment for #656/#657: extract_text already joins wrapped
+//! Cross-format alignment: extract_text already joins wrapped
 //! Hebrew/Arabic lines; the converter pipeline must too. PDF is hand-built
 //! tagged (no third-party fixture).
 

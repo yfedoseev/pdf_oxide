@@ -19797,7 +19797,7 @@ mod tests {
         assert!(PdfDocument::should_insert_space(&prev, &current));
     }
 
-    /// #667: two glyphs of the same complex Brahmic script with an intra-word
+    /// Two glyphs of the same complex Brahmic script with an intra-word
     /// gap (a Bengali matra-cluster `ছো` followed by `ট`, ~9pt apart at 13pt)
     /// must NOT get a heuristic space — word breaks in these scripts are
     /// carried by explicit SPACE glyphs (§14.8.2.5), and the Latin-tuned gap
@@ -20246,7 +20246,7 @@ mod tests {
         );
     }
 
-    /// #656: a pure-RTL line whose zero-advance glyphs (hamza seats, marks,
+    /// A pure-RTL line whose zero-advance glyphs (hamza seats, marks,
     /// producer-positioned consonants) are drawn a couple of points off the
     /// baseline must NOT be scattered into separate rows. The fixed quantized
     /// row band split them out and emitted them first (the leading stray-alef
@@ -20352,7 +20352,7 @@ mod tests {
     }
 
     // ========================================================================
-    // RTL neutral-punctuation reversal (push_span_text_bidi / #669)
+    // RTL neutral-punctuation reversal (push_span_text_bidi)
     // ========================================================================
 
     /// A neutral-only span ("<space><comma>") inside a pure-RTL run carries its
