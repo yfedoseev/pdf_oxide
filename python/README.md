@@ -95,13 +95,13 @@ with PdfDocument("report.pdf") as doc:
         print(f"Page {page.index}: {page.width:.0f}×{page.height:.0f} pts")
         text   = page.text           # str
         chars  = page.chars          # list[TextChar]
-        words  = page.words          # list[Word]
+        words  = page.words          # list[PyWord]
         lines  = page.lines          # list[TextLine]
         spans  = page.spans          # list[TextSpan]
         tables = page.tables         # list[Table]
-        images = page.images         # list[Image]
-        annots = page.annotations    # list[Annotation]
-        paths  = page.paths          # list[Path]
+        images = page.images         # list[dict]
+        annots = page.annotations    # list[dict]
+        paths  = page.paths          # list[dict]
 
         md   = page.markdown(detect_headings=True)
         html = page.html()
