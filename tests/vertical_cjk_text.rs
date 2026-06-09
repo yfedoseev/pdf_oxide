@@ -97,3 +97,27 @@ fn vertical_cjk_reads_column_major_right_to_left() {
         "vertical CJK not read column-major right-to-left: {text:?}"
     );
 }
+
+/// Cross-format: vertical CJK must be column-major in Markdown and HTML too —
+/// not rendered as a table (the columns must not be mistaken for table cells).
+#[test]
+fn vertical_cjk_markdown_and_html_match_text() {
+    use pdf_oxide::converters::ConversionOptions;
+    let expected = "\u{4E00}\u{4E8C}\u{4E09}\u{56DB}\u{4E94}\u{516D}\u{4E03}\u{516B}\u{4E5D}";
+    let doc = PdfDocument::from_bytes(vertical_cjk_pdf()).unwrap();
+
+    let md = doc.to_markdown(0, &ConversionOptions::default()).unwrap();
+    assert!(!md.contains('|'), "vertical CJK rendered as a Markdown table: {md:?}");
+    let md_compact: String = md.chars().filter(|c| !c.is_whitespace()).collect();
+    assert_eq!(md_compact, expected, "vertical CJK markdown not column-major: {md:?}");
+
+    let html = doc.to_html(0, &ConversionOptions::default()).unwrap();
+    assert!(!html.contains("<table"), "vertical CJK rendered as an HTML table: {html:?}");
+    let html_text: String = html
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .replace("<p>", "")
+        .replace("</p>", "");
+    assert_eq!(html_text, expected, "vertical CJK html not column-major: {html:?}");
+}

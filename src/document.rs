@@ -15414,6 +15414,14 @@ impl PdfDocument {
         // which were only honoured by the plain-text path).
         let base_spans = Self::apply_region_filters(self.extract_spans(page_index)?, options);
 
+        // Vertical CJK (tategaki, ISO 32000-1 §9.7.4.3): the column-major text is
+        // a single flowing paragraph. The horizontal converter pipeline would
+        // mis-read its columns (and the spatial table fallback mis-fires on
+        // them), so mirror the plain-text path and emit the column-major text.
+        if let Some(vertical) = Self::try_assemble_vertical_cjk(&base_spans) {
+            return Ok(vertical);
+        }
+
         let tables = if options.extract_tables {
             // text_fallback=true: to_markdown explicitly targets structured output,
             // so we enable the text-only spatial fallback for line-less tables
@@ -15898,6 +15906,18 @@ impl PdfDocument {
         // Region filters applied up front so excluded content is gone from every
         // downstream path (#609), matching the markdown and plain-text surfaces.
         let base_spans = Self::apply_region_filters(self.extract_spans(page_index)?, options);
+
+        // Vertical CJK (tategaki, ISO 32000-1 §9.7.4.3): emit the column-major
+        // text as a single paragraph, mirroring the plain-text and markdown
+        // paths (the horizontal pipeline mis-reads vertical columns and the
+        // spatial table fallback mis-fires on them).
+        if let Some(vertical) = Self::try_assemble_vertical_cjk(&base_spans) {
+            let escaped = vertical
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            return Ok(format!("<p>{}</p>", escaped.trim()));
+        }
 
         let tables = if options.extract_tables {
             // text_fallback=true: to_html explicitly targets structured output,
