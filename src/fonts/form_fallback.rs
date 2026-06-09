@@ -33,7 +33,9 @@ pub fn classify(c: char) -> Option<Fallback> {
 fn is_emoji(cp: u32) -> bool {
     matches!(
         cp,
-        0x1F000..=0x1FAFF | 0x2600..=0x26FF | 0x2700..=0x27BF | 0x1F1E6..=0x1F1FF
+        // Regional indicators (0x1F1E6..=0x1F1FF) already fall inside the
+        // 0x1F000..=0x1FAFF block, so they are not listed separately.
+        0x1F000..=0x1FAFF | 0x2600..=0x26FF | 0x2700..=0x27BF
     )
 }
 
