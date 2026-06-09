@@ -1377,13 +1377,16 @@ impl MarkdownOutputConverter {
                     && !prev_was_list_item
                     && !span.preformatted
                     && !prev.preformatted;
-                let next_continues_lowercase = span
-                    .span
-                    .text
-                    .trim_start()
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_lowercase());
+                // The next line continues the sentence when it starts lowercase
+                // (`…downtown by\nnine…`) or with a number that is not an
+                // ordered-list marker (`…downtown by\n2028`). An ordered marker
+                // (`2.` / `3)`) is a deliberate new item and must not merge.
+                let next_trim = span.span.text.trim_start();
+                let next_continues_lowercase = next_trim.chars().next().is_some_and(|c| {
+                    c.is_lowercase()
+                        || (c.is_ascii_digit()
+                            && super::is_ordered_list_marker(next_trim).is_none())
+                });
                 let prev_unterminated = current_line
                     .trim_end()
                     .chars()
