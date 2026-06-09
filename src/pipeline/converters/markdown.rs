@@ -2179,6 +2179,14 @@ fn fence_monospace_blocks(s: &str) -> String {
     let flush_code = |code: &mut Vec<String>, out: &mut Vec<String>| {
         if !code.is_empty() {
             let body = code.join("\n");
+            // A fence around whitespace-only content carries no information and,
+            // on a scanned / blank page (whose only spans are stray whitespace),
+            // it would make the page's Markdown non-empty — masking the empty
+            // state and suppressing the `[OCR REQUIRED]` annotation. Drop it.
+            if body.trim().is_empty() {
+                code.clear();
+                return;
+            }
             out.push(format!("```\n{body}\n```"));
             code.clear();
         }

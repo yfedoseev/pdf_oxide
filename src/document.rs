@@ -7290,17 +7290,30 @@ impl PdfDocument {
             false
         }
         let chars: Vec<char> = text.chars().collect();
-        let mut out = String::with_capacity(text.len());
-        for (i, &c) in chars.iter().enumerate() {
-            if c == ' '
-                && arabic_letter_past_marks(chars[..i].iter().rev())
-                && arabic_letter_past_marks(chars[i + 1..].iter())
-            {
-                continue; // interior cursive-join space → drop
-            }
-            out.push(c);
+        // Interior spaces flanked by Arabic letters on both sides. A producer's
+        // spurious cursive-join space splits ONE word, so a genuine spurious run
+        // carries exactly one such space. A span with several Arabic-flanked
+        // spaces is ordinary multi-word text whose spaces are real word breaks —
+        // stripping them all would concatenate every word into one token
+        // (the right_to_left_01 class). §14.8.2.3.3 governs word-break detection,
+        // not deletion of every interior space, so strip only the lone case and
+        // leave multi-word runs (and their real spaces) intact.
+        let qualifying: Vec<usize> = (0..chars.len())
+            .filter(|&i| {
+                chars[i] == ' '
+                    && arabic_letter_past_marks(chars[..i].iter().rev())
+                    && arabic_letter_past_marks(chars[i + 1..].iter())
+            })
+            .collect();
+        if qualifying.len() != 1 {
+            return text.to_string();
         }
-        out
+        let drop = qualifying[0];
+        chars
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &c)| (i != drop).then_some(c))
+            .collect()
     }
 
     /// Emit the inter-line newline(s) between two vertically separated spans in
