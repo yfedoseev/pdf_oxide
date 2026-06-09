@@ -2,6 +2,12 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **Watermark annotations rendered as nothing in compliant viewers** — a watermark's `/AP` appearance was serialized as a stream nested *directly* inside the annotation dictionary (`/AP <</N <<…>> stream … endstream>>`). A PDF stream must be an indirect object (ISO 32000-1:2008 §7.3.8); the inline form is invalid, so spec-compliant readers (e.g. MuPDF/PyMuPDF) rejected the annotation with "invalid key in dict" and the watermark never appeared — even though the bytes were present in the file. A shared `hoist_appearance_streams` helper now lifts nested `/N`, `/D`, and `/R` appearance streams (including named-state sub-dictionaries) into freshly allocated indirect objects and replaces the slot with a reference, applied on both the `DocumentBuilder` writer and the existing-page `DocumentEditor::save_page` paths. Verified end-to-end with MuPDF: the watermark now parses and renders on both paths.
+
 ## [0.3.63] - 2026-06-09
 
 > CJK extraction-quality fixes — vertical-CJK (tategaki) reading order no longer mis-fires on horizontal Japanese text, CJK glyphs no longer surface as Kangxi-radical codepoints, and Korean number spacing is preserved — plus recovery of dropped inter-word spaces on tightly-typeset PDFs, and routine dependency updates.

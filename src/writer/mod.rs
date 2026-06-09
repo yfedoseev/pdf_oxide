@@ -131,6 +131,7 @@ pub use linearization::{
     SharedObjectHeader,
 };
 pub use movie::{MovieActivation, MovieAnnotation, MovieData, MoviePlayMode};
+pub(crate) use object_serializer::hoist_appearance_streams;
 pub use object_serializer::ObjectSerializer;
 pub use outline_builder::{
     FitMode, OutlineBuildResult, OutlineBuilder, OutlineDestination, OutlineItem, OutlineStyle,

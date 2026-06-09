@@ -3717,6 +3717,43 @@ mod tests {
     }
 
     #[test]
+    fn test_watermark_appearance_is_indirect_not_inline() {
+        // Regression: a watermark's `/AP /N` appearance stream must be an
+        // indirect object (`/N <id> 0 R`), not an inline stream embedded in
+        // the annotation dict (which is invalid PDF and renders to nothing).
+        let mut builder = DocumentBuilder::new();
+        let wm = crate::writer::WatermarkAnnotation::new("CONFIDENTIAL")
+            .with_rect(crate::geometry::Rect::new(50.0, 50.0, 200.0, 400.0));
+        builder
+            .letter_page()
+            .paragraph("body")
+            .watermark_custom(wm)
+            .done();
+
+        let bytes = builder.build().unwrap();
+        let content = String::from_utf8_lossy(&bytes);
+
+        assert!(content.contains("/Subtype /Watermark"), "watermark missing");
+        // `/N` references an indirect object...
+        let re = regex_lite_n_ref(&content);
+        assert!(re, "appearance `/N` is not an indirect reference: not found");
+        // ...and the appearance dict is never opened inline after `/N`.
+        assert!(
+            !content.contains("/N <<"),
+            "inline appearance stream leaked into annotation dict"
+        );
+    }
+
+    // Minimal check for `/N <digits> 0 R` without pulling in a regex crate.
+    fn regex_lite_n_ref(s: &str) -> bool {
+        s.match_indices("/N ").any(|(i, _)| {
+            let rest = &s[i + 3..];
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            !digits.is_empty() && rest[digits.len()..].starts_with(" 0 R")
+        })
+    }
+
+    #[test]
     fn test_document_builder_with_metadata() {
         let mut builder = DocumentBuilder::new().metadata(
             DocumentMetadata::new()
