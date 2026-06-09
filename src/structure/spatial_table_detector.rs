@@ -324,6 +324,42 @@ fn looks_like_prose_paragraph(table: &Table) -> bool {
     false
 }
 
+/// Reject a spatial (no-rulings) "table" that is actually CJK prose split into
+/// columns by the wrap geometry of an unspaced script. CJK (Chinese, Japanese,
+/// Korean Han/kana) writes without inter-word spaces, so wrapped prose lines
+/// align into a grid the column detector mistakes for a table. A genuine CJK
+/// data cell is short (a label or a number); a prose fragment is a long run of
+/// ideographs/kana. Reject when any cell holds a run of `MIN_CJK_RUN` or more
+/// consecutive CJK characters. Ruled / author-marked tables never reach here.
+fn looks_like_cjk_prose(table: &Table) -> bool {
+    const MIN_CJK_RUN: usize = 12;
+    fn is_cjk(c: char) -> bool {
+        matches!(
+            c as u32,
+            0x3040..=0x30FF      // Hiragana + Katakana
+            | 0x3400..=0x4DBF    // CJK Ext A
+            | 0x4E00..=0x9FFF    // CJK Unified
+            | 0xF900..=0xFAFF    // CJK Compatibility
+            | 0xFF66..=0xFF9F    // Halfwidth Katakana
+            | 0xAC00..=0xD7AF    // Hangul Syllables
+        )
+    }
+    table.rows.iter().flat_map(|r| &r.cells).any(|c| {
+        let mut run = 0usize;
+        for ch in c.text.chars() {
+            if is_cjk(ch) {
+                run += 1;
+                if run >= MIN_CJK_RUN {
+                    return true;
+                }
+            } else if !ch.is_whitespace() {
+                run = 0;
+            }
+        }
+        false
+    })
+}
+
 /// Reject a spatial (no-rulings) "table" that is actually a bulleted list whose
 /// markers and bodies aligned into columns. A genuine data table never carries
 /// a cell that is *only* a bullet glyph; an untagged list rendered into two
@@ -715,6 +751,7 @@ pub fn detect_tables_from_spans(spans: &[TextSpan], config: &TableDetectionConfi
         || !passes_spatial_quality_gate(&orig_table)
         || looks_like_prose_paragraph(&orig_table)
         || looks_like_bulleted_list(&orig_table)
+        || looks_like_cjk_prose(&orig_table)
     {
         return Vec::new();
     }
@@ -745,6 +782,7 @@ pub fn detect_tables_from_spans(spans: &[TextSpan], config: &TableDetectionConfi
         || !passes_spatial_quality_gate(&table)
         || looks_like_prose_paragraph(&table)
         || looks_like_bulleted_list(&table)
+        || looks_like_cjk_prose(&table)
     {
         return Vec::new();
     }
@@ -3952,6 +3990,35 @@ mod tests {
             bbox: None,
             is_header: false,
         }
+    }
+
+    #[test]
+    fn test_looks_like_cjk_prose() {
+        let row = |cells: &[&str]| TableRow {
+            cells: cells.iter().map(|c| prose_cell(c)).collect(),
+            is_header: false,
+        };
+        // CJK prose mis-split into columns: a long ideograph/kana run in a cell.
+        let mut prose = Table::new();
+        prose.col_count = 2;
+        prose.rows.push(row(&[
+            "\u{30CD}\u{30B3}",
+            "\u{72ED}\u{7FA9}\u{306B}\u{306F}\u{98DF}\u{8089}\u{76EE}\u{30CD}\u{30B3}\u{79D1}\u{30CD}\u{30B3}\u{5C5E}",
+        ]));
+        assert!(looks_like_cjk_prose(&prose));
+
+        // A genuine CJK data table — short label + number cells — is NOT prose.
+        let mut table = Table::new();
+        table.col_count = 2;
+        table.rows.push(row(&["\u{58F2}\u{4E0A}", "1,234"]));
+        table.rows.push(row(&["\u{5229}\u{76CA}", "567"]));
+        assert!(!looks_like_cjk_prose(&table));
+
+        // Latin prose has no long CJK run.
+        let mut latin = Table::new();
+        latin.col_count = 2;
+        latin.rows.push(row(&["Region", "North"]));
+        assert!(!looks_like_cjk_prose(&latin));
     }
 
     #[test]
