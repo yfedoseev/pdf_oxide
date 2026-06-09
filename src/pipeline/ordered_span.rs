@@ -205,6 +205,11 @@ pub struct OrderedTextSpan {
     /// §12.6.4.7). Output converters emit `[text](uri)` / `<a href>` for runs
     /// of spans that share a URI. None when the span carries no link.
     pub link_uri: Option<Arc<str>>,
+
+    /// True when this span is preformatted (nested under a `Code` element in
+    /// the structure tree). Converters must preserve its line breaks and never
+    /// reflow it into a paragraph.
+    pub preformatted: bool,
 }
 
 impl OrderedTextSpan {
@@ -220,6 +225,7 @@ impl OrderedTextSpan {
             block_id: None,
             actualtext_replacement: None,
             link_uri: None,
+            preformatted: false,
         }
     }
 
@@ -234,6 +240,7 @@ impl OrderedTextSpan {
             block_id: None,
             actualtext_replacement: None,
             link_uri: None,
+            preformatted: false,
         }
     }
 

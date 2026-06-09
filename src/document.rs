@@ -15299,7 +15299,7 @@ impl PdfDocument {
 
         let pipeline_config = TextPipelineConfig::from_conversion_options(options);
 
-        let (mcid_order, mcid_to_role, mcid_to_block_id) = {
+        let (mcid_order, mcid_to_role, mcid_to_block_id, mcid_preformatted) = {
             // Use structure-tree reading order only when trustworthy (§14.8.2.3.1):
             // honours /MarkInfo /Suspects so markdown stays consistent with
             // extract_text / to_plain_text. (The /Table-element table path in
@@ -15331,9 +15331,14 @@ impl PdfDocument {
                     std::collections::HashMap::new();
                 let mut block_map: std::collections::HashMap<u32, u32> =
                     std::collections::HashMap::new();
+                let mut preformatted_set: std::collections::HashSet<u32> =
+                    std::collections::HashSet::new();
                 if let Some(content) = cached_page {
                     for item in content {
                         if let Some(mcid) = item.mcid {
+                            if item.preformatted {
+                                preformatted_set.insert(mcid);
+                            }
                             // Heading takes precedence over list role on the
                             // same MCR (a heading-marked-content doesn't
                             // also play a list role in any sane PDF).
@@ -15399,6 +15404,11 @@ impl PdfDocument {
                 } else {
                     Some(block_map)
                 };
+                let preformatted_opt = if preformatted_set.is_empty() {
+                    None
+                } else {
+                    Some(preformatted_set)
+                };
 
                 if !order.is_empty() {
                     log::debug!(
@@ -15408,19 +15418,19 @@ impl PdfDocument {
                         block_map_opt.as_ref().map(|m| m.len()).unwrap_or(0),
                         page_index
                     );
-                    (Some(order), role_map_opt, block_map_opt)
+                    (Some(order), role_map_opt, block_map_opt, preformatted_opt)
                 } else {
                     log::debug!(
                         "No MCIDs found for page {}, reading order strategy will use geometric fallback",
                         page_index
                     );
-                    (None, role_map_opt, block_map_opt)
+                    (None, role_map_opt, block_map_opt, preformatted_opt)
                 }
             } else {
                 log::debug!(
                     "No structure tree found, reading order strategy will use geometric fallback"
                 );
-                (None, None, None)
+                (None, None, None, None)
             }
         };
 
@@ -15442,7 +15452,7 @@ impl PdfDocument {
         // and respect tagged paragraph boundaries even when the
         // geometric inter-paragraph gap is too small for the heuristic
         // (issue #377 D1 + D5 unlock).
-        if mcid_to_role.is_some() || mcid_to_block_id.is_some() {
+        if mcid_to_role.is_some() || mcid_to_block_id.is_some() || mcid_preformatted.is_some() {
             for s in ordered_spans.iter_mut() {
                 if let Some(mcid) = s.span.mcid {
                     if let Some(role) = mcid_to_role.as_ref().and_then(|m| m.get(&mcid)) {
@@ -15450,6 +15460,12 @@ impl PdfDocument {
                     }
                     if let Some(bid) = mcid_to_block_id.as_ref().and_then(|m| m.get(&mcid)) {
                         s.block_id = Some(*bid);
+                    }
+                    if mcid_preformatted
+                        .as_ref()
+                        .is_some_and(|m| m.contains(&mcid))
+                    {
+                        s.preformatted = true;
                     }
                 }
             }

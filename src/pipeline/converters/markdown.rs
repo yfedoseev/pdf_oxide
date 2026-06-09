@@ -1109,6 +1109,23 @@ impl MarkdownOutputConverter {
         // so that heading-only documents still produce sensible ratios.
         let base_font_size = super::base_heading_font_size(&sorted, config.output.detect_headings);
 
+        // Per-block right margin: the rightmost edge any span sharing a
+        // paragraph `block_id` reaches. A *wrapped* prose line runs to this
+        // margin; a deliberately short line (a shell command, a record row, a
+        // paragraph's last line) stops well short of it. Used to gate the
+        // structure-authoritative paragraph reflow below.
+        let mut block_right_max: std::collections::HashMap<u32, f32> =
+            std::collections::HashMap::new();
+        for s in &sorted {
+            if let Some(b) = s.block_id {
+                let right = s.span.bbox.x + s.span.bbox.width;
+                let e = block_right_max.entry(b).or_insert(f32::MIN);
+                if right > *e {
+                    *e = right;
+                }
+            }
+        }
+
         // Track which tables have been rendered
         let mut tables_rendered = vec![false; tables.len()];
         // Pre-render table markdown so we can check for orphaned spans.
@@ -1341,8 +1358,56 @@ impl MarkdownOutputConverter {
                 // inline with a leading caption.
                 let heading_changed_break = heading_changed && !line_truly_continuous;
 
+                // Structure-authoritative paragraph reflow (ISO 32000-1 §14.8.3:
+                // one `<P>` BLSE is a single paragraph that "can be split
+                // between lines of text"). When two spans share a paragraph
+                // block, the *geometric* gap heuristic must not split a wrapped
+                // line — but only when this is genuinely a mid-sentence wrap.
+                // The continuation signals (cheap, language-neutral) keep
+                // intentional same-block line breaks intact: form fields and
+                // record rows start with a capitalised label, code is tagged
+                // preformatted, and a sentence end is a hard boundary.
+                let same_block = matches!(
+                    (span.block_id, prev.block_id),
+                    (Some(a), Some(b)) if a == b
+                );
+                let plain_para = current_heading_level.is_none()
+                    && span_heading_level.is_none()
+                    && !is_list_item_role
+                    && !prev_was_list_item
+                    && !span.preformatted
+                    && !prev.preformatted;
+                let next_continues_lowercase = span
+                    .span
+                    .text
+                    .trim_start()
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_lowercase());
+                let prev_unterminated = current_line
+                    .trim_end()
+                    .chars()
+                    .last()
+                    .is_none_or(|c| !matches!(c, '.' | '!' | '?' | ':' | ';'));
+                // The previous line must have run to the block's right margin —
+                // a genuine wrap. A short ragged line (shell command, mis-tagged
+                // code, a record value) is a deliberate break and is preserved.
+                let prev_fills_column = prev.block_id.is_some_and(|b| {
+                    block_right_max.get(&b).is_some_and(|&m| {
+                        let prev_right = prev.span.bbox.x + prev.span.bbox.width;
+                        prev_right >= m - prev.span.font_size.max(8.0) * 1.5
+                    })
+                });
+                let merge_wrapped_line = same_block
+                    && plain_para
+                    && next_continues_lowercase
+                    && prev_unterminated
+                    && prev_fills_column;
+                let geometric_para_break =
+                    self.is_paragraph_break(span, prev) && !merge_wrapped_line;
+
                 if group_flush
-                    || self.is_paragraph_break(span, prev)
+                    || geometric_para_break
                     || heading_changed_break
                     || list_item_changed
                     || block_changed

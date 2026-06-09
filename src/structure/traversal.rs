@@ -83,6 +83,10 @@ pub struct OrderedContent {
     /// rather than the geometric multi-line gap.
     pub in_table: bool,
 
+    /// True when this MCR is nested under a `Code` element. Preformatted —
+    /// its line breaks are significant and converters must not reflow them.
+    pub preformatted: bool,
+
     /// Actual text replacement from /ActualText (optional)
     /// Per PDF spec Section 14.9.4, when present this replaces all
     /// descendant content with the specified text.
@@ -120,6 +124,10 @@ struct InheritedContext {
     /// instead of the geometric multi-line gap (ISO 32000-1 §14.8.4.3.4:
     /// table rows are stacked block-level rows, not free-leading paragraphs).
     in_table: bool,
+    /// True when the MCR is nested under a `Code` element — preformatted
+    /// content whose line breaks are significant. The converters must NOT
+    /// reflow such lines into a single paragraph.
+    preformatted: bool,
 }
 
 impl InheritedContext {
@@ -191,11 +199,13 @@ impl InheritedContext {
                     | StructType::TH
                     | StructType::TD
             );
+        let preformatted = self.preformatted || matches!(child, StructType::Code);
         Self {
             heading_level,
             list_role,
             block_id,
             in_table,
+            preformatted,
         }
     }
 }
@@ -305,6 +315,7 @@ fn traverse_element_all_pages(
                     is_word_break: false,
                     block_id: descended.block_id,
                     in_table: descended.in_table,
+                    preformatted: descended.preformatted,
                     actual_text: None,
                     mcid_scope: Some(mcid_scope.clone()),
                 });
@@ -327,6 +338,7 @@ fn traverse_element_all_pages(
                             is_word_break: true,
                             block_id: descended.block_id,
                             in_table: descended.in_table,
+                            preformatted: descended.preformatted,
                             actual_text: None,
                             mcid_scope: None,
                         });
@@ -405,6 +417,7 @@ fn traverse_element(
             is_word_break: true,
             block_id: descended.block_id,
             in_table: descended.in_table,
+            preformatted: descended.preformatted,
             actual_text: None,
             mcid_scope: None,
         });
@@ -433,6 +446,7 @@ fn traverse_element(
                         is_word_break: false,
                         block_id: descended.block_id,
                         in_table: descended.in_table,
+                        preformatted: descended.preformatted,
                         actual_text: None,
                         mcid_scope: Some(mcid_scope.clone()),
                     });
