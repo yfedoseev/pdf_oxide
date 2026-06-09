@@ -10859,33 +10859,40 @@ impl PdfDocument {
         }
         boxes.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
 
-        // Sweep-merge X extents; the first ≥ MIN_GUTTER_PT forward jump is a
-        // gutter splitting the (already x-sorted) boxes into left/right groups.
+        // Sweep-merge X extents and collect EVERY ≥ MIN_GUTTER_PT forward jump
+        // (a vertical channel no span crosses). A genuine two-column body has
+        // exactly ONE such corridor — the gutter; the lines inside each column
+        // overlap horizontally, so a column's own extents merge into a single
+        // contiguous run. A short-cell table (numeric grid, form) instead leaves
+        // a corridor between every cell column, so two or more qualifying gaps
+        // means a grid / multi-region layout, not two columns — reject it
+        // (matching the grid-row discriminator on the histogram path).
         let mut cover_right = boxes[0].1;
+        let mut gutter_splits: Vec<usize> = Vec::new();
         for i in 1..boxes.len() {
-            let gap = boxes[i].0 - cover_right;
-            if gap >= MIN_GUTTER_PT {
-                let (left, right) = boxes.split_at(i);
-                if left.len() < 2 || right.len() < 2 {
-                    cover_right = cover_right.max(boxes[i].1);
-                    continue;
-                }
-                // Vertical ranges of the two sides must overlap — otherwise the
-                // "columns" are vertically stacked blocks (e.g. a body block
-                // above a sidebar), which read fine row-aware.
-                let l_y0 = left.iter().map(|b| b.2).fold(f32::INFINITY, f32::min);
-                let l_y1 = left.iter().map(|b| b.3).fold(f32::NEG_INFINITY, f32::max);
-                let r_y0 = right.iter().map(|b| b.2).fold(f32::INFINITY, f32::min);
-                let r_y1 = right.iter().map(|b| b.3).fold(f32::NEG_INFINITY, f32::max);
-                let overlap = l_y1.min(r_y1) - l_y0.max(r_y0);
-                let min_height = (l_y1 - l_y0).min(r_y1 - r_y0);
-                if min_height > 0.0 && overlap > 0.5 * min_height {
-                    return true;
-                }
+            if boxes[i].0 - cover_right >= MIN_GUTTER_PT {
+                gutter_splits.push(i);
             }
             cover_right = cover_right.max(boxes[i].1);
         }
-        false
+        if gutter_splits.len() != 1 {
+            return false; // 0 = single column; ≥ 2 = grid / multi-region
+        }
+
+        let (left, right) = boxes.split_at(gutter_splits[0]);
+        if left.len() < 2 || right.len() < 2 {
+            return false;
+        }
+        // Vertical ranges of the two sides must overlap — otherwise the
+        // "columns" are vertically stacked blocks (e.g. a body block above a
+        // sidebar), which read fine row-aware.
+        let l_y0 = left.iter().map(|b| b.2).fold(f32::INFINITY, f32::min);
+        let l_y1 = left.iter().map(|b| b.3).fold(f32::NEG_INFINITY, f32::max);
+        let r_y0 = right.iter().map(|b| b.2).fold(f32::INFINITY, f32::min);
+        let r_y1 = right.iter().map(|b| b.3).fold(f32::NEG_INFINITY, f32::max);
+        let overlap = l_y1.min(r_y1) - l_y0.max(r_y0);
+        let min_height = (l_y1 - l_y0).min(r_y1 - r_y0);
+        min_height > 0.0 && overlap > 0.5 * min_height
     }
 
     fn is_multi_column_page(spans: &[crate::layout::TextSpan]) -> bool {
