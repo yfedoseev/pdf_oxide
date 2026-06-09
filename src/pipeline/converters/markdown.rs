@@ -2078,10 +2078,24 @@ fn is_column_gap(prev: &OrderedTextSpan, current: &OrderedTextSpan) -> bool {
     let cur_left = current.span.bbox.x;
     let font_size = current.span.font_size.max(prev.span.font_size).max(1.0);
 
-    // Backward wrap: x went meaningfully backwards on the same y
-    // baseline. Strongest possible signal of a column-major reading
-    // order transition.
+    // Backward wrap: x went meaningfully backwards. This is the signature of
+    // BOTH a within-column line wrap (X resets to the column's left margin) and
+    // a genuine column transition (X jumps to the next column). They are told
+    // apart by Y: a normal line wrap steps DOWN by about one line, whereas a
+    // column transition jumps back UP to the next column's top (Y increases) or
+    // drops far more than a line. Only the latter is a column boundary —
+    // treating a plain wrap as one splits every wrapped line in a narrow column
+    // into its own paragraph (multi-column newspaper / journal bodies).
     if cur_left + font_size * 2.0 < prev.span.bbox.x {
+        // A within-column line wrap drops by about ONE line; a column
+        // transition either jumps back UP (Y increases), drops far more than a
+        // line, or stays on roughly the SAME baseline (a balanced column whose
+        // next column resumes at the same height). Only a ~one-line downward
+        // step is an ordinary wrap.
+        let y_drop = prev.span.bbox.y - current.span.bbox.y;
+        if y_drop > font_size * 0.5 && y_drop < font_size * 2.0 {
+            return false; // ordinary line wrap, not a column boundary
+        }
         return true;
     }
 
@@ -2967,6 +2981,27 @@ mod tests {
                 px, pw, cx, font, expected, actual
             );
         }
+    }
+
+    /// A backward-X transition is a column boundary ONLY when it is not an
+    /// ordinary within-column line wrap. A wrap drops by ~one line; a column
+    /// jump goes up, stays on the same baseline, or drops far more.
+    #[test]
+    fn test_is_column_gap_distinguishes_wrap_from_column_jump() {
+        let font = 13.0;
+        let mk = |x: f32, y: f32| {
+            let mut s = make_span("w", x, y, font, FontWeight::Normal);
+            s.span.bbox.width = 40.0;
+            s
+        };
+        // Within-column wrap: X resets to the left margin, Y steps down one
+        // line (~13.5pt). NOT a column boundary.
+        assert!(!is_column_gap(&mk(285.0, 555.8), &mk(229.0, 542.2)));
+        // Same-baseline column transition (end of col 1 → top-ish of col 2 at
+        // the same Y, y_drop ≈ 0). IS a column boundary.
+        assert!(is_column_gap(&mk(976.7, 1013.2), &mk(192.6, 1011.7)));
+        // Column jump UP (next column resumes far above). IS a column boundary.
+        assert!(is_column_gap(&mk(500.0, 100.0), &mk(72.0, 700.0)));
     }
 
     /// D5c RED — multi-column newspaper case. Two text spans on the
