@@ -334,6 +334,9 @@ jobs:
     name: CLI Build
     runs-on: ${{ matrix.os }}
     strategy:
+      # A transient single-OS hiccup (e.g. a Windows cache-save tar
+      # failure) must not cancel the other OSes' builds.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
@@ -359,6 +362,8 @@ jobs:
     name: MCP Build
     runs-on: ${{ matrix.os }}
     strategy:
+      # A transient single-OS hiccup must not cancel the other OSes' builds.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
@@ -1578,7 +1583,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: always()
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: ./lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
