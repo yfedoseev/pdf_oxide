@@ -969,7 +969,18 @@ impl MarkdownOutputConverter {
                     // (`** text**` and `**text **` are both rejected as
                     // literal asterisks by strict renderers).
                     for (i, span) in cell.spans.iter().enumerate() {
-                        let is_bold = self.is_bold_raw(span, config);
+                        // A Markdown header row is already rendered bold by
+                        // readers (via the `|---|` separator beneath it), so
+                        // explicit `**` in a header cell is redundant and
+                        // diverges from the conventional rendering
+                        // ("| Region |", not "| **Region** |"). Suppress bold
+                        // in the header row ONLY when the table actually has
+                        // data rows beneath it — a single-row table is all
+                        // "header", so its emphasis is real content and must be
+                        // kept. Data cells always keep their bold.
+                        let has_data_rows = table.rows.len() > header_end;
+                        let is_header = row_idx < header_end && has_data_rows;
+                        let is_bold = !is_header && self.is_bold_raw(span, config);
                         let is_italic = span.is_italic;
                         let formatting_changed =
                             is_bold != active_bold || is_italic != active_italic;
