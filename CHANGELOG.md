@@ -2,6 +2,12 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **Fixed Python type stubs leaking the pyo3 `Py<Self>` receiver as a positional parameter** — methods implemented in Rust with a by-value receiver (`fn page(slf_handle: Py<Self>, …)` — the idiom pyo3 uses to hand a method an owned handle to its own instance) were emitted by the rylai stub generator with that receiver re-exposed *alongside* the injected `self`.
+
 ## [0.3.63] - 2026-06-09
 
 > CJK extraction-quality fixes — vertical-CJK (tategaki) reading order no longer mis-fires on horizontal Japanese text, CJK glyphs no longer surface as Kangxi-radical codepoints, and Korean number spacing is preserved — plus recovery of dropped inter-word spaces on tightly-typeset PDFs, and routine dependency updates.
