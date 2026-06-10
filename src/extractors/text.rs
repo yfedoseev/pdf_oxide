@@ -1046,6 +1046,22 @@ pub(crate) fn strip_cjk_digit_boundary_spaces(text: &str) -> String {
             | 0xFF66..=0xFF9F    // Halfwidth Katakana
         )
     };
+    // A bracket hugs its content in every script, so a space between a CJK or
+    // Hangul character and an adjacent bracket is a layout artifact, not a word
+    // break (e.g. Korean "고양이(학명: …)" / "카투스[*]" — the paren and the
+    // reference marker sit flush against the syllable). Hangul IS included here,
+    // unlike the digit case above: the digit boundary is a real Korean word
+    // break, but the bracket boundary never is. Full-width CJK brackets carry
+    // their own spacing and are left alone.
+    let is_cjk_or_hangul = |c: char| {
+        is_cjk(c)
+            || matches!(c as u32,
+                0xAC00..=0xD7A3   // Hangul syllables
+                | 0x1100..=0x11FF // Hangul Jamo
+                | 0x3130..=0x318F // Hangul Compatibility Jamo
+            )
+    };
+    let is_hug_bracket = |c: char| matches!(c, '(' | ')' | '[' | ']' | '{' | '}');
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -1055,6 +1071,12 @@ pub(crate) fn strip_cjk_digit_boundary_spaces(text: &str) -> String {
             let (p, n) = (chars[i - 1], chars[i + 1]);
             if (is_cjk(p) && n.is_ascii_digit()) || (p.is_ascii_digit() && is_cjk(n)) {
                 i += 1; // drop the artifact space
+                continue;
+            }
+            if (is_cjk_or_hangul(p) && is_hug_bracket(n))
+                || (is_hug_bracket(p) && is_cjk_or_hangul(n))
+            {
+                i += 1; // drop the artifact space hugging a bracket
                 continue;
             }
         }
@@ -13279,6 +13301,16 @@ mod tests {
         assert_eq!(strip_cjk_digit_boundary_spaces("page 12 of 30"), "page 12 of 30"); // Latin
                                                                                        // No-op fast path.
         assert_eq!(strip_cjk_digit_boundary_spaces("中文"), "中文");
+
+        // Brackets hug their content: a space between a CJK/Hangul character and
+        // an adjacent bracket is a layout artifact, dropped on both sides and
+        // for both ASCII paren/square/brace shapes.
+        assert_eq!(strip_cjk_digit_boundary_spaces("고양이 (학명"), "고양이(학명"); // Hangul→(
+        assert_eq!(strip_cjk_digit_boundary_spaces("카투스 [*]) 는"), "카투스[*])는"); // Hangul→[ , )→Hangul
+        assert_eq!(strip_cjk_digit_boundary_spaces("漢字 (注)"), "漢字(注)"); // CJK↔paren
+        // A space between Latin and a bracket is left alone (English may write
+        // "study (note)" with a space).
+        assert_eq!(strip_cjk_digit_boundary_spaces("study (note)"), "study (note)");
     }
 
     /// Overlap (raw_gap < 0) on a fallback-width font IS corrected — this is
