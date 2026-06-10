@@ -323,6 +323,15 @@ logging = []
 # value falls back to the /DA font and emits a warning instead of embedding.
 cjk-form-fonts = []
 
+# Bundle Droid Sans Fallback (CJK) into the page renderer's font database so
+# that composite (Type 0) fonts which reference a glyph collection but embed no
+# outlines — e.g. the predefined Adobe character collections a PDF processor
+# "shall support" per ISO 32000-2 §9.7.5.2 — still paint real glyphs instead of
+# nothing on hosts that have no system CJK font installed. Opt-in because it
+# adds ~4 MB of font data to the binary; when disabled, such fonts fall back to
+# whatever system CJK font exists (and render blank if none is present).
+cjk-render-fallback = []
+
 # FIPS 140-3 validated cryptographic backend (issue #236).
 # When enabled, opt into `AwsLcProvider` (Amazon's `aws-lc-rs` with
 # the `fips` feature) as an alternative to the default

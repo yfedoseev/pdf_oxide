@@ -128,6 +128,20 @@ fn system_fontdb() -> std::sync::Arc<fontdb::Database> {
         .get_or_init(|| {
             let mut db = fontdb::Database::new();
             db.load_system_fonts();
+            // Guarantee a CJK-covering face exists no matter which fonts the
+            // host has installed. Registered under its real family name
+            // ("Droid Sans Fallback"), so the existing fallback resolver only
+            // reaches it as a last resort — after any system CJK font (Noto
+            // Sans/Serif CJK, SimSun, …). Without this, a composite (Type 0)
+            // font that references a glyph collection but embeds no outlines
+            // renders blank on CJK-fontless hosts. ISO 32000-2 §9.7.5.2: a
+            // processor shall support the Adobe predefined character
+            // collections even when the PDF embeds no outlines for them.
+            #[cfg(feature = "cjk-render-fallback")]
+            db.load_font_data(
+                crate::fonts::form_fallback::font_bytes(crate::fonts::form_fallback::Fallback::Cjk)
+                    .to_vec(),
+            );
             std::sync::Arc::new(db)
         })
         .clone()
@@ -1753,6 +1767,62 @@ mod tests {
     use crate::content::graphics_state::GraphicsState;
     use crate::fonts::{Encoding, FontInfo, VerticalMetrics};
     use std::collections::HashMap;
+
+    /// Query helper: the family name the CJK fallback resolver looks up.
+    #[cfg(feature = "cjk-render-fallback")]
+    fn query_droid_fallback(db: &fontdb::Database) -> Option<fontdb::ID> {
+        db.query(&fontdb::Query {
+            families: &[fontdb::Family::Name("Droid Sans Fallback")],
+            weight: fontdb::Weight::NORMAL,
+            stretch: fontdb::Stretch::Normal,
+            style: fontdb::Style::Normal,
+        })
+    }
+
+    /// The bundled CJK fallback (feature `cjk-render-fallback`) must provide
+    /// real glyph coverage for the Adobe predefined character collections even
+    /// on a host with NO fonts installed. Build a database holding only the
+    /// bundled face — deliberately skipping `load_system_fonts` — and confirm
+    /// it is both discoverable under the family name the resolver queries and
+    /// able to outline representative CJK glyphs. Host-independent: it never
+    /// consults system fonts.
+    #[cfg(feature = "cjk-render-fallback")]
+    #[test]
+    fn bundled_cjk_fallback_covers_cjk_without_system_fonts() {
+        let mut db = fontdb::Database::new();
+        db.load_font_data(
+            crate::fonts::form_fallback::font_bytes(crate::fonts::form_fallback::Fallback::Cjk)
+                .to_vec(),
+        );
+        let id = query_droid_fallback(&db)
+            .expect("bundled Droid Sans Fallback must be queryable by family name");
+
+        // Representative Japanese kanji / Chinese hanzi / Korean hangul from
+        // the Adobe-Japan1 / Adobe-GB1 / Adobe-Korea1 collections.
+        let covered = db
+            .with_face_data(id, |data, index| {
+                let face = ttf_parser::Face::parse(data, index).expect("parse bundled face");
+                ['東', '中', '가']
+                    .iter()
+                    .all(|&c| face.glyph_index(c).is_some())
+            })
+            .expect("bundled face data must be present");
+        assert!(covered, "bundled CJK fallback must cover representative CJK glyphs");
+    }
+
+    /// The process-wide system font database must always expose a CJK-capable
+    /// "Droid Sans Fallback" face when the feature is on — the guaranteed
+    /// last-resort lookup key `get_cjk_fallback_cached` and `load_font_data`
+    /// rely on. Without the feature this would be absent on a CJK-fontless host
+    /// and composite fonts with no embedded outlines would render blank.
+    #[cfg(feature = "cjk-render-fallback")]
+    #[test]
+    fn system_fontdb_registers_cjk_fallback() {
+        assert!(
+            query_droid_fallback(&system_fontdb()).is_some(),
+            "system_fontdb must expose Droid Sans Fallback under cjk-render-fallback"
+        );
+    }
 
     /// Build a minimal Type0 FontInfo for advance-measurement tests.
     /// All horizontal widths are 1000 (one full em) and vertical metrics
