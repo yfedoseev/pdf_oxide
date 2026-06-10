@@ -186,6 +186,48 @@ jobs:
         if: runner.os == 'Linux'
         run: rm -rf target/doc target/debug/incremental
 
+  # Rendering / test-support integration tier.
+  #
+  # `rendering` and `test-support` are NOT default features, so the main
+  # `test` job (which runs `cargo test` under default features) compiles
+  # every `#[cfg(feature = "rendering")]` test file to ZERO tests. Without
+  # this job a green CI does not prove the rendering suite passes, and
+  # rendering regressions can land on `main` undetected. This job is the
+  # gate that actually executes that tier.
+  rendering:
+    name: Rendering Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Free disk space (Linux)
+        uses: ./.github/actions/free-disk-space
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: false
+          rustflags: ''
+
+      - name: Cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: rendering-v1
+          cache-bin: "false"
+
+      - name: Run rendering + test-support tests
+        run: cargo test --features rendering,test-support,cjk-render-fallback --verbose
+        env:
+          CARGO_INCREMENTAL: "0"
+          # Cap parallel link-worker spawns: rust-lld can SIGBUS when many
+          # test binaries link at once on resource-constrained runners.
+          # Same mitigation as the `test` and coverage jobs (#399).
+          CARGO_BUILD_JOBS: "2"
+
+      - name: Reclaim disk before cache save
+        run: rm -rf target/doc target/debug/incremental
+
   # Test Python bindings feature (only production-ready feature in v0.1.0)
   features:
     name: Feature Tests
