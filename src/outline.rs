@@ -112,13 +112,22 @@ impl PdfDocument {
     fn parse_outline_item(&self, item_ref: crate::object::ObjectRef) -> Result<OutlineItem> {
         let item_obj = self.load_object(item_ref)?;
 
-        // Extract title
-        let title = match item_obj.as_dict() {
-            Some(dict) => match dict.get("Title") {
-                Some(Object::String(s)) => String::from_utf8_lossy(s).to_string(),
-                _ => "(No Title)".to_string(),
-            },
-            None => "(No Title)".to_string(),
+        // Extract title. `/Title` is a PDF text string (ISO 32000-1
+        // §7.9.2.2): UTF-16BE/LE prefixed with a BOM, or PDFDocEncoding
+        // for the BOM-less form. hyperref emits UTF-16BE-with-BOM by
+        // default, so a bare `String::from_utf8_lossy` mangles it —
+        // route every case through the shared text-string decoder. The
+        // value may also be given as an indirect reference.
+        let title = match item_obj.as_dict().and_then(|dict| dict.get("Title")) {
+            Some(Object::String(s)) => crate::optional_content::decode_pdf_text_string(s),
+            Some(Object::Reference(r)) => self
+                .load_object(*r)
+                .ok()
+                .as_ref()
+                .and_then(Object::as_string)
+                .map(crate::optional_content::decode_pdf_text_string)
+                .unwrap_or_else(|| "(No Title)".to_string()),
+            _ => "(No Title)".to_string(),
         };
 
         // Extract destination
