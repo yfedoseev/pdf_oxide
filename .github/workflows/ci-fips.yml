@@ -59,7 +59,16 @@ jobs:
 
       - name: Install build deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install cmake nasm go
+        # Retry: Homebrew on hosted macOS runners intermittently fails the
+        # formula download on transient DNS/network blips.
+        run: |
+          n=0
+          until brew install cmake nasm go; do
+            n=$((n + 1))
+            [ "$n" -ge 3 ] && { echo "brew install failed after $n attempts"; exit 1; }
+            echo "brew install failed (attempt $n/3), retrying in 15s..."
+            sleep 15
+          done
 
       - name: Install build deps (Windows)
         if: runner.os == 'Windows'
@@ -150,7 +159,16 @@ jobs:
 
       - name: Install build deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install cmake nasm go
+        # Retry: Homebrew on hosted macOS runners intermittently fails the
+        # formula download on transient DNS/network blips.
+        run: |
+          n=0
+          until brew install cmake nasm go; do
+            n=$((n + 1))
+            [ "$n" -ge 3 ] && { echo "brew install failed after $n attempts"; exit 1; }
+            echo "brew install failed (attempt $n/3), retrying in 15s..."
+            sleep 15
+          done
 
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
@@ -266,7 +284,16 @@ jobs:
 
       - name: Install build deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install cmake nasm go
+        # Retry: Homebrew on hosted macOS runners intermittently fails the
+        # formula download on transient DNS/network blips.
+        run: |
+          n=0
+          until brew install cmake nasm go; do
+            n=$((n + 1))
+            [ "$n" -ge 3 ] && { echo "brew install failed after $n attempts"; exit 1; }
+            echo "brew install failed (attempt $n/3), retrying in 15s..."
+            sleep 15
+          done
 
       - name: Install build deps (Windows)
         if: runner.os == 'Windows'

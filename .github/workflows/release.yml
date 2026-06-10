@@ -1540,7 +1540,10 @@ jobs:
         run: |
           V="${{ needs.validate.outputs.version }}"
           for crate in pdf_oxide pdf_oxide_cli pdf_oxide_mcp; do
-            if curl -sf "https://crates.io/api/v1/crates/$crate/$V" -H "User-Agent: pdf_oxide-release-ci" > /dev/null; then
+            # --retry covers transient network/DNS/5xx blips but NOT a 404
+            # (no --retry-all-errors), so a not-yet-published crate still
+            # falls straight through to the publish branch without delay.
+            if curl -sf --retry 3 --retry-delay 2 "https://crates.io/api/v1/crates/$crate/$V" -H "User-Agent: pdf_oxide-release-ci" > /dev/null; then
               echo "$crate $V already on crates.io — skipping"
             else
               cargo publish -p $crate
