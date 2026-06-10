@@ -824,14 +824,22 @@ fn merge_lines_into_spans(lines: &[Vec<TextSpan>]) -> Vec<TextSpan> {
                     .chars()
                     .next()
                     .is_some_and(|c| c.is_lowercase());
-                if ends_hyphen && starts_lower {
-                    // Drop the trailing '-' from the previous span; the
-                    // word continues on the next line. Mirrors the
+                if ends_hyphen {
+                    // A hyphen at the end of a line is an incidental layout
+                    // artifact, not a word break — so this seam never gets a
+                    // separating space inserted. When the continuation starts
+                    // lowercase it is a single word divided across the line
+                    // (a soft hyphen, e.g. "captur-" / "ing"): drop the
+                    // trailing '-' and join. When it starts uppercase it is a
+                    // hard hyphen in a wrapped compound (e.g. "sub-" /
+                    // "Neptune"): keep the hyphen, still no space. Mirrors the
                     // `merge_hyphenated_spans` heuristic in
                     // `docx_layout::merge_hyphenated_spans`.
-                    let trimmed: String = prev_text[..prev_text.len() - 1].to_string()
-                        + &prev.text[prev_text.len()..]; // preserve any trailing ws (none expected)
-                    prev.text = trimmed;
+                    if starts_lower {
+                        let trimmed: String = prev_text[..prev_text.len() - 1].to_string()
+                            + &prev.text[prev_text.len()..]; // preserve any trailing ws (none expected)
+                        prev.text = trimmed;
+                    }
                 } else if !prev_ends_ws && !next_starts_ws {
                     // Neither end carries whitespace; downstream
                     // concatenation would fuse the words. Append a
@@ -1354,5 +1362,56 @@ fn median_font_size(spans: &[TextSpan]) -> f32 {
         (sizes[n / 2 - 1] + sizes[n / 2]) / 2.0
     } else {
         sizes[n / 2]
+    }
+}
+
+#[cfg(test)]
+mod merge_lines_tests {
+    use super::*;
+
+    /// One span on its own line, default geometry. `merge_lines_into_spans`
+    /// only inspects `.text` at the seam, so geometry is irrelevant here.
+    fn line(text: &str) -> Vec<TextSpan> {
+        vec![TextSpan {
+            text: text.to_string(),
+            ..Default::default()
+        }]
+    }
+
+    fn merged_text(lines: &[Vec<TextSpan>]) -> String {
+        merge_lines_into_spans(lines)
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect()
+    }
+
+    /// §14.8.2.2.3 soft-hyphen line break of a single word: the hyphen is an
+    /// incidental layout artifact — drop it and join with no space.
+    #[test]
+    fn soft_hyphen_lowercase_continuation_drops_hyphen() {
+        assert_eq!(merged_text(&[line("captur-"), line("ing")]), "capturing");
+    }
+
+    /// A hard hyphen in a compound proper noun that happened to wrap at the
+    /// hyphen (e.g. "sub-Neptune" split into "sub-" / "Neptune"). The hyphen
+    /// is real content (§14.8.2.2.3 distinguishes it from the soft hyphen):
+    /// keep it and, crucially, do NOT insert a space at the line seam.
+    #[test]
+    fn line_end_hyphen_uppercase_continuation_joins_without_space() {
+        assert_eq!(merged_text(&[line("sub-"), line("Neptune")]), "sub-Neptune");
+    }
+
+    /// Two ordinary words split across lines with no whitespace on either
+    /// side must gain a single separating space so they are not fused.
+    #[test]
+    fn missing_inter_line_space_is_inserted() {
+        assert_eq!(merged_text(&[line("the"), line("Chinese")]), "the Chinese");
+    }
+
+    /// A line seam where one side already carries whitespace must be left
+    /// untouched (no double space).
+    #[test]
+    fn existing_whitespace_seam_unchanged() {
+        assert_eq!(merged_text(&[line("hello "), line("world")]), "hello world");
     }
 }
