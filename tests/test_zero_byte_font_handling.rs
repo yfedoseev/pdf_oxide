@@ -54,6 +54,7 @@ fn test_skip_truetype_cmap_when_embedded_font_zero_bytes() {
         wmode: 0,
         cid_vertical_metrics: None,
         cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
+        cjk_substitution: None,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -117,6 +118,7 @@ fn test_skip_truetype_cmap_for_common_office_fonts() {
             wmode: 0,
             cid_vertical_metrics: None,
             cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
+            cjk_substitution: None,
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -185,6 +187,7 @@ fn test_still_use_truetype_cmap_when_embedded_font_has_data() {
         wmode: 0,
         cid_vertical_metrics: None,
         cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
+        cjk_substitution: None,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),

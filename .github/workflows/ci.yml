@@ -667,7 +667,7 @@ jobs:
 
       # Validate the produced module using wasm-tools.
       - name: Install wasm-tools
-        uses: taiki-e/install-action@0631aa6515c7d545823c67cfae7ef4fc7f490154 # v2
+        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
         with:
           tool: wasm-tools
 
@@ -732,8 +732,18 @@ jobs:
           #     improvements (#525, #524), so the ceiling is raised
           #     rather than the styling fix gated off wasm32 — same
           #     precedent the v0.3.48 bump followed.
-          # Ceiling leaves ~6% headroom above the 14489 KB v0.3.52 baseline.
-          max_kb=15360
+          #   #674 ~15.05 MB: the §11 transparency surface (isolated /
+          #     knockout groups, the full blend-mode set, soft-mask
+          #     luminosity/alpha compositing) plus the `IccBackend`
+          #     trait land real compositing code on the rendering path,
+          #     which the wasm build compiles in (`--features
+          #     wasm,rendering,barcodes`). The optional lcms2 backend is
+          #     gated off wasm, so this is the pure-Rust compositor, not
+          #     a vendored CMM — legitimate feature growth, so the
+          #     ceiling is raised rather than §11 gated off wasm32, same
+          #     precedent the v0.3.48 / v0.3.52 bumps followed.
+          # Ceiling leaves ~6% headroom above the ~15.05 MB #674 baseline.
+          max_kb=16384
           if [ "$after_kb" -gt "$max_kb" ]; then
             echo "::error::wasm bundle ${after_kb} KB exceeds ceiling ${max_kb} KB"
             exit 1
@@ -1706,7 +1716,7 @@ jobs:
         with:
           key: taplo
       - name: Install taplo
-        uses: taiki-e/install-action@0631aa6515c7d545823c67cfae7ef4fc7f490154 # v2
+        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
         with:
           tool: taplo-cli
       - name: Check TOML formatting
@@ -1726,7 +1736,7 @@ jobs:
         with:
           key: shear
       - name: Install cargo-shear
-        uses: taiki-e/install-action@0631aa6515c7d545823c67cfae7ef4fc7f490154 # v2
+        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
         with:
           tool: cargo-shear
       - name: Check for unused dependencies
@@ -1753,7 +1763,7 @@ jobs:
         with:
           key: hack
       - name: Install cargo-hack
-        uses: taiki-e/install-action@0631aa6515c7d545823c67cfae7ef4fc7f490154 # v2
+        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
         with:
           tool: cargo-hack
       - name: Build each feature (singletons + default + all-features)

@@ -25,6 +25,9 @@ use crate::rendering::resolution::{
     DeviceColor, IccTransformCache, LogicalColor, PaintIntent, PaintKind, PaintSide,
     ResolutionContext, ResolutionPipeline, ResolvedColor,
 };
+use crate::rendering::sidecar::{
+    self as sidecar_mod, page_declares_transparency_or_overprint, CmykSidecar,
+};
 use crate::rendering::text_rasterizer::TextRasterizer;
 
 use crate::fonts::FontInfo;
@@ -220,7 +223,64 @@ pub struct PageRenderer {
     /// page in `render_page_with_options`; lives across paint
     /// operators within the page.
     pub(crate) icc_transform_cache: IccTransformCache,
+    /// Depth counter for the SMask materialisation path. Incremented
+    /// on entry to [`Self::apply_smask_after_paint`] and decremented
+    /// on exit. When the counter reaches [`MAX_SMASK_DEPTH`] further
+    /// SMask materialisation is skipped (the paint is left
+    /// unmodulated) so adversarial cyclic `/G` references do not
+    /// drive unbounded recursion. ISO 32000-1:2008 does not mandate a
+    /// numeric cap; 32 levels is well above any realistic nesting and
+    /// keeps the stack usage bounded.
+    smask_depth: u32,
+    /// Per-page CMYK + spot-ink compositing sidecar. When present,
+    /// every opaque CMYK paint mirrors its plate values into the
+    /// CMYK lanes so the compose-first and overprint-correction
+    /// paths read the backdrop CMYK quadruple directly instead of
+    /// inverting the post-ICC RGB (lossy under non-linear OutputIntent
+    /// profiles). The CMYK lane layout matches the RGBA pixmap:
+    /// 4 bytes per pixel (C, M, Y, K), row-major, width × height —
+    /// preserved byte-for-byte from the round-4 shape.
+    ///
+    /// The sidecar additionally carries one tint plane per discovered
+    /// spot ink, sized at page setup from the page's resource tree
+    /// (ISO 32000-1:2008 §8.6.6.4 / §8.6.6.5 declarations on
+    /// `/Resources/ColorSpace` and nested Form XObjects). The spot
+    /// lanes sit ALONGSIDE the CMYK blend space per §11.7.3 — they
+    /// are NOT a blend space themselves, since §11.3.4 and §11.6.6
+    /// (Table 147) forbid `Separation` and `DeviceN` as blend spaces.
+    ///
+    /// Lazy allocation: stays `None` for pages without an OutputIntent
+    /// CMYK profile and pages whose resources declare no transparency
+    /// or overprint trigger. The detection-OFF path is byte-identical
+    /// to the pre-sidecar behaviour because the consuming helpers
+    /// fall back to additive-clamp inversion when the sidecar is
+    /// `None`.
+    cmyk_sidecar: Option<CmykSidecar>,
+    /// When `true`, allocate the CMYK + spot sidecar on every
+    /// transparency-detected page regardless of whether the document
+    /// declares a CMYK `OutputIntent`. The separation-renderer's
+    /// composite-then-decompose entry point flips this so the spot
+    /// lanes and the process plane survive the render even for press
+    /// jobs whose `OutputIntent` is missing or non-CMYK. The detection
+    /// gate ([`page_declares_transparency_or_overprint`]) is still
+    /// honoured; detection-OFF pages never allocate a sidecar.
+    pub(crate) force_cmyk_sidecar: bool,
+    /// Latch on the H3b silent-K=0 warning: when the document declares
+    /// `/OutputIntents` but no usable CMYK profile parses out, the
+    /// RGB→CMYK fallback emits K=0 (losing the K plane). The first
+    /// fallback hit logs once; subsequent paints stay silent so the
+    /// log doesn't spam on a degenerate document. Reset on each
+    /// `render_page_with_options` entry.
+    k_zero_warning_emitted: bool,
 }
+
+/// Maximum SMask materialisation recursion depth. A cyclic
+/// `/SMask /G` chain (form XObject whose own ExtGState declares the
+/// same `/SMask`) would otherwise drive unbounded recursion. The cap
+/// is chosen above any realistic nesting depth so legitimate PDFs are
+/// unaffected; adversarial inputs fall through to the no-soft-mask
+/// branch once the cap engages.
+pub(crate) const MAX_SMASK_DEPTH: u32 = 32;
 
 impl PageRenderer {
     /// Create a new page renderer with the specified options.
@@ -233,7 +293,25 @@ impl PageRenderer {
             color_spaces: HashMap::new(),
             excluded_layers_snapshot: None,
             icc_transform_cache: IccTransformCache::new(),
+            smask_depth: 0,
+            cmyk_sidecar: None,
+            force_cmyk_sidecar: false,
+            k_zero_warning_emitted: false,
         }
+    }
+
+    /// Take ownership of the per-page CMYK + spot-ink sidecar produced
+    /// by the most recent [`Self::render_page_with_options`] call.
+    /// Leaves the renderer's slot empty so a subsequent render starts
+    /// fresh.
+    ///
+    /// Used by the separation entry point
+    /// ([`super::separation_renderer::render_separations`]) to harvest
+    /// the populated process + spot lanes after a composite render and
+    /// decompose them into per-plate output (ISO 32000-1 §10.5 plates,
+    /// §11.7.3 spot lanes, §11.7.4.2 BM split).
+    pub(crate) fn take_cmyk_sidecar(&mut self) -> Option<CmykSidecar> {
+        self.cmyk_sidecar.take()
     }
 
     /// Number of qcms transform constructions the per-page cache has
@@ -245,6 +323,67 @@ impl PageRenderer {
     #[cfg(feature = "test-support")]
     pub fn icc_transform_cache_build_count(&self) -> usize {
         self.icc_transform_cache.build_count()
+    }
+
+    /// Total `IccTransformCache::get_or_build` calls (hits + misses)
+    /// observed since the last `render_page_with_options` call. Test-
+    /// support only. Distinguishes a properly-hoisted per-paint
+    /// lookup from a per-pixel regression: the cache returns a cached
+    /// `Arc<Transform>` on every hit so `build_count` stays at 1
+    /// either way, but the `content_hash` SipHash over the whole
+    /// profile blob runs on every call, hit or miss. A correctly
+    /// hoisted hot loop therefore yields lookup_count ≈ paint count;
+    /// a per-pixel regression yields lookup_count proportional to
+    /// painted pixels.
+    #[cfg(feature = "test-support")]
+    pub fn icc_transform_cache_lookup_count(&self) -> usize {
+        self.icc_transform_cache.lookup_count()
+    }
+
+    /// Number of CMYK→CMYK retarget cache misses observed since the
+    /// last `render_page_with_options` call. Test-support only. Pins
+    /// the M2 retarget cache: a page with many DeviceN /Process
+    /// /ICCBased N=4 paints under one OutputIntent must build the
+    /// retarget transform exactly once per unique `(src_profile,
+    /// dst_profile, intent)` tuple, not once per paint.
+    #[cfg(feature = "test-support")]
+    pub fn icc_transform_cache_cmyk_retarget_build_count(&self) -> usize {
+        self.icc_transform_cache.cmyk_retarget_build_count()
+    }
+
+    /// Pixmap dimensions of the per-page compositing sidecar, or
+    /// `None` when the sidecar was not allocated for the most recent
+    /// `render_page_with_options` call (detection-OFF).
+    ///
+    /// Test-support only — gates round-1 spot-ink discovery probes
+    /// and round-4 CMYK plane shape probes.
+    #[cfg(feature = "test-support")]
+    pub fn cmyk_sidecar_dims(&self) -> Option<(u32, u32)> {
+        self.cmyk_sidecar.as_ref().map(CmykSidecar::dims)
+    }
+
+    /// Read-only view over the sidecar's packed `(C, M, Y, K)` plane.
+    /// `None` when the sidecar is not allocated.
+    #[cfg(feature = "test-support")]
+    pub fn cmyk_sidecar_cmyk_bytes(&self) -> Option<&[u8]> {
+        self.cmyk_sidecar.as_ref().map(CmykSidecar::cmyk)
+    }
+
+    /// Ordered list of spot ink names the discovery pre-pass surfaced
+    /// for the most recent render (sorted ASCII, deduped, `/All` and
+    /// `/None` filtered out per ISO 32000-1 §8.6.6.4). `None` when
+    /// the sidecar is not allocated.
+    #[cfg(feature = "test-support")]
+    pub fn cmyk_sidecar_spot_names(&self) -> Option<&[String]> {
+        self.cmyk_sidecar.as_ref().map(CmykSidecar::spot_names)
+    }
+
+    /// Read-only view over the tint plane for spot ink `index`,
+    /// or `None` when the sidecar is not allocated or `index` is
+    /// beyond the discovered spot set.
+    #[cfg(feature = "test-support")]
+    pub fn cmyk_sidecar_spot_plane(&self, index: usize) -> Option<&[u8]> {
+        self.cmyk_sidecar.as_ref().and_then(|s| s.spot_plane(index))
     }
 
     /// Render a page to a raster image.
@@ -267,6 +406,12 @@ impl PageRenderer {
         // amortising transform construction across paints within a
         // single page.
         self.icc_transform_cache.clear();
+        // Reset the H3b silent-K=0 warning latch so a new page's first
+        // RGB-to-CMYK fallback under a declared-but-unparseable
+        // /OutputIntents profile logs once on the new page (instead
+        // of staying suppressed across all subsequent renders on this
+        // long-lived PageRenderer).
+        self.k_zero_warning_emitted = false;
 
         // Refresh the excluded-layers snapshot once per page. The effective
         // set combines (a) the PDF's default-off OCGs per /OCProperties/D
@@ -351,6 +496,50 @@ impl PageRenderer {
 
         // Pre-load resources (v0.3.18 synchronization)
         self.load_resources(doc, &resources)?;
+
+        // Decide whether to allocate the CMYK + spot-ink sidecar. The
+        // CMYK plane costs `4·width·height` bytes per page and mirrors
+        // every opaque CMYK paint so the compose-first and overprint
+        // correction helpers can read the backdrop CMYK quadruple
+        // directly instead of inverting the post-ICC RGB. Each spot
+        // ink adds one extra plane of `width·height` bytes.
+        //
+        // Allocation is gated on (a) the OutputIntent declares a
+        // CMYK profile — without one, the process-side helpers would
+        // not fire at all — and (b) the page resources declare
+        // ExtGState entries that could drive transparency or
+        // overprint, or the page's Form XObjects declare /Group dicts
+        // or /SMask entries (which trigger transparency-group
+        // compositing). When either condition is false the sidecar
+        // stays `None` and the per-paint mirror is a no-op; the
+        // detection-OFF path is byte-identical to the pre-sidecar
+        // behaviour.
+        //
+        // The spot ink set is discovered with the same walker the
+        // separation renderer's per-plate path uses (§8.6.6.4 /
+        // §8.6.6.5: `/Separation` and non-process `/DeviceN`
+        // colorants, with `/All` and `/None` filtered out). Sizing
+        // the sidecar's spot lanes up front means subsequent paint
+        // operators can blind-index by ink without re-walking the
+        // resource tree.
+        self.cmyk_sidecar = None;
+        // ISO 32000-1 §11.7.3 + §11.7.4.2 + §10.5: the sidecar carries
+        // the composite-then-separate workflow's process + spot lanes.
+        // The default page-renderer path gates on the OutputIntent CMYK
+        // profile because the compose-first / overprint-correction
+        // helpers only fire when there is a non-trivial CMYK→RGB
+        // transform to compose under. The separation entry point flips
+        // `force_cmyk_sidecar` so the sidecar lives on every
+        // detection-ON page regardless of OutputIntent — the per-plate
+        // output is meaningful even without a press ICC profile (it is
+        // the raw subtractive tint at every pixel).
+        let needs_cmyk_sidecar = (self.force_cmyk_sidecar
+            || doc.output_intent_cmyk_profile().is_some())
+            && page_declares_transparency_or_overprint(doc, &resources);
+        if needs_cmyk_sidecar {
+            let spot_names = sidecar_mod::discover_page_spot_inks(doc, page_num);
+            self.cmyk_sidecar = Some(CmykSidecar::new(width, height, spot_names));
+        }
 
         // Get page content stream
         let content_data = doc.get_page_content_data(page_num)?;
@@ -600,6 +789,22 @@ impl PageRenderer {
                     gs.fill_color_space = "DeviceRGB".to_string();
                     gs.fill_color_components.clear();
                     gs.fill_color_components.extend_from_slice(&[*r, *g, *b]);
+                    // Device-family fill paint: per §11.7.3 the source
+                    // covers only the process channels, so any spot ink
+                    // identity recorded by a prior /Separation or
+                    // /DeviceN paint is no longer the active source.
+                    // The sidecar's per-paint spot mirror reads this
+                    // empty list as "no spot lane writes for this paint".
+                    gs.fill_spot_inks.clear();
+                    // ISO 32000-1 §8.6.3: the fill colour and colour
+                    // space are coupled — switching to /DeviceRGB
+                    // invalidates any prior /DeviceCMYK identity. Failing
+                    // to clear `fill_color_cmyk` here means the §11.7.4.3
+                    // overprint path would still see the prior paint's
+                    // CMYK quadruple as the "current source colour",
+                    // producing wrong B(c_b, c_s) = c_s values for the
+                    // new RGB paint's region.
+                    gs.fill_color_cmyk = None;
                     log::debug!("SetFillRgb: [{}, {}, {}]", r, g, b);
                 },
                 Operator::SetStrokeRgb { r, g, b } => {
@@ -608,6 +813,8 @@ impl PageRenderer {
                     gs.stroke_color_space = "DeviceRGB".to_string();
                     gs.stroke_color_components.clear();
                     gs.stroke_color_components.extend_from_slice(&[*r, *g, *b]);
+                    gs.stroke_spot_inks.clear();
+                    gs.stroke_color_cmyk = None;
                     log::debug!("SetStrokeRgb: [{}, {}, {}]", r, g, b);
                 },
                 Operator::SetFillGray { gray } => {
@@ -617,6 +824,8 @@ impl PageRenderer {
                     gs.fill_color_space = "DeviceGray".to_string();
                     gs.fill_color_components.clear();
                     gs.fill_color_components.push(g);
+                    gs.fill_spot_inks.clear();
+                    gs.fill_color_cmyk = None;
                     log::debug!("SetFillGray: {}", g);
                 },
                 Operator::SetStrokeGray { gray } => {
@@ -626,6 +835,8 @@ impl PageRenderer {
                     gs.stroke_color_space = "DeviceGray".to_string();
                     gs.stroke_color_components.clear();
                     gs.stroke_color_components.push(g);
+                    gs.stroke_spot_inks.clear();
+                    gs.stroke_color_cmyk = None;
                     log::debug!("SetStrokeGray: {}", g);
                 },
                 Operator::SetFillCmyk { c, m, y, k } => {
@@ -638,6 +849,7 @@ impl PageRenderer {
                     gs.fill_color_components.clear();
                     gs.fill_color_components
                         .extend_from_slice(&[*c, *m, *y, *k]);
+                    gs.fill_spot_inks.clear();
                     log::debug!("SetFillCmyk: [{}, {}, {}, {}] -> {:?}", c, m, y, k, (r, g, b));
                 },
                 Operator::SetStrokeCmyk { c, m, y, k } => {
@@ -649,16 +861,69 @@ impl PageRenderer {
                     gs.stroke_color_components.clear();
                     gs.stroke_color_components
                         .extend_from_slice(&[*c, *m, *y, *k]);
+                    gs.stroke_spot_inks.clear();
                     log::debug!("SetStrokeCmyk: [{}, {}, {}, {}] -> {:?}", c, m, y, k, (r, g, b));
                 },
 
                 // Color space operators
                 Operator::SetFillColorSpace { name } => {
-                    gs_stack.current_mut().fill_color_space = name.clone();
+                    // ISO 32000-1 §8.6.8: the `cs` operator shall also
+                    // set the current colour to its initial value, which
+                    // depends on the colour space. For Separation /
+                    // DeviceN the initial tint is 1.0 per colorant
+                    // (§8.6.6.4 / §8.6.6.5); for DeviceCMYK the initial
+                    // colour is (0, 0, 0, 1); device-family RGB / Gray
+                    // start at all-zeros. Failing to reset the colour
+                    // here means a paint after `cs /CS_B` without an
+                    // intervening `scn` would carry the prior space's
+                    // identity and tint, including its spot ink list —
+                    // round 2 QA pinned that the spot mirror would then
+                    // write the prior /CS_A's spot lane.
+                    let resolved = self.color_spaces.get(name).cloned();
+                    // §10.7.3: the §8.6.8 initial-colour evaluation runs an
+                    // ICC retarget for DeviceN /Process /ICCBased; thread
+                    // the live gs intent through so a prior `/Perceptual ri`
+                    // / ExtGState /RI propagates into the retarget tag pick.
+                    let intent_for_initial = crate::color::RenderingIntent::from_pdf_name(
+                        &gs_stack.current().rendering_intent,
+                    );
+                    let initial = sidecar_mod::initial_colour_for_space(
+                        name,
+                        resolved.as_ref(),
+                        doc,
+                        intent_for_initial,
+                        Some(&self.icc_transform_cache),
+                    );
+                    let gs = gs_stack.current_mut();
+                    gs.fill_color_space = name.clone();
+                    gs.fill_color_rgb = initial.rgb;
+                    gs.fill_color_cmyk = initial.cmyk;
+                    gs.fill_color_components.clear();
+                    gs.fill_color_components
+                        .extend_from_slice(&initial.components);
+                    gs.fill_spot_inks = initial.spot_inks;
                     log::debug!("SetFillColorSpace: {}", name);
                 },
                 Operator::SetStrokeColorSpace { name } => {
-                    gs_stack.current_mut().stroke_color_space = name.clone();
+                    let resolved = self.color_spaces.get(name).cloned();
+                    let intent_for_initial = crate::color::RenderingIntent::from_pdf_name(
+                        &gs_stack.current().rendering_intent,
+                    );
+                    let initial = sidecar_mod::initial_colour_for_space(
+                        name,
+                        resolved.as_ref(),
+                        doc,
+                        intent_for_initial,
+                        Some(&self.icc_transform_cache),
+                    );
+                    let gs = gs_stack.current_mut();
+                    gs.stroke_color_space = name.clone();
+                    gs.stroke_color_rgb = initial.rgb;
+                    gs.stroke_color_cmyk = initial.cmyk;
+                    gs.stroke_color_components.clear();
+                    gs.stroke_color_components
+                        .extend_from_slice(&initial.components);
+                    gs.stroke_spot_inks = initial.spot_inks;
                 },
                 Operator::SetFillColor { components } => {
                     let gs = gs_stack.current_mut();
@@ -666,6 +931,15 @@ impl PageRenderer {
                     let resolved_space = self.color_spaces.get(&space_name);
                     gs.fill_color_components.clear();
                     gs.fill_color_components.extend_from_slice(components);
+                    // ISO 32000-1 §8.6.3 + §11.7.4.3: `sc` mutates the
+                    // current fill colour for the active colour space.
+                    // Clear any stale CMYK identity left over from a
+                    // prior DeviceCMYK paint; the DeviceCMYK arm below
+                    // refills it. Without this clear, a SetFillColor on
+                    // a non-CMYK space leaves the prior CMYK quadruple
+                    // visible to the §11.7.4.3 overprint path and
+                    // corrupts the per-channel B(c_b, c_s) result.
+                    gs.fill_color_cmyk = None;
 
                     match space_name.as_str() {
                         "DeviceGray" | "G" if !components.is_empty() => {
@@ -682,6 +956,8 @@ impl PageRenderer {
                                 components[2],
                                 components[3],
                             );
+                            gs.fill_color_cmyk =
+                                Some((components[0], components[1], components[2], components[3]));
                         },
                         _ => {
                             let mut handled = false;
@@ -762,6 +1038,17 @@ impl PageRenderer {
                             }
                         },
                     }
+                    // Per ISO 32000-1 §8.6.6.4 / §8.6.6.5: when the fill
+                    // colour space is /Separation or /DeviceN, record the
+                    // colorant names + tints for the sidecar's per-paint
+                    // spot lane mirror. Other spaces clear the slot so a
+                    // subsequent paint does not inherit stale spot data
+                    // from a prior /Separation set.
+                    gs.fill_spot_inks = resolved_space
+                        .map(|rs| {
+                            crate::rendering::sidecar::extract_paint_spot_inks(rs, components, doc)
+                        })
+                        .unwrap_or_default();
                     log::debug!(
                         "SetFillColor: {} {:?} -> {:?}",
                         space_name,
@@ -775,6 +1062,7 @@ impl PageRenderer {
                     let resolved_space = self.color_spaces.get(&space_name);
                     gs.stroke_color_components.clear();
                     gs.stroke_color_components.extend_from_slice(components);
+                    gs.stroke_color_cmyk = None;
 
                     match space_name.as_str() {
                         "DeviceGray" | "G" if !components.is_empty() => {
@@ -791,6 +1079,8 @@ impl PageRenderer {
                                 components[2],
                                 components[3],
                             );
+                            gs.stroke_color_cmyk =
+                                Some((components[0], components[1], components[2], components[3]));
                         },
                         _ => {
                             let mut handled = false;
@@ -844,6 +1134,11 @@ impl PageRenderer {
                             }
                         },
                     }
+                    gs.stroke_spot_inks = resolved_space
+                        .map(|rs| {
+                            crate::rendering::sidecar::extract_paint_spot_inks(rs, components, doc)
+                        })
+                        .unwrap_or_default();
                     log::debug!(
                         "SetStrokeColor: {} {:?} -> {:?}",
                         space_name,
@@ -857,6 +1152,7 @@ impl PageRenderer {
                     let resolved_space = self.color_spaces.get(&space_name);
                     gs.fill_color_components.clear();
                     gs.fill_color_components.extend_from_slice(components);
+                    gs.fill_color_cmyk = None;
 
                     match space_name.as_str() {
                         "DeviceGray" | "G" if !components.is_empty() => {
@@ -873,6 +1169,8 @@ impl PageRenderer {
                                 components[2],
                                 components[3],
                             );
+                            gs.fill_color_cmyk =
+                                Some((components[0], components[1], components[2], components[3]));
                         },
                         _ => {
                             let mut handled = false;
@@ -920,6 +1218,40 @@ impl PageRenderer {
                                                 // see the matching comment in the SetFillColor
                                                 // arm above. The dispatcher just records the
                                                 // components for the pipeline to read.
+                                                //
+                                                // BUT: §11.7.4.3 CompatibleOverprint reads
+                                                // `gs.fill_color_cmyk` (when populated) /
+                                                // `gs.fill_color_rgb` to recover the source
+                                                // CMYK for the `B(c_b, c_s)` blend function.
+                                                // A DeviceN paint that declares /Process
+                                                // attribution (§8.6.6.5) carries process
+                                                // colorants directly in its source tints; we
+                                                // must populate the graphics-state CMYK
+                                                // identity here, otherwise the overprint
+                                                // dispatcher reads the stale post-`cs`
+                                                // initial `(0,0,0)` RGB and produces a
+                                                // constant `(1,1,1,0)` source CMYK
+                                                // regardless of actual scn tints.
+                                                if type_name == "DeviceN" {
+                                                    let intent_for_extract =
+                                                        crate::color::RenderingIntent::from_pdf_name(
+                                                            &gs.rendering_intent,
+                                                        );
+                                                    if let Some(cmyk) =
+                                                        crate::rendering::sidecar::extract_process_paint_cmyk(
+                                                            rs,
+                                                            components,
+                                                            doc,
+                                                            intent_for_extract,
+                                                            Some(&self.icc_transform_cache),
+                                                        )
+                                                    {
+                                                        gs.fill_color_cmyk = Some(cmyk);
+                                                        gs.fill_color_rgb = cmyk_to_rgb(
+                                                            cmyk.0, cmyk.1, cmyk.2, cmyk.3,
+                                                        );
+                                                    }
+                                                }
                                                 handled = true;
                                             },
                                             "Indexed" => {
@@ -944,6 +1276,11 @@ impl PageRenderer {
                             }
                         },
                     }
+                    gs.fill_spot_inks = resolved_space
+                        .map(|rs| {
+                            crate::rendering::sidecar::extract_paint_spot_inks(rs, components, doc)
+                        })
+                        .unwrap_or_default();
                     log::debug!(
                         "SetFillColorN: {} {:?} -> {:?}",
                         space_name,
@@ -957,6 +1294,7 @@ impl PageRenderer {
                     let resolved_space = self.color_spaces.get(&space_name);
                     gs.stroke_color_components.clear();
                     gs.stroke_color_components.extend_from_slice(components);
+                    gs.stroke_color_cmyk = None;
                     match space_name.as_str() {
                         "DeviceGray" | "G" if !components.is_empty() => {
                             let g = components[0];
@@ -972,6 +1310,8 @@ impl PageRenderer {
                                 components[2],
                                 components[3],
                             );
+                            gs.stroke_color_cmyk =
+                                Some((components[0], components[1], components[2], components[3]));
                         },
                         _ => {
                             let mut handled = false;
@@ -1017,7 +1357,31 @@ impl PageRenderer {
                                             "Separation" | "DeviceN" => {
                                                 // Pipeline owns the colour at paint time —
                                                 // see the matching comment in the SetFillColor
-                                                // arm.
+                                                // arm. The §11.7.4.3 CompatibleOverprint
+                                                // source-CMYK reconstruction for /Process-
+                                                // attributed DeviceN runs the same way as the
+                                                // fill side; see the comment in
+                                                // `SetFillColorN` above.
+                                                if type_name == "DeviceN" {
+                                                    let intent_for_extract =
+                                                        crate::color::RenderingIntent::from_pdf_name(
+                                                            &gs.rendering_intent,
+                                                        );
+                                                    if let Some(cmyk) =
+                                                        crate::rendering::sidecar::extract_process_paint_cmyk(
+                                                            rs,
+                                                            components,
+                                                            doc,
+                                                            intent_for_extract,
+                                                            Some(&self.icc_transform_cache),
+                                                        )
+                                                    {
+                                                        gs.stroke_color_cmyk = Some(cmyk);
+                                                        gs.stroke_color_rgb = cmyk_to_rgb(
+                                                            cmyk.0, cmyk.1, cmyk.2, cmyk.3,
+                                                        );
+                                                    }
+                                                }
                                                 handled = true;
                                             },
                                             "Indexed" => {
@@ -1036,6 +1400,11 @@ impl PageRenderer {
                             }
                         },
                     }
+                    gs.stroke_spot_inks = resolved_space
+                        .map(|rs| {
+                            crate::rendering::sidecar::extract_paint_spot_inks(rs, components, doc)
+                        })
+                        .unwrap_or_default();
                     log::debug!(
                         "SetStrokeColorN: {} {:?} -> {:?}",
                         space_name,
@@ -1139,7 +1508,7 @@ impl PageRenderer {
                         );
                         let clip = clip_stack.last().and_then(|c| c.as_ref());
                         if let Some(path) = current_path.finish() {
-                            let gs = gs_stack.current();
+                            let gs_clone = gs_stack.current().clone();
                             // Stroke side mirrors the path-fill routing —
                             // route through the pipeline so Type 4 Separation
                             // strokes resolve correctly. Line width / cap /
@@ -1148,13 +1517,83 @@ impl PageRenderer {
                             // by the colour splice.
                             let spliced = self.pipeline_resolve_paint_gs(
                                 doc,
-                                gs,
+                                &gs_clone,
                                 PipelinePaintKind::PathStroke,
                             );
-                            let render_gs: &GraphicsState = spliced.as_ref().unwrap_or(gs);
-                            let transform = combine_transforms(base_transform, &gs.ctm);
+                            let render_gs: &GraphicsState = spliced.as_ref().unwrap_or(&gs_clone);
+                            let transform = combine_transforms(base_transform, &gs_clone.ctm);
+                            let smask_snap = self.smask_snapshot(pixmap, &gs_clone);
+                            let smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
+                            let overprint_snap = self.overprint_snapshot(pixmap, &gs_clone, false);
+                            let cmyk_compose_snap =
+                                self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, false);
+                            let cmyk_sidecar_snap =
+                                self.cmyk_sidecar_snapshot(pixmap, &gs_clone, false);
+                            let rgb_sidecar_snap =
+                                self.cmyk_sidecar_snapshot_for_rgb_paint(pixmap, &gs_clone, false);
+                            let cmyk_coverage =
+                                self.rasterise_stroke_coverage(&path, transform, &gs_clone, clip);
                             self.path_rasterizer
                                 .stroke_path_clipped(pixmap, &path, transform, render_gs, clip);
+                            if let Some(snap) = cmyk_compose_snap {
+                                self.apply_cmyk_compose_after_paint_with_coverage(
+                                    pixmap,
+                                    &snap,
+                                    cmyk_coverage.as_deref(),
+                                    &gs_clone,
+                                    doc,
+                                    false,
+                                );
+                            }
+                            if let Some(snap) = overprint_snap {
+                                self.apply_overprint_after_paint_with_coverage(
+                                    pixmap,
+                                    &snap,
+                                    cmyk_coverage.as_deref(),
+                                    &gs_clone,
+                                    doc,
+                                    false,
+                                );
+                            }
+                            if let Some(snap) = cmyk_sidecar_snap {
+                                self.mirror_cmyk_paint_into_sidecar_with_coverage(
+                                    pixmap,
+                                    &snap,
+                                    cmyk_coverage.as_deref(),
+                                    &gs_clone,
+                                    doc,
+                                    false,
+                                );
+                            }
+                            if let Some(snap) = rgb_sidecar_snap {
+                                self.mirror_rgb_paint_into_sidecar_with_coverage(
+                                    pixmap,
+                                    &snap,
+                                    cmyk_coverage.as_deref(),
+                                    &gs_clone,
+                                    doc,
+                                    false,
+                                );
+                            }
+                            self.mirror_spot_paint_into_sidecar_with_coverage(
+                                pixmap,
+                                &[],
+                                cmyk_coverage.as_deref(),
+                                &gs_clone,
+                                false,
+                            );
+                            if let Some(snap) = smask_snap {
+                                self.apply_smask_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    smask_spot_snap.as_deref(),
+                                    &gs_clone,
+                                    doc,
+                                    page_num,
+                                    resources,
+                                    base_transform,
+                                )?;
+                            }
                         }
                     } else {
                         let _ = current_path.finish();
@@ -1172,7 +1611,7 @@ impl PageRenderer {
                         );
                         let clip = clip_stack.last().and_then(|c| c.as_ref());
                         if let Some(path) = current_path.finish() {
-                            let gs = gs_stack.current();
+                            let gs_clone = gs_stack.current().clone();
                             // Resolve the active fill colour through the
                             // pipeline (PostScript Type 4 tint transforms,
                             // ICCBased N=4, etc.) and splice the resulting
@@ -1180,11 +1619,30 @@ impl PageRenderer {
                             // rasteriser consumes.
                             let spliced = self.pipeline_resolve_paint_gs(
                                 doc,
-                                gs,
+                                &gs_clone,
                                 PipelinePaintKind::PathFill,
                             );
-                            let render_gs: &GraphicsState = spliced.as_ref().unwrap_or(gs);
-                            let transform = combine_transforms(base_transform, &gs.ctm);
+                            let render_gs: &GraphicsState = spliced.as_ref().unwrap_or(&gs_clone);
+                            let transform = combine_transforms(base_transform, &gs_clone.ctm);
+                            // §11.4.7 + §11.7.4: snapshot before the
+                            // paint so the post-paint modulators can
+                            // blend the backdrop (snapshot) with the
+                            // painted result.
+                            let smask_snap = self.smask_snapshot(pixmap, &gs_clone);
+                            let smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
+                            let overprint_snap = self.overprint_snapshot(pixmap, &gs_clone, true);
+                            let cmyk_compose_snap =
+                                self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, true);
+                            let cmyk_sidecar_snap =
+                                self.cmyk_sidecar_snapshot(pixmap, &gs_clone, true);
+                            let rgb_sidecar_snap =
+                                self.cmyk_sidecar_snapshot_for_rgb_paint(pixmap, &gs_clone, true);
+                            let cmyk_coverage = self.rasterise_fill_coverage(
+                                &path,
+                                transform,
+                                tiny_skia::FillRule::Winding,
+                                clip,
+                            );
                             self.path_rasterizer.fill_path_clipped(
                                 pixmap,
                                 &path,
@@ -1193,6 +1651,65 @@ impl PageRenderer {
                                 tiny_skia::FillRule::Winding,
                                 clip,
                             );
+                            if let Some(snap) = cmyk_compose_snap {
+                                self.apply_cmyk_compose_after_paint_with_coverage(
+                                    pixmap,
+                                    &snap,
+                                    cmyk_coverage.as_deref(),
+                                    &gs_clone,
+                                    doc,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = overprint_snap {
+                                self.apply_overprint_after_paint_with_coverage(
+                                    pixmap,
+                                    &snap,
+                                    cmyk_coverage.as_deref(),
+                                    &gs_clone,
+                                    doc,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = cmyk_sidecar_snap {
+                                self.mirror_cmyk_paint_into_sidecar_with_coverage(
+                                    pixmap,
+                                    &snap,
+                                    cmyk_coverage.as_deref(),
+                                    &gs_clone,
+                                    doc,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = rgb_sidecar_snap {
+                                self.mirror_rgb_paint_into_sidecar_with_coverage(
+                                    pixmap,
+                                    &snap,
+                                    cmyk_coverage.as_deref(),
+                                    &gs_clone,
+                                    doc,
+                                    true,
+                                );
+                            }
+                            self.mirror_spot_paint_into_sidecar_with_coverage(
+                                pixmap,
+                                &[],
+                                cmyk_coverage.as_deref(),
+                                &gs_clone,
+                                true,
+                            );
+                            if let Some(snap) = smask_snap {
+                                self.apply_smask_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    smask_spot_snap.as_deref(),
+                                    &gs_clone,
+                                    doc,
+                                    page_num,
+                                    resources,
+                                    base_transform,
+                                )?;
+                            }
                         }
                     } else {
                         let _ = current_path.finish();
@@ -1224,8 +1741,8 @@ impl PageRenderer {
                             current_path.close();
                         }
                         if let Some(path) = current_path.finish() {
-                            let gs = gs_stack.current();
-                            let transform = combine_transforms(base_transform, &gs.ctm);
+                            let gs_clone = gs_stack.current().clone();
+                            let transform = combine_transforms(base_transform, &gs_clone.ctm);
                             let fill_rule = if matches!(op, Operator::CloseFillStrokeEvenOdd) {
                                 tiny_skia::FillRule::EvenOdd
                             } else {
@@ -1247,15 +1764,116 @@ impl PageRenderer {
                             // single-side clones.
                             let spliced = self.pipeline_resolve_paint_gs(
                                 doc,
-                                gs,
+                                &gs_clone,
                                 PipelinePaintKind::PathFillStroke,
                             );
-                            let render_gs: &GraphicsState = spliced.as_ref().unwrap_or(gs);
+                            let render_gs: &GraphicsState = spliced.as_ref().unwrap_or(&gs_clone);
+
+                            // Fill side: snapshot before paint, paint,
+                            // then run compose-first / overprint / SMask
+                            // correctors against the fill-side gs fields.
+                            // The §11.7.4 + §11.4.7 + §11.4 rules apply
+                            // to combos exactly as they do to plain `f`
+                            // — the only difference here is the stroke
+                            // pass also lays paint on top, so each side
+                            // gets its own snapshot/apply cycle.
+                            let fill_smask_snap = self.smask_snapshot(pixmap, &gs_clone);
+                            let fill_smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
+                            let fill_overprint_snap =
+                                self.overprint_snapshot(pixmap, &gs_clone, true);
+                            let fill_cmyk_compose_snap =
+                                self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, true);
+                            let fill_spot_snap = self.spot_paint_snapshot(pixmap, &gs_clone, true);
+                            // §11.7.3 + §11.3.3 require per-pixel
+                            // coverage on every lane. The path-Fill
+                            // helper uses `rasterise_fill_coverage`;
+                            // the combo arm uses the same call so AA
+                            // edges receive fractional coverage and an
+                            // alternate-CS RGB collision with backdrop
+                            // does not mask the paint from the spot
+                            // mirror's diff branch.
+                            let fill_cmyk_coverage =
+                                self.rasterise_fill_coverage(&path, transform, fill_rule, clip);
                             self.path_rasterizer.fill_path_clipped(
                                 pixmap, &path, transform, render_gs, fill_rule, clip,
                             );
+                            if let Some(snap) = fill_cmyk_compose_snap {
+                                self.apply_cmyk_compose_after_paint(
+                                    pixmap, &snap, &gs_clone, doc, true,
+                                );
+                            }
+                            if let Some(snap) = fill_overprint_snap {
+                                self.apply_overprint_after_paint(
+                                    pixmap, &snap, &gs_clone, doc, true,
+                                );
+                            }
+                            if let Some(snap) = fill_spot_snap {
+                                self.mirror_spot_paint_into_sidecar_with_coverage(
+                                    pixmap,
+                                    &snap,
+                                    fill_cmyk_coverage.as_deref(),
+                                    &gs_clone,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = fill_smask_snap {
+                                self.apply_smask_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    fill_smask_spot_snap.as_deref(),
+                                    &gs_clone,
+                                    doc,
+                                    page_num,
+                                    resources,
+                                    base_transform,
+                                )?;
+                            }
+
+                            // Stroke side: same snapshot/apply pattern
+                            // against the stroke-side fields.
+                            let stroke_smask_snap = self.smask_snapshot(pixmap, &gs_clone);
+                            let stroke_smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
+                            let stroke_overprint_snap =
+                                self.overprint_snapshot(pixmap, &gs_clone, false);
+                            let stroke_cmyk_compose_snap =
+                                self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, false);
+                            let stroke_spot_snap =
+                                self.spot_paint_snapshot(pixmap, &gs_clone, false);
+                            let stroke_cmyk_coverage =
+                                self.rasterise_stroke_coverage(&path, transform, &gs_clone, clip);
                             self.path_rasterizer
                                 .stroke_path_clipped(pixmap, &path, transform, render_gs, clip);
+                            if let Some(snap) = stroke_cmyk_compose_snap {
+                                self.apply_cmyk_compose_after_paint(
+                                    pixmap, &snap, &gs_clone, doc, false,
+                                );
+                            }
+                            if let Some(snap) = stroke_overprint_snap {
+                                self.apply_overprint_after_paint(
+                                    pixmap, &snap, &gs_clone, doc, false,
+                                );
+                            }
+                            if let Some(snap) = stroke_spot_snap {
+                                self.mirror_spot_paint_into_sidecar_with_coverage(
+                                    pixmap,
+                                    &snap,
+                                    stroke_cmyk_coverage.as_deref(),
+                                    &gs_clone,
+                                    false,
+                                );
+                            }
+                            if let Some(snap) = stroke_smask_snap {
+                                self.apply_smask_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    stroke_smask_spot_snap.as_deref(),
+                                    &gs_clone,
+                                    doc,
+                                    page_num,
+                                    resources,
+                                    base_transform,
+                                )?;
+                            }
                         }
                     } else {
                         let _ = current_path.finish();
@@ -1273,8 +1891,8 @@ impl PageRenderer {
                         );
                         let clip = clip_stack.last().and_then(|c| c.as_ref());
                         if let Some(path) = current_path.finish() {
-                            let gs = gs_stack.current();
-                            let transform = combine_transforms(base_transform, &gs.ctm);
+                            let gs_clone = gs_stack.current().clone();
+                            let transform = combine_transforms(base_transform, &gs_clone.ctm);
                             // One unified resolve covers both fill and the
                             // optional stroke pass — for plain `f*` the
                             // helper produces a fill-only splice; for
@@ -1286,8 +1904,31 @@ impl PageRenderer {
                             } else {
                                 PipelinePaintKind::PathFill
                             };
-                            let spliced = self.pipeline_resolve_paint_gs(doc, gs, kind);
-                            let render_gs: &GraphicsState = spliced.as_ref().unwrap_or(gs);
+                            let spliced = self.pipeline_resolve_paint_gs(doc, &gs_clone, kind);
+                            let render_gs: &GraphicsState = spliced.as_ref().unwrap_or(&gs_clone);
+
+                            // Fill side: snapshot + paint + correctors.
+                            // §11.4.7 + §11.7.4 + §11.4 compose-first
+                            // each apply to `f*` just as they do to `f`
+                            // — the only difference is the EvenOdd fill
+                            // rule, which only changes coverage, not
+                            // the colour-composition rule.
+                            let fill_smask_snap = self.smask_snapshot(pixmap, &gs_clone);
+                            let fill_smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
+                            let fill_overprint_snap =
+                                self.overprint_snapshot(pixmap, &gs_clone, true);
+                            let fill_cmyk_compose_snap =
+                                self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, true);
+                            let fill_spot_snap = self.spot_paint_snapshot(pixmap, &gs_clone, true);
+                            // §11.7.3 + §11.3.3 spot mirror needs a
+                            // real per-pixel coverage mask — see the
+                            // FillStroke arm above for the rationale.
+                            let fill_cmyk_coverage = self.rasterise_fill_coverage(
+                                &path,
+                                transform,
+                                tiny_skia::FillRule::EvenOdd,
+                                clip,
+                            );
                             self.path_rasterizer.fill_path_clipped(
                                 pixmap,
                                 &path,
@@ -1296,13 +1937,84 @@ impl PageRenderer {
                                 tiny_skia::FillRule::EvenOdd,
                                 clip,
                             );
+                            if let Some(snap) = fill_cmyk_compose_snap {
+                                self.apply_cmyk_compose_after_paint(
+                                    pixmap, &snap, &gs_clone, doc, true,
+                                );
+                            }
+                            if let Some(snap) = fill_overprint_snap {
+                                self.apply_overprint_after_paint(
+                                    pixmap, &snap, &gs_clone, doc, true,
+                                );
+                            }
+                            if let Some(snap) = fill_spot_snap {
+                                self.mirror_spot_paint_into_sidecar_with_coverage(
+                                    pixmap,
+                                    &snap,
+                                    fill_cmyk_coverage.as_deref(),
+                                    &gs_clone,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = fill_smask_snap {
+                                self.apply_smask_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    fill_smask_spot_snap.as_deref(),
+                                    &gs_clone,
+                                    doc,
+                                    page_num,
+                                    resources,
+                                    base_transform,
+                                )?;
+                            }
+
                             if matches!(op, Operator::FillStrokeEvenOdd) {
-                                // Stroke side: Type 4 Separation on the
-                                // stroke colour is honoured — the spliced
-                                // `render_gs` carries the resolved stroke
-                                // fields.
+                                // Stroke side: same snapshot/paint/apply
+                                // cycle against the stroke fields.
+                                let stroke_smask_snap = self.smask_snapshot(pixmap, &gs_clone);
+                                let stroke_smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
+                                let stroke_overprint_snap =
+                                    self.overprint_snapshot(pixmap, &gs_clone, false);
+                                let stroke_cmyk_compose_snap =
+                                    self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, false);
+                                let stroke_spot_snap =
+                                    self.spot_paint_snapshot(pixmap, &gs_clone, false);
+                                let stroke_cmyk_coverage = self
+                                    .rasterise_stroke_coverage(&path, transform, &gs_clone, clip);
                                 self.path_rasterizer
                                     .stroke_path_clipped(pixmap, &path, transform, render_gs, clip);
+                                if let Some(snap) = stroke_cmyk_compose_snap {
+                                    self.apply_cmyk_compose_after_paint(
+                                        pixmap, &snap, &gs_clone, doc, false,
+                                    );
+                                }
+                                if let Some(snap) = stroke_overprint_snap {
+                                    self.apply_overprint_after_paint(
+                                        pixmap, &snap, &gs_clone, doc, false,
+                                    );
+                                }
+                                if let Some(snap) = stroke_spot_snap {
+                                    self.mirror_spot_paint_into_sidecar_with_coverage(
+                                        pixmap,
+                                        &snap,
+                                        stroke_cmyk_coverage.as_deref(),
+                                        &gs_clone,
+                                        false,
+                                    );
+                                }
+                                if let Some(snap) = stroke_smask_snap {
+                                    self.apply_smask_after_paint(
+                                        pixmap,
+                                        &snap,
+                                        stroke_smask_spot_snap.as_deref(),
+                                        &gs_clone,
+                                        doc,
+                                        page_num,
+                                        resources,
+                                        base_transform,
+                                    )?;
+                                }
                             }
                         }
                     } else {
@@ -1380,7 +2092,29 @@ impl PageRenderer {
                             // that clone — no operator-arm-side clone
                             // needed.
                             let colors = self.pipeline_resolve_text_colors(doc, gs);
-                            self.text_rasterizer.render_text(
+                            // §11.4.7 + §11.7.4 + §11.4 cycle: text-
+                            // showing is a fill-side paint (modulated by
+                            // Tr render mode for stroke). One snapshot
+                            // per Tj call brackets the whole string.
+                            let smask_snap = self.smask_snapshot(pixmap, gs);
+                            let smask_spot_snap = self.smask_spot_snapshot(gs);
+                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true);
+                            let cmyk_compose_snap =
+                                self.cmyk_compose_snapshot(pixmap, gs, doc, true);
+                            let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
+                            // §9.4 + §11.7.3 + §11.3.3: rasterise the
+                            // glyph-outline coverage in parallel with
+                            // the visible paint so the spot mirror has
+                            // a geometry-true per-pixel coverage mask
+                            // (AA-edge fidelity + identical-RGB
+                            // collision insulated) instead of a
+                            // snapshot-vs-post-paint diff.
+                            let text_coverage = spot_snap.as_ref().and_then(|_| {
+                                self.rasterise_text_coverage_render_text(
+                                    text, transform, gs, resources, doc, clip,
+                                )
+                            });
+                            let adv = self.text_rasterizer.render_text(
                                 pixmap,
                                 text,
                                 transform,
@@ -1390,7 +2124,48 @@ impl PageRenderer {
                                 doc,
                                 clip,
                                 &self.fonts,
-                            )?
+                            )?;
+                            let gs_for_apply = gs_stack.current().clone();
+                            if let Some(snap) = cmyk_compose_snap {
+                                self.apply_cmyk_compose_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    &gs_for_apply,
+                                    doc,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = overprint_snap {
+                                self.apply_overprint_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    &gs_for_apply,
+                                    doc,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = spot_snap {
+                                self.mirror_spot_paint_into_sidecar_with_coverage(
+                                    pixmap,
+                                    &snap,
+                                    text_coverage.as_deref(),
+                                    &gs_for_apply,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = smask_snap {
+                                self.apply_smask_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    smask_spot_snap.as_deref(),
+                                    &gs_for_apply,
+                                    doc,
+                                    page_num,
+                                    resources,
+                                    base_transform,
+                                )?;
+                            }
+                            adv
                         } else {
                             self.text_rasterizer.measure_text(text, gs, &self.fonts)
                         };
@@ -1429,7 +2204,18 @@ impl PageRenderer {
                             // on the prior colour-setting ops, so the resolve
                             // happens here, not inside `T*`.
                             let colors = self.pipeline_resolve_text_colors(doc, gs);
-                            self.text_rasterizer.render_text(
+                            let smask_snap = self.smask_snapshot(pixmap, gs);
+                            let smask_spot_snap = self.smask_spot_snapshot(gs);
+                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true);
+                            let cmyk_compose_snap =
+                                self.cmyk_compose_snapshot(pixmap, gs, doc, true);
+                            let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
+                            let text_coverage = spot_snap.as_ref().and_then(|_| {
+                                self.rasterise_text_coverage_render_text(
+                                    text, transform, gs, resources, doc, clip,
+                                )
+                            });
+                            let adv = self.text_rasterizer.render_text(
                                 pixmap,
                                 text,
                                 transform,
@@ -1439,12 +2225,56 @@ impl PageRenderer {
                                 doc,
                                 clip,
                                 &self.fonts,
-                            )?
+                            )?;
+                            let gs_for_apply = gs_stack.current().clone();
+                            if let Some(snap) = cmyk_compose_snap {
+                                self.apply_cmyk_compose_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    &gs_for_apply,
+                                    doc,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = overprint_snap {
+                                self.apply_overprint_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    &gs_for_apply,
+                                    doc,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = spot_snap {
+                                self.mirror_spot_paint_into_sidecar_with_coverage(
+                                    pixmap,
+                                    &snap,
+                                    text_coverage.as_deref(),
+                                    &gs_for_apply,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = smask_snap {
+                                self.apply_smask_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    smask_spot_snap.as_deref(),
+                                    &gs_for_apply,
+                                    doc,
+                                    page_num,
+                                    resources,
+                                    base_transform,
+                                )?;
+                            }
+                            adv
                         } else {
                             self.text_rasterizer.measure_text(text, gs, &self.fonts)
                         };
 
-                        // Axis swap encapsulated in advance_text_matrix.
+                        // The rasterizer returns a scalar magnitude along the
+                        // active writing axis. advance_text_matrix routes it
+                        // to x (WMode 0) or y (WMode 1), keeping the axis
+                        // swap in exactly one place.
                         gs_stack.current_mut().advance_text_matrix(advance);
                     }
                 },
@@ -1471,7 +2301,18 @@ impl PageRenderer {
                             // calls so the colour propagates without an
                             // operator-arm-side clone of `gs`.
                             let colors = self.pipeline_resolve_text_colors(doc, gs);
-                            self.text_rasterizer.render_tj_array(
+                            let smask_snap = self.smask_snapshot(pixmap, gs);
+                            let smask_spot_snap = self.smask_spot_snapshot(gs);
+                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true);
+                            let cmyk_compose_snap =
+                                self.cmyk_compose_snapshot(pixmap, gs, doc, true);
+                            let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
+                            let text_coverage = spot_snap.as_ref().and_then(|_| {
+                                self.rasterise_text_coverage_render_tj_array(
+                                    array, transform, gs, resources, doc, clip,
+                                )
+                            });
+                            let adv = self.text_rasterizer.render_tj_array(
                                 pixmap,
                                 array,
                                 transform,
@@ -1481,13 +2322,57 @@ impl PageRenderer {
                                 doc,
                                 clip,
                                 &self.fonts,
-                            )?
+                            )?;
+                            let gs_for_apply = gs_stack.current().clone();
+                            if let Some(snap) = cmyk_compose_snap {
+                                self.apply_cmyk_compose_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    &gs_for_apply,
+                                    doc,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = overprint_snap {
+                                self.apply_overprint_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    &gs_for_apply,
+                                    doc,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = spot_snap {
+                                self.mirror_spot_paint_into_sidecar_with_coverage(
+                                    pixmap,
+                                    &snap,
+                                    text_coverage.as_deref(),
+                                    &gs_for_apply,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = smask_snap {
+                                self.apply_smask_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    smask_spot_snap.as_deref(),
+                                    &gs_for_apply,
+                                    doc,
+                                    page_num,
+                                    resources,
+                                    base_transform,
+                                )?;
+                            }
+                            adv
                         } else {
                             self.text_rasterizer
                                 .measure_tj_array(array, gs, &self.fonts)
                         };
 
-                        // Axis swap encapsulated in advance_text_matrix.
+                        // The rasterizer returns a scalar magnitude along the
+                        // active writing axis. advance_text_matrix routes it
+                        // to x (WMode 0) or y (WMode 1), keeping the axis
+                        // swap in exactly one place.
                         gs_stack.current_mut().advance_text_matrix(advance);
                     }
                 },
@@ -1526,7 +2411,18 @@ impl PageRenderer {
                             // happens immediately before painting just like
                             // in `Tj` / `'`.
                             let colors = self.pipeline_resolve_text_colors(doc, gs);
-                            self.text_rasterizer.render_text(
+                            let smask_snap = self.smask_snapshot(pixmap, gs);
+                            let smask_spot_snap = self.smask_spot_snapshot(gs);
+                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true);
+                            let cmyk_compose_snap =
+                                self.cmyk_compose_snapshot(pixmap, gs, doc, true);
+                            let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
+                            let text_coverage = spot_snap.as_ref().and_then(|_| {
+                                self.rasterise_text_coverage_render_text(
+                                    text, transform, gs, resources, doc, clip,
+                                )
+                            });
+                            let adv = self.text_rasterizer.render_text(
                                 pixmap,
                                 text,
                                 transform,
@@ -1536,12 +2432,56 @@ impl PageRenderer {
                                 doc,
                                 clip,
                                 &self.fonts,
-                            )?
+                            )?;
+                            let gs_for_apply = gs_stack.current().clone();
+                            if let Some(snap) = cmyk_compose_snap {
+                                self.apply_cmyk_compose_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    &gs_for_apply,
+                                    doc,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = overprint_snap {
+                                self.apply_overprint_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    &gs_for_apply,
+                                    doc,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = spot_snap {
+                                self.mirror_spot_paint_into_sidecar_with_coverage(
+                                    pixmap,
+                                    &snap,
+                                    text_coverage.as_deref(),
+                                    &gs_for_apply,
+                                    true,
+                                );
+                            }
+                            if let Some(snap) = smask_snap {
+                                self.apply_smask_after_paint(
+                                    pixmap,
+                                    &snap,
+                                    smask_spot_snap.as_deref(),
+                                    &gs_for_apply,
+                                    doc,
+                                    page_num,
+                                    resources,
+                                    base_transform,
+                                )?;
+                            }
+                            adv
                         } else {
                             self.text_rasterizer.measure_text(text, gs, &self.fonts)
                         };
 
-                        // Axis swap encapsulated in advance_text_matrix.
+                        // The rasterizer returns a scalar magnitude along the
+                        // active writing axis. advance_text_matrix routes it
+                        // to x (WMode 0) or y (WMode 1), keeping the axis
+                        // swap in exactly one place.
                         gs_stack.current_mut().advance_text_matrix(advance);
                     }
                 },
@@ -1549,13 +2489,110 @@ impl PageRenderer {
                 // XObject (images) — suppressed when inside an excluded OCG layer
                 Operator::Do { name } => {
                     if excluded_layer_depth == 0 {
-                        let gs = gs_stack.current();
-                        let transform = combine_transforms(base_transform, &gs.ctm);
+                        let gs_clone = gs_stack.current().clone();
+                        let transform = combine_transforms(base_transform, &gs_clone.ctm);
                         let clip = clip_stack.last().and_then(|c| c.as_ref());
                         log::debug!("Do: rendering XObject '{}'", name);
+                        // §11.4.7 + §11.7.4 + §11.4 cycle: the entire
+                        // XObject paint (Form or Image) sits inside the
+                        // snapshot bracket so a /SMask attached via
+                        // ExtGState modulates the cumulative
+                        // contribution. Image XObjects always behave as
+                        // fill-side paints; Form XObjects honour their
+                        // own internal ExtGState changes (the snapshot
+                        // captures the page-level state, the Form runs
+                        // recursively, and the apply blends the Form's
+                        // contribution against the captured backdrop).
+                        //
+                        // Per-subtype dispatch for the post-Do colour-
+                        // lane modulators: Image / ImageMask XObjects do
+                        // NOT execute their own paint operators — their
+                        // pixel data is painted using the outer
+                        // graphics state, so the post-Do CMYK compose,
+                        // overprint and spot-lane mirrors are how those
+                        // lanes learn about the contribution. Form
+                        // XObjects DO execute their own paint operators
+                        // (Fill / Stroke / FillStroke / Do / ShowText /
+                        // shading), each of which runs its own per-
+                        // paint sidecar mirror with the FORM's gs at
+                        // the time of the paint. Re-applying the outer
+                        // gs's CMYK / overprint / spot mirror after a
+                        // Form Do would composite the form's region
+                        // again with whatever colour the OUTER gs had,
+                        // double-counting (and, when the outer colour
+                        // differs from the form's, overwriting the
+                        // form's mirror writes — the QA-6 / QA-6-DIAG-2
+                        // failure mode where outer /K's iteration 2
+                        // /Inner Do lost the inner Form's spot
+                        // contribution). SMask attenuation always
+                        // applies — an outer /SMask gs in effect at the
+                        // Do attaches to the Do's entire region
+                        // regardless of how the inner produced its
+                        // pixels.
+                        let xobj_subtype = self.xobject_subtype(name, resources, doc);
+                        let is_form = matches!(xobj_subtype.as_deref(), Some("Form"));
+                        let smask_snap = self.smask_snapshot(pixmap, &gs_clone);
+                        let smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
+                        let overprint_snap = if is_form {
+                            None
+                        } else {
+                            self.overprint_snapshot(pixmap, &gs_clone, true)
+                        };
+                        let cmyk_compose_snap = if is_form {
+                            None
+                        } else {
+                            self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, true)
+                        };
+                        let spot_snap = if is_form {
+                            None
+                        } else {
+                            self.spot_paint_snapshot(pixmap, &gs_clone, true)
+                        };
+                        // §8.9.5 + §8.9.6.2 + §11.7.3: rasterise the
+                        // Image / ImageMask footprint + stencil-bit
+                        // coverage so the spot mirror has a geometry-
+                        // true per-pixel mask. Skipped for Form
+                        // XObjects (their per-paint mirror runs
+                        // inside the recursive content stream — the
+                        // post-Do mirror for Forms is already
+                        // suppressed by round 3's P0 fix).
+                        let image_coverage = spot_snap.as_ref().and_then(|_| {
+                            self.rasterise_image_xobject_coverage(
+                                name, transform, &gs_clone, resources, doc, clip,
+                            )
+                        });
                         self.render_xobject(
-                            pixmap, name, transform, gs, resources, doc, page_num, clip,
+                            pixmap, name, transform, &gs_clone, resources, doc, page_num, clip,
                         )?;
+                        if let Some(snap) = cmyk_compose_snap {
+                            self.apply_cmyk_compose_after_paint(
+                                pixmap, &snap, &gs_clone, doc, true,
+                            );
+                        }
+                        if let Some(snap) = overprint_snap {
+                            self.apply_overprint_after_paint(pixmap, &snap, &gs_clone, doc, true);
+                        }
+                        if let Some(snap) = spot_snap {
+                            self.mirror_spot_paint_into_sidecar_with_coverage(
+                                pixmap,
+                                &snap,
+                                image_coverage.as_deref(),
+                                &gs_clone,
+                                true,
+                            );
+                        }
+                        if let Some(snap) = smask_snap {
+                            self.apply_smask_after_paint(
+                                pixmap,
+                                &snap,
+                                smask_spot_snap.as_deref(),
+                                &gs_clone,
+                                doc,
+                                page_num,
+                                resources,
+                                base_transform,
+                            )?;
+                        }
                     }
                 },
 
@@ -1668,10 +2705,86 @@ impl PageRenderer {
                 // Shading (gradient) operator — suppressed when inside excluded layer
                 Operator::PaintShading { name } => {
                     if excluded_layer_depth == 0 {
-                        let gs = gs_stack.current();
-                        let transform = combine_transforms(base_transform, &gs.ctm);
+                        let mut gs_clone = gs_stack.current().clone();
+                        // §8.7.4 + §11.7.3: when the shading's
+                        // /ColorSpace is /Separation or non-process
+                        // /DeviceN, surface the ink-name list (paired
+                        // with the /Function /C0 endpoint tints) onto
+                        // `gs_clone.fill_spot_inks` so the spot mirror
+                        // sees a non-empty source ink set and fires.
+                        // Without this the shading paint silently
+                        // bypasses the spot mirror because the gating
+                        // (`spot_paint_active`) checks
+                        // `gs.fill_spot_inks`, which is otherwise
+                        // populated only by `cs`/`scn` colour-set
+                        // operators — none of which fire before `sh`.
+                        if !self.spot_paint_active(&gs_clone, true) && self.cmyk_sidecar.is_some() {
+                            if let Some(inks) = self.resolve_shading_spot_inks(name, resources, doc)
+                            {
+                                if !inks.is_empty() {
+                                    gs_clone.fill_spot_inks = inks;
+                                }
+                            }
+                        }
+                        let transform = combine_transforms(base_transform, &gs_clone.ctm);
                         let clip = clip_stack.last().and_then(|c| c.as_ref());
-                        self.render_shading(pixmap, name, transform, gs, resources, doc, clip)?;
+                        // §11.4.7 + §11.7.4 + §11.4 cycle: shading is
+                        // a fill-side paint, so the snapshot/apply
+                        // cadence mirrors the path-Fill arm. The
+                        // overprint and compose-first paths short-
+                        // circuit when the active fill colour is not
+                        // CMYK (the shading paint's per-pixel colour
+                        // comes from the gradient interpolator, not
+                        // `gs.fill_color_cmyk`), so they only fire when
+                        // the page set a CMYK fill before invoking
+                        // `sh`.
+                        let smask_snap = self.smask_snapshot(pixmap, &gs_clone);
+                        let smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
+                        let overprint_snap = self.overprint_snapshot(pixmap, &gs_clone, true);
+                        let cmyk_compose_snap =
+                            self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, true);
+                        let spot_snap = self.spot_paint_snapshot(pixmap, &gs_clone, true);
+                        // §8.7.4 + §11.7.3: rasterise the shading
+                        // geometry (intersected with the active clip)
+                        // so the spot mirror sees the geometry-true
+                        // per-pixel coverage of the gradient.
+                        let shading_coverage = spot_snap.as_ref().and_then(|_| {
+                            self.rasterise_shading_coverage(
+                                name, transform, &gs_clone, resources, doc, clip,
+                            )
+                        });
+                        self.render_shading(
+                            pixmap, name, transform, &gs_clone, resources, doc, clip,
+                        )?;
+                        if let Some(snap) = cmyk_compose_snap {
+                            self.apply_cmyk_compose_after_paint(
+                                pixmap, &snap, &gs_clone, doc, true,
+                            );
+                        }
+                        if let Some(snap) = overprint_snap {
+                            self.apply_overprint_after_paint(pixmap, &snap, &gs_clone, doc, true);
+                        }
+                        if let Some(snap) = spot_snap {
+                            self.mirror_spot_paint_into_sidecar_with_coverage(
+                                pixmap,
+                                &snap,
+                                shading_coverage.as_deref(),
+                                &gs_clone,
+                                true,
+                            );
+                        }
+                        if let Some(snap) = smask_snap {
+                            self.apply_smask_after_paint(
+                                pixmap,
+                                &snap,
+                                smask_spot_snap.as_deref(),
+                                &gs_clone,
+                                doc,
+                                page_num,
+                                resources,
+                                base_transform,
+                            )?;
+                        }
                     }
                 },
 
@@ -2232,6 +3345,29 @@ impl PageRenderer {
     }
 
     /// Render an XObject (image or form).
+    /// Resolve the `/Subtype` name of the named XObject in the active
+    /// resources without rendering it. Returns `Some("Form")`,
+    /// `Some("Image")`, etc., or `None` when the lookup fails or the
+    /// XObject lacks a `/Subtype`. Used by the `Do` operator dispatcher
+    /// to pick the correct post-Do colour-lane modulators per ISO
+    /// 32000-1 §11.4.7 (Image XObjects paint with outer gs; Form
+    /// XObjects run their own operators with their own gs).
+    fn xobject_subtype(&self, name: &str, resources: &Object, doc: &PdfDocument) -> Option<String> {
+        let res_dict = resources.as_dict()?;
+        let xobj_entry = res_dict.get("XObject")?;
+        let xobjects_obj = doc.resolve_object(xobj_entry).ok()?;
+        let xobjects = xobjects_obj.as_dict()?;
+        let xobj_ref_obj = xobjects.get(name)?;
+        let xobj = doc.resolve_object(xobj_ref_obj).ok()?;
+        if let Object::Stream { ref dict, .. } = xobj {
+            return dict
+                .get("Subtype")
+                .and_then(|o| o.as_name())
+                .map(String::from);
+        }
+        None
+    }
+
     fn render_xobject(
         &mut self,
         pixmap: &mut Pixmap,
@@ -2831,7 +3967,26 @@ impl PageRenderer {
                 })
                 .unwrap_or(false);
 
-            log::debug!("Rendering transparency group (isolated={})", is_isolated);
+            // ISO 32000-1:2008 §11.4.6.2 — knockout flag. A knockout group
+            // composites each element against the group's initial backdrop
+            // rather than against the accumulated paint from earlier
+            // elements. Later elements override earlier ones in regions
+            // where both contribute.
+            let is_knockout = dict
+                .get("Group")
+                .and_then(|g| g.as_dict())
+                .and_then(|gd| gd.get("K"))
+                .map(|k| match k {
+                    Object::Boolean(b) => *b,
+                    _ => false,
+                })
+                .unwrap_or(false);
+
+            log::debug!(
+                "Rendering transparency group (isolated={}, knockout={})",
+                is_isolated,
+                is_knockout
+            );
 
             // Create a separate pixmap for the group
             let mut group_pixmap =
@@ -2845,15 +4000,31 @@ impl PageRenderer {
             }
             // Isolated groups start fully transparent (default Pixmap state)
 
-            // Execute operators into the group pixmap
-            self.execute_operators(
-                &mut group_pixmap,
-                combined_transform,
-                &operators,
-                doc,
-                page_num,
-                &form_resources,
-            )?;
+            if is_knockout {
+                // §11.4.6.2: snapshot the initial backdrop, then composite
+                // each element separately against it. The accumulator
+                // starts as the backdrop; each paint operator's result is
+                // merged in so later paints override earlier ones in
+                // overlap regions.
+                self.execute_knockout_group(
+                    &mut group_pixmap,
+                    combined_transform,
+                    &operators,
+                    doc,
+                    page_num,
+                    &form_resources,
+                )?;
+            } else {
+                // Execute operators into the group pixmap
+                self.execute_operators(
+                    &mut group_pixmap,
+                    combined_transform,
+                    &operators,
+                    doc,
+                    page_num,
+                    &form_resources,
+                )?;
+            }
 
             if is_isolated {
                 // Composite the isolated group onto the parent using over blending
@@ -2881,6 +4052,2378 @@ impl PageRenderer {
             )?;
         }
 
+        Ok(())
+    }
+
+    /// Take a snapshot of `pixmap` if the graphics state has an active
+    /// `/SMask`. The caller paints normally, then calls
+    /// [`Self::apply_smask_after_paint`] with the snapshot to modulate
+    /// the painted contribution by the soft mask. Returns `None` when
+    /// the gs has no soft mask, so the caller takes the no-op branch.
+    fn smask_snapshot(&self, pixmap: &Pixmap, gs: &GraphicsState) -> Option<Vec<u8>> {
+        if gs.smask.is_some() {
+            Some(pixmap.data().to_vec())
+        } else {
+            None
+        }
+    }
+
+    /// Companion to [`Self::smask_snapshot`] for the spot-lane sidecar.
+    /// When the graphics state has an active `/SMask` AND the sidecar
+    /// is allocated, return a flat snapshot of every spot plane so the
+    /// SMask attenuation path can blend `m·post_mirror + (1-m)·pre`
+    /// per pixel per lane.
+    ///
+    /// ISO 32000-1 §11.3.3 + §11.7.3: "Only a single shape value and
+    /// opacity value shall be maintained at each point in the computed
+    /// group results; they shall apply to both process and spot colour
+    /// components." The pixmap's RGB lanes receive the SMask alpha
+    /// attenuation via [`Self::apply_smask_after_paint`]; the spot
+    /// lanes need the same attenuation against their pre-paint state so
+    /// the lane composes at the spec-correct effective alpha.
+    fn smask_spot_snapshot(&self, gs: &GraphicsState) -> Option<Vec<u8>> {
+        gs.smask.as_ref()?;
+        let sidecar = self.cmyk_sidecar.as_ref()?;
+        Some(sidecar.spots_all().to_vec())
+    }
+
+    /// Predicate: should the CMYK compose-before-convert path fire for
+    /// the current paint operator? Per ISO 32000-1:2008 §11.4 + Annex G,
+    /// transparency compositing happens in the source colour space and
+    /// the OutputIntent ICC conversion happens at display. When all of
+    /// the following hold, the spec-correct rendering requires composing
+    /// in CMYK before converting through the ICC profile:
+    ///
+    /// * The active colour on the relevant side is genuine CMYK
+    ///   (`gs.fill_color_cmyk` / `gs.stroke_color_cmyk` populated).
+    /// * The graphics state declares non-trivial transparency: alpha
+    ///   below 1.0, a non-Normal blend mode, or an active soft mask.
+    /// * A CMYK OutputIntent ICC profile is available (otherwise the
+    ///   additive-clamp fallback is linear, so convert-first and
+    ///   compose-first are byte-identical and we save the work).
+    ///
+    /// Returns `true` only when every condition is met so the no-op
+    /// branch is the cheapest possible test: a single ICC-profile
+    /// lookup + a few `gs` field reads.
+    fn cmyk_compose_active(&self, gs: &GraphicsState, doc: &PdfDocument, fill_side: bool) -> bool {
+        let has_cmyk = if fill_side {
+            gs.fill_color_cmyk.is_some()
+        } else {
+            gs.stroke_color_cmyk.is_some()
+        };
+        if !has_cmyk {
+            return false;
+        }
+        // ISO 32000-1 §11.7.4.3: when overprint is active the
+        // CompatibleOverprint blend function takes over the per-channel
+        // composition (`α · B(c_b, c_s) + (1 - α) · c_b`). Running the
+        // compose-first helper additionally would double-touch the
+        // sidecar and corrupt the OPM=1 preserve-on-zero rule (compose
+        // would write `(1-α)·c_b`, then overprint would read that as
+        // the new backdrop). The overprint helper handles compose
+        // itself for overprint paints.
+        let overprint = if fill_side {
+            gs.fill_overprint
+        } else {
+            gs.stroke_overprint
+        };
+        if overprint {
+            return false;
+        }
+        let alpha = if fill_side {
+            gs.fill_alpha
+        } else {
+            gs.stroke_alpha
+        };
+        let non_trivial = alpha < 1.0 || gs.blend_mode != "Normal" || gs.smask.is_some();
+        if !non_trivial {
+            return false;
+        }
+        doc.output_intent_cmyk_profile().is_some()
+    }
+
+    /// Snapshot the pixmap when [`Self::cmyk_compose_active`] returns
+    /// true. The caller paints normally with the tiny_skia rasteriser
+    /// (which renders CMYK→RGB-via-ICC then alpha-blends in RGB — the
+    /// convert-first path), then hands the snapshot to
+    /// [`Self::apply_cmyk_compose_after_paint`] to overwrite the
+    /// painted region with the compose-first result.
+    fn cmyk_compose_snapshot(
+        &self,
+        pixmap: &Pixmap,
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        fill_side: bool,
+    ) -> Option<Vec<u8>> {
+        if self.cmyk_compose_active(gs, doc, fill_side) {
+            Some(pixmap.data().to_vec())
+        } else {
+            None
+        }
+    }
+
+    /// Snapshot the pixmap when the spot-lane mirror is about to fire.
+    /// Returns `Some(pixmap_bytes)` when the sidecar is allocated AND
+    /// the active side has at least one spot ink in the sidecar's
+    /// discovered spot set; `None` otherwise. The mirror helper
+    /// (`mirror_spot_paint_into_sidecar_with_coverage`) uses the
+    /// snapshot to recover painted-pixel positions via a snapshot-vs-
+    /// post-paint diff when the caller has no pre-rasterised coverage
+    /// mask. Path-paint callers pass the pre-rasterised coverage
+    /// directly and ignore the snapshot's diff role.
+    fn spot_paint_snapshot(
+        &self,
+        pixmap: &Pixmap,
+        gs: &GraphicsState,
+        fill_side: bool,
+    ) -> Option<Vec<u8>> {
+        if !self.spot_paint_active(gs, fill_side) {
+            return None;
+        }
+        Some(pixmap.data().to_vec())
+    }
+
+    /// Snapshot the pixmap when the CMYK sidecar plane is present and
+    /// the paint side carries a CMYK colour. The plane mirror runs at
+    /// every CMYK paint (opaque or transparent) so the sidecar stays
+    /// in sync with the page's plate state. The mirror helper
+    /// `mirror_cmyk_paint_into_sidecar` consumes the snapshot + post-
+    /// paint pixmap to identify the painted region and writes updated
+    /// CMYK quadruples at those pixels.
+    fn cmyk_sidecar_snapshot(
+        &self,
+        pixmap: &Pixmap,
+        gs: &GraphicsState,
+        fill_side: bool,
+    ) -> Option<Vec<u8>> {
+        self.cmyk_sidecar.as_ref()?;
+        let has_cmyk = if fill_side {
+            gs.fill_color_cmyk.is_some()
+        } else {
+            gs.stroke_color_cmyk.is_some()
+        };
+        if !has_cmyk {
+            return None;
+        }
+        Some(pixmap.data().to_vec())
+    }
+
+    /// After a CMYK paint (opaque or transparent), write updated CMYK
+    /// quadruples to the sidecar plane at painted pixels. The
+    /// effective coverage is recovered from the snapshot vs post-paint
+    /// pixmap diff so AA-edge pixels carry the correct partial CMYK.
+    /// Skipped silently when the sidecar is None (detection-OFF) or
+    /// when the painted-pixel-recovery cannot proceed (e.g. the
+    /// rasteriser produced no observable diff).
+    ///
+    /// Called only when the paint is OPAQUE (no transparency
+    /// composition needed). For transparent paints, the compose-first
+    /// path is the source of truth for sidecar updates — it already
+    /// mirrors the composed quadruple after compositing.
+    ///
+    /// For overprint paints, sidecar update happens inside
+    /// [`Self::apply_overprint_after_paint`] which handles plate
+    /// merging.
+    fn mirror_cmyk_paint_into_sidecar(
+        &mut self,
+        pixmap: &Pixmap,
+        snapshot: &[u8],
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        fill_side: bool,
+    ) {
+        let (sc, sm, sy, sk) = if fill_side {
+            match gs.fill_color_cmyk {
+                Some(v) => v,
+                None => return,
+            }
+        } else {
+            match gs.stroke_color_cmyk {
+                Some(v) => v,
+                None => return,
+            }
+        };
+
+        // Skip when compose-first or overprint paths handle the
+        // sidecar update themselves. Those paths run within their
+        // own `apply_*_after_paint` helpers and write composed /
+        // merged CMYK directly.
+        let alpha = if fill_side {
+            gs.fill_alpha
+        } else {
+            gs.stroke_alpha
+        };
+        let overprint = if fill_side {
+            gs.fill_overprint
+        } else {
+            gs.stroke_overprint
+        };
+        let transparent = alpha < 1.0 || gs.blend_mode != "Normal" || gs.smask.is_some();
+        if transparent || overprint {
+            return;
+        }
+
+        // For opaque CMYK paints the post-paint RGB came through the
+        // ICC convert-first (or additive-clamp fallback) path. To
+        // detect painted pixels we look at the snapshot vs post-paint
+        // diff; for AA-edge pixels we need to recover the effective
+        // coverage so the sidecar carries the right partial-coverage
+        // CMYK.
+        let src_rgb_ic = {
+            let c_u8 = (sc.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let m_u8 = (sm.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let y_u8 = (sy.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let k_u8 = (sk.clamp(0.0, 1.0) * 255.0).round() as u8;
+            if let Some(profile) = doc.output_intent_cmyk_profile() {
+                let intent = crate::color::RenderingIntent::from_pdf_name(&gs.rendering_intent);
+                let transform = self.icc_transform_cache.get_or_build(&profile, intent);
+                let rgb = transform.convert_cmyk_pixel(c_u8, m_u8, y_u8, k_u8);
+                [
+                    rgb[0] as f32 / 255.0,
+                    rgb[1] as f32 / 255.0,
+                    rgb[2] as f32 / 255.0,
+                ]
+            } else {
+                let (r, g, b) = cmyk_to_rgb(sc, sm, sy, sk);
+                [r, g, b]
+            }
+        };
+
+        let post = pixmap.data();
+        let plane = match self.cmyk_sidecar.as_mut() {
+            Some(s) => s.cmyk_mut(),
+            None => return,
+        };
+        debug_assert_eq!(post.len(), snapshot.len());
+        debug_assert_eq!(post.len(), plane.len());
+
+        for px in 0..(post.len() / 4) {
+            let off = px * 4;
+            let painted = post[off] != snapshot[off]
+                || post[off + 1] != snapshot[off + 1]
+                || post[off + 2] != snapshot[off + 2]
+                || post[off + 3] != snapshot[off + 3];
+            if !painted {
+                continue;
+            }
+
+            // Recover effective coverage c from the source-over blend
+            // on the channel with maximum |snap - src|.
+            let snap_r = snapshot[off] as f32 / 255.0;
+            let snap_g = snapshot[off + 1] as f32 / 255.0;
+            let snap_b = snapshot[off + 2] as f32 / 255.0;
+            let post_r = post[off] as f32 / 255.0;
+            let post_g = post[off + 1] as f32 / 255.0;
+            let post_b = post[off + 2] as f32 / 255.0;
+
+            let diffs = [
+                (snap_r - src_rgb_ic[0]).abs(),
+                (snap_g - src_rgb_ic[1]).abs(),
+                (snap_b - src_rgb_ic[2]).abs(),
+            ];
+            let (max_idx, max_diff) = diffs
+                .iter()
+                .enumerate()
+                .fold((0usize, 0.0_f32), |acc, (i, &v)| if v > acc.1 { (i, v) } else { acc });
+            let coverage = if max_diff > 1.0 / 255.0 {
+                let (snap_ch, post_ch, src_ch) = match max_idx {
+                    0 => (snap_r, post_r, src_rgb_ic[0]),
+                    1 => (snap_g, post_g, src_rgb_ic[1]),
+                    _ => (snap_b, post_b, src_rgb_ic[2]),
+                };
+                ((snap_ch - post_ch) / (snap_ch - src_ch)).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+
+            // Sidecar backdrop CMYK.
+            let dc = plane[off] as f32 / 255.0;
+            let dm = plane[off + 1] as f32 / 255.0;
+            let dy = plane[off + 2] as f32 / 255.0;
+            let dk = plane[off + 3] as f32 / 255.0;
+
+            // Source-over CMYK blend at effective coverage.
+            let mc = coverage * sc + (1.0 - coverage) * dc;
+            let mm = coverage * sm + (1.0 - coverage) * dm;
+            let my = coverage * sy + (1.0 - coverage) * dy;
+            let mk = coverage * sk + (1.0 - coverage) * dk;
+
+            plane[off] = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+            plane[off + 1] = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+            plane[off + 2] = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+            plane[off + 3] = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+
+    /// Recompute every painted pixel through the §11.4 compose-first
+    /// rule. The naive paint path converted CMYK→RGB through the
+    /// OutputIntent ICC before alpha-blending; under a non-linear ICC
+    /// (input curves != identity), `ICC(α·A + (1-α)·B) ≠ α·ICC(A) +
+    /// (1-α)·ICC(B)`, so the convert-first result diverges from the
+    /// spec-correct compose-first value. This helper recovers the
+    /// effective coverage from the post-paint RGB (using the convert-
+    /// first source RGB the rasteriser actually wrote) and replaces the
+    /// pixel with `ICC(α·source_cmyk + (1-α)·snapshot_cmyk)`, where
+    /// `snapshot_cmyk` comes from inverting the snapshot RGB through
+    /// the additive-clamp formula. The inversion is exact when the
+    /// snapshot was produced by an additive-clamp paint (the
+    /// no-transparency baseline) and is the same lossy approximation
+    /// the composite overprint path admits when the backdrop went
+    /// through a non-trivial ICC.
+    ///
+    /// Alpha channel is preserved from the post-paint pixmap because
+    /// the alpha composition rule is the same in either ordering
+    /// (`α_out = c·α_src + (1-c·α_src)·α_dst`).
+    /// Rasterise a fill path to a coverage byte buffer when the CMYK
+    /// sidecar is active. Returns `None` when the sidecar is
+    /// detection-OFF — the diff-driven compose-first path is the
+    /// only one used in that case and a coverage mask would be
+    /// unused work.
+    fn rasterise_fill_coverage(
+        &self,
+        path: &tiny_skia::Path,
+        transform: Transform,
+        fill_rule: tiny_skia::FillRule,
+        clip: Option<&tiny_skia::Mask>,
+    ) -> Option<Vec<u8>> {
+        let sidecar = self.cmyk_sidecar.as_ref()?;
+        let (w, h) = sidecar.dims();
+        let mut mask = tiny_skia::Mask::new(w, h)?;
+        mask.fill_path(path, fill_rule, true, transform);
+        let mut buf = mask.data().to_vec();
+        // Intersect with the active clip mask. tiny_skia's clip mask
+        // is per-pixel coverage; pixel-wise min gives the
+        // intersection.
+        if let Some(c) = clip {
+            for (b, cv) in buf.iter_mut().zip(c.data().iter()) {
+                *b = (*b).min(*cv);
+            }
+        }
+        Some(buf)
+    }
+
+    /// Rasterise a stroke path to a coverage byte buffer. Mirror of
+    /// [`Self::rasterise_fill_coverage`] for the stroke-side compose-
+    /// first / overprint paths. tiny_skia's `Mask` does not expose
+    /// `stroke_path` directly, so this routes through a scratch
+    /// alpha-only `Pixmap`: paint the stroke with full-alpha black,
+    /// then extract the alpha channel as the coverage buffer.
+    fn rasterise_stroke_coverage(
+        &self,
+        path: &tiny_skia::Path,
+        transform: Transform,
+        gs: &GraphicsState,
+        clip: Option<&tiny_skia::Mask>,
+    ) -> Option<Vec<u8>> {
+        let sidecar = self.cmyk_sidecar.as_ref()?;
+        let (w, h) = sidecar.dims();
+        let mut scratch = Pixmap::new(w, h)?;
+        let dash = if !gs.dash_pattern.0.is_empty() {
+            tiny_skia::StrokeDash::new(gs.dash_pattern.0.clone(), gs.dash_pattern.1)
+        } else {
+            None
+        };
+        let stroke = tiny_skia::Stroke {
+            width: gs.line_width,
+            line_cap: match gs.line_cap {
+                1 => tiny_skia::LineCap::Round,
+                2 => tiny_skia::LineCap::Square,
+                _ => tiny_skia::LineCap::Butt,
+            },
+            line_join: match gs.line_join {
+                1 => tiny_skia::LineJoin::Round,
+                2 => tiny_skia::LineJoin::Bevel,
+                _ => tiny_skia::LineJoin::Miter,
+            },
+            miter_limit: gs.miter_limit,
+            dash,
+        };
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
+        paint.anti_alias = true;
+        scratch.stroke_path(path, &paint, &stroke, transform, clip);
+        let buf: Vec<u8> = scratch.data().chunks_exact(4).map(|px| px[3]).collect();
+        Some(buf)
+    }
+
+    /// Build a coverage-only `GraphicsState` clone from `gs`. The clone
+    /// forces full opacity (`fill_alpha` / `stroke_alpha` = 1.0),
+    /// `/Normal` blend, and opaque-black fill colour. Re-running a paint
+    /// with this gs into a fresh transparent scratch pixmap produces an
+    /// alpha channel that equals geometry coverage at every pixel — the
+    /// same per-pixel coverage `tiny_skia::Mask::fill_path` and the
+    /// stroke-side scratch-Pixmap helper produce for path-side coverage.
+    /// The caller extracts the alpha channel via
+    /// [`Self::extract_alpha_as_coverage`].
+    ///
+    /// `gs.render_mode` is preserved verbatim. ISO 32000-1 §9.3.6 text
+    /// rendering mode 3 ("neither fill nor stroke; add to path for
+    /// clipping") produces no visible mark, and under the §11.3.3
+    /// single shape/opacity per pixel rule the spot lane must see no
+    /// mark either (§11.7.3 composes the spot lane with the same shape
+    /// / opacity as the page). The text rasteriser already collapses
+    /// the paint to fully transparent for `render_mode == 3` (see
+    /// `text_rasterizer.rs` — `paint.set_color(rgba 0,0,0,0)`), so the
+    /// scratch alpha channel correctly resolves to zero coverage and no
+    /// spot lane write fires. Overriding `render_mode` to 0 here would
+    /// paint visible glyphs into the coverage scratch while the visible
+    /// pixmap shows nothing, leaking a spurious spot-lane write.
+    fn coverage_only_gs(gs: &GraphicsState) -> GraphicsState {
+        let mut cov = gs.clone();
+        cov.fill_alpha = 1.0;
+        cov.stroke_alpha = 1.0;
+        cov.blend_mode = "Normal".to_string();
+        cov.fill_color_rgb = (0.0, 0.0, 0.0);
+        cov.stroke_color_rgb = (0.0, 0.0, 0.0);
+        // Strip SMask so the scratch render doesn't kick off a
+        // recursive SMask compose with a different geometry.
+        cov.smask = None;
+        cov
+    }
+
+    /// Extract the alpha channel from a pixmap as a byte buffer. The
+    /// alpha encodes per-pixel coverage when the pixmap was painted
+    /// with opaque-black paint and `BlendMode::SourceOver` on a fresh
+    /// transparent backdrop — both glyph fills, image blits, and
+    /// shading paints obey that contract through the existing
+    /// rasterisers when the gs has `fill_alpha = 1.0` and
+    /// `blend_mode = "Normal"`. Per pixel: `alpha == 255` is fully
+    /// covered, `alpha == 0` is uncovered, intermediate values carry
+    /// AA-edge partial coverage. The buffer is then handed to the
+    /// spot-mirror's coverage-aware path verbatim.
+    fn extract_alpha_as_coverage(pixmap: &Pixmap) -> Vec<u8> {
+        pixmap.data().chunks_exact(4).map(|px| px[3]).collect()
+    }
+
+    /// Rasterise the text-show coverage for a single `Tj` / `'` / `"`
+    /// string by running the same `text_rasterizer.render_text` path
+    /// the visible paint uses, but with [`Self::coverage_only_gs`] so
+    /// the alpha channel encodes per-glyph AA-edge coverage exactly.
+    /// Returns `None` when the sidecar is detection-OFF (coverage
+    /// would be unused work).
+    ///
+    /// Per ISO 32000-1 §9.4 text-showing operators + §9.6 simple-font
+    /// glyph rasterisation: every glyph in the run is laid into the
+    /// scratch pixmap via the same tt-parser / rustybuzz / ttf-outline
+    /// path the visible paint uses, so the coverage mask is geometry-
+    /// identical (including font-fallback substitutions) to the
+    /// visible glyph bodies.
+    fn rasterise_text_coverage_render_text(
+        &self,
+        text: &[u8],
+        base_transform: Transform,
+        gs: &GraphicsState,
+        resources: &Object,
+        doc: &PdfDocument,
+        clip_mask: Option<&tiny_skia::Mask>,
+    ) -> Option<Vec<u8>> {
+        let sidecar = self.cmyk_sidecar.as_ref()?;
+        let (w, h) = sidecar.dims();
+        let mut scratch = Pixmap::new(w, h)?;
+        let cov_gs = Self::coverage_only_gs(gs);
+        // Suppress error logs — the coverage scratch path is permitted
+        // to fail silently because the visible-paint call will have
+        // already surfaced the same error.
+        let _ = self.text_rasterizer.render_text(
+            &mut scratch,
+            text,
+            base_transform,
+            &cov_gs,
+            None,
+            resources,
+            doc,
+            clip_mask,
+            &self.fonts,
+        );
+        Some(Self::extract_alpha_as_coverage(&scratch))
+    }
+
+    /// Rasterise the text-show coverage for a `TJ` array. Mirror of
+    /// [`Self::rasterise_text_coverage_render_text`] for the
+    /// positioning-adjustment form. Same §9.4 + §9.6 contract.
+    fn rasterise_text_coverage_render_tj_array(
+        &self,
+        array: &[crate::content::operators::TextElement],
+        base_transform: Transform,
+        gs: &GraphicsState,
+        resources: &Object,
+        doc: &PdfDocument,
+        clip_mask: Option<&tiny_skia::Mask>,
+    ) -> Option<Vec<u8>> {
+        let sidecar = self.cmyk_sidecar.as_ref()?;
+        let (w, h) = sidecar.dims();
+        let mut scratch = Pixmap::new(w, h)?;
+        let cov_gs = Self::coverage_only_gs(gs);
+        let _ = self.text_rasterizer.render_tj_array(
+            &mut scratch,
+            array,
+            base_transform,
+            &cov_gs,
+            None,
+            resources,
+            doc,
+            clip_mask,
+            &self.fonts,
+        );
+        Some(Self::extract_alpha_as_coverage(&scratch))
+    }
+
+    /// Rasterise the coverage for an Image / ImageMask Do by re-running
+    /// the same image / stencil paint path into a fresh transparent
+    /// scratch pixmap with [`Self::coverage_only_gs`] (fill_alpha = 1,
+    /// /Normal BM). The resulting alpha channel folds the unit-square
+    /// device-space footprint (§8.9.5) with the per-pixel stencil bit
+    /// (§8.9.6.2 /Decode default) for ImageMasks AND with the per-
+    /// pixel alpha of the source image for sampled images.
+    ///
+    /// Returns `None` when the sidecar is detection-OFF or when the
+    /// XObject is a Form (Form Do is handled by the per-paint mirror
+    /// inside the form's recursive content stream — the post-Do mirror
+    /// for Form XObjects is suppressed by round 3's P0 fix).
+    fn rasterise_image_xobject_coverage(
+        &mut self,
+        name: &str,
+        transform: Transform,
+        gs: &GraphicsState,
+        resources: &Object,
+        doc: &PdfDocument,
+        clip_mask: Option<&tiny_skia::Mask>,
+    ) -> Option<Vec<u8>> {
+        let sidecar = self.cmyk_sidecar.as_ref()?;
+        let (w, h) = sidecar.dims();
+        let mut scratch = Pixmap::new(w, h)?;
+        let cov_gs = Self::coverage_only_gs(gs);
+        // Resolve the XObject reference + subtype dispatch the same
+        // way the visible-paint Do arm does, but only for Image and
+        // ImageMask subtypes. Form XObjects are excluded because
+        // their post-Do mirror is suppressed (round 3 P0 fix), and
+        // because re-running a Form Do here would invoke its own
+        // nested content stream recursively — work that has nothing
+        // to do with coverage extraction on the OUTER Do site.
+        let xobj_dict_resources = resources;
+        if let Object::Dictionary(res_dict) = xobj_dict_resources {
+            if let Some(xobj_entry) = res_dict.get("XObject") {
+                let xobjects_obj = doc.resolve_object(xobj_entry).ok()?;
+                if let Some(xobjects) = xobjects_obj.as_dict() {
+                    if let Some(xobj_ref_obj) = xobjects.get(name) {
+                        let xobj = doc.resolve_object(xobj_ref_obj).ok()?;
+                        let xobj_ref = xobj_ref_obj.as_reference();
+                        if let Object::Stream { ref dict, .. } = xobj {
+                            if let Some(subtype) = dict.get("Subtype").and_then(|o| o.as_name()) {
+                                if subtype == "Image" {
+                                    let is_image_mask = dict
+                                        .get("ImageMask")
+                                        .map(|o| matches!(o, Object::Boolean(true)))
+                                        .unwrap_or(false);
+                                    if is_image_mask {
+                                        let _ = self.render_image_mask(
+                                            &mut scratch,
+                                            &xobj,
+                                            xobj_ref,
+                                            transform,
+                                            doc,
+                                            clip_mask,
+                                            &cov_gs,
+                                        );
+                                    } else {
+                                        let smask = dict.get("SMask").cloned();
+                                        let mask = dict.get("Mask").cloned();
+                                        let _ = self.render_image(
+                                            &mut scratch,
+                                            &xobj,
+                                            xobj_ref,
+                                            transform,
+                                            doc,
+                                            clip_mask,
+                                            smask,
+                                            mask,
+                                            &cov_gs,
+                                        );
+                                    }
+                                } else {
+                                    // Form XObject (or other): no
+                                    // coverage from this site —
+                                    // returning all-zero coverage
+                                    // would over-suppress the spot
+                                    // mirror's diff fallback. Instead
+                                    // signal "no coverage produced"
+                                    // by returning None; the spot
+                                    // mirror falls back to the diff
+                                    // branch.
+                                    return None;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Some(Self::extract_alpha_as_coverage(&scratch))
+    }
+
+    /// Resolve the shading dict's spot-ink list. Returns
+    /// `Some(non_empty)` when the shading's `/ColorSpace` is
+    /// `/Separation` or a non-process `/DeviceN`, with the tints taken
+    /// from the function's `/C0` endpoint (correct for constant
+    /// gradients; for varying gradients the C0 tint is the LANE write
+    /// the §11.3.3 compose will see — a single tint per ink is the
+    /// most the current spot-mirror representation supports).
+    ///
+    /// Returns `None` when the shading isn't found, has no
+    /// `/ColorSpace`, or its CS is a process colour space.
+    fn resolve_shading_spot_inks(
+        &self,
+        name: &str,
+        resources: &Object,
+        doc: &PdfDocument,
+    ) -> Option<Vec<(String, f32)>> {
+        // Walk Resources/Shading/<name> the same way render_shading
+        // does.
+        let res_dict = resources.as_dict()?;
+        let shadings_obj = res_dict.get("Shading")?;
+        let shadings = doc.resolve_object(shadings_obj).ok()?;
+        let shadings_dict = shadings.as_dict()?;
+        let sh_obj = shadings_dict.get(name)?;
+        let shading = doc.resolve_object(sh_obj).ok()?;
+        let shading_dict = shading.as_dict()?;
+
+        // Get /ColorSpace (Name | Array).
+        let cs_obj = shading_dict.get("ColorSpace")?;
+        let cs_resolved = doc.resolve_object(cs_obj).ok()?;
+
+        // The CS might be a Name pointing into the page Resources
+        // ColorSpace dict. Walk it to its array form so
+        // `extract_paint_spot_inks` can match against the
+        // `/Separation` / `/DeviceN` head.
+        let cs_array_object: Object = if let Some(cs_name) = cs_resolved.as_name() {
+            let cs_dict_obj = res_dict.get("ColorSpace")?;
+            let cs_dict_resolved = doc.resolve_object(cs_dict_obj).ok()?;
+            let cs_dict = cs_dict_resolved.as_dict()?;
+            let named = cs_dict.get(cs_name)?;
+            doc.resolve_object(named).ok()?
+        } else {
+            cs_resolved
+        };
+
+        // Extract the function's /C0 endpoint (used for constant
+        // gradients; for Type 2 functions this is the value at
+        // /Domain[0]).
+        let func_obj = shading_dict.get("Function")?;
+        let func_resolved = doc.resolve_object(func_obj).ok()?;
+        let func_dict = func_resolved.as_dict()?;
+        let c0_obj = func_dict.get("C0")?;
+        let c0_arr = c0_obj.as_array()?;
+        let c0_components: Vec<f32> = c0_arr
+            .iter()
+            .map(|o| match o {
+                Object::Real(v) => *v as f32,
+                Object::Integer(v) => *v as f32,
+                _ => 0.0,
+            })
+            .collect();
+
+        // Dispatch through the existing spot-extractor.
+        let inks = crate::rendering::sidecar::extract_paint_spot_inks(
+            &cs_array_object,
+            &c0_components,
+            doc,
+        );
+        if inks.is_empty() {
+            None
+        } else {
+            Some(inks)
+        }
+    }
+
+    /// Rasterise the coverage for a shading paint (`sh` operator) by
+    /// re-running `render_shading` into a fresh transparent scratch
+    /// pixmap with [`Self::coverage_only_gs`] (fill_alpha = 1, /Normal
+    /// BM). The shading interpolator paints its gradient colour into
+    /// the scratch, and the alpha channel records per-pixel coverage
+    /// of the gradient geometry intersected with the active clip
+    /// (§8.7.4).
+    ///
+    /// Returns `None` when the sidecar is detection-OFF.
+    fn rasterise_shading_coverage(
+        &self,
+        name: &str,
+        transform: Transform,
+        gs: &GraphicsState,
+        resources: &Object,
+        doc: &PdfDocument,
+        clip_mask: Option<&tiny_skia::Mask>,
+    ) -> Option<Vec<u8>> {
+        let sidecar = self.cmyk_sidecar.as_ref()?;
+        let (w, h) = sidecar.dims();
+        let mut scratch = Pixmap::new(w, h)?;
+        let cov_gs = Self::coverage_only_gs(gs);
+        let _ =
+            self.render_shading(&mut scratch, name, transform, &cov_gs, resources, doc, clip_mask);
+        Some(Self::extract_alpha_as_coverage(&scratch))
+    }
+
+    /// Coverage-aware compose-first that takes a pre-rasterised path
+    /// coverage mask. Used when the CMYK sidecar is allocated so the
+    /// "painted region" is identified independent of the snap-vs-dest
+    /// diff (which fails when source and backdrop ICC-RGB collide,
+    /// producing painted=false at pixels that the path actually
+    /// covered). Falls through to the standard
+    /// [`Self::apply_cmyk_compose_after_paint`] when the sidecar is
+    /// None.
+    fn apply_cmyk_compose_after_paint_with_coverage(
+        &mut self,
+        pixmap: &mut Pixmap,
+        snapshot: &[u8],
+        coverage: Option<&[u8]>,
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        fill_side: bool,
+    ) {
+        if self.cmyk_sidecar.is_none() || coverage.is_none() {
+            // Fall back to the diff-driven path. Detection-OFF
+            // byte-identical behaviour.
+            self.apply_cmyk_compose_after_paint(pixmap, snapshot, gs, doc, fill_side);
+            return;
+        }
+
+        let (sc, sm, sy, sk) = if fill_side {
+            match gs.fill_color_cmyk {
+                Some(v) => v,
+                None => return,
+            }
+        } else {
+            match gs.stroke_color_cmyk {
+                Some(v) => v,
+                None => return,
+            }
+        };
+        let alpha_g = if fill_side {
+            gs.fill_alpha
+        } else {
+            gs.stroke_alpha
+        };
+        let profile = match doc.output_intent_cmyk_profile() {
+            Some(p) => p,
+            None => return,
+        };
+        let intent = crate::color::RenderingIntent::from_pdf_name(&gs.rendering_intent);
+        let coverage = coverage.expect("checked above");
+        // Hoist the ICC transform out of the per-pixel loop. The cache key
+        // includes `profile.content_hash()`, which hashes every byte of the
+        // ICC profile blob — a per-pixel lookup on a full-page transparency
+        // fill ran tens of GB of hash work for the same (profile, intent)
+        // tuple every paint. The sibling diff-driven path
+        // (`apply_cmyk_compose_after_paint`) hoists the same way.
+        let transform = self.icc_transform_cache.get_or_build(&profile, intent);
+        let dest = pixmap.data_mut();
+
+        for px in 0..(dest.len() / 4) {
+            let off = px * 4;
+            let cov = coverage[px];
+            if cov == 0 {
+                continue;
+            }
+            let coverage_frac = cov as f32 / 255.0;
+            let c_alpha = (coverage_frac * alpha_g).clamp(0.0, 1.0);
+
+            // Backdrop CMYK from sidecar.
+            let plane = self.cmyk_sidecar.as_ref().expect("checked above").cmyk();
+            let dc = plane[off] as f32 / 255.0;
+            let dm = plane[off + 1] as f32 / 255.0;
+            let dy = plane[off + 2] as f32 / 255.0;
+            let dk = plane[off + 3] as f32 / 255.0;
+
+            let mc = c_alpha * sc + (1.0 - c_alpha) * dc;
+            let mm = c_alpha * sm + (1.0 - c_alpha) * dm;
+            let my = c_alpha * sy + (1.0 - c_alpha) * dy;
+            let mk = c_alpha * sk + (1.0 - c_alpha) * dk;
+
+            let mc_u8 = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let mm_u8 = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let my_u8 = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let mk_u8 = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+
+            let rgb = transform.convert_cmyk_pixel(mc_u8, mm_u8, my_u8, mk_u8);
+
+            dest[off] = rgb[0];
+            dest[off + 1] = rgb[1];
+            dest[off + 2] = rgb[2];
+
+            // Mirror composed CMYK back to sidecar.
+            let plane = self.cmyk_sidecar.as_mut().expect("re-borrow").cmyk_mut();
+            plane[off] = mc_u8;
+            plane[off + 1] = mm_u8;
+            plane[off + 2] = my_u8;
+            plane[off + 3] = mk_u8;
+        }
+        let _ = snapshot; // diff-path no longer consults the snapshot
+    }
+
+    fn apply_cmyk_compose_after_paint(
+        &mut self,
+        pixmap: &mut Pixmap,
+        snapshot: &[u8],
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        fill_side: bool,
+    ) {
+        let (sc, sm, sy, sk) = if fill_side {
+            match gs.fill_color_cmyk {
+                Some(v) => v,
+                None => return,
+            }
+        } else {
+            match gs.stroke_color_cmyk {
+                Some(v) => v,
+                None => return,
+            }
+        };
+        let alpha_g = if fill_side {
+            gs.fill_alpha
+        } else {
+            gs.stroke_alpha
+        };
+        let profile = match doc.output_intent_cmyk_profile() {
+            Some(p) => p,
+            None => return,
+        };
+
+        // Build a single ICC transform for this call. The renderer's
+        // per-page IccTransformCache holds the compiled qcms transform
+        // across the many paint operators on the page; we look it up
+        // ONCE here and reuse the Arc<Transform> for every pixel in the
+        // loop below. The cache key includes `profile.content_hash()`,
+        // which hashes every byte of the profile blob (SipHash over
+        // hundreds of KB on a typical CMYK profile); a per-pixel lookup
+        // would re-hash the same blob on every paint.
+        let intent = crate::color::RenderingIntent::from_pdf_name(&gs.rendering_intent);
+        let transform = self.icc_transform_cache.get_or_build(&profile, intent);
+
+        // Compute the convert-first source RGB the rasteriser actually
+        // wrote into the pixmap. We need this to recover the effective
+        // coverage `c·α` from the post-paint pixel:
+        //   post = (c·α)·src_rgb_ic + (1 - c·α)·snap_rgb
+        // The recovery picks the channel with maximum |snap - src| for
+        // numerical stability and skips channels where the difference
+        // is below a threshold.
+        let src_rgb_ic = {
+            let c_u8 = (sc.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let m_u8 = (sm.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let y_u8 = (sy.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let k_u8 = (sk.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let rgb = transform.convert_cmyk_pixel(c_u8, m_u8, y_u8, k_u8);
+            [
+                rgb[0] as f32 / 255.0,
+                rgb[1] as f32 / 255.0,
+                rgb[2] as f32 / 255.0,
+            ]
+        };
+
+        let dest = pixmap.data_mut();
+        debug_assert_eq!(dest.len(), snapshot.len());
+
+        for px in 0..(dest.len() / 4) {
+            let off = px * 4;
+
+            // Detect "this pixel was painted": any RGBA byte differs
+            // between snapshot and current pixmap.
+            let painted = dest[off] != snapshot[off]
+                || dest[off + 1] != snapshot[off + 1]
+                || dest[off + 2] != snapshot[off + 2]
+                || dest[off + 3] != snapshot[off + 3];
+            if !painted {
+                continue;
+            }
+
+            let snap_r = snapshot[off] as f32 / 255.0;
+            let snap_g = snapshot[off + 1] as f32 / 255.0;
+            let snap_b = snapshot[off + 2] as f32 / 255.0;
+            let post_r = dest[off] as f32 / 255.0;
+            let post_g = dest[off + 1] as f32 / 255.0;
+            let post_b = dest[off + 2] as f32 / 255.0;
+
+            // Recover effective coverage c·α by inverting the source-
+            // over alpha-blend on the channel with maximum |snap -
+            // src_rgb_ic| (most numerically stable). Default to the
+            // graphics-state alpha when the source RGB matches the
+            // snapshot exactly on every channel — in that case the
+            // pixel's RGB contribution is zero so any coverage value
+            // produces the same result.
+            let diffs = [
+                (snap_r - src_rgb_ic[0]).abs(),
+                (snap_g - src_rgb_ic[1]).abs(),
+                (snap_b - src_rgb_ic[2]).abs(),
+            ];
+            let (max_idx, max_diff) = diffs
+                .iter()
+                .enumerate()
+                .fold((0usize, 0.0_f32), |acc, (i, &v)| if v > acc.1 { (i, v) } else { acc });
+
+            let c_alpha = if max_diff > 1.0 / 255.0 {
+                let (snap_ch, post_ch, src_ch) = match max_idx {
+                    0 => (snap_r, post_r, src_rgb_ic[0]),
+                    1 => (snap_g, post_g, src_rgb_ic[1]),
+                    _ => (snap_b, post_b, src_rgb_ic[2]),
+                };
+                ((snap_ch - post_ch) / (snap_ch - src_ch)).clamp(0.0, 1.0)
+            } else {
+                // Source RGB ≈ snapshot RGB — coverage is moot, but use
+                // the graphics-state alpha as a sensible fallback so a
+                // non-Normal blend mode still gets the right magnitude.
+                alpha_g
+            };
+
+            // Backdrop CMYK source. Two paths:
+            //
+            //  (a) Sidecar plane present — read CMYK quadruple directly
+            //      from the page-resident plate buffer. This is the
+            //      press-accurate path; under a non-linear ICC the
+            //      additive-clamp inversion below is lossy.
+            //  (b) No sidecar — fall back to §10.3.5 additive-clamp
+            //      inversion of the snapshot RGB. Exact for the
+            //      baseline-white backdrop and the additive-clamp
+            //      fallback OutputIntent path; bounded-loss when the
+            //      backdrop went through a non-linear ICC. Documented
+            //      gap, kept for the detection-OFF path.
+            let (dc, dm, dy, dk) =
+                if let Some(plane) = self.cmyk_sidecar.as_ref().map(CmykSidecar::cmyk) {
+                    (
+                        plane[off] as f32 / 255.0,
+                        plane[off + 1] as f32 / 255.0,
+                        plane[off + 2] as f32 / 255.0,
+                        plane[off + 3] as f32 / 255.0,
+                    )
+                } else {
+                    (
+                        (1.0 - snap_r).max(0.0),
+                        (1.0 - snap_g).max(0.0),
+                        (1.0 - snap_b).max(0.0),
+                        0.0_f32,
+                    )
+                };
+
+            // Compose in CMYK source space at effective coverage·alpha.
+            let mc = c_alpha * sc + (1.0 - c_alpha) * dc;
+            let mm = c_alpha * sm + (1.0 - c_alpha) * dm;
+            let my = c_alpha * sy + (1.0 - c_alpha) * dy;
+            let mk = c_alpha * sk + (1.0 - c_alpha) * dk;
+
+            // Convert the composed CMYK through the OutputIntent ICC,
+            // reusing the loop-hoisted `transform`.
+            let mc_u8 = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let mm_u8 = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let my_u8 = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let mk_u8 = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let rgb = transform.convert_cmyk_pixel(mc_u8, mm_u8, my_u8, mk_u8);
+
+            dest[off] = rgb[0];
+            dest[off + 1] = rgb[1];
+            dest[off + 2] = rgb[2];
+            // Alpha unchanged — the source-over alpha rule is identical
+            // in convert-first vs compose-first, so the tiny_skia
+            // rasteriser's alpha output is correct as-is.
+
+            // Mirror the composed CMYK into the sidecar so subsequent
+            // paints see the press-accurate backdrop. The mirror is
+            // bypassed when the sidecar is None (detection-OFF
+            // byte-identical path).
+            if let Some(plane) = self.cmyk_sidecar.as_mut().map(CmykSidecar::cmyk_mut) {
+                plane[off] = mc_u8;
+                plane[off + 1] = mm_u8;
+                plane[off + 2] = my_u8;
+                plane[off + 3] = mk_u8;
+            }
+        }
+    }
+
+    /// Take a snapshot of `pixmap` when the graphics state has the
+    /// overprint parameter active for the targeted side. Used by
+    /// [`Self::apply_overprint_after_paint`] to recover the pre-paint
+    /// pixel state in the painted region so the §11.7.4.3
+    /// CompatibleOverprint blend function can be applied.
+    ///
+    /// The snapshot fires for every source colour space class
+    /// classified by [`source_for_overprint`] — DeviceCMYK direct,
+    /// DeviceGray/RGB/CIE/ICCBased process spaces, and
+    /// Separation/DeviceN. The per-channel blend function dispatches
+    /// on the source class; without the snapshot the painted region
+    /// could not be identified for compositing.
+    fn overprint_snapshot(
+        &self,
+        pixmap: &Pixmap,
+        gs: &GraphicsState,
+        fill_side: bool,
+    ) -> Option<Vec<u8>> {
+        if source_for_overprint(gs, fill_side).is_some() {
+            Some(pixmap.data().to_vec())
+        } else {
+            None
+        }
+    }
+
+    /// Apply §11.7.4 composite overprint correction to the painted
+    /// region. For each pixel where the paint contributed (snapshot
+    /// differs from the post-paint pixmap), read the *snapshot's* RGB,
+    /// invert to CMYK, and per-plate compose with the new paint's CMYK
+    /// quadruple under the active OPM rule:
+    ///
+    ///   - OPM=0 (standard): non-source plates are knocked out to 0
+    ///     except where overprint preserves them; for the composite
+    ///     preview the simplest implementation honours "non-zero
+    ///     source plate replaces dest" and "zero source plate is
+    ///     transparent for that plate, dest preserved".
+    ///   - OPM=1 (nonzero): zero source components are transparent for
+    ///     their plate (dest preserved); non-zero replace dest plate.
+    ///
+    /// The merged CMYK is converted back to RGB and written to the
+    /// destination pixel, replacing the naïve over-paint result.
+    /// Coverage-aware overprint correction. Like
+    /// [`Self::apply_cmyk_compose_after_paint_with_coverage`] but for
+    /// the §11.7.4 plate merge. Reads backdrop CMYK from the sidecar
+    /// instead of the additive-clamp inversion of the snapshot RGB.
+    /// Falls back to [`Self::apply_overprint_after_paint`] when the
+    /// sidecar is None.
+    fn apply_overprint_after_paint_with_coverage(
+        &mut self,
+        pixmap: &mut Pixmap,
+        snapshot: &[u8],
+        coverage: Option<&[u8]>,
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        fill_side: bool,
+    ) {
+        if self.cmyk_sidecar.is_none() || coverage.is_none() {
+            self.apply_overprint_after_paint(pixmap, snapshot, gs, doc, fill_side);
+            return;
+        }
+
+        let Some(source) = source_for_overprint(gs, fill_side) else {
+            return;
+        };
+        let opm = gs.overprint_mode;
+        let alpha_g = if fill_side {
+            gs.fill_alpha
+        } else {
+            gs.stroke_alpha
+        };
+        let (sc, sm, sy, sk) = source.cmyk;
+        let coverage = coverage.expect("checked above");
+
+        let icc_path = doc.output_intent_cmyk_profile().is_some();
+        let icc_profile = if icc_path {
+            doc.output_intent_cmyk_profile()
+        } else {
+            None
+        };
+        let icc_intent = if icc_path {
+            Some(crate::color::RenderingIntent::from_pdf_name(&gs.rendering_intent))
+        } else {
+            None
+        };
+        // Hoist the ICC transform once per call rather than once per pixel:
+        // the cache key includes `profile.content_hash()` (a SipHash over
+        // every byte of the profile blob), so a per-pixel lookup on a
+        // full-page overprint fill ran tens of GB of hash work for the
+        // same (profile, intent). The sibling diff-driven path hoists the
+        // same way.
+        let icc_transform = match (icc_profile.as_ref(), icc_intent) {
+            (Some(profile), Some(intent)) => {
+                Some(self.icc_transform_cache.get_or_build(profile, intent))
+            },
+            _ => None,
+        };
+
+        let dest = pixmap.data_mut();
+        for px in 0..(dest.len() / 4) {
+            let off = px * 4;
+            let cov = coverage[px];
+            if cov == 0 {
+                continue;
+            }
+            // Effective alpha for this pixel — §11.3.3's α'.
+            let c_alpha = ((cov as f32 / 255.0) * alpha_g).clamp(0.0, 1.0);
+
+            // Backdrop CMYK from sidecar.
+            let plane = self.cmyk_sidecar.as_ref().expect("checked above").cmyk();
+            let dc = plane[off] as f32 / 255.0;
+            let dm = plane[off + 1] as f32 / 255.0;
+            let dy = plane[off + 2] as f32 / 255.0;
+            let dk_existing = plane[off + 3] as f32 / 255.0;
+
+            // §11.7.4.3 per-channel CompatibleOverprint composed with α.
+            let mc =
+                compose_overprint_channel(source.class, ProcessChannel::C, sc, dc, opm, c_alpha);
+            let mm =
+                compose_overprint_channel(source.class, ProcessChannel::M, sm, dm, opm, c_alpha);
+            let my =
+                compose_overprint_channel(source.class, ProcessChannel::Y, sy, dy, opm, c_alpha);
+            let mk = compose_overprint_channel(
+                source.class,
+                ProcessChannel::K,
+                sk,
+                dk_existing,
+                opm,
+                c_alpha,
+            );
+
+            let (r_byte, g_byte, b_byte) = if let Some(transform) = icc_transform.as_ref() {
+                let mc_u8 = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let mm_u8 = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let my_u8 = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let mk_u8 = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let rgb = transform.convert_cmyk_pixel(mc_u8, mm_u8, my_u8, mk_u8);
+                (rgb[0], rgb[1], rgb[2])
+            } else {
+                let (rr, rg, rb) = cmyk_to_rgb(mc, mm, my, mk);
+                (
+                    (rr * 255.0).round().clamp(0.0, 255.0) as u8,
+                    (rg * 255.0).round().clamp(0.0, 255.0) as u8,
+                    (rb * 255.0).round().clamp(0.0, 255.0) as u8,
+                )
+            };
+
+            dest[off] = r_byte;
+            dest[off + 1] = g_byte;
+            dest[off + 2] = b_byte;
+
+            // Mirror merged CMYK into sidecar.
+            let plane = self.cmyk_sidecar.as_mut().expect("re-borrow").cmyk_mut();
+            plane[off] = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+            plane[off + 1] = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+            plane[off + 2] = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+            plane[off + 3] = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+        let _ = snapshot;
+    }
+
+    /// Snapshot the pixmap when the sidecar is active AND the current
+    /// paint is an RGB-source paint (DeviceRGB / DeviceGray / CalGray /
+    /// RGB ICCBased — i.e. `fill_color_cmyk` is None on the active
+    /// side). ISO 32000-1 §11.3.4 defines the §11.3.3 blend / composite
+    /// computation that operates inside a single colour space; the
+    /// "ONE blend space" mandate itself is §11.4.5.1's `/Group /CS`
+    /// definition. On a CMYK OutputIntents page the group blend space
+    /// IS CMYK (§11.4.5.1 default for a page-level transparency group
+    /// derived from the document's OutputIntent), so an RGB-source
+    /// paint must be converted to CMYK at paint-resolution time and
+    /// mirrored into the sidecar. The companion helper
+    /// [`Self::mirror_rgb_paint_into_sidecar`] runs the conversion +
+    /// per-pixel composition.
+    fn cmyk_sidecar_snapshot_for_rgb_paint(
+        &self,
+        pixmap: &Pixmap,
+        gs: &GraphicsState,
+        fill_side: bool,
+    ) -> Option<Vec<u8>> {
+        self.cmyk_sidecar.as_ref()?;
+        let has_cmyk = if fill_side {
+            gs.fill_color_cmyk.is_some()
+        } else {
+            gs.stroke_color_cmyk.is_some()
+        };
+        if has_cmyk {
+            // The CMYK mirror path handles this paint; the RGB mirror
+            // must NOT double-touch the sidecar.
+            return None;
+        }
+        Some(pixmap.data().to_vec())
+    }
+
+    /// Convert the active side's RGB colour to a CMYK quadruple using
+    /// the document's OutputIntent CMYK profile when available, or the
+    /// §10.3.5 inverse `(C, M, Y) = (1-R, 1-G, 1-B)` with `K = 0`
+    /// fallback when the active backend has no CMYK output path. The
+    /// fallback loses ink-coverage information in the K plane —
+    /// documented behaviour, observable only when the destination
+    /// press carries non-zero K under the converted RGB region.
+    fn resolve_rgb_paint_to_cmyk(
+        &mut self,
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        fill_side: bool,
+    ) -> (f32, f32, f32, f32) {
+        let (r, g, b) = if fill_side {
+            gs.fill_color_rgb
+        } else {
+            gs.stroke_color_rgb
+        };
+        let r = r.clamp(0.0, 1.0);
+        let g = g.clamp(0.0, 1.0);
+        let b = b.clamp(0.0, 1.0);
+        if let Some(profile) = doc.output_intent_cmyk_profile() {
+            let intent = crate::color::RenderingIntent::from_pdf_name(&gs.rendering_intent);
+            if let Some(transform) = self
+                .icc_transform_cache
+                .get_or_build_srgb_to_cmyk(&profile, intent)
+            {
+                let cmyk = transform.convert_pixel([r, g, b]);
+                return (cmyk[0], cmyk[1], cmyk[2], cmyk[3]);
+            }
+        }
+        // §10.3.5 inverse for the qcms / no-CMM backends. K stays at 0
+        // because the additive-clamp form `(C, M, Y) = (1-R, 1-G, 1-B)`
+        // does not encode ink-coverage in K.
+        //
+        // When the document catalog DECLARES an /OutputIntents array
+        // but `output_intent_cmyk_profile()` returns `None`, the
+        // producer asked for a press conversion that we couldn't honour
+        // (e.g. profile bytes failed to parse, or no entry carried a
+        // /N=4 /DestOutputProfile). Falling through to the K=0 inverse
+        // silently degrades press output — the K plane goes empty
+        // where the OutputIntent profile would have allocated black
+        // ink. Log a one-shot warning so this is observable until
+        // upstream issue yfedoseev/pdf_oxide#712 lands the proper
+        // profile-parse-error diagnostic. When no /OutputIntents
+        // declaration is present the K=0 fallback is the documented
+        // device-RGB behaviour and stays silent.
+        if doc.has_output_intents_declaration() && !self.k_zero_warning_emitted {
+            log::warn!(
+                "rgb→cmyk fallback fired with K=0 while document declares \
+                 /OutputIntents. Profile lookup returned None (likely an \
+                 unparseable /DestOutputProfile stream); press output \
+                 will degrade in the K plane. Tracked upstream as \
+                 yfedoseev/pdf_oxide#712."
+            );
+            self.k_zero_warning_emitted = true;
+        }
+        (1.0 - r, 1.0 - g, 1.0 - b, 0.0)
+    }
+
+    /// Mirror an RGB-source paint into the CMYK sidecar via §11.3.4 +
+    /// §11.4.5.1 blend-space conversion (§11.4.5.1 defines the group's
+    /// /CS as the single blend colour space; §11.3.4 is the per-pixel
+    /// compositing computation that runs inside it). Diff-driven
+    /// variant for paints with no pre-rasterised coverage; the
+    /// with-coverage variant is the hot path under transparency.
+    fn mirror_rgb_paint_into_sidecar(
+        &mut self,
+        pixmap: &Pixmap,
+        snapshot: &[u8],
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        fill_side: bool,
+    ) {
+        if self.cmyk_sidecar.is_none() {
+            return;
+        }
+        let has_cmyk = if fill_side {
+            gs.fill_color_cmyk.is_some()
+        } else {
+            gs.stroke_color_cmyk.is_some()
+        };
+        if has_cmyk {
+            return;
+        }
+        // Skip overprint paints — overprint is meaningful only on
+        // process-channel CMYK sources per §11.7.4.3 Table 149, and
+        // the RGB source has no plate assignment to merge.
+        let overprint = if fill_side {
+            gs.fill_overprint
+        } else {
+            gs.stroke_overprint
+        };
+        if overprint {
+            return;
+        }
+
+        let alpha = if fill_side {
+            gs.fill_alpha
+        } else {
+            gs.stroke_alpha
+        };
+        let (sc, sm, sy, sk) = self.resolve_rgb_paint_to_cmyk(gs, doc, fill_side);
+
+        let post = pixmap.data();
+        let plane = match self.cmyk_sidecar.as_mut() {
+            Some(s) => s.cmyk_mut(),
+            None => return,
+        };
+        debug_assert_eq!(post.len(), snapshot.len());
+        debug_assert_eq!(post.len(), plane.len());
+
+        for px in 0..(post.len() / 4) {
+            let off = px * 4;
+            let painted = post[off] != snapshot[off]
+                || post[off + 1] != snapshot[off + 1]
+                || post[off + 2] != snapshot[off + 2]
+                || post[off + 3] != snapshot[off + 3];
+            if !painted {
+                continue;
+            }
+            // Effective coverage from the alpha-channel delta. For
+            // opaque RGB paints the post-alpha is 255 against any
+            // backdrop, so coverage = 1. For transparent paints we
+            // bound via the alpha; the visible pixmap diff carries
+            // alpha edge contributions, but for the §11.3.4 +
+            // §11.4.5.1 sidecar mirror the conservative choice is to
+            // mirror at the paint's nominal alpha — over-mirroring at
+            // an AA-edge pixel still produces a smoothly-graded CMYK
+            // backdrop and the next paint's coverage mask defines the
+            // final composite.
+            let eff = alpha.clamp(0.0, 1.0);
+            let dc = plane[off] as f32 / 255.0;
+            let dm = plane[off + 1] as f32 / 255.0;
+            let dy = plane[off + 2] as f32 / 255.0;
+            let dk = plane[off + 3] as f32 / 255.0;
+            let mc = eff * sc + (1.0 - eff) * dc;
+            let mm = eff * sm + (1.0 - eff) * dm;
+            let my = eff * sy + (1.0 - eff) * dy;
+            let mk = eff * sk + (1.0 - eff) * dk;
+            plane[off] = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+            plane[off + 1] = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+            plane[off + 2] = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+            plane[off + 3] = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+
+    /// Coverage-aware mirror of RGB-source paints into the CMYK
+    /// sidecar. Pattern matches [`Self::mirror_cmyk_paint_into_sidecar_with_coverage`].
+    fn mirror_rgb_paint_into_sidecar_with_coverage(
+        &mut self,
+        pixmap: &Pixmap,
+        snapshot: &[u8],
+        coverage: Option<&[u8]>,
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        fill_side: bool,
+    ) {
+        if self.cmyk_sidecar.is_none() || coverage.is_none() {
+            self.mirror_rgb_paint_into_sidecar(pixmap, snapshot, gs, doc, fill_side);
+            return;
+        }
+        let has_cmyk = if fill_side {
+            gs.fill_color_cmyk.is_some()
+        } else {
+            gs.stroke_color_cmyk.is_some()
+        };
+        if has_cmyk {
+            return;
+        }
+        let overprint = if fill_side {
+            gs.fill_overprint
+        } else {
+            gs.stroke_overprint
+        };
+        if overprint {
+            return;
+        }
+        let alpha = if fill_side {
+            gs.fill_alpha
+        } else {
+            gs.stroke_alpha
+        };
+        let (sc, sm, sy, sk) = self.resolve_rgb_paint_to_cmyk(gs, doc, fill_side);
+
+        let coverage = coverage.expect("checked above");
+        let plane = self
+            .cmyk_sidecar
+            .as_mut()
+            .expect("checked above")
+            .cmyk_mut();
+        for px in 0..(plane.len() / 4) {
+            let cov = coverage[px];
+            if cov == 0 {
+                continue;
+            }
+            // Effective alpha at this pixel = path coverage · paint alpha.
+            let eff = (cov as f32 / 255.0) * alpha.clamp(0.0, 1.0);
+            let off = px * 4;
+            let dc = plane[off] as f32 / 255.0;
+            let dm = plane[off + 1] as f32 / 255.0;
+            let dy = plane[off + 2] as f32 / 255.0;
+            let dk = plane[off + 3] as f32 / 255.0;
+            let mc = eff * sc + (1.0 - eff) * dc;
+            let mm = eff * sm + (1.0 - eff) * dm;
+            let my = eff * sy + (1.0 - eff) * dy;
+            let mk = eff * sk + (1.0 - eff) * dk;
+            plane[off] = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+            plane[off + 1] = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+            plane[off + 2] = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+            plane[off + 3] = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+        let _ = snapshot;
+    }
+
+    /// Coverage-aware mirror of opaque CMYK paints into the sidecar.
+    /// Like [`Self::mirror_cmyk_paint_into_sidecar`] but uses the
+    /// pre-rasterised coverage instead of the snap-vs-dest diff.
+    fn mirror_cmyk_paint_into_sidecar_with_coverage(
+        &mut self,
+        pixmap: &Pixmap,
+        snapshot: &[u8],
+        coverage: Option<&[u8]>,
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        fill_side: bool,
+    ) {
+        if self.cmyk_sidecar.is_none() || coverage.is_none() {
+            self.mirror_cmyk_paint_into_sidecar(pixmap, snapshot, gs, doc, fill_side);
+            return;
+        }
+
+        let (sc, sm, sy, sk) = if fill_side {
+            match gs.fill_color_cmyk {
+                Some(v) => v,
+                None => return,
+            }
+        } else {
+            match gs.stroke_color_cmyk {
+                Some(v) => v,
+                None => return,
+            }
+        };
+        // Skip when the paint is transparent or overprint — those
+        // paths handle the sidecar update themselves.
+        let alpha = if fill_side {
+            gs.fill_alpha
+        } else {
+            gs.stroke_alpha
+        };
+        let overprint = if fill_side {
+            gs.fill_overprint
+        } else {
+            gs.stroke_overprint
+        };
+        let transparent = alpha < 1.0 || gs.blend_mode != "Normal" || gs.smask.is_some();
+        if transparent || overprint {
+            return;
+        }
+
+        let coverage = coverage.expect("checked above");
+        let plane = self
+            .cmyk_sidecar
+            .as_mut()
+            .expect("checked above")
+            .cmyk_mut();
+        for px in 0..(plane.len() / 4) {
+            let cov = coverage[px];
+            if cov == 0 {
+                continue;
+            }
+            let cov_f = cov as f32 / 255.0;
+            let off = px * 4;
+            let dc = plane[off] as f32 / 255.0;
+            let dm = plane[off + 1] as f32 / 255.0;
+            let dy = plane[off + 2] as f32 / 255.0;
+            let dk = plane[off + 3] as f32 / 255.0;
+            let mc = cov_f * sc + (1.0 - cov_f) * dc;
+            let mm = cov_f * sm + (1.0 - cov_f) * dm;
+            let my = cov_f * sy + (1.0 - cov_f) * dy;
+            let mk = cov_f * sk + (1.0 - cov_f) * dk;
+            plane[off] = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+            plane[off + 1] = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+            plane[off + 2] = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+            plane[off + 3] = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+        let _ = snapshot;
+        let _ = doc;
+    }
+
+    /// Predicate: should the spot-lane mirror fire for the current paint?
+    ///
+    /// Returns `true` when:
+    /// 1. The sidecar is allocated (page declares transparency / overprint
+    ///    AND a CMYK OutputIntent is present).
+    /// 2. The active side declares spot inks via `gs.fill_spot_inks` /
+    ///    `gs.stroke_spot_inks` (populated by SetFillColorN /
+    ///    SetStrokeColorN when the colour space is /Separation or
+    ///    /DeviceN per ISO 32000-1 §8.6.6.4 / §8.6.6.5).
+    /// 3. At least one of those inks has a corresponding plane in
+    ///    `sidecar.spot_names()`. An ink with no plane is the §8.6.6.3
+    ///    "device has no plate for this colorant" branch — the
+    ///    alternate colour space's CMYK decomposition lands on the
+    ///    process plane via the existing CMYK mirror, so there is no
+    ///    spot-lane work for this paint.
+    fn spot_paint_active(&self, gs: &GraphicsState, fill_side: bool) -> bool {
+        let Some(sidecar) = self.cmyk_sidecar.as_ref() else {
+            return false;
+        };
+        let inks = if fill_side {
+            &gs.fill_spot_inks
+        } else {
+            &gs.stroke_spot_inks
+        };
+        if inks.is_empty() {
+            return false;
+        }
+        inks.iter()
+            .any(|(name, _)| sidecar.spot_index(name).is_some())
+    }
+
+    /// Apply per-pixel spot lane composition for the most recent paint.
+    ///
+    /// Composition follows ISO 32000-1 §11.3.3 (basic compositing
+    /// formula) + §11.7.4.2 (per-lane BM dispatch). For each active
+    /// source spot ink whose plane exists on the page:
+    ///
+    /// 1. Classify the requested `gs.blend_mode` via
+    ///    [`BlendModeClass::from_name`]. The §11.6.3 unknown-name
+    ///    fallback keeps unrecognised modes on the /Normal path.
+    /// 2. Read the spot's per-lane dispatch
+    ///    ([`BlendModeClass::spot_dispatch`]) — for
+    ///    [`SpotBlendDispatch::SubstituteNormal`] the §11.7.4.2 rule
+    ///    forces /Normal on the spot lane regardless of the requested
+    ///    mode.
+    /// 3. Compose the new tint per pixel:
+    ///    `t_r = (1 - α') · t_b + α' · B(t_b, t_s)` where
+    ///    `α' = coverage · gs_alpha`, `t_b` is the backdrop tint,
+    ///    `t_s` is the source tint, and `B(·, ·)` is the dispatched
+    ///    blend function on subtractive tints. Per §11.3.5.2 Table 136
+    ///    the separable formulas operate on additive components — for
+    ///    /Normal and the white-preserving modes the subtractive form
+    ///    is mathematically equivalent (the formulas are component-wise
+    ///    monotonic), so we apply them directly on tint values without
+    ///    the additive↔subtractive conversion round-trip.
+    ///
+    /// Spot inks active on the source but with no plane in the sidecar
+    /// (device does not carry the colorant per §8.6.6.3) are silently
+    /// skipped — the composite RGB pixmap already received the
+    /// alternate-CS approximation through the rasteriser.
+    ///
+    /// Other spot inks (in `sidecar.spot_names()` but NOT in the
+    /// source's `gs.fill_spot_inks` / `gs.stroke_spot_inks`) are NOT
+    /// touched. Per §11.7.3, every paint conceptually hits every
+    /// component; for unsourced components the spec assigns "additive
+    /// 1.0 / subtractive 0.0". Under /Normal: result = source 0.0
+    /// composed against backdrop t_b gives `(1 - α') · t_b + α' · 0 =
+    /// (1 - α') · t_b` — which for opaque paints `(α' = 1)` would
+    /// ERASE the backdrop. Per §11.7.4.3 CompatibleOverprint, when
+    /// overprint is enabled the spec instead preserves the backdrop on
+    /// unsourced channels (B(c_b, c_s) = c_b). We adopt the
+    /// overprint-preserving semantics unconditionally for unsourced
+    /// spot lanes: real-world PDFs that target spot inks almost always
+    /// expect "paint only what I said to paint" (the CompatibleOverprint
+    /// behaviour), and the erase-on-unsourced policy under /Normal
+    /// without overprint produces visually wrong output that no
+    /// prepress workflow desires. This is pinned as
+    /// [`HONEST_GAP_SPOT_LANE_UNSOURCED_PRESERVE_BACKDROP`] in the
+    /// probes.
+    fn mirror_spot_paint_into_sidecar_with_coverage(
+        &mut self,
+        pixmap: &Pixmap,
+        snapshot: &[u8],
+        coverage: Option<&[u8]>,
+        gs: &GraphicsState,
+        fill_side: bool,
+    ) {
+        if !self.spot_paint_active(gs, fill_side) {
+            return;
+        }
+
+        let source_inks: Vec<(String, f32)> = if fill_side {
+            gs.fill_spot_inks.clone()
+        } else {
+            gs.stroke_spot_inks.clone()
+        };
+        let gs_alpha = if fill_side {
+            gs.fill_alpha
+        } else {
+            gs.stroke_alpha
+        };
+
+        // §11.7.4.2 dispatch: classify the requested BM once.
+        let class = crate::rendering::sidecar::BlendModeClass::from_name(&gs.blend_mode);
+        // Per §11.7.4.2 the spot lane either uses the requested BM
+        // unchanged, or substitutes /Normal. SubstituteNormal returns
+        // "Normal" so the separable_blend helper takes the c_s path
+        // identically.
+        let effective_bm: &str = match class.spot_dispatch() {
+            crate::rendering::sidecar::SpotBlendDispatch::UseRequested => gs.blend_mode.as_str(),
+            crate::rendering::sidecar::SpotBlendDispatch::SubstituteNormal => "Normal",
+        };
+
+        // Build a coverage source. Two shapes:
+        // * `coverage`: pre-rasterised path coverage from the path-paint
+        //   helpers (`rasterise_fill_coverage` / `rasterise_stroke_coverage`).
+        //   Bytes are 0..255 effective coverage per pixel.
+        // * `None`: paint sites that don't have a separate rasteriser
+        //   call (FillStroke combos, text, shading, Do). Fall back to a
+        //   snapshot-vs-post diff: any pixel that changed is treated as
+        //   "fully painted" (coverage = 255). This loses partial-coverage
+        //   fidelity at AA edges; interior pixels are byte-exact.
+        let post = pixmap.data();
+        let computed_coverage: Vec<u8>;
+        let cov_slice: &[u8] = if let Some(c) = coverage {
+            c
+        } else {
+            debug_assert_eq!(post.len(), snapshot.len());
+            computed_coverage = (0..post.len() / 4)
+                .map(|px| {
+                    let off = px * 4;
+                    let changed = post[off] != snapshot[off]
+                        || post[off + 1] != snapshot[off + 1]
+                        || post[off + 2] != snapshot[off + 2]
+                        || post[off + 3] != snapshot[off + 3];
+                    if changed {
+                        255
+                    } else {
+                        0
+                    }
+                })
+                .collect();
+            &computed_coverage
+        };
+
+        let sidecar = match self.cmyk_sidecar.as_mut() {
+            Some(s) => s,
+            None => return,
+        };
+
+        for (name, tint) in source_inks {
+            // §8.6.6.3: ink not in the device's plate set → no spot
+            // lane to write. The composite RGB pixmap already carries
+            // the alternate-CS approximation.
+            let Some(idx) = sidecar.spot_index(&name) else {
+                continue;
+            };
+            let Some(plane) = sidecar.spot_plane_mut(idx) else {
+                continue;
+            };
+            // The `tint` value is the operator's component for this
+            // colorant — already subtractive per §8.6.6.4 / §8.6.6.5.
+            let c_s = tint.clamp(0.0, 1.0);
+            debug_assert_eq!(plane.len(), cov_slice.len());
+
+            for (px, cov) in cov_slice.iter().enumerate() {
+                let cov = *cov;
+                if cov == 0 {
+                    continue;
+                }
+                // Effective coverage·alpha — §11.3.3's α_s.
+                let alpha = (cov as f32 / 255.0) * gs_alpha;
+                let alpha = alpha.clamp(0.0, 1.0);
+                let t_b = plane[px] as f32 / 255.0;
+                let blended = crate::rendering::sidecar::separable_blend(effective_bm, t_b, c_s);
+                let t_r = (1.0 - alpha) * t_b + alpha * blended;
+                plane[px] = (t_r.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        }
+    }
+
+    /// Apply ISO 32000-1 §11.7.4.3 CompatibleOverprint to every painted
+    /// pixel.
+    ///
+    /// The §11.7.4.3 blend function `B(c_b, c_s)` returns a subtractive
+    /// tint per Table 149, dispatched on source colour space × OP × OPM:
+    ///
+    /// |Source CS                            |Component          |OP=true OPM=0|OP=true OPM=1                |
+    /// |-------------------------------------|-------------------|-------------|-----------------------------|
+    /// |DeviceCMYK direct                    |C, M, Y, K         |c_s          |c_s if c_s≠0 else c_b        |
+    /// |DeviceCMYK direct                    |Process not in CMYK|c_s          |c_s                          |
+    /// |DeviceCMYK direct                    |Spot               |c_b          |c_b                          |
+    /// |Any other process CS (e.g. DeviceGray|Process            |c_s          |c_s                          |
+    /// |  DeviceRGB, ICCBased, DeviceCMYK    |Spot               |c_b          |c_b                          |
+    /// |  via sampled image)                 |                   |             |                             |
+    /// |Separation / DeviceN                 |Process            |c_b          |c_b                          |
+    /// |                                     |Named spot         |c_s          |c_s                          |
+    /// |                                     |Unnamed spot       |c_b          |c_b                          |
+    ///
+    /// The OPM=1 zero-source-preserve rule is specific to row 1
+    /// (DeviceCMYK directly specified). §11.7.4.5 makes this explicit:
+    /// "Nonzero overprint mode shall apply only to painting operations
+    /// that use the current colour in the graphics state when the
+    /// current colour space is DeviceCMYK".
+    ///
+    /// Each painted pixel composes per §11.3.3 as
+    /// `c_r = α · B(c_b, c_s) + (1 − α) · c_b`, where α is the effective
+    /// shape×opacity at the pixel. This helper recovers α from the
+    /// snapshot-vs-post-paint diff like the coverage-less compose path
+    /// does; the coverage-aware variant
+    /// ([`Self::apply_overprint_after_paint_with_coverage`]) reads α
+    /// directly from the path coverage mask + `gs` alpha.
+    ///
+    /// The process lanes (CMYK) are written to the sidecar plane and
+    /// converted to RGB via the OutputIntent ICC (falling back to the
+    /// additive-clamp `cmyk_to_rgb` round-trip when no profile is
+    /// available). Spot lanes are handled separately by
+    /// [`Self::mirror_spot_paint_into_sidecar_with_coverage`] — for
+    /// Separation / DeviceN sources the named spot lane carries c_s; for
+    /// all other source classes the spot lane is preserved (no write),
+    /// matching Table 149's spot row.
+    fn apply_overprint_after_paint(
+        &mut self,
+        pixmap: &mut Pixmap,
+        snapshot: &[u8],
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        fill_side: bool,
+    ) {
+        let Some(source) = source_for_overprint(gs, fill_side) else {
+            return;
+        };
+        let opm = gs.overprint_mode;
+        let alpha_g = if fill_side {
+            gs.fill_alpha
+        } else {
+            gs.stroke_alpha
+        };
+        let (sc, sm, sy, sk) = source.cmyk;
+        // ICC path active when the CMYK sidecar plane is present AND an
+        // OutputIntent CMYK profile is available. The merged CMYK then
+        // runs through the ICC; otherwise the additive-clamp
+        // `cmyk_to_rgb` round-trip stays in place.
+        let icc_path = self.cmyk_sidecar.is_some() && doc.output_intent_cmyk_profile().is_some();
+        let icc_profile = if icc_path {
+            doc.output_intent_cmyk_profile()
+        } else {
+            None
+        };
+        let icc_intent = if icc_path {
+            Some(crate::color::RenderingIntent::from_pdf_name(&gs.rendering_intent))
+        } else {
+            None
+        };
+        // Hoist the ICC transform out of the per-pixel loop. The cache
+        // key includes `profile.content_hash()` (SipHash over every
+        // byte of the ICC profile blob); a per-pixel lookup re-hashed
+        // hundreds of KB on every painted pixel.
+        let icc_transform = match (icc_profile.as_ref(), icc_intent) {
+            (Some(profile), Some(intent)) => {
+                Some(self.icc_transform_cache.get_or_build(profile, intent))
+            },
+            _ => None,
+        };
+
+        // Pre-compute the convert-first source RGB the rasteriser
+        // actually wrote. Used to invert the source-over alpha blend
+        // and recover effective coverage·alpha per pixel. Mirrors the
+        // `apply_cmyk_compose_after_paint` recovery for byte-identity
+        // with the compose-first path.
+        let src_rgb_ic = if let Some(transform) = icc_transform.as_ref() {
+            let c_u8 = (sc.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let m_u8 = (sm.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let y_u8 = (sy.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let k_u8 = (sk.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let rgb = transform.convert_cmyk_pixel(c_u8, m_u8, y_u8, k_u8);
+            [
+                rgb[0] as f32 / 255.0,
+                rgb[1] as f32 / 255.0,
+                rgb[2] as f32 / 255.0,
+            ]
+        } else {
+            let (r, g, b) = cmyk_to_rgb(sc, sm, sy, sk);
+            [r, g, b]
+        };
+
+        let dest = pixmap.data_mut();
+        debug_assert_eq!(dest.len(), snapshot.len());
+
+        for px in 0..(dest.len() / 4) {
+            let off = px * 4;
+
+            // Detect "this pixel was painted": any RGBA byte differs
+            // between snapshot and current pixmap. Coverage-aware AA
+            // pixels are detected too.
+            let painted = dest[off] != snapshot[off]
+                || dest[off + 1] != snapshot[off + 1]
+                || dest[off + 2] != snapshot[off + 2]
+                || dest[off + 3] != snapshot[off + 3];
+            if !painted {
+                continue;
+            }
+
+            // Recover effective coverage·alpha from the source-over
+            // alpha blend on the most-stable channel — same shape as
+            // apply_cmyk_compose_after_paint.
+            let snap_r = snapshot[off] as f32 / 255.0;
+            let snap_g = snapshot[off + 1] as f32 / 255.0;
+            let snap_b = snapshot[off + 2] as f32 / 255.0;
+            let post_r = dest[off] as f32 / 255.0;
+            let post_g = dest[off + 1] as f32 / 255.0;
+            let post_b = dest[off + 2] as f32 / 255.0;
+            let diffs = [
+                (snap_r - src_rgb_ic[0]).abs(),
+                (snap_g - src_rgb_ic[1]).abs(),
+                (snap_b - src_rgb_ic[2]).abs(),
+            ];
+            let (max_idx, max_diff) = diffs
+                .iter()
+                .enumerate()
+                .fold((0usize, 0.0_f32), |acc, (i, &v)| if v > acc.1 { (i, v) } else { acc });
+            let c_alpha = if max_diff > 1.0 / 255.0 {
+                let (snap_ch, post_ch, src_ch) = match max_idx {
+                    0 => (snap_r, post_r, src_rgb_ic[0]),
+                    1 => (snap_g, post_g, src_rgb_ic[1]),
+                    _ => (snap_b, post_b, src_rgb_ic[2]),
+                };
+                ((snap_ch - post_ch) / (snap_ch - src_ch)).clamp(0.0, 1.0)
+            } else {
+                // Source RGB ≈ snapshot RGB — coverage is moot. Use the
+                // graphics-state alpha as a sensible fallback.
+                alpha_g
+            };
+
+            // Backdrop CMYK from sidecar; additive-clamp fallback when
+            // the sidecar is None.
+            let (dc, dm, dy, dk_existing) =
+                if let Some(plane) = self.cmyk_sidecar.as_ref().map(CmykSidecar::cmyk) {
+                    (
+                        plane[off] as f32 / 255.0,
+                        plane[off + 1] as f32 / 255.0,
+                        plane[off + 2] as f32 / 255.0,
+                        plane[off + 3] as f32 / 255.0,
+                    )
+                } else {
+                    let dr = snapshot[off] as f32 / 255.0;
+                    let dg = snapshot[off + 1] as f32 / 255.0;
+                    let db = snapshot[off + 2] as f32 / 255.0;
+                    ((1.0 - dr).max(0.0), (1.0 - dg).max(0.0), (1.0 - db).max(0.0), 0.0_f32)
+                };
+
+            // Per-channel §11.7.4.3 CompatibleOverprint blend function,
+            // then §11.3.3 composition with effective alpha.
+            let mc =
+                compose_overprint_channel(source.class, ProcessChannel::C, sc, dc, opm, c_alpha);
+            let mm =
+                compose_overprint_channel(source.class, ProcessChannel::M, sm, dm, opm, c_alpha);
+            let my =
+                compose_overprint_channel(source.class, ProcessChannel::Y, sy, dy, opm, c_alpha);
+            let mk = compose_overprint_channel(
+                source.class,
+                ProcessChannel::K,
+                sk,
+                dk_existing,
+                opm,
+                c_alpha,
+            );
+
+            // CMYK → RGB conversion. ICC path for the press-accurate
+            // case; additive-clamp `cmyk_to_rgb` for the fallback.
+            let (r_byte, g_byte, b_byte) = if let Some(transform) = icc_transform.as_ref() {
+                let mc_u8 = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let mm_u8 = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let my_u8 = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let mk_u8 = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let rgb = transform.convert_cmyk_pixel(mc_u8, mm_u8, my_u8, mk_u8);
+                (rgb[0], rgb[1], rgb[2])
+            } else {
+                let (rr, rg, rb) = cmyk_to_rgb(mc, mm, my, mk);
+                (
+                    (rr * 255.0).round().clamp(0.0, 255.0) as u8,
+                    (rg * 255.0).round().clamp(0.0, 255.0) as u8,
+                    (rb * 255.0).round().clamp(0.0, 255.0) as u8,
+                )
+            };
+
+            // Preserve the painted pixel's alpha (post-paint alpha
+            // already accounts for the paint's contribution); just
+            // overwrite RGB with the per-channel composed value.
+            dest[off] = r_byte;
+            dest[off + 1] = g_byte;
+            dest[off + 2] = b_byte;
+            // Alpha unchanged.
+
+            // Mirror the composed CMYK into the sidecar so subsequent
+            // paints see the post-overprint backdrop.
+            if let Some(plane) = self.cmyk_sidecar.as_mut().map(CmykSidecar::cmyk_mut) {
+                plane[off] = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+                plane[off + 1] = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+                plane[off + 2] = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+                plane[off + 3] = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        }
+    }
+
+    /// Modulate the destination pixmap's painted contribution by the
+    /// soft mask declared on `gs`. The mask is rendered once per call
+    /// from the referenced Form XObject; on rendering failure the
+    /// snapshot is restored (the paint is suppressed entirely — safer
+    /// than leaving the unmodulated paint, which would mis-render
+    /// content the author intended to hide).
+    ///
+    /// Per ISO 32000-1:2008 §11.4.7, for each pixel:
+    ///
+    /// - `S=Alpha`: `mask_value = form_pixmap.alpha[px]`
+    /// - `S=Luminosity`: `mask_value = 0.30 R + 0.59 G + 0.11 B` of form_pixmap
+    ///
+    /// Optional `/TR` transfer is evaluated on the mask value before
+    /// modulation. The destination pixel is updated as a linear blend
+    /// between `snapshot` and `pixmap` weighted by the mask:
+    /// `dest = mask * pixmap + (1 - mask) * snapshot`.
+    fn apply_smask_after_paint(
+        &mut self,
+        pixmap: &mut Pixmap,
+        snapshot: &[u8],
+        spot_snapshot: Option<&[u8]>,
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        page_num: usize,
+        resources: &Object,
+        base_transform: Transform,
+    ) -> Result<()> {
+        let smask = match gs.smask.as_ref() {
+            Some(s) => s.clone(),
+            None => return Ok(()),
+        };
+
+        // Defend against adversarial cyclic /SMask /G chains: the form
+        // referenced by /G can itself declare /SMask on its own
+        // content, re-entering this materialisation path. Without a
+        // cap recursion is unbounded. At the cap the paint is left
+        // unmodulated (the pre-paint snapshot is NOT restored — the
+        // caller's paint stays visible) and the recursion unwinds.
+        if self.smask_depth >= MAX_SMASK_DEPTH {
+            log::warn!(
+                "SMask materialisation reached MAX_SMASK_DEPTH={}; \
+                 likely cyclic /SMask /G chain. Skipping further \
+                 modulation on this paint.",
+                MAX_SMASK_DEPTH
+            );
+            return Ok(());
+        }
+        self.smask_depth += 1;
+        let result = self.apply_smask_after_paint_inner(
+            pixmap,
+            snapshot,
+            spot_snapshot,
+            &smask,
+            doc,
+            page_num,
+            resources,
+            base_transform,
+        );
+        self.smask_depth -= 1;
+        result
+    }
+
+    fn apply_smask_after_paint_inner(
+        &mut self,
+        pixmap: &mut Pixmap,
+        snapshot: &[u8],
+        spot_snapshot: Option<&[u8]>,
+        smask: &crate::content::graphics_state::SoftMaskForm,
+        doc: &PdfDocument,
+        page_num: usize,
+        resources: &Object,
+        base_transform: Transform,
+    ) -> Result<()> {
+        // Render the Form XObject into a fresh pixmap. The pixmap
+        // starts fully transparent for /S /Alpha (the spec default
+        // backdrop is the black point, which projects to alpha=0).
+        // For /S /Luminosity the optional /BC backdrop pre-fills with
+        // the declared colour; absent /BC the spec default is the
+        // colour space's black point (also fills with zeros).
+        let w = pixmap.width();
+        let h = pixmap.height();
+        let mut mask_pixmap = match Pixmap::new(w, h) {
+            Some(p) => p,
+            None => {
+                // Allocation failed — restore the snapshot to avoid
+                // emitting an unmasked paint.
+                pixmap.data_mut().copy_from_slice(snapshot);
+                return Ok(());
+            },
+        };
+
+        // Resolve the Form XObject. We load it before the /BC pre-fill
+        // so the pre-fill can consult the Form's /Group /CS for
+        // 5+ component DeviceN backdrops (the n=1/3/4 device-family
+        // cases don't need the Group CS — array length disambiguates).
+        let form_obj = match doc.load_object(smask.form_ref) {
+            Ok(o) => o,
+            Err(_) => {
+                pixmap.data_mut().copy_from_slice(snapshot);
+                return Ok(());
+            },
+        };
+
+        let (form_dict, form_data) = match &form_obj {
+            Object::Stream { dict, .. } => {
+                // Decode through the encryption layer if present, the
+                // same way render_form_xobject does at the main
+                // dispatch site (page_renderer:2320).
+                let data = doc.decode_stream_with_encryption(&form_obj, smask.form_ref)?;
+                (dict.clone(), data)
+            },
+            _ => {
+                pixmap.data_mut().copy_from_slice(snapshot);
+                return Ok(());
+            },
+        };
+
+        // For /S /Luminosity, pre-fill with the /BC backdrop if
+        // present. The backdrop is in the Group colour space:
+        //  - n=1   → /DeviceGray
+        //  - n=3   → /DeviceRGB
+        //  - n=4   → /DeviceCMYK
+        //  - n>=5  → /DeviceN (or /NChannel) declared on the Form's
+        //           /Group /CS. Evaluating an /DeviceN backdrop
+        //           requires walking the Group /CS tint transform
+        //           and projecting the alternate-space colour through
+        //           the same path the renderer uses for /Separation /
+        //           /DeviceN paints. The helper below handles that.
+        if smask.subtype == crate::content::graphics_state::SoftMaskSubtype::Luminosity {
+            if let Some(ref bc) = smask.backdrop {
+                let (r, g, b) = match bc.len() {
+                    1 => {
+                        let v = (bc[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+                        (v, v, v)
+                    },
+                    3 => (
+                        (bc[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+                        (bc[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+                        (bc[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+                    ),
+                    4 => {
+                        let (rf, gf, bf) = cmyk_to_rgb(bc[0], bc[1], bc[2], bc[3]);
+                        (
+                            (rf * 255.0).round() as u8,
+                            (gf * 255.0).round() as u8,
+                            (bf * 255.0).round() as u8,
+                        )
+                    },
+                    n if n >= 5 => {
+                        // §11.6.5.2 Table 144 + §8.6.6.5: when the
+                        // Form group declares DeviceN / NChannel as
+                        // its /CS, /BC carries n tints. Evaluate the
+                        // group's tint transform on the BC tints and
+                        // project the resulting alternate-space colour
+                        // to RGB. Falls to (0, 0, 0) (the spec's
+                        // black-point default) if the group's CS is
+                        // not a recognised DeviceN.
+                        evaluate_devicen_bc_to_rgb(&form_dict, bc, doc).unwrap_or((0, 0, 0))
+                    },
+                    _ => (0, 0, 0),
+                };
+                let data = mask_pixmap.data_mut();
+                for px in 0..(w * h) as usize {
+                    let off = px * 4;
+                    data[off] = r;
+                    data[off + 1] = g;
+                    data[off + 2] = b;
+                    data[off + 3] = 255;
+                }
+            }
+        }
+
+        let form_resources_obj = form_dict
+            .get("Resources")
+            .and_then(|r| doc.resolve_object(r).ok())
+            .unwrap_or_else(|| resources.clone());
+
+        // Render the form using the page's base transform: §11.6.5.2
+        // mandates the mask be evaluated in the device space in effect
+        // at the host paint, which carries both the DPI scale and the
+        // PDF→device y-flip. Using `Transform::identity()` here would
+        // leave the mask at PDF user-space (72 dpi, y-up) — mis-scaled
+        // and y-flipped relative to the pixmap whenever DPI ≠ 72.
+        // The form's /Matrix is still composed on top of `base_transform`
+        // by `render_form_xobject`, so the mask remains positioned by
+        // its own matrix within the page-aligned device frame.
+        let _ = self.render_form_xobject(
+            &mut mask_pixmap,
+            &form_dict,
+            &form_data,
+            base_transform,
+            doc,
+            page_num,
+            &form_resources_obj,
+        );
+
+        // Resolve /TR transfer function once. The audit fixture uses
+        // a Type-2 power function (`N=2` squares the input); the
+        // helper below covers Type 2 and falls through to identity
+        // for unsupported types. PDF spec §11.4.7 requires identity
+        // as the default when /TR is absent.
+        let transfer = smask
+            .transfer
+            .as_ref()
+            .and_then(|tr_obj| doc.resolve_object(tr_obj).ok())
+            .and_then(|resolved| parse_transfer_function(doc, &resolved));
+
+        // Apply the mask: pixmap = mask * pixmap + (1 - mask) * snapshot.
+        let mask_data = mask_pixmap.data();
+        let dest = pixmap.data_mut();
+        debug_assert_eq!(mask_data.len(), dest.len());
+        debug_assert_eq!(snapshot.len(), dest.len());
+
+        // §11.3.3 + §11.7.3: the SMask alpha is a single shape/opacity
+        // value per pixel that applies to BOTH process and spot colour
+        // components. Compute the per-pixel mask alpha once, then
+        // attenuate the visible pixmap (RGB+α) AND, when the sidecar
+        // is allocated, every spot lane against its pre-mirror
+        // snapshot.
+        let pixel_count = dest.len() / 4;
+        let mut mask_alpha: Vec<f32> = Vec::with_capacity(pixel_count);
+        for px in 0..pixel_count {
+            let off = px * 4;
+            let mut m = match smask.subtype {
+                crate::content::graphics_state::SoftMaskSubtype::Alpha => {
+                    mask_data[off + 3] as f32 / 255.0
+                },
+                crate::content::graphics_state::SoftMaskSubtype::Luminosity => {
+                    let r = mask_data[off] as f32 / 255.0;
+                    let g = mask_data[off + 1] as f32 / 255.0;
+                    let b = mask_data[off + 2] as f32 / 255.0;
+                    0.30 * r + 0.59 * g + 0.11 * b
+                },
+            };
+
+            if let Some(ref tf) = transfer {
+                m = tf.eval(m).clamp(0.0, 1.0);
+            }
+            mask_alpha.push(m);
+
+            let inv_m = 1.0 - m;
+            for c in 0..4 {
+                let painted = dest[off + c] as f32;
+                let backed = snapshot[off + c] as f32;
+                let blended = m * painted + inv_m * backed;
+                dest[off + c] = blended.clamp(0.0, 255.0).round() as u8;
+            }
+        }
+
+        // Spot lanes: apply the same SMask alpha attenuation to every
+        // spot plane against its pre-mirror snapshot. Per §11.7.3, the
+        // soft mask's alpha modulates the spot lane the same way it
+        // modulates process channels — a single (shape, opacity) per
+        // pixel applies to every lane class. Skipping this step (or
+        // applying the SMask only to the pixmap) leaves the spot lanes
+        // composed at α=1 while the visible pixmap is attenuated, so
+        // the press plate output would over-deposit ink relative to
+        // the visible composite by exactly the SMask attenuation
+        // factor.
+        if let (Some(pre_spots), Some(sidecar)) = (spot_snapshot, self.cmyk_sidecar.as_mut()) {
+            let spots = sidecar.spots_all_mut();
+            // The snapshot length tracks the page's spot plane count.
+            // If the sidecar's plane count changed mid-paint (it
+            // doesn't — fixed at page setup) the comparison would be
+            // unsafe; debug-assert it stays in sync.
+            debug_assert_eq!(spots.len(), pre_spots.len());
+            let plane_size = pixel_count;
+            let plane_count = spots.len() / plane_size;
+            for plane_idx in 0..plane_count {
+                let base = plane_idx * plane_size;
+                for px in 0..plane_size {
+                    let m = mask_alpha[px];
+                    let inv_m = 1.0 - m;
+                    let post = spots[base + px] as f32;
+                    let pre = pre_spots[base + px] as f32;
+                    let blended = m * post + inv_m * pre;
+                    spots[base + px] = blended.clamp(0.0, 255.0).round() as u8;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Render a knockout transparency group per ISO 32000-1:2008 §11.4.6.2.
+    ///
+    /// The group's initial backdrop is `pixmap` on entry. Each painted
+    /// element composites against that backdrop (not against earlier
+    /// elements in the group), and later elements override earlier ones
+    /// in overlap regions.
+    ///
+    /// Implementation: segment the operator stream at paint operators
+    /// (Fill / Stroke / FillStroke / PaintShading / DrawObject /
+    /// ShowText / inline image). For each paint boundary `i`, render
+    /// the cumulative slice `operators[0..=i]` into a fresh
+    /// backdrop-copy scratch pixmap. The cumulative replay preserves
+    /// graphics-state side effects (color, CTM, clip) across paint
+    /// boundaries while keeping each paint's pixel contribution
+    /// referenced to the original backdrop. The scratch pixmap's
+    /// differences from the backdrop identify the pixels this element
+    /// touched, which then overwrite the accumulator.
+    ///
+    /// Cost: O(N · K) operator executions where N is total operators
+    /// and K is paint operators. Knockout groups are rare in practice
+    /// so the quadratic factor is acceptable.
+    fn execute_knockout_group(
+        &mut self,
+        pixmap: &mut Pixmap,
+        base_transform: Transform,
+        operators: &[Operator],
+        doc: &PdfDocument,
+        page_num: usize,
+        resources: &Object,
+    ) -> Result<()> {
+        // Backdrop is the pixmap state at group entry.
+        let width = pixmap.width();
+        let height = pixmap.height();
+        let backdrop_data: Vec<u8> = pixmap.data().to_vec();
+
+        // Sidecar backdrop snapshot. ISO 32000-1 §11.3.3 + §11.4.6.2:
+        // a knockout group composes each element against the group's
+        // INITIAL backdrop, and the single (shape, opacity) the spec
+        // maintains per pixel applies to BOTH process and spot lanes.
+        // So the CMYK plane and every spot plane must be reset to the
+        // group's backdrop before each element's cumulative replay,
+        // exactly like the RGB pixmap is. Without this reset the
+        // round-2 spot mirror's per-paint writes would compose against
+        // the previous element's lane state — that is non-isolated
+        // group semantics, NOT knockout. The brief calls this out as
+        // the round-2 gap the secondary scope of round 3 closes.
+        let sidecar_backdrop_cmyk: Option<Vec<u8>> =
+            self.cmyk_sidecar.as_ref().map(|s| s.cmyk().to_vec());
+        let sidecar_backdrop_spots: Option<Vec<u8>> =
+            self.cmyk_sidecar.as_ref().map(|s| s.spots_all().to_vec());
+
+        // Identify paint-operator indices. These define element
+        // boundaries.
+        let paint_indices: Vec<usize> = operators
+            .iter()
+            .enumerate()
+            .filter_map(|(i, op)| if is_paint_operator(op) { Some(i) } else { None })
+            .collect();
+
+        if paint_indices.is_empty() {
+            // No paint ops — still execute for state side effects (rare).
+            return self.execute_operators(
+                pixmap,
+                base_transform,
+                operators,
+                doc,
+                page_num,
+                resources,
+            );
+        }
+
+        // Accumulator starts as the backdrop. Each element's painted
+        // pixels overwrite the accumulator.
+        let mut accumulator: Vec<u8> = backdrop_data.clone();
+        // Sidecar accumulators parallel `accumulator` for the process
+        // and spot lanes. They start at the group's initial backdrop
+        // and absorb per-element scratch-vs-backdrop diffs.
+        let mut sidecar_accum_cmyk: Option<Vec<u8>> = sidecar_backdrop_cmyk.clone();
+        let mut sidecar_accum_spots: Option<Vec<u8>> = sidecar_backdrop_spots.clone();
+
+        for &end_idx in &paint_indices {
+            // Cumulative replay: graphics-state operators 0..end_idx
+            // plus the paint at end_idx, with all PRIOR paint operators
+            // filtered out. Filtering keeps the state side effects
+            // (CTM, fill color, ExtGState, clip path construction) that
+            // the current paint depends on, while ensuring no earlier
+            // element's pixel contribution reaches the scratch. The
+            // scratch is initialised to the backdrop so the paint
+            // composites against the group's initial backdrop only.
+            let mut scratch = Pixmap::new(width, height).ok_or_else(|| {
+                crate::error::Error::InvalidPdf("knockout scratch pixmap alloc failed".into())
+            })?;
+            scratch.data_mut().copy_from_slice(&backdrop_data);
+
+            // Reset sidecar lanes to the group's backdrop before this
+            // element's replay so the per-paint mirror writes compose
+            // against the BACKDROP (knockout rule), not against earlier
+            // elements' lane state. The §11.4.6.2 spec is explicit: the
+            // group's "constituent objects ... shall be composited with
+            // the group's initial backdrop rather than with each
+            // other". This restoration extends that rule to the
+            // process / spot lanes the round-1/2 sidecar carries.
+            if let (Some(sidecar), Some(cmyk_b)) =
+                (self.cmyk_sidecar.as_mut(), sidecar_backdrop_cmyk.as_ref())
+            {
+                sidecar.restore_cmyk(cmyk_b);
+            }
+            if let (Some(sidecar), Some(spots_b)) =
+                (self.cmyk_sidecar.as_mut(), sidecar_backdrop_spots.as_ref())
+            {
+                sidecar.restore_spots(spots_b);
+            }
+
+            let element_ops: Vec<Operator> = operators[..=end_idx]
+                .iter()
+                .enumerate()
+                .filter_map(|(i, op)| {
+                    if i < end_idx && is_paint_operator(op) {
+                        None
+                    } else {
+                        Some(op.clone())
+                    }
+                })
+                .collect();
+
+            self.execute_operators(
+                &mut scratch,
+                base_transform,
+                &element_ops,
+                doc,
+                page_num,
+                resources,
+            )?;
+
+            // Merge: where scratch differs from backdrop, this element
+            // touched the pixel — its value overrides the accumulator.
+            // Comparing scratch vs backdrop (not vs accumulator) is the
+            // key knockout semantic: each element sees only the
+            // backdrop, never the accumulated paint from earlier
+            // elements.
+            let scratch_data = scratch.data();
+            debug_assert_eq!(scratch_data.len(), backdrop_data.len());
+            debug_assert_eq!(accumulator.len(), backdrop_data.len());
+
+            // Process pixel-by-pixel (4 bytes RGBA).
+            for px in 0..(scratch_data.len() / 4) {
+                let off = px * 4;
+                let same = scratch_data[off] == backdrop_data[off]
+                    && scratch_data[off + 1] == backdrop_data[off + 1]
+                    && scratch_data[off + 2] == backdrop_data[off + 2]
+                    && scratch_data[off + 3] == backdrop_data[off + 3];
+                if !same {
+                    accumulator[off] = scratch_data[off];
+                    accumulator[off + 1] = scratch_data[off + 1];
+                    accumulator[off + 2] = scratch_data[off + 2];
+                    accumulator[off + 3] = scratch_data[off + 3];
+                }
+            }
+
+            // Merge sidecar lanes: any byte that differs from the
+            // backdrop snapshot was written by this element's paint
+            // mirror. Pull the post-element value into the accumulator
+            // so later replay iterations see only the backdrop on
+            // restore, but the merged group result preserves every
+            // element's contribution (last-paint wins on per-byte
+            // collision, mirroring the pixmap merge).
+            if let (Some(sidecar), Some(accum), Some(backdrop)) = (
+                self.cmyk_sidecar.as_ref(),
+                sidecar_accum_cmyk.as_mut(),
+                sidecar_backdrop_cmyk.as_ref(),
+            ) {
+                let post = sidecar.cmyk();
+                debug_assert_eq!(post.len(), backdrop.len());
+                debug_assert_eq!(accum.len(), backdrop.len());
+                for i in 0..post.len() {
+                    if post[i] != backdrop[i] {
+                        accum[i] = post[i];
+                    }
+                }
+            }
+            if let (Some(sidecar), Some(accum), Some(backdrop)) = (
+                self.cmyk_sidecar.as_ref(),
+                sidecar_accum_spots.as_mut(),
+                sidecar_backdrop_spots.as_ref(),
+            ) {
+                let post = sidecar.spots_all();
+                debug_assert_eq!(post.len(), backdrop.len());
+                debug_assert_eq!(accum.len(), backdrop.len());
+                for i in 0..post.len() {
+                    if post[i] != backdrop[i] {
+                        accum[i] = post[i];
+                    }
+                }
+            }
+        }
+
+        // Replay any trailing non-paint operators (state side effects
+        // that follow the last paint) onto the accumulator. The group's
+        // visible output IS the accumulator, so we install it before
+        // returning.
+        pixmap.data_mut().copy_from_slice(&accumulator);
+
+        // Install the merged sidecar accumulators back into the
+        // sidecar. The group's spot and process lanes are now the
+        // accumulated knockout result — later operators (outside the
+        // group) compose against this state.
+        if let (Some(sidecar), Some(cmyk_a)) =
+            (self.cmyk_sidecar.as_mut(), sidecar_accum_cmyk.as_ref())
+        {
+            sidecar.restore_cmyk(cmyk_a);
+        }
+        if let (Some(sidecar), Some(spots_a)) =
+            (self.cmyk_sidecar.as_mut(), sidecar_accum_spots.as_ref())
+        {
+            sidecar.restore_spots(spots_a);
+        }
         Ok(())
     }
 
@@ -3301,6 +6844,1081 @@ impl PageRenderer {
 /// the renderer needs to honour.
 const RGBA_MATCH_EPSILON: f32 = 1.0e-6;
 
+/// Single-input single-output transfer function used by `/SMask /TR`.
+/// `Identity` is the spec default when `/TR` is absent.
+#[derive(Clone, Debug)]
+pub(crate) enum SMaskTransfer {
+    /// Identity transfer.
+    Identity,
+    /// `f(x) = C0 + x^N * (C1 - C0)` per §7.10.3 Type 2 functions.
+    Type2 {
+        /// Lower endpoint of the codomain.
+        c0: f32,
+        /// Upper endpoint of the codomain.
+        c1: f32,
+        /// Exponent.
+        n: f32,
+    },
+    /// Type 0 sampled function (§7.10.2). One-dimensional unit-interval
+    /// lookup table — the parser materialises the sampled stream into
+    /// a `Vec<f32>` so per-pixel evaluation is a single bounded
+    /// allocation-free read.
+    Type0 {
+        /// One sample per /Size[0] entry, decoded to the [0, 1]
+        /// output range. Linear interpolation between adjacent entries
+        /// evaluates the function at intermediate inputs.
+        samples: Vec<f32>,
+    },
+    /// Type 4 PostScript calculator (§7.10.5). The compiled program
+    /// is reused per pixel; `Program` carries no mutable state so
+    /// concurrent calls are safe.
+    Type4 {
+        /// Compiled PostScript program. The caller routes one f64
+        /// input through `evaluate` and reads one f64 output.
+        program: crate::functions::Program,
+    },
+    /// Type 3 stitching function (§7.10.4). Combines `k` subfunctions
+    /// over disjoint subintervals of `/Domain`. For an SMask /TR the
+    /// outer function is 1-input 1-output; each subfunction must also
+    /// be 1-input 1-output (verified at parse time). Subfunctions can
+    /// themselves be any function type the parser accepts, including
+    /// Type 3 — recursive stitching is unusual but spec-legal.
+    Type3 {
+        /// Subfunctions in domain order. The `Vec`'s heap allocation
+        /// breaks the recursive type's would-be infinite size; no
+        /// extra `Box` is required (clippy `vec_box`). Length is `k`,
+        /// where `k = bounds.len() + 1`.
+        subfunctions: Vec<SMaskTransfer>,
+        /// `k - 1` boundary values dividing `/Domain` into `k`
+        /// subintervals. The i-th subinterval per §7.10.4 step 2 is
+        /// `[x0, b0)`, ..., `[b(k-2), x1]` — a boundary value belongs
+        /// to the subinterval on its right.
+        bounds: Vec<f32>,
+        /// `k` pairs of `(e_lo, e_hi)` that linearly remap each
+        /// subinterval onto the corresponding subfunction's native
+        /// input range. Indexed by subfunction position.
+        encode: Vec<(f32, f32)>,
+        /// `/Domain` as `(x0, x1)`. Inputs outside this range are
+        /// clipped to the nearest endpoint before dispatch.
+        domain: (f32, f32),
+    },
+}
+
+impl SMaskTransfer {
+    /// Evaluate the transfer at `x` clamped to its domain `[0, 1]`.
+    pub(crate) fn eval(&self, x: f32) -> f32 {
+        let x = x.clamp(0.0, 1.0);
+        match self {
+            SMaskTransfer::Identity => x,
+            SMaskTransfer::Type2 { c0, c1, n } => {
+                let p = x.powf(*n);
+                c0 + p * (c1 - c0)
+            },
+            SMaskTransfer::Type0 { samples } => {
+                // §7.10.2 Type-0 sampled: clamp x to [0, 1] (the
+                // domain), encode to sample-index space, linearly
+                // interpolate between the two nearest entries.
+                let n = samples.len();
+                if n == 0 {
+                    return x;
+                }
+                if n == 1 {
+                    return samples[0];
+                }
+                let pos = x * (n as f32 - 1.0);
+                let lo = pos.floor() as usize;
+                let hi = (lo + 1).min(n - 1);
+                let frac = pos - lo as f32;
+                let v = samples[lo] * (1.0 - frac) + samples[hi] * frac;
+                v.clamp(0.0, 1.0)
+            },
+            SMaskTransfer::Type4 { program } => {
+                // §7.10.5 PostScript calculator. The compiled program
+                // takes one f64 input and emits one f64 output for a
+                // /TR function (1→1 per §11.6.5.2 Table 144). Failure
+                // modes (stack underflow, runtime budget) fall back
+                // to identity rather than panicking; the transfer
+                // function is a rendering-time concern and a malformed
+                // program should not break the page render.
+                match program.evaluate(&[x as f64]) {
+                    Ok(out) if !out.is_empty() => (out[0] as f32).clamp(0.0, 1.0),
+                    _ => x,
+                }
+            },
+            SMaskTransfer::Type3 {
+                subfunctions,
+                bounds,
+                encode,
+                domain,
+            } => {
+                // §7.10.4 Type 3 stitching. Steps follow the spec:
+                //   1. Clip input to `/Domain` (the outer clamp to
+                //      [0, 1] at the top of `eval` already constrains
+                //      the SMask /TR input to its [0, 1] range; this
+                //      tighter clip enforces the function's own
+                //      declared /Domain).
+                //   2. Find the subinterval index `i` such that
+                //      `b(i-1) <= x < b(i)`, with the convention that
+                //      a boundary value belongs to the subinterval on
+                //      its right and the final subinterval is
+                //      half-open at its upper end (`x >= b(k-2)` →
+                //      `i = k-1`).
+                //   3. Compute the subinterval bounds and linearly
+                //      remap `x` from `[lo_i, hi_i]` to the
+                //      subfunction's native input range
+                //      `[encode_lo_i, encode_hi_i]`.
+                //   4. Evaluate the i-th subfunction at the encoded
+                //      input; the result is the function's output.
+                //
+                // Malformed-input policy: an empty subfunctions vec
+                // (which the parser rejects, but defensively guarded
+                // here) returns the clipped input unchanged. A
+                // zero-width subinterval — possible if a /Bounds entry
+                // equals one of its neighbouring endpoints — degenerates
+                // the linear remap (division by zero); in that case we
+                // use the subfunction's `encode_lo` directly, which is
+                // the only well-defined point in the remap.
+                let (x0, x1) = *domain;
+                let x_clipped = x.clamp(x0, x1);
+                let k = subfunctions.len();
+                if k == 0 {
+                    return x_clipped;
+                }
+                // Step 2: locate subinterval index via the half-open
+                // convention. `partition_point` returns the count of
+                // bounds strictly ≤ x_clipped; that count IS the
+                // subinterval index because every boundary belongs to
+                // the right subinterval.
+                let i = bounds
+                    .iter()
+                    .copied()
+                    .filter(|b| x_clipped >= *b)
+                    .count()
+                    .min(k - 1);
+                let lo_i = if i == 0 { x0 } else { bounds[i - 1] };
+                let hi_i = if i == k - 1 { x1 } else { bounds[i] };
+                let (e_lo, e_hi) = encode.get(i).copied().unwrap_or((0.0, 1.0));
+                let encoded = if (hi_i - lo_i).abs() <= f32::EPSILON {
+                    // Zero-width subinterval — use the encode-lo
+                    // endpoint directly. Any input that falls into a
+                    // collapsed subinterval is the boundary point
+                    // itself, so this is the only spec-coherent choice.
+                    e_lo
+                } else {
+                    e_lo + (x_clipped - lo_i) * (e_hi - e_lo) / (hi_i - lo_i)
+                };
+                subfunctions[i].eval(encoded)
+            },
+        }
+    }
+}
+
+/// Parse a `/SMask /TR` function. Type 0 (sampled), Type 2 (exponential
+/// interpolation), Type 3 (stitching), and Type 4 (PostScript calculator)
+/// are recognised per ISO 32000-1:2008 §7.10. Unrecognised function
+/// types fall to Identity, the spec default for an absent or
+/// unrecognised /TR per §11.4.7.
+fn parse_transfer_function(doc: &PdfDocument, obj: &Object) -> Option<SMaskTransfer> {
+    // Identity is a Name `/Identity` per Table 109. Anything else
+    // should be a function dictionary.
+    if let Some("Identity") = obj.as_name() {
+        return Some(SMaskTransfer::Identity);
+    }
+    let dict = obj.as_dict()?;
+    let ft = dict.get("FunctionType").and_then(Object::as_integer)?;
+    match ft {
+        0 => parse_type0_transfer_function(obj, dict).or(Some(SMaskTransfer::Identity)),
+        2 => {
+            let c0 = dict
+                .get("C0")
+                .and_then(|o| o.as_array())
+                .and_then(|a| a.first())
+                .and_then(|v| {
+                    v.as_real()
+                        .map(|r| r as f32)
+                        .or_else(|| v.as_integer().map(|i| i as f32))
+                })
+                .unwrap_or(0.0);
+            let c1 = dict
+                .get("C1")
+                .and_then(|o| o.as_array())
+                .and_then(|a| a.first())
+                .and_then(|v| {
+                    v.as_real()
+                        .map(|r| r as f32)
+                        .or_else(|| v.as_integer().map(|i| i as f32))
+                })
+                .unwrap_or(1.0);
+            let n = dict
+                .get("N")
+                .and_then(|v| {
+                    v.as_real()
+                        .map(|r| r as f32)
+                        .or_else(|| v.as_integer().map(|i| i as f32))
+                })
+                .unwrap_or(1.0);
+            Some(SMaskTransfer::Type2 { c0, c1, n })
+        },
+        3 => parse_type3_transfer_function(doc, dict).or(Some(SMaskTransfer::Identity)),
+        4 => parse_type4_transfer_function(obj).or(Some(SMaskTransfer::Identity)),
+        _ => Some(SMaskTransfer::Identity),
+    }
+}
+
+/// Decode a Type 0 sampled-function stream into a unit-interval lookup
+/// table over the 1-input 1-output domain. Returns `None` for any
+/// shape the SMask /TR contract doesn't accept (multi-input or
+/// multi-output) so the caller can fall back to Identity. Per
+/// §7.10.2:
+///  - `/Domain` is a 2-element array `[lo hi]` defining the input
+///    range; for /TR this is `[0 1]` by construction.
+///  - `/Range` is a 2-element array defining the output range; for
+///    /TR this is `[0 1]` by construction.
+///  - `/Size` is a 1-element array `[N]` — N sample positions.
+///  - `/BitsPerSample` is the bit count per packed sample (1/2/4/8/
+///    12/16/24/32). We accept the canonical 8-bit case the SMask /TR
+///    samples-as-LUT pattern uses; deeper depths fall to None.
+///  - `/Encode` defaults to `[0 Size[0]-1]` and `/Decode` defaults to
+///    `/Range`. We honour the defaults; explicit overrides for /TR
+///    are rare but supported via the standard linear remap.
+fn parse_type0_transfer_function(
+    obj: &Object,
+    dict: &std::collections::HashMap<String, Object>,
+) -> Option<SMaskTransfer> {
+    // Single-input single-output only. /TR per §11.6.5.2 Table 144 is
+    // a 1→1 function; reject anything else so we don't silently
+    // mishandle a malformed N→M sampled function.
+    let domain_len = dict
+        .get("Domain")
+        .and_then(|o| o.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let range_len = dict
+        .get("Range")
+        .and_then(|o| o.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    if domain_len != 2 || range_len != 2 {
+        return None;
+    }
+    let size_arr = dict.get("Size").and_then(|o| o.as_array())?;
+    if size_arr.len() != 1 {
+        return None;
+    }
+    let size = size_arr.first().and_then(Object::as_integer)? as usize;
+    if size == 0 || size > 65_536 {
+        return None;
+    }
+    let bps = dict
+        .get("BitsPerSample")
+        .and_then(Object::as_integer)
+        .unwrap_or(8);
+    if bps != 8 {
+        // Only the 8-bit packing is honoured. Other depths land at
+        // Identity to keep the parser simple; a real-world /TR rarely
+        // uses anything other than 8-bit samples.
+        return None;
+    }
+    let stream_bytes = match obj {
+        Object::Stream { .. } => obj.decode_stream_data().ok()?,
+        _ => return None,
+    };
+    if stream_bytes.len() < size {
+        return None;
+    }
+    // /Decode default = /Range; /Encode default = [0 Size-1]. For the
+    // canonical /TR shape both defaults apply, so the raw sample byte
+    // /255 IS the unit-interval LUT value.
+    let dec_lo;
+    let dec_hi;
+    if let Some(arr) = dict.get("Decode").and_then(|o| o.as_array()) {
+        if arr.len() != 2 {
+            return None;
+        }
+        dec_lo = obj_to_f32(arr.first()?)?;
+        dec_hi = obj_to_f32(arr.get(1)?)?;
+    } else {
+        // Default to /Range.
+        let r = dict.get("Range").and_then(|o| o.as_array())?;
+        dec_lo = obj_to_f32(r.first()?)?;
+        dec_hi = obj_to_f32(r.get(1)?)?;
+    }
+    let max_sample_value = 255.0; // bps=8 above
+    let mut samples: Vec<f32> = Vec::with_capacity(size);
+    for i in 0..size {
+        let raw = stream_bytes[i] as f32;
+        let v = dec_lo + (raw / max_sample_value) * (dec_hi - dec_lo);
+        samples.push(v.clamp(0.0, 1.0));
+    }
+    Some(SMaskTransfer::Type0 { samples })
+}
+
+/// Compile a Type 4 PostScript calculator stream as a transfer
+/// function. The /SMask /TR contract is 1-input 1-output per
+/// §11.6.5.2 Table 144; we route through the existing crate-private
+/// `Program` evaluator which already serves Separation / DeviceN tint
+/// transforms. Returns `None` when the stream isn't a Stream object,
+/// the parse fails (orphan procedure body, unknown operator), or the
+/// program advertises a multi-input/multi-output shape that doesn't
+/// match a transfer function.
+fn parse_type4_transfer_function(obj: &Object) -> Option<SMaskTransfer> {
+    let dict = obj.as_dict()?;
+    let domain_len = dict
+        .get("Domain")
+        .and_then(|o| o.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let range_len = dict
+        .get("Range")
+        .and_then(|o| o.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    // §7.10.5: Type 4 requires Domain and Range. /TR is 1→1.
+    if domain_len != 2 || range_len != 2 {
+        return None;
+    }
+    let stream_bytes = match obj {
+        Object::Stream { .. } => obj.decode_stream_data().ok()?,
+        _ => return None,
+    };
+    let program = crate::functions::Program::compile(&stream_bytes).ok()?;
+    Some(SMaskTransfer::Type4 { program })
+}
+
+/// Parse a Type 3 stitching function (§7.10.4) as a transfer function.
+/// A stitching function combines `k` subfunctions over disjoint
+/// subintervals of `/Domain`, dispatching the input through whichever
+/// subfunction's subinterval contains it after a linear remap. The
+/// SMask /TR contract is 1-input 1-output (§11.6.5.2 Table 144), so
+/// the outer function's `/Domain` is a 2-element array and each
+/// subfunction must itself parse as a 1-input 1-output transfer.
+///
+/// Required entries per Table 39:
+///  - `/Domain [x0 x1]` — 2-element array.
+///  - `/Functions [f0 ... f(k-1)]` — array of `k` subfunctions, each
+///    parsed recursively (any type the dispatcher accepts is valid).
+///  - `/Bounds [b0 ... b(k-2)]` — `k - 1` boundary values dividing
+///    `/Domain` into `k` subintervals; per §7.10.4 the spec requires
+///    `x0 < b0 < b1 < ... < b(k-2) < x1`. We do NOT enforce strict
+///    monotonicity here: a zero-width subinterval (e.g. `b(j-1) ==
+///    b(j)`, or a boundary equal to an endpoint) is malformed but
+///    spec-permitted; the `eval` arm handles the zero-width case by
+///    using the subfunction's `encode_lo` directly.
+///  - `/Encode [e0_lo e0_hi ... e(k-1)_lo e(k-1)_hi]` — `2k` values
+///    mapping each subinterval to its subfunction's native input range.
+///
+/// Returns `None` for any shape the /TR contract rejects:
+/// multi-input outer function, mismatched `/Bounds` or `/Encode`
+/// arity, a subfunction that fails to parse, or zero subfunctions.
+/// The caller falls back to Identity on `None`.
+fn parse_type3_transfer_function(
+    doc: &PdfDocument,
+    dict: &std::collections::HashMap<String, Object>,
+) -> Option<SMaskTransfer> {
+    // Outer /Domain must be 1-input (2 values) for a /TR function.
+    let domain_arr = dict.get("Domain").and_then(|o| o.as_array())?;
+    if domain_arr.len() != 2 {
+        return None;
+    }
+    let x0 = obj_to_f32(domain_arr.first()?)?;
+    let x1 = obj_to_f32(domain_arr.get(1)?)?;
+
+    // /Functions — recursively parse each subfunction. Subfunctions
+    // can be indirect refs so we resolve before recursing.
+    let funcs_arr = dict.get("Functions").and_then(|o| o.as_array())?;
+    if funcs_arr.is_empty() {
+        return None;
+    }
+    let k = funcs_arr.len();
+    let mut subfunctions: Vec<SMaskTransfer> = Vec::with_capacity(k);
+    for f in funcs_arr {
+        let resolved = doc.resolve_object(f).ok()?;
+        let parsed = parse_transfer_function(doc, &resolved)?;
+        subfunctions.push(parsed);
+    }
+
+    // /Bounds — k-1 entries.
+    let bounds_arr = dict.get("Bounds").and_then(|o| o.as_array())?;
+    if bounds_arr.len() != k - 1 {
+        return None;
+    }
+    let mut bounds: Vec<f32> = Vec::with_capacity(k - 1);
+    for b in bounds_arr {
+        bounds.push(obj_to_f32(b)?);
+    }
+
+    // /Encode — 2k entries (k pairs of (lo, hi)).
+    let encode_arr = dict.get("Encode").and_then(|o| o.as_array())?;
+    if encode_arr.len() != 2 * k {
+        return None;
+    }
+    let mut encode: Vec<(f32, f32)> = Vec::with_capacity(k);
+    for i in 0..k {
+        let lo = obj_to_f32(encode_arr.get(2 * i)?)?;
+        let hi = obj_to_f32(encode_arr.get(2 * i + 1)?)?;
+        encode.push((lo, hi));
+    }
+
+    Some(SMaskTransfer::Type3 {
+        subfunctions,
+        bounds,
+        encode,
+        domain: (x0, x1),
+    })
+}
+
+fn obj_to_f32(o: &Object) -> Option<f32> {
+    o.as_real()
+        .map(|r| r as f32)
+        .or_else(|| o.as_integer().map(|i| i as f32))
+}
+
+/// Evaluate a /BC backdrop colour whose component count is 5 or more,
+/// against the Form XObject's /Group /CS = /DeviceN (or /NChannel).
+/// Returns the RGB byte triple after the DeviceN tint transform runs
+/// and the alternate-space result projects to RGB.
+///
+/// Per ISO 32000-1:2008 §11.6.5.2 Table 144 + §8.6.6.5 (DeviceN colour
+/// spaces): the BC entry consists of `n` numbers (one per group CS
+/// component), and the renderer must evaluate the group's tint
+/// transform to project the BC tints into the alternate colour space
+/// before any further conversion.
+///
+/// Returns `None` when:
+///  - the Form has no /Group dict, or
+///  - the Group has no /CS entry, or
+///  - the CS is not a /DeviceN array, or
+///  - the tint transform evaluator fails to produce a result.
+fn evaluate_devicen_bc_to_rgb(
+    form_dict: &std::collections::HashMap<String, Object>,
+    bc: &[f32],
+    doc: &PdfDocument,
+) -> Option<(u8, u8, u8)> {
+    let group_obj = form_dict.get("Group")?;
+    let group_resolved = doc.resolve_object(group_obj).ok()?;
+    let group_dict = group_resolved.as_dict()?;
+    let cs_obj = group_dict.get("CS")?;
+    let cs_resolved = doc.resolve_object(cs_obj).ok()?;
+    let cs_arr = match &cs_resolved {
+        Object::Array(arr) => arr,
+        _ => return None,
+    };
+    let type_name = cs_arr.first().and_then(|o| o.as_name())?;
+    if type_name != "DeviceN" && type_name != "NChannel" {
+        return None;
+    }
+    let alt_cs_obj = cs_arr.get(2)?;
+    let func_obj = cs_arr.get(3)?;
+    let func_resolved = doc.resolve_object(func_obj).ok()?;
+    let func_dict = func_resolved.as_dict()?;
+
+    let altspace_values: Vec<f32> = evaluate_bc_tint_function(doc, &func_resolved, func_dict, bc)?;
+
+    // Resolve the alternate space (Name → fast path, Array → typed
+    // closed-form projection per §8.6.5.2-5 / §8.6.5.5).
+    let alt_resolved = doc.resolve_object(alt_cs_obj).ok()?;
+    let (r, g, b) = project_bc_altspace_to_rgb(doc, &alt_resolved, &altspace_values)?;
+
+    Some((
+        (r.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (g.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (b.clamp(0.0, 1.0) * 255.0).round() as u8,
+    ))
+}
+
+/// Evaluate a DeviceN tint-transform function for /BC backdrop
+/// resolution, dispatching across PDF function types 0/2/3/4.
+///
+/// Per ISO 32000-1:2008 §7.10:
+///  - **Type 0** (sampled, §7.10.2) — n-dimensional sampled function;
+///    evaluated by N-linear interpolation of the surrounding 2^n
+///    nearest samples in the packed CLUT stream.
+///  - **Type 2** (exponential, §7.10.3) — 1→m; only `bc[0]` reaches the
+///    function (Type 2 inputs are scalar by spec).
+///  - **Type 3** (stitching, §7.10.4) — 1→m; only `bc[0]` reaches the
+///    outer function; the per-subinterval dispatch recurses into any
+///    subfunction type the parser accepts.
+///  - **Type 4** (PostScript calculator, §7.10.5) — n→m via the
+///    crate-private `Program` evaluator.
+fn evaluate_bc_tint_function(
+    doc: &PdfDocument,
+    func_resolved: &Object,
+    func_dict: &std::collections::HashMap<String, Object>,
+    bc: &[f32],
+) -> Option<Vec<f32>> {
+    let func_type = func_dict.get("FunctionType").and_then(Object::as_integer)?;
+    match func_type {
+        0 => evaluate_type0_multi(func_resolved, func_dict, bc),
+        2 => Some(evaluate_type2_multi(func_dict, bc.first().copied().unwrap_or(0.0))),
+        3 => evaluate_type3_multi(doc, func_dict, bc.first().copied().unwrap_or(0.0)),
+        4 => {
+            let bytes = match func_resolved {
+                Object::Stream { .. } => func_resolved.decode_stream_data().ok()?,
+                _ => return None,
+            };
+            let program = crate::functions::Program::compile(&bytes).ok()?;
+            let inputs: Vec<f64> = bc.iter().map(|&v| v as f64).collect();
+            let result = program.evaluate(&inputs).ok()?;
+            Some(result.into_iter().map(|v| v as f32).collect())
+        },
+        _ => None,
+    }
+}
+
+/// Evaluate a Type 2 (exponential interpolation) function with scalar
+/// input `x`, returning the per-output samples per §7.10.3:
+/// `y_j = C0_j + x^N · (C1_j - C0_j)`.
+fn evaluate_type2_multi(dict: &std::collections::HashMap<String, Object>, x: f32) -> Vec<f32> {
+    let n_pow = dict
+        .get("N")
+        .and_then(|o| o.as_real().or_else(|| o.as_integer().map(|i| i as f64)))
+        .unwrap_or(1.0) as f32;
+    let c0 = dict.get("C0").and_then(|o| o.as_array());
+    let c1 = dict.get("C1").and_then(|o| o.as_array());
+    let len = c0.map(|a| a.len()).max(c1.map(|a| a.len())).unwrap_or(1);
+    let x_pow = if n_pow == 1.0 { x } else { x.powf(n_pow) };
+    let mut out = Vec::with_capacity(len);
+    for j in 0..len {
+        let c0j = c0
+            .and_then(|a| a.get(j))
+            .and_then(obj_to_f32)
+            .unwrap_or(0.0);
+        let c1j = c1
+            .and_then(|a| a.get(j))
+            .and_then(obj_to_f32)
+            .unwrap_or(1.0);
+        out.push(c0j + x_pow * (c1j - c0j));
+    }
+    out
+}
+
+/// Evaluate a Type 3 (stitching) function with scalar input `x` per
+/// §7.10.4. Recursively evaluates the subfunction containing `x` and
+/// returns its per-output samples. Subfunctions can be any function
+/// type the dispatcher accepts (Type 0/2/3/4); cyclic Type 3 ⊃ Type 3
+/// chains are unusual but spec-legal and supported via the recursive
+/// call back into `evaluate_bc_tint_function`.
+fn evaluate_type3_multi(
+    doc: &PdfDocument,
+    dict: &std::collections::HashMap<String, Object>,
+    x: f32,
+) -> Option<Vec<f32>> {
+    let domain_arr = dict.get("Domain").and_then(|o| o.as_array())?;
+    if domain_arr.len() != 2 {
+        return None;
+    }
+    let x0 = obj_to_f32(domain_arr.first()?)?;
+    let x1 = obj_to_f32(domain_arr.get(1)?)?;
+
+    let funcs_arr = dict.get("Functions").and_then(|o| o.as_array())?;
+    if funcs_arr.is_empty() {
+        return None;
+    }
+    let k = funcs_arr.len();
+
+    let bounds_arr = dict.get("Bounds").and_then(|o| o.as_array())?;
+    if bounds_arr.len() != k - 1 {
+        return None;
+    }
+    let mut bounds: Vec<f32> = Vec::with_capacity(k - 1);
+    for b in bounds_arr {
+        bounds.push(obj_to_f32(b)?);
+    }
+
+    let encode_arr = dict.get("Encode").and_then(|o| o.as_array())?;
+    if encode_arr.len() != 2 * k {
+        return None;
+    }
+
+    let x_clipped = x.clamp(x0, x1);
+    let i = bounds
+        .iter()
+        .copied()
+        .filter(|b| x_clipped >= *b)
+        .count()
+        .min(k - 1);
+    let lo_i = if i == 0 { x0 } else { bounds[i - 1] };
+    let hi_i = if i == k - 1 { x1 } else { bounds[i] };
+    let e_lo = obj_to_f32(encode_arr.get(2 * i)?)?;
+    let e_hi = obj_to_f32(encode_arr.get(2 * i + 1)?)?;
+    let encoded = if (hi_i - lo_i).abs() <= f32::EPSILON {
+        e_lo
+    } else {
+        e_lo + (x_clipped - lo_i) * (e_hi - e_lo) / (hi_i - lo_i)
+    };
+
+    let sub_obj = funcs_arr.get(i)?;
+    let sub_resolved = doc.resolve_object(sub_obj).ok()?;
+    let sub_dict = sub_resolved.as_dict()?;
+    evaluate_bc_tint_function(doc, &sub_resolved, sub_dict, &[encoded])
+}
+
+/// Evaluate a Type 0 (sampled) function with n-dimensional input `bc`
+/// per §7.10.2.
+///
+/// The sampled function is stored as a packed stream of m·∏Size_i
+/// samples; each sample is a `BitsPerSample`-bit unsigned value laid
+/// out in row-major order with input dimension 0 varying fastest. We
+/// linearly remap each input via `Encode` to a continuous sample index,
+/// then n-linearly interpolate among the 2^n surrounding integer-grid
+/// samples and finally remap the per-output samples through `Decode`
+/// into the function's output range.
+///
+/// Returns `None` for any shape the evaluator cannot satisfy: missing
+/// /Size or /Range, /BitsPerSample outside the canonical 8-bit case
+/// (other depths are spec-legal but rare for tint transforms; rejecting
+/// the call lets the caller report unsupported), input arity mismatch,
+/// stream too short, or any malformed array.
+fn evaluate_type0_multi(
+    obj: &Object,
+    dict: &std::collections::HashMap<String, Object>,
+    bc: &[f32],
+) -> Option<Vec<f32>> {
+    let domain_arr = dict.get("Domain").and_then(|o| o.as_array())?;
+    let range_arr = dict.get("Range").and_then(|o| o.as_array())?;
+    if domain_arr.len() % 2 != 0 || range_arr.len() % 2 != 0 {
+        return None;
+    }
+    let n_in = domain_arr.len() / 2;
+    let n_out = range_arr.len() / 2;
+    if n_in == 0 || n_out == 0 || bc.len() < n_in {
+        return None;
+    }
+
+    let size_arr = dict.get("Size").and_then(|o| o.as_array())?;
+    if size_arr.len() != n_in {
+        return None;
+    }
+    let mut sizes: Vec<usize> = Vec::with_capacity(n_in);
+    let mut total_samples: usize = 1;
+    for s in size_arr {
+        let v = s.as_integer()? as usize;
+        if v == 0 {
+            return None;
+        }
+        sizes.push(v);
+        total_samples = total_samples.checked_mul(v)?;
+    }
+    total_samples = total_samples.checked_mul(n_out)?;
+
+    let bps = dict
+        .get("BitsPerSample")
+        .and_then(Object::as_integer)
+        .unwrap_or(8);
+    if bps != 8 {
+        // §7.10.2 admits 1/2/4/8/12/16/24/32. We accept the canonical
+        // 8-bit case used by every tint-transform PDF observed in the
+        // wild. Wider depths fall through to None so the caller can
+        // record the unsupported case (currently the only consumer is
+        // /BC, which records via parent dispatch).
+        return None;
+    }
+    let max_sample = 255.0_f32;
+
+    let bytes = match obj {
+        Object::Stream { .. } => obj.decode_stream_data().ok()?,
+        _ => return None,
+    };
+    if bytes.len() < total_samples {
+        return None;
+    }
+
+    // Encode: linearly remap each domain input to a continuous index
+    // in `[0, Size_i - 1]`. Defaults to `[0 Size_i - 1]` per spec.
+    let encode_arr = dict.get("Encode").and_then(|o| o.as_array());
+    let mut encoded_idx: Vec<f32> = Vec::with_capacity(n_in);
+    for i in 0..n_in {
+        let d_lo = obj_to_f32(domain_arr.get(2 * i)?)?;
+        let d_hi = obj_to_f32(domain_arr.get(2 * i + 1)?)?;
+        let (e_lo, e_hi) = if let Some(arr) = encode_arr {
+            if arr.len() == 2 * n_in {
+                (obj_to_f32(arr.get(2 * i)?)?, obj_to_f32(arr.get(2 * i + 1)?)?)
+            } else {
+                (0.0, (sizes[i] - 1) as f32)
+            }
+        } else {
+            (0.0, (sizes[i] - 1) as f32)
+        };
+        let x = bc[i].clamp(d_lo, d_hi);
+        let mapped = if (d_hi - d_lo).abs() <= f32::EPSILON {
+            e_lo
+        } else {
+            e_lo + (x - d_lo) * (e_hi - e_lo) / (d_hi - d_lo)
+        };
+        let clamped = mapped.clamp(0.0, (sizes[i] - 1) as f32);
+        encoded_idx.push(clamped);
+    }
+
+    // N-linear interpolation among the 2^n surrounding integer-grid
+    // points. `lo_i` is the floor index per dimension, `frac_i` is the
+    // fractional offset toward the next grid point.
+    let mut lo: Vec<usize> = Vec::with_capacity(n_in);
+    let mut frac: Vec<f32> = Vec::with_capacity(n_in);
+    for i in 0..n_in {
+        let v = encoded_idx[i];
+        let lo_i = (v.floor() as isize).max(0) as usize;
+        let lo_i = lo_i.min(sizes[i] - 1);
+        let f_i = if lo_i + 1 >= sizes[i] {
+            0.0
+        } else {
+            v - lo_i as f32
+        };
+        lo.push(lo_i);
+        frac.push(f_i);
+    }
+
+    // Stride per dimension. Dimension 0 varies fastest: stride[0] = n_out,
+    // stride[i] = stride[i-1] * sizes[i-1].
+    let mut strides: Vec<usize> = Vec::with_capacity(n_in);
+    let mut acc = n_out;
+    for size in &sizes {
+        strides.push(acc);
+        acc = acc.checked_mul(*size)?;
+    }
+
+    // Decode: per-output `[lo hi]` mapping the [0, 255] sample byte to
+    // the function's output range. Defaults to `Range`.
+    let decode_arr = dict.get("Decode").and_then(|o| o.as_array());
+
+    let mut out = Vec::with_capacity(n_out);
+    let combinations = 1usize << n_in;
+    for j in 0..n_out {
+        // Decode bounds for output j.
+        let (d_lo, d_hi) = if let Some(arr) = decode_arr {
+            if arr.len() == 2 * n_out {
+                (obj_to_f32(arr.get(2 * j)?)?, obj_to_f32(arr.get(2 * j + 1)?)?)
+            } else {
+                (obj_to_f32(range_arr.get(2 * j)?)?, obj_to_f32(range_arr.get(2 * j + 1)?)?)
+            }
+        } else {
+            (obj_to_f32(range_arr.get(2 * j)?)?, obj_to_f32(range_arr.get(2 * j + 1)?)?)
+        };
+        let r_lo = obj_to_f32(range_arr.get(2 * j)?)?;
+        let r_hi = obj_to_f32(range_arr.get(2 * j + 1)?)?;
+
+        let mut accum = 0.0_f32;
+        for c in 0..combinations {
+            // For each combination of {lo, lo+1} across the n_in dims,
+            // compute the offset into the packed stream and the
+            // multi-linear weight (product of per-dim weights).
+            let mut offset = j;
+            let mut weight = 1.0_f32;
+            for i in 0..n_in {
+                let upper = (c >> i) & 1 == 1;
+                let idx_i = if upper {
+                    (lo[i] + 1).min(sizes[i] - 1)
+                } else {
+                    lo[i]
+                };
+                offset += idx_i * strides[i];
+                let w_i = if upper { frac[i] } else { 1.0 - frac[i] };
+                weight *= w_i;
+            }
+            let raw = bytes[offset] as f32;
+            let decoded = d_lo + (raw / max_sample) * (d_hi - d_lo);
+            accum += weight * decoded;
+        }
+        out.push(accum.clamp(r_lo, r_hi));
+    }
+    Some(out)
+}
+
+/// Project a DeviceN /BC alternate-space tuple into RGB per §8.6.5.
+///
+/// Supports `DeviceGray` / `DeviceRGB` / `DeviceCMYK` (Name forms and
+/// short names), `[/CalGray <<dict>>]`, `[/CalRGB <<dict>>]`,
+/// `[/Lab <<dict>>]`, and `[/ICCBased <stream>]` of any N. Cal* and
+/// Lab use closed-form §8.6.5.2-4 projections; ICCBased delegates to
+/// the linked CMM (lcms2 or qcms) — when no CMM is linked in we fall
+/// back to the embedded `/Alternate` colour space recursively, per
+/// §8.6.5.5.
+fn project_bc_altspace_to_rgb(
+    doc: &PdfDocument,
+    alt_resolved: &Object,
+    values: &[f32],
+) -> Option<(f32, f32, f32)> {
+    // Name forms first.
+    if let Some(name) = alt_resolved.as_name() {
+        return match name {
+            "DeviceCMYK" | "CMYK" if values.len() >= 4 => {
+                Some(cmyk_to_rgb(values[0], values[1], values[2], values[3]))
+            },
+            "DeviceRGB" | "RGB" if values.len() >= 3 => Some((values[0], values[1], values[2])),
+            "DeviceGray" | "G" if !values.is_empty() => {
+                let v = values[0];
+                Some((v, v, v))
+            },
+            _ => None,
+        };
+    }
+
+    // Array forms — first element is the family name.
+    let arr = match alt_resolved {
+        Object::Array(a) => a,
+        _ => return None,
+    };
+    let family = arr.first().and_then(|o| o.as_name())?;
+    match family {
+        "DeviceCMYK" | "CMYK" if values.len() >= 4 => {
+            Some(cmyk_to_rgb(values[0], values[1], values[2], values[3]))
+        },
+        "DeviceRGB" | "RGB" if values.len() >= 3 => Some((values[0], values[1], values[2])),
+        "DeviceGray" | "G" if !values.is_empty() => {
+            let v = values[0];
+            Some((v, v, v))
+        },
+        "CalGray" => project_cal_gray_to_rgb(arr.get(1)?, values),
+        "CalRGB" => project_cal_rgb_to_rgb(arr.get(1)?, values),
+        "Lab" => project_lab_to_rgb(arr.get(1)?, values),
+        "ICCBased" => {
+            let stream_obj = arr.get(1)?;
+            let stream_resolved = doc.resolve_object(stream_obj).ok()?;
+            project_iccbased_to_rgb(doc, &stream_resolved, values)
+        },
+        _ => None,
+    }
+}
+
+/// §8.6.5.2 CalGray → linear XYZ → sRGB. The /Gamma exponent applies
+/// to the input value; the result is multiplied by /WhitePoint and
+/// then converted to sRGB through the standard D65 sRGB transform.
+fn project_cal_gray_to_rgb(dict_obj: &Object, values: &[f32]) -> Option<(f32, f32, f32)> {
+    let dict = dict_obj.as_dict()?;
+    let g = values.first().copied().unwrap_or(0.0).clamp(0.0, 1.0);
+    let gamma = dict
+        .get("Gamma")
+        .and_then(|o| o.as_real().or_else(|| o.as_integer().map(|i| i as f64)))
+        .unwrap_or(1.0) as f32;
+    let wp = read_whitepoint(dict);
+
+    // §8.6.5.2: A_g = a^gamma; X = X_w · A_g; Y = Y_w · A_g; Z = Z_w · A_g.
+    let a_g = g.powf(gamma);
+    let x = wp.0 * a_g;
+    let y = wp.1 * a_g;
+    let z = wp.2 * a_g;
+    Some(xyz_to_srgb(x, y, z))
+}
+
+/// Parse a Cal* / Lab `/WhitePoint` entry, defaulting to D65
+/// (0.9505, 1.0, 1.0890) per the standard sRGB / Cal* convention when
+/// the entry is missing or malformed.
+fn read_whitepoint(dict: &std::collections::HashMap<String, Object>) -> (f32, f32, f32) {
+    let arr = match dict.get("WhitePoint").and_then(|o| o.as_array()) {
+        Some(a) if a.len() == 3 => a,
+        _ => return (0.9505, 1.0, 1.0890),
+    };
+    let xw = obj_to_f32(&arr[0]).unwrap_or(0.9505);
+    let yw = obj_to_f32(&arr[1]).unwrap_or(1.0);
+    let zw = obj_to_f32(&arr[2]).unwrap_or(1.0890);
+    (xw, yw, zw)
+}
+
+/// §8.6.5.3 CalRGB → linear XYZ → sRGB. Per-channel /Gamma applied to
+/// the per-channel input, then the /Matrix multiplies the gamma-applied
+/// tuple into linear XYZ; XYZ → sRGB closes the chain.
+fn project_cal_rgb_to_rgb(dict_obj: &Object, values: &[f32]) -> Option<(f32, f32, f32)> {
+    let dict = dict_obj.as_dict()?;
+    if values.len() < 3 {
+        return None;
+    }
+    let a = values[0].clamp(0.0, 1.0);
+    let b = values[1].clamp(0.0, 1.0);
+    let c = values[2].clamp(0.0, 1.0);
+    let (g_r, g_g, g_b) = match dict.get("Gamma").and_then(|o| o.as_array()) {
+        Some(arr) if arr.len() == 3 => (
+            obj_to_f32(&arr[0]).unwrap_or(1.0),
+            obj_to_f32(&arr[1]).unwrap_or(1.0),
+            obj_to_f32(&arr[2]).unwrap_or(1.0),
+        ),
+        _ => (1.0_f32, 1.0_f32, 1.0_f32),
+    };
+    let mat = match dict.get("Matrix").and_then(|o| o.as_array()) {
+        Some(arr) if arr.len() == 9 => {
+            let mut m = [0.0_f32; 9];
+            for (i, slot) in m.iter_mut().enumerate() {
+                *slot = obj_to_f32(&arr[i]).unwrap_or(0.0);
+            }
+            m
+        },
+        _ => [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+    };
+
+    // §8.6.5.3: A = a^g_a, B = b^g_b, C = c^g_c; XYZ = Matrix · (A B C)^T.
+    // The matrix is stored column-major per spec (Table 64): the first
+    // three entries are the X column [X_a, Y_a, Z_a], the next three
+    // are the Y column, the last three are the Z column.
+    let a_p = a.powf(g_r);
+    let b_p = b.powf(g_g);
+    let c_p = c.powf(g_b);
+    let x = mat[0] * a_p + mat[3] * b_p + mat[6] * c_p;
+    let y = mat[1] * a_p + mat[4] * b_p + mat[7] * c_p;
+    let z = mat[2] * a_p + mat[5] * b_p + mat[8] * c_p;
+    Some(xyz_to_srgb(x, y, z))
+}
+
+/// §8.6.5.4 Lab → XYZ → sRGB via the standard CIELab inverse. The
+/// dictionary's /WhitePoint sets the reference white; the function
+/// `f^-1(t) = t^3 if t > 6/29, else 3·(6/29)^2·(t - 4/29)`.
+fn project_lab_to_rgb(dict_obj: &Object, values: &[f32]) -> Option<(f32, f32, f32)> {
+    let dict = dict_obj.as_dict()?;
+    if values.len() < 3 {
+        return None;
+    }
+    let l = values[0];
+    let a = values[1];
+    let b = values[2];
+
+    let wp = read_whitepoint(dict);
+
+    // §8.6.5.4: M = (L* + 16) / 116; L_X = M + a*/500; L_Z = M - b*/200.
+    let m = (l + 16.0) / 116.0;
+    let l_x = m + a / 500.0;
+    let l_z = m - b / 200.0;
+
+    fn inv_f(t: f32) -> f32 {
+        let cutoff = 6.0_f32 / 29.0;
+        if t > cutoff {
+            t * t * t
+        } else {
+            3.0 * cutoff * cutoff * (t - 4.0 / 29.0)
+        }
+    }
+
+    let x = wp.0 * inv_f(l_x);
+    let y = wp.1 * inv_f(m);
+    let z = wp.2 * inv_f(l_z);
+    Some(xyz_to_srgb(x, y, z))
+}
+
+/// Linear XYZ → sRGB via the standard ITU-R BT.709 / sRGB primaries
+/// matrix and the §IEC 61966-2-1 piecewise transfer function. Inputs
+/// are CIE XYZ tristimulus values normalised so Y_white = 1.
+fn xyz_to_srgb(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
+    // sRGB primaries matrix (D65 reference). The PDF Cal* /Lab specs
+    // express XYZ tristimulus values; sRGB is the canonical output.
+    let r = 3.2404542 * x - 1.5371385 * y - 0.4985314 * z;
+    let g = -0.969_266 * x + 1.8760108 * y + 0.041_556 * z;
+    let b = 0.0556434 * x - 0.2040259 * y + 1.0572252 * z;
+    fn gamma_compress(u: f32) -> f32 {
+        let u = u.clamp(0.0, 1.0);
+        if u <= 0.0031308 {
+            12.92 * u
+        } else {
+            1.055 * u.powf(1.0 / 2.4) - 0.055
+        }
+    }
+    (gamma_compress(r), gamma_compress(g), gamma_compress(b))
+}
+
+/// §8.6.5.5 ICCBased projection. Under a linked CMM (lcms2 or qcms),
+/// build a source-profile → sRGB transform and apply it. Without a
+/// linked CMM, fall back to the embedded `/Alternate` space and
+/// recurse. Without a /Alternate, fall back to the device family
+/// inferred from the stream's /N (DeviceGray for N=1, DeviceRGB for
+/// N=3, DeviceCMYK for N=4) per §8.6.5.5.
+fn project_iccbased_to_rgb(
+    doc: &PdfDocument,
+    stream_resolved: &Object,
+    values: &[f32],
+) -> Option<(f32, f32, f32)> {
+    let dict = stream_resolved.as_dict()?;
+    let n = dict.get("N").and_then(|o| o.as_integer()).unwrap_or(3);
+
+    #[cfg(any(feature = "icc-qcms", feature = "icc-lcms2"))]
+    {
+        if let Ok(bytes) = stream_resolved.decode_stream_data() {
+            if let Some(profile) = crate::color::IccProfile::parse(bytes, n.clamp(0, 255) as u8) {
+                let profile = std::sync::Arc::new(profile);
+                let intent = crate::color::RenderingIntent::default();
+                let transform = crate::color::Transform::new_srgb_target(
+                    std::sync::Arc::clone(&profile),
+                    intent,
+                );
+                if transform.has_cmm() {
+                    match n {
+                        4 if values.len() >= 4 => {
+                            let c_u8 = (values[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+                            let m_u8 = (values[1].clamp(0.0, 1.0) * 255.0).round() as u8;
+                            let y_u8 = (values[2].clamp(0.0, 1.0) * 255.0).round() as u8;
+                            let k_u8 = (values[3].clamp(0.0, 1.0) * 255.0).round() as u8;
+                            let rgb = transform.convert_cmyk_pixel(c_u8, m_u8, y_u8, k_u8);
+                            return Some((
+                                rgb[0] as f32 / 255.0,
+                                rgb[1] as f32 / 255.0,
+                                rgb[2] as f32 / 255.0,
+                            ));
+                        },
+                        3 if values.len() >= 3 => {
+                            let r_u8 = (values[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+                            let g_u8 = (values[1].clamp(0.0, 1.0) * 255.0).round() as u8;
+                            let b_u8 = (values[2].clamp(0.0, 1.0) * 255.0).round() as u8;
+                            let rgb = transform.convert_rgb_buffer(&[r_u8, g_u8, b_u8]);
+                            if rgb.len() >= 3 {
+                                return Some((
+                                    rgb[0] as f32 / 255.0,
+                                    rgb[1] as f32 / 255.0,
+                                    rgb[2] as f32 / 255.0,
+                                ));
+                            }
+                        },
+                        1 if !values.is_empty() => {
+                            let g_u8 = (values[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+                            let rgb = transform.convert_gray_buffer(&[g_u8]);
+                            if rgb.len() >= 3 {
+                                return Some((
+                                    rgb[0] as f32 / 255.0,
+                                    rgb[1] as f32 / 255.0,
+                                    rgb[2] as f32 / 255.0,
+                                ));
+                            }
+                        },
+                        _ => {},
+                    }
+                }
+            }
+        }
+    }
+
+    // No CMM (or CMM declined the profile) — recurse into /Alternate.
+    if let Some(alt_obj) = dict.get("Alternate") {
+        let alt_resolved = doc.resolve_object(alt_obj).ok()?;
+        return project_bc_altspace_to_rgb(doc, &alt_resolved, values);
+    }
+    // No /Alternate — synthesise the device family per /N (§8.6.5.5).
+    match n {
+        4 if values.len() >= 4 => Some(cmyk_to_rgb(values[0], values[1], values[2], values[3])),
+        3 if values.len() >= 3 => Some((values[0], values[1], values[2])),
+        1 if !values.is_empty() => Some((values[0], values[0], values[0])),
+        _ => None,
+    }
+}
+
+/// Returns `true` when the operator paints pixels into the pixmap.
+///
+/// Used by the knockout-group renderer to segment the operator stream
+/// at element boundaries. Per ISO 32000-1:2008 §11.4.6.2 each "element"
+/// in a knockout group is delimited by a paint operator and composites
+/// independently against the group's initial backdrop.
+fn is_paint_operator(op: &Operator) -> bool {
+    matches!(
+        op,
+        Operator::Fill
+            | Operator::FillEvenOdd
+            | Operator::Stroke
+            | Operator::FillStroke
+            | Operator::FillStrokeEvenOdd
+            | Operator::CloseFillStroke
+            | Operator::CloseFillStrokeEvenOdd
+            | Operator::PaintShading { .. }
+            | Operator::Do { .. }
+            | Operator::InlineImage { .. }
+            | Operator::Tj { .. }
+            | Operator::TJ { .. }
+            | Operator::Quote { .. }
+            | Operator::DoubleQuote { .. }
+    )
+}
+
 /// Returns `true` when the resolved `(r, g, b, a)` matches the supplied
 /// rgb triple and alpha within [`RGBA_MATCH_EPSILON`] on every channel.
 ///
@@ -3521,6 +8139,254 @@ fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
     let g = 1.0 - (m + k).min(1.0);
     let b = 1.0 - (y + k).min(1.0);
     (r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0))
+}
+
+/// ISO 32000-1 §11.7.4.3 / Table 149 source colour space classes.
+///
+/// The CompatibleOverprint blend function `B(c_b, c_s)` selects between
+/// source replace (`c_s`) and backdrop preserve (`c_b`) per-channel
+/// based on (a) which source CS class the paint operator uses and (b)
+/// whether OPM=1's zero-source-preserve rule applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceCsClass {
+    /// `DeviceCMYK` specified directly via `k` / `K` / `sc` / `scn` on
+    /// a `/DeviceCMYK` colour space. This is Table 149 row 1 — the only
+    /// class for which the OPM=1 zero-source-preserve rule applies. The
+    /// process colour components (C, M, Y, K) of the group colour space
+    /// receive `B = c_s` under OPM=0 and `B = (c_s if c_s≠0 else c_b)`
+    /// under OPM=1.
+    DeviceCmykDirect,
+    /// Any other process colour space — `DeviceGray`, `DeviceRGB`,
+    /// `CalGray`, `CalRGB`, `ICCBased` of any N, or `DeviceCMYK`
+    /// not-directly-specified (e.g. a sampled image's pixel colours).
+    /// Table 149 row 2: all process colour components of the group CS
+    /// get `B = c_s` regardless of OPM. The OPM=1 zero-source-preserve
+    /// rule does not apply (§11.7.4.5: "Nonzero overprint mode shall
+    /// apply only to painting operations that use the current colour
+    /// in the graphics state when the current colour space is
+    /// DeviceCMYK").
+    OtherProcess,
+    /// `Separation` or non-process `DeviceN`. Table 149 row 3: process
+    /// colour components preserve backdrop (`B = c_b`); the named-spot
+    /// lanes carry `c_s`; unnamed spot lanes preserve backdrop. The
+    /// process-side override is the dispositive difference from the
+    /// process-CS classes — a Separation paint must NOT mark process
+    /// plates even when its alternate colour space rasterised an RGB
+    /// approximation into the composite buffer.
+    SeparationOrDeviceN,
+}
+
+/// One of the four DeviceCMYK process channels. Used by
+/// [`compose_overprint_channel`] to identify which channel index of the
+/// `Source` CMYK quadruple a per-channel call concerns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessChannel {
+    C,
+    M,
+    Y,
+    K,
+}
+
+/// Resolved source colour for the §11.7.4.3 CompatibleOverprint path.
+///
+/// The CMYK quadruple is the source colour expressed in DeviceCMYK
+/// regardless of the original colour space — for DeviceGray it is
+/// `(0, 0, 0, 1-g)`, for DeviceRGB it is the §10.3.5 additive-clamp
+/// inverse, and for Separation/DeviceN it is the alternate-space
+/// evaluation (or `(0, 0, 0, 0)` when the alternate path produces
+/// nothing — in that case the process-lane preserve rule does the work).
+#[derive(Debug, Clone, Copy)]
+struct OverprintSource {
+    class: SourceCsClass,
+    cmyk: (f32, f32, f32, f32),
+}
+
+/// Determine the §11.7.4.3 source colour for an overprint paint.
+///
+/// Returns `None` when no `B(c_b, c_s)` would fire — the caller should
+/// skip the per-channel pass.
+///
+/// The dispatch reads `gs.fill_color_space` / `gs.stroke_color_space`
+/// to classify the source. For DeviceCMYK direct we also require
+/// `fill_color_cmyk` / `stroke_color_cmyk` populated; if it is missing
+/// (e.g. a stale state where the colour space name is "DeviceCMYK" but
+/// the components vector is empty) we degrade gracefully to
+/// `OtherProcess` so the source CMYK is recovered from the RGB
+/// fallback below.
+fn source_for_overprint(gs: &GraphicsState, fill_side: bool) -> Option<OverprintSource> {
+    let (space_name, color_cmyk, color_rgb, components, spot_inks) = if fill_side {
+        (
+            gs.fill_color_space.as_str(),
+            gs.fill_color_cmyk,
+            gs.fill_color_rgb,
+            &gs.fill_color_components,
+            &gs.fill_spot_inks,
+        )
+    } else {
+        (
+            gs.stroke_color_space.as_str(),
+            gs.stroke_color_cmyk,
+            gs.stroke_color_rgb,
+            &gs.stroke_color_components,
+            &gs.stroke_spot_inks,
+        )
+    };
+    let overprint_active = if fill_side {
+        gs.fill_overprint
+    } else {
+        gs.stroke_overprint
+    };
+    if !overprint_active {
+        return None;
+    }
+
+    match space_name {
+        "DeviceCMYK" | "CMYK" => {
+            // Table 149 row 1: DeviceCMYK specified directly. The
+            // graphics-state CMYK quadruple is the source. When the
+            // colour space is named DeviceCMYK but no component vector
+            // landed yet (initial-colour edge case after a `cs` without
+            // an `scn`), fall back to (0, 0, 0, 1) — the spec's §8.6.8
+            // initial colour for DeviceCMYK.
+            let cmyk = color_cmyk.unwrap_or((0.0, 0.0, 0.0, 1.0));
+            Some(OverprintSource {
+                class: SourceCsClass::DeviceCmykDirect,
+                cmyk,
+            })
+        },
+        "DeviceGray" | "G" | "CalGray" => {
+            // Table 149 row 2: DeviceGray maps to CMYK as (0, 0, 0, 1-g)
+            // per the standard gray→CMYK conversion (used by the
+            // device-space paint pipeline and §10.3.5).
+            let g = components.first().copied().unwrap_or(color_rgb.0);
+            let k = (1.0 - g).clamp(0.0, 1.0);
+            Some(OverprintSource {
+                class: SourceCsClass::OtherProcess,
+                cmyk: (0.0, 0.0, 0.0, k),
+            })
+        },
+        "DeviceRGB" | "RGB" | "CalRGB" => {
+            // Table 149 row 2: DeviceRGB maps to CMYK via the §10.3.5
+            // additive-clamp inverse `C = 1 - R`, `M = 1 - G`,
+            // `Y = 1 - B`, `K = 0`.
+            let r = components.first().copied().unwrap_or(color_rgb.0);
+            let g = components.get(1).copied().unwrap_or(color_rgb.1);
+            let b = components.get(2).copied().unwrap_or(color_rgb.2);
+            let c = (1.0 - r).clamp(0.0, 1.0);
+            let m = (1.0 - g).clamp(0.0, 1.0);
+            let y = (1.0 - b).clamp(0.0, 1.0);
+            Some(OverprintSource {
+                class: SourceCsClass::OtherProcess,
+                cmyk: (c, m, y, 0.0),
+            })
+        },
+        _ => {
+            // Composite-named space — Separation, DeviceN, ICCBased,
+            // Indexed, Pattern. The spot lanes (if any) are mirrored
+            // separately by `mirror_spot_paint_into_sidecar_with_coverage`;
+            // here we only need to know the process-side rule for the
+            // four CMYK channels.
+            //
+            // Dispatch precedence:
+            //
+            // 1. `color_cmyk` populated — DeviceN /Process attribution
+            //    (§8.6.6.5) is in play and the source CMYK was
+            //    reconstructed in `SetFillColorN`. Process lanes follow
+            //    Table 149 row 2 "any other process colour space"
+            //    regardless of whether a spot tail is also present:
+            //    the spot tail's tints land via the spot mirror, but
+            //    the process tail's tints still drive the process
+            //    channels via `B = c_s`. Mixed DeviceN /Process+spot
+            //    must NOT preserve backdrop on the process lanes — the
+            //    process tints are sourced from the same `scn` and
+            //    contribute to the C/M/Y/K plates.
+            //
+            // 2. `spot_inks` non-empty (no process CMYK) — pure
+            //    Separation or DeviceN with NO process attribution.
+            //    Process lanes preserve backdrop per Table 149 row 3;
+            //    the named spot lanes are handled by the spot mirror.
+            //
+            // 3. Otherwise — ICCBased / Pattern / Indexed / DeviceN
+            //    /Process whose /Process /ColorSpace the dispatcher
+            //    could not resolve (CalRGB / CalGray array forms,
+            //    malformed /Components per
+            //    HONEST_GAP_DEVICEN_PROCESS_MISMATCHED_NAMES). Falls
+            //    under Table 149 row 2; recover CMYK from the
+            //    convert-from-RGB additive-clamp inverse so the
+            //    per-process-channel `B = c_s` rule has a defensible
+            //    source value.
+            if let Some(cmyk) = color_cmyk {
+                Some(OverprintSource {
+                    class: SourceCsClass::OtherProcess,
+                    cmyk,
+                })
+            } else if !spot_inks.is_empty() {
+                Some(OverprintSource {
+                    class: SourceCsClass::SeparationOrDeviceN,
+                    cmyk: (0.0, 0.0, 0.0, 0.0),
+                })
+            } else {
+                let (r, g, b) = color_rgb;
+                let c = (1.0 - r).clamp(0.0, 1.0);
+                let m = (1.0 - g).clamp(0.0, 1.0);
+                let y = (1.0 - b).clamp(0.0, 1.0);
+                Some(OverprintSource {
+                    class: SourceCsClass::OtherProcess,
+                    cmyk: (c, m, y, 0.0),
+                })
+            }
+        },
+    }
+}
+
+/// ISO 32000-1 §11.7.4.3 + §11.3.3 per-channel composed result.
+///
+/// Computes `c_r = α · B(c_b, c_s) + (1 − α) · c_b` for one process
+/// channel, where `B` is the CompatibleOverprint blend function per
+/// Table 149. The dispatch closely follows Table 149's rows; see the
+/// docstring on [`PageRenderer::apply_overprint_after_paint`] for the
+/// table layout.
+///
+/// - `class` — which Table 149 row applies.
+/// - `channel` — the C/M/Y/K identity of this call.
+/// - `c_s`, `c_b` — source and backdrop subtractive tints for this
+///   channel.
+/// - `opm` — graphics-state `/OPM` value (0 or 1).
+/// - `alpha` — effective shape × opacity for the pixel.
+fn compose_overprint_channel(
+    class: SourceCsClass,
+    _channel: ProcessChannel,
+    c_s: f32,
+    c_b: f32,
+    opm: u8,
+    alpha: f32,
+) -> f32 {
+    let b = match class {
+        SourceCsClass::DeviceCmykDirect => {
+            // Table 149 row 1: B = c_s for C/M/Y/K under OPM=0 or when
+            // c_s ≠ 0 under OPM=1; B = c_b for c_s == 0 under OPM=1.
+            // The §11.7.4.5 NOTE 1 explicitly restricts the OPM=1
+            // preserve rule to the directly-specified-DeviceCMYK case.
+            if opm == 1 && c_s == 0.0 {
+                c_b
+            } else {
+                c_s
+            }
+        },
+        SourceCsClass::OtherProcess => {
+            // Table 149 row 2: B = c_s for every process colour
+            // component of the group CS regardless of OPM.
+            c_s
+        },
+        SourceCsClass::SeparationOrDeviceN => {
+            // Table 149 row 3: process colour components preserve
+            // backdrop. The named-spot lanes are handled by the spot
+            // sidecar mirror, not by this per-process-channel pass.
+            c_b
+        },
+    };
+    let alpha = alpha.clamp(0.0, 1.0);
+    alpha * b + (1.0 - alpha) * c_b
 }
 
 fn apply_pending_clip(

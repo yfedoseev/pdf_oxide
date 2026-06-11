@@ -223,7 +223,7 @@ impl ColorResolver {
         // composite-surface concern — the plates ARE the press-target
         // ink coverage, so dropping the CMYK channel values for a
         // monolithic Rgba would zero out every plate.
-        #[cfg(feature = "icc")]
+        #[cfg(any(feature = "icc-qcms", feature = "icc-lcms2"))]
         if n == 4 && components.len() >= 4 {
             if let Ok(bytes) = resolved_stream.decode_stream_data() {
                 if let Some(profile) = crate::color::IccProfile::parse(bytes, 4) {
@@ -287,7 +287,7 @@ impl ColorResolver {
         // hit by every bare /DeviceRGB paint on the page, so caching
         // the compiled qcms transform pays back for the same reason
         // the CMYK arm above does.
-        #[cfg(feature = "icc")]
+        #[cfg(any(feature = "icc-qcms", feature = "icc-lcms2"))]
         if n == 3 && components.len() >= 3 {
             if let Ok(bytes) = resolved_stream.decode_stream_data() {
                 if let Some(profile) = crate::color::IccProfile::parse(bytes, 3) {
@@ -340,7 +340,7 @@ impl ColorResolver {
         // and N=4 — the key is (profile.content_hash(), intent), no
         // n_components in the key, so the same cache amortises Gray
         // ICC alongside RGB and CMYK.
-        #[cfg(feature = "icc")]
+        #[cfg(any(feature = "icc-qcms", feature = "icc-lcms2"))]
         if n == 1 && !components.is_empty() {
             if let Ok(bytes) = resolved_stream.decode_stream_data() {
                 if let Some(profile) = crate::color::IccProfile::parse(bytes, 1) {
@@ -703,7 +703,7 @@ pub(crate) fn cmyk_to_rgb_via_intent(
     k: f32,
     ctx: &ResolutionContext<'_>,
 ) -> (f32, f32, f32) {
-    #[cfg(feature = "icc")]
+    #[cfg(any(feature = "icc-qcms", feature = "icc-lcms2"))]
     if let Some(profile) = ctx.output_intent_cmyk {
         let c_u8 = (c.clamp(0.0, 1.0) * 255.0).round() as u8;
         let m_u8 = (m.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -1178,7 +1178,7 @@ mod tests {
         assert!((b - 1.0).abs() < 1e-6);
     }
 
-    #[cfg(feature = "icc")]
+    #[cfg(any(feature = "icc-qcms", feature = "icc-lcms2"))]
     #[test]
     fn cmyk_to_rgb_via_intent_falls_back_when_profile_has_no_cmm() {
         // The header-only stub profile parses (IccProfile::parse accepts

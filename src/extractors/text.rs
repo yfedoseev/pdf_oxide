@@ -8399,6 +8399,7 @@ mod tests {
             wmode: 0,
             cid_vertical_metrics: None,
             cid_default_vertical_metrics: crate::fonts::VerticalMetrics::SPEC_DEFAULT,
+            cjk_substitution: None,
         }
     }
 

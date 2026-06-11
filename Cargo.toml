@@ -26,6 +26,8 @@ ignored = [
     # WASM-only runtime deps (gated on `wasm` feature)
     "getrandom_02",
     "web-sys",
+    # Press-grade ICC backend (gated on `icc-lcms2` feature)
+    "lcms2",
 ]
 ignored-paths = [
     # Runnable examples — not declared as [[example]] targets because they use
@@ -214,10 +216,19 @@ p384 = { version = "0.13", optional = true }                       # ECDSA P-384
 # Parallel extraction
 rayon = { version = "1.12", optional = true }
 
-# ICC colour management (Firefox's qcms, pure Rust). Default features
-# bring in `cmyk` + `iccv4-enabled` which cover every colour space PDF
-# /ICCBased streams actually use.
+# ICC colour management — pure-Rust qcms (Firefox's colour engine).
+# Default features bring in `cmyk` + `iccv4-enabled` which cover every
+# colour space PDF /ICCBased streams actually use.  Gated on
+# `icc-qcms`; the legacy `icc` feature aliases to it.
 qcms = { version = "0.3", optional = true }
+
+# ICC colour management — press-grade lcms2 (Little CMS, C). Opt-in
+# behind `icc-lcms2` because it pulls in the lcms2-sys C dependency.
+# Required for CMYK→CMYK profile retargeting, Black Point Compensation,
+# and per-intent dispatch — the bits qcms 0.3 doesn't implement. Real
+# prepress / packaging consumers turn this on; library embedders
+# targeting WASM or C# AOT stay on the qcms default.
+lcms2 = { version = "6", optional = true }
 
 # Math and algorithms
 ndarray = { version = "0.17", optional = true, features = ["std"] }
@@ -323,13 +334,16 @@ logging = []
 # value falls back to the /DA font and emits a warning instead of embedding.
 cjk-form-fonts = []
 
-# Bundle Droid Sans Fallback (CJK) into the page renderer's font database so
-# that composite (Type 0) fonts which reference a glyph collection but embed no
-# outlines — e.g. the predefined Adobe character collections a PDF processor
-# "shall support" per ISO 32000-2 §9.7.5.2 — still paint real glyphs instead of
-# nothing on hosts that have no system CJK font installed. Opt-in because it
-# adds ~4 MB of font data to the binary; when disabled, such fonts fall back to
-# whatever system CJK font exists (and render blank if none is present).
+# Bundle Droid Sans Fallback so the page-render path can substitute a covering
+# CJK font when the source PDF references an Adobe predefined CIDFont
+# (Ryumin-Light, GothicBBB-Medium, HeiseiMin-W3, STSong-Light, MHei-Medium,
+# HYSMyeongJo-Medium, …) without embedding glyph outlines — ISO 32000-2 §9.7.5.2
+# requires a conforming reader to ship the Adobe-CNS1, Adobe-GB1,
+# Adobe-Japan1 and Adobe-KR character collections. CID → Unicode (via the
+# bundled cid_mappings tables) → Droid Sans glyph_id; produces a sans-serif
+# rendering even when the document asked for Mincho / Gothic. Opt-in because
+# the bundled font adds ~3.4 MB to the binary. Independent of `cjk-form-fonts`
+# so the form-flatten path's behaviour is unchanged when only one is on.
 cjk-render-fallback = []
 
 # FIPS 140-3 validated cryptographic backend (issue #236).
@@ -347,12 +361,28 @@ cjk-render-fallback = []
 # Combining `fips` with `legacy-crypto` is a compile-time error.
 fips = ["dep:aws-lc-rs", "aws-lc-rs/fips"]
 
-# Real ICC colour management via qcms (Firefox's colour engine).
-# When enabled, ICCBased colour spaces and CMYK images are converted
-# using the embedded profile instead of ISO 32000-1 §10.3.5's
-# additive-clamp fallback. Pure Rust, so WASM and C# AOT targets keep
-# working without a C toolchain dependency.
-icc = ["dep:qcms"]
+# Real ICC colour management.
+#
+# Three modes:
+#
+#  - `icc-qcms` (default, via the `icc` alias): pure-Rust Firefox-derived
+#    colour engine. CMYK→RGB through the embedded profile, no CMYK→CMYK
+#    retargeting, no Black Point Compensation. Pure Rust so WASM and
+#    C# AOT targets keep working without a C toolchain dependency.
+#
+#  - `icc-lcms2`: opt-in C-dep press-grade CMM. Adds CMYK→CMYK profile
+#    retargeting through Lab PCS (closes the DeviceN /Process ICC
+#    profile-mismatch gap for prepress/packaging workloads), BPC, and
+#    per-intent dispatch the spec asks for. Drags in lcms2-sys (C).
+#
+#  - both: when both `icc-qcms` and `icc-lcms2` are enabled the active
+#    backend is lcms2 — it's the strict superset.
+#
+# Backwards-compat alias: `icc` resolves to `icc-qcms`. Users who built
+# with `--features icc` keep the same behaviour and the same dep graph.
+icc = ["icc-qcms"]
+icc-qcms = ["dep:qcms"]
+icc-lcms2 = ["dep:lcms2"]
 
 # Gate MD5 key-derivation (R≤4 PDF Standard Security) and RC4 cipher
 # behind this feature. Default-on so existing users keep full R≤4 read/write

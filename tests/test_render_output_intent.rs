@@ -1174,6 +1174,14 @@ fn output_intent_render_pixel_is_byte_exact_against_qcms_reference() {
 /// no out-of-gamut excursion to compress. If qcms ever starts producing
 /// different values per intent on a constant CLUT that's a CMM bug
 /// worth surfacing.
+///
+/// This assertion holds for qcms 0.3.0 (which ignores the intent
+/// parameter for CMYK inputs altogether) but NOT for lcms2 with BPC
+/// on — BPC adjusts the black-point mapping per intent even on a
+/// constant CLUT, so the four intents legitimately produce different
+/// shadow-region bytes.  Gated to qcms-only so the probe stays
+/// meaningful when the icc-lcms2 backend is also linked in.
+#[cfg(not(feature = "icc-lcms2"))]
 #[test]
 fn output_intent_constant_clut_is_invariant_across_rendering_intents() {
     use pdf_oxide::color::{IccProfile, RenderingIntent, Transform};
@@ -2145,6 +2153,14 @@ fn qa_round4_thousand_rgb_paints_through_default_rgb_build_one_transform() {
 /// IF qcms honoured them. Synthesising such a fixture requires a real
 /// CMM toolchain (curves + matrices + a true 4D CLUT) — deferred as
 /// HONEST_GAP_INTENT_SENSITIVE_FIXTURE.
+///
+/// Gated to qcms-only: under `icc-lcms2` the intent IS externally
+/// observable (lcms2 honours rendering intent + BPC for CMYK
+/// inputs), which is the round-7 closure path.  Running this probe
+/// under the lcms2 backend would correctly flip it RED — that's
+/// the gap closure documented at
+/// `HONEST_GAP_DEVICEN_PROCESS_ICC_PROFILE_MISMATCH_R7`.
+#[cfg(not(feature = "icc-lcms2"))]
 #[test]
 fn qa_round3_qcms_030_treats_cmyk_intent_as_informational() {
     use pdf_oxide::color::{IccProfile, RenderingIntent, Transform};
@@ -3861,5 +3877,363 @@ fn output_intent_malformed_iccbased_stream_falls_through() {
         "a malformed /DestOutputProfile stream (sub-header-length garbage) \
          must fall through to §10.3.5 additive-clamp byte-for-byte without \
          panicking; got ({r},{g},{b},{a})"
+    );
+}
+
+// ===========================================================================
+// ICC transform cache MUST be hoisted out of the per-pixel transparency loop
+// ===========================================================================
+//
+// `apply_cmyk_compose_after_paint_with_coverage` and
+// `apply_overprint_after_paint_with_coverage` previously called
+// `IccTransformCache::get_or_build` inside their per-pixel coverage loops.
+// The cache key hashes every byte of the ICC profile blob (SipHash via
+// `IccProfile::content_hash`), so a full-page transparency fill on a
+// 1000×1000-pixel page meant ~1M hashes of the same profile per paint.
+// The fix hoists the lookup once per call. These probes pin the hoist
+// via the test-support `build_count`: a single paint can only build the
+// transform once.
+
+/// Build a single-page PDF that declares one ExtGState with `/ca 0.5`,
+/// references it once via `gs`, then emits N opaque CMYK fills covering
+/// the whole page. Every fill routes through the
+/// `apply_cmyk_compose_after_paint_with_coverage` helper (transparency
+/// active → sidecar allocated → coverage path active). With the hoist,
+/// the cache must record exactly one build for the single (profile,
+/// intent) tuple in play.
+fn build_pdf_cmyk_with_transparency_and_repeated_paints(
+    icc_profile_bytes: &[u8],
+    paints: usize,
+) -> Vec<u8> {
+    let mut ops = String::new();
+    ops.push_str("/T gs\n");
+    for _ in 0..paints {
+        ops.push_str("0.25 0 0 0 k\n0 0 100 100 re\nf\n");
+    }
+    let catalog_entries =
+        "/OutputIntents [<< /Type /OutputIntent /S /GTS_PDFX /OutputCondition (S) /DestOutputProfile 5 0 R >>]";
+
+    // Re-implement the catalog-entries builder so the page can carry
+    // ExtGState in its /Resources. The shared helper hard-codes
+    // `<< >>` for resources.
+    let mut buf: Vec<u8> = Vec::new();
+    buf.extend_from_slice(b"%PDF-1.4\n");
+
+    let cat_off = buf.len();
+    let catalog =
+        format!("1 0 obj\n<< /Type /Catalog /Pages 2 0 R {} >>\nendobj\n", catalog_entries);
+    buf.extend_from_slice(catalog.as_bytes());
+
+    let pages_off = buf.len();
+    buf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+    let page_off = buf.len();
+    buf.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+         /Resources << /ExtGState << /T << /Type /ExtGState /ca 0.5 >> >> >> \
+         /Contents 4 0 R >>\nendobj\n",
+    );
+
+    let stream_off = buf.len();
+    let stream_hdr = format!("4 0 obj\n<< /Length {} >>\nstream\n", ops.len());
+    buf.extend_from_slice(stream_hdr.as_bytes());
+    buf.extend_from_slice(ops.as_bytes());
+    buf.extend_from_slice(b"\nendstream\nendobj\n");
+
+    let icc_off = buf.len();
+    let icc_hdr = format!("5 0 obj\n<< /N 4 /Length {} >>\nstream\n", icc_profile_bytes.len());
+    buf.extend_from_slice(icc_hdr.as_bytes());
+    buf.extend_from_slice(icc_profile_bytes);
+    buf.extend_from_slice(b"\nendstream\nendobj\n");
+
+    let xref_off = buf.len();
+    buf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+    for off in [cat_off, pages_off, page_off, stream_off, icc_off] {
+        buf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+    }
+    buf.extend_from_slice(
+        format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off).as_bytes(),
+    );
+    buf
+}
+
+/// Pin that `apply_cmyk_compose_after_paint_with_coverage` builds the
+/// ICC transform exactly once per (profile, intent), even across many
+/// paints touching the full page under transparency. Before the hoist
+/// fix the cache was queried per pixel — for a 100×100 page rendered
+/// at 72 DPI that meant one hash of the entire ICC blob for every
+/// pixel covered. The counter is exact: 1 = hoisted, > paint count
+/// = per-pixel regression.
+#[cfg(feature = "test-support")]
+#[test]
+fn cmyk_transparency_compose_hoists_icc_transform_cache_lookup() {
+    use pdf_oxide::rendering::{PageRenderer, RenderOptions};
+
+    let icc = build_minimal_cmyk_to_rgb_lut8_profile(135);
+    let paints: usize = 8;
+    let pdf = build_pdf_cmyk_with_transparency_and_repeated_paints(&icc, paints);
+    let doc = PdfDocument::from_bytes(pdf).expect("open");
+
+    let mut renderer = PageRenderer::new(RenderOptions::with_dpi(72));
+    let _ = renderer.render_page(&doc, 0).expect("render");
+
+    let built = renderer.icc_transform_cache_build_count();
+    assert_eq!(
+        built, 1,
+        "Many full-page transparency CMYK paints under one OutputIntent \
+         profile and one rendering intent must build the qcms Transform \
+         exactly once. Built {built} times — the per-paint transform \
+         cache regressed or is missing."
+    );
+
+    // The hoist guards against per-pixel `get_or_build` calls. The
+    // cache returns the same `Arc<Transform>` on every hit so
+    // `build_count` cannot distinguish "hoisted" from "per-pixel"; the
+    // `lookup_count` counter increments on every CALL regardless of
+    // hit/miss, so it cleanly does. On a 100×100 page with 8 paints
+    // covering the full canvas, the per-pixel regression would record
+    // ≈ 8 × 10_000 = 80_000 lookups; the hoisted path records at most
+    // a small constant per paint (one for the with_coverage helper).
+    let looked_up = renderer.icc_transform_cache_lookup_count();
+    assert!(
+        looked_up <= paints * 4,
+        "Per-pixel `get_or_build` regression detected in \
+         `apply_cmyk_compose_after_paint_with_coverage`: {paints} \
+         full-page CMYK paints recorded {looked_up} ICC-transform \
+         lookups. The hoist caps lookups at a small constant per paint \
+         (one call per `get_or_build` site reached); a per-pixel \
+         lookup scales with painted-pixel count (100×100 = 10_000 per \
+         paint here)."
+    );
+}
+
+/// Pin the same hoist for the overprint helper. The fixture toggles
+/// `/OP true` on the ExtGState so process-colour overprint composition
+/// routes through `apply_overprint_after_paint_with_coverage`. The
+/// build count must remain at 1 across many overprint paints.
+fn build_pdf_cmyk_with_overprint_and_repeated_paints(
+    icc_profile_bytes: &[u8],
+    paints: usize,
+) -> Vec<u8> {
+    let mut ops = String::new();
+    ops.push_str("/T gs\n");
+    for _ in 0..paints {
+        ops.push_str("0.25 0 0 0 k\n0 0 100 100 re\nf\n");
+    }
+    let catalog_entries =
+        "/OutputIntents [<< /Type /OutputIntent /S /GTS_PDFX /OutputCondition (S) /DestOutputProfile 5 0 R >>]";
+
+    let mut buf: Vec<u8> = Vec::new();
+    buf.extend_from_slice(b"%PDF-1.4\n");
+
+    let cat_off = buf.len();
+    let catalog =
+        format!("1 0 obj\n<< /Type /Catalog /Pages 2 0 R {} >>\nendobj\n", catalog_entries);
+    buf.extend_from_slice(catalog.as_bytes());
+
+    let pages_off = buf.len();
+    buf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+    let page_off = buf.len();
+    buf.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+         /Resources << /ExtGState << /T << /Type /ExtGState /OP true /op true >> >> >> \
+         /Contents 4 0 R >>\nendobj\n",
+    );
+
+    let stream_off = buf.len();
+    let stream_hdr = format!("4 0 obj\n<< /Length {} >>\nstream\n", ops.len());
+    buf.extend_from_slice(stream_hdr.as_bytes());
+    buf.extend_from_slice(ops.as_bytes());
+    buf.extend_from_slice(b"\nendstream\nendobj\n");
+
+    let icc_off = buf.len();
+    let icc_hdr = format!("5 0 obj\n<< /N 4 /Length {} >>\nstream\n", icc_profile_bytes.len());
+    buf.extend_from_slice(icc_hdr.as_bytes());
+    buf.extend_from_slice(icc_profile_bytes);
+    buf.extend_from_slice(b"\nendstream\nendobj\n");
+
+    let xref_off = buf.len();
+    buf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+    for off in [cat_off, pages_off, page_off, stream_off, icc_off] {
+        buf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+    }
+    buf.extend_from_slice(
+        format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off).as_bytes(),
+    );
+    buf
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn cmyk_overprint_with_coverage_hoists_icc_transform_cache_lookup() {
+    use pdf_oxide::rendering::{PageRenderer, RenderOptions};
+
+    let icc = build_minimal_cmyk_to_rgb_lut8_profile(135);
+    let paints: usize = 8;
+    let pdf = build_pdf_cmyk_with_overprint_and_repeated_paints(&icc, paints);
+    let doc = PdfDocument::from_bytes(pdf).expect("open");
+
+    let mut renderer = PageRenderer::new(RenderOptions::with_dpi(72));
+    let _ = renderer.render_page(&doc, 0).expect("render");
+
+    let built = renderer.icc_transform_cache_build_count();
+    assert_eq!(
+        built, 1,
+        "Many full-page CMYK overprint paints under one OutputIntent \
+         profile and one rendering intent must build the qcms Transform \
+         exactly once."
+    );
+
+    let looked_up = renderer.icc_transform_cache_lookup_count();
+    assert!(
+        looked_up <= paints * 4,
+        "Per-pixel `get_or_build` regression detected in \
+         `apply_overprint_after_paint_with_coverage`: {paints} \
+         full-page CMYK overprint paints recorded {looked_up} ICC- \
+         transform lookups. Hoist caps lookups at a small constant \
+         per paint."
+    );
+}
+
+// ===========================================================================
+// H3b — silent K=0 RGB→CMYK fallback under declared /OutputIntents.
+//
+// `resolve_rgb_paint_to_cmyk` falls back to the §10.3.5 inverse
+// (C, M, Y) = (1−R, 1−G, 1−B), K = 0 whenever it can't get a CMYK
+// profile out of the document. That's the correct behaviour when no
+// /OutputIntents declaration was made at all (the producer didn't ask
+// for press conversion). When the catalog DOES declare /OutputIntents
+// but the profile bytes don't parse, the fallback silently degrades
+// press output — the K plane goes empty. This probe pins a one-shot
+// `log::warn!` on that surface so the silent degradation is
+// observable until upstream yfedoseev/pdf_oxide#712 (swallowed
+// profile-parse diagnostic) lands.
+// ===========================================================================
+
+/// Capture warn-level log records into an in-test buffer so the probe
+/// can grep for the H3b diagnostic. Mirrors `CapturingLogger` in
+/// `src/rendering/sidecar.rs::tests` — duplicated here because the
+/// integration test crate can't reach in-crate test types.
+struct WarnCaptureLogger {
+    buf: std::sync::Mutex<Vec<String>>,
+}
+impl log::Log for WarnCaptureLogger {
+    fn enabled(&self, m: &log::Metadata) -> bool {
+        m.level() <= log::Level::Warn
+    }
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            let mut g = self.buf.lock().unwrap();
+            g.push(format!("{}", record.args()));
+        }
+    }
+    fn flush(&self) {}
+}
+static WARN_CAPTURE_LOGGER: std::sync::OnceLock<&'static WarnCaptureLogger> =
+    std::sync::OnceLock::new();
+fn install_warn_capture_logger() -> &'static WarnCaptureLogger {
+    WARN_CAPTURE_LOGGER.get_or_init(|| {
+        let leaked: &'static WarnCaptureLogger = Box::leak(Box::new(WarnCaptureLogger {
+            buf: std::sync::Mutex::new(Vec::new()),
+        }));
+        let _ = log::set_logger(leaked);
+        log::set_max_level(log::LevelFilter::Warn);
+        leaked
+    })
+}
+
+/// Build a single-page PDF that declares `/OutputIntents` with a
+/// malformed /DestOutputProfile stream (64 bytes of garbage — below
+/// the 128-byte ICC header minimum) and an ExtGState with `/ca 0.5`
+/// to force the sidecar / RGB-to-CMYK mirror path. The page paints a
+/// non-trivial RGB rect so `resolve_rgb_paint_to_cmyk` runs.
+fn build_pdf_rgb_with_unparseable_output_intent() -> Vec<u8> {
+    let garbage: Vec<u8> = (0u8..=63u8).collect();
+    let ops = "/T gs\n0.4 0.6 0.8 rg\n0 0 100 100 re\nf\n";
+    let catalog_entries =
+        "/OutputIntents [<< /Type /OutputIntent /S /GTS_PDFX /OutputCondition (S) /DestOutputProfile 5 0 R >>]";
+
+    let mut buf: Vec<u8> = Vec::new();
+    buf.extend_from_slice(b"%PDF-1.4\n");
+    let cat_off = buf.len();
+    let catalog =
+        format!("1 0 obj\n<< /Type /Catalog /Pages 2 0 R {} >>\nendobj\n", catalog_entries);
+    buf.extend_from_slice(catalog.as_bytes());
+
+    let pages_off = buf.len();
+    buf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+    let page_off = buf.len();
+    buf.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+         /Resources << /ExtGState << /T << /Type /ExtGState /ca 0.5 >> >> >> \
+         /Contents 4 0 R >>\nendobj\n",
+    );
+
+    let stream_off = buf.len();
+    let stream_hdr = format!("4 0 obj\n<< /Length {} >>\nstream\n", ops.len());
+    buf.extend_from_slice(stream_hdr.as_bytes());
+    buf.extend_from_slice(ops.as_bytes());
+    buf.extend_from_slice(b"\nendstream\nendobj\n");
+
+    let icc_off = buf.len();
+    let icc_hdr = format!("5 0 obj\n<< /N 4 /Length {} >>\nstream\n", garbage.len());
+    buf.extend_from_slice(icc_hdr.as_bytes());
+    buf.extend_from_slice(&garbage);
+    buf.extend_from_slice(b"\nendstream\nendobj\n");
+
+    let xref_off = buf.len();
+    buf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+    for off in [cat_off, pages_off, page_off, stream_off, icc_off] {
+        buf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+    }
+    buf.extend_from_slice(
+        format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off).as_bytes(),
+    );
+    buf
+}
+
+#[test]
+fn h3b_rgb_paint_under_unparseable_output_intent_logs_k_zero_warning() {
+    use pdf_oxide::rendering::render_separations;
+
+    let logger = install_warn_capture_logger();
+    let start_len = logger.buf.lock().unwrap().len();
+
+    let pdf = build_pdf_rgb_with_unparseable_output_intent();
+    let doc = PdfDocument::from_bytes(pdf).expect("open synthetic PDF");
+
+    // Pre-condition: the catalog declares /OutputIntents and the
+    // accessor can't extract a usable CMYK profile.
+    assert!(doc.has_output_intents_declaration(), "fixture must declare /OutputIntents");
+    assert!(
+        doc.output_intent_cmyk_profile().is_none(),
+        "fixture's /DestOutputProfile is 64 bytes of garbage; \
+         IccProfile::parse must reject it and the accessor must \
+         surface None"
+    );
+
+    // Render through the separation entry point: that route flips
+    // `force_cmyk_sidecar` so the sidecar lives even when no usable
+    // OutputIntent profile is in scope. The /ca 0.5 ExtGState
+    // satisfies the transparency-detection gate so the RGB-paint
+    // mirror path fires; that path calls `resolve_rgb_paint_to_cmyk`
+    // and hits the K=0 fallback.
+    let _plates = render_separations(&doc, 0, 72).expect("render separations");
+
+    let records: Vec<String> = {
+        let guard = logger.buf.lock().unwrap();
+        guard[start_len..].to_vec()
+    };
+    let saw_warning = records
+        .iter()
+        .any(|m| m.contains("K=0") && m.contains("/OutputIntents") && m.contains("712"));
+    assert!(
+        saw_warning,
+        "H3b: an RGB paint under a malformed /OutputIntents declaration \
+         must emit a `log::warn!` naming the K=0 fallback and upstream \
+         issue #712. Captured records since start: {:?}",
+        records
     );
 }

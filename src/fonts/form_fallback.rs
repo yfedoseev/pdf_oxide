@@ -84,6 +84,17 @@ pub fn font_bytes(kind: Fallback) -> &'static [u8] {
     }
 }
 
+/// Raw TrueType bytes for the bundled CJK fallback font, exposed for the
+/// page-render substitution path (ISO 32000-2 §9.7.5.2 — predefined CIDFont
+/// glyph supply). Gated on `cjk-render-fallback`; the form-flatten path uses
+/// the sibling `font_bytes(Fallback::Cjk)` accessor under `cjk-form-fonts` and
+/// the two paths are intentionally independent so enabling one does not
+/// activate the other.
+#[cfg(feature = "cjk-render-fallback")]
+pub fn render_cjk_fallback_bytes() -> &'static [u8] {
+    include_bytes!("assets/DroidSansFallbackFull.ttf")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

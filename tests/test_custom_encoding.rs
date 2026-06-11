@@ -209,6 +209,7 @@ fn create_font_with_encoding(encoding: Encoding) -> FontInfo {
         wmode: 0,
         cid_vertical_metrics: None,
         cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
+        cjk_substitution: None,
         type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),

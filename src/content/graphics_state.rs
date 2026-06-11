@@ -288,6 +288,61 @@ pub struct GraphicsState {
     /// Overprint mode (ExtGState `/OPM`): 0 = standard, 1 = nonzero
     /// ("Adobe nonzero overprint"). PDF default `0`.
     pub overprint_mode: u8,
+
+    /// Active Form-XObject soft mask (§11.4.7). When `Some`, each paint
+    /// operator within the graphics-state scope has its destination
+    /// alpha modulated by the rasterised Form XObject's projected
+    /// values (alpha channel for /S /Alpha, BT.601 luminance for
+    /// /S /Luminosity). PDF default `None` (no soft mask).
+    pub smask: Option<SoftMaskForm>,
+
+    /// Active spot ink names paired with their tint values for the most
+    /// recent fill paint. Populated by the SetFillColor / SetFillColorN
+    /// dispatchers when the active fill colour space is `/Separation`
+    /// (ISO 32000-1 §8.6.6.4) or `/DeviceN` (§8.6.6.5). Each tuple is
+    /// `(ink_name, subtractive_tint)` matching the source colorant
+    /// declaration order; `/All` and `/None` are surfaced verbatim so
+    /// the §8.6.6.3 reserved-name branch in the renderer can dispatch
+    /// on them. Empty Vec means "no explicit spot ink active" — i.e.
+    /// the fill came from Device-family / CIE-based / Indexed source.
+    ///
+    /// The sidecar's per-paint spot-lane mirror reads this field at
+    /// paint time to decide which lanes to write under the §11.7.3
+    /// "every object paints every component" + §11.7.4.2 BM split
+    /// rules. Process colorants named by a DeviceN /Process attrs dict
+    /// (§8.6.6.5) are NOT surfaced here — they ride the CMYK plane
+    /// alongside the spot lanes.
+    pub fill_spot_inks: Vec<(String, f32)>,
+    /// Same as [`Self::fill_spot_inks`], for the stroke side
+    /// (`SetStrokeColorN`, §8.6.5.1).
+    pub stroke_spot_inks: Vec<(String, f32)>,
+}
+
+/// Subtype of a soft-mask (§11.4.7 / Table 144 `S` field). Alpha uses
+/// the rasterised Form XObject's alpha channel as the modulation
+/// source; Luminosity uses the BT.601 luma of its RGB.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoftMaskSubtype {
+    /// `/S /Alpha` — modulation source is the form's alpha channel.
+    Alpha,
+    /// `/S /Luminosity` — modulation source is the form's BT.601 luma.
+    Luminosity,
+}
+
+/// Form-XObject soft-mask payload (§11.4.7).
+#[derive(Clone, Debug)]
+pub struct SoftMaskForm {
+    /// Reference to the Form XObject that supplies the mask geometry.
+    pub form_ref: crate::object::ObjectRef,
+    /// Alpha vs Luminosity projection.
+    pub subtype: SoftMaskSubtype,
+    /// Optional `/BC` backdrop colour. Length matches the Group
+    /// colour-space component count (1 for /DeviceGray, 3 for
+    /// /DeviceRGB, 4 for /DeviceCMYK). Per §11.4.7 honoured only for
+    /// /S /Luminosity.
+    pub backdrop: Option<Vec<f32>>,
+    /// Optional `/TR` transfer function (PDF Function object).
+    pub transfer: Option<crate::object::Object>,
 }
 
 impl GraphicsState {
@@ -337,6 +392,9 @@ impl GraphicsState {
             fill_overprint: false,           // §11.7.4 default
             stroke_overprint: false,         // §11.7.4 default
             overprint_mode: 0,               // §11.7.4 default (standard mode)
+            smask: None,                     // §11.4.7 default (no soft mask)
+            fill_spot_inks: Vec::new(),      // no spot source yet
+            stroke_spot_inks: Vec::new(),    // no spot source yet
         }
     }
 

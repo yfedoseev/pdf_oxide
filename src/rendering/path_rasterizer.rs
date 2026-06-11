@@ -1,6 +1,8 @@
 //! Path rasterizer - renders PDF paths using tiny-skia.
 
-use super::{create_fill_paint, create_stroke_paint};
+use super::{
+    create_fill_paint, create_stroke_paint, paint_with_nonsep_blend, pdf_blend_mode_is_nonseparable,
+};
 use crate::content::GraphicsState;
 use tiny_skia::{FillRule, LineCap, LineJoin, Path, Pixmap, Stroke, Transform};
 
@@ -67,7 +69,6 @@ impl PathRasterizer {
         fill_rule: FillRule,
         clip_mask: Option<&tiny_skia::Mask>,
     ) {
-        let paint = create_fill_paint(gs, &gs.blend_mode);
         // NOTE: do NOT compute `path.clone().transform(transform)` here just for
         // logging. Vector figures (scatter / contour plots embedded as Form
         // XObjects) trigger this path tens of thousands of times per page, and
@@ -85,6 +86,20 @@ impl PathRasterizer {
                 pixel_bounds
             );
         }
+
+        // §11.3.5.3 non-separable blend modes have no native tiny_skia
+        // counterpart. Route through the out-of-band path: render with
+        // Normal blending into a scratch pixmap, then per-pixel compose
+        // into the destination via HSL/HSY algorithm.
+        if let Some(mode) = pdf_blend_mode_is_nonseparable(&gs.blend_mode) {
+            let paint = create_fill_paint(gs, "Normal");
+            paint_with_nonsep_blend(pixmap, mode, |scratch| {
+                scratch.fill_path(path, &paint, fill_rule, transform, clip_mask);
+            });
+            return;
+        }
+
+        let paint = create_fill_paint(gs, &gs.blend_mode);
         pixmap.fill_path(path, &paint, fill_rule, transform, clip_mask);
     }
 
@@ -97,7 +112,6 @@ impl PathRasterizer {
         gs: &GraphicsState,
         clip_mask: Option<&tiny_skia::Mask>,
     ) {
-        let paint = create_stroke_paint(gs, &gs.blend_mode);
         // See fill_path_clipped: skip the expensive transformed-bounds compute
         // unless debug logging is enabled.
         if log::log_enabled!(log::Level::Debug) {
@@ -126,6 +140,17 @@ impl PathRasterizer {
             dash,
         };
 
+        // §11.3.5.3 non-separable blend modes go through the
+        // out-of-band scratch + HSL/HSY compose path.
+        if let Some(mode) = pdf_blend_mode_is_nonseparable(&gs.blend_mode) {
+            let paint = create_stroke_paint(gs, "Normal");
+            paint_with_nonsep_blend(pixmap, mode, |scratch| {
+                scratch.stroke_path(path, &paint, &stroke, transform, clip_mask);
+            });
+            return;
+        }
+
+        let paint = create_stroke_paint(gs, &gs.blend_mode);
         pixmap.stroke_path(path, &paint, &stroke, transform, clip_mask);
     }
 

@@ -30,11 +30,20 @@
 //! 3. Rasterize paths, text, and images to tiny-skia pixmap
 //! 4. Convert to output format (PNG/JPEG)
 
+pub(crate) mod blend_nonsep;
 pub(crate) mod ext_gstate;
 pub(crate) mod page_renderer;
 mod path_rasterizer;
 pub(crate) mod resolution;
 pub(crate) mod separation_renderer;
+/// CMYK + spot-ink compositing sidecar used by the page renderer to
+/// hold the §11.4 transparency-composite state during a page render.
+///
+/// Public so integration tests can drive the §11.7.4.2 dispatch
+/// classifier ([`crate::rendering::sidecar::BlendModeClass`]) directly
+/// without going through a rendered pixmap. Internal storage types
+/// (`CmykSidecar`) remain `pub(crate)`.
+pub mod sidecar;
 mod text_rasterizer;
 
 pub use page_renderer::{ImageFormat, PageRenderer, RenderOptions, RenderedImage};
@@ -93,6 +102,49 @@ pub(crate) fn pdf_blend_mode_to_skia(mode: &str) -> tiny_skia::BlendMode {
         "Exclusion" => tiny_skia::BlendMode::Exclusion,
         _ => tiny_skia::BlendMode::SourceOver,
     }
+}
+
+/// Returns `Some(mode)` when the PDF blend mode name is one of the four
+/// non-separable modes that tiny_skia cannot express natively. The
+/// caller renders the paint into a fresh scratch pixmap with Normal
+/// blending, then dispatches per-pixel composition via
+/// [`blend_nonsep::compose_in_place`].
+pub(crate) fn pdf_blend_mode_is_nonseparable(
+    mode: &str,
+) -> Option<blend_nonsep::NonSeparableBlend> {
+    blend_nonsep::NonSeparableBlend::from_name(mode)
+}
+
+/// Run `paint` into a fresh scratch pixmap (same dimensions as `dest`)
+/// with Normal blending, then per-pixel compose the scratch onto `dest`
+/// using the given non-separable mode per ISO 32000-1:2008 §11.3.5.3.
+///
+/// `paint` is a closure that paints into the supplied scratch pixmap
+/// using the rasteriser's normal code path; the closure must NOT set
+/// the non-separable blend mode on its paint object (the dispatcher
+/// substitutes Normal so the scratch captures only the source
+/// contribution).
+pub(crate) fn paint_with_nonsep_blend<F>(
+    dest: &mut tiny_skia::Pixmap,
+    mode: blend_nonsep::NonSeparableBlend,
+    paint: F,
+) where
+    F: FnOnce(&mut tiny_skia::Pixmap),
+{
+    let w = dest.width();
+    let h = dest.height();
+    let mut scratch = match tiny_skia::Pixmap::new(w, h) {
+        Some(p) => p,
+        None => {
+            // Allocation failed — fall back to direct paint (degraded
+            // mode is SourceOver, which is what the legacy dispatch
+            // does for non-separable modes). Better than panic.
+            paint(dest);
+            return;
+        },
+    };
+    paint(&mut scratch);
+    blend_nonsep::compose_in_place(dest.data_mut(), scratch.data(), mode);
 }
 
 /// Render a PDF page to an image.

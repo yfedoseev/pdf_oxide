@@ -12,7 +12,7 @@ use super::form_fields::{
 };
 use super::freetext::FreeTextAnnotation;
 use super::ink::InkAnnotation;
-use super::object_serializer::ObjectSerializer;
+use super::object_serializer::{hoist_appearance_streams, ObjectSerializer};
 use super::shape_annotations::{LineAnnotation, PolygonAnnotation, ShapeAnnotation};
 use super::special_annotations::{
     CaretAnnotation, FileAttachmentAnnotation, FileAttachmentIcon, PopupAnnotation,
@@ -1983,6 +1983,19 @@ impl PdfWriter {
             xref_offsets.push((*obj_id, output.len()));
             output.extend_from_slice(&serializer.serialize_indirect(*obj_id, 0, obj));
         }
+
+        // Hoist any inline appearance streams (e.g. a watermark's `/AP /N`)
+        // into their own indirect objects — a stream may not be a direct
+        // dictionary value. New ids come from `next_obj_id` and the extracted
+        // streams are appended so they get xref entries below.
+        let mut hoisted_ap_objects: Vec<(u32, Object)> = Vec::new();
+        for (_, annot_obj) in annotation_objects.iter_mut() {
+            if let Object::Dictionary(annot_dict) = annot_obj {
+                hoisted_ap_objects
+                    .extend(hoist_appearance_streams(annot_dict, &mut self.next_obj_id));
+            }
+        }
+        annotation_objects.extend(hoisted_ap_objects);
 
         // Annotation objects
         for (annot_id, annot_obj) in &annotation_objects {

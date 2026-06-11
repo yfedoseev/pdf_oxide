@@ -474,6 +474,17 @@ pub struct PdfDocument {
     /// happens to echo into the header band on every page (B3: pdfa_010
     /// would otherwise drop "University of Oklahoma 2009").
     running_artifact_signatures: Mutex<Option<std::collections::HashMap<String, usize>>>,
+    /// Memoised result of [`PdfDocument::output_intent_cmyk_profile`].
+    ///
+    /// The accessor walks `/OutputIntents` and decodes + parses the ICC
+    /// stream every call. The hot transparency / overprint paths invoke
+    /// it once per paint and the parse is non-trivial (qcms / lcms2
+    /// header validation + LUT decode on a profile blob that can be
+    /// hundreds of KB), so the result is cached for the document
+    /// lifetime here. `Some(None)` means "checked once, no usable CMYK
+    /// OutputIntent" — distinct from `None` (not yet checked).
+    output_intent_cmyk_profile_cache:
+        Mutex<Option<Option<std::sync::Arc<crate::color::IccProfile>>>>,
     /// Accumulated extraction warnings for programmatic inspection.
     /// Populated when silent fallbacks occur (font not found, CMap absent, etc.).
     /// Retrieve with [`PdfDocument::warnings`]; drain with [`PdfDocument::take_warnings`].
@@ -691,6 +702,33 @@ fn extract_inks_from_color_space_dict(
     doc: Option<&PdfDocument>,
     out: &mut Vec<String>,
 ) {
+    let mut visited: std::collections::HashSet<ObjectRef> = std::collections::HashSet::new();
+    for cs_def in cs_dict.values() {
+        collect_inks_from_color_space(cs_def, doc, out, &mut visited, 0);
+    }
+}
+
+/// Inner walker — surfaces inks from a single colour-space definition.
+/// Factored out of [`extract_inks_from_color_space_dict`] so the
+/// Pattern arm can recurse into its underlying colour space without
+/// requiring a synthetic single-entry dict.
+///
+/// **Cycle handling:** the Pattern arm recurses into the underlying
+/// colour space (§8.7.3.1). A self-referential array such as
+/// `5 0 obj [/Pattern 5 0 R]` would otherwise blow the stack, so
+/// indirect references are de-duplicated via `visited` (keyed on
+/// `ObjectRef`) and total depth is capped at `MAX_RECURSION_DEPTH`
+/// — the same backstop used by [`PdfDocument::walk_form_xobject_tree_for_inks`].
+fn collect_inks_from_color_space(
+    cs_def: &Object,
+    doc: Option<&PdfDocument>,
+    out: &mut Vec<String>,
+    visited: &mut std::collections::HashSet<ObjectRef>,
+    depth: u32,
+) {
+    if depth >= MAX_RECURSION_DEPTH {
+        return;
+    }
     let deref = |obj: &Object| -> Object {
         match (obj.as_reference(), doc) {
             (Some(r), Some(d)) => d.load_object(r).unwrap_or_else(|_| obj.clone()),
@@ -698,53 +736,97 @@ fn extract_inks_from_color_space_dict(
         }
     };
 
-    for cs_def in cs_dict.values() {
-        let arr = match cs_def.as_array() {
-            Some(a) => a,
-            None => continue,
-        };
-        if arr.len() < 2 {
-            continue;
-        }
-        let cs_type = match arr.first().and_then(Object::as_name) {
-            Some(n) => n,
-            None => continue,
-        };
-        match cs_type {
-            "Separation" => {
-                // §8.6.6.2: [/Separation /InkName /AlternateCS /TintTransform].
-                // The name slot is usually inline but resolve indirects for safety.
-                let name_obj = match arr.get(1) {
-                    Some(o) => deref(o),
-                    None => continue,
-                };
-                if let Some(ink) = name_obj.as_name() {
-                    if ink != "All" && ink != "None" {
-                        out.push(ink.to_string());
-                    }
+    let arr = match cs_def.as_array() {
+        Some(a) => a,
+        None => return,
+    };
+    if arr.len() < 2 {
+        return;
+    }
+    let cs_type = match arr.first().and_then(Object::as_name) {
+        Some(n) => n,
+        None => return,
+    };
+    match cs_type {
+        "Pattern" => {
+            // ISO 32000-1 §8.7.3.1: a Pattern colour space's
+            // optional second array element is the underlying
+            // colour space (uncoloured Tiling carries the
+            // underlying space's tints). Recurse so a Pattern
+            // with /Separation or /DeviceN underlying surfaces
+            // the spot colorants for plate allocation.
+            //
+            // Guard against self-referential cycles (e.g.
+            // `5 0 obj [/Pattern 5 0 R]`): an indirect underlying
+            // ref is recorded in `visited`; a repeat hit terminates
+            // the recursion silently.
+            if let Some(r) = arr[1].as_reference() {
+                if !visited.insert(r) {
+                    return;
                 }
-            },
-            "DeviceN" => {
-                // §8.6.6.3: [/DeviceN <names-array> /AlternateCS /TintTransform <attrs>].
-                // The names array is commonly emitted as an indirect reference
-                // when the same colorant set is shared across multiple DeviceN
-                // spaces; resolve before unpacking the names.
-                let names_obj = match arr.get(1) {
-                    Some(o) => deref(o),
-                    None => continue,
-                };
-                if let Some(inks) = names_obj.as_array() {
-                    for ink_obj in inks {
-                        if let Some(ink) = ink_obj.as_name() {
-                            if ink != "All" && ink != "None" {
-                                out.push(ink.to_string());
-                            }
+            }
+            let underlying = deref(&arr[1]);
+            collect_inks_from_color_space(&underlying, doc, out, visited, depth + 1);
+        },
+        "Separation" => {
+            // §8.6.6.2: [/Separation /InkName /AlternateCS /TintTransform].
+            // The name slot is usually inline but resolve indirects for safety.
+            let name_obj = deref(&arr[1]);
+            if let Some(ink) = name_obj.as_name() {
+                if ink != "All" && ink != "None" {
+                    out.push(ink.to_string());
+                }
+            }
+        },
+        "DeviceN" => {
+            // §8.6.6.5: [/DeviceN <names-array> /AlternateCS /TintTransform <attrs>].
+            // The names array is commonly emitted as an indirect reference
+            // when the same colorant set is shared across multiple DeviceN
+            // spaces; resolve before unpacking the names.
+            let names_obj = match arr.get(1) {
+                Some(o) => deref(o),
+                None => return,
+            };
+            // ISO 32000-1 §8.6.6.5 / Table 73: the optional 5th array
+            // element is the attributes dictionary. When its `/Process`
+            // sub-dictionary declares a `/Components` array, those names
+            // are PROCESS colorants (riding the page's process plates),
+            // not spot inks. The same rule applies whether the attrs
+            // dict's `/Subtype` is `/DeviceN` (the default, PDF 1.6) or
+            // `/NChannel` (PDF 1.7 stricter subtype) — §8.6.6.5 names the
+            // /Process key on both subtypes. Build the process-name set
+            // here so the colorants loop can filter against it.
+            let process_names: std::collections::HashSet<String> = arr
+                .get(4)
+                .map(&deref)
+                .as_ref()
+                .and_then(Object::as_dict)
+                .and_then(|attrs| attrs.get("Process"))
+                .map(&deref)
+                .as_ref()
+                .and_then(Object::as_dict)
+                .and_then(|proc_dict| proc_dict.get("Components"))
+                .map(&deref)
+                .as_ref()
+                .and_then(Object::as_array)
+                .map(|comps| {
+                    comps
+                        .iter()
+                        .filter_map(|o| o.as_name().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Some(inks) = names_obj.as_array() {
+                for ink_obj in inks {
+                    if let Some(ink) = ink_obj.as_name() {
+                        if ink != "All" && ink != "None" && !process_names.contains(ink) {
+                            out.push(ink.to_string());
                         }
                     }
                 }
-            },
-            _ => {},
-        }
+            }
+        },
+        _ => {},
     }
 }
 
@@ -994,6 +1076,7 @@ impl PdfDocument {
             page_content_cache: Mutex::new(BoundedEntryCache::new(64)),
             page_spans_cache: Mutex::new(BoundedEntryCache::new(8)),
             running_artifact_signatures: Mutex::new(None),
+            output_intent_cmyk_profile_cache: Mutex::new(None),
             accumulated_warnings: Mutex::new(Vec::new()),
             warning_sink: crate::extractors::warnings::WarningSink::new(),
         };
@@ -3719,6 +3802,55 @@ impl PdfDocument {
     /// Returns `None` when no output intent exists, no CMYK entry is
     /// present, or the profile stream can't be parsed as ICC.
     pub fn output_intent_cmyk_profile(&self) -> Option<std::sync::Arc<crate::color::IccProfile>> {
+        // Memoise the (potentially expensive) decode + parse: hot rendering
+        // paths consult this accessor once per paint, and qcms / lcms2
+        // header validation + LUT decode on a hundreds-of-KB profile is
+        // not free. `Some(None)` means "checked once, no usable CMYK
+        // OutputIntent"; a subsequent call must NOT re-walk the catalog.
+        if let Some(cached) = self
+            .output_intent_cmyk_profile_cache
+            .lock_or_recover()
+            .as_ref()
+        {
+            return cached.clone();
+        }
+        let resolved = self.compute_output_intent_cmyk_profile();
+        *self.output_intent_cmyk_profile_cache.lock_or_recover() = Some(resolved.clone());
+        resolved
+    }
+
+    /// True when the document catalog declares an `/OutputIntents`
+    /// array, regardless of whether the contained profile bytes
+    /// successfully parse. Coupled with
+    /// [`Self::output_intent_cmyk_profile`] returning `None`, this
+    /// distinguishes "no OutputIntent requested" (acceptable silent
+    /// fallback) from "OutputIntent requested but unusable" (degraded
+    /// press output that callers should warn about). Tracks upstream
+    /// issue yfedoseev/pdf_oxide#712 on swallowed profile-parse
+    /// diagnostics.
+    pub fn has_output_intents_declaration(&self) -> bool {
+        let Ok(catalog) = self.catalog() else {
+            return false;
+        };
+        let Some(cat_dict) = catalog.as_dict() else {
+            return false;
+        };
+        let Some(intents_obj) = cat_dict.get("OutputIntents") else {
+            return false;
+        };
+        let intents_obj = match intents_obj {
+            Object::Reference(r) => match self.load_object(*r) {
+                Ok(o) => o,
+                Err(_) => return false,
+            },
+            other => other.clone(),
+        };
+        matches!(intents_obj, Object::Array(_))
+    }
+
+    fn compute_output_intent_cmyk_profile(
+        &self,
+    ) -> Option<std::sync::Arc<crate::color::IccProfile>> {
         let catalog = self.catalog().ok()?;
         let cat_dict = catalog.as_dict()?;
 
@@ -3734,7 +3866,14 @@ impl PdfDocument {
 
         for entry in intents_arr {
             let entry = match entry {
-                Object::Reference(r) => self.load_object(r).ok()?,
+                // Skip a broken entry rather than aborting the whole array (§7.3.10).
+                Object::Reference(r) => match self.load_object(r) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        log::warn!("OutputIntents entry {r} could not be loaded ({e:?}); skipping");
+                        continue;
+                    },
+                },
                 other => other,
             };
             let entry_dict = match entry.as_dict() {
@@ -3745,10 +3884,19 @@ impl PdfDocument {
                 Some(p) => p.clone(),
                 None => continue,
             };
+            let profile_label = match &profile_obj {
+                Object::Reference(r) => format!("DestOutputProfile {r}"),
+                _ => "inline DestOutputProfile".to_string(),
+            };
             let profile_stream = match profile_obj {
-                Object::Reference(r) => match self.load_object(r) {
-                    Ok(o) => o,
-                    Err(_) => continue,
+                Object::Reference(r) => {
+                    match self.load_object(r) {
+                        Ok(o) => o,
+                        Err(e) => {
+                            log::warn!("OutputIntent {profile_label} could not be loaded ({e:?}); skipping");
+                            continue;
+                        },
+                    }
                 },
                 other => other,
             };
@@ -3762,10 +3910,20 @@ impl PdfDocument {
             };
             let bytes = match profile_stream.decode_stream_data() {
                 Ok(b) => b,
-                Err(_) => continue,
+                Err(e) => {
+                    log::warn!(
+                        "OutputIntent {profile_label} stream failed to decode ({e:?}); skipping"
+                    );
+                    continue;
+                },
             };
-            if let Some(prof) = crate::color::IccProfile::parse(bytes, n) {
-                return Some(std::sync::Arc::new(prof));
+            match crate::color::IccProfile::parse(bytes, n) {
+                Some(prof) => return Some(std::sync::Arc::new(prof)),
+                None => {
+                    log::warn!(
+                        "OutputIntent {profile_label} is not a valid N=4 ICC profile; skipping"
+                    )
+                },
             }
         }
         None
@@ -14544,35 +14702,64 @@ impl PdfDocument {
         Some(h)
     }
 
-    /// Document-aware extension of `font_identity_hash_cheap` that resolves
-    /// `/DescendantFonts` references on Type0 fonts and folds the descendant
-    /// CIDFont's width metrics (`/DW`, `/DW2`, `/W`, `/W2`) into the hash.
+    /// Document-aware extension of `font_identity_hash_cheap` that folds the
+    /// *content* of a font's document-specific streams — its `/ToUnicode` CMap
+    /// and embedded font program(s) — plus the descendant CIDFont's width
+    /// metrics (`/DW`, `/DW2`, `/W`, `/W2`) and stream-form `/CIDToGIDMap` into
+    /// the identity hash.
     ///
-    /// Without this, two Type0 fonts whose Type0 dicts have identical inline
-    /// shape (same BaseFont, Encoding, ToUnicode/DescendantFonts refs) but
-    /// whose referenced CIDFonts carry different vertical metrics collide on
-    /// the Layer 5/6 caches — the second document silently inherits the
-    /// first's `w1y` and renders vertical text at the wrong advance. This is
-    /// the same bug class as the ToUnicode-stream poisoning fixed in
-    /// `a327bcd` and the `/Widths` poisoning fixed in #598, applied to the
-    /// descendant CIDFont's horizontal AND vertical width arrays.
+    /// Why content, not just references: `font_identity_hash_cheap` folds only
+    /// the *reference* (object id/gen) of `/ToUnicode`, and the global cache is
+    /// skipped only for *canonical* subset fonts (`AAAAAA+`, six uppercase
+    /// letters + `+`; see `is_subset_basefont`). A non-canonical subset tag
+    /// such as `/CIDFont+F1` is therefore still shared cross-document, and
+    /// PDFs emitted from a common template reuse the same `/ToUnicode` object
+    /// number — so two genuinely different fonts that merely share a
+    /// `/BaseFont` name produce an identical cheap hash. Keyed only by that
+    /// hash, the cross-document global cache (Layer 6) served a later document
+    /// the *earlier* font's parsed `FontInfo`, and its glyph→Unicode mapping
+    /// came out as a constant-offset cipher or control/PUA junk (e.g.
+    /// `SUMMARY` → `6800$5<`). Folding the `/ToUnicode` stream bytes — and the
+    /// embedded `/FontFile{,2,3}` bytes — gives such fonts distinct keys so
+    /// they can never collide regardless of subset-tag form or object reuse,
+    /// while genuinely identical fonts still dedup. This completes the
+    /// cross-document hardening from #595/#597/#598 (which folded the
+    /// `/ToUnicode` *reference* and the `/Widths`, and excluded canonical
+    /// `AAAAAA+` subsets), applied to the field that actually decodes text.
     ///
-    /// Cost: one `load_object` per descendant CIDFont (typically one) on the
-    /// first call; subsequent calls hit `font_id_hash_cache`. The descendant
-    /// load is the same work `FontInfo::from_dict` will do later, so the
-    /// marginal cost when a font actually needs parsing is zero; the only
-    /// new work is on cache *hits* that previously skipped descendant
-    /// resolution entirely. In return we trade off one indirect-ref load per
-    /// unique Type0 font per process for correctness on /W2 + /DW2.
+    /// Cost: a few extra `load_object` calls (the `/ToUnicode` stream, each
+    /// descendant CIDFont, the `/FontDescriptor`s and their font programs) on
+    /// the first encounter of a font per document; subsequent calls hit
+    /// `font_id_hash_cache`, and the loads themselves are served from the
+    /// object cache that `FontInfo::from_dict` populates anyway. Stream bytes
+    /// are folded *raw* (still encoded) — see `fold_stream_bytes`.
     fn font_identity_hash_with_descendants(&self, font_obj: &Object) -> u64 {
         use std::hash::{Hash, Hasher};
         // Seed with the cheap inline hash so existing identity coverage is
-        // preserved bit-for-bit when there are no descendants to fold in.
+        // preserved bit-for-bit when there are no streams/descendants to fold.
         let base = Self::font_identity_hash_cheap(font_obj);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         base.hash(&mut hasher);
 
         if let Some(d) = font_obj.as_dict() {
+            // /ToUnicode stream BYTES — the decisive discriminator. The cheap
+            // hash folds only this stream's reference; folding its content is
+            // what stops same-named, differently-mapped fonts from colliding
+            // across documents when the cheap key matches (#595).
+            if let Some(to_unicode) = d.get("ToUnicode") {
+                17u8.hash(&mut hasher);
+                self.fold_stream_bytes(to_unicode, &mut hasher);
+            }
+
+            // Simple fonts (Type1/TrueType) carry their embedded program on the
+            // top-level /FontDescriptor. Two subset fonts that share a
+            // /BaseFont name but embed different glyph programs must not alias.
+            if let Some(fd) = d.get("FontDescriptor") {
+                if let Some(fd_obj) = self.resolve_indirect_for_hash(fd) {
+                    self.fold_font_program(&fd_obj, 18, &mut hasher);
+                }
+            }
+
             if let Some(Object::Array(arr)) = d.get("DescendantFonts") {
                 // Domain separator for the descendant section.
                 11u8.hash(&mut hasher);
@@ -14620,11 +14807,108 @@ impl PdfDocument {
                         16u8.hash(&mut hasher);
                         Self::hash_pdf_object_deterministic(csi, &mut hasher);
                     }
+                    // Descendant /Subtype: CIDFontType0 (CFF) and CIDFontType2
+                    // (TrueType) are not interchangeable even with identical
+                    // name + metrics; the top-level Subtype is `Type0` for both.
+                    if let Some(st) = dd.get("Subtype") {
+                        19u8.hash(&mut hasher);
+                        Self::hash_pdf_object_deterministic(st, &mut hasher);
+                    }
+                    // Embedded CIDFont program lives on the descendant's
+                    // /FontDescriptor (/FontFile2 for TrueType, /FontFile3 for
+                    // CFF). Folded under a distinct section so it cannot alias
+                    // a simple font's top-level program.
+                    if let Some(fd) = dd.get("FontDescriptor") {
+                        if let Some(fd_obj) = self.resolve_indirect_for_hash(fd) {
+                            self.fold_font_program(&fd_obj, 20, &mut hasher);
+                        }
+                    }
+                    // Descendant /CIDToGIDMap: the *stream* form remaps
+                    // CID→glyph (§9.7.4.3), so two otherwise-identical embedded
+                    // CIDFontType2 fonts with different maps select different
+                    // glyphs and must not alias. The `/Identity` name — and an
+                    // absent entry, which defaults to Identity — fold nothing,
+                    // so the common path's key is unchanged (and an explicit
+                    // `/Identity` still dedups with an absent one).
+                    if let Some(c2g) = dd.get("CIDToGIDMap") {
+                        if !matches!(c2g, Object::Name(_)) {
+                            21u8.hash(&mut hasher);
+                            self.fold_stream_bytes(c2g, &mut hasher);
+                        }
+                    }
                 }
             }
         }
 
         hasher.finish()
+    }
+
+    /// Resolve a single level of indirection for hashing: returns the
+    /// referenced object, the object itself when already inline, or `None`
+    /// when a reference cannot be loaded (cycle/missing). Used only to reach a
+    /// `/FontDescriptor` dict — it never re-enters the font dict, so it cannot
+    /// loop.
+    fn resolve_indirect_for_hash(&self, obj: &Object) -> Option<Object> {
+        match obj {
+            Object::Reference(r) => self.load_object(*r).ok(),
+            other => Some(other.clone()),
+        }
+    }
+
+    /// Fold the *raw* bytes of a (possibly indirectly-referenced) stream into
+    /// the hash. Folds nothing when the object is absent, unreadable, or not a
+    /// stream.
+    ///
+    /// Raw — still-encoded — bytes are deliberate. They are a sufficient
+    /// discriminator: different decoded content yields different encoded bytes
+    /// under any deterministic filter, so this never produces a *false* dedup
+    /// (two different fonts sharing a key). It avoids inflating large font
+    /// programs on the cache-key path. The only cost is a *missed* dedup when
+    /// the same logical content is stored under two different filters
+    /// (e.g. raw vs. FlateDecode) — harmless, and not a pattern a single
+    /// producer emits within a corpus.
+    fn fold_stream_bytes<H: std::hash::Hasher>(&self, obj: &Object, hasher: &mut H) {
+        use std::hash::Hash;
+        let owned;
+        let stream: &Object = match obj {
+            Object::Stream { .. } => obj,
+            Object::Reference(r) => match self.load_object(*r) {
+                Ok(o) => {
+                    owned = o;
+                    &owned
+                },
+                Err(_) => return,
+            },
+            _ => return,
+        };
+        if let Object::Stream { data, .. } = stream {
+            (data.len() as u64).hash(hasher);
+            data.as_ref().hash(hasher);
+        }
+    }
+
+    /// Fold any embedded font program (`/FontFile`, `/FontFile2`,
+    /// `/FontFile3`) reachable from a `/FontDescriptor` dict into the hash,
+    /// namespaced by `section` so a simple font's program and a descendant
+    /// CIDFont's program cannot alias each other.
+    fn fold_font_program<H: std::hash::Hasher>(
+        &self,
+        descriptor: &Object,
+        section: u8,
+        hasher: &mut H,
+    ) {
+        use std::hash::Hash;
+        let dict = match descriptor.as_dict() {
+            Some(d) => d,
+            None => return,
+        };
+        for (variant, key) in ["FontFile", "FontFile2", "FontFile3"].iter().enumerate() {
+            if let Some(ff) = dict.get(*key) {
+                section.hash(hasher);
+                (variant as u8).hash(hasher);
+                self.fold_stream_bytes(ff, hasher);
+            }
+        }
     }
 
     /// Hash a PDF `Object` deterministically. Used by the descendant-aware
@@ -24955,5 +25239,91 @@ mod ink_dict_extractor_tests {
         let mut out = Vec::new();
         extract_inks_from_color_space_dict(&cs_dict, None, &mut out);
         assert!(out.is_empty());
+    }
+
+    /// Build a minimal PDF that embeds a single colour-space object with a
+    /// self-referential Pattern array `5 0 obj [/Pattern 5 0 R]`. Used by the
+    /// cycle-handling regression below — the array as stored on disk is the
+    /// minimal shape that triggers unbounded recursion in the inks walker
+    /// before the depth/visited-set guard was added.
+    fn build_pdf_with_self_referential_pattern_cs() -> Vec<u8> {
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+
+        let off1 = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+        let off2 = pdf.len();
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+        let off3 = pdf.len();
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /ColorSpace << /CS0 5 0 R >> >> >>\nendobj\n",
+        );
+
+        let off4 = pdf.len();
+        pdf.extend_from_slice(b"4 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n");
+
+        // Object 5: a Pattern colour-space array whose underlying space is a
+        // reference back to itself — the cycle the regression guards against.
+        let off5 = pdf.len();
+        pdf.extend_from_slice(b"5 0 obj\n[/Pattern 5 0 R]\nendobj\n");
+
+        let xref_off = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 6\n");
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off1).as_bytes());
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off2).as_bytes());
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off3).as_bytes());
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off4).as_bytes());
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off5).as_bytes());
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off)
+                .as_bytes(),
+        );
+        pdf
+    }
+
+    #[test]
+    fn self_referential_pattern_cs_does_not_stack_overflow() {
+        // Regression: prior to the depth-bound + visited-set guard, a
+        // self-referential Pattern colour space (§8.7.3.1) recursed through
+        // `collect_inks_from_color_space` without termination and aborted
+        // the process with a stack overflow. The fix records each indirect
+        // underlying ref in a visited set and caps total walk depth at
+        // `MAX_RECURSION_DEPTH`, mirroring `walk_form_xobject_tree_for_inks`.
+        //
+        // The call must return without panicking; the inks vector is left
+        // empty because no concrete colorant ever surfaces on a self-cycle.
+        let pdf = build_pdf_with_self_referential_pattern_cs();
+        let doc = PdfDocument::from_bytes(pdf).expect("synthetic PDF should parse");
+
+        // Resolve `5 0 R` to the on-disk Pattern array; this matches how the
+        // page-level walker enters the helper after dereferencing a /ColorSpace
+        // resource entry.
+        let cs_def = doc
+            .load_object(ObjectRef { id: 5, gen: 0 })
+            .expect("object 5 should load");
+
+        let mut out = Vec::new();
+        let mut visited: std::collections::HashSet<ObjectRef> = std::collections::HashSet::new();
+        // The bug is a stack overflow, so the assertion is simply that this
+        // call returns. The visited-set must dedupe the self-reference on
+        // first encounter; without the guard, the recursion is unbounded.
+        super::collect_inks_from_color_space(&cs_def, Some(&doc), &mut out, &mut visited, 0);
+        assert!(
+            out.is_empty(),
+            "self-referential Pattern colour space surfaces no concrete colorants"
+        );
+    }
+
+    #[test]
+    fn get_page_inks_handles_self_referential_pattern_cs() {
+        // End-to-end shape of the same regression: the public
+        // `get_page_inks` entry point walks the resource dictionary and
+        // hits the cycle through the same helper. Must not stack-overflow.
+        let pdf = build_pdf_with_self_referential_pattern_cs();
+        let doc = PdfDocument::from_bytes(pdf).expect("synthetic PDF should parse");
+        let inks = doc.get_page_inks(0).expect("page-inks walk must not panic");
+        assert!(inks.is_empty(), "self-cycle yields no plates");
     }
 }

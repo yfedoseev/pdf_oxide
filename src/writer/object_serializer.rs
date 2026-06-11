@@ -404,6 +404,54 @@ impl ObjectSerializer {
     }
 }
 
+/// Hoist inline appearance streams out of an annotation dictionary into
+/// indirect objects, as the PDF spec requires.
+///
+/// An annotation's `/AP` appearance can carry stream objects under `/N`,
+/// `/D` and `/R` (each either a single stream or a sub-dictionary of named
+/// appearance states). Some builders construct these as a direct
+/// [`Object::Stream`] nested inside the dictionary — which serializes to an
+/// illegal inline `<< … >> stream … endstream` *inside* the annotation dict.
+/// A stream **must** be an indirect object (ISO 32000-1 §7.3.8), so this
+/// replaces every nested stream with an [`Object::Reference`] to a freshly
+/// allocated id (drawn from `next_id`, which is advanced) and returns the
+/// `(id, stream)` pairs for the caller to write as separate indirect objects.
+///
+/// Returns an empty vector when there is nothing to hoist, so it is safe to
+/// call on every annotation dictionary unconditionally.
+pub(crate) fn hoist_appearance_streams(
+    annot_dict: &mut HashMap<String, Object>,
+    next_id: &mut u32,
+) -> Vec<(u32, Object)> {
+    let mut extracted = Vec::new();
+    let mut hoist = |slot: &mut Object, out: &mut Vec<(u32, Object)>| {
+        if matches!(slot, Object::Stream { .. }) {
+            let id = *next_id;
+            *next_id += 1;
+            let stream = std::mem::replace(slot, Object::Reference(ObjectRef::new(id, 0)));
+            out.push((id, stream));
+        }
+    };
+
+    if let Some(Object::Dictionary(ap)) = annot_dict.get_mut("AP") {
+        for key in ["N", "D", "R"] {
+            match ap.get_mut(key) {
+                Some(slot @ Object::Stream { .. }) => hoist(slot, &mut extracted),
+                // A sub-dictionary of named appearance states (e.g. a
+                // checkbox's `/On` and `/Off`); hoist each state's stream.
+                Some(Object::Dictionary(states)) => {
+                    for state in states.values_mut() {
+                        hoist(state, &mut extracted);
+                    }
+                },
+                _ => {},
+            }
+        }
+    }
+
+    extracted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,6 +460,82 @@ mod tests {
     fn test_serialize_null() {
         let s = ObjectSerializer::new();
         assert_eq!(s.serialize_to_string(&Object::Null), "null");
+    }
+
+    fn stream(tag: &str) -> Object {
+        let mut d = HashMap::new();
+        d.insert("Subtype".to_string(), Object::Name("Form".to_string()));
+        Object::Stream {
+            dict: d,
+            data: bytes::Bytes::from(tag.to_string()),
+        }
+    }
+
+    #[test]
+    fn test_hoist_appearance_stream_replaces_inline_n_with_reference() {
+        // An annotation whose `/AP /N` is an inline stream must come back with
+        // `/N` rewritten to an indirect reference and the stream returned for
+        // separate writing -- a stream is illegal as a direct dict value.
+        let mut ap = HashMap::new();
+        ap.insert("N".to_string(), stream("appearance"));
+        let mut annot = HashMap::new();
+        annot.insert("Subtype".to_string(), Object::Name("Watermark".to_string()));
+        annot.insert("AP".to_string(), Object::Dictionary(ap));
+
+        let mut next_id = 42;
+        let hoisted = hoist_appearance_streams(&mut annot, &mut next_id);
+
+        assert_eq!(next_id, 43, "one id consumed");
+        assert_eq!(hoisted.len(), 1);
+        assert_eq!(hoisted[0].0, 42);
+        assert!(matches!(hoisted[0].1, Object::Stream { .. }));
+
+        let Object::Dictionary(ap) = &annot["AP"] else {
+            panic!("AP not a dict")
+        };
+        assert_eq!(ap["N"], Object::Reference(ObjectRef::new(42, 0)));
+
+        // And it must serialize as an indirect ref, never as an inline stream.
+        let rendered = ObjectSerializer::new().serialize_to_string(&annot["AP"]);
+        assert!(rendered.contains("42 0 R"), "got: {rendered}");
+        assert!(!rendered.contains("stream"), "inline stream leaked: {rendered}");
+    }
+
+    #[test]
+    fn test_hoist_appearance_handles_named_state_substreams() {
+        // `/N` may be a dict of named states (e.g. checkbox /On, /Off); each
+        // state's stream must be hoisted independently.
+        let mut states = HashMap::new();
+        states.insert("On".to_string(), stream("on"));
+        states.insert("Off".to_string(), stream("off"));
+        let mut ap = HashMap::new();
+        ap.insert("N".to_string(), Object::Dictionary(states));
+        let mut annot = HashMap::new();
+        annot.insert("AP".to_string(), Object::Dictionary(ap));
+
+        let mut next_id = 100;
+        let hoisted = hoist_appearance_streams(&mut annot, &mut next_id);
+
+        assert_eq!(hoisted.len(), 2);
+        assert_eq!(next_id, 102);
+        let Object::Dictionary(ap) = &annot["AP"] else {
+            panic!("AP not a dict")
+        };
+        let Object::Dictionary(states) = &ap["N"] else {
+            panic!("N not a dict")
+        };
+        assert!(matches!(states["On"], Object::Reference(_)));
+        assert!(matches!(states["Off"], Object::Reference(_)));
+    }
+
+    #[test]
+    fn test_hoist_appearance_noop_without_streams() {
+        // No `/AP`, or an `/AP` without streams, must consume no ids.
+        let mut annot = HashMap::new();
+        annot.insert("Subtype".to_string(), Object::Name("Link".to_string()));
+        let mut next_id = 7;
+        assert!(hoist_appearance_streams(&mut annot, &mut next_id).is_empty());
+        assert_eq!(next_id, 7);
     }
 
     #[test]

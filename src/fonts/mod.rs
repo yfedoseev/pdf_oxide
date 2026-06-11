@@ -27,6 +27,11 @@ pub mod form_fallback;
 /// Process-level cross-document font cache for batch processing.
 pub mod global_cache;
 pub mod non_text_detection;
+/// Adobe predefined CIDFont base-name registry for substitution when the PDF
+/// references one of the Adobe-Japan1 / Adobe-GB1 / Adobe-CNS1 / Adobe-Korea1
+/// faces (Ryumin-Light, GothicBBB-Medium, STSong-Light, …) without embedding
+/// glyph outlines. ISO 32000-2 §9.7.5.2 mandates support for these collections.
+pub mod predefined_cidfont;
 /// TrueType font CMap parsing for glyph-to-character mapping.
 pub mod truetype_cmap;
 /// TrueType/OpenType font parser for PDF embedding (v0.3.0).
