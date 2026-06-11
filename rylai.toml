@@ -1,4 +1,12 @@
-format = ["uvx ruff format", "uvx ruff check --select I --fix"]
+# `format` commands run (in order) on the generated .pyi, with the file path
+# appended as the final argument. fix_self_handle_stub.py runs first to strip
+# leaked pyo3 `Py<Self>` receiver params that rylai re-emits as positional
+# parameters (see the script's docstring); ruff then re-formats the result.
+format = [
+    "python3 scripts/fix_self_handle_stub.py",
+    "uvx ruff format",
+    "uvx ruff check --select I --fix",
+]
 
 # `python_version` intentionally left at rylai's default so the emitted
 # stub uses PEP-585 / PEP-604 syntax directly (`tuple[int, ...]`,

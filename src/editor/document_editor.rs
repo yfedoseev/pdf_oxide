@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 use crate::extractors::HierarchicalExtractor;
 use crate::geometry::Rect;
 use crate::object::{Object, ObjectRef};
-use crate::writer::{ContentStreamBuilder, ObjectSerializer};
+use crate::writer::{hoist_appearance_streams, ContentStreamBuilder, ObjectSerializer};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 #[cfg(not(target_arch = "wasm32"))]
@@ -3375,34 +3375,58 @@ impl DocumentEditor {
                                     // Get page refs for building annotations (needed for link destinations)
                                     let page_refs = self.get_page_refs().unwrap_or_default();
 
-                                    if let Some(annotations) =
-                                        self.modified_annotations.get(&source_page_index)
-                                    {
-                                        let new_annotations: Vec<_> =
-                                            annotations.iter().filter(|a| a.is_new()).collect();
-
-                                        for (annot_id, annot_wrapper) in
-                                            new_annotation_ids.iter().zip(new_annotations.iter())
+                                    // Build the annotation dictionaries first, in
+                                    // a scope that releases the `modified_annotations`
+                                    // borrow before we allocate ids / mutate `self`.
+                                    let built_annots: Vec<(u32, HashMap<String, Object>)> =
+                                        if let Some(annotations) =
+                                            self.modified_annotations.get(&source_page_index)
                                         {
-                                            if let Some(writer_annot) =
-                                                annot_wrapper.writer_annotation()
-                                            {
-                                                // Build the annotation dictionary
-                                                let annot_dict = writer_annot.build(&page_refs);
+                                            new_annotation_ids
+                                                .iter()
+                                                .zip(annotations.iter().filter(|a| a.is_new()))
+                                                .filter_map(|(annot_id, annot_wrapper)| {
+                                                    annot_wrapper
+                                                        .writer_annotation()
+                                                        .map(|wa| (*annot_id, wa.build(&page_refs)))
+                                                })
+                                                .collect()
+                                        } else {
+                                            Vec::new()
+                                        };
 
-                                                // Write the annotation object
-                                                let offset = writer.stream_position()?;
-                                                let bytes = serialize_obj(
-                                                    &serializer,
-                                                    *annot_id,
-                                                    0,
-                                                    &Object::Dictionary(annot_dict),
-                                                    &encryption_handler,
-                                                );
-                                                writer.write_all(&bytes)?;
-                                                xref_entries.push((*annot_id, offset, 0, true));
-                                            }
+                                    for (annot_id, mut annot_dict) in built_annots {
+                                        // Hoist any inline appearance stream (e.g. a
+                                        // watermark's `/AP /N`) into its own indirect
+                                        // object; a stream may not be a direct dict value.
+                                        let hoisted = hoist_appearance_streams(
+                                            &mut annot_dict,
+                                            &mut self.next_object_id,
+                                        );
+                                        for (stream_id, stream_obj) in hoisted {
+                                            let offset = writer.stream_position()?;
+                                            let bytes = serialize_obj(
+                                                &serializer,
+                                                stream_id,
+                                                0,
+                                                &stream_obj,
+                                                &encryption_handler,
+                                            );
+                                            writer.write_all(&bytes)?;
+                                            xref_entries.push((stream_id, offset, 0, true));
                                         }
+
+                                        // Write the annotation object
+                                        let offset = writer.stream_position()?;
+                                        let bytes = serialize_obj(
+                                            &serializer,
+                                            annot_id,
+                                            0,
+                                            &Object::Dictionary(annot_dict),
+                                            &encryption_handler,
+                                        );
+                                        writer.write_all(&bytes)?;
+                                        xref_entries.push((annot_id, offset, 0, true));
                                     }
                                 }
 
