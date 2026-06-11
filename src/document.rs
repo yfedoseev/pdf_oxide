@@ -5975,6 +5975,11 @@ impl PdfDocument {
         // embedded ASCII number (e.g. "公元前 1000 年" → "公元前1000年").
         let cleaned_text = crate::extractors::text::strip_cjk_digit_boundary_spaces(&cleaned_text);
 
+        // Drop a space the word-break heuristic injected inside a prime-notation
+        // number (e.g. "0′′ .28" / "0′′. 28" → "0′′.28").
+        let cleaned_text =
+            crate::extractors::text::strip_prime_decimal_boundary_spaces(&cleaned_text);
+
         Ok(cleaned_text)
     }
 
@@ -10715,6 +10720,16 @@ impl PdfDocument {
             if spans[i].text.is_empty() || !spans[i].text.chars().all(|c| map(c).is_some()) {
                 continue;
             }
+            // Leave a signed numeric exponent (scientific unit notation such as
+            // `s−1`, `m−2`) as ASCII. ToUnicode already decoded the intended
+            // characters, and the plaintext convention every reference extractor
+            // follows keeps these un-superscripted; rewriting `−1` to `₋₁` / `⁻¹`
+            // is both wrong against that convention and — because the geometric
+            // classifier fires inconsistently on borderline baselines — a source
+            // of non-determinism across identical occurrences.
+            if Self::run_is_signed_number(&spans[i].text) {
+                continue;
+            }
             // Limit the substitution to clearly token-internal
             // super/sub-scripts: the run must have a base-sized
             // neighbour on BOTH sides whose first/last char is
@@ -10732,6 +10747,19 @@ impl PdfDocument {
             let substituted: String = spans[i].text.chars().map(|c| map(c).unwrap()).collect();
             spans[i].text = substituted;
         }
+    }
+
+    /// A run is a signed numeric exponent — e.g. `-1`, `−2`, `‑3` — when it
+    /// opens with a minus/hyphen sign and contains at least one digit. Such runs
+    /// are scientific unit exponents (`s−1`, `m−2`) that the plaintext extraction
+    /// convention keeps as ASCII, so [`apply_super_sub_script_substitutions`]
+    /// must not rewrite them into Unicode sub/superscript glyphs.
+    ///
+    /// [`apply_super_sub_script_substitutions`]: Self::apply_super_sub_script_substitutions
+    fn run_is_signed_number(text: &str) -> bool {
+        let is_minus = |c: char| matches!(c, '\u{002D}' | '\u{2212}' | '\u{2010}' | '\u{2011}');
+        matches!(text.chars().next(), Some(c) if is_minus(c))
+            && text.chars().any(|c| c.is_ascii_digit())
     }
 
     /// For every span, the `(max_font_size, anchor_y)` over the spans within
@@ -19205,6 +19233,25 @@ fn find_substring(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn test_run_is_signed_number() {
+        // Signed numeric exponents (unit notation) are detected for every
+        // common minus/hyphen sign and left to the caller to skip.
+        assert!(PdfDocument::run_is_signed_number("-1")); // U+002D hyphen-minus
+        assert!(PdfDocument::run_is_signed_number("\u{2212}2")); // U+2212 minus sign
+        assert!(PdfDocument::run_is_signed_number("\u{2010}3")); // U+2010 hyphen
+        assert!(PdfDocument::run_is_signed_number("\u{2011}45")); // U+2011 non-breaking hyphen
+                                                                  // A bare sign with no digit is not a signed number.
+        assert!(!PdfDocument::run_is_signed_number("-"));
+        // Unsigned digit runs (chemistry subscripts, ordinals, exponents the
+        // plaintext convention DOES want as Unicode) are not affected.
+        assert!(!PdfDocument::run_is_signed_number("2")); // H₂O
+        assert!(!PdfDocument::run_is_signed_number("th")); // 8ᵗʰ
+        assert!(!PdfDocument::run_is_signed_number("")); // empty
+                                                         // The sign must lead: an interior hyphen is not a signed exponent.
+        assert!(!PdfDocument::run_is_signed_number("1-"));
+    }
 
     /// A span injected into a tagged page via `extract_text_with_extra_spans`
     /// and carrying the MCID of a middle block must be emitted at that block's

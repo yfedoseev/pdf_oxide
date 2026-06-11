@@ -1086,6 +1086,48 @@ pub(crate) fn strip_cjk_digit_boundary_spaces(text: &str) -> String {
     out
 }
 
+/// Remove an ASCII space that the geometric word-break heuristic injected inside
+/// a prime-notation number, e.g. `0′′.28` → `0′′ .28` or `0′′. 28`.
+///
+/// Arc-second / arc-minute values attach their decimal fraction to the prime
+/// without a break (`0′′.28`, `1′′.47`). A prime glyph's metric advance (w0,
+/// ISO 32000-1 §9.4.4) is narrow relative to its inked form, so the gap to the
+/// following `.NN` reads as wider than a space and the heuristic splits the
+/// token. Two artifact positions are repaired:
+///   • prime → `.`   (`′ .` → `′.`)
+///   • `.` → digit, when the `.` directly follows a prime (`′. 2` → `′.2`)
+///
+/// Feet-and-inches like `5′ 6″` are left untouched: the space there sits between
+/// a prime and a *digit* (not a `.`), which is a genuine measurement boundary.
+pub(crate) fn strip_prime_decimal_boundary_spaces(text: &str) -> String {
+    if !text.contains(' ') {
+        return text.to_string();
+    }
+    let is_prime = |c: char| matches!(c, '\u{2032}' | '\u{2033}' | '\u{2034}');
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == ' ' && i > 0 && i + 1 < chars.len() {
+            let (p, n) = (chars[i - 1], chars[i + 1]);
+            // `′ .28` — space between the prime and the decimal point.
+            if is_prime(p) && n == '.' {
+                i += 1;
+                continue;
+            }
+            // `′. 28` — space between the prime's decimal point and its digits.
+            if p == '.' && n.is_ascii_digit() && i >= 2 && is_prime(chars[i - 2]) {
+                i += 1;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
 fn should_insert_space(
     preceding_text: &str,
     following_text: &str,
@@ -13309,9 +13351,40 @@ mod tests {
         assert_eq!(strip_cjk_digit_boundary_spaces("고양이 (학명"), "고양이(학명"); // Hangul→(
         assert_eq!(strip_cjk_digit_boundary_spaces("카투스 [*]) 는"), "카투스[*])는"); // Hangul→[ , )→Hangul
         assert_eq!(strip_cjk_digit_boundary_spaces("漢字 (注)"), "漢字(注)"); // CJK↔paren
-        // A space between Latin and a bracket is left alone (English may write
-        // "study (note)" with a space).
+                                                                              // A space between Latin and a bracket is left alone (English may write
+                                                                              // "study (note)" with a space).
         assert_eq!(strip_cjk_digit_boundary_spaces("study (note)"), "study (note)");
+    }
+
+    #[test]
+    fn test_strip_prime_decimal_boundary_spaces() {
+        // Artifact space between the prime and the decimal point is dropped.
+        assert_eq!(
+            strip_prime_decimal_boundary_spaces("0\u{2032}\u{2032} .28"),
+            "0\u{2032}\u{2032}.28"
+        );
+        // Artifact space between the prime's decimal point and its digits.
+        assert_eq!(
+            strip_prime_decimal_boundary_spaces("0\u{2032}\u{2032}. 28"),
+            "0\u{2032}\u{2032}.28"
+        );
+        // Single prime and double-prime (U+2033) both handled.
+        assert_eq!(strip_prime_decimal_boundary_spaces("1\u{2032}.47"), "1\u{2032}.47"); // already tight: no-op
+        assert_eq!(strip_prime_decimal_boundary_spaces("12\u{2033} .5"), "12\u{2033}.5");
+        // Feet-and-inches keeps its space: prime → DIGIT (not a decimal point).
+        assert_eq!(
+            strip_prime_decimal_boundary_spaces("5\u{2032} 6\u{2033}"),
+            "5\u{2032} 6\u{2033}"
+        );
+        // A prime ending a sentence followed by prose is untouched (next not . / digit).
+        assert_eq!(strip_prime_decimal_boundary_spaces("see 3\u{2032} and"), "see 3\u{2032} and");
+        // A lone decimal with no preceding prime is untouched.
+        assert_eq!(strip_prime_decimal_boundary_spaces("v1. 0 release"), "v1. 0 release");
+        // No-op fast path.
+        assert_eq!(
+            strip_prime_decimal_boundary_spaces("0\u{2032}\u{2032}.28"),
+            "0\u{2032}\u{2032}.28"
+        );
     }
 
     /// Overlap (raw_gap < 0) on a fallback-width font IS corrected — this is
