@@ -14570,35 +14570,64 @@ impl PdfDocument {
         Some(h)
     }
 
-    /// Document-aware extension of `font_identity_hash_cheap` that resolves
-    /// `/DescendantFonts` references on Type0 fonts and folds the descendant
-    /// CIDFont's width metrics (`/DW`, `/DW2`, `/W`, `/W2`) into the hash.
+    /// Document-aware extension of `font_identity_hash_cheap` that folds the
+    /// *content* of a font's document-specific streams — its `/ToUnicode` CMap
+    /// and embedded font program(s) — plus the descendant CIDFont's width
+    /// metrics (`/DW`, `/DW2`, `/W`, `/W2`) and stream-form `/CIDToGIDMap` into
+    /// the identity hash.
     ///
-    /// Without this, two Type0 fonts whose Type0 dicts have identical inline
-    /// shape (same BaseFont, Encoding, ToUnicode/DescendantFonts refs) but
-    /// whose referenced CIDFonts carry different vertical metrics collide on
-    /// the Layer 5/6 caches — the second document silently inherits the
-    /// first's `w1y` and renders vertical text at the wrong advance. This is
-    /// the same bug class as the ToUnicode-stream poisoning fixed in
-    /// `a327bcd` and the `/Widths` poisoning fixed in #598, applied to the
-    /// descendant CIDFont's horizontal AND vertical width arrays.
+    /// Why content, not just references: `font_identity_hash_cheap` folds only
+    /// the *reference* (object id/gen) of `/ToUnicode`, and the global cache is
+    /// skipped only for *canonical* subset fonts (`AAAAAA+`, six uppercase
+    /// letters + `+`; see `is_subset_basefont`). A non-canonical subset tag
+    /// such as `/CIDFont+F1` is therefore still shared cross-document, and
+    /// PDFs emitted from a common template reuse the same `/ToUnicode` object
+    /// number — so two genuinely different fonts that merely share a
+    /// `/BaseFont` name produce an identical cheap hash. Keyed only by that
+    /// hash, the cross-document global cache (Layer 6) served a later document
+    /// the *earlier* font's parsed `FontInfo`, and its glyph→Unicode mapping
+    /// came out as a constant-offset cipher or control/PUA junk (e.g.
+    /// `SUMMARY` → `6800$5<`). Folding the `/ToUnicode` stream bytes — and the
+    /// embedded `/FontFile{,2,3}` bytes — gives such fonts distinct keys so
+    /// they can never collide regardless of subset-tag form or object reuse,
+    /// while genuinely identical fonts still dedup. This completes the
+    /// cross-document hardening from #595/#597/#598 (which folded the
+    /// `/ToUnicode` *reference* and the `/Widths`, and excluded canonical
+    /// `AAAAAA+` subsets), applied to the field that actually decodes text.
     ///
-    /// Cost: one `load_object` per descendant CIDFont (typically one) on the
-    /// first call; subsequent calls hit `font_id_hash_cache`. The descendant
-    /// load is the same work `FontInfo::from_dict` will do later, so the
-    /// marginal cost when a font actually needs parsing is zero; the only
-    /// new work is on cache *hits* that previously skipped descendant
-    /// resolution entirely. In return we trade off one indirect-ref load per
-    /// unique Type0 font per process for correctness on /W2 + /DW2.
+    /// Cost: a few extra `load_object` calls (the `/ToUnicode` stream, each
+    /// descendant CIDFont, the `/FontDescriptor`s and their font programs) on
+    /// the first encounter of a font per document; subsequent calls hit
+    /// `font_id_hash_cache`, and the loads themselves are served from the
+    /// object cache that `FontInfo::from_dict` populates anyway. Stream bytes
+    /// are folded *raw* (still encoded) — see `fold_stream_bytes`.
     fn font_identity_hash_with_descendants(&self, font_obj: &Object) -> u64 {
         use std::hash::{Hash, Hasher};
         // Seed with the cheap inline hash so existing identity coverage is
-        // preserved bit-for-bit when there are no descendants to fold in.
+        // preserved bit-for-bit when there are no streams/descendants to fold.
         let base = Self::font_identity_hash_cheap(font_obj);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         base.hash(&mut hasher);
 
         if let Some(d) = font_obj.as_dict() {
+            // /ToUnicode stream BYTES — the decisive discriminator. The cheap
+            // hash folds only this stream's reference; folding its content is
+            // what stops same-named, differently-mapped fonts from colliding
+            // across documents when the cheap key matches (#595).
+            if let Some(to_unicode) = d.get("ToUnicode") {
+                17u8.hash(&mut hasher);
+                self.fold_stream_bytes(to_unicode, &mut hasher);
+            }
+
+            // Simple fonts (Type1/TrueType) carry their embedded program on the
+            // top-level /FontDescriptor. Two subset fonts that share a
+            // /BaseFont name but embed different glyph programs must not alias.
+            if let Some(fd) = d.get("FontDescriptor") {
+                if let Some(fd_obj) = self.resolve_indirect_for_hash(fd) {
+                    self.fold_font_program(&fd_obj, 18, &mut hasher);
+                }
+            }
+
             if let Some(Object::Array(arr)) = d.get("DescendantFonts") {
                 // Domain separator for the descendant section.
                 11u8.hash(&mut hasher);
@@ -14646,11 +14675,108 @@ impl PdfDocument {
                         16u8.hash(&mut hasher);
                         Self::hash_pdf_object_deterministic(csi, &mut hasher);
                     }
+                    // Descendant /Subtype: CIDFontType0 (CFF) and CIDFontType2
+                    // (TrueType) are not interchangeable even with identical
+                    // name + metrics; the top-level Subtype is `Type0` for both.
+                    if let Some(st) = dd.get("Subtype") {
+                        19u8.hash(&mut hasher);
+                        Self::hash_pdf_object_deterministic(st, &mut hasher);
+                    }
+                    // Embedded CIDFont program lives on the descendant's
+                    // /FontDescriptor (/FontFile2 for TrueType, /FontFile3 for
+                    // CFF). Folded under a distinct section so it cannot alias
+                    // a simple font's top-level program.
+                    if let Some(fd) = dd.get("FontDescriptor") {
+                        if let Some(fd_obj) = self.resolve_indirect_for_hash(fd) {
+                            self.fold_font_program(&fd_obj, 20, &mut hasher);
+                        }
+                    }
+                    // Descendant /CIDToGIDMap: the *stream* form remaps
+                    // CID→glyph (§9.7.4.3), so two otherwise-identical embedded
+                    // CIDFontType2 fonts with different maps select different
+                    // glyphs and must not alias. The `/Identity` name — and an
+                    // absent entry, which defaults to Identity — fold nothing,
+                    // so the common path's key is unchanged (and an explicit
+                    // `/Identity` still dedups with an absent one).
+                    if let Some(c2g) = dd.get("CIDToGIDMap") {
+                        if !matches!(c2g, Object::Name(_)) {
+                            21u8.hash(&mut hasher);
+                            self.fold_stream_bytes(c2g, &mut hasher);
+                        }
+                    }
                 }
             }
         }
 
         hasher.finish()
+    }
+
+    /// Resolve a single level of indirection for hashing: returns the
+    /// referenced object, the object itself when already inline, or `None`
+    /// when a reference cannot be loaded (cycle/missing). Used only to reach a
+    /// `/FontDescriptor` dict — it never re-enters the font dict, so it cannot
+    /// loop.
+    fn resolve_indirect_for_hash(&self, obj: &Object) -> Option<Object> {
+        match obj {
+            Object::Reference(r) => self.load_object(*r).ok(),
+            other => Some(other.clone()),
+        }
+    }
+
+    /// Fold the *raw* bytes of a (possibly indirectly-referenced) stream into
+    /// the hash. Folds nothing when the object is absent, unreadable, or not a
+    /// stream.
+    ///
+    /// Raw — still-encoded — bytes are deliberate. They are a sufficient
+    /// discriminator: different decoded content yields different encoded bytes
+    /// under any deterministic filter, so this never produces a *false* dedup
+    /// (two different fonts sharing a key). It avoids inflating large font
+    /// programs on the cache-key path. The only cost is a *missed* dedup when
+    /// the same logical content is stored under two different filters
+    /// (e.g. raw vs. FlateDecode) — harmless, and not a pattern a single
+    /// producer emits within a corpus.
+    fn fold_stream_bytes<H: std::hash::Hasher>(&self, obj: &Object, hasher: &mut H) {
+        use std::hash::Hash;
+        let owned;
+        let stream: &Object = match obj {
+            Object::Stream { .. } => obj,
+            Object::Reference(r) => match self.load_object(*r) {
+                Ok(o) => {
+                    owned = o;
+                    &owned
+                },
+                Err(_) => return,
+            },
+            _ => return,
+        };
+        if let Object::Stream { data, .. } = stream {
+            (data.len() as u64).hash(hasher);
+            data.as_ref().hash(hasher);
+        }
+    }
+
+    /// Fold any embedded font program (`/FontFile`, `/FontFile2`,
+    /// `/FontFile3`) reachable from a `/FontDescriptor` dict into the hash,
+    /// namespaced by `section` so a simple font's program and a descendant
+    /// CIDFont's program cannot alias each other.
+    fn fold_font_program<H: std::hash::Hasher>(
+        &self,
+        descriptor: &Object,
+        section: u8,
+        hasher: &mut H,
+    ) {
+        use std::hash::Hash;
+        let dict = match descriptor.as_dict() {
+            Some(d) => d,
+            None => return,
+        };
+        for (variant, key) in ["FontFile", "FontFile2", "FontFile3"].iter().enumerate() {
+            if let Some(ff) = dict.get(*key) {
+                section.hash(hasher);
+                (variant as u8).hash(hasher);
+                self.fold_stream_bytes(ff, hasher);
+            }
+        }
     }
 
     /// Hash a PDF `Object` deterministically. Used by the descendant-aware

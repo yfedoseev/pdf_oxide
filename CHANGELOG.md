@@ -2,6 +2,12 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **Cross-document font cache now keys Type0/Identity-H fonts by `/ToUnicode` content (extends #595, #597, #598)** — the cross-document cache hardening in #595/#597/#598 folds the `/ToUnicode` *reference* (object id/gen) into the font identity hash and keeps *canonical* subset fonts (`AAAAAA+`) out of the shared cache. This extends that coverage to two cases the reference-based key doesn't reach: a non-canonical subset tag such as `/CIDFont+F1` (emitted by some generators) stays eligible for cross-document sharing, and PDFs produced from a common template reuse the same `/ToUnicode` object number — so two genuinely different fonts that merely share a `/BaseFont` name produced an identical key. Processed in one long-lived process, a later document was then served an earlier font's parsed `FontInfo` and its glyphs decoded through the wrong `/ToUnicode` — a constant-offset cipher (`SUMMARY` → `6800$5<`) or control/PUA characters — though each document extracted correctly in isolation. The identity hash now folds the `/ToUnicode` stream *bytes*, the embedded `/FontFile{,2,3}` bytes, the descendant `/Subtype`, and a stream-form descendant `/CIDToGIDMap`, so same-named-but-different fonts get distinct keys regardless of subset-tag form or object reuse, while genuinely identical fonts still deduplicate across documents (the cache's purpose is preserved). Same bug class as the `/Widths` poisoning fixed in #598.
+
 ## [0.3.63] - 2026-06-09
 
 > CJK extraction-quality fixes — vertical-CJK (tategaki) reading order no longer mis-fires on horizontal Japanese text, CJK glyphs no longer surface as Kangxi-radical codepoints, and Korean number spacing is preserved — plus recovery of dropped inter-word spaces on tightly-typeset PDFs, and routine dependency updates.
