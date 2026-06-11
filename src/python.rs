@@ -430,6 +430,7 @@ impl PyPdfDocument {
     }
 
     /// Focus extraction on a region.
+    #[pyo3(signature = (page, bbox))]
     fn within(slf: Py<Self>, page: usize, bbox: (f32, f32, f32, f32)) -> PyResult<PyPdfPageRegion> {
         Ok(PyPdfPageRegion {
             doc: slf,
@@ -5695,6 +5696,7 @@ impl PyDocumentBuilder {
 
     /// Start a new A4 page and return a `FluentPageBuilder`. Call
     /// `.done()` on the returned builder to commit the page.
+    #[pyo3(signature = ())]
     fn a4_page(slf_handle: Py<Self>) -> PyFluentPageBuilder {
         PyFluentPageBuilder {
             parent: slf_handle,
@@ -5709,6 +5711,7 @@ impl PyDocumentBuilder {
         }
     }
 
+    #[pyo3(signature = ())]
     fn letter_page(slf_handle: Py<Self>) -> PyFluentPageBuilder {
         PyFluentPageBuilder {
             parent: slf_handle,
@@ -5725,6 +5728,7 @@ impl PyDocumentBuilder {
 
     /// Start a new page with custom dimensions in PDF points
     /// (72 pt = 1 inch). Use for non-standard paper sizes.
+    #[pyo3(signature = (width, height))]
     fn page(slf_handle: Py<Self>, width: f32, height: f32) -> PyFluentPageBuilder {
         PyFluentPageBuilder {
             parent: slf_handle,
