@@ -332,6 +332,24 @@ pub struct TextRasterizer {
     /// `PageRenderer`. See the `SYSTEM_FONTDB` docstring for the
     /// measurement that motivated the switch.
     fontdb: std::sync::Arc<fontdb::Database>,
+    /// Memo for [`Self::load_font_data`]: PDF base-font name → resolved
+    /// `(fontdb::ID, face index)`, including negative results. The
+    /// name→ID resolution walks a variant cascade with one
+    /// `fontdb::Database::query` per variant and was re-run on every
+    /// text-showing operator — measurable on documents with non-embedded
+    /// fonts, and doubled by the overprint dry pass. The database is
+    /// immutable for the rasterizer's lifetime, so memoisation cannot
+    /// change resolution results. `Mutex`, not `RefCell`, to keep the
+    /// rasterizer `Sync` (same pattern as `FontInfo::type0_unicode_memo`).
+    font_query_memo: std::sync::Mutex<FontQueryMemo>,
+}
+
+#[derive(Default)]
+struct FontQueryMemo {
+    map: HashMap<String, Option<(fontdb::ID, u32)>>,
+    /// Cascade runs that missed the memo (test-only observability).
+    #[cfg(test)]
+    misses: u64,
 }
 
 impl TextRasterizer {
@@ -339,6 +357,7 @@ impl TextRasterizer {
     pub fn new() -> Self {
         Self {
             fontdb: system_fontdb(),
+            font_query_memo: std::sync::Mutex::new(FontQueryMemo::default()),
         }
     }
 
@@ -347,7 +366,10 @@ impl TextRasterizer {
     /// pre-populate the database with non-system fonts.
     #[allow(dead_code)]
     pub fn with_fontdb(fontdb: std::sync::Arc<fontdb::Database>) -> Self {
-        Self { fontdb }
+        Self {
+            fontdb,
+            font_query_memo: std::sync::Mutex::new(FontQueryMemo::default()),
+        }
     }
 
     /// Render a text string (Tj operator).
@@ -832,7 +854,48 @@ impl TextRasterizer {
 
     /// Find and load font data from system. Returns a `fontdb::ID` alongside
     /// the `Arc`-wrapped bytes so callers can look up the parsed-face cache.
+    /// Memoised front of [`Self::load_font_data_uncached`]. The variant
+    /// cascade is fully determined by the immutable font database, so the
+    /// resolved `(ID, index)` is cached per base-font name — including
+    /// negative results. Bytes are re-fetched through the process-wide
+    /// `cached_font_bytes` (an `Arc` clone on hit); if that ever fails for
+    /// a memoised ID the lookup falls back to the full cascade rather than
+    /// trusting the stale entry.
     fn load_font_data(&self, pdf_font_name: &str) -> Option<(fontdb::ID, Arc<Vec<u8>>, u32)> {
+        if let Ok(memo) = self.font_query_memo.lock() {
+            if let Some(entry) = memo.map.get(pdf_font_name) {
+                let resolved = *entry;
+                drop(memo);
+                match resolved {
+                    None => return None,
+                    Some((id, _)) => {
+                        if let Some((data, index)) = cached_font_bytes(id, self.font_db()) {
+                            return Some((id, data, index));
+                        }
+                        // Stale entry (font bytes no longer loadable):
+                        // fall through to the cascade below.
+                    },
+                }
+            }
+        }
+        let result = self.load_font_data_uncached(pdf_font_name);
+        if let Ok(mut memo) = self.font_query_memo.lock() {
+            #[cfg(test)]
+            {
+                memo.misses += 1;
+            }
+            memo.map.insert(
+                pdf_font_name.to_string(),
+                result.as_ref().map(|(id, _, index)| (*id, *index)),
+            );
+        }
+        result
+    }
+
+    fn load_font_data_uncached(
+        &self,
+        pdf_font_name: &str,
+    ) -> Option<(fontdb::ID, Arc<Vec<u8>>, u32)> {
         // Strip subset prefix (e.g., "ABCDEF+FontName" -> "FontName")
         let clean_name = if let Some(plus_idx) = pdf_font_name.find('+') {
             &pdf_font_name[plus_idx + 1..]
@@ -2354,6 +2417,41 @@ mod tests {
         assert!(
             (half - 10.0).abs() < 0.01,
             "Th=50% must halve the returned advance (§9.4.4 tx·Th): got {half}, full was {full}"
+        );
+    }
+
+    /// `load_font_data` resolves a PDF base-font name through a variant
+    /// cascade of `fontdb::Database::query` calls. The result is fully
+    /// determined by the immutable font database, so repeated lookups for
+    /// the same name must hit the per-rasterizer memo instead of re-running
+    /// the cascade — the overprint dry pass doubles text traversals, and an
+    /// unmemoised cascade measurably regressed non-embedded-font documents.
+    #[test]
+    fn load_font_data_memoises_name_resolution() {
+        let rasterizer = TextRasterizer::new();
+        let first = rasterizer.load_font_data("Helvetica");
+        let misses_after_first = rasterizer.font_query_memo.lock().unwrap().misses;
+        let second = rasterizer.load_font_data("Helvetica");
+        let misses_after_second = rasterizer.font_query_memo.lock().unwrap().misses;
+        assert_eq!(
+            first.as_ref().map(|(id, _, idx)| (*id, *idx)),
+            second.as_ref().map(|(id, _, idx)| (*id, *idx)),
+            "memoised resolution must return the same face"
+        );
+        assert_eq!(misses_after_first, 1, "first lookup runs the cascade once");
+        assert_eq!(
+            misses_after_second, 1,
+            "second lookup for the same name must be served from the memo"
+        );
+
+        // Negative results memoise too — a name that matches nothing must
+        // not re-run the cascade either.
+        let _ = rasterizer.load_font_data("NoSuchFont-Zz9");
+        let _ = rasterizer.load_font_data("NoSuchFont-Zz9");
+        assert_eq!(
+            rasterizer.font_query_memo.lock().unwrap().misses,
+            2,
+            "negative resolution must also be memoised"
         );
     }
 }
