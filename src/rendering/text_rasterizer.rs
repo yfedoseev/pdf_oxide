@@ -1649,22 +1649,34 @@ impl TextRasterizer {
                 (0.0, 0.0, 0.0)
             };
 
-            // CID → Unicode → glyph_id. Two-stage lookup: the Adobe
-            // character collection (e.g. UniJIS-UCS2-H for Adobe-Japan1)
-            // maps the PDF's CID to a Unicode code point; the bundled
-            // font's `cmap` then maps that Unicode point to a glyph_id.
-            // Either step can miss for CIDs outside the collection
-            // tables or Unicode code points outside Droid Sans Fallback's
-            // coverage — in that case we paint nothing but still advance
-            // the cursor so the rest of the text lands correctly.
+            // CID → Unicode → glyph_id. The PDF's CID is resolved to a
+            // Unicode code point, then the bundled font's `cmap` maps that
+            // point to a glyph_id. Source of the CID → Unicode mapping,
+            // in priority order:
+            //   1. the font's /ToUnicode CMap — authoritative for this
+            //      font's CIDs (§9.10.2), and the only correct mapping for
+            //      an Identity-encoded subset whose CIDs are not the Adobe
+            //      collection's CIDs;
+            //   2. the Adobe character collection table (e.g. UniJIS-UCS2-H
+            //      for Adobe-Japan1) — the common case for the real
+            //      predefined CIDFonts (Ryumin-Light, …) this substitution
+            //      targets, which usually ship no /ToUnicode.
+            // Either step can miss for CIDs outside both sources or Unicode
+            // points outside Droid Sans Fallback's coverage — then we paint
+            // nothing but still advance the cursor so the rest lands right.
             let mut gid: u16 = 0;
             let mut ch: char = '\0';
-            if let Some(cp) = collection.cid_to_unicode(cid) {
-                if let Some(c) = char::from_u32(cp) {
-                    ch = c;
-                    if let Some(g) = ttf_face.glyph_index(c) {
-                        gid = g.0;
-                    }
+            let unicode = font_info
+                .to_unicode
+                .as_ref()
+                .and_then(|lazy| lazy.get())
+                .and_then(|cmap| cmap.get(&(cid as u32)).and_then(|s| s.chars().next()))
+                .filter(|c| !matches!(*c, '\u{FFFD}' | '\u{FFFE}' | '\u{FFFF}'))
+                .or_else(|| collection.cid_to_unicode(cid).and_then(char::from_u32));
+            if let Some(c) = unicode {
+                ch = c;
+                if let Some(g) = ttf_face.glyph_index(c) {
+                    gid = g.0;
                 }
             }
 
