@@ -139,3 +139,43 @@ fn no_overprint_means_no_scan() {
     let (scanned, _) = scanned_for(build_pdf(content, ""));
     assert_eq!(scanned, 0, "no /OP in the ExtGState ⇒ the overprint pass must not run");
 }
+
+/// Render and return (snapshot_bytes, page_bytes).
+fn snapshot_bytes_for(pdf: Vec<u8>) -> (u64, u64) {
+    let doc = PdfDocument::from_bytes(pdf).expect("synthetic PDF must parse");
+    let mut renderer = PageRenderer::new(RenderOptions::with_dpi(72));
+    let img = renderer.render_page(&doc, 0).expect("render");
+    let total = (img.width as u64) * (img.height as u64) * 4;
+    (renderer.overprint_snapshot_bytes(), total)
+}
+
+/// The pre-paint snapshot for a small /OP true Tj must be rect-sized, not
+/// page-sized: the text arms obtain a provable pre-paint bound by running
+/// the glyph traversal once in dry-run mode (same code path as the paint,
+/// fills skipped) before taking the snapshot.
+#[test]
+fn small_text_snapshot_is_rect_bounded() {
+    let resources = format!(
+        "{} /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >>",
+        OP_GS
+    );
+    let content = "/Ov gs 0 0.5 0 0 k BT /F1 12 Tf 20 50 Td (Hi) Tj ET";
+    let (snap_bytes, page_bytes) = snapshot_bytes_for(build_pdf(content, &resources));
+    assert!(snap_bytes > 0, "overprint snapshot must be taken for a /OP true Tj");
+    assert!(
+        snap_bytes <= page_bytes / 4,
+        "text overprint snapshot must be rect-sized: {snap_bytes} of {page_bytes} bytes"
+    );
+}
+
+/// Control: the path-fill snapshot is already rect-sized.
+#[test]
+fn small_fill_snapshot_is_rect_bounded() {
+    let content = "/Ov gs 0 0.5 0 0 k 10 10 20 20 re f";
+    let (snap_bytes, page_bytes) = snapshot_bytes_for(build_pdf(content, OP_GS));
+    assert!(snap_bytes > 0);
+    assert!(
+        snap_bytes <= page_bytes / 4,
+        "fill overprint snapshot must be rect-sized: {snap_bytes} of {page_bytes} bytes"
+    );
+}

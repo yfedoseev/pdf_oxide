@@ -229,6 +229,11 @@ pub struct PageRenderer {
     /// full-page scan) without wall-clock noise.
     #[cfg(feature = "test-support")]
     overprint_scan_px: u64,
+    /// Bytes captured by §11.7.4 overprint pre-paint snapshots during the
+    /// most recent `render_page*` call. Test-support only: pins that
+    /// snapshots are rect-sized, not page-sized.
+    #[cfg(feature = "test-support")]
+    overprint_snapshot_bytes: u64,
     /// Depth counter for the SMask materialisation path. Incremented
     /// on entry to [`Self::apply_smask_after_paint`] and decremented
     /// on exit. When the counter reaches [`MAX_SMASK_DEPTH`] further
@@ -301,6 +306,8 @@ impl PageRenderer {
             icc_transform_cache: IccTransformCache::new(),
             #[cfg(feature = "test-support")]
             overprint_scan_px: 0,
+            #[cfg(feature = "test-support")]
+            overprint_snapshot_bytes: 0,
             smask_depth: 0,
             cmyk_sidecar: None,
             force_cmyk_sidecar: false,
@@ -403,6 +410,14 @@ impl PageRenderer {
         self.overprint_scan_px
     }
 
+    /// Bytes captured by §11.7.4 overprint pre-paint snapshots during the
+    /// most recent `render_page*` call. Test-support only — pins that a
+    /// bounded paint takes a rect-sized snapshot, not a page-sized one.
+    #[cfg(feature = "test-support")]
+    pub fn overprint_snapshot_bytes(&self) -> u64 {
+        self.overprint_snapshot_bytes
+    }
+
     /// Render a page to a raster image.
     pub fn render_page(&mut self, doc: &PdfDocument, page_num: usize) -> Result<RenderedImage> {
         self.render_page_with_options(page_num, doc)
@@ -426,6 +441,7 @@ impl PageRenderer {
         #[cfg(feature = "test-support")]
         {
             self.overprint_scan_px = 0;
+            self.overprint_snapshot_bytes = 0;
         }
         // Reset the H3b silent-K=0 warning latch so a new page's first
         // RGB-to-CMYK fallback under a declared-but-unparseable
@@ -2189,7 +2205,36 @@ impl PageRenderer {
                             // per Tj call brackets the whole string.
                             let smask_snap = self.smask_snapshot(pixmap, gs);
                             let smask_spot_snap = self.smask_spot_snapshot(gs);
-                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true, None);
+                            // Pre-paint bound for the overprint snapshot: traverse
+                            // the glyph pipeline once in dry-run mode (identical
+                            // code path, fills skipped) to learn the device rect
+                            // the paint can touch. A dry-pass error degrades to a
+                            // full-page snapshot; the paint call below surfaces
+                            // the same error to the caller.
+                            let text_overprint_bounds =
+                                if source_for_overprint(gs, true).is_some() {
+                                    let mut dry_bounds = PaintBounds::dry();
+                                    match self.text_rasterizer.render_text(
+                                        pixmap,
+                                        text,
+                                        transform,
+                                        gs,
+                                        colors.as_ref(),
+                                        resources,
+                                        doc,
+                                        clip,
+                                        &self.fonts,
+                                        Some(&mut dry_bounds),
+                                    ) {
+                                        Ok(_) => dry_bounds
+                                            .to_device_rect(pixmap.width(), pixmap.height()),
+                                        Err(_) => None,
+                                    }
+                                } else {
+                                    None
+                                };
+                            let overprint_snap =
+                                self.overprint_snapshot(pixmap, gs, true, text_overprint_bounds);
                             let cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, gs, doc, true);
                             let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
@@ -2205,8 +2250,6 @@ impl PageRenderer {
                                     text, transform, gs, resources, doc, clip,
                                 )
                             });
-                            let mut text_paint_bounds =
-                                overprint_snap.as_ref().map(|_| PaintBounds::default());
                             let adv = self.text_rasterizer.render_text(
                                 pixmap,
                                 text,
@@ -2217,12 +2260,9 @@ impl PageRenderer {
                                 doc,
                                 clip,
                                 &self.fonts,
-                                text_paint_bounds.as_mut(),
+                                None,
                             )?;
                             let gs_for_apply = gs_stack.current().clone();
-                            let text_overprint_scan = text_paint_bounds
-                                .as_ref()
-                                .and_then(|b| b.to_device_rect(pixmap.width(), pixmap.height()));
                             if let Some(snap) = cmyk_compose_snap {
                                 self.apply_cmyk_compose_after_paint(
                                     pixmap,
@@ -2239,7 +2279,7 @@ impl PageRenderer {
                                     &gs_for_apply,
                                     doc,
                                     true,
-                                    text_overprint_scan,
+                                    None,
                                 );
                             }
                             if let Some(snap) = spot_snap {
@@ -2304,7 +2344,36 @@ impl PageRenderer {
                             let colors = self.pipeline_resolve_text_colors(doc, gs);
                             let smask_snap = self.smask_snapshot(pixmap, gs);
                             let smask_spot_snap = self.smask_spot_snapshot(gs);
-                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true, None);
+                            // Pre-paint bound for the overprint snapshot: traverse
+                            // the glyph pipeline once in dry-run mode (identical
+                            // code path, fills skipped) to learn the device rect
+                            // the paint can touch. A dry-pass error degrades to a
+                            // full-page snapshot; the paint call below surfaces
+                            // the same error to the caller.
+                            let text_overprint_bounds =
+                                if source_for_overprint(gs, true).is_some() {
+                                    let mut dry_bounds = PaintBounds::dry();
+                                    match self.text_rasterizer.render_text(
+                                        pixmap,
+                                        text,
+                                        transform,
+                                        gs,
+                                        colors.as_ref(),
+                                        resources,
+                                        doc,
+                                        clip,
+                                        &self.fonts,
+                                        Some(&mut dry_bounds),
+                                    ) {
+                                        Ok(_) => dry_bounds
+                                            .to_device_rect(pixmap.width(), pixmap.height()),
+                                        Err(_) => None,
+                                    }
+                                } else {
+                                    None
+                                };
+                            let overprint_snap =
+                                self.overprint_snapshot(pixmap, gs, true, text_overprint_bounds);
                             let cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, gs, doc, true);
                             let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
@@ -2313,8 +2382,6 @@ impl PageRenderer {
                                     text, transform, gs, resources, doc, clip,
                                 )
                             });
-                            let mut text_paint_bounds =
-                                overprint_snap.as_ref().map(|_| PaintBounds::default());
                             let adv = self.text_rasterizer.render_text(
                                 pixmap,
                                 text,
@@ -2325,12 +2392,9 @@ impl PageRenderer {
                                 doc,
                                 clip,
                                 &self.fonts,
-                                text_paint_bounds.as_mut(),
+                                None,
                             )?;
                             let gs_for_apply = gs_stack.current().clone();
-                            let text_overprint_scan = text_paint_bounds
-                                .as_ref()
-                                .and_then(|b| b.to_device_rect(pixmap.width(), pixmap.height()));
                             if let Some(snap) = cmyk_compose_snap {
                                 self.apply_cmyk_compose_after_paint(
                                     pixmap,
@@ -2347,7 +2411,7 @@ impl PageRenderer {
                                     &gs_for_apply,
                                     doc,
                                     true,
-                                    text_overprint_scan,
+                                    None,
                                 );
                             }
                             if let Some(snap) = spot_snap {
@@ -2408,7 +2472,36 @@ impl PageRenderer {
                             let colors = self.pipeline_resolve_text_colors(doc, gs);
                             let smask_snap = self.smask_snapshot(pixmap, gs);
                             let smask_spot_snap = self.smask_spot_snapshot(gs);
-                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true, None);
+                            // Pre-paint bound for the overprint snapshot: traverse
+                            // the glyph pipeline once in dry-run mode (identical
+                            // code path, fills skipped) to learn the device rect
+                            // the paint can touch. A dry-pass error degrades to a
+                            // full-page snapshot; the paint call below surfaces
+                            // the same error to the caller.
+                            let text_overprint_bounds =
+                                if source_for_overprint(gs, true).is_some() {
+                                    let mut dry_bounds = PaintBounds::dry();
+                                    match self.text_rasterizer.render_tj_array(
+                                        pixmap,
+                                        array,
+                                        transform,
+                                        gs,
+                                        colors.as_ref(),
+                                        resources,
+                                        doc,
+                                        clip,
+                                        &self.fonts,
+                                        Some(&mut dry_bounds),
+                                    ) {
+                                        Ok(_) => dry_bounds
+                                            .to_device_rect(pixmap.width(), pixmap.height()),
+                                        Err(_) => None,
+                                    }
+                                } else {
+                                    None
+                                };
+                            let overprint_snap =
+                                self.overprint_snapshot(pixmap, gs, true, text_overprint_bounds);
                             let cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, gs, doc, true);
                             let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
@@ -2417,8 +2510,6 @@ impl PageRenderer {
                                     array, transform, gs, resources, doc, clip,
                                 )
                             });
-                            let mut text_paint_bounds =
-                                overprint_snap.as_ref().map(|_| PaintBounds::default());
                             let adv = self.text_rasterizer.render_tj_array(
                                 pixmap,
                                 array,
@@ -2429,12 +2520,9 @@ impl PageRenderer {
                                 doc,
                                 clip,
                                 &self.fonts,
-                                text_paint_bounds.as_mut(),
+                                None,
                             )?;
                             let gs_for_apply = gs_stack.current().clone();
-                            let text_overprint_scan = text_paint_bounds
-                                .as_ref()
-                                .and_then(|b| b.to_device_rect(pixmap.width(), pixmap.height()));
                             if let Some(snap) = cmyk_compose_snap {
                                 self.apply_cmyk_compose_after_paint(
                                     pixmap,
@@ -2451,7 +2539,7 @@ impl PageRenderer {
                                     &gs_for_apply,
                                     doc,
                                     true,
-                                    text_overprint_scan,
+                                    None,
                                 );
                             }
                             if let Some(snap) = spot_snap {
@@ -2525,7 +2613,36 @@ impl PageRenderer {
                             let colors = self.pipeline_resolve_text_colors(doc, gs);
                             let smask_snap = self.smask_snapshot(pixmap, gs);
                             let smask_spot_snap = self.smask_spot_snapshot(gs);
-                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true, None);
+                            // Pre-paint bound for the overprint snapshot: traverse
+                            // the glyph pipeline once in dry-run mode (identical
+                            // code path, fills skipped) to learn the device rect
+                            // the paint can touch. A dry-pass error degrades to a
+                            // full-page snapshot; the paint call below surfaces
+                            // the same error to the caller.
+                            let text_overprint_bounds =
+                                if source_for_overprint(gs, true).is_some() {
+                                    let mut dry_bounds = PaintBounds::dry();
+                                    match self.text_rasterizer.render_text(
+                                        pixmap,
+                                        text,
+                                        transform,
+                                        gs,
+                                        colors.as_ref(),
+                                        resources,
+                                        doc,
+                                        clip,
+                                        &self.fonts,
+                                        Some(&mut dry_bounds),
+                                    ) {
+                                        Ok(_) => dry_bounds
+                                            .to_device_rect(pixmap.width(), pixmap.height()),
+                                        Err(_) => None,
+                                    }
+                                } else {
+                                    None
+                                };
+                            let overprint_snap =
+                                self.overprint_snapshot(pixmap, gs, true, text_overprint_bounds);
                             let cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, gs, doc, true);
                             let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
@@ -2534,8 +2651,6 @@ impl PageRenderer {
                                     text, transform, gs, resources, doc, clip,
                                 )
                             });
-                            let mut text_paint_bounds =
-                                overprint_snap.as_ref().map(|_| PaintBounds::default());
                             let adv = self.text_rasterizer.render_text(
                                 pixmap,
                                 text,
@@ -2546,12 +2661,9 @@ impl PageRenderer {
                                 doc,
                                 clip,
                                 &self.fonts,
-                                text_paint_bounds.as_mut(),
+                                None,
                             )?;
                             let gs_for_apply = gs_stack.current().clone();
-                            let text_overprint_scan = text_paint_bounds
-                                .as_ref()
-                                .and_then(|b| b.to_device_rect(pixmap.width(), pixmap.height()));
                             if let Some(snap) = cmyk_compose_snap {
                                 self.apply_cmyk_compose_after_paint(
                                     pixmap,
@@ -2568,7 +2680,7 @@ impl PageRenderer {
                                     &gs_for_apply,
                                     doc,
                                     true,
-                                    text_overprint_scan,
+                                    None,
                                 );
                             }
                             if let Some(snap) = spot_snap {
@@ -5178,7 +5290,7 @@ impl PageRenderer {
     /// historical behaviour). Pixels outside the bound cannot change, so a
     /// rect snapshot loses nothing the after-paint diff could detect.
     fn overprint_snapshot(
-        &self,
+        &mut self,
         pixmap: &Pixmap,
         gs: &GraphicsState,
         fill_side: bool,
@@ -5186,7 +5298,12 @@ impl PageRenderer {
     ) -> Option<RectSnapshot> {
         if source_for_overprint(gs, fill_side).is_some() {
             let rect = bounds.unwrap_or_else(|| DeviceRect::full(pixmap.width(), pixmap.height()));
-            Some(RectSnapshot::capture(pixmap, rect))
+            let snap = RectSnapshot::capture(pixmap, rect);
+            #[cfg(feature = "test-support")]
+            {
+                self.overprint_snapshot_bytes += snap.bytes.len() as u64;
+            }
+            Some(snap)
         } else {
             None
         }
@@ -8440,6 +8557,12 @@ impl DeviceRect {
 pub(crate) struct PaintBounds {
     any: bool,
     unbounded: bool,
+    /// When set, paint helpers traverse and accumulate but skip the actual
+    /// rasterisation — a dry pass over the *identical* code path used to
+    /// obtain a provable pre-paint bound (e.g. for text, whose glyph
+    /// geometry is only known once outlines are built). The dry pass must
+    /// alter nothing but the skipped fills: same control flow, same state.
+    dry_run: bool,
     min_x: f32,
     min_y: f32,
     max_x: f32,
@@ -8447,6 +8570,17 @@ pub(crate) struct PaintBounds {
 }
 
 impl PaintBounds {
+    /// A dry-run accumulator: traverse + accumulate, skip rasterisation.
+    pub(crate) fn dry() -> Self {
+        Self {
+            dry_run: true,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn is_dry_run(&self) -> bool {
+        self.dry_run
+    }
     pub(crate) fn add_device_aabb(&mut self, min_x: f32, min_y: f32, max_x: f32, max_y: f32) {
         if !(min_x.is_finite() && min_y.is_finite() && max_x.is_finite() && max_y.is_finite()) {
             self.unbounded = true;
