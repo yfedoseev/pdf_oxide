@@ -10,6 +10,17 @@ ignore = [
     # - Timing attacks require local access and precise measurements
     # - Will update when fix becomes available
     "RUSTSEC-2023-0071",
+    # RUSTSEC-2026-0176 / RUSTSEC-2026-0177: pyo3 0.28.x advisories — an
+    # out-of-bounds read in `nth`/`nth_back` for PyList/PyTuple iterators, and
+    # a missing `Sync` bound on `PyCFunction::new_closure` closures. Neither
+    # API is used by our binding (lists are built via `PyList::empty`+`append`;
+    # all callables are `#[pyfunction]`/`#[pymethods]`, never runtime closures),
+    # so both paths are unreachable. Fixed in pyo3 0.29.0, but not yet adoptable:
+    # pyo3-log (latest 0.13.3) requires pyo3 `>=0.26, <0.29`, so taking 0.29 would
+    # drop the Rust->Python logging bridge. Bump pyo3 + pyo3-log together once
+    # pyo3-log supports 0.29 (review 2026-09-10).
+    "RUSTSEC-2026-0176",
+    "RUSTSEC-2026-0177",
 ]
 
 # Treat unmaintained crates as warnings (not errors)
