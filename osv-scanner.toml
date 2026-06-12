@@ -36,3 +36,17 @@ id = "RUSTSEC-2026-0176"
 # the Rust->Python logging bridge. Re-evaluate when pyo3-log adds pyo3 0.29
 # support (then bump both).
 ignoreUntil = 2026-09-10
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0177"
+# `pyo3` crate: missing `Sync` bound on closures passed to
+# `PyCFunction::new_closure` (a non-Sync closure could be invoked
+# concurrently from multiple Python threads — a soundness data race).
+# NOT reachable in our usage: the binding does not call
+# `PyCFunction::new_closure` / `new_closure_bound` anywhere (all Python
+# callables are `#[pyfunction]`/`#[pymethods]`, not runtime closures).
+# Same fix and same blocker as RUSTSEC-2026-0176 above: resolved in pyo3
+# 0.29.0, which pyo3-log (latest 0.13.3, pyo3 `>=0.26, <0.29`) does not yet
+# allow. The only two advisories OSV reports for pyo3 0.28.3. Re-evaluate
+# and bump pyo3 + pyo3-log together when pyo3-log adds 0.29 support.
+ignoreUntil = 2026-09-10
