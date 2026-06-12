@@ -1,8 +1,8 @@
 # OSV-Scanner configuration for pdf_oxide.
 #
 # Documents the (small) set of known-upstream Rust advisories that have no
-# available fix, with explicit per-CVE justifications and a 90-day review
-# horizon. Re-evaluate every release.
+# available — or no currently *adoptable* — fix, with explicit per-CVE
+# justifications and a 90-day review horizon. Re-evaluate every release.
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0436"
@@ -22,3 +22,17 @@ id = "RUSTSEC-2023-0071"
 # is not applicable. No fix version released upstream. Re-evaluate when
 # rustcrypto/RSA ships the constant-time rewrite.
 ignoreUntil = 2026-08-23
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0176"
+# `pyo3` crate: out-of-bounds read in the optimized `nth` / `nth_back`
+# iterator methods for `PyList` / `PyTuple` when called with a large `n`
+# (unchecked `index + n` before bounds-checking). NOT reachable in our
+# usage: the binding only constructs lists via `PyList::empty` + `append`
+# and never calls `nth` / `nth_back` on a Python list/tuple iterator with a
+# caller-controlled index, so the vulnerable path is never executed.
+# Fixed upstream in pyo3 0.29.0, but not yet adoptable: pyo3-log (latest
+# 0.13.3) requires pyo3 `>=0.26, <0.29`, so taking 0.29 would mean dropping
+# the Rust->Python logging bridge. Re-evaluate when pyo3-log adds pyo3 0.29
+# support (then bump both).
+ignoreUntil = 2026-09-10
