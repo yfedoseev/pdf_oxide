@@ -2375,6 +2375,7 @@ fn render_text_to_plate(
             ctx.doc,
             clip,
             ctx.fonts,
+            None,
         )?;
         painted_advance = Some(advance);
     }

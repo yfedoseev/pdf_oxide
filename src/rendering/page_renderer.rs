@@ -223,6 +223,12 @@ pub struct PageRenderer {
     /// page in `render_page_with_options`; lives across paint
     /// operators within the page.
     pub(crate) icc_transform_cache: IccTransformCache,
+    /// Pixels iterated by the §11.7.4 overprint after-paint scan during
+    /// the most recent `render_page*` call. Test-support only: pins the
+    /// dirty-rect bounding contract (a small paint must not trigger a
+    /// full-page scan) without wall-clock noise.
+    #[cfg(feature = "test-support")]
+    overprint_scan_px: u64,
     /// Depth counter for the SMask materialisation path. Incremented
     /// on entry to [`Self::apply_smask_after_paint`] and decremented
     /// on exit. When the counter reaches [`MAX_SMASK_DEPTH`] further
@@ -293,6 +299,8 @@ impl PageRenderer {
             color_spaces: HashMap::new(),
             excluded_layers_snapshot: None,
             icc_transform_cache: IccTransformCache::new(),
+            #[cfg(feature = "test-support")]
+            overprint_scan_px: 0,
             smask_depth: 0,
             cmyk_sidecar: None,
             force_cmyk_sidecar: false,
@@ -386,6 +394,15 @@ impl PageRenderer {
         self.cmyk_sidecar.as_ref().and_then(|s| s.spot_plane(index))
     }
 
+    /// Pixels iterated by the §11.7.4 overprint after-paint scan during
+    /// the most recent `render_page*` call. Test-support only — pins
+    /// the dirty-rect bounding contract: a small /OP-true paint must
+    /// scan a rect-bounded neighbourhood of its geometry, not the page.
+    #[cfg(feature = "test-support")]
+    pub fn overprint_scanned_pixels(&self) -> u64 {
+        self.overprint_scan_px
+    }
+
     /// Render a page to a raster image.
     pub fn render_page(&mut self, doc: &PdfDocument, page_num: usize) -> Result<RenderedImage> {
         self.render_page_with_options(page_num, doc)
@@ -406,6 +423,10 @@ impl PageRenderer {
         // amortising transform construction across paints within a
         // single page.
         self.icc_transform_cache.clear();
+        #[cfg(feature = "test-support")]
+        {
+            self.overprint_scan_px = 0;
+        }
         // Reset the H3b silent-K=0 warning latch so a new page's first
         // RGB-to-CMYK fallback under a declared-but-unparseable
         // /OutputIntents profile logs once on the new page (instead
@@ -1524,7 +1545,19 @@ impl PageRenderer {
                             let transform = combine_transforms(base_transform, &gs_clone.ctm);
                             let smask_snap = self.smask_snapshot(pixmap, &gs_clone);
                             let smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
-                            let overprint_snap = self.overprint_snapshot(pixmap, &gs_clone, false);
+                            let overprint_rect = device_paint_rect_for_path(
+                                &path,
+                                transform,
+                                Some(&gs_clone),
+                                pixmap.width(),
+                                pixmap.height(),
+                            );
+                            let overprint_snap = self.overprint_snapshot(
+                                pixmap,
+                                &gs_clone,
+                                false,
+                                Some(overprint_rect),
+                            );
                             let cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, false);
                             let cmyk_sidecar_snap =
@@ -1553,6 +1586,7 @@ impl PageRenderer {
                                     &gs_clone,
                                     doc,
                                     false,
+                                    None,
                                 );
                             }
                             if let Some(snap) = cmyk_sidecar_snap {
@@ -1630,7 +1664,19 @@ impl PageRenderer {
                             // painted result.
                             let smask_snap = self.smask_snapshot(pixmap, &gs_clone);
                             let smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
-                            let overprint_snap = self.overprint_snapshot(pixmap, &gs_clone, true);
+                            let overprint_rect = device_paint_rect_for_path(
+                                &path,
+                                transform,
+                                None,
+                                pixmap.width(),
+                                pixmap.height(),
+                            );
+                            let overprint_snap = self.overprint_snapshot(
+                                pixmap,
+                                &gs_clone,
+                                true,
+                                Some(overprint_rect),
+                            );
                             let cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, true);
                             let cmyk_sidecar_snap =
@@ -1669,6 +1715,7 @@ impl PageRenderer {
                                     &gs_clone,
                                     doc,
                                     true,
+                                    None,
                                 );
                             }
                             if let Some(snap) = cmyk_sidecar_snap {
@@ -1779,8 +1826,19 @@ impl PageRenderer {
                             // gets its own snapshot/apply cycle.
                             let fill_smask_snap = self.smask_snapshot(pixmap, &gs_clone);
                             let fill_smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
-                            let fill_overprint_snap =
-                                self.overprint_snapshot(pixmap, &gs_clone, true);
+                            let fill_paint_rect = device_paint_rect_for_path(
+                                &path,
+                                transform,
+                                None,
+                                pixmap.width(),
+                                pixmap.height(),
+                            );
+                            let fill_overprint_snap = self.overprint_snapshot(
+                                pixmap,
+                                &gs_clone,
+                                true,
+                                Some(fill_paint_rect),
+                            );
                             let fill_cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, true);
                             let fill_spot_snap = self.spot_paint_snapshot(pixmap, &gs_clone, true);
@@ -1804,7 +1862,7 @@ impl PageRenderer {
                             }
                             if let Some(snap) = fill_overprint_snap {
                                 self.apply_overprint_after_paint(
-                                    pixmap, &snap, &gs_clone, doc, true,
+                                    pixmap, &snap, &gs_clone, doc, true, None,
                                 );
                             }
                             if let Some(snap) = fill_spot_snap {
@@ -1833,8 +1891,19 @@ impl PageRenderer {
                             // against the stroke-side fields.
                             let stroke_smask_snap = self.smask_snapshot(pixmap, &gs_clone);
                             let stroke_smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
-                            let stroke_overprint_snap =
-                                self.overprint_snapshot(pixmap, &gs_clone, false);
+                            let stroke_paint_rect = device_paint_rect_for_path(
+                                &path,
+                                transform,
+                                Some(&gs_clone),
+                                pixmap.width(),
+                                pixmap.height(),
+                            );
+                            let stroke_overprint_snap = self.overprint_snapshot(
+                                pixmap,
+                                &gs_clone,
+                                false,
+                                Some(stroke_paint_rect),
+                            );
                             let stroke_cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, false);
                             let stroke_spot_snap =
@@ -1850,7 +1919,7 @@ impl PageRenderer {
                             }
                             if let Some(snap) = stroke_overprint_snap {
                                 self.apply_overprint_after_paint(
-                                    pixmap, &snap, &gs_clone, doc, false,
+                                    pixmap, &snap, &gs_clone, doc, false, None,
                                 );
                             }
                             if let Some(snap) = stroke_spot_snap {
@@ -1915,8 +1984,19 @@ impl PageRenderer {
                             // the colour-composition rule.
                             let fill_smask_snap = self.smask_snapshot(pixmap, &gs_clone);
                             let fill_smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
-                            let fill_overprint_snap =
-                                self.overprint_snapshot(pixmap, &gs_clone, true);
+                            let fill_paint_rect = device_paint_rect_for_path(
+                                &path,
+                                transform,
+                                None,
+                                pixmap.width(),
+                                pixmap.height(),
+                            );
+                            let fill_overprint_snap = self.overprint_snapshot(
+                                pixmap,
+                                &gs_clone,
+                                true,
+                                Some(fill_paint_rect),
+                            );
                             let fill_cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, true);
                             let fill_spot_snap = self.spot_paint_snapshot(pixmap, &gs_clone, true);
@@ -1944,7 +2024,7 @@ impl PageRenderer {
                             }
                             if let Some(snap) = fill_overprint_snap {
                                 self.apply_overprint_after_paint(
-                                    pixmap, &snap, &gs_clone, doc, true,
+                                    pixmap, &snap, &gs_clone, doc, true, None,
                                 );
                             }
                             if let Some(snap) = fill_spot_snap {
@@ -1974,8 +2054,19 @@ impl PageRenderer {
                                 // cycle against the stroke fields.
                                 let stroke_smask_snap = self.smask_snapshot(pixmap, &gs_clone);
                                 let stroke_smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
-                                let stroke_overprint_snap =
-                                    self.overprint_snapshot(pixmap, &gs_clone, false);
+                                let stroke_paint_rect = device_paint_rect_for_path(
+                                    &path,
+                                    transform,
+                                    Some(&gs_clone),
+                                    pixmap.width(),
+                                    pixmap.height(),
+                                );
+                                let stroke_overprint_snap = self.overprint_snapshot(
+                                    pixmap,
+                                    &gs_clone,
+                                    false,
+                                    Some(stroke_paint_rect),
+                                );
                                 let stroke_cmyk_compose_snap =
                                     self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, false);
                                 let stroke_spot_snap =
@@ -1991,7 +2082,7 @@ impl PageRenderer {
                                 }
                                 if let Some(snap) = stroke_overprint_snap {
                                     self.apply_overprint_after_paint(
-                                        pixmap, &snap, &gs_clone, doc, false,
+                                        pixmap, &snap, &gs_clone, doc, false, None,
                                     );
                                 }
                                 if let Some(snap) = stroke_spot_snap {
@@ -2098,7 +2189,7 @@ impl PageRenderer {
                             // per Tj call brackets the whole string.
                             let smask_snap = self.smask_snapshot(pixmap, gs);
                             let smask_spot_snap = self.smask_spot_snapshot(gs);
-                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true);
+                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true, None);
                             let cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, gs, doc, true);
                             let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
@@ -2114,6 +2205,8 @@ impl PageRenderer {
                                     text, transform, gs, resources, doc, clip,
                                 )
                             });
+                            let mut text_paint_bounds =
+                                overprint_snap.as_ref().map(|_| PaintBounds::default());
                             let adv = self.text_rasterizer.render_text(
                                 pixmap,
                                 text,
@@ -2124,8 +2217,12 @@ impl PageRenderer {
                                 doc,
                                 clip,
                                 &self.fonts,
+                                text_paint_bounds.as_mut(),
                             )?;
                             let gs_for_apply = gs_stack.current().clone();
+                            let text_overprint_scan = text_paint_bounds
+                                .as_ref()
+                                .and_then(|b| b.to_device_rect(pixmap.width(), pixmap.height()));
                             if let Some(snap) = cmyk_compose_snap {
                                 self.apply_cmyk_compose_after_paint(
                                     pixmap,
@@ -2142,6 +2239,7 @@ impl PageRenderer {
                                     &gs_for_apply,
                                     doc,
                                     true,
+                                    text_overprint_scan,
                                 );
                             }
                             if let Some(snap) = spot_snap {
@@ -2206,7 +2304,7 @@ impl PageRenderer {
                             let colors = self.pipeline_resolve_text_colors(doc, gs);
                             let smask_snap = self.smask_snapshot(pixmap, gs);
                             let smask_spot_snap = self.smask_spot_snapshot(gs);
-                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true);
+                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true, None);
                             let cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, gs, doc, true);
                             let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
@@ -2215,6 +2313,8 @@ impl PageRenderer {
                                     text, transform, gs, resources, doc, clip,
                                 )
                             });
+                            let mut text_paint_bounds =
+                                overprint_snap.as_ref().map(|_| PaintBounds::default());
                             let adv = self.text_rasterizer.render_text(
                                 pixmap,
                                 text,
@@ -2225,8 +2325,12 @@ impl PageRenderer {
                                 doc,
                                 clip,
                                 &self.fonts,
+                                text_paint_bounds.as_mut(),
                             )?;
                             let gs_for_apply = gs_stack.current().clone();
+                            let text_overprint_scan = text_paint_bounds
+                                .as_ref()
+                                .and_then(|b| b.to_device_rect(pixmap.width(), pixmap.height()));
                             if let Some(snap) = cmyk_compose_snap {
                                 self.apply_cmyk_compose_after_paint(
                                     pixmap,
@@ -2243,6 +2347,7 @@ impl PageRenderer {
                                     &gs_for_apply,
                                     doc,
                                     true,
+                                    text_overprint_scan,
                                 );
                             }
                             if let Some(snap) = spot_snap {
@@ -2303,7 +2408,7 @@ impl PageRenderer {
                             let colors = self.pipeline_resolve_text_colors(doc, gs);
                             let smask_snap = self.smask_snapshot(pixmap, gs);
                             let smask_spot_snap = self.smask_spot_snapshot(gs);
-                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true);
+                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true, None);
                             let cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, gs, doc, true);
                             let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
@@ -2312,6 +2417,8 @@ impl PageRenderer {
                                     array, transform, gs, resources, doc, clip,
                                 )
                             });
+                            let mut text_paint_bounds =
+                                overprint_snap.as_ref().map(|_| PaintBounds::default());
                             let adv = self.text_rasterizer.render_tj_array(
                                 pixmap,
                                 array,
@@ -2322,8 +2429,12 @@ impl PageRenderer {
                                 doc,
                                 clip,
                                 &self.fonts,
+                                text_paint_bounds.as_mut(),
                             )?;
                             let gs_for_apply = gs_stack.current().clone();
+                            let text_overprint_scan = text_paint_bounds
+                                .as_ref()
+                                .and_then(|b| b.to_device_rect(pixmap.width(), pixmap.height()));
                             if let Some(snap) = cmyk_compose_snap {
                                 self.apply_cmyk_compose_after_paint(
                                     pixmap,
@@ -2340,6 +2451,7 @@ impl PageRenderer {
                                     &gs_for_apply,
                                     doc,
                                     true,
+                                    text_overprint_scan,
                                 );
                             }
                             if let Some(snap) = spot_snap {
@@ -2413,7 +2525,7 @@ impl PageRenderer {
                             let colors = self.pipeline_resolve_text_colors(doc, gs);
                             let smask_snap = self.smask_snapshot(pixmap, gs);
                             let smask_spot_snap = self.smask_spot_snapshot(gs);
-                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true);
+                            let overprint_snap = self.overprint_snapshot(pixmap, gs, true, None);
                             let cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, gs, doc, true);
                             let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
@@ -2422,6 +2534,8 @@ impl PageRenderer {
                                     text, transform, gs, resources, doc, clip,
                                 )
                             });
+                            let mut text_paint_bounds =
+                                overprint_snap.as_ref().map(|_| PaintBounds::default());
                             let adv = self.text_rasterizer.render_text(
                                 pixmap,
                                 text,
@@ -2432,8 +2546,12 @@ impl PageRenderer {
                                 doc,
                                 clip,
                                 &self.fonts,
+                                text_paint_bounds.as_mut(),
                             )?;
                             let gs_for_apply = gs_stack.current().clone();
+                            let text_overprint_scan = text_paint_bounds
+                                .as_ref()
+                                .and_then(|b| b.to_device_rect(pixmap.width(), pixmap.height()));
                             if let Some(snap) = cmyk_compose_snap {
                                 self.apply_cmyk_compose_after_paint(
                                     pixmap,
@@ -2450,6 +2568,7 @@ impl PageRenderer {
                                     &gs_for_apply,
                                     doc,
                                     true,
+                                    text_overprint_scan,
                                 );
                             }
                             if let Some(snap) = spot_snap {
@@ -2536,7 +2655,7 @@ impl PageRenderer {
                         let overprint_snap = if is_form {
                             None
                         } else {
-                            self.overprint_snapshot(pixmap, &gs_clone, true)
+                            self.overprint_snapshot(pixmap, &gs_clone, true, None)
                         };
                         let cmyk_compose_snap = if is_form {
                             None
@@ -2570,7 +2689,9 @@ impl PageRenderer {
                             );
                         }
                         if let Some(snap) = overprint_snap {
-                            self.apply_overprint_after_paint(pixmap, &snap, &gs_clone, doc, true);
+                            self.apply_overprint_after_paint(
+                                pixmap, &snap, &gs_clone, doc, true, None,
+                            );
                         }
                         if let Some(snap) = spot_snap {
                             self.mirror_spot_paint_into_sidecar_with_coverage(
@@ -2740,7 +2861,7 @@ impl PageRenderer {
                         // `sh`.
                         let smask_snap = self.smask_snapshot(pixmap, &gs_clone);
                         let smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
-                        let overprint_snap = self.overprint_snapshot(pixmap, &gs_clone, true);
+                        let overprint_snap = self.overprint_snapshot(pixmap, &gs_clone, true, None);
                         let cmyk_compose_snap =
                             self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, true);
                         let spot_snap = self.spot_paint_snapshot(pixmap, &gs_clone, true);
@@ -2762,7 +2883,9 @@ impl PageRenderer {
                             );
                         }
                         if let Some(snap) = overprint_snap {
-                            self.apply_overprint_after_paint(pixmap, &snap, &gs_clone, doc, true);
+                            self.apply_overprint_after_paint(
+                                pixmap, &snap, &gs_clone, doc, true, None,
+                            );
                         }
                         if let Some(snap) = spot_snap {
                             self.mirror_spot_paint_into_sidecar_with_coverage(
@@ -4534,6 +4657,7 @@ impl PageRenderer {
             doc,
             clip_mask,
             &self.fonts,
+            None,
         );
         Some(Self::extract_alpha_as_coverage(&scratch))
     }
@@ -4564,6 +4688,7 @@ impl PageRenderer {
             doc,
             clip_mask,
             &self.fonts,
+            None,
         );
         Some(Self::extract_alpha_as_coverage(&scratch))
     }
@@ -5048,14 +5173,20 @@ impl PageRenderer {
     /// Separation/DeviceN. The per-channel blend function dispatches
     /// on the source class; without the snapshot the painted region
     /// could not be identified for compositing.
+    /// `bounds` is the device rect the upcoming paint is provably confined
+    /// to (`None` = no provable bound → snapshot the full page, the
+    /// historical behaviour). Pixels outside the bound cannot change, so a
+    /// rect snapshot loses nothing the after-paint diff could detect.
     fn overprint_snapshot(
         &self,
         pixmap: &Pixmap,
         gs: &GraphicsState,
         fill_side: bool,
-    ) -> Option<Vec<u8>> {
+        bounds: Option<DeviceRect>,
+    ) -> Option<RectSnapshot> {
         if source_for_overprint(gs, fill_side).is_some() {
-            Some(pixmap.data().to_vec())
+            let rect = bounds.unwrap_or_else(|| DeviceRect::full(pixmap.width(), pixmap.height()));
+            Some(RectSnapshot::capture(pixmap, rect))
         } else {
             None
         }
@@ -5086,14 +5217,15 @@ impl PageRenderer {
     fn apply_overprint_after_paint_with_coverage(
         &mut self,
         pixmap: &mut Pixmap,
-        snapshot: &[u8],
+        snap: &RectSnapshot,
         coverage: Option<&[u8]>,
         gs: &GraphicsState,
         doc: &PdfDocument,
         fill_side: bool,
+        scan_override: Option<DeviceRect>,
     ) {
         if self.cmyk_sidecar.is_none() || coverage.is_none() {
-            self.apply_overprint_after_paint(pixmap, snapshot, gs, doc, fill_side);
+            self.apply_overprint_after_paint(pixmap, snap, gs, doc, fill_side, scan_override);
             return;
         }
 
@@ -5133,67 +5265,100 @@ impl PageRenderer {
             _ => None,
         };
 
-        let dest = pixmap.data_mut();
-        for px in 0..(dest.len() / 4) {
-            let off = px * 4;
-            let cov = coverage[px];
-            if cov == 0 {
-                continue;
-            }
-            // Effective alpha for this pixel — §11.3.3's α'.
-            let c_alpha = ((cov as f32 / 255.0) * alpha_g).clamp(0.0, 1.0);
-
-            // Backdrop CMYK from sidecar.
-            let plane = self.cmyk_sidecar.as_ref().expect("checked above").cmyk();
-            let dc = plane[off] as f32 / 255.0;
-            let dm = plane[off + 1] as f32 / 255.0;
-            let dy = plane[off + 2] as f32 / 255.0;
-            let dk_existing = plane[off + 3] as f32 / 255.0;
-
-            // §11.7.4.3 per-channel CompatibleOverprint composed with α.
-            let mc =
-                compose_overprint_channel(source.class, ProcessChannel::C, sc, dc, opm, c_alpha);
-            let mm =
-                compose_overprint_channel(source.class, ProcessChannel::M, sm, dm, opm, c_alpha);
-            let my =
-                compose_overprint_channel(source.class, ProcessChannel::Y, sy, dy, opm, c_alpha);
-            let mk = compose_overprint_channel(
-                source.class,
-                ProcessChannel::K,
-                sk,
-                dk_existing,
-                opm,
-                c_alpha,
-            );
-
-            let (r_byte, g_byte, b_byte) = if let Some(transform) = icc_transform.as_ref() {
-                let mc_u8 = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
-                let mm_u8 = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
-                let my_u8 = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
-                let mk_u8 = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
-                let rgb = transform.convert_cmyk_pixel(mc_u8, mm_u8, my_u8, mk_u8);
-                (rgb[0], rgb[1], rgb[2])
-            } else {
-                let (rr, rg, rb) = cmyk_to_rgb(mc, mm, my, mk);
-                (
-                    (rr * 255.0).round().clamp(0.0, 255.0) as u8,
-                    (rg * 255.0).round().clamp(0.0, 255.0) as u8,
-                    (rb * 255.0).round().clamp(0.0, 255.0) as u8,
-                )
-            };
-
-            dest[off] = r_byte;
-            dest[off + 1] = g_byte;
-            dest[off + 2] = b_byte;
-
-            // Mirror merged CMYK into sidecar.
-            let plane = self.cmyk_sidecar.as_mut().expect("re-borrow").cmyk_mut();
-            plane[off] = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
-            plane[off + 1] = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
-            plane[off + 2] = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
-            plane[off + 3] = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+        // Coverage is a page-indexed plane; the walk is restricted to the
+        // snapshot rect (every covered pixel lies inside it — the rect
+        // provably bounds the paint geometry the coverage was rasterised
+        // from), optionally narrowed further by the caller.
+        let scan = scan_override.map_or(snap.rect, |s| s.intersect(&snap.rect));
+        if scan.is_empty() {
+            return;
         }
-        let _ = snapshot;
+        let page_w = pixmap.width() as usize;
+        let dest = pixmap.data_mut();
+        #[cfg(feature = "test-support")]
+        {
+            self.overprint_scan_px += scan.width() as u64 * scan.height() as u64;
+        }
+        for y in scan.y0..scan.y1 {
+            for x in scan.x0..scan.x1 {
+                let px = y as usize * page_w + x as usize;
+                let off = px * 4;
+                let cov = coverage[px];
+                if cov == 0 {
+                    continue;
+                }
+                // Effective alpha for this pixel — §11.3.3's α'.
+                let c_alpha = ((cov as f32 / 255.0) * alpha_g).clamp(0.0, 1.0);
+
+                // Backdrop CMYK from sidecar.
+                let plane = self.cmyk_sidecar.as_ref().expect("checked above").cmyk();
+                let dc = plane[off] as f32 / 255.0;
+                let dm = plane[off + 1] as f32 / 255.0;
+                let dy = plane[off + 2] as f32 / 255.0;
+                let dk_existing = plane[off + 3] as f32 / 255.0;
+
+                // §11.7.4.3 per-channel CompatibleOverprint composed with α.
+                let mc = compose_overprint_channel(
+                    source.class,
+                    ProcessChannel::C,
+                    sc,
+                    dc,
+                    opm,
+                    c_alpha,
+                );
+                let mm = compose_overprint_channel(
+                    source.class,
+                    ProcessChannel::M,
+                    sm,
+                    dm,
+                    opm,
+                    c_alpha,
+                );
+                let my = compose_overprint_channel(
+                    source.class,
+                    ProcessChannel::Y,
+                    sy,
+                    dy,
+                    opm,
+                    c_alpha,
+                );
+                let mk = compose_overprint_channel(
+                    source.class,
+                    ProcessChannel::K,
+                    sk,
+                    dk_existing,
+                    opm,
+                    c_alpha,
+                );
+
+                let (r_byte, g_byte, b_byte) = if let Some(transform) = icc_transform.as_ref() {
+                    let mc_u8 = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let mm_u8 = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let my_u8 = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let mk_u8 = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let rgb = transform.convert_cmyk_pixel(mc_u8, mm_u8, my_u8, mk_u8);
+                    (rgb[0], rgb[1], rgb[2])
+                } else {
+                    let (rr, rg, rb) = cmyk_to_rgb(mc, mm, my, mk);
+                    (
+                        (rr * 255.0).round().clamp(0.0, 255.0) as u8,
+                        (rg * 255.0).round().clamp(0.0, 255.0) as u8,
+                        (rb * 255.0).round().clamp(0.0, 255.0) as u8,
+                    )
+                };
+
+                dest[off] = r_byte;
+                dest[off + 1] = g_byte;
+                dest[off + 2] = b_byte;
+
+                // Mirror merged CMYK into sidecar.
+                let plane = self.cmyk_sidecar.as_mut().expect("re-borrow").cmyk_mut();
+                plane[off] = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+                plane[off + 1] = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+                plane[off + 2] = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+                plane[off + 3] = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        }
     }
 
     /// Snapshot the pixmap when the sidecar is active AND the current
@@ -5743,10 +5908,11 @@ impl PageRenderer {
     fn apply_overprint_after_paint(
         &mut self,
         pixmap: &mut Pixmap,
-        snapshot: &[u8],
+        snap: &RectSnapshot,
         gs: &GraphicsState,
         doc: &PdfDocument,
         fill_side: bool,
+        scan_override: Option<DeviceRect>,
     ) {
         let Some(source) = source_for_overprint(gs, fill_side) else {
             return;
@@ -5805,121 +5971,155 @@ impl PageRenderer {
             [r, g, b]
         };
 
+        // The scan walks only the snapshot's rect (or a caller-supplied
+        // sub-rect of it). Pixels outside the rect were provably not
+        // painted, so the historical full-page diff would have skipped
+        // them anyway — restricting the walk is byte-identical.
+        let scan = scan_override.map_or(snap.rect, |s| s.intersect(&snap.rect));
+        if scan.is_empty() {
+            return;
+        }
+        let page_w = pixmap.width() as usize;
+        let snapshot = snap.bytes.as_slice();
         let dest = pixmap.data_mut();
-        debug_assert_eq!(dest.len(), snapshot.len());
 
-        for px in 0..(dest.len() / 4) {
-            let off = px * 4;
+        #[cfg(feature = "test-support")]
+        {
+            self.overprint_scan_px += scan.width() as u64 * scan.height() as u64;
+        }
+        for y in scan.y0..scan.y1 {
+            for x in scan.x0..scan.x1 {
+                let off = (y as usize * page_w + x as usize) * 4;
+                let soff = snap.offset(x, y);
 
-            // Detect "this pixel was painted": any RGBA byte differs
-            // between snapshot and current pixmap. Coverage-aware AA
-            // pixels are detected too.
-            let painted = dest[off] != snapshot[off]
-                || dest[off + 1] != snapshot[off + 1]
-                || dest[off + 2] != snapshot[off + 2]
-                || dest[off + 3] != snapshot[off + 3];
-            if !painted {
-                continue;
-            }
+                // Detect "this pixel was painted": any RGBA byte differs
+                // between snapshot and current pixmap. Coverage-aware AA
+                // pixels are detected too.
+                let painted = dest[off] != snapshot[soff]
+                    || dest[off + 1] != snapshot[soff + 1]
+                    || dest[off + 2] != snapshot[soff + 2]
+                    || dest[off + 3] != snapshot[soff + 3];
+                if !painted {
+                    continue;
+                }
 
-            // Recover effective coverage·alpha from the source-over
-            // alpha blend on the most-stable channel — same shape as
-            // apply_cmyk_compose_after_paint.
-            let snap_r = snapshot[off] as f32 / 255.0;
-            let snap_g = snapshot[off + 1] as f32 / 255.0;
-            let snap_b = snapshot[off + 2] as f32 / 255.0;
-            let post_r = dest[off] as f32 / 255.0;
-            let post_g = dest[off + 1] as f32 / 255.0;
-            let post_b = dest[off + 2] as f32 / 255.0;
-            let diffs = [
-                (snap_r - src_rgb_ic[0]).abs(),
-                (snap_g - src_rgb_ic[1]).abs(),
-                (snap_b - src_rgb_ic[2]).abs(),
-            ];
-            let (max_idx, max_diff) = diffs
-                .iter()
-                .enumerate()
-                .fold((0usize, 0.0_f32), |acc, (i, &v)| if v > acc.1 { (i, v) } else { acc });
-            let c_alpha = if max_diff > 1.0 / 255.0 {
-                let (snap_ch, post_ch, src_ch) = match max_idx {
-                    0 => (snap_r, post_r, src_rgb_ic[0]),
-                    1 => (snap_g, post_g, src_rgb_ic[1]),
-                    _ => (snap_b, post_b, src_rgb_ic[2]),
-                };
-                ((snap_ch - post_ch) / (snap_ch - src_ch)).clamp(0.0, 1.0)
-            } else {
-                // Source RGB ≈ snapshot RGB — coverage is moot. Use the
-                // graphics-state alpha as a sensible fallback.
-                alpha_g
-            };
-
-            // Backdrop CMYK from sidecar; additive-clamp fallback when
-            // the sidecar is None.
-            let (dc, dm, dy, dk_existing) =
-                if let Some(plane) = self.cmyk_sidecar.as_ref().map(CmykSidecar::cmyk) {
-                    (
-                        plane[off] as f32 / 255.0,
-                        plane[off + 1] as f32 / 255.0,
-                        plane[off + 2] as f32 / 255.0,
-                        plane[off + 3] as f32 / 255.0,
-                    )
+                // Recover effective coverage·alpha from the source-over
+                // alpha blend on the most-stable channel — same shape as
+                // apply_cmyk_compose_after_paint.
+                let snap_r = snapshot[soff] as f32 / 255.0;
+                let snap_g = snapshot[soff + 1] as f32 / 255.0;
+                let snap_b = snapshot[soff + 2] as f32 / 255.0;
+                let post_r = dest[off] as f32 / 255.0;
+                let post_g = dest[off + 1] as f32 / 255.0;
+                let post_b = dest[off + 2] as f32 / 255.0;
+                let diffs = [
+                    (snap_r - src_rgb_ic[0]).abs(),
+                    (snap_g - src_rgb_ic[1]).abs(),
+                    (snap_b - src_rgb_ic[2]).abs(),
+                ];
+                let (max_idx, max_diff) = diffs
+                    .iter()
+                    .enumerate()
+                    .fold((0usize, 0.0_f32), |acc, (i, &v)| if v > acc.1 { (i, v) } else { acc });
+                let c_alpha = if max_diff > 1.0 / 255.0 {
+                    let (snap_ch, post_ch, src_ch) = match max_idx {
+                        0 => (snap_r, post_r, src_rgb_ic[0]),
+                        1 => (snap_g, post_g, src_rgb_ic[1]),
+                        _ => (snap_b, post_b, src_rgb_ic[2]),
+                    };
+                    ((snap_ch - post_ch) / (snap_ch - src_ch)).clamp(0.0, 1.0)
                 } else {
-                    let dr = snapshot[off] as f32 / 255.0;
-                    let dg = snapshot[off + 1] as f32 / 255.0;
-                    let db = snapshot[off + 2] as f32 / 255.0;
-                    ((1.0 - dr).max(0.0), (1.0 - dg).max(0.0), (1.0 - db).max(0.0), 0.0_f32)
+                    // Source RGB ≈ snapshot RGB — coverage is moot. Use the
+                    // graphics-state alpha as a sensible fallback.
+                    alpha_g
                 };
 
-            // Per-channel §11.7.4.3 CompatibleOverprint blend function,
-            // then §11.3.3 composition with effective alpha.
-            let mc =
-                compose_overprint_channel(source.class, ProcessChannel::C, sc, dc, opm, c_alpha);
-            let mm =
-                compose_overprint_channel(source.class, ProcessChannel::M, sm, dm, opm, c_alpha);
-            let my =
-                compose_overprint_channel(source.class, ProcessChannel::Y, sy, dy, opm, c_alpha);
-            let mk = compose_overprint_channel(
-                source.class,
-                ProcessChannel::K,
-                sk,
-                dk_existing,
-                opm,
-                c_alpha,
-            );
+                // Backdrop CMYK from sidecar; additive-clamp fallback when
+                // the sidecar is None.
+                let (dc, dm, dy, dk_existing) =
+                    if let Some(plane) = self.cmyk_sidecar.as_ref().map(CmykSidecar::cmyk) {
+                        (
+                            plane[off] as f32 / 255.0,
+                            plane[off + 1] as f32 / 255.0,
+                            plane[off + 2] as f32 / 255.0,
+                            plane[off + 3] as f32 / 255.0,
+                        )
+                    } else {
+                        let dr = snapshot[soff] as f32 / 255.0;
+                        let dg = snapshot[soff + 1] as f32 / 255.0;
+                        let db = snapshot[soff + 2] as f32 / 255.0;
+                        ((1.0 - dr).max(0.0), (1.0 - dg).max(0.0), (1.0 - db).max(0.0), 0.0_f32)
+                    };
 
-            // CMYK → RGB conversion. ICC path for the press-accurate
-            // case; additive-clamp `cmyk_to_rgb` for the fallback.
-            let (r_byte, g_byte, b_byte) = if let Some(transform) = icc_transform.as_ref() {
-                let mc_u8 = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
-                let mm_u8 = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
-                let my_u8 = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
-                let mk_u8 = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
-                let rgb = transform.convert_cmyk_pixel(mc_u8, mm_u8, my_u8, mk_u8);
-                (rgb[0], rgb[1], rgb[2])
-            } else {
-                let (rr, rg, rb) = cmyk_to_rgb(mc, mm, my, mk);
-                (
-                    (rr * 255.0).round().clamp(0.0, 255.0) as u8,
-                    (rg * 255.0).round().clamp(0.0, 255.0) as u8,
-                    (rb * 255.0).round().clamp(0.0, 255.0) as u8,
-                )
-            };
+                // Per-channel §11.7.4.3 CompatibleOverprint blend function,
+                // then §11.3.3 composition with effective alpha.
+                let mc = compose_overprint_channel(
+                    source.class,
+                    ProcessChannel::C,
+                    sc,
+                    dc,
+                    opm,
+                    c_alpha,
+                );
+                let mm = compose_overprint_channel(
+                    source.class,
+                    ProcessChannel::M,
+                    sm,
+                    dm,
+                    opm,
+                    c_alpha,
+                );
+                let my = compose_overprint_channel(
+                    source.class,
+                    ProcessChannel::Y,
+                    sy,
+                    dy,
+                    opm,
+                    c_alpha,
+                );
+                let mk = compose_overprint_channel(
+                    source.class,
+                    ProcessChannel::K,
+                    sk,
+                    dk_existing,
+                    opm,
+                    c_alpha,
+                );
 
-            // Preserve the painted pixel's alpha (post-paint alpha
-            // already accounts for the paint's contribution); just
-            // overwrite RGB with the per-channel composed value.
-            dest[off] = r_byte;
-            dest[off + 1] = g_byte;
-            dest[off + 2] = b_byte;
-            // Alpha unchanged.
+                // CMYK → RGB conversion. ICC path for the press-accurate
+                // case; additive-clamp `cmyk_to_rgb` for the fallback.
+                let (r_byte, g_byte, b_byte) = if let Some(transform) = icc_transform.as_ref() {
+                    let mc_u8 = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let mm_u8 = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let my_u8 = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let mk_u8 = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let rgb = transform.convert_cmyk_pixel(mc_u8, mm_u8, my_u8, mk_u8);
+                    (rgb[0], rgb[1], rgb[2])
+                } else {
+                    let (rr, rg, rb) = cmyk_to_rgb(mc, mm, my, mk);
+                    (
+                        (rr * 255.0).round().clamp(0.0, 255.0) as u8,
+                        (rg * 255.0).round().clamp(0.0, 255.0) as u8,
+                        (rb * 255.0).round().clamp(0.0, 255.0) as u8,
+                    )
+                };
 
-            // Mirror the composed CMYK into the sidecar so subsequent
-            // paints see the post-overprint backdrop.
-            if let Some(plane) = self.cmyk_sidecar.as_mut().map(CmykSidecar::cmyk_mut) {
-                plane[off] = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
-                plane[off + 1] = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
-                plane[off + 2] = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
-                plane[off + 3] = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+                // Preserve the painted pixel's alpha (post-paint alpha
+                // already accounts for the paint's contribution); just
+                // overwrite RGB with the per-channel composed value.
+                dest[off] = r_byte;
+                dest[off + 1] = g_byte;
+                dest[off + 2] = b_byte;
+                // Alpha unchanged.
+
+                // Mirror the composed CMYK into the sidecar so subsequent
+                // paints see the post-overprint backdrop.
+                if let Some(plane) = self.cmyk_sidecar.as_mut().map(CmykSidecar::cmyk_mut) {
+                    plane[off] = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    plane[off + 1] = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    plane[off + 2] = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    plane[off + 3] = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+                }
             }
         }
     }
@@ -8147,6 +8347,284 @@ fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
 #[cfg(test)]
 pub(crate) static APC_MATERIALIZED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+
+/// Anti-aliasing guard for paint-bbox → device-rect conversion: tiny_skia's
+/// AA filtering can light pixels whose centres sit just outside the exact
+/// geometry, so every dirty rect is expanded by this many device pixels on
+/// each side before clamping.
+const PAINT_BBOX_AA_MARGIN: f32 = 2.0;
+
+/// Half-open device-pixel rectangle (`x0..x1`, `y0..y1`) bounding the region
+/// an after-paint pass needs to snapshot and scan. Always clamped to the
+/// pixmap; may be empty when the paint geometry lies entirely off-page (an
+/// empty rect means no in-page pixel can have been painted, so skipping the
+/// pass is exact).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DeviceRect {
+    pub(crate) x0: u32,
+    pub(crate) y0: u32,
+    pub(crate) x1: u32,
+    pub(crate) y1: u32,
+}
+
+impl DeviceRect {
+    pub(crate) fn full(width: u32, height: u32) -> Self {
+        Self {
+            x0: 0,
+            y0: 0,
+            x1: width,
+            y1: height,
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.x1 <= self.x0 || self.y1 <= self.y0
+    }
+
+    pub(crate) fn width(&self) -> u32 {
+        self.x1.saturating_sub(self.x0)
+    }
+
+    pub(crate) fn height(&self) -> u32 {
+        self.y1.saturating_sub(self.y0)
+    }
+
+    pub(crate) fn intersect(&self, other: &Self) -> Self {
+        Self {
+            x0: self.x0.max(other.x0),
+            y0: self.y0.max(other.y0),
+            x1: self.x1.min(other.x1),
+            y1: self.y1.min(other.y1),
+        }
+    }
+
+    /// Build from a device-space AABB, expanded by `margin` pixels on every
+    /// side and clamped to `width`×`height`. Any non-finite coordinate makes
+    /// the bound unprovable → returns the full-page rect (safe fallback,
+    /// identical to the historical full-page scan).
+    pub(crate) fn from_device_aabb(
+        min_x: f32,
+        min_y: f32,
+        max_x: f32,
+        max_y: f32,
+        margin: f32,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        if !(min_x.is_finite()
+            && min_y.is_finite()
+            && max_x.is_finite()
+            && max_y.is_finite()
+            && margin.is_finite())
+        {
+            return Self::full(width, height);
+        }
+        // `f32 as u32` saturates, but pre-clamp anyway so the floor/ceil
+        // round outward (conservative) before the cast.
+        let x0 = (min_x - margin).floor().clamp(0.0, width as f32) as u32;
+        let y0 = (min_y - margin).floor().clamp(0.0, height as f32) as u32;
+        let x1 = (max_x + margin).ceil().clamp(0.0, width as f32) as u32;
+        let y1 = (max_y + margin).ceil().clamp(0.0, height as f32) as u32;
+        Self { x0, y0, x1, y1 }
+    }
+}
+
+/// Accumulates the device-space AABB of everything a paint helper actually
+/// rasterised, so after-paint passes can scan only that region. A paint
+/// whose mapped coordinates are non-finite marks the accumulator unbounded,
+/// which degrades the consumer to the historical full-page scan — never to
+/// an under-covering rect. Every glyph paint site in the text rasteriser
+/// must accumulate into this (or the text arms' scan rect under-covers);
+/// new paint sites inherit that obligation.
+#[derive(Debug, Default)]
+pub(crate) struct PaintBounds {
+    any: bool,
+    unbounded: bool,
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+}
+
+impl PaintBounds {
+    pub(crate) fn add_device_aabb(&mut self, min_x: f32, min_y: f32, max_x: f32, max_y: f32) {
+        if !(min_x.is_finite() && min_y.is_finite() && max_x.is_finite() && max_y.is_finite()) {
+            self.unbounded = true;
+            return;
+        }
+        if self.any {
+            self.min_x = self.min_x.min(min_x);
+            self.min_y = self.min_y.min(min_y);
+            self.max_x = self.max_x.max(max_x);
+            self.max_y = self.max_y.max(max_y);
+        } else {
+            self.any = true;
+            self.min_x = min_x;
+            self.min_y = min_y;
+            self.max_x = max_x;
+            self.max_y = max_y;
+        }
+    }
+
+    /// Union in `path`'s bounds as mapped by the affine `transform` the
+    /// rasteriser paints with. An affine map sends the path's bbox corners
+    /// to a quad whose AABB contains the transformed path, so this is a
+    /// provable (conservative) bound.
+    pub(crate) fn add_path(&mut self, path: &tiny_skia::Path, transform: Transform) {
+        let b = path.bounds();
+        let mut pts = [
+            tiny_skia::Point::from_xy(b.left(), b.top()),
+            tiny_skia::Point::from_xy(b.right(), b.top()),
+            tiny_skia::Point::from_xy(b.left(), b.bottom()),
+            tiny_skia::Point::from_xy(b.right(), b.bottom()),
+        ];
+        for p in pts.iter_mut() {
+            transform.map_point(p);
+        }
+        let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
+        let (mut max_x, mut max_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+        for p in &pts {
+            min_x = min_x.min(p.x);
+            min_y = min_y.min(p.y);
+            max_x = max_x.max(p.x);
+            max_y = max_y.max(p.y);
+        }
+        self.add_device_aabb(min_x, min_y, max_x, max_y);
+    }
+
+    /// Resolve into a scan rect. `None` = no provable bound (consumer must
+    /// scan the full page). An accumulator that painted nothing resolves to
+    /// an empty rect — nothing was painted, so nothing needs scanning.
+    pub(crate) fn to_device_rect(&self, width: u32, height: u32) -> Option<DeviceRect> {
+        if self.unbounded {
+            return None;
+        }
+        if !self.any {
+            return Some(DeviceRect {
+                x0: 0,
+                y0: 0,
+                x1: 0,
+                y1: 0,
+            });
+        }
+        Some(DeviceRect::from_device_aabb(
+            self.min_x,
+            self.min_y,
+            self.max_x,
+            self.max_y,
+            PAINT_BBOX_AA_MARGIN,
+            width,
+            height,
+        ))
+    }
+}
+
+/// Device-space dirty rect for painting `path` under `transform`.
+/// `stroke` carries the graphics state when the paint is a stroke: the rect
+/// is expanded by the worst-case stroke outset (half line width × the
+/// transform's Frobenius norm — an upper bound on its scale — × the miter
+/// limit, with a 1-pixel floor for zero-width hairlines). Fills expand only
+/// by the AA margin.
+fn device_paint_rect_for_path(
+    path: &tiny_skia::Path,
+    transform: Transform,
+    stroke: Option<&GraphicsState>,
+    width: u32,
+    height: u32,
+) -> DeviceRect {
+    let mut bounds = PaintBounds::default();
+    bounds.add_path(path, transform);
+    if bounds.unbounded || !bounds.any {
+        // Non-finite mapped coordinates → unprovable → full page.
+        // No geometry at all → degenerate empty path; tiny_skia paints
+        // nothing for it, so an empty rect is exact.
+        return if bounds.unbounded {
+            DeviceRect::full(width, height)
+        } else {
+            DeviceRect {
+                x0: 0,
+                y0: 0,
+                x1: 0,
+                y1: 0,
+            }
+        };
+    }
+    // The stroke outset expands the *unclamped* AABB: a path lying just
+    // off-page can still paint in-page through a fat stroke, so clamping
+    // before expansion would under-cover. Half line width × the
+    // transform's Frobenius norm (an upper bound on its scale), times:
+    //  - √2 for caps — a square cap's corner sits hw·√2 from the endpoint
+    //    (round/butt caps stay within hw and are covered a fortiori);
+    //  - the miter limit when the path has joins (≥ 2 drawing segments)
+    //    AND the join style is miter (PDF join 0) — a miter tip extends
+    //    up to hw·limit beyond the vertex. Bevel/round joins stay within
+    //    hw. Single-segment paths (the ubiquitous rule-line case) have no
+    //    joins, so the limit never inflates their rect.
+    // Floored at 1 device pixel for zero-width hairline strokes.
+    let stroke_outset = stroke.map_or(0.0, |gs| {
+        let scale = (transform.sx * transform.sx
+            + transform.kx * transform.kx
+            + transform.ky * transform.ky
+            + transform.sy * transform.sy)
+            .sqrt();
+        let hw = 0.5 * gs.line_width.max(0.0) * scale;
+        let draw_segments = path
+            .segments()
+            .filter(|s| !matches!(s, tiny_skia::PathSegment::MoveTo(_)))
+            .count();
+        let factor = if draw_segments > 1 && gs.line_join == 0 {
+            gs.miter_limit.max(std::f32::consts::SQRT_2)
+        } else {
+            std::f32::consts::SQRT_2
+        };
+        (hw * factor).max(1.0)
+    });
+    DeviceRect::from_device_aabb(
+        bounds.min_x,
+        bounds.min_y,
+        bounds.max_x,
+        bounds.max_y,
+        PAINT_BBOX_AA_MARGIN + stroke_outset,
+        width,
+        height,
+    )
+}
+
+/// Pre-paint pixel snapshot of a device rect, row-packed. `rect` is the
+/// region the bytes cover; an after-paint pass may scan any sub-rect of it.
+pub(crate) struct RectSnapshot {
+    rect: DeviceRect,
+    bytes: Vec<u8>,
+}
+
+impl RectSnapshot {
+    fn capture(pixmap: &Pixmap, rect: DeviceRect) -> Self {
+        let full = DeviceRect::full(pixmap.width(), pixmap.height());
+        let rect = rect.intersect(&full);
+        if rect == full {
+            return Self {
+                rect,
+                bytes: pixmap.data().to_vec(),
+            };
+        }
+        let stride = pixmap.width() as usize * 4;
+        let data = pixmap.data();
+        let row_bytes = rect.width() as usize * 4;
+        let mut bytes = Vec::with_capacity(row_bytes * rect.height() as usize);
+        for y in rect.y0..rect.y1 {
+            let start = y as usize * stride + rect.x0 as usize * 4;
+            bytes.extend_from_slice(&data[start..start + row_bytes]);
+        }
+        Self { rect, bytes }
+    }
+
+    /// Byte at the snapshot-local offset for device pixel (x, y), which must
+    /// lie inside `self.rect`.
+    #[inline]
+    fn offset(&self, x: u32, y: u32) -> usize {
+        ((y - self.rect.y0) as usize * self.rect.width() as usize + (x - self.rect.x0) as usize) * 4
+    }
+}
 
 /// ISO 32000-1 §11.7.4.3 / Table 149 source colour space classes.
 ///

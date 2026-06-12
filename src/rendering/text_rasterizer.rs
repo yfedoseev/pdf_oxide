@@ -372,6 +372,7 @@ impl TextRasterizer {
         doc: &PdfDocument,
         clip_mask: Option<&tiny_skia::Mask>,
         font_cache: &HashMap<String, Arc<crate::fonts::FontInfo>>,
+        mut paint_bounds: Option<&mut crate::rendering::page_renderer::PaintBounds>,
     ) -> Result<f32> {
         // Get font info from cache
         let font_info = if let Some(font_name) = &gs.font_name {
@@ -431,6 +432,7 @@ impl TextRasterizer {
                     base_transform,
                     gs,
                     clip_mask,
+                    paint_bounds.as_deref_mut(),
                 );
             }
         }
@@ -472,6 +474,7 @@ impl TextRasterizer {
                             base_transform,
                             gs,
                             clip_mask,
+                            paint_bounds.as_deref_mut(),
                         );
                     }
 
@@ -550,6 +553,7 @@ impl TextRasterizer {
                     base_transform,
                     gs,
                     clip_mask,
+                    paint_bounds.as_deref_mut(),
                 ) {
                     Ok(advance) => return Ok(advance),
                     Err(e) => {
@@ -575,6 +579,7 @@ impl TextRasterizer {
                                 clip_mask,
                                 pdf_font_name,
                                 false,
+                                paint_bounds.as_deref_mut(),
                             );
                         }
                     },
@@ -594,6 +599,7 @@ impl TextRasterizer {
                 clip_mask,
                 pdf_font_name,
                 true, // allow_fallback
+                paint_bounds.as_deref_mut(),
             )?)
         } else {
             let font_name = font_info
@@ -613,6 +619,7 @@ impl TextRasterizer {
                 base_transform,
                 gs,
                 clip_mask,
+                paint_bounds,
             )?)
         }
     }
@@ -768,6 +775,7 @@ impl TextRasterizer {
         doc: &PdfDocument,
         clip_mask: Option<&tiny_skia::Mask>,
         font_cache: &HashMap<String, Arc<crate::fonts::FontInfo>>,
+        mut paint_bounds: Option<&mut crate::rendering::page_renderer::PaintBounds>,
     ) -> Result<f32> {
         let mut current_gs = gs.clone();
         let mut total_advance: f32 = 0.0;
@@ -785,6 +793,7 @@ impl TextRasterizer {
                         doc,
                         clip_mask,
                         font_cache,
+                        paint_bounds.as_deref_mut(),
                     )?;
                     current_gs.advance_text_matrix(advance);
                     total_advance += advance;
@@ -996,6 +1005,7 @@ impl TextRasterizer {
         clip_mask: Option<&tiny_skia::Mask>,
         pdf_font_name: &str,
         allow_fallback: bool,
+        mut paint_bounds: Option<&mut crate::rendering::page_renderer::PaintBounds>,
     ) -> Result<f32> {
         let font_size = gs.font_size;
         let h_scale = gs.horizontal_scaling / 100.0;
@@ -1043,6 +1053,7 @@ impl TextRasterizer {
                             clip_mask,
                             pdf_font_name,
                             false, // don't allow infinite fallback
+                            paint_bounds.as_deref_mut(),
                         );
                     }
                 }
@@ -1053,6 +1064,7 @@ impl TextRasterizer {
                     base_transform,
                     gs,
                     clip_mask,
+                    paint_bounds.as_deref_mut(),
                 );
             }
             _local_rb = rb_opt;
@@ -1281,6 +1293,9 @@ impl TextRasterizer {
                     let glyph_transform =
                         combined_base.pre_translate(px, py).pre_scale(scale, scale);
 
+                    if let Some(b) = paint_bounds.as_deref_mut() {
+                        b.add_path(&path, glyph_transform);
+                    }
                     pixmap.fill_path(
                         &path,
                         paint,
@@ -1348,6 +1363,9 @@ impl TextRasterizer {
                                     let cjk_transform = combined_base
                                         .pre_translate(px, py)
                                         .pre_scale(cjk_scale, -cjk_scale);
+                                    if let Some(b) = paint_bounds.as_deref_mut() {
+                                        b.add_path(&cjk_path, cjk_transform);
+                                    }
                                     pixmap.fill_path(
                                         &cjk_path,
                                         paint,
@@ -1419,6 +1437,7 @@ impl TextRasterizer {
         base_transform: Transform,
         gs: &GraphicsState,
         clip_mask: Option<&tiny_skia::Mask>,
+        mut paint_bounds: Option<&mut crate::rendering::page_renderer::PaintBounds>,
     ) -> Result<f32> {
         let font_size = gs.font_size;
         let h_scale = gs.horizontal_scaling / 100.0;
@@ -1525,6 +1544,9 @@ impl TextRasterizer {
                             let py = y_cursor + paint_origin_dy + rise_y;
                             let glyph_transform =
                                 combined_base.pre_translate(px, py).pre_scale(scale, scale);
+                            if let Some(b) = paint_bounds.as_deref_mut() {
+                                b.add_path(&path, glyph_transform);
+                            }
                             pixmap.fill_path(
                                 &path,
                                 paint,
@@ -1589,6 +1611,7 @@ impl TextRasterizer {
         base_transform: Transform,
         gs: &GraphicsState,
         clip_mask: Option<&tiny_skia::Mask>,
+        mut paint_bounds: Option<&mut crate::rendering::page_renderer::PaintBounds>,
     ) -> Result<f32> {
         let face = match render_cjk_fallback_face() {
             Some(f) => f,
@@ -1702,6 +1725,9 @@ impl TextRasterizer {
                         let py = y_cursor + paint_origin_dy + rise_y;
                         let glyph_transform =
                             combined_base.pre_translate(px, py).pre_scale(scale, scale);
+                        if let Some(b) = paint_bounds.as_deref_mut() {
+                            b.add_path(&path, glyph_transform);
+                        }
                         pixmap.fill_path(
                             &path,
                             paint,
@@ -1775,6 +1801,7 @@ impl TextRasterizer {
         base_transform: Transform,
         gs: &GraphicsState,
         clip_mask: Option<&tiny_skia::Mask>,
+        mut paint_bounds: Option<&mut crate::rendering::page_renderer::PaintBounds>,
     ) -> Result<f32> {
         // Just draw rectangles for now as very last resort
         let font_size = gs.font_size;
@@ -1803,6 +1830,9 @@ impl TextRasterizer {
                 ) {
                     pb.push_rect(rect);
                     if let Some(path) = pb.finish() {
+                        if let Some(b) = paint_bounds.as_deref_mut() {
+                            b.add_path(&path, transform);
+                        }
                         pixmap.fill_path(
                             &path,
                             paint,
