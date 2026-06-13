@@ -830,6 +830,12 @@ pub fn extract_image_from_xobject(
                 format: PixelFormat::RGB,
             }
         } else {
+            // Separation / DeviceN images keep their *raw* tint samples here.
+            // The composite renderer expands them into the alternate space
+            // on demand via `PdfImage::separation_expanded_to_alternate`
+            // (§8.6.6.4); the per-plate separation renderer instead routes
+            // the raw channels straight to named plates, so the contract for
+            // both consumers is "extractor returns raw samples".
             let pixel_format = color_space_to_pixel_format(&color_space);
             ImageData::Raw {
                 pixels: decoded_data,
@@ -864,6 +870,100 @@ pub fn extract_image_from_xobject(
                 ccitt_params.rows = Some(height);
             }
             image.set_ccitt_params(ccitt_params);
+        }
+    }
+
+    Ok(image)
+}
+
+/// Extract an image XObject for **composite** rendering, expanding any
+/// `/Separation` or `/DeviceN` colour space through its tint transform
+/// into the alternate colour space (ISO 32000-1:2008 §8.6.6.4).
+///
+/// This differs from [`extract_image_from_xobject`], which always returns
+/// the *raw* sample stream so the per-plate separation renderer can route
+/// each colorant channel to its named plate. The composite renderer needs
+/// the tint-transformed colour instead: a `/Separation /Cyan` watercolour
+/// must decode to cyan, not to literal grayscale. When the colour space is
+/// not Separation/DeviceN, or its tint transform can't be resolved, this is
+/// equivalent to `extract_image_from_xobject`.
+///
+/// On a successful expansion the returned image carries:
+///   - sample bytes in the alternate space's native layout (e.g. CMYK),
+///   - a `color_space` left as `Separation`/`DeviceN` (so the only
+///     behavioural difference is the alternate-space byte layout that
+///     `to_dynamic_image`'s catch-all arm converts), and
+///   - an ICC profile for a CMYK alternate: the alternate's own ICCBased
+///     profile when present, else the document's `/OutputIntents` CMYK
+///     profile, so the conversion runs through the CMM rather than the
+///     §10.3.5 additive-clamp fallback.
+pub fn extract_image_from_xobject_expanded(
+    doc: Option<&crate::document::PdfDocument>,
+    xobject: &crate::object::Object,
+    obj_ref: Option<ObjectRef>,
+    color_space_map: Option<&std::collections::HashMap<String, crate::object::Object>>,
+) -> Result<PdfImage> {
+    let mut image = extract_image_from_xobject(doc, xobject, obj_ref, color_space_map)?;
+
+    if !matches!(image.color_space, ColorSpace::Separation | ColorSpace::DeviceN) {
+        return Ok(image);
+    }
+
+    // Re-resolve the image's colour-space object so we can read the tint
+    // transform + alternate space. Mirrors the resolution in
+    // `extract_image_from_xobject`.
+    let dict = match xobject.as_dict() {
+        Some(d) => d,
+        None => return Ok(image),
+    };
+    let cs_obj = match dict.get("ColorSpace") {
+        Some(o) => o,
+        None => return Ok(image),
+    };
+    let resolved = if let Some(d) = doc {
+        let res = if let Some(r) = cs_obj.as_reference() {
+            d.load_object(r)?
+        } else {
+            cs_obj.clone()
+        };
+        if let (crate::object::Object::Name(ref name), Some(map)) = (&res, color_space_map) {
+            map.get(name).cloned().unwrap_or(res)
+        } else {
+            res
+        }
+    } else {
+        cs_obj.clone()
+    };
+
+    let sep = match resolve_separation_tint(doc, &resolved)? {
+        Some(s) => s,
+        // Malformed / unsupported tint transform: leave the raw image as-is
+        // (legacy literal-sample fallback — better than failing the render).
+        None => return Ok(image),
+    };
+
+    // Pull the raw decoded samples back out — only Raw-format images can be
+    // expanded (a Separation/DeviceN stream is never JPEG-coded in practice).
+    let raw = match image.data {
+        ImageData::Raw { ref pixels, .. } => pixels.clone(),
+        ImageData::Jpeg(_) => return Ok(image),
+    };
+
+    let expanded = expand_separation_to_alt(&raw, &sep, image.width, image.height)?;
+    image.data = ImageData::Raw {
+        pixels: expanded,
+        format: sep.alt_fmt,
+    };
+
+    // Route a CMYK alternate through the CMM: prefer the alternate's own ICC
+    // profile, else the document's /OutputIntents CMYK profile (§14.11.5).
+    if image.icc_profile.is_none() {
+        if let Some(p) = sep.alt_profile.clone() {
+            image.set_icc_profile(p);
+        } else if sep.alt_fmt == PixelFormat::CMYK {
+            if let Some(p) = doc.and_then(|d| d.output_intent_cmyk_profile()) {
+                image.set_icc_profile(p);
+            }
         }
     }
 
@@ -934,6 +1034,247 @@ pub(crate) struct IndexedResolution {
     /// colourimetrically (e.g. Lab, whose palette is rewritten to RGB
     /// before being returned).
     pub base_profile: Option<std::sync::Arc<crate::color::IccProfile>>,
+}
+
+/// Outcome of resolving a `[/Separation name alt tint]` or
+/// `[/DeviceN names alt tint attrs?]` colour space for image decoding:
+/// the number of input colorants, the alternate colour space the tint
+/// transform maps into (its [`PixelFormat`] and optional ICC profile),
+/// and the parsed tint-transform function.
+///
+/// Per ISO 32000-1:2008 §8.6.6.4, an image whose `/ColorSpace` is a
+/// Separation or DeviceN space carries raw subtractive **tint** samples
+/// (one byte per colorant at 8 bpc); each pixel's tint vector must be
+/// run through the tint transform into the alternate space before any
+/// device conversion. Treating the samples as literal grayscale / CMYK
+/// (the pre-fix behaviour) renders a spot-colour image with the wrong
+/// hue — a `/Separation /Cyan` watercolour, for instance, decodes to
+/// neutral gray instead of cyan.
+pub(crate) struct SeparationResolution {
+    /// Number of input colorants (1 for Separation, N for DeviceN).
+    pub n_inputs: usize,
+    /// Pixel format of the alternate colour space the tint maps into.
+    pub alt_fmt: PixelFormat,
+    /// ICC profile of the alternate space when it is `/ICCBased`, so
+    /// CMYK alternates render through the document's CMM rather than the
+    /// §10.3.5 additive-clamp fallback.
+    pub alt_profile: Option<std::sync::Arc<crate::color::IccProfile>>,
+    /// Resolved tint-transform function object (Type 2 / 3 / 4).
+    pub tint_fn: crate::object::Object,
+}
+
+/// Resolve a `/Separation` or `/DeviceN` image colour space into the
+/// pieces needed to map tint samples into its alternate space.
+///
+/// Returns `Ok(None)` when the array is not a Separation/DeviceN space,
+/// or when it is malformed in a way that leaves no tint transform to
+/// apply (caller then falls back to the legacy literal-sample path).
+fn resolve_separation_tint(
+    doc: Option<&crate::document::PdfDocument>,
+    cs_obj: &crate::object::Object,
+) -> Result<Option<SeparationResolution>> {
+    use crate::object::Object;
+
+    let Object::Array(arr) = cs_obj else {
+        return Ok(None);
+    };
+    let head = arr.first().and_then(|o| o.as_name());
+    let n_inputs = match head {
+        Some("Separation") => 1,
+        Some("DeviceN") => arr
+            .get(1)
+            .and_then(|o| o.as_array())
+            .map(|names| names.len())
+            .unwrap_or(0),
+        _ => return Ok(None),
+    };
+    if n_inputs == 0 {
+        return Ok(None);
+    }
+
+    // [/Separation name alt tint] → alt at 2, tint at 3.
+    // [/DeviceN names alt tint attrs?] → alt at 2, tint at 3.
+    let resolve = |o: &Object| -> Object {
+        if let (Some(d), Some(r)) = (doc, o.as_reference()) {
+            d.load_object(r).unwrap_or_else(|_| o.clone())
+        } else {
+            o.clone()
+        }
+    };
+
+    let alt_obj = match arr.get(2) {
+        Some(o) => resolve(o),
+        None => return Ok(None),
+    };
+    let tint_fn = match arr.get(3) {
+        Some(o) => resolve(o),
+        None => return Ok(None),
+    };
+
+    // Resolve inner references inside an array-form alternate (e.g.
+    // [/ICCBased <ref>]) so parse_color_space can read /N from the
+    // profile stream dict.
+    let alt_obj = if let Object::Array(mut inner) = alt_obj {
+        if let Some(d) = doc {
+            for item in inner.iter_mut() {
+                if let Some(r) = item.as_reference() {
+                    if let Ok(resolved) = d.load_object(r) {
+                        *item = resolved;
+                    }
+                }
+            }
+        }
+        Object::Array(inner)
+    } else {
+        alt_obj
+    };
+
+    let alt_cs = parse_color_space(&alt_obj)?;
+    let alt_fmt = color_space_to_pixel_format(&alt_cs);
+    let alt_profile = if matches!(alt_cs, ColorSpace::ICCBased(_)) {
+        resolve_icc_profile_from_obj(doc, &alt_obj)
+    } else {
+        None
+    };
+
+    Ok(Some(SeparationResolution {
+        n_inputs,
+        alt_fmt,
+        alt_profile,
+        tint_fn,
+    }))
+}
+
+/// Evaluate a tint-transform function for a single input vector.
+///
+/// Supports FunctionType 2 (exponential interpolation, §7.10.3) and
+/// FunctionType 4 (PostScript calculator, §7.10.5) — the two forms used
+/// by Separation / DeviceN tint transforms in practice. Returns `None`
+/// for unsupported / malformed functions so the caller can fall back.
+fn evaluate_tint_function(func_obj: &crate::object::Object, inputs: &[f32]) -> Option<Vec<f32>> {
+    use crate::object::Object;
+
+    let dict = func_obj.as_dict()?;
+    let func_type = dict.get("FunctionType").and_then(|o| o.as_integer())?;
+
+    let obj_to_f32 = |o: &Object| -> f32 {
+        o.as_real()
+            .or_else(|| o.as_integer().map(|i| i as f64))
+            .unwrap_or(0.0) as f32
+    };
+
+    match func_type {
+        2 => {
+            // y_j = C0_j + x^N * (C1_j - C0_j). Type 2 takes a single
+            // scalar input; for a multi-input DeviceN this form is not
+            // valid, so require exactly one input.
+            if inputs.len() != 1 {
+                return None;
+            }
+            let x = inputs[0];
+            let n = dict.get("N").map(&obj_to_f32).unwrap_or(1.0);
+            let c0 = dict.get("C0").and_then(|o| o.as_array());
+            let c1 = dict.get("C1").and_then(|o| o.as_array());
+            let len = c0.map(|a| a.len()).max(c1.map(|a| a.len())).unwrap_or(1);
+            let x_pow = if n == 1.0 { x } else { x.powf(n) };
+            let mut out = Vec::with_capacity(len);
+            for j in 0..len {
+                let c0j = c0.and_then(|a| a.get(j)).map(&obj_to_f32).unwrap_or(0.0);
+                let c1j = c1.and_then(|a| a.get(j)).map(&obj_to_f32).unwrap_or(1.0);
+                out.push(c0j + x_pow * (c1j - c0j));
+            }
+            Some(out)
+        },
+        4 => {
+            let Object::Stream { dict, .. } = func_obj else {
+                return None;
+            };
+            let bytes = func_obj.decode_stream_data().ok()?;
+            let pairs = |key: &str| -> Vec<[f64; 2]> {
+                dict.get(key)
+                    .and_then(|o| o.as_array())
+                    .map(|a| {
+                        a.chunks_exact(2)
+                            .map(|c| [obj_to_f32(&c[0]) as f64, obj_to_f32(&c[1]) as f64])
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let domain = pairs("Domain");
+            let range = pairs("Range");
+            let inputs_f64: Vec<f64> = inputs.iter().map(|&v| v as f64).collect();
+            let out =
+                crate::functions::evaluate_type4_clamped(&bytes, &inputs_f64, &domain, &range)
+                    .ok()?;
+            Some(out.into_iter().map(|v| v as f32).collect())
+        },
+        _ => None,
+    }
+}
+
+/// Map decoded 8-bit Separation / DeviceN tint samples through the tint
+/// transform into the alternate colour space's native byte layout.
+///
+/// `raw` is the decoded sample stream: `n_inputs` bytes per pixel, one
+/// tint per colorant (8 bpc). Output is `width * height *
+/// alt_fmt.bytes_per_pixel()` bytes in the alternate space. For the
+/// common single-input Separation case a 256-entry lookup table makes
+/// this a table lookup per pixel; multi-input DeviceN evaluates the tint
+/// transform per pixel.
+fn expand_separation_to_alt(
+    raw: &[u8],
+    sep: &SeparationResolution,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>> {
+    let n_in = sep.n_inputs;
+    let n_out = sep.alt_fmt.bytes_per_pixel();
+    let pixel_count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| Error::Image("Separation image dimensions overflow".to_string()))?;
+
+    // Quantise an alternate-space f32 vector to the output byte layout.
+    let to_bytes = |vals: &[f32], out: &mut Vec<u8>| {
+        for i in 0..n_out {
+            let v = vals.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            out.push((v * 255.0 + 0.5) as u8);
+        }
+    };
+
+    let mut output = Vec::with_capacity(pixel_count * n_out);
+
+    if n_in == 1 {
+        // Build a 256-entry LUT: tint byte → alternate-space bytes.
+        let mut lut: Vec<Vec<u8>> = Vec::with_capacity(256);
+        for v in 0u32..256 {
+            let t = v as f32 / 255.0;
+            let alt = evaluate_tint_function(&sep.tint_fn, &[t])
+                .ok_or_else(|| Error::Image("Unsupported Separation tint transform".to_string()))?;
+            let mut entry = Vec::with_capacity(n_out);
+            to_bytes(&alt, &mut entry);
+            lut.push(entry);
+        }
+        for &sample in raw.iter().take(pixel_count) {
+            output.extend_from_slice(&lut[sample as usize]);
+        }
+        // Short input: pad with the zero-tint entry so dimensions hold.
+        while output.len() < pixel_count * n_out {
+            output.extend_from_slice(&lut[0]);
+        }
+    } else {
+        let mut inputs = vec![0f32; n_in];
+        for px in 0..pixel_count {
+            let base = px * n_in;
+            for (c, slot) in inputs.iter_mut().enumerate() {
+                *slot = raw.get(base + c).copied().unwrap_or(0) as f32 / 255.0;
+            }
+            let alt = evaluate_tint_function(&sep.tint_fn, &inputs)
+                .ok_or_else(|| Error::Image("Unsupported DeviceN tint transform".to_string()))?;
+            to_bytes(&alt, &mut output);
+        }
+    }
+
+    Ok(output)
 }
 
 /// Resolve an Indexed color space's base color space and palette lookup bytes.
@@ -2172,6 +2513,91 @@ mod indexed_tests {
         let cs = Object::Name("Lab".to_string());
         let wp = super::extract_lab_whitepoint(&cs);
         assert!((wp[0] - 0.9505).abs() < 1e-6);
+    }
+
+    /// A single-channel `/Separation` image must map each sample through
+    /// its tint transform into the alternate colour space — not be
+    /// rendered as literal grayscale.
+    ///
+    /// Here the separation is `[/Separation /Cyan /DeviceCMYK <Type-2 fn>]`
+    /// with `C0 = [0 0 0 0]`, `C1 = [1 0 0 0]`: a tint `t` maps to CMYK
+    /// `(t, 0, 0, 0)` — pure cyan, which is a strongly blue/cyan RGB.
+    /// A mid-tint sample (byte 128 ≈ t 0.5) must therefore decode to an
+    /// RGB where blue and green dominate red. The pre-fix code labelled
+    /// the image `PixelFormat::Grayscale` and emitted `(g, g, g)`, i.e.
+    /// neutral gray with R == G == B — that is the defect this pins.
+    #[test]
+    fn separation_cyan_image_applies_tint_transform_not_grayscale() {
+        use crate::object::Object;
+        use std::collections::HashMap;
+
+        let mut func = HashMap::new();
+        func.insert("FunctionType".to_string(), Object::Integer(2));
+        func.insert("N".to_string(), Object::Integer(1));
+        func.insert(
+            "Domain".to_string(),
+            Object::Array(vec![Object::Integer(0), Object::Integer(1)]),
+        );
+        func.insert(
+            "C0".to_string(),
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(0),
+            ]),
+        );
+        func.insert(
+            "C1".to_string(),
+            Object::Array(vec![
+                Object::Integer(1),
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(0),
+            ]),
+        );
+
+        let cs = Object::Array(vec![
+            Object::Name("Separation".to_string()),
+            Object::Name("Cyan".to_string()),
+            Object::Name("DeviceCMYK".to_string()),
+            Object::Dictionary(func),
+        ]);
+
+        let mut dict = HashMap::new();
+        dict.insert("Subtype".to_string(), Object::Name("Image".to_string()));
+        dict.insert("Width".to_string(), Object::Integer(2));
+        dict.insert("Height".to_string(), Object::Integer(1));
+        dict.insert("BitsPerComponent".to_string(), Object::Integer(8));
+        dict.insert("ColorSpace".to_string(), cs);
+
+        // Two single-channel samples: a mid tint and full tint.
+        let xobject = Object::Stream {
+            dict,
+            data: bytes::Bytes::from_static(&[128, 255]),
+        };
+
+        let img = extract_image_from_xobject_expanded(None, &xobject, None, None)
+            .expect("Separation image must extract");
+        let dynamic = img
+            .to_dynamic_image()
+            .expect("Separation image must decode to RGB");
+        let rgb = dynamic.to_rgb8();
+
+        // Mid-tint pixel (t ≈ 0.5 → CMYK ~(0.5, 0, 0, 0)).
+        let p = rgb.get_pixel(0, 0);
+        let (r, g, b) = (p[0], p[1], p[2]);
+
+        // The defining symptom of the bug is a neutral gray (R == G == B).
+        // A correct cyan tint is strongly blue/green-dominant.
+        assert!(
+            b as i32 > r as i32 + 30,
+            "Cyan tint must be blue-dominant: R={r}, G={g}, B={b} (gray would be R==G==B)"
+        );
+        assert!(
+            g as i32 > r as i32 + 30,
+            "Cyan tint must be green-dominant over red: R={r}, G={g}, B={b}"
+        );
     }
 }
 

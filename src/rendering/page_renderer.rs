@@ -608,7 +608,15 @@ impl PageRenderer {
         };
 
         // Execute operators
-        self.execute_operators(&mut pixmap, transform, &operators, doc, page_num, &resources)?;
+        self.execute_operators(
+            &mut pixmap,
+            transform,
+            &operators,
+            doc,
+            page_num,
+            &resources,
+            None,
+        )?;
 
         // Render annotations (if requested and present)
         if self.options.render_annotations {
@@ -730,6 +738,7 @@ impl PageRenderer {
         doc: &PdfDocument,
         page_num: usize,
         resources: &Object,
+        inherited_gs: Option<&GraphicsState>,
     ) -> Result<()> {
         // Per-render snapshot lives on `self.excluded_layers_snapshot` (filled
         // by `render_page_with_options`). Recursive calls into this function
@@ -750,6 +759,23 @@ impl PageRenderer {
             gs.stroke_color_space = "DeviceGray".to_string();
             gs.fill_color_rgb = (0.0, 0.0, 0.0);
             gs.stroke_color_rgb = (0.0, 0.0, 0.0);
+        }
+
+        // ISO 32000-1:2008 §8.10.1: a form XObject's content is rendered as
+        // if its stream were spliced into the page at the `Do`, within the
+        // *current* graphics state. The compositing parameters in effect
+        // there — non-stroking / stroking constant alpha (`ca` / `CA`) and
+        // the blend mode (`BM`) — therefore apply to everything the form
+        // paints, unless the form itself overrides them. Seed the form's
+        // initial state from the caller so an inner image/fill blends with
+        // the backdrop instead of compositing fully opaque. (The CTM, clip,
+        // and colour are threaded separately via `base_transform`, the
+        // caller's `clip_mask`, and the form's own content.)
+        if let Some(parent) = inherited_gs {
+            let gs = gs_stack.current_mut();
+            gs.fill_alpha = parent.fill_alpha;
+            gs.stroke_alpha = parent.stroke_alpha;
+            gs.blend_mode = parent.blend_mode.clone();
         }
 
         let mut in_text_object = false;
@@ -3749,6 +3775,7 @@ impl PageRenderer {
                                             doc,
                                             page_num,
                                             form_resources,
+                                            gs,
                                         ) {
                                             log::warn!(
                                                 "Skipping malformed Form XObject '{}': {}",
@@ -3785,12 +3812,22 @@ impl PageRenderer {
         mask_obj: Option<Object>,
         gs: &GraphicsState,
     ) -> Result<()> {
-        use crate::extractors::images::extract_image_from_xobject;
+        use crate::extractors::images::{
+            extract_image_from_xobject, extract_image_from_xobject_expanded,
+        };
 
-        // Use robust image extractor to handle various formats and color spaces
+        // Use robust image extractor to handle various formats and color spaces.
+        // The composite path uses the *expanded* extractor so a Separation /
+        // DeviceN image is mapped through its tint transform into the
+        // alternate colour space (§8.6.6.4) instead of being painted as raw
+        // grayscale / CMYK channels.
         let color_space_map = self.color_spaces.clone();
-        let pdf_image =
-            extract_image_from_xobject(Some(doc), xobject, obj_ref, Some(&color_space_map))?;
+        let pdf_image = extract_image_from_xobject_expanded(
+            Some(doc),
+            xobject,
+            obj_ref,
+            Some(&color_space_map),
+        )?;
         let dynamic_image = pdf_image.to_dynamic_image()?;
         let mut rgba_image = dynamic_image.to_rgba8();
 
@@ -4169,6 +4206,7 @@ impl PageRenderer {
         doc: &PdfDocument,
         page_num: usize,
         parent_resources: &Object,
+        parent_gs: &GraphicsState,
     ) -> Result<()> {
         // Parse /Matrix from form dict (default: identity)
         let form_matrix = if let Some(Object::Array(arr)) = dict.get("Matrix") {
@@ -4263,11 +4301,27 @@ impl PageRenderer {
                     crate::error::Error::InvalidPdf("Failed to create group pixmap".into())
                 })?;
 
-            if !is_isolated {
-                // Non-isolated: copy parent content as initial backdrop
+            // The caller's constant alpha (`ca`) and blend mode (`BM`) are a
+            // property of the group as a whole and are applied once, when the
+            // finished group is composited back onto the backdrop (ISO
+            // 32000-1:2008 §11.6.6). To make that composite well-defined for
+            // any blend mode (Multiply, etc.) the group's own content is
+            // rendered into an *isolated* (transparent) pixmap here regardless
+            // of the `/I` flag, then drawn over the backdrop with the parent's
+            // alpha + blend. For a non-isolated group this drops backdrop
+            // interaction *inside* the group, which only matters for
+            // semi-transparent group content; the common case (opaque images
+            // / fills that cover the group region) is handled correctly and,
+            // crucially, no longer clobbers the backdrop under a non-Normal
+            // blend or a sub-unity alpha.
+            let needs_blend_composite =
+                parent_gs.fill_alpha < 1.0 || parent_gs.blend_mode != "Normal";
+
+            if !is_isolated && !needs_blend_composite {
+                // Fast path preserved for the overwhelmingly common opaque
+                // Normal case: render straight into a backdrop-seeded pixmap.
                 group_pixmap.data_mut().copy_from_slice(pixmap.data());
             }
-            // Isolated groups start fully transparent (default Pixmap state)
 
             if is_knockout {
                 // §11.4.6.2: snapshot the initial backdrop, then composite
@@ -4284,7 +4338,8 @@ impl PageRenderer {
                     &form_resources,
                 )?;
             } else {
-                // Execute operators into the group pixmap
+                // Passing `None` keeps the caller's `ca` / `BM` from being
+                // applied per element — they belong to the group composite.
                 self.execute_operators(
                     &mut group_pixmap,
                     combined_transform,
@@ -4292,25 +4347,39 @@ impl PageRenderer {
                     doc,
                     page_num,
                     &form_resources,
+                    None,
                 )?;
             }
 
-            if is_isolated {
-                // Composite the isolated group onto the parent using over blending
+            if !is_isolated && !needs_blend_composite {
+                // Opaque Normal non-isolated group: the backdrop-seeded
+                // pixmap IS the result.
+                pixmap.data_mut().copy_from_slice(group_pixmap.data());
+            } else {
+                // Composite the finished (isolated) group onto the backdrop
+                // applying the parent's constant alpha + blend mode. The
+                // pre-fix code used an opaque Normal paint here, so a group
+                // invoked under e.g. `/BM /Multiply /ca 0.8` overwrote the
+                // backdrop instead of multiplying into it.
+                let group_paint = tiny_skia::PixmapPaint {
+                    opacity: parent_gs.fill_alpha.clamp(0.0, 1.0),
+                    blend_mode: crate::rendering::pdf_blend_mode_to_skia(&parent_gs.blend_mode),
+                    quality: tiny_skia::FilterQuality::Nearest,
+                };
                 pixmap.draw_pixmap(
                     0,
                     0,
                     group_pixmap.as_ref(),
-                    &tiny_skia::PixmapPaint::default(),
+                    &group_paint,
                     Transform::identity(),
                     None,
                 );
-            } else {
-                // Non-isolated: the group pixmap IS the result (it started with parent content)
-                pixmap.data_mut().copy_from_slice(group_pixmap.data());
             }
         } else {
-            // Non-group form XObject: render directly
+            // Non-group form XObject: its content is spliced into the page
+            // within the current graphics state (§8.10.1), so it paints
+            // directly onto the backdrop and inherits the caller's constant
+            // alpha + blend mode.
             self.execute_operators(
                 pixmap,
                 combined_transform,
@@ -4318,6 +4387,7 @@ impl PageRenderer {
                 doc,
                 page_num,
                 &form_resources,
+                Some(parent_gs),
             )?;
         }
 
@@ -6511,6 +6581,9 @@ impl PageRenderer {
         // The form's /Matrix is still composed on top of `base_transform`
         // by `render_form_xobject`, so the mask remains positioned by
         // its own matrix within the page-aligned device frame.
+        // The soft-mask form produces the mask itself, independent of the
+        // host paint's alpha / blend — render it with a default (opaque,
+        // Normal) graphics state.
         let _ = self.render_form_xobject(
             &mut mask_pixmap,
             &form_dict,
@@ -6519,6 +6592,7 @@ impl PageRenderer {
             doc,
             page_num,
             &form_resources_obj,
+            &GraphicsState::default(),
         );
 
         // Resolve /TR transfer function once. The audit fixture uses
@@ -6677,6 +6751,7 @@ impl PageRenderer {
                 doc,
                 page_num,
                 resources,
+                None,
             );
         }
 
@@ -6741,6 +6816,7 @@ impl PageRenderer {
                 doc,
                 page_num,
                 resources,
+                None,
             )?;
 
             // Merge: where scratch differs from backdrop, this element
@@ -6896,6 +6972,9 @@ impl PageRenderer {
                                     }
                                 }
 
+                                // An annotation appearance stream renders in
+                                // its own graphics state, not the page
+                                // content's — use a default (opaque, Normal).
                                 self.render_form_xobject(
                                     pixmap,
                                     &dict,
@@ -6904,6 +6983,7 @@ impl PageRenderer {
                                     doc,
                                     page_num,
                                     &Object::Dictionary(std::collections::HashMap::new()),
+                                    &GraphicsState::default(),
                                 )?;
 
                                 self.fonts = old_fonts;
