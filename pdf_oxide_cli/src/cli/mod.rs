@@ -60,8 +60,18 @@ fn dispatch(
         Command::Text {
             ref file,
             ref format,
+            ref column_mode,
             ref area,
-        } => commands::text::run(file, format, area.as_deref(), pages, output, password, json),
+        } => commands::text::run(
+            file,
+            format,
+            column_mode,
+            area.as_deref(),
+            pages,
+            output,
+            password,
+            json,
+        ),
         Command::Paths {
             ref file,
             ref format,
@@ -227,7 +237,7 @@ fn run_piped_stdin() -> pdf_oxide::Result<()> {
             ));
         }
         let file = std::path::PathBuf::from(&path);
-        commands::text::run(&file, "plain", None, None, None, None, false)
+        commands::text::run(&file, "plain", "auto", None, None, None, None, false)
     } else {
         Err(pdf_oxide::Error::InvalidOperation("No input received on stdin".to_string()))
     }

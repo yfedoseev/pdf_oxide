@@ -5,6 +5,7 @@ use std::path::Path;
 pub fn run(
     file: &Path,
     format: &str,
+    column_mode: &str,
     area: Option<&str>,
     pages: Option<&str>,
     output: Option<&Path>,
@@ -25,9 +26,15 @@ pub fn run(
     // assignment), so it is emitted as JSON regardless of the `--json` flag and
     // ignores `--area` (it operates on the whole page).
     if format == "structured" {
+        // clap restricts `--column-mode` to these three values.
+        let mode = match column_mode {
+            "two" => pdf_oxide::ColumnMode::Two,
+            "single" => pdf_oxide::ColumnMode::Single,
+            _ => pdf_oxide::ColumnMode::Auto,
+        };
         let mut all_pages = Vec::new();
         for &page_idx in &page_indices {
-            let structured = doc.extract_structured(page_idx)?;
+            let structured = doc.extract_structured_with_column_mode(page_idx, mode)?;
             all_pages.push(serde_json::json!({
                 "page": page_idx + 1,
                 "structured": serde_json::to_value(&structured).unwrap(),

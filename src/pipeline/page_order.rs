@@ -69,19 +69,111 @@ fn page_reading_order_inner(
         return Ok(Vec::new());
     }
 
-    // Article threads (#458): the parser (`crate::structure::parse_article_threads`)
-    // and `ArticleThreadStrategy` ship as a tested foundation, but are NOT yet
-    // auto-wired into this default path. The v0.3.61 corpus sweep showed the
-    // ≥80%-bead-coverage gate activated on regular technical books (single-column,
-    // where geometric order is already correct) and reordered content
-    // non-improvingly. Until the activation gate can be proven to *only improve*
-    // on true multi-column magazine threads (deferred → v0.3.62), the default
-    // reading order stays geometric so the corpus is byte-identical. Callers can
-    // still use the parser/strategy directly.
-    let context = build_context(doc, page_index);
+    // Tier 1 (logical structure order) → Tier 2 (article threads) → Tier 3
+    // (geometric). The v0.3.61 sweep showed a bare ≥80%-bead-coverage gate
+    // regressed single-column books (it reordered content non-improvingly), so
+    // Tier 2 only activates behind the conservative multi-column +
+    // order-divergence gate in `page_article_bead_rects` — which is provably a
+    // no-op on single-column / geometric-order threads.
+    let mut context = build_context(doc, page_index);
+    if !context.has_structure_tree {
+        if let Some(beads) = page_article_bead_rects(doc, page_index, &spans) {
+            context = context.with_bead_rects(beads);
+        }
+    }
 
     let pipeline = TextPipeline::with_config(TextPipelineConfig::default());
     pipeline.process(spans, context)
+}
+
+/// Article-thread (#458) bead rectangles for `page_index`, in `/N` chain order,
+/// when a conservative gate confirms a thread genuinely governs this page.
+///
+/// All conditions are required — the v0.3.61 corpus sweep found a bare
+/// ≥80%-coverage gate regressed single-column books by reordering them
+/// non-improvingly:
+///   1. **≥2 beads** on the page (nothing to reorder otherwise).
+///   2. **Coverage** — ≥80% of non-empty span centres fall inside some bead.
+///   3. **Multi-column** — the beads occupy ≥2 disjoint horizontal bands; a
+///      single-column thread adds nothing over geometric order (this is the
+///      gate that excludes the technical books the prior attempt regressed).
+///   4. **Order-divergence** — the `/N` bead order differs from the naive
+///      geometric order (top-to-bottom, left-to-right). When they coincide the
+///      thread reorders nothing, so skipping keeps output byte-identical.
+fn page_article_bead_rects(
+    doc: &PdfDocument,
+    page_index: usize,
+    spans: &[crate::layout::TextSpan],
+) -> Option<Vec<Rect>> {
+    let threads = crate::structure::parse_article_threads(doc);
+    if threads.is_empty() {
+        return None;
+    }
+    // This page's beads, in `/N` chain order across all threads.
+    let beads: Vec<Rect> = threads
+        .iter()
+        .flat_map(|t| t.beads.iter())
+        .filter(|b| b.page_index == page_index)
+        .map(|b| b.rect)
+        .collect();
+    if beads.len() < 2 {
+        return None;
+    }
+
+    // 2. Coverage.
+    let body: Vec<&crate::layout::TextSpan> =
+        spans.iter().filter(|s| !s.text.trim().is_empty()).collect();
+    if body.is_empty() {
+        return None;
+    }
+    let inside = |r: &Rect, x: f32, y: f32| {
+        x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height
+    };
+    let covered = body
+        .iter()
+        .filter(|s| {
+            let cx = s.bbox.x + s.bbox.width * 0.5;
+            let cy = s.bbox.y + s.bbox.height * 0.5;
+            beads.iter().any(|r| inside(r, cx, cy))
+        })
+        .count();
+    if (covered as f32) < 0.8 * body.len() as f32 {
+        return None;
+    }
+
+    // 3. Multi-column: sweep bead x-extents; require ≥2 disjoint bands.
+    let mut xs: Vec<(f32, f32)> = beads.iter().map(|r| (r.x, r.x + r.width)).collect();
+    xs.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
+    let mut bands = 1usize;
+    let mut cover_right = xs[0].1;
+    for &(l, r) in &xs[1..] {
+        if l > cover_right {
+            bands += 1;
+        }
+        cover_right = cover_right.max(r);
+    }
+    if bands < 2 {
+        return None;
+    }
+
+    // 4. Order-divergence vs naive geometric (top-to-bottom, left-to-right).
+    let mut geom: Vec<Rect> = beads.clone();
+    geom.sort_by(|a, b| {
+        let y = crate::utils::safe_float_cmp(b.y, a.y); // larger y = higher on page
+        if y != std::cmp::Ordering::Equal {
+            return y;
+        }
+        crate::utils::safe_float_cmp(a.x, b.x)
+    });
+    let same_order = beads
+        .iter()
+        .zip(geom.iter())
+        .all(|(a, b)| a.x == b.x && a.y == b.y);
+    if same_order {
+        return None;
+    }
+
+    Some(beads)
 }
 
 /// Build the `ReadingOrderContext` for a page from the document's

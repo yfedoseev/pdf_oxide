@@ -56,6 +56,13 @@ pub enum Command {
         #[arg(long, value_parser = ["plain", "words", "lines", "structured"], default_value = "plain")]
         format: String,
 
+        /// Column detection for `--format structured` (issue #734):
+        /// `auto` (heuristic), `two` (force a two-column split for
+        /// reference-edition layouts the heuristic is conservative about),
+        /// or `single` (suppress columns). Untagged/geometric pages only.
+        #[arg(long, value_parser = ["auto", "two", "single"], default_value = "auto")]
+        column_mode: String,
+
         /// Specific area to extract from as x,y,width,height (points)
         #[arg(long)]
         area: Option<String>,

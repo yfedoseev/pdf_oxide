@@ -79,12 +79,12 @@ fn pos(haystack: &str, needle: &str) -> usize {
         .unwrap_or_else(|| panic!("markdown is missing {needle:?}; got:\n{haystack}"))
 }
 
-// Pending a non-heuristic untagged column-region model. A full-width-line lock
-// in the XY-Cut path was tried and reverted: even gated to gutter-bridging
-// lines it fired on figure/flow-diagram regions and verse, reordering them
-// (alice_old, arxiv flow diagrams). The correct fix is a column-region detector
-// that reconstructs the layout model (roadmap G1), not a line-locking heuristic.
-#[ignore = "full-width header band handling pending a column-region model"]
+// Fixed (#734). `to_markdown` detects the two-column gutter and converts the
+// columns independently (`convert_columns_split`). The header is emitted as two
+// show-strings straddling the gutter; the band-aware split keeps any line that
+// shares a Y-band with a gutter-crossing span whole (a full-width band), so the
+// header stays intact and ahead of the body instead of being split across the
+// column boundary.
 #[test]
 fn full_width_header_is_not_split_by_column_cut() {
     let pdf = full_width_header_two_column_pdf();

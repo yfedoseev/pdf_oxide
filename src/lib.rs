@@ -328,7 +328,7 @@ pub use redaction::{
     redact_content_stream, Classification, FontInfoMetrics, OcgPolicy, RedactionOptions,
     RedactionRegion, RedactionReport, RegionSet,
 };
-pub use structured::{RegionRole, StructuredPage, StructuredRegion};
+pub use structured::{ColumnMode, RegionRole, StructuredPage, StructuredRegion};
 
 // Global font cache for batch processing
 pub use fonts::global_cache::{

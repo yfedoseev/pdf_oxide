@@ -87,6 +87,14 @@ pub struct OrderedContent {
     /// its line breaks are significant and converters must not reflow them.
     pub preformatted: bool,
 
+    /// Identifier of the nearest `Sect` / `Art` / `Part` grouping-element
+    /// ancestor (ISO 32000-1:2008 §14.8.4.2), or `None` at the document level.
+    /// Two MCRs that share a `section_id` belong to the same logical section —
+    /// the spec-authoritative, page-independent grouping that
+    /// `extract_structured` surfaces as a per-region section index, so chapters
+    /// stay grouped across pages without geometric guessing (#734 §5/§6).
+    pub section_id: Option<u32>,
+
     /// Actual text replacement from /ActualText (optional)
     /// Per PDF spec Section 14.9.4, when present this replaces all
     /// descendant content with the specified text.
@@ -118,6 +126,9 @@ struct InheritedContext {
     /// Identifier of the nearest block-level ancestor — see
     /// `OrderedContent::block_id`.
     block_id: u32,
+    /// Identifier of the nearest `Sect`/`Art`/`Part` ancestor — see
+    /// `OrderedContent::section_id`.
+    section_id: Option<u32>,
     /// True when the MCR is nested under a table grouping element
     /// (Table / THead / TBody / TFoot / TR / TH / TD). Used by the
     /// plain-text assembler to separate table rows with a single newline
@@ -151,6 +162,7 @@ impl InheritedContext {
                 | StructType::Sect
                 | StructType::Div
                 | StructType::Art
+                | StructType::Part
                 | StructType::Note
                 | StructType::Reference
                 | StructType::BibEntry
@@ -188,6 +200,13 @@ impl InheritedContext {
         } else {
             self.block_id
         };
+        // A Sect/Art/Part opens a new logical section (§14.8.4.2); its own
+        // block_id (just bumped above) becomes the section id its descendants
+        // inherit. Other elements keep the enclosing section.
+        let section_id = match child {
+            StructType::Sect | StructType::Art | StructType::Part => Some(block_id),
+            _ => self.section_id,
+        };
         let in_table = self.in_table
             || matches!(
                 child,
@@ -204,6 +223,7 @@ impl InheritedContext {
             heading_level,
             list_role,
             block_id,
+            section_id,
             in_table,
             preformatted,
         }
@@ -314,6 +334,7 @@ fn traverse_element_all_pages(
                     is_block,
                     is_word_break: false,
                     block_id: descended.block_id,
+                    section_id: descended.section_id,
                     in_table: descended.in_table,
                     preformatted: descended.preformatted,
                     actual_text: None,
@@ -337,6 +358,7 @@ fn traverse_element_all_pages(
                             is_block: false,
                             is_word_break: true,
                             block_id: descended.block_id,
+                            section_id: descended.section_id,
                             in_table: descended.in_table,
                             preformatted: descended.preformatted,
                             actual_text: None,
@@ -416,6 +438,7 @@ fn traverse_element(
             is_block: false,
             is_word_break: true,
             block_id: descended.block_id,
+            section_id: descended.section_id,
             in_table: descended.in_table,
             preformatted: descended.preformatted,
             actual_text: None,
@@ -445,6 +468,7 @@ fn traverse_element(
                         is_block,
                         is_word_break: false,
                         block_id: descended.block_id,
+                        section_id: descended.section_id,
                         in_table: descended.in_table,
                         preformatted: descended.preformatted,
                         actual_text: None,

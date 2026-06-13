@@ -194,6 +194,7 @@ fn cmd_text(state: &mut ReplState, args: &str) -> pdf_oxide::Result<()> {
         super::commands::text::run(
             Path::new(args),
             "plain",
+            "auto",
             None,
             None,
             None,
@@ -213,6 +214,7 @@ fn cmd_text(state: &mut ReplState, args: &str) -> pdf_oxide::Result<()> {
         super::commands::text::run(
             &path,
             "plain",
+            "auto",
             None,
             None,
             None,

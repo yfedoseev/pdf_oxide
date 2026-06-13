@@ -12212,13 +12212,67 @@ impl PdfDocument {
         &self,
         page_index: usize,
     ) -> Result<crate::structured::StructuredPage> {
+        self.extract_structured_with_column_mode(page_index, crate::structured::ColumnMode::Auto)
+    }
+
+    /// Extract a page as [`StructuredPage`](crate::structured::StructuredPage)
+    /// regions with an explicit column-detection
+    /// [`ColumnMode`](crate::structured::ColumnMode) (issue #734 Fix 3).
+    ///
+    /// `Auto` runs the geometric gutter heuristic (same as
+    /// [`extract_structured`](Self::extract_structured)); `Two` forces a
+    /// two-column split for layouts the conservative heuristic rejects (short,
+    /// ragged reference-edition lines); `Single` suppresses column detection.
+    /// The override applies to the geometric path only — ISO 32000-1:2008
+    /// §14.8.2.3 leaves untagged reading order undefined — and never overrides a
+    /// trustworthy structure tree.
+    pub fn extract_structured_with_column_mode(
+        &self,
+        page_index: usize,
+        column_mode: crate::structured::ColumnMode,
+    ) -> Result<crate::structured::StructuredPage> {
         let page_text = self.extract_page_text(page_index)?;
-        Ok(crate::structured::build_structured_page(
+        let struct_info = self.structured_mcid_info(page_index);
+        Ok(crate::structured::build_structured_page_full(
             page_index,
             page_text.page_width,
             page_text.page_height,
             page_text.spans,
+            column_mode,
+            &struct_info,
         ))
+    }
+
+    /// Per-MCID structure facts for `extract_structured` (ISO 32000-1:2008
+    /// §14.8.4): which MCIDs are `Lbl` labels and which logical `Sect`/`Art`
+    /// section each belongs to. Empty for untagged or suspect-tagged PDFs, so
+    /// the structured output is identical to the geometric path there. Section
+    /// ids are document-stable (the same `Sect` element yields the same id on
+    /// every page it spans), giving cross-page chapter continuity for free
+    /// (#734 §4/§5/§6).
+    fn structured_mcid_info(&self, page_index: usize) -> crate::structured::McidStructInfo {
+        let mut info = crate::structured::McidStructInfo::default();
+        let Some(ref struct_tree) = self.struct_tree_trustworthy() else {
+            return info;
+        };
+        if self.structure_content_cache.lock_or_recover().is_none() {
+            let all = crate::structure::traverse_structure_tree_all_pages(struct_tree);
+            *self.structure_content_cache.lock_or_recover() = Some(all);
+        }
+        let cache = self.structure_content_cache.lock_or_recover();
+        if let Some(content) = cache.as_ref().and_then(|c| c.get(&(page_index as u32))) {
+            for item in content {
+                if let Some(mcid) = item.mcid {
+                    if matches!(item.list_role, Some(crate::structure::ListRole::Lbl)) {
+                        info.lbl.insert(mcid);
+                    }
+                    if let Some(sid) = item.section_id {
+                        info.section.insert(mcid, sid as usize);
+                    }
+                }
+            }
+        }
+        info
     }
 
     /// Extract complete page text data with a specific reading order.

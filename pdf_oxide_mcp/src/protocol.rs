@@ -103,6 +103,12 @@ fn handle_tools_list() -> Result<Value, (i32, String)> {
                             "type": "boolean",
                             "default": true,
                             "description": "Embed images as base64 data URIs in markdown/html output (true) or save as separate files (false)"
+                        },
+                        "column_mode": {
+                            "type": "string",
+                            "enum": ["auto", "two", "single"],
+                            "default": "auto",
+                            "description": "Column detection for format=structured: auto (heuristic), two (force a two-column split for reference-edition layouts the heuristic is conservative about), or single (suppress columns). Applies to untagged/geometric pages only."
                         }
                     }
                 }

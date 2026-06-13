@@ -38,6 +38,20 @@ pub fn run(args: &Value) -> Result<Value, (i32, String)> {
         ));
     }
 
+    // Column-detection override for `structured` (issue #734 Fix 3). Tier-3
+    // (geometric) only; ignored by tagged-structure reading order.
+    let column_mode = match args.get("column_mode").and_then(|v| v.as_str()) {
+        None | Some("auto") => pdf_oxide::ColumnMode::Auto,
+        Some("two") => pdf_oxide::ColumnMode::Two,
+        Some("single") => pdf_oxide::ColumnMode::Single,
+        Some(other) => {
+            return Err((
+                -32602,
+                format!("Invalid column_mode: {other}. Must be auto, two, or single"),
+            ));
+        },
+    };
+
     // Open document
     let mut doc =
         PdfDocument::open(file_path).map_err(|e| (-32603, format!("Failed to open PDF: {e}")))?;
@@ -87,7 +101,7 @@ pub fn run(args: &Value) -> Result<Value, (i32, String)> {
     };
 
     // Extract content
-    let content = extract_pages(&mut doc, &page_indices, format, &opts)?;
+    let content = extract_pages(&mut doc, &page_indices, format, &opts, column_mode)?;
 
     // Write output
     if let Some(parent) = Path::new(output_path).parent() {
@@ -146,15 +160,18 @@ fn extract_pages(
     page_indices: &[usize],
     format: &str,
     opts: &ConversionOptions,
+    column_mode: pdf_oxide::ColumnMode,
 ) -> Result<String, (i32, String)> {
     // `structured` returns one JSON document for the whole request (an array of
     // per-page StructuredPage), not concatenated text — handle it up front.
     if format == "structured" {
         let mut pages = Vec::with_capacity(page_indices.len());
         for &idx in page_indices {
-            let structured = doc.extract_structured(idx).map_err(|e| {
-                (-32603, format!("Structured extraction failed on page {}: {e}", idx + 1))
-            })?;
+            let structured = doc
+                .extract_structured_with_column_mode(idx, column_mode)
+                .map_err(|e| {
+                    (-32603, format!("Structured extraction failed on page {}: {e}", idx + 1))
+                })?;
             pages.push(json!({
                 "page": idx + 1,
                 "structured": serde_json::to_value(&structured).unwrap(),
@@ -427,6 +444,46 @@ mod tests {
             "format": "bogus"
         });
         assert!(run(&args).is_err(), "unknown format must be rejected");
+    }
+
+    #[test]
+    fn test_extract_structured_rejects_unknown_column_mode() {
+        let pdf = fixture_path("simple.pdf");
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.json");
+        let args = json!({
+            "file_path": pdf.to_str().unwrap(),
+            "output_path": out.to_str().unwrap(),
+            "format": "structured",
+            "column_mode": "sideways"
+        });
+        assert!(run(&args).is_err(), "unknown column_mode must be rejected");
+    }
+
+    #[test]
+    fn test_extract_structured_column_mode_single_suppresses_columns() {
+        // `column_mode=single` must force every region's column_index to null,
+        // even on a layout `auto` would split into columns (#734 Fix 3).
+        let pdf = fixture_path("multi_column_table.pdf");
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.json");
+        let args = json!({
+            "file_path": pdf.to_str().unwrap(),
+            "output_path": out.to_str().unwrap(),
+            "format": "structured",
+            "column_mode": "single"
+        });
+        run(&args).expect("structured extract with column_mode=single should succeed");
+        let parsed: Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let pages = parsed["pages"].as_array().expect("pages array");
+        for page in pages {
+            for region in page["structured"]["regions"].as_array().unwrap() {
+                assert!(
+                    region["column_index"].is_null(),
+                    "column_mode=single must null every column_index, got {region:?}"
+                );
+            }
+        }
     }
 
     #[test]

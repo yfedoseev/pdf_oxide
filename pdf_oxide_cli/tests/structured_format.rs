@@ -55,3 +55,54 @@ fn text_structured_is_listed_as_a_valid_format() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// `--column-mode single` must suppress all column indices; `--column-mode two`
+/// must force a split (≥1 region with `column_index": 1`) on a layout `auto` is
+/// conservative about (issue #734 Fix 3).
+#[test]
+fn text_structured_column_mode_overrides() {
+    let run = |mode: &str| -> String {
+        let out = Command::new(bin())
+            .args(["text", "--format", "structured", "--column-mode", mode])
+            .arg(fixture("multi_column_table.pdf"))
+            .output()
+            .expect("run pdf-oxide");
+        assert!(
+            out.status.success(),
+            "--column-mode {mode} failed; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+
+    // single: every column_index null.
+    let single = run("single");
+    assert!(
+        !single.contains("\"column_index\": 0") && !single.contains("\"column_index\": 1"),
+        "column-mode single must null all column indices: {single}"
+    );
+
+    // two: at least one region forced into the right column.
+    let two = run("two");
+    assert!(
+        two.contains("\"column_index\": 1"),
+        "column-mode two must force a two-column split: {two}"
+    );
+}
+
+/// Guard the clap value_parser: an unknown `--column-mode` is rejected.
+#[test]
+fn text_rejects_unknown_column_mode() {
+    let out = Command::new(bin())
+        .args([
+            "text",
+            "--format",
+            "structured",
+            "--column-mode",
+            "diagonal",
+        ])
+        .arg(fixture("multi_column_table.pdf"))
+        .output()
+        .expect("run pdf-oxide");
+    assert!(!out.status.success(), "unknown --column-mode must be rejected");
+}
