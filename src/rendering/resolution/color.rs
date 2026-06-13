@@ -483,6 +483,19 @@ impl ColorResolver {
 
         let alt_cs_name = alt_cs_obj.as_name();
 
+        // Production-quality spot path: a DeviceN whose `/Colorants`
+        // attribute (arr[4], §8.6.6.4) defines the single active ink as a
+        // CIE-based (Lab / ICCBased) Separation resolves the composite
+        // through that colour-managed definition rather than the bulk
+        // DeviceCMYK alternate (the §8.6.6.3 process approximation). Gated to
+        // exactly one active ink: multi-ink composite blending in a CIE space
+        // has no single-call answer, so those keep the alternate path.
+        if matches!(type_name, Some("DeviceN")) {
+            if let Some(c) = self.resolve_devicen_via_colorant(arr, components, ctx, alpha) {
+                return Ok(c);
+            }
+        }
+
         let altspace_values: Vec<f32> = match func_type {
             2 => evaluate_type2(func_dict, components[0]),
             4 => evaluate_type4(&func_resolved, components)?,
@@ -514,17 +527,77 @@ impl ColorResolver {
                 Ok(first_as_gray(&altspace_values, alpha))
             },
             _ => {
-                // Compound alternate space (e.g. ICCBased). We synthesise a
-                // logical Spaced colour and recurse — this lets a
-                // Separation with an ICC alternate route through the ICC
-                // branch correctly.
-                if let Object::Array(_) = alt_cs_obj {
-                    self.resolve_spaced(alt_cs_obj, &altspace_values, ctx, alpha)
-                } else {
-                    Ok(first_as_gray(&altspace_values, alpha))
+                // Compound alternate space (e.g. ICCBased, Lab). Resolve
+                // indirect refs first — real-world spot alternates are
+                // commonly indirect objects (`12 0 R`), not inline arrays,
+                // and an unresolved ref previously fell through to
+                // first_as_gray (discarding chroma, often clamping L* to
+                // near-white). Then recurse so the alternate routes through
+                // its proper branch (Lab / ICCBased).
+                let resolved_alt = ctx.doc.resolve_object(alt_cs_obj).ok();
+                match resolved_alt {
+                    Some(ref o) if o.as_array().is_some() => {
+                        self.resolve_spaced(o, &altspace_values, ctx, alpha)
+                    },
+                    _ => Ok(first_as_gray(&altspace_values, alpha)),
                 }
             },
         }
+    }
+
+    /// For a `DeviceN` `[/DeviceN names altCS tint attrs]` with exactly one
+    /// active ink, resolve the composite through that ink's `/Colorants`
+    /// Separation definition when it is CIE-based (Lab / ICCBased), so a
+    /// colour-managed spot reproduces from its device-independent definition
+    /// instead of the lossy process alternate. Returns `None` (caller uses
+    /// the alternate) when: not exactly one ink is active, no `/Colorants`
+    /// entry exists for it, or the colorant's own alternate is itself a
+    /// device space (no accuracy gained, e.g. process inks or finishing
+    /// plates with a DeviceRGB/DeviceCMYK alternate).
+    fn resolve_devicen_via_colorant(
+        &self,
+        arr: &[Object],
+        components: &[f32],
+        ctx: &ResolutionContext,
+        alpha: f32,
+    ) -> Option<ResolvedColor> {
+        // Exactly one ink active (non-zero tint).
+        let active: Vec<usize> = components
+            .iter()
+            .enumerate()
+            .filter(|(_, &t)| t.abs() > f32::EPSILON)
+            .map(|(i, _)| i)
+            .collect();
+        let [idx] = active.as_slice() else {
+            return None;
+        };
+        let idx = *idx;
+
+        // names = arr[1] → array of colorant Name objects.
+        let names_resolved = ctx.doc.resolve_object(arr.get(1)?).ok()?;
+        let names = names_resolved.as_array()?;
+        let ink_name = names.get(idx)?.as_name()?.to_string();
+
+        // attrs = arr[4] → /Colorants → ink_name → Separation colour space.
+        let attrs_resolved = ctx.doc.resolve_object(arr.get(4)?).ok()?;
+        let colorants_obj = attrs_resolved.as_dict()?.get("Colorants")?;
+        let colorants_resolved = ctx.doc.resolve_object(colorants_obj).ok()?;
+        let colorant_obj = colorants_resolved.as_dict()?.get(&ink_name)?;
+        let colorant_resolved = ctx.doc.resolve_object(colorant_obj).ok()?;
+        let colorant_arr = colorant_resolved.as_array()?;
+
+        // Only take this path when the colorant's alternate is CIE-based.
+        // A device-family alternate (resolved to a bare Name) gains nothing
+        // over the DeviceN's own alternate, so leave those on the CMYK path.
+        let colorant_alt = ctx.doc.resolve_object(colorant_arr.get(2)?).ok()?;
+        if colorant_alt.as_name().is_some() {
+            return None;
+        }
+
+        // Resolve the single-ink Separation at this ink's tint. Its Lab/ICC
+        // alternate routes through resolve_spaced's Lab / ICCBased arms.
+        self.resolve_separation_or_devicen(colorant_arr, &[components[idx]], ctx, alpha)
+            .ok()
     }
 
     fn resolve_indexed(
@@ -1402,5 +1475,78 @@ mod tests {
             "Lab with non-zero chroma must not be gray; got ({r},{g},{b})"
         );
         assert!(b > r, "negative b* (blue) should make blue dominate; got ({r},{g},{b})");
+    }
+
+    /// Build a PDF whose object 3 is a `[/Lab <<…>>]` colour space, so a
+    /// Separation can reference it indirectly (`3 0 R`) — the real-world
+    /// shape (packaging spot alternates are indirect objects).
+    fn doc_with_lab_obj() -> crate::document::PdfDocument {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(b"%PDF-1.4\n");
+        let o1 = buf.len();
+        buf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        let o2 = buf.len();
+        buf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n");
+        let o3 = buf.len();
+        buf.extend_from_slice(
+            b"3 0 obj\n[ /Lab << /WhitePoint [0.9642 1 0.8249] /Range [-128 127 -128 127] >> ]\nendobj\n",
+        );
+        let xref = buf.len();
+        buf.extend_from_slice(b"xref\n0 4\n0000000000 65535 f \n");
+        for off in [o1, o2, o3] {
+            buf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+        }
+        buf.extend_from_slice(
+            format!("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref).as_bytes(),
+        );
+        crate::document::PdfDocument::from_bytes(buf).expect("doc parses")
+    }
+
+    fn lab_tint_fn() -> Object {
+        // tint -> Lab, C1 = blue (54.84, 5.36, -45.91).
+        let mut d: HashMap<String, Object> = HashMap::new();
+        d.insert("FunctionType".into(), Object::Integer(2));
+        d.insert("Domain".into(), Object::Array(vec![Object::Real(0.0), Object::Real(1.0)]));
+        d.insert("N".into(), Object::Integer(1));
+        d.insert(
+            "C0".into(),
+            Object::Array(vec![Object::Real(100.0), Object::Real(0.0), Object::Real(0.0)]),
+        );
+        d.insert(
+            "C1".into(),
+            Object::Array(vec![
+                Object::Real(54.837936),
+                Object::Real(5.357234),
+                Object::Real(-45.906386),
+            ]),
+        );
+        Object::Dictionary(d)
+    }
+
+    /// A bare Separation whose Lab alternate is an INDIRECT reference must
+    /// resolve through the Lab conversion — not fall to first_as_gray (which
+    /// took L*=54.8, clamped to 1.0, and produced near-white). This is the
+    /// real-world shape the inline-array test missed.
+    #[test]
+    fn separation_with_indirect_lab_alternate_resolves_blue() {
+        let doc = doc_with_lab_obj();
+        let spaces = HashMap::new();
+        let sep = Object::Array(vec![
+            Object::Name("Separation".into()),
+            Object::Name("Spot".into()),
+            Object::Reference(crate::object::ObjectRef::new(3, 0)), // indirect /Lab
+            lab_tint_fn(),
+        ]);
+        let resolved = ColorResolver::new()
+            .resolve_spaced(&sep, &[1.0], &ctx(&doc, &spaces), 1.0)
+            .expect("resolve Separation");
+        let ResolvedColor::Rgba { r, g, b, .. } = resolved else {
+            panic!("expected Rgba; got {resolved:?}");
+        };
+        assert!(
+            b > r + 0.15 && b > 0.5,
+            "indirect Lab alternate must resolve to the blue spot, not near-white \
+             gray; got r={r} g={g} b={b}"
+        );
     }
 }
