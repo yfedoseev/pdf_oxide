@@ -173,6 +173,7 @@ impl ColorResolver {
             "DeviceGray" | "G" | "CalGray" => Ok(first_as_gray(components, alpha)),
             "DeviceRGB" | "RGB" | "CalRGB" => Ok(three_as_rgb(components, alpha)),
             "DeviceCMYK" | "CMYK" => Ok(four_as_cmyk_native(components, alpha)),
+            "Lab" => Ok(lab_array_to_rgba(arr, components, alpha)),
             "ICCBased" => self.resolve_iccbased(arr, components, ctx, alpha),
             "Separation" | "DeviceN" => {
                 self.resolve_separation_or_devicen(arr, components, ctx, alpha)
@@ -600,6 +601,132 @@ fn first_as_gray(components: &[f32], alpha: f32) -> ResolvedColor {
         r: g,
         g,
         b: g,
+        a: alpha,
+    }
+}
+
+/// CIE L\*a\*b\* → sRGB (0..1 per channel). `whitepoint` is the colour
+/// space's `/WhitePoint` `[Xw Yw Zw]` (PDF §8.6.5.4; the spot alternates in
+/// packaging artwork are D50). The path is the standard
+/// L\*a\*b\* → XYZ (relative to `whitepoint`) → Bradford-adapt to D65 →
+/// linear sRGB → sRGB gamma, matching how a colour-managed previewer
+/// converts a device-independent Lab colour for display.
+fn lab_to_srgb(l: f32, a: f32, b: f32, whitepoint: [f32; 3]) -> (f32, f32, f32) {
+    // L*a*b* → XYZ relative to the space's white point (CIE 15 / §8.6.5.4).
+    let fy = (l + 16.0) / 116.0;
+    let fx = fy + a / 500.0;
+    let fz = fy - b / 200.0;
+    const EPS: f32 = 216.0 / 24389.0;
+    const KAPPA: f32 = 24389.0 / 27.0;
+    let finv = |t: f32| -> f32 {
+        let t3 = t * t * t;
+        if t3 > EPS {
+            t3
+        } else {
+            (116.0 * t - 16.0) / KAPPA
+        }
+    };
+    let xr = finv(fx);
+    let yr = if l > KAPPA * EPS {
+        let f = (l + 16.0) / 116.0;
+        f * f * f
+    } else {
+        l / KAPPA
+    };
+    let zr = finv(fz);
+    let (xn, yn, zn) = (whitepoint[0], whitepoint[1], whitepoint[2]);
+    let (x, y, z) = (xr * xn, yr * yn, zr * zn);
+
+    // Bradford chromatic adaptation from the source white point to D65
+    // (sRGB's white): XYZ → cone (LMS) response, scale by the per-cone
+    // ratio of destination to source white, back to XYZ.
+    const BRADFORD: [[f32; 3]; 3] = [
+        [0.8951, 0.2664, -0.1614],
+        [-0.7502, 1.7135, 0.0367],
+        [0.0389, -0.0685, 1.0296],
+    ];
+    const BRADFORD_INV: [[f32; 3]; 3] = [
+        [0.9869929, -0.1470543, 0.1599627],
+        [0.4323053, 0.5183603, 0.0492912],
+        [-0.0085287, 0.0400428, 0.9684867],
+    ];
+    const D65: [f32; 3] = [0.95047, 1.0, 1.08883];
+    let mul = |m: [[f32; 3]; 3], v: [f32; 3]| {
+        [
+            m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+            m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+            m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+        ]
+    };
+    let src_lms = mul(BRADFORD, [xn, yn, zn]);
+    let dst_lms = mul(BRADFORD, D65);
+    let lms = mul(BRADFORD, [x, y, z]);
+    let adapted = [
+        lms[0] * dst_lms[0] / src_lms[0],
+        lms[1] * dst_lms[1] / src_lms[1],
+        lms[2] * dst_lms[2] / src_lms[2],
+    ];
+    let xyz = mul(BRADFORD_INV, adapted);
+
+    // XYZ (D65) → linear sRGB → sRGB gamma, clamped to the displayable cube.
+    let rl = 3.2406 * xyz[0] - 1.5372 * xyz[1] - 0.4986 * xyz[2];
+    let gl = -0.9689 * xyz[0] + 1.8758 * xyz[1] + 0.0415 * xyz[2];
+    let bl = 0.0557 * xyz[0] - 0.2040 * xyz[1] + 1.0570 * xyz[2];
+    let gamma = |c: f32| -> f32 {
+        let c = c.clamp(0.0, 1.0);
+        if c <= 0.0031308 {
+            12.92 * c
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        }
+    };
+    (gamma(rl), gamma(gl), gamma(bl))
+}
+
+/// Resolve a PDF CIE-based `[/Lab << /WhitePoint … /Range … >>]` colour
+/// space (§8.6.5.4) from its `[L* a* b*]` components to sRGB. `a*`/`b*` are
+/// clamped to the space's `/Range` (default `[-100 100 -100 100]`).
+fn lab_array_to_rgba(arr: &[Object], components: &[f32], alpha: f32) -> ResolvedColor {
+    let dict = arr.get(1).and_then(|o| o.as_dict());
+    let whitepoint = dict
+        .and_then(|d| d.get("WhitePoint"))
+        .and_then(|o| o.as_array())
+        .map(|a| {
+            [
+                a.first().map(object_to_f32).unwrap_or(0.9642),
+                a.get(1).map(object_to_f32).unwrap_or(1.0),
+                a.get(2).map(object_to_f32).unwrap_or(0.8249),
+            ]
+        })
+        .unwrap_or([0.9642, 1.0, 0.8249]);
+    let range = dict
+        .and_then(|d| d.get("Range"))
+        .and_then(|o| o.as_array())
+        .map(|a| {
+            [
+                a.first().map(object_to_f32).unwrap_or(-100.0),
+                a.get(1).map(object_to_f32).unwrap_or(100.0),
+                a.get(2).map(object_to_f32).unwrap_or(-100.0),
+                a.get(3).map(object_to_f32).unwrap_or(100.0),
+            ]
+        })
+        .unwrap_or([-100.0, 100.0, -100.0, 100.0]);
+    let l = components.first().copied().unwrap_or(0.0).clamp(0.0, 100.0);
+    let a = components
+        .get(1)
+        .copied()
+        .unwrap_or(0.0)
+        .clamp(range[0], range[1]);
+    let b = components
+        .get(2)
+        .copied()
+        .unwrap_or(0.0)
+        .clamp(range[2], range[3]);
+    let (r, g, bl) = lab_to_srgb(l, a, b, whitepoint);
+    ResolvedColor::Rgba {
+        r,
+        g,
+        b: bl,
         a: alpha,
     }
 }
@@ -1209,5 +1336,71 @@ mod tests {
         assert!((r - 0.75).abs() < 0.01, "got r={r}");
         assert!((g - 1.0).abs() < 0.01, "got g={g}");
         assert!((b - 1.0).abs() < 0.01, "got b={b}");
+    }
+
+    /// Helper: build a PDF `[/Lab << /WhitePoint [...] /Range [...] >>]`
+    /// colour-space array. D50 whitepoint (the PDF Lab default and what
+    /// this corpus's spot alternates use).
+    fn lab_space(range: Option<[f32; 4]>) -> Object {
+        let mut dict: HashMap<String, Object> = HashMap::new();
+        dict.insert(
+            "WhitePoint".to_string(),
+            Object::Array(vec![
+                Object::Real(0.9642),
+                Object::Real(1.0),
+                Object::Real(0.8249),
+            ]),
+        );
+        if let Some(r) = range {
+            dict.insert(
+                "Range".to_string(),
+                Object::Array(r.iter().map(|v| Object::Real(*v as f64)).collect()),
+            );
+        }
+        Object::Array(vec![Object::Name("Lab".to_string()), Object::Dictionary(dict)])
+    }
+
+    /// Lab L*=100 (white point) resolves to sRGB white.
+    #[test]
+    fn lab_l100_is_white() {
+        let (r, g, b) = super::lab_to_srgb(100.0, 0.0, 0.0, [0.9642, 1.0, 0.8249]);
+        assert!(r > 0.98 && g > 0.98 && b > 0.98, "L*=100 must be white; got ({r},{g},{b})");
+    }
+
+    /// Lab L*=0 resolves to sRGB black.
+    #[test]
+    fn lab_l0_is_black() {
+        let (r, g, b) = super::lab_to_srgb(0.0, 0.0, 0.0, [0.9642, 1.0, 0.8249]);
+        assert!(r < 0.02 && g < 0.02 && b < 0.02, "L*=0 must be black; got ({r},{g},{b})");
+    }
+
+    /// CIELAB sRGB-red reference: Lab(53.24, 80.09, 67.20) ≈ sRGB (1,0,0).
+    /// Pins that chroma (a*, b*) is honoured, not discarded.
+    #[test]
+    fn lab_red_reference_is_red() {
+        let (r, g, b) = super::lab_to_srgb(53.24, 80.09, 67.20, [0.9504, 1.0, 1.0888]);
+        assert!(r > 0.9, "expected near-full red channel; got r={r}");
+        assert!(g < 0.25 && b < 0.25, "expected low g,b; got g={g} b={b}");
+    }
+
+    /// The bug fix: a Lab colour space with non-zero a*/b* must NOT collapse
+    /// to gray (R==G==B) the way the pre-fix `_ => first_as_gray` arm did.
+    #[test]
+    fn resolve_spaced_lab_preserves_chroma() {
+        let doc = fixture_doc();
+        let spaces = HashMap::new();
+        let space = lab_space(Some([-128.0, 127.0, -128.0, 127.0]));
+        // A blue-ish Lab: moderate L*, negative a*, strongly negative b*.
+        let resolved = ColorResolver::new()
+            .resolve_spaced(&space, &[55.0, 0.0, -55.0], &ctx(&doc, &spaces), 1.0)
+            .expect("resolve Lab");
+        let ResolvedColor::Rgba { r, g, b, .. } = resolved else {
+            panic!("Lab must resolve to Rgba; got {resolved:?}");
+        };
+        assert!(
+            (r - g).abs() > 0.02 || (b - g).abs() > 0.02,
+            "Lab with non-zero chroma must not be gray; got ({r},{g},{b})"
+        );
+        assert!(b > r, "negative b* (blue) should make blue dominate; got ({r},{g},{b})");
     }
 }
