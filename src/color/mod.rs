@@ -160,6 +160,14 @@ pub struct IccProfile {
     /// buffers unexpectedly.
     n_components: u8,
     header: IccHeader,
+    /// SipHash of `bytes`, computed once at construction. `content_hash`
+    /// keys the per-paint transform cache, so it is called per paint
+    /// operator; hashing the full blob each time dominated render CPU on
+    /// ICC-heavy documents. The bytes are immutable (`Arc<Vec<u8>>`, no
+    /// mutation API), so a value computed at parse stays valid for the
+    /// profile's lifetime. Equal to `compute_content_hash(&bytes)`, so it
+    /// is consistent with — and redundant under — the derived `Eq`.
+    content_hash: u64,
 }
 
 impl IccProfile {
@@ -178,10 +186,12 @@ impl IccProfile {
                 return None;
             }
         }
+        let content_hash = compute_content_hash(&bytes);
         Some(Self {
             bytes: Arc::new(bytes),
             n_components: declared_n,
             header,
+            content_hash,
         })
     }
 
@@ -202,15 +212,38 @@ impl IccProfile {
         &self.header
     }
 
-    /// Hash the profile bytes for use as a transform-cache key. Two
+    /// Hash of the profile bytes, for use as a transform-cache key. Two
     /// profiles with identical bytes produce identical compiled
-    /// transforms, so this is sufficient.
+    /// transforms, so this is sufficient. Precomputed at construction —
+    /// O(1) here, no re-hash of the blob.
     pub fn content_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        self.bytes.hash(&mut h);
-        h.finish()
+        self.content_hash
     }
+}
+
+/// Test-support counter: number of times the profile byte-blob was actually
+/// SipHashed. Used to pin that `content_hash` hashes at most once per
+/// profile rather than per call (the per-paint hot path).
+#[cfg(feature = "test-support")]
+static ICC_CONTENT_HASH_COMPUTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Read the byte-hash compute counter (test-support only).
+#[cfg(feature = "test-support")]
+pub fn icc_content_hash_compute_count() -> u64 {
+    ICC_CONTENT_HASH_COMPUTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// SipHash the profile bytes. The single site that touches the blob, so the
+/// test-support counter here measures exactly how often the (expensive) hash
+/// runs.
+fn compute_content_hash(bytes: &[u8]) -> u64 {
+    #[cfg(feature = "test-support")]
+    ICC_CONTENT_HASH_COMPUTES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
 }
 
 /// A compiled source-profile → sRGB transform for a given intent.
@@ -589,6 +622,29 @@ mod tests {
         let bytes = minimal_header(b"CMYK", 128);
         let p = IccProfile::parse(bytes, 4).expect("should parse");
         assert_eq!(p.n_components(), 4);
+    }
+
+    /// `content_hash` keys the per-paint transform cache, so it runs on
+    /// every paint operator. Hashing the full profile blob (hundreds of KB
+    /// for production CMYK profiles) on each call dominated render CPU on
+    /// ICC-heavy corpora. The hash is invariant for an immutable profile,
+    /// so repeated calls must hash the bytes at most once.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn content_hash_hashes_bytes_at_most_once() {
+        let bytes = minimal_header(b"CMYK", 256);
+        let start = icc_content_hash_compute_count();
+        let p = IccProfile::parse(bytes, 4).expect("should parse");
+        let h0 = p.content_hash();
+        for _ in 0..49 {
+            assert_eq!(p.content_hash(), h0, "hash must be stable across calls");
+        }
+        let used = icc_content_hash_compute_count() - start;
+        assert!(
+            used <= 1,
+            "content_hash must hash the profile bytes at most once across 50 \
+             calls; hashed {used} times"
+        );
     }
 
     #[test]
