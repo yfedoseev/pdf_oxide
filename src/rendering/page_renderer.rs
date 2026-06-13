@@ -234,6 +234,12 @@ pub struct PageRenderer {
     /// snapshots are rect-sized, not page-sized.
     #[cfg(feature = "test-support")]
     overprint_snapshot_bytes: u64,
+    /// Pixels iterated by the spot/RGB/CMYK sidecar-mirror coverage passes
+    /// during the most recent `render_page*` call. Test-support only: pins
+    /// that a small paint's mirror write is rect-bounded, not a full-plane
+    /// scan.
+    #[cfg(feature = "test-support")]
+    sidecar_mirror_scan_px: u64,
     /// Depth counter for the SMask materialisation path. Incremented
     /// on entry to [`Self::apply_smask_after_paint`] and decremented
     /// on exit. When the counter reaches [`MAX_SMASK_DEPTH`] further
@@ -308,6 +314,8 @@ impl PageRenderer {
             overprint_scan_px: 0,
             #[cfg(feature = "test-support")]
             overprint_snapshot_bytes: 0,
+            #[cfg(feature = "test-support")]
+            sidecar_mirror_scan_px: 0,
             smask_depth: 0,
             cmyk_sidecar: None,
             force_cmyk_sidecar: false,
@@ -418,6 +426,15 @@ impl PageRenderer {
         self.overprint_snapshot_bytes
     }
 
+    /// Pixels iterated by the spot/RGB/CMYK sidecar-mirror coverage passes
+    /// during the most recent `render_page*` call. Test-support only — pins
+    /// that a small paint's mirror write scans a rect-bounded region, not
+    /// the full page plane.
+    #[cfg(feature = "test-support")]
+    pub fn sidecar_mirror_scanned_pixels(&self) -> u64 {
+        self.sidecar_mirror_scan_px
+    }
+
     /// Render a page to a raster image.
     pub fn render_page(&mut self, doc: &PdfDocument, page_num: usize) -> Result<RenderedImage> {
         self.render_page_with_options(page_num, doc)
@@ -442,6 +459,7 @@ impl PageRenderer {
         {
             self.overprint_scan_px = 0;
             self.overprint_snapshot_bytes = 0;
+            self.sidecar_mirror_scan_px = 0;
         }
         // Reset the H3b silent-K=0 warning latch so a new page's first
         // RGB-to-CMYK fallback under a declared-but-unparseable
@@ -1613,6 +1631,7 @@ impl PageRenderer {
                                     &gs_clone,
                                     doc,
                                     false,
+                                    Some(overprint_rect),
                                 );
                             }
                             if let Some(snap) = rgb_sidecar_snap {
@@ -1623,6 +1642,7 @@ impl PageRenderer {
                                     &gs_clone,
                                     doc,
                                     false,
+                                    Some(overprint_rect),
                                 );
                             }
                             self.mirror_spot_paint_into_sidecar_with_coverage(
@@ -1631,6 +1651,7 @@ impl PageRenderer {
                                 cmyk_coverage.as_deref(),
                                 &gs_clone,
                                 false,
+                                Some(overprint_rect),
                             );
                             if let Some(snap) = smask_snap {
                                 self.apply_smask_after_paint(
@@ -1742,6 +1763,7 @@ impl PageRenderer {
                                     &gs_clone,
                                     doc,
                                     true,
+                                    Some(overprint_rect),
                                 );
                             }
                             if let Some(snap) = rgb_sidecar_snap {
@@ -1752,6 +1774,7 @@ impl PageRenderer {
                                     &gs_clone,
                                     doc,
                                     true,
+                                    Some(overprint_rect),
                                 );
                             }
                             self.mirror_spot_paint_into_sidecar_with_coverage(
@@ -1760,6 +1783,7 @@ impl PageRenderer {
                                 cmyk_coverage.as_deref(),
                                 &gs_clone,
                                 true,
+                                Some(overprint_rect),
                             );
                             if let Some(snap) = smask_snap {
                                 self.apply_smask_after_paint(
@@ -1888,6 +1912,7 @@ impl PageRenderer {
                                     fill_cmyk_coverage.as_deref(),
                                     &gs_clone,
                                     true,
+                                    Some(fill_paint_rect),
                                 );
                             }
                             if let Some(snap) = fill_smask_snap {
@@ -1945,6 +1970,7 @@ impl PageRenderer {
                                     stroke_cmyk_coverage.as_deref(),
                                     &gs_clone,
                                     false,
+                                    Some(stroke_paint_rect),
                                 );
                             }
                             if let Some(snap) = stroke_smask_snap {
@@ -2050,6 +2076,7 @@ impl PageRenderer {
                                     fill_cmyk_coverage.as_deref(),
                                     &gs_clone,
                                     true,
+                                    Some(fill_paint_rect),
                                 );
                             }
                             if let Some(snap) = fill_smask_snap {
@@ -2108,6 +2135,7 @@ impl PageRenderer {
                                         stroke_cmyk_coverage.as_deref(),
                                         &gs_clone,
                                         false,
+                                        Some(stroke_paint_rect),
                                     );
                                 }
                                 if let Some(snap) = stroke_smask_snap {
@@ -2289,6 +2317,7 @@ impl PageRenderer {
                                     text_coverage.as_deref(),
                                     &gs_for_apply,
                                     true,
+                                    text_overprint_bounds,
                                 );
                             }
                             if let Some(snap) = smask_snap {
@@ -2421,6 +2450,7 @@ impl PageRenderer {
                                     text_coverage.as_deref(),
                                     &gs_for_apply,
                                     true,
+                                    text_overprint_bounds,
                                 );
                             }
                             if let Some(snap) = smask_snap {
@@ -2549,6 +2579,7 @@ impl PageRenderer {
                                     text_coverage.as_deref(),
                                     &gs_for_apply,
                                     true,
+                                    text_overprint_bounds,
                                 );
                             }
                             if let Some(snap) = smask_snap {
@@ -2690,6 +2721,7 @@ impl PageRenderer {
                                     text_coverage.as_deref(),
                                     &gs_for_apply,
                                     true,
+                                    text_overprint_bounds,
                                 );
                             }
                             if let Some(snap) = smask_snap {
@@ -2812,6 +2844,7 @@ impl PageRenderer {
                                 image_coverage.as_deref(),
                                 &gs_clone,
                                 true,
+                                None,
                             );
                         }
                         if let Some(snap) = smask_snap {
@@ -3006,6 +3039,7 @@ impl PageRenderer {
                                 shading_coverage.as_deref(),
                                 &gs_clone,
                                 true,
+                                None,
                             );
                         }
                         if let Some(snap) = smask_snap {
@@ -5668,6 +5702,7 @@ impl PageRenderer {
         gs: &GraphicsState,
         doc: &PdfDocument,
         fill_side: bool,
+        scan: Option<DeviceRect>,
     ) {
         if self.cmyk_sidecar.is_none() || coverage.is_none() {
             self.mirror_rgb_paint_into_sidecar(pixmap, snapshot, gs, doc, fill_side);
@@ -5697,31 +5732,43 @@ impl PageRenderer {
         let (sc, sm, sy, sk) = self.resolve_rgb_paint_to_cmyk(gs, doc, fill_side);
 
         let coverage = coverage.expect("checked above");
+        let (w, h) = self.cmyk_sidecar.as_ref().expect("checked above").dims();
+        // Coverage is zero outside the paint's device rect, so bounding the
+        // walk to that rect is byte-identical to the full-plane walk while
+        // skipping the millions of cov==0 pixels a small paint never touches.
+        let scan = sidecar_scan_rect(scan, w, h);
+        #[cfg(feature = "test-support")]
+        {
+            self.sidecar_mirror_scan_px += scan.width() as u64 * scan.height() as u64;
+        }
         let plane = self
             .cmyk_sidecar
             .as_mut()
             .expect("checked above")
             .cmyk_mut();
-        for px in 0..(plane.len() / 4) {
-            let cov = coverage[px];
-            if cov == 0 {
-                continue;
+        for y in scan.y0..scan.y1 {
+            for x in scan.x0..scan.x1 {
+                let px = y as usize * w as usize + x as usize;
+                let cov = coverage[px];
+                if cov == 0 {
+                    continue;
+                }
+                // Effective alpha at this pixel = path coverage · paint alpha.
+                let eff = (cov as f32 / 255.0) * alpha.clamp(0.0, 1.0);
+                let off = px * 4;
+                let dc = plane[off] as f32 / 255.0;
+                let dm = plane[off + 1] as f32 / 255.0;
+                let dy = plane[off + 2] as f32 / 255.0;
+                let dk = plane[off + 3] as f32 / 255.0;
+                let mc = eff * sc + (1.0 - eff) * dc;
+                let mm = eff * sm + (1.0 - eff) * dm;
+                let my = eff * sy + (1.0 - eff) * dy;
+                let mk = eff * sk + (1.0 - eff) * dk;
+                plane[off] = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+                plane[off + 1] = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+                plane[off + 2] = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+                plane[off + 3] = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
             }
-            // Effective alpha at this pixel = path coverage · paint alpha.
-            let eff = (cov as f32 / 255.0) * alpha.clamp(0.0, 1.0);
-            let off = px * 4;
-            let dc = plane[off] as f32 / 255.0;
-            let dm = plane[off + 1] as f32 / 255.0;
-            let dy = plane[off + 2] as f32 / 255.0;
-            let dk = plane[off + 3] as f32 / 255.0;
-            let mc = eff * sc + (1.0 - eff) * dc;
-            let mm = eff * sm + (1.0 - eff) * dm;
-            let my = eff * sy + (1.0 - eff) * dy;
-            let mk = eff * sk + (1.0 - eff) * dk;
-            plane[off] = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
-            plane[off + 1] = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
-            plane[off + 2] = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
-            plane[off + 3] = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
         }
         let _ = snapshot;
     }
@@ -5737,6 +5784,7 @@ impl PageRenderer {
         gs: &GraphicsState,
         doc: &PdfDocument,
         fill_side: bool,
+        scan: Option<DeviceRect>,
     ) {
         if self.cmyk_sidecar.is_none() || coverage.is_none() {
             self.mirror_cmyk_paint_into_sidecar(pixmap, snapshot, gs, doc, fill_side);
@@ -5772,30 +5820,39 @@ impl PageRenderer {
         }
 
         let coverage = coverage.expect("checked above");
+        let (w, h) = self.cmyk_sidecar.as_ref().expect("checked above").dims();
+        let scan = sidecar_scan_rect(scan, w, h);
+        #[cfg(feature = "test-support")]
+        {
+            self.sidecar_mirror_scan_px += scan.width() as u64 * scan.height() as u64;
+        }
         let plane = self
             .cmyk_sidecar
             .as_mut()
             .expect("checked above")
             .cmyk_mut();
-        for px in 0..(plane.len() / 4) {
-            let cov = coverage[px];
-            if cov == 0 {
-                continue;
+        for y in scan.y0..scan.y1 {
+            for x in scan.x0..scan.x1 {
+                let px = y as usize * w as usize + x as usize;
+                let cov = coverage[px];
+                if cov == 0 {
+                    continue;
+                }
+                let cov_f = cov as f32 / 255.0;
+                let off = px * 4;
+                let dc = plane[off] as f32 / 255.0;
+                let dm = plane[off + 1] as f32 / 255.0;
+                let dy = plane[off + 2] as f32 / 255.0;
+                let dk = plane[off + 3] as f32 / 255.0;
+                let mc = cov_f * sc + (1.0 - cov_f) * dc;
+                let mm = cov_f * sm + (1.0 - cov_f) * dm;
+                let my = cov_f * sy + (1.0 - cov_f) * dy;
+                let mk = cov_f * sk + (1.0 - cov_f) * dk;
+                plane[off] = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
+                plane[off + 1] = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
+                plane[off + 2] = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
+                plane[off + 3] = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
             }
-            let cov_f = cov as f32 / 255.0;
-            let off = px * 4;
-            let dc = plane[off] as f32 / 255.0;
-            let dm = plane[off + 1] as f32 / 255.0;
-            let dy = plane[off + 2] as f32 / 255.0;
-            let dk = plane[off + 3] as f32 / 255.0;
-            let mc = cov_f * sc + (1.0 - cov_f) * dc;
-            let mm = cov_f * sm + (1.0 - cov_f) * dm;
-            let my = cov_f * sy + (1.0 - cov_f) * dy;
-            let mk = cov_f * sk + (1.0 - cov_f) * dk;
-            plane[off] = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
-            plane[off + 1] = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
-            plane[off + 2] = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
-            plane[off + 3] = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
         }
         let _ = snapshot;
         let _ = doc;
@@ -5887,6 +5944,7 @@ impl PageRenderer {
         coverage: Option<&[u8]>,
         gs: &GraphicsState,
         fill_side: bool,
+        scan: Option<DeviceRect>,
     ) {
         if !self.spot_paint_active(gs, fill_side) {
             return;
@@ -5946,6 +6004,28 @@ impl PageRenderer {
             &computed_coverage
         };
 
+        let (sw, sh) = match self.cmyk_sidecar.as_ref() {
+            Some(s) => s.dims(),
+            None => return,
+        };
+        // Spot coverage is zero outside the paint's device rect; bound the
+        // per-ink walk to that rect (byte-identical to the full-plane walk).
+        let scan = sidecar_scan_rect(scan, sw, sh);
+        #[cfg(feature = "test-support")]
+        {
+            // One walk of the rect per source ink with a plate in the sidecar.
+            let inks_with_plate = source_inks
+                .iter()
+                .filter(|(name, _)| {
+                    self.cmyk_sidecar
+                        .as_ref()
+                        .and_then(|s| s.spot_index(name))
+                        .is_some()
+                })
+                .count() as u64;
+            self.sidecar_mirror_scan_px +=
+                inks_with_plate * scan.width() as u64 * scan.height() as u64;
+        }
         let sidecar = match self.cmyk_sidecar.as_mut() {
             Some(s) => s,
             None => return,
@@ -5966,18 +6046,22 @@ impl PageRenderer {
             let c_s = tint.clamp(0.0, 1.0);
             debug_assert_eq!(plane.len(), cov_slice.len());
 
-            for (px, cov) in cov_slice.iter().enumerate() {
-                let cov = *cov;
-                if cov == 0 {
-                    continue;
+            for y in scan.y0..scan.y1 {
+                for x in scan.x0..scan.x1 {
+                    let px = y as usize * sw as usize + x as usize;
+                    let cov = cov_slice[px];
+                    if cov == 0 {
+                        continue;
+                    }
+                    // Effective coverage·alpha — §11.3.3's α_s.
+                    let alpha = (cov as f32 / 255.0) * gs_alpha;
+                    let alpha = alpha.clamp(0.0, 1.0);
+                    let t_b = plane[px] as f32 / 255.0;
+                    let blended =
+                        crate::rendering::sidecar::separable_blend(effective_bm, t_b, c_s);
+                    let t_r = (1.0 - alpha) * t_b + alpha * blended;
+                    plane[px] = (t_r.clamp(0.0, 1.0) * 255.0).round() as u8;
                 }
-                // Effective coverage·alpha — §11.3.3's α_s.
-                let alpha = (cov as f32 / 255.0) * gs_alpha;
-                let alpha = alpha.clamp(0.0, 1.0);
-                let t_b = plane[px] as f32 / 255.0;
-                let blended = crate::rendering::sidecar::separable_blend(effective_bm, t_b, c_s);
-                let t_r = (1.0 - alpha) * t_b + alpha * blended;
-                plane[px] = (t_r.clamp(0.0, 1.0) * 255.0).round() as u8;
             }
         }
     }
@@ -8651,6 +8735,16 @@ impl PaintBounds {
             height,
         ))
     }
+}
+
+/// Resolve a sidecar-mirror scan rect: the caller-supplied paint bound
+/// clamped to the plane, or the full plane when no bound is provable
+/// (`None`). The mirror walk only ever skips `cov==0` pixels, and coverage
+/// is zero outside the paint geometry the bound came from, so restricting
+/// the walk to this rect is byte-identical to walking the whole plane.
+fn sidecar_scan_rect(scan: Option<DeviceRect>, width: u32, height: u32) -> DeviceRect {
+    let full = DeviceRect::full(width, height);
+    scan.map(|r| r.intersect(&full)).unwrap_or(full)
 }
 
 /// Device-space dirty rect for painting `path` under `transform`.
