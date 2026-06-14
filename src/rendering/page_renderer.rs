@@ -252,6 +252,13 @@ pub struct PageRenderer {
     /// the whole page.
     #[cfg(feature = "test-support")]
     snapshot_family_scan_px: u64,
+    /// Page-sized coverage *result* buffers freshly allocated by the per-paint
+    /// coverage rasterisers during the most recent `render_page*` call.
+    /// Test-support only: pins that the returned coverage buffer is reused
+    /// across paints (allocated at most once per page per fill/stroke lane)
+    /// rather than zero-allocated afresh on every paint operator.
+    #[cfg(feature = "test-support")]
+    coverage_result_allocs: u64,
     /// Depth counter for the SMask materialisation path. Incremented
     /// on entry to [`Self::apply_smask_after_paint`] and decremented
     /// on exit. When the counter reaches [`MAX_SMASK_DEPTH`] further
@@ -304,6 +311,18 @@ pub struct PageRenderer {
     /// paint on a page allocates them at the page dimensions; reset per page.
     coverage_scratch_mask: Option<tiny_skia::Mask>,
     coverage_scratch_pixmap: Option<Pixmap>,
+    /// Persistent page-indexed coverage *result* buffers handed to the
+    /// after-paint consumers. The rasterisers overwrite only the paint's
+    /// device rect and return the buffer by move; each call site moves it
+    /// back here after its consumers run, so the allocation is reused across
+    /// paints instead of a fresh page-sized zeroed `Vec` per paint. Relies on
+    /// the same invariant as the scratch buffers above — consumers read
+    /// coverage only inside the paint rect, so stale bytes outside it are
+    /// never observed. Separate fill/stroke lanes because the fill+stroke
+    /// (`B`) operator keeps both live within one arm. `None` until first use;
+    /// reset per page.
+    coverage_fill_result: Option<Vec<u8>>,
+    coverage_stroke_result: Option<Vec<u8>>,
     /// Latch on the H3b silent-K=0 warning: when the document declares
     /// `/OutputIntents` but no usable CMYK profile parses out, the
     /// RGB→CMYK fallback emits K=0 (losing the K plane). The first
@@ -342,11 +361,15 @@ impl PageRenderer {
             snapshot_family_bytes: 0,
             #[cfg(feature = "test-support")]
             snapshot_family_scan_px: 0,
+            #[cfg(feature = "test-support")]
+            coverage_result_allocs: 0,
             smask_depth: 0,
             cmyk_sidecar: None,
             force_cmyk_sidecar: false,
             coverage_scratch_mask: None,
             coverage_scratch_pixmap: None,
+            coverage_fill_result: None,
+            coverage_stroke_result: None,
             k_zero_warning_emitted: false,
         }
     }
@@ -480,6 +503,16 @@ impl PageRenderer {
         self.snapshot_family_scan_px
     }
 
+    /// Fresh page-sized coverage *result* buffers allocated by the per-paint
+    /// coverage rasterisers during the most recent `render_page*` call.
+    /// Test-support only — pins that the returned coverage buffer is reused
+    /// across paints (allocated at most once per page per fill/stroke lane)
+    /// rather than zero-allocated on every paint operator.
+    #[cfg(feature = "test-support")]
+    pub fn coverage_result_alloc_count(&self) -> u64 {
+        self.coverage_result_allocs
+    }
+
     /// Render a page to a raster image.
     pub fn render_page(&mut self, doc: &PdfDocument, page_num: usize) -> Result<RenderedImage> {
         self.render_page_with_options(page_num, doc)
@@ -505,6 +538,8 @@ impl PageRenderer {
         // also guard on dims, but dropping keeps memory bounded across pages).
         self.coverage_scratch_mask = None;
         self.coverage_scratch_pixmap = None;
+        self.coverage_fill_result = None;
+        self.coverage_stroke_result = None;
         #[cfg(feature = "test-support")]
         {
             self.overprint_scan_px = 0;
@@ -512,6 +547,7 @@ impl PageRenderer {
             self.sidecar_mirror_scan_px = 0;
             self.snapshot_family_bytes = 0;
             self.snapshot_family_scan_px = 0;
+            self.coverage_result_allocs = 0;
         }
         // Reset the H3b silent-K=0 warning latch so a new page's first
         // RGB-to-CMYK fallback under a declared-but-unparseable
@@ -1751,6 +1787,8 @@ impl PageRenderer {
                                 false,
                                 Some(overprint_rect),
                             );
+                            // Recycle the stroke coverage buffer for the next paint.
+                            self.coverage_stroke_result = cmyk_coverage;
                             if let Some(snap) = smask_snap {
                                 self.apply_smask_after_paint(
                                     pixmap,
@@ -1899,6 +1937,8 @@ impl PageRenderer {
                                 true,
                                 Some(overprint_rect),
                             );
+                            // Recycle the fill coverage buffer for the next paint.
+                            self.coverage_fill_result = cmyk_coverage;
                             if let Some(snap) = smask_snap {
                                 self.apply_smask_after_paint(
                                     pixmap,
@@ -2046,6 +2086,8 @@ impl PageRenderer {
                                     Some(fill_paint_rect),
                                 );
                             }
+                            // Recycle the fill coverage buffer for the next paint.
+                            self.coverage_fill_result = fill_cmyk_coverage;
                             if let Some(snap) = fill_smask_snap {
                                 self.apply_smask_after_paint(
                                     pixmap,
@@ -2120,6 +2162,8 @@ impl PageRenderer {
                                     Some(stroke_paint_rect),
                                 );
                             }
+                            // Recycle the stroke coverage buffer for the next paint.
+                            self.coverage_stroke_result = stroke_cmyk_coverage;
                             if let Some(snap) = stroke_smask_snap {
                                 self.apply_smask_after_paint(
                                     pixmap,
@@ -2239,6 +2283,8 @@ impl PageRenderer {
                                     Some(fill_paint_rect),
                                 );
                             }
+                            // Recycle the fill coverage buffer for the next paint.
+                            self.coverage_fill_result = fill_cmyk_coverage;
                             if let Some(snap) = fill_smask_snap {
                                 self.apply_smask_after_paint(
                                     pixmap,
@@ -2314,6 +2360,8 @@ impl PageRenderer {
                                         Some(stroke_paint_rect),
                                     );
                                 }
+                                // Recycle the stroke coverage buffer for the next paint.
+                                self.coverage_stroke_result = stroke_cmyk_coverage;
                                 if let Some(snap) = stroke_smask_snap {
                                     self.apply_smask_after_paint(
                                         pixmap,
@@ -4950,12 +4998,28 @@ impl PageRenderer {
         rect: DeviceRect,
     ) -> Option<Vec<u8>> {
         let (w, h) = self.cmyk_sidecar.as_ref()?.dims();
+        let n = (w as usize) * (h as usize);
+        // Take the persistent page-indexed result buffer (owned, so it does
+        // not alias the scratch-mask borrow below). Reused across paints: the
+        // write loop overwrites only the paint's device rect, and the
+        // consumers read coverage only inside that rect, so stale bytes
+        // outside it are never observed — byte-identical to a freshly-zeroed
+        // buffer. A fresh zeroed allocation happens only on the first paint of
+        // a page (or a page-size change), not per paint.
+        let mut buf = match self.coverage_fill_result.take() {
+            Some(b) if b.len() == n => b,
+            _ => {
+                #[cfg(feature = "test-support")]
+                {
+                    self.coverage_result_allocs += 1;
+                }
+                vec![0u8; n]
+            },
+        };
         // Reuse a page-sized scratch mask across paints. `fill_path` blits
         // coverage only onto covered spans (it does not zero the rest), so
         // the scratch must be cleared before each fill — but only over the
-        // paint's device rect, since the returned buffer is read only inside
-        // that rect (the after-paint scans are rect-bounded) and is zeroed
-        // elsewhere on construction below.
+        // paint's device rect.
         let mask = match self.coverage_scratch_mask.as_mut() {
             Some(m) if m.width() == w && m.height() == h => m,
             _ => {
@@ -4966,14 +5030,9 @@ impl PageRenderer {
         clear_mask_rect(mask, rect, w);
         mask.fill_path(path, fill_rule, true, transform);
 
-        // Build the returned page-indexed coverage buffer: zero everywhere,
-        // the paint's device rect copied from the freshly-filled mask. Pixels
-        // outside the rect are provably uncovered (the rect bounds the paint
-        // geometry), so a zero there is byte-identical to the old full-page
-        // `mask.data().to_vec()`.
+        // Overwrite the paint's device rect from the freshly-filled mask.
         let mask_data = mask.data();
         let clip_data = clip.map(|c| c.data());
-        let mut buf = vec![0u8; (w * h) as usize];
         for y in rect.y0..rect.y1 {
             let row = y as usize * w as usize;
             for x in rect.x0..rect.x1 {
@@ -5030,13 +5089,28 @@ impl PageRenderer {
         paint.set_color(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
         paint.anti_alias = true;
 
+        // Take the persistent page-indexed result buffer (owned, so it does
+        // not alias the scratch-pixmap borrow below). Reused across paints:
+        // the write loop overwrites only the paint's device rect, and the
+        // consumers read coverage only inside that rect, so stale bytes
+        // outside it are never observed — byte-identical to a freshly-zeroed
+        // buffer. A fresh zeroed allocation happens only on the first stroke
+        // of a page (or a page-size change), not per paint.
+        let n = (w as usize) * (h as usize);
+        let mut buf = match self.coverage_stroke_result.take() {
+            Some(b) if b.len() == n => b,
+            _ => {
+                #[cfg(feature = "test-support")]
+                {
+                    self.coverage_result_allocs += 1;
+                }
+                vec![0u8; n]
+            },
+        };
         // Reuse a page-sized scratch pixmap across paints, clearing only the
         // paint's device rect before re-stroking. `stroke_path` source-over-
         // blends onto a transparent backdrop, so a cleared rect produces the
-        // same alpha coverage a fresh pixmap would; pixels outside the rect
-        // are provably untouched by this stroke and are zeroed in the
-        // returned buffer below, so the result is byte-identical to the old
-        // fresh-`Pixmap::new` path.
+        // same alpha coverage a fresh pixmap would.
         let scratch = match self.coverage_scratch_pixmap.as_mut() {
             Some(p) if p.width() == w && p.height() == h => p,
             _ => {
@@ -5048,7 +5122,6 @@ impl PageRenderer {
         scratch.stroke_path(path, &paint, &stroke, transform, clip);
 
         let data = scratch.data();
-        let mut buf = vec![0u8; (w * h) as usize];
         let wu = w as usize;
         for y in rect.y0..rect.y1 {
             let row = y as usize * wu;
