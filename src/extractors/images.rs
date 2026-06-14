@@ -935,6 +935,11 @@ pub fn extract_image_from_xobject_expanded(
         cs_obj.clone()
     };
 
+    // NB: `expand_separation_to_alt` below indexes the decoded stream as one
+    // byte per tint sample, i.e. it assumes 8 bits per component (the norm for
+    // spot-colour raster artwork). Sub-byte (1/2/4) and 16-bpc Separation /
+    // DeviceN streams would need unpacking to one byte per sample before this
+    // path could be trusted on them; full BPC expansion is not yet wired here.
     let sep = match resolve_separation_tint(doc, &resolved)? {
         Some(s) => s,
         // Malformed / unsupported tint transform: leave the raw image as-is

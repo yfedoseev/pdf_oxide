@@ -9163,12 +9163,6 @@ fn sidecar_scan_rect(scan: Option<DeviceRect>, width: u32, height: u32) -> Devic
     scan.map(|r| r.intersect(&full)).unwrap_or(full)
 }
 
-/// Device-space dirty rect for painting `path` under `transform`.
-/// `stroke` carries the graphics state when the paint is a stroke: the rect
-/// is expanded by the worst-case stroke outset (half line width × the
-/// transform's Frobenius norm — an upper bound on its scale — × the miter
-/// limit, with a 1-pixel floor for zero-width hairlines). Fills expand only
-/// by the AA margin.
 /// Zero the bytes of `mask` (1 byte per pixel) over `rect`, clamped to the
 /// mask. Used to recycle a persistent coverage scratch mask without zeroing
 /// the whole page each paint.
@@ -9203,6 +9197,12 @@ fn clear_pixmap_rect(pixmap: &mut Pixmap, rect: DeviceRect) {
     }
 }
 
+/// Device-space dirty rect for painting `path` under `transform`.
+/// `stroke` carries the graphics state when the paint is a stroke: the rect
+/// is expanded by the worst-case stroke outset (half line width × the
+/// transform's Frobenius norm — an upper bound on its scale — × the miter
+/// limit, with a 1-pixel floor for zero-width hairlines). Fills expand only
+/// by the AA margin.
 fn device_paint_rect_for_path(
     path: &tiny_skia::Path,
     transform: Transform,
