@@ -105,6 +105,34 @@ pub fn is_arabic_letter(code: u32) -> bool {
     )
 }
 
+/// Arabic letters with Unicode `Joining_Type = R` (right-joining only): they
+/// join to a preceding letter but NEVER to the following one, so the cursive
+/// connection breaks *after* them regardless of any following letter. The
+/// canonical set is the alef family (ا أ إ آ ٱ), waw (و ؤ), dal/thal (د ذ),
+/// reh/zain (ر ز), teh marbuta (ة), and their block variants — per Unicode
+/// `ArabicShaping.txt`.
+///
+/// Relevance (ISO 32000-1 §14.8.2.3.3): because the join already breaks after
+/// an R-letter, a SPACE following one renders the same whether it is a genuine
+/// word break or a producer artefact — the two are visually indistinguishable.
+/// The interior-space stripper uses this to avoid concatenating two real words
+/// across such a space (`دار اب` must stay two words, not become `داراب`).
+pub fn is_right_joining_arabic(code: u32) -> bool {
+    matches!(code,
+        0x0622..=0x0625 | // alef madda / hamza-above / waw-hamza / hamza-below
+        0x0627 |          // alef
+        0x0629 |          // teh marbuta
+        0x062F | 0x0630 | // dal, thal
+        0x0631 | 0x0632 | // reh, zain
+        0x0648 |          // waw
+        0x0671..=0x0673 | 0x0675 | // alef wasla and variants
+        0x0688..=0x0699 | // dal / reh block variants (all Joining_Type R)
+        0x06C0 | 0x06C3..=0x06CB | 0x06CD | 0x06CF |
+        0x06D2 | 0x06D3 | // yeh barree
+        0x06EE | 0x06EF   // dal / reh with inverted V
+    )
+}
+
 // ============================================================================
 // HEBREW DIACRITICS AND PUNCTUATION
 // ============================================================================
@@ -383,6 +411,22 @@ mod tests {
         assert_eq!(detect_rtl_script(0x0627), Some(RTLScript::Arabic)); // ALEF
         assert_eq!(detect_rtl_script(0x05D0), Some(RTLScript::Hebrew)); // ALEF
         assert_eq!(detect_rtl_script(0x0041), None); // Latin 'A'
+    }
+
+    #[test]
+    fn test_right_joining_arabic() {
+        // Joining_Type = R (right-joining only): alef, dal, thal, reh, zain,
+        // waw, teh marbuta.
+        for r in [0x0627, 0x0622, 0x0623, 0x0625, 0x062F, 0x0630, 0x0631, 0x0632, 0x0648, 0x0629] {
+            assert!(is_right_joining_arabic(r), "{r:#06X} should be right-joining");
+        }
+        // Dual-joining letters (beh, teh, lam, qaf, …) and yeh-hamza are NOT R.
+        for d in [0x0628, 0x062A, 0x0644, 0x0642, 0x0639, 0x0626] {
+            assert!(!is_right_joining_arabic(d), "{d:#06X} should be dual-joining");
+        }
+        // Non-Arabic is never right-joining.
+        assert!(!is_right_joining_arabic(0x05D0)); // Hebrew alef
+        assert!(!is_right_joining_arabic(0x0041)); // Latin 'A'
     }
 
     #[test]

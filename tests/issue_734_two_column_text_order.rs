@@ -93,32 +93,25 @@ fn assert_column_major(label: &str, out: &str) {
     );
 }
 
-// Issue #734 Fix 2 — TARGET (currently #[ignore]d). The per-flow column-major
-// heuristics (a flat sort in `extract_text`, a split-convert in
-// `to_markdown`/`to_html`) were REVERTED: the v0.3.64-vs-HEAD corpus sweep
-// proved they regress real two-column PDFs (arxiv references scrambled, a road
-// data-sheet form glued, a TOC's page numbers detached) because each flow
-// rolled its own ordering and the flat sort overrode XY-cut's already-correct
-// order. The correct fix is a single recursive XY-cut column-region pass
-// (`page_reading_order`) consumed by ALL flows, with the full-width-title band
-// separated at the partition level. These assert the goal across text/md/html
-// and un-ignore when that universal reading-order lands (corpus-gated).
-// #734: pending the G1 column-region model. FOUR attempts to fix this at the
-// geometric layer have each traded one win for a new regression on the corpus
-// (per-flow flat sort scrambled arxiv refs; content-balance gate regressed a
-// TOC; the XY-cut band-peel guard regressed a different arxiv's mid-body section
-// heading + a gov form). Robust full-width-band-vs-content separation at every
-// nesting level needs layout-model reconstruction, not a geometric heuristic.
-// The clean wins (structured column_index, tagged Lbl/Sect, column-mode override)
-// ship; this target waits for G1. See column-region-reading-order-design.md.
-#[ignore = "#734: needs G1 column-region model — 4 geometric attempts each regressed the corpus"]
+// Issue #734 Fix 2 — two-column column-major reading order across text, markdown
+// and HTML. A content-balance gate (`prose_two_column_gutter`) confirms genuine
+// two-column prose (rejecting forms / TOCs / tables / N-up spreads via left-edge
+// column clustering), then `reorder_column_major_with_bands` emits each column
+// top-to-bottom with full-width title/heading bands separated at their vertical
+// position. The plain-text path reorders spans directly; markdown/HTML reuse the
+// same reorder via `reorder_two_column_prose` and tell the pipeline to preserve
+// that order (`ReadingOrderContext::preserve_input_order`), and both converters
+// suppress the spatial table fallback on these pages so the body is not
+// re-gridded row-wise. Corpus-gated (156-PDF v0.3.64-vs-HEAD sweep): pure
+// reorder wins (12_pg174 bibliography, tracemonkey, irs_f1099msc), zero content
+// loss, zero regressions. The earlier per-flow flat-sort / band-peel attempts
+// that traded a win for a regression were superseded by this gate-plus-emit.
 #[test]
 fn kjf_two_column_reads_column_major_text() {
     let doc = PdfDocument::from_bytes(kjf_two_column_pdf()).unwrap();
     assert_column_major("text", &doc.extract_text(0).unwrap());
 }
 
-#[ignore = "#734: pending universal recursive-XY-cut reading order"]
 #[test]
 fn kjf_two_column_reads_column_major_markdown() {
     let doc = PdfDocument::from_bytes(kjf_two_column_pdf()).unwrap();
@@ -126,7 +119,6 @@ fn kjf_two_column_reads_column_major_markdown() {
     assert_column_major("markdown", &md);
 }
 
-#[ignore = "#734: pending universal recursive-XY-cut reading order"]
 #[test]
 fn kjf_two_column_reads_column_major_html() {
     let doc = PdfDocument::from_bytes(kjf_two_column_pdf()).unwrap();

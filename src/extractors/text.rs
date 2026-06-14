@@ -6646,7 +6646,7 @@ impl<'doc> TextExtractor<'doc> {
                 // Reverse to get logical reading order.
                 // Only reverse if user_pos_x indicates LTR placement (positive width).
                 if buffer.accumulated_width > 0.0 {
-                    text = text.chars().rev().collect();
+                    text = crate::text::bidi::reverse_rtl_keep_numbers(&text);
                 }
             }
         }
@@ -7128,7 +7128,7 @@ impl<'doc> TextExtractor<'doc> {
                 match verdict {
                     crate::text::bidi::RunOrder::Visual => {
                         // Confidence-gated visual-order detection — reverse.
-                        unicode_text = unicode_text.chars().rev().collect();
+                        unicode_text = crate::text::bidi::reverse_rtl_keep_numbers(&unicode_text);
                     },
                     crate::text::bidi::RunOrder::Logical => {
                         // Confidence-gated logical-order — leave alone.
@@ -7148,7 +7148,7 @@ impl<'doc> TextExtractor<'doc> {
                             ctm.transform_point(p.x, p.y).x
                         };
                         if last_x > first_x {
-                            unicode_text = unicode_text.chars().rev().collect();
+                            unicode_text = crate::text::bidi::reverse_rtl_keep_numbers(&unicode_text);
                         }
                     },
                 }
@@ -7379,11 +7379,16 @@ impl<'doc> TextExtractor<'doc> {
                 // (1 or 2) is determined by the font's encoding / ToUnicode CMap
                 // codespace, not hardcoded to 2. Per ISO 32000-1:2008 §9.7.6.2.
                 let mut w_sum = 0.0f32;
-                for (cid, _) in TextCharIter::new(text, Some(font)) {
+                for (cid, nbytes) in TextCharIter::new(text, Some(font)) {
                     let mut w = font.get_glyph_width(cid) * fs_factor * hs_factor;
                     w += cs_hs;
-                    // Per ISO 32000-1:2008 Section 9.3.3: Tw applied when CID == 32
-                    if cid == 32 {
+                    // Per ISO 32000-1:2008 §9.3.3: Tw applies ONLY to the
+                    // single-byte character code 32, never to the byte value 32
+                    // inside a multi-byte code. `TextCharIter` yields the raw
+                    // code plus its byte width, so gate on a single-byte 32 — a
+                    // 2-byte CID #32 (0x0020) in an Identity-H/CJK font must not
+                    // take Tw (it would over-advance and mis-position the run).
+                    if nbytes == 1 && cid == 32 {
                         w += ws_hs;
                     }
                     w_sum += w;
@@ -7399,11 +7404,11 @@ impl<'doc> TextExtractor<'doc> {
                 // glyph-stretching axis — it does not scale w1y, Tc, or
                 // Tw in vertical mode.
                 let mut w_sum = 0.0f32;
-                for (cid, _) in TextCharIter::new(text, Some(font)) {
+                for (cid, nbytes) in TextCharIter::new(text, Some(font)) {
                     let w1y = font.get_vertical_metrics(cid).w1y;
                     let mut w = w1y * fs_factor;
                     w += char_space;
-                    if cid == 32 {
+                    if nbytes == 1 && cid == 32 {
                         w += word_space;
                     }
                     w_sum += w;
@@ -7768,10 +7773,10 @@ impl<'doc> TextExtractor<'doc> {
                 // keyword patterns but whose ToUnicode CMap declares a 2-byte
                 // codespace range (§9.7.5).
                 let mut w_sum = 0.0f32;
-                for (cid, _) in TextCharIter::new(text, Some(font)) {
+                for (cid, nbytes) in TextCharIter::new(text, Some(font)) {
                     let mut w = font.get_glyph_width(cid) * fs_factor * hs_factor;
                     w += cs_hs;
-                    if cid == 32 {
+                    if nbytes == 1 && cid == 32 {
                         w += ws_hs;
                     }
                     w_sum += w;
@@ -7786,11 +7791,11 @@ impl<'doc> TextExtractor<'doc> {
                 // (§9.3.4).
                 buffer.append(text)?;
                 let mut w_sum = 0.0f32;
-                for (cid, _) in TextCharIter::new(text, Some(font)) {
+                for (cid, nbytes) in TextCharIter::new(text, Some(font)) {
                     let w1y = font.get_vertical_metrics(cid).w1y;
                     let mut w = w1y * fs_factor;
                     w += char_space;
-                    if cid == 32 {
+                    if nbytes == 1 && cid == 32 {
                         w += word_space;
                     }
                     w_sum += w;
@@ -8018,7 +8023,7 @@ impl<'doc> TextExtractor<'doc> {
                         };
                         match verdict {
                             crate::text::bidi::RunOrder::Visual => {
-                                text = text.chars().rev().collect();
+                                text = crate::text::bidi::reverse_rtl_keep_numbers(&text);
                             },
                             crate::text::bidi::RunOrder::Logical => {
                                 // Detected logical order — leave alone.
@@ -8029,7 +8034,7 @@ impl<'doc> TextExtractor<'doc> {
                                 // left-to-right in text space implies visual
                                 // order for RTL scripts.
                                 if buffer.accumulated_width > 0.0 {
-                                    text = text.chars().rev().collect();
+                                    text = crate::text::bidi::reverse_rtl_keep_numbers(&text);
                                 }
                             },
                         }

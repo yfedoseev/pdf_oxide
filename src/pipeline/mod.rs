@@ -106,7 +106,25 @@ impl TextPipeline {
         spans: Vec<TextSpan>,
         context: ReadingOrderContext,
     ) -> Result<Vec<OrderedTextSpan>> {
-        let mut ordered = if is_vertical_majority(&spans) {
+        let mut ordered = if context.preserve_input_order && context.mcid_order.is_none() {
+            // The caller already established a non-geometric reading order the
+            // strategies cannot reproduce (two-column-prose column-major, #734):
+            // wrap the spans in their current order without re-sorting, so the
+            // geometric XY-cut fallback does not re-derive a row-major order and
+            // interleave the columns.
+            log::trace!(
+                "TextPipeline: preserving caller-supplied order for {} spans \
+                 (reading-order strategy skipped).",
+                spans.len()
+            );
+            spans
+                .into_iter()
+                .enumerate()
+                .map(|(order, span)| {
+                    OrderedTextSpan::with_info(span, order, ReadingOrderInfo::simple())
+                })
+                .collect()
+        } else if is_vertical_majority(&spans) {
             log::trace!(
                 "TextPipeline: vertical-majority page detected ({}/{} spans wmode=1) — \
                  routing through TategakiStrategy regardless of configured strategy.",

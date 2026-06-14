@@ -529,6 +529,70 @@ pub fn wrap_rtl_isolates(text: &str, block_is_rtl: bool) -> String {
     out
 }
 
+/// Reverse a visual-order RTL run to logical order while keeping embedded
+/// number sequences in their natural left-to-right order — UAX #9 rule L2: a
+/// run of digits forms an even (LTR) embedding level inside RTL text and is
+/// therefore not mirrored when the surrounding RTL is reversed. A separator
+/// (`.` `,` `:` and the Arabic decimal/thousands separators) is treated as part
+/// of the number only when it sits between two digits, so `1,000` and `3.14`
+/// stay intact while a trailing comma reverses as an ordinary neutral.
+///
+/// For any run containing no digits this is byte-identical to a plain
+/// `chars().rev().collect()`, so the digit-free RTL case (the corpus-validated
+/// common path) is unchanged; only digit-bearing runs — where a whole-string
+/// reversal would wrongly emit `2009` as `9002` — are corrected.
+pub fn reverse_rtl_keep_numbers(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let is_digit = |c: char| {
+        c.is_ascii_digit()
+            || ('\u{0660}'..='\u{0669}').contains(&c) // Arabic-Indic
+            || ('\u{06F0}'..='\u{06F9}').contains(&c) // Extended Arabic-Indic
+    };
+    let is_sep = |c: char| matches!(c, '.' | ',' | ':' | '\u{066B}' | '\u{066C}');
+    // Mark which positions belong to a maximal number run (digit (sep digit)*).
+    let mut in_num = vec![false; n];
+    let mut i = 0;
+    while i < n {
+        if is_digit(chars[i]) {
+            let start = i;
+            let mut j = i + 1;
+            loop {
+                if j < n && is_digit(chars[j]) {
+                    j += 1;
+                } else if j + 1 < n && is_sep(chars[j]) && is_digit(chars[j + 1]) {
+                    j += 2;
+                } else {
+                    break;
+                }
+            }
+            for slot in in_num.iter_mut().take(j).skip(start) {
+                *slot = true;
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    // Walk right-to-left, emitting number runs forward and every other char
+    // reversed (identical to a plain reversal when no number run is present).
+    let mut out: Vec<char> = Vec::with_capacity(n);
+    let mut i = n;
+    while i > 0 {
+        i -= 1;
+        if in_num[i] {
+            let end = i + 1;
+            while i > 0 && in_num[i - 1] {
+                i -= 1;
+            }
+            out.extend_from_slice(&chars[i..end]);
+        } else {
+            out.push(chars[i]);
+        }
+    }
+    out.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,6 +601,30 @@ mod tests {
     fn looks_rtl_pure_ascii_is_false() {
         assert!(!looks_rtl("hello world"));
         assert!(!looks_rtl(""));
+    }
+
+    #[test]
+    fn reverse_keep_numbers_digit_free_is_plain_reversal() {
+        // No digits → byte-identical to chars().rev() so digit-free RTL
+        // (the corpus-validated path) is untouched.
+        for s in ["الثدييات", "שלום", "ab-cd!", ""] {
+            let plain: String = s.chars().rev().collect();
+            assert_eq!(reverse_rtl_keep_numbers(s), plain, "changed digit-free {s:?}");
+        }
+    }
+
+    #[test]
+    fn reverse_keep_numbers_preserves_year() {
+        // Visual-order Hebrew "ל-2009," → logical "ל-2009," (digits stay 2009,
+        // a plain reversal would emit 9002). Visual input is the rendered order.
+        assert_eq!(reverse_rtl_keep_numbers(",2009-ל"), "ל-2009,");
+    }
+
+    #[test]
+    fn reverse_keep_numbers_keeps_internal_separators() {
+        // Thousands / decimal separators between digits stay with the number.
+        assert_eq!(reverse_rtl_keep_numbers(",1,000-ל"), "ל-1,000,");
+        assert_eq!(reverse_rtl_keep_numbers("3.14-ל"), "ל-3.14");
     }
 
     #[test]

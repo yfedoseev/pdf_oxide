@@ -94,6 +94,15 @@ pub struct ReadingOrderContext {
     /// tree may be unreliable and reading order strategies should consider
     /// falling back to geometric ordering.
     pub suspects: bool,
+
+    /// Preserve the caller-supplied span order verbatim instead of running a
+    /// reading-order strategy. Set when the converter has already established a
+    /// non-geometric order the strategies cannot reproduce — currently the
+    /// two-column-prose column-major reorder (#734), whose ordering the
+    /// geometric XY-cut fallback would otherwise re-derive as row-major and
+    /// interleave the columns. Ignored when `mcid_order` is present (a tagged
+    /// PDF's structure order wins).
+    pub preserve_input_order: bool,
 }
 
 impl ReadingOrderContext {
@@ -127,6 +136,12 @@ impl ReadingOrderContext {
     /// ordering instead of trusting the potentially unreliable structure tree.
     pub fn with_suspects(mut self, suspects: bool) -> Self {
         self.suspects = suspects;
+        self
+    }
+
+    /// Preserve the caller-supplied span order (see `preserve_input_order`).
+    pub fn with_preserve_input_order(mut self, preserve: bool) -> Self {
+        self.preserve_input_order = preserve;
         self
     }
 
