@@ -2823,6 +2823,42 @@ impl PdfDocument {
             .map(|&i| band_of(spans[i].bbox.y))
             .collect();
 
+        // Numbered reference/bibliography lists render the leading marker
+        // ("1.", "2.", "3.") in a narrow column to the left of the body
+        // text. That marker column is sparse (one per entry) and its markers
+        // sit between body rows, so they look exactly like rowspan labels to
+        // the heuristic below — but they are NOT: each number belongs to its
+        // own entry and promoting them scrambles the reference order. Detect
+        // the pattern (>=3 numbered markers sharing a tight left-edge cluster
+        // and spread down >=3 distinct rows = a vertical numbered list) and
+        // exclude those markers from label promotion.
+        let is_numbered_marker = |i: usize| -> bool {
+            let t = spans[i].text.trim_start();
+            let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+            digits >= 1 && digits <= 3 && t[digits..].starts_with(['.', ')'])
+        };
+        let numbered_excluded: HashSet<usize> = {
+            let markers: Vec<usize> = (0..spans.len()).filter(|&i| is_numbered_marker(i)).collect();
+            if markers.len() >= 3 {
+                let mut xs: Vec<f32> = markers.iter().map(|&i| spans[i].bbox.x).collect();
+                xs.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+                let median_x = xs[xs.len() / 2];
+                let cluster: Vec<usize> = markers
+                    .iter()
+                    .copied()
+                    .filter(|&i| (spans[i].bbox.x - median_x).abs() <= 6.0)
+                    .collect();
+                let rows: HashSet<i32> = cluster.iter().map(|&i| band_of(spans[i].bbox.y)).collect();
+                if cluster.len() >= 3 && rows.len() >= 3 {
+                    cluster.into_iter().collect()
+                } else {
+                    HashSet::new()
+                }
+            } else {
+                HashSet::new()
+            }
+        };
+
         // Collect "label" candidates: spans that sit in a "sparse"
         // column — one that holds meaningfully fewer spans than the
         // most populous column. A candidate only qualifies when it
@@ -2842,7 +2878,12 @@ impl PdfDocument {
                     let y = spans[i].bbox.y;
                     // Exclude spans on the same Y-band as the dense column:
                     // those are line-continuation text, not rowspan labels.
-                    y > data_bot && y < data_top && !dense_bands.contains(&band_of(y))
+                    // Also exclude numbered-list markers (reference numbers),
+                    // which would otherwise be hoisted out of reading order.
+                    y > data_bot
+                        && y < data_top
+                        && !dense_bands.contains(&band_of(y))
+                        && !numbered_excluded.contains(&i)
                 })
                 .collect();
             if in_data.len() >= 2 {
@@ -25667,6 +25708,73 @@ mod tests {
             "reorder_rowspan_labels must not change order when sparse spans \
              share Y-bands with the dense column; \
              before={before:?} after={after:?}"
+        );
+    }
+
+    /// Regression: a numbered reference/bibliography list whose markers
+    /// ("1.", "2.", …) sit in a narrow left column between body rows must
+    /// NOT have those markers promoted as rowspan labels. The geometry is
+    /// identical to a genuine rowspan table — only the marker TEXT (a
+    /// vertical numbered list) distinguishes it — so the guard keys on the
+    /// numbered-marker signal and leaves reading order intact.
+    #[test]
+    fn test_rowspan_skips_numbered_reference_continuation() {
+        use crate::layout::TextSpan;
+
+        fn mk(text: &str, x: f32, y: f32, w: f32) -> TextSpan {
+            TextSpan {
+                artifact_type: None,
+                text: text.to_string(),
+                bbox: crate::geometry::Rect::new(x, y, w, 10.0),
+                font_size: 12.0,
+                font_name: "Arial".into(),
+                font_weight: crate::layout::FontWeight::Normal,
+                is_italic: false,
+                is_monospace: false,
+                color: crate::layout::Color::black(),
+                mcid: None,
+                mcid_scope: None,
+                sequence: 0,
+                split_boundary_before: false,
+                offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+            }
+        }
+
+        // Dense body column (x=200): 12 rows y=100..-10 step -10.
+        // Numbered markers (x=50): "1.".."4." sitting BETWEEN body rows —
+        // the exact geometry that promotes a genuine rowspan label.
+        let mut spans = vec![
+            mk("1.", 50.0, 95.0, 40.0),
+            mk("2.", 50.0, 65.0, 40.0),
+            mk("3.", 50.0, 35.0, 40.0),
+            mk("4.", 50.0, 5.0, 40.0),
+        ];
+        for i in 0..12 {
+            let y = 100.0 - (i as f32) * 10.0;
+            spans.push(mk(&format!("b{:02}", i), 200.0, y, 20.0));
+        }
+
+        // Sort as extract_spans does before calling reorder_rowspan_labels.
+        spans.sort_by(|a, b| {
+            crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
+        });
+        let before: Vec<String> = spans.iter().map(|s| s.text.clone()).collect();
+
+        super::PdfDocument::reorder_rowspan_labels(&mut spans);
+
+        let after: Vec<String> = spans.iter().map(|s| s.text.clone()).collect();
+        assert_eq!(
+            before, after,
+            "numbered reference markers must not be promoted as rowspan \
+             labels; before={before:?} after={after:?}"
         );
     }
 
