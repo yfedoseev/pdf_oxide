@@ -11813,6 +11813,11 @@ impl PdfDocument {
             if buf.is_empty() {
                 return;
             }
+            // A full line-height, used to decide when a block sits clearly
+            // *below* the opposite column rather than beside it.
+            let mut heights: Vec<f32> = buf.iter().map(|s| s.bbox.height).collect();
+            heights.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+            let line_h = heights.get(heights.len() / 2).copied().unwrap_or(10.0).max(1.0);
             // Left column (centre < gutter) by y, then right column by y.
             let (mut left, mut right): (Vec<TextSpan>, Vec<TextSpan>) = std::mem::take(buf)
                 .into_iter()
@@ -11821,10 +11826,43 @@ impl PdfDocument {
                 crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y)
                     .then_with(|| crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x))
             };
+            // Trailing-block peel: a block lying a full line-height BELOW the
+            // entire opposite column is a bottom-spanning block (e.g. a
+            // bottom-left References section), not a parallel column member, so
+            // it must read AFTER both columns at its own y — not within its
+            // column partition (which would print it before the whole opposite
+            // column). oxide bbox.y is top-up (higher y = higher on page), so
+            // "below" = smaller y. Only fires when the opposite column has real
+            // content (>=2 spans) and the block clears its bottom by a line, so
+            // balanced 2-col bodies (columns ending at ~equal y) are untouched.
+            let bottom_y = |v: &[TextSpan]| v.iter().map(|s| s.bbox.y).fold(f32::INFINITY, f32::min);
+            let right_bottom = bottom_y(&right);
+            let left_bottom = bottom_y(&left);
+            let mut trailing: Vec<TextSpan> = Vec::new();
+            if right.len() >= 2 {
+                left.retain(|s| {
+                    let below = s.bbox.y < right_bottom - line_h;
+                    if below {
+                        trailing.push(s.clone());
+                    }
+                    !below
+                });
+            }
+            if left.len() >= 2 {
+                right.retain(|s| {
+                    let below = s.bbox.y < left_bottom - line_h;
+                    if below {
+                        trailing.push(s.clone());
+                    }
+                    !below
+                });
+            }
             left.sort_by(by_yx);
             right.sort_by(by_yx);
+            trailing.sort_by(by_yx);
             out.append(&mut left);
             out.append(&mut right);
+            out.append(&mut trailing);
         };
         let mut i = 0;
         while i < src.len() {
