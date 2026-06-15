@@ -103,16 +103,21 @@ pub fn pdf_to_ir(
         // benefit since rotated text would otherwise emit a horizontal
         // shape in the wrong place.
         if let Ok(chars) = doc.extract_chars(page_idx) {
-            let chars_horizontal_dominant = if chars.is_empty() {
-                true
-            } else {
+            // `span_overlaps_rotated_chars` drops a span only when its nearest
+            // char is rotated (>= 5deg). When the page has NO rotated char at
+            // all (the overwhelming majority), the per-span nearest-char scan
+            // would run O(spans x chars) only to never drop anything. Gate the
+            // whole retain behind one O(chars) precheck — byte-identical output,
+            // removes the quadratic on every unrotated page.
+            let any_rotated = chars.iter().any(|c| c.rotation_degrees.abs() >= 5.0);
+            if any_rotated {
                 let horiz = chars
                     .iter()
                     .filter(|c| c.rotation_degrees.abs() < 5.0)
                     .count();
-                horiz * 4 >= chars.len() * 3
-            };
-            spans.retain(|s| !span_overlaps_rotated_chars(s, &chars, chars_horizontal_dominant));
+                let chars_horizontal_dominant = chars.is_empty() || horiz * 4 >= chars.len() * 3;
+                spans.retain(|s| !span_overlaps_rotated_chars(s, &chars, chars_horizontal_dominant));
+            }
         }
         // Drop page-pagination artifacts: PDF marked-content tags
         // headers / footers / watermarks via `Artifact` BDC blocks
