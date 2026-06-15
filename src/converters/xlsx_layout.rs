@@ -306,24 +306,29 @@ fn merge_hyphenated_spans(spans: &mut Vec<crate::layout::text_block::TextSpan>) 
     if spans.len() < 2 {
         return;
     }
-    let mut i = 0;
-    while i + 1 < spans.len() {
-        let curr_ends_hyphen = spans[i].text.ends_with('-');
-        let same_size = (spans[i].font_size - spans[i + 1].font_size).abs() < 0.01;
-        let next_starts_lower = spans[i + 1]
+    // Single forward pass with a running accumulator (was O(n^2) via
+    // Vec::remove + no-advance re-scan). Byte-identical to the loop above.
+    let mut out: Vec<crate::layout::text_block::TextSpan> = Vec::with_capacity(spans.len());
+    let mut iter = std::mem::take(spans).into_iter();
+    let mut cur = iter.next().expect("len >= 2 checked above");
+    for next in iter {
+        let curr_ends_hyphen = cur.text.ends_with('-');
+        let same_size = (cur.font_size - next.font_size).abs() < 0.01;
+        let next_starts_lower = next
             .text
             .chars()
             .next()
             .map(|c| c.is_ascii_lowercase())
             .unwrap_or(false);
         if curr_ends_hyphen && same_size && next_starts_lower {
-            let merged_text =
-                format!("{}{}", &spans[i].text[..spans[i].text.len() - 1], &spans[i + 1].text);
-            spans[i].text = merged_text;
-            spans[i].bbox.width += spans[i + 1].bbox.width;
-            spans.remove(i + 1);
+            let merged_text = format!("{}{}", &cur.text[..cur.text.len() - 1], &next.text);
+            cur.text = merged_text;
+            cur.bbox.width += next.bbox.width;
         } else {
-            i += 1;
+            out.push(cur);
+            cur = next;
         }
     }
+    out.push(cur);
+    *spans = out;
 }

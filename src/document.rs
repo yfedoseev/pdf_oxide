@@ -5565,6 +5565,29 @@ impl PdfDocument {
                             .flat_map(|r| r.cells.iter().flat_map(|c| c.mcids.iter().copied()))
                     })
                     .collect();
+                // Flatten every cell bbox once and index it into coarse y-bands,
+                // so the per-span containment test below scans only the cells in
+                // the span's y-band instead of every cell on the page (was
+                // O(spans x cells) on untagged table pages). A cell that contains
+                // a span necessarily shares the span's y-band, so this is
+                // byte-identical to the full scan.
+                let cell_bboxes: Vec<crate::geometry::Rect> = tables
+                    .iter()
+                    .flat_map(|t| {
+                        t.rows
+                            .iter()
+                            .flat_map(|r| r.cells.iter().filter_map(|c| c.bbox))
+                    })
+                    .collect();
+                const CELL_Y_BIN: f32 = 18.0;
+                let cell_bin = |y: f32| (y / CELL_Y_BIN).floor() as i32;
+                let mut cell_y_index: std::collections::HashMap<i32, Vec<usize>> =
+                    std::collections::HashMap::new();
+                for (ci, b) in cell_bboxes.iter().enumerate() {
+                    for bin in cell_bin(b.y)..=cell_bin(b.y + b.height) {
+                        cell_y_index.entry(bin).or_default().push(ci);
+                    }
+                }
                 // Returns true when span should be removed from the flow because
                 // it is owned by a table cell (will be re-emitted by render_text).
                 let span_in_table = |s: &crate::layout::TextSpan| -> bool {
@@ -5581,19 +5604,22 @@ impl PdfDocument {
                     // Using per-cell bboxes (rather than the coarser table bbox) prevents
                     // dropping paragraph spans that lie inside the table's outer bounding
                     // box but were not captured as table cells by the spatial detector.
-                    if tables.iter().any(|t| {
-                        t.rows.iter().any(|r| {
-                            r.cells.iter().any(|c| {
-                                c.bbox.is_some_and(|b| {
-                                    Self::contains_rect_with_tolerance(
-                                        &b,
-                                        &s.bbox,
-                                        RETAIN_TOLERANCE,
-                                    )
-                                })
+                    // Probe only the cells in the span's y-band (±1 bin guards the
+                    // containment tolerance). Equivalent to scanning every cell.
+                    let slo = cell_bin(s.bbox.y) - 1;
+                    let shi = cell_bin(s.bbox.y + s.bbox.height) + 1;
+                    let in_cell = (slo..=shi).any(|bin| {
+                        cell_y_index.get(&bin).is_some_and(|cands| {
+                            cands.iter().any(|&ci| {
+                                Self::contains_rect_with_tolerance(
+                                    &cell_bboxes[ci],
+                                    &s.bbox,
+                                    RETAIN_TOLERANCE,
+                                )
                             })
                         })
-                    }) {
+                    });
+                    if in_cell {
                         return true;
                     }
                     // Fallback: text-based match. The bbox check above uses
@@ -13755,7 +13781,11 @@ impl PdfDocument {
         let page_bbox =
             crate::geometry::Rect::new(media_box.0, media_box.1, media_box.2, media_box.3);
 
-        let all_chars: Vec<_> = spans.iter().flat_map(|s| s.to_chars()).collect();
+        // Materialize each span's chars ONCE (to_chars allocates + decodes); the
+        // word-clustering loop below reuses chars_per_span instead of calling
+        // to_chars a second time per span. Byte-identical, halves to_chars work.
+        let chars_per_span: Vec<Vec<_>> = spans.iter().map(|s| s.to_chars()).collect();
+        let all_chars: Vec<_> = chars_per_span.iter().flatten().cloned().collect();
         if all_chars.is_empty() {
             return Ok(Vec::new());
         }
@@ -13777,8 +13807,8 @@ impl PdfDocument {
         let mut split_boundary_word_indices: std::collections::HashSet<usize> =
             std::collections::HashSet::new();
         let mut words = Vec::new();
-        for span in &spans {
-            let span_chars = span.to_chars();
+        for (span_idx, span) in spans.iter().enumerate() {
+            let span_chars = &chars_per_span[span_idx];
             if span_chars.is_empty() {
                 continue;
             }
@@ -13786,7 +13816,7 @@ impl PdfDocument {
             // Group characters within THIS SPAN. Since PDF spans are often words or line fragments,
             // this is much safer than global character clustering.
             let clusters =
-                clustering::cluster_chars_into_words(&span_chars, params.word_gap_threshold);
+                clustering::cluster_chars_into_words(span_chars, params.word_gap_threshold);
 
             // Record split boundary: the first word created from this span is a hard
             // boundary when split_boundary_before = true (e.g. table cell boundary).
@@ -14008,7 +14038,9 @@ impl PdfDocument {
         let page_bbox =
             crate::geometry::Rect::new(media_box.0, media_box.1, media_box.2, media_box.3);
 
-        let all_chars: Vec<_> = spans.iter().flat_map(|s| s.to_chars()).collect();
+        // Materialize each span's chars once (see extract_text_as_words).
+        let chars_per_span: Vec<Vec<_>> = spans.iter().map(|s| s.to_chars()).collect();
+        let all_chars: Vec<_> = chars_per_span.iter().flatten().cloned().collect();
         let props =
             DocumentProperties::analyze(&all_chars, page_bbox).map_err(Error::LayoutAnalysis)?;
         let mut params = AdaptiveLayoutParams::from_properties(&props);
@@ -14024,14 +14056,13 @@ impl PdfDocument {
         // Walk spans in canonical reading order, clustering chars → words.
         // No block partition; spans are already pre-ordered.
         let mut words: Vec<Word> = Vec::new();
-        for span in &spans {
-            let span_chars = span.to_chars();
+        for span_chars in &chars_per_span {
             if span_chars.is_empty() {
                 continue;
             }
 
             let clusters =
-                clustering::cluster_chars_into_words(&span_chars, params.word_gap_threshold);
+                clustering::cluster_chars_into_words(span_chars, params.word_gap_threshold);
             for cluster_indices in clusters {
                 let cluster_chars: Vec<_> = cluster_indices
                     .iter()

@@ -1414,11 +1414,23 @@ impl XYCutStrategy {
                 false
             } else {
                 let tol = 10.0_f32;
-                let largest = mins
-                    .iter()
-                    .map(|&a| mins.iter().filter(|&&b| (a - b).abs() <= tol).count())
-                    .max()
-                    .unwrap_or(0);
+                // Largest count of leftmost-edges within ±tol of any single edge.
+                // Sort once + binary-search the window instead of the O(k^2)
+                // all-pairs scan; the max count is a multiset property so this is
+                // identical to the pairwise version.
+                let largest = {
+                    let mut sorted = mins.clone();
+                    sorted.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+                    sorted
+                        .iter()
+                        .map(|&a| {
+                            let lo = sorted.partition_point(|&x| x < a - tol);
+                            let hi = sorted.partition_point(|&x| x <= a + tol);
+                            hi - lo
+                        })
+                        .max()
+                        .unwrap_or(0)
+                };
                 // Centered when no left-margin cluster covers a majority.
                 (largest as f32) < (mins.len() as f32) * 0.5
             }
@@ -1446,12 +1458,15 @@ impl XYCutStrategy {
             // where header/footer/title rows dilute the body-line count
             // but a real multi-column body still dominates.
             let min_cluster = (3usize).max(lines.len() / 5);
-            for &pos in &gap_positions {
-                let cluster_size = gap_positions
-                    .iter()
-                    .filter(|&&p| (p - pos).abs() <= cluster_radius)
-                    .count();
-                if cluster_size >= min_cluster {
+            // Sort once + binary-search each gap's ±radius window instead of the
+            // O(k^2) all-pairs scan. Returns false iff some gap's window holds
+            // >= min_cluster gaps — identical to the pairwise version.
+            let mut sorted_gaps = gap_positions.clone();
+            sorted_gaps.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+            for &pos in &sorted_gaps {
+                let lo = sorted_gaps.partition_point(|&p| p < pos - cluster_radius);
+                let hi = sorted_gaps.partition_point(|&p| p <= pos + cluster_radius);
+                if hi - lo >= min_cluster {
                     return false;
                 }
             }

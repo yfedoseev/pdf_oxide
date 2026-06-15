@@ -116,7 +116,8 @@ pub fn pdf_to_ir(
                     .filter(|c| c.rotation_degrees.abs() < 5.0)
                     .count();
                 let chars_horizontal_dominant = chars.is_empty() || horiz * 4 >= chars.len() * 3;
-                spans.retain(|s| !span_overlaps_rotated_chars(s, &chars, chars_horizontal_dominant));
+                spans
+                    .retain(|s| !span_overlaps_rotated_chars(s, &chars, chars_horizontal_dominant));
             }
         }
         // Drop page-pagination artifacts: PDF marked-content tags

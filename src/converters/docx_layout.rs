@@ -800,11 +800,15 @@ fn merge_hyphenated_spans(spans: &mut Vec<crate::layout::text_block::TextSpan>) 
     if spans.len() < 2 {
         return;
     }
-    let mut i = 0;
-    while i + 1 < spans.len() {
+    // Single forward pass with a running accumulator. The previous version did
+    // `spans.remove(i+1)` (O(n) shift) and did not advance `i` after a merge, so
+    // a long hyphenation chain was O(n^2). Here `cur` accumulates and may chain
+    // into the following span exactly as before, but each span is visited once.
+    let mut out: Vec<crate::layout::text_block::TextSpan> = Vec::with_capacity(spans.len());
+    let mut iter = std::mem::take(spans).into_iter();
+    let mut cur = iter.next().expect("len >= 2 checked above");
+    for next in iter {
         let merge = {
-            let cur = &spans[i];
-            let next = &spans[i + 1];
             let cur_text = cur.text.trim_end();
             // Hyphen at end of current span, lowercase letter starting the next.
             let ends_hyphen = cur_text.ends_with('-')
@@ -820,8 +824,7 @@ fn merge_hyphenated_spans(spans: &mut Vec<crate::layout::text_block::TextSpan>) 
                 .chars()
                 .next()
                 .is_some_and(|c| c.is_lowercase());
-            // Different baseline (PDF y decreases downward in line stacking;
-            // a hyphenation continuation lives on a lower line).
+            // Different baseline (a hyphenation continuation lives on a lower line).
             let cur_cy = cur.bbox.y + cur.bbox.height * 0.5;
             let next_cy = next.bbox.y + next.bbox.height * 0.5;
             let line_h = cur.font_size.max(next.font_size).max(1.0);
@@ -829,27 +832,26 @@ fn merge_hyphenated_spans(spans: &mut Vec<crate::layout::text_block::TextSpan>) 
             ends_hyphen && starts_lower && new_line
         };
         if merge {
-            // Drop trailing '-' and any whitespace, splice next text.
-            let next_text = spans[i + 1].text.trim_start().to_string();
-            let mut cur_text = spans[i].text.trim_end().to_string();
+            let next_text = next.text.trim_start().to_string();
+            let mut cur_text = cur.text.trim_end().to_string();
             cur_text.pop(); // remove '-'
             cur_text.push_str(&next_text);
-            spans[i].text = cur_text;
-            // Extend the bbox to cover both fragments so the frame holds
-            // the merged word visually. Use union of original boxes.
-            let next_bbox = spans[i + 1].bbox;
-            let cur_bbox = spans[i].bbox;
+            cur.text = cur_text;
+            let cur_bbox = cur.bbox;
+            let next_bbox = next.bbox;
             let min_x = cur_bbox.x.min(next_bbox.x);
             let min_y = cur_bbox.y.min(next_bbox.y);
             let max_x = (cur_bbox.x + cur_bbox.width).max(next_bbox.x + next_bbox.width);
             let max_y = (cur_bbox.y + cur_bbox.height).max(next_bbox.y + next_bbox.height);
-            spans[i].bbox = crate::geometry::Rect::new(min_x, min_y, max_x - min_x, max_y - min_y);
-            spans.remove(i + 1);
-            // Don't advance i — the merged span might chain to the next one.
+            cur.bbox = crate::geometry::Rect::new(min_x, min_y, max_x - min_x, max_y - min_y);
+            // `cur` stays the accumulator — may chain into the next span.
         } else {
-            i += 1;
+            out.push(cur);
+            cur = next;
         }
     }
+    out.push(cur);
+    *spans = out;
 }
 
 /// Reduce a `PathContent` to one or more `SimpleShape`s.
