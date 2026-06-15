@@ -16992,6 +16992,20 @@ impl PdfDocument {
         // a trustworthy struct tree's mcid order still wins.
         let prose_reordered = Self::reorder_two_column_prose(&mut spans);
 
+        // Publisher-metadata sidebar segregation (RW-1 D3): same gate + emit as
+        // the plain-text path; preserve the order so the pipeline does not
+        // re-interleave the metadata column into the body (untagged pages).
+        let sidebar_reordered = if !prose_reordered {
+            if let Some(ordered) = Self::sidebar_body_reading_order(&spans) {
+                spans = ordered;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
         let pipeline_config = TextPipelineConfig::from_conversion_options(options);
 
         let (mcid_order, mcid_to_role, mcid_to_block_id, mcid_preformatted) = {
@@ -17135,7 +17149,7 @@ impl PdfDocument {
         // Step 6: Build reading order context (pass mcid_order if available)
         let mut context = ReadingOrderContext::new()
             .with_page(page_index as u32)
-            .with_preserve_input_order(prose_reordered);
+            .with_preserve_input_order(prose_reordered || sidebar_reordered);
         if let Some(order) = mcid_order {
             context = context.with_mcid_order(order);
         }
@@ -17531,6 +17545,20 @@ impl PdfDocument {
         // a trustworthy struct tree's mcid order still wins.
         let prose_reordered = Self::reorder_two_column_prose(&mut spans);
 
+        // Publisher-metadata sidebar segregation (RW-1 D3): same gate + emit as
+        // the plain-text path. When it fires, preserve the order so the pipeline
+        // does not re-interleave the metadata column into the body.
+        let sidebar_reordered = if !prose_reordered {
+            if let Some(ordered) = Self::sidebar_body_reading_order(&spans) {
+                spans = ordered;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
         let pipeline_config = TextPipelineConfig::from_conversion_options(options);
 
         // Step 4: Create pipeline with config
@@ -17547,7 +17575,7 @@ impl PdfDocument {
         } else {
             ReadingOrderContext::new()
                 .with_page(page_index as u32)
-                .with_preserve_input_order(prose_reordered)
+                .with_preserve_input_order(prose_reordered || sidebar_reordered)
         };
 
         // Step 6: Process through pipeline (applies reading order strategy)
