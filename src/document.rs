@@ -7547,9 +7547,57 @@ impl PdfDocument {
             let mut tmp = span.clone();
             tmp.text = span.text.chars().rev().collect();
             Self::push_span_text(out, &tmp);
+        } else if rtl_run && Self::is_reversible_rtl_numeric_span(&span.text) {
+            // A neutral+numeric span (e.g. a Hebrew-context " ,2009-" or " 600-")
+            // embedded in a pure-RTL run carries its glyphs in *visual*
+            // (content-stream draw) order. Reverse it to logical order while
+            // keeping each digit run forward (UAX #9 rule L2): visual " ,2009-"
+            // → logical "-2009, ", re-attaching the hyphen to the number and the
+            // comma to the preceding word, without ever flipping 2009 → 9002.
+            let mut tmp = span.clone();
+            tmp.text = crate::text::bidi::reverse_rtl_keep_numbers(&span.text);
+            Self::push_span_text(out, &tmp);
         } else {
             Self::push_span_text(out, span);
         }
+    }
+
+    /// Whether `text` is a neutral+numeric span eligible for number-preserving
+    /// RTL visual→logical reversal in [`push_span_text_bidi`]: every non-space
+    /// char is a [reorderable neutral](Self::is_rtl_reorderable_neutral), an
+    /// ASCII hyphen-minus, or a digit (ASCII / Arabic-Indic U+0660–0669 /
+    /// Extended Arabic-Indic U+06F0–06F9); it contains **exactly one** maximal
+    /// digit run (so a date range `2009-2010` or an ORCID is never reversed),
+    /// at least one movable neutral/hyphen, and the number-preserving reversal
+    /// actually changes it (else the cheaper verbatim path is byte-identical).
+    fn is_reversible_rtl_numeric_span(text: &str) -> bool {
+        let is_digit = |c: char| {
+            c.is_ascii_digit()
+                || ('\u{0660}'..='\u{0669}').contains(&c)
+                || ('\u{06F0}'..='\u{06F9}').contains(&c)
+        };
+        let mut has_movable = false;
+        let mut digit_runs = 0usize;
+        let mut in_digit = false;
+        for c in text.chars() {
+            if is_digit(c) {
+                if !in_digit {
+                    digit_runs += 1;
+                    in_digit = true;
+                }
+                continue;
+            }
+            in_digit = false;
+            if c.is_whitespace() {
+                continue;
+            }
+            if c == '-' || Self::is_rtl_reorderable_neutral(c) {
+                has_movable = true;
+                continue;
+            }
+            return false; // strong letter, bracket, quote, etc. → not eligible
+        }
+        digit_runs == 1 && has_movable && crate::text::bidi::reverse_rtl_keep_numbers(text) != text
     }
 
     /// Remove ASCII SPACE (U+0020) characters that sit *between two Arabic
@@ -7599,7 +7647,10 @@ impl PdfDocument {
         // strip them all. The density test (qualifying ≥ half the inter-letter
         // gaps) tells this apart from ordinary multi-word text, whose spaces are
         // sparse real word breaks (the right_to_left_01 class) — those stay.
-        let arabic_letters = chars.iter().filter(|&&c| is_arabic_letter(c as u32)).count();
+        let arabic_letters = chars
+            .iter()
+            .filter(|&&c| is_arabic_letter(c as u32))
+            .count();
         let gaps = arabic_letters.saturating_sub(1).max(1);
         if qualifying.len() >= 2 && qualifying.len() * 2 >= gaps {
             let drop: std::collections::HashSet<usize> = qualifying.iter().copied().collect();
@@ -9205,8 +9256,7 @@ impl PdfDocument {
                 // Repair the cross-span Arabic glyph-interleave defect (zero-width
                 // mark/consonant spans landing at word edges) before ordering.
                 let merged_rtl = Self::merge_interleaved_rtl_lines(spans);
-                let use_spans: &[crate::layout::TextSpan] =
-                    merged_rtl.as_deref().unwrap_or(spans);
+                let use_spans: &[crate::layout::TextSpan] = merged_rtl.as_deref().unwrap_or(spans);
                 for span in Self::order_mcid_spans(use_spans) {
                     if let Some(prev) = &prev_span {
                         let y_diff = (prev.bbox.y - span.bbox.y).abs();
@@ -9490,9 +9540,7 @@ impl PdfDocument {
     /// a single space at genuine inter-word x-gaps. The downstream
     /// [`push_span_text_bidi`] then reverses this to correct logical order with
     /// marks kept attached (`reverse_rtl_keeping_marks`).
-    fn merge_rtl_line_to_visual_span(
-        line: &[&crate::layout::TextSpan],
-    ) -> crate::layout::TextSpan {
+    fn merge_rtl_line_to_visual_span(line: &[&crate::layout::TextSpan]) -> crate::layout::TextSpan {
         use crate::text::rtl_detector::is_rtl_diacritic;
         use crate::utils::safe_float_cmp;
         // Explode to glyphs: split bases from combining marks, DROP shatter spaces
@@ -9508,10 +9556,42 @@ impl PdfDocument {
                 word_space_x.push(s.bbox.x + s.bbox.width * 0.5);
                 continue;
             }
-            for tc in s.to_chars() {
+            // Pre-collect the span's chars so a whitespace glyph can see its
+            // non-mark neighbours (to tell a cursive-join shatter space from a
+            // genuine word break).
+            let span_chars: Vec<char> = s.to_chars().into_iter().map(|t| t.char).collect();
+            for (idx, tc) in s.to_chars().into_iter().enumerate() {
                 let c = tc.char;
                 if c.is_whitespace() {
-                    continue; // interior shatter space
+                    // ISO 32000-1 §14.8.2.3.3: a SPACE that borders a
+                    // NON-CURSIVE token (clause punctuation / symbol — not an
+                    // Arabic/Hebrew letter and not a digit) is a real word
+                    // break, so record its x. A space flanked by cursive letters
+                    // is the producer's intra-word shatter (dropped), and a
+                    // space between digits is a thousands separator (dropped) —
+                    // neither is a word boundary.
+                    use crate::text::rtl_detector::{
+                        is_arabic_letter, is_arabic_number, is_hebrew_letter,
+                    };
+                    let neighbour = |it: &mut dyn Iterator<Item = &char>| -> Option<char> {
+                        it.copied()
+                            .find(|&p| !p.is_whitespace() && !is_rtl_diacritic(p as u32))
+                    };
+                    let is_boundary_marker = |o: Option<char>| {
+                        o.is_some_and(|p| {
+                            let u = p as u32;
+                            !is_arabic_letter(u)
+                                && !is_hebrew_letter(u)
+                                && !is_arabic_number(u)
+                                && !p.is_ascii_digit()
+                        })
+                    };
+                    let prev = neighbour(&mut span_chars[..idx].iter().rev());
+                    let next = neighbour(&mut span_chars[idx + 1..].iter());
+                    if is_boundary_marker(prev) || is_boundary_marker(next) {
+                        word_space_x.push(tc.bbox.x + tc.bbox.width * 0.5);
+                    }
+                    continue; // not emitted as a glyph either way
                 }
                 if is_rtl_diacritic(c as u32) {
                     marks.push((tc.bbox.x, c));
@@ -10195,8 +10275,7 @@ impl PdfDocument {
                 // Repair the cross-span Arabic glyph-interleave defect (zero-width
                 // mark/consonant spans landing at word edges) before ordering.
                 let merged_rtl = Self::merge_interleaved_rtl_lines(spans);
-                let use_spans: &[crate::layout::TextSpan] =
-                    merged_rtl.as_deref().unwrap_or(spans);
+                let use_spans: &[crate::layout::TextSpan] = merged_rtl.as_deref().unwrap_or(spans);
                 for span in Self::order_mcid_spans(use_spans) {
                     if let Some(prev) = &prev_span {
                         let y_diff = (prev.bbox.y - span.bbox.y).abs();
@@ -12074,9 +12153,15 @@ impl PdfDocument {
             return None;
         }
         let x_min = spans.iter().map(|s| s.bbox.left()).fold(f32::MAX, f32::min);
-        let x_max = spans.iter().map(|s| s.bbox.right()).fold(f32::MIN, f32::max);
+        let x_max = spans
+            .iter()
+            .map(|s| s.bbox.right())
+            .fold(f32::MIN, f32::max);
         let y_min = spans.iter().map(|s| s.bbox.top()).fold(f32::MAX, f32::min);
-        let y_max = spans.iter().map(|s| s.bbox.bottom()).fold(f32::MIN, f32::max);
+        let y_max = spans
+            .iter()
+            .map(|s| s.bbox.bottom())
+            .fold(f32::MIN, f32::max);
         let width = (x_max - x_min).max(1.0);
         let height = (y_max - y_min).max(1.0);
         if !(width.is_finite() && height.is_finite()) {
@@ -21935,15 +22020,26 @@ mod tests {
         assert_eq!(out, "word ,", "LTR neutral span must be emitted verbatim");
     }
 
-    /// A neutral span that embeds a digit (a left-to-right sub-run) must NOT be
-    /// reversed even inside an RTL run — reversing `2009` would corrupt the year
-    /// to `9002`. Guards the digit-exclusion in `is_reversible_rtl_neutral_span`.
+    /// A neutral+single-number span inside a pure-RTL run is reversed to logical
+    /// order with the DIGIT RUN KEPT FORWARD (UAX #9 L2): visual `2009,` →
+    /// logical `,2009` (the comma re-attaches to the preceding word; `2009` is
+    /// never flipped to `9002`). Guards `is_reversible_rtl_numeric_span`.
     #[test]
-    fn test_push_span_text_bidi_does_not_reverse_digit_bearing_span() {
+    fn test_push_span_text_bidi_reverses_neutral_number_keeping_digits() {
         let span = make_rtl_test_span("2009,", 270.0, 700.0);
         let mut out = String::new();
         PdfDocument::push_span_text_bidi(&mut out, &span, true);
-        assert_eq!(out, "2009,", "digit-bearing span must not be reversed");
+        assert_eq!(out, ",2009", "neutral+number span: reverse order, keep 2009 forward");
+    }
+
+    /// A span with TWO digit runs joined by a hyphen (a year range / ORCID) must
+    /// NOT be reversed — only a single maximal digit run qualifies.
+    #[test]
+    fn test_push_span_text_bidi_does_not_reverse_multi_number_span() {
+        let span = make_rtl_test_span("2009-2010", 270.0, 700.0);
+        let mut out = String::new();
+        PdfDocument::push_span_text_bidi(&mut out, &span, true);
+        assert_eq!(out, "2009-2010", "multi-digit-run span must be emitted verbatim");
     }
 
     #[test]

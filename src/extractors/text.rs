@@ -6438,6 +6438,36 @@ impl<'doc> TextExtractor<'doc> {
                     Matrix::identity()
                 };
 
+                // Parse /BBox (form coordinate space) for the §8.10.1 form clip.
+                // A form XObject's painting is clipped to its /BBox; text the form
+                // draws outside the BBox is invisible in a conformant renderer and
+                // must not be extracted. Stored as [x0,y0,x1,y1]; None disables the
+                // clip (defensive — /BBox is required, but malformed dicts exist).
+                let form_bbox: Option<[f32; 4]> = match xobject_dict.get("BBox") {
+                    Some(Object::Array(arr)) if arr.len() >= 4 => {
+                        let f = |i: usize| -> Option<f32> {
+                            match arr.get(i) {
+                                Some(Object::Real(v)) => Some(*v as f32),
+                                Some(Object::Integer(v)) => Some(*v as f32),
+                                _ => None,
+                            }
+                        };
+                        match (f(0), f(1), f(2), f(3)) {
+                            (Some(a), Some(b), Some(c), Some(d))
+                                if a.is_finite()
+                                    && b.is_finite()
+                                    && c.is_finite()
+                                    && d.is_finite() =>
+                            {
+                                // Normalize so [x0,y0] is the min corner.
+                                Some([a.min(c), b.min(d), a.max(c), b.max(d)])
+                            },
+                            _ => None,
+                        }
+                    },
+                    _ => None,
+                };
+
                 // Only save/restore fonts+resources when XObject has its own Resources.
                 // Avoids expensive HashMap clone for XObjects that inherit page fonts.
                 let has_own_resources = xobject_dict.contains_key("Resources");
@@ -6490,6 +6520,11 @@ impl<'doc> TextExtractor<'doc> {
                 let state = self.state_stack.current_mut();
                 state.ctm = form_matrix.multiply(&state.ctm);
 
+                // Effective form→page transform used for every span drawn inside
+                // the form; the /BBox clip below maps the BBox through this same
+                // CTM so the comparison happens in one coordinate space.
+                let form_ctm = self.state_stack.current().ctm;
+
                 // Push the Form XObject scope (ISO 32000-1:2008
                 // §14.7.4.3). Every MCID emitted inside this form's
                 // content stream lives in the form's MCID namespace,
@@ -6526,6 +6561,66 @@ impl<'doc> TextExtractor<'doc> {
                         name,
                         e
                     );
+                }
+
+                // Apply the Form XObject /BBox clip (ISO 32000-1:2008 §8.10.1): a
+                // form's marks are clipped to its BBox, so text the form paints
+                // OUTSIDE the BBox is invisible in a conformant renderer (pdfium,
+                // Acrobat, MuPDF) and must not be extracted. Some producers (e.g.
+                // pdfTeX \includegraphics of a figure PDF that retained a full
+                // draft-galley page) paint a redundant copy of the article body
+                // outside the figure's BBox; without this clip it surfaces as
+                // duplicate text overlapping the real page body. Done BEFORE the
+                // span cache so cached results are already clipped. Byte-identical
+                // on every form whose painted text lies inside its BBox (the
+                // conformant majority) — only out-of-BBox marks are dropped.
+                if let Some([bx0, by0, bx1, by1]) = form_bbox {
+                    if self.spans.len() > spans_before && bx1 > bx0 && by1 > by0 {
+                        // Map the BBox corners through the form CTM into page space
+                        // and take the axis-aligned bound (a superset for rotated
+                        // forms — conservative, never over-clips).
+                        let c = [
+                            form_ctm.transform_point(bx0, by0),
+                            form_ctm.transform_point(bx1, by0),
+                            form_ctm.transform_point(bx1, by1),
+                            form_ctm.transform_point(bx0, by1),
+                        ];
+                        let min_x = c.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
+                        let max_x = c.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
+                        let min_y = c.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+                        let max_y = c.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+                        if min_x.is_finite()
+                            && max_x.is_finite()
+                            && min_y.is_finite()
+                            && max_y.is_finite()
+                        {
+                            // Tolerance so glyphs sitting exactly on the clip edge
+                            // are kept (conformant clipping is exact; this only
+                            // guards float rounding, far below any real margin).
+                            const TOL: f32 = 1.0;
+                            let inside = |s: &TextSpan| {
+                                let cx = s.bbox.x + s.bbox.width * 0.5;
+                                let cy = s.bbox.y + s.bbox.height * 0.5;
+                                cx >= min_x - TOL
+                                    && cx <= max_x + TOL
+                                    && cy >= min_y - TOL
+                                    && cy <= max_y + TOL
+                            };
+                            // Fast path: when every span this form painted is
+                            // already inside its /BBox (the conformant majority —
+                            // and where this clip is a no-op anyway), skip the
+                            // split_off/extend allocation churn entirely. Only the
+                            // rare out-of-BBox case (the draft-galley underlay)
+                            // pays for the rebuild. Cheap O(form-spans) scan, no
+                            // allocation; keeps large form-heavy docs fast.
+                            if self.spans[spans_before..].iter().any(|s| !inside(s)) {
+                                let added = self.spans.split_off(spans_before);
+                                let kept: Vec<TextSpan> =
+                                    added.into_iter().filter(|s| inside(s)).collect();
+                                self.spans.extend(kept);
+                            }
+                        }
+                    }
                 }
 
                 // Cache span results for self-contained Form XObjects.
@@ -7148,7 +7243,8 @@ impl<'doc> TextExtractor<'doc> {
                             ctm.transform_point(p.x, p.y).x
                         };
                         if last_x > first_x {
-                            unicode_text = crate::text::bidi::reverse_rtl_keep_numbers(&unicode_text);
+                            unicode_text =
+                                crate::text::bidi::reverse_rtl_keep_numbers(&unicode_text);
                         }
                     },
                 }
