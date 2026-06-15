@@ -12356,52 +12356,79 @@ impl PdfDocument {
             return None;
         }
 
-        // Classify each clustered line. BAND = a full-width line (extent > 60% of
-        // the region, crossing the gutter): the title / full-width abstract.
-        // SIDEBAR = a line entirely left of the gutter. BODY = a line starting at
-        // or right of the gutter. The per-line test fires only when the sidebar
-        // occupies baselines DISTINCT from the body (the real metadata-block +
-        // body-flow layout); a page whose left and right halves share every
-        // baseline merges into full-width lines and presents no sidebar here, so
-        // ordinary single-/two-column text never engages this path. (A
-        // gutter-straddle refinement was tried and reverted — it widened firing to
-        // margin-note / verse / inline-math pages and regressed the corpus.)
+        // Classify each SPAN by the gutter. A publisher-metadata sidebar and the
+        // body usually SHARE baselines (the metadata column interleaves with body
+        // lines by Y), so a per-line cluster would fuse them into one full-width
+        // line and hide the sidebar — classify per span instead. BAND = a span
+        // genuinely spanning the gutter (a wide full-width title/heading). SIDEBAR
+        // = a span entirely left of the gutter. BODY = everything at/right of it.
         let mut band: Vec<usize> = Vec::new();
         let mut sidebar: Vec<usize> = Vec::new();
         let mut body: Vec<usize> = Vec::new();
-        let (mut left_w, mut right_w): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
-        let mut band_near_top = false;
-        for l in &lines {
-            let extent = l.max_right - l.min_left;
-            let is_band = extent > width * 0.60 && l.min_left < gutter && l.max_right > gutter;
-            if is_band {
-                band.extend(l.members.iter().copied());
-                if l.top_y > y_max - height * 0.35 {
-                    band_near_top = true;
-                }
-            } else if l.max_right <= gutter {
-                sidebar.extend(l.members.iter().copied());
-                left_w.push(extent);
+        for (i, s) in spans.iter().enumerate() {
+            let l = s.bbox.left();
+            let r = s.bbox.right();
+            if l < gutter && r > gutter && (r - l) > width * 0.40 {
+                band.push(i);
+            } else if r <= gutter {
+                sidebar.push(i);
             } else {
-                body.extend(l.members.iter().copied());
-                if l.min_left >= gutter - width * 0.03 {
-                    right_w.push(extent);
-                }
+                body.push(i);
             }
         }
-        // Confidence gates: a full-width title-ish band on top, a real sidebar and
-        // body, and the sidebar genuinely narrower than the body.
-        if !band_near_top || left_w.len() < 5 || right_w.len() < 8 {
+        // A real sidebar/body are each multi-line.
+        let line_count = |v: &[usize]| -> usize {
+            let mut ys: Vec<f32> = v.iter().map(|&i| spans[i].bbox.bottom()).collect();
+            ys.sort_by(|a, b| safe_float_cmp(*a, *b));
+            ys.dedup_by(|a, b| (*a - *b).abs() <= 2.0);
+            ys.len()
+        };
+        if line_count(&sidebar) < 5 || line_count(&body) < 8 {
             return None;
         }
-        let median = |v: &mut Vec<f32>| {
-            v.sort_by(|a, b| safe_float_cmp(*a, *b));
-            v[v.len() / 2]
+        // Sidebar genuinely narrower than the body column.
+        let col_width = |v: &[usize]| -> f32 {
+            let lo = v.iter().map(|&i| spans[i].bbox.left()).fold(f32::MAX, f32::min);
+            let hi = v.iter().map(|&i| spans[i].bbox.right()).fold(f32::MIN, f32::max);
+            (hi - lo).max(0.0)
         };
-        let lw = median(&mut left_w);
-        let rw = median(&mut right_w);
-        if lw >= width * 0.45 || lw >= rw * 0.60 {
+        let sw = col_width(&sidebar);
+        let bw = col_width(&body);
+        if sw >= width * 0.45 || sw >= bw * 0.70 {
             return None; // left column not a narrow sidebar relative to the body
+        }
+        // ANTI-FORM discriminator. A bare narrow left column is geometrically
+        // indistinguishable from a label:value form (Name:/Address:/Date:) or a
+        // verse/margin-note page, and these PDFs carry NO background tint to anchor
+        // the sidebar. The reliable signal is semantic: a publisher-metadata
+        // sidebar carries recognisable furniture labels that never head a form
+        // field or a body column. Require >=2 DISTINCT labels so ordinary narrow
+        // columns and forms never engage this reordering.
+        let side_text: String = {
+            let mut t = String::new();
+            for &i in &sidebar {
+                t.push_str(&spans[i].text.to_lowercase());
+                t.push(' ');
+            }
+            t
+        };
+        const FURNITURE: [&str; 12] = [
+            "citation",
+            "received",
+            "accepted",
+            "published",
+            "copyright",
+            "licensee",
+            "academic editor",
+            "publisher",
+            "doi.org",
+            "issn",
+            "creative commons",
+            "open access",
+        ];
+        let furniture_hits = FURNITURE.iter().filter(|k| side_text.contains(**k)).count();
+        if furniture_hits < 2 {
+            return None;
         }
 
         // Emit: band + body merged top→bottom (title stays on top, body flows,
