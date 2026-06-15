@@ -2532,6 +2532,13 @@ pub struct TextExtractor<'doc> {
     /// Tracks nested marked content tags to enable artifact filtering.
     /// When content is marked as `/Artifact`, it should be excluded from text extraction.
     marked_content_stack: Vec<MarkedContentContext>,
+    /// True once a `/ReversedChars` marked-content sequence (ISO 32000-1
+    /// §14.8.2.3.3) has been seen on this page. Such producers draw RTL glyphs
+    /// individually with explicit positioning and mark real word boundaries with
+    /// explicit space glyphs — so oxide must NOT additionally insert geometric
+    /// word spaces between cursively-adjacent Arabic letters (which would shatter
+    /// words, e.g. `إسبريسو` → `إس بر يسو`).
+    saw_reversed_chars: bool,
     /// Whether we're currently inside an /Artifact marked content context
     ///
     /// Per PDF Spec Section 14.6, artifact content should be excluded from text extraction.
@@ -2685,6 +2692,7 @@ impl<'doc> TextExtractor<'doc> {
             tj_span_buffer: None,     // No buffer initially
             span_sequence_counter: 0, // Initialize sequence counter
             marked_content_stack: Vec::new(), // Track marked content contexts
+            saw_reversed_chars: false,
             inside_artifact: false,   // Track artifact state
             excluded_layers: HashSet::new(),
             inside_excluded_layer: false,
@@ -4514,7 +4522,7 @@ impl<'doc> TextExtractor<'doc> {
                     current.text.push_str(&span.text);
                 } else {
                     let tj_offset_triggered_override = has_split_boundary;
-                    let space_decision = should_insert_space(
+                    let mut space_decision = should_insert_space(
                         &current.text,
                         &span.text,
                         space_gap,
@@ -4528,6 +4536,32 @@ impl<'doc> TextExtractor<'doc> {
                         current.font_size,
                         span.font_size,
                     );
+
+                    // ReversedChars Arabic word-shatter guard (ISO 32000-1
+                    // §14.8.2.3.3). On a page that draws RTL glyphs individually
+                    // under /ReversedChars, real word boundaries are marked with
+                    // explicit space glyphs (preserved above as whitespace-only
+                    // spans). A GEOMETRIC space between two cursively-adjacent
+                    // Arabic letters is therefore a positioning artifact, not a
+                    // word break — suppress it so words stay whole (إسبريسو, not
+                    // إس بر يسو). Only fires on ReversedChars pages, so ordinary
+                    // geometric-spaced Arabic producers are unaffected.
+                    if self.saw_reversed_chars && space_decision.insert_space {
+                        use crate::text::rtl_detector::is_arabic_letter;
+                        let prev_ar = current
+                            .text
+                            .chars()
+                            .next_back()
+                            .is_some_and(|c| is_arabic_letter(c as u32));
+                        let next_ar = span
+                            .text
+                            .chars()
+                            .next()
+                            .is_some_and(|c| is_arabic_letter(c as u32));
+                        if prev_ar && next_ar {
+                            space_decision.insert_space = false;
+                        }
+                    }
 
                     log::debug!(
                         "Span merge decision: gap={:.2}pt, decision={:?}, source={:?}, confidence={:.2}, offset_semantic={}",
@@ -6011,6 +6045,9 @@ impl<'doc> TextExtractor<'doc> {
                 // order, tree-scope ActualText suppression,
                 // table-cell membership).
                 self.flush_tj_span_buffer()?;
+                if tag == "ReversedChars" {
+                    self.saw_reversed_chars = true;
+                }
                 // BMC doesn't have properties, but the tag can indicate artifacts
                 let is_artifact = tag == "Artifact";
                 self.marked_content_stack.push(MarkedContentContext {
