@@ -9736,6 +9736,18 @@ impl PdfDocument {
     ///
     /// Mixed RTL+Latin lines are left untouched (full UAX #9 deferred), and the
     /// whole pass is skipped when the page has no RTL characters.
+    ///
+    /// KNOWN LIMITATION (md/html only): this pass orders a pure-RTL line by
+    /// sorting whole SPANS by `bbox.x` (rightmost first), so it cannot place a
+    /// standalone zero-width glyph (e.g. an Arabic qaf whose x falls inside an
+    /// already-merged word span) at its correct *intra-word* slot — the glyph
+    /// sorts before/after the word instead (`القهوة` → `قالهوة`). The plain-text
+    /// path avoids this by reconstructing at the GLYPH level
+    /// ([`merge_interleaved_rtl_lines`] / [`merge_rtl_line_to_visual_span`],
+    /// which explode each span to per-glyph bases via `to_chars`). To make the
+    /// md/html path match the text path, either run `merge_interleaved_rtl_lines`
+    /// on the raw spans before the pipeline orders them, or rebuild each gated
+    /// line here at the glyph level instead of the whole-span x-sort.
     fn apply_rtl_logical_order_to_ordered_spans(spans: &mut [crate::pipeline::OrderedTextSpan]) {
         use crate::text::rtl_detector::is_rtl_text;
         use crate::utils::safe_float_cmp;
