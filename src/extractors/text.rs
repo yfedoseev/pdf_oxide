@@ -4602,6 +4602,43 @@ impl<'doc> TextExtractor<'doc> {
                     current.char_widths.resize(merged_char_count, pad);
                 }
 
+                // Preserve the merged-in glyph's TRUE origin for scrambled-RTL
+                // producers (e.g. /ReversedChars + per-glyph /ActualText Arabic,
+                // ISO 32000-1 §14.8.2.3.3 / §14.9.4). Such producers reposition
+                // glyphs out of advance-order, so the appended raw advances collapse
+                // the merged span to advance-flow and `to_chars()` loses each glyph's
+                // true x — the RTL visual-order sort (`merge_rtl_line_to_visual_span`)
+                // then mis-places zero-width marks (القهوة → قالهوة). After the
+                // char_widths are in lockstep with the (possibly space-inserted) text,
+                // stretch the advance leading into the merged-in span's LAST glyph so
+                // `to_chars()` reconstructs it at `span.bbox.x`. Gated to Arabic so
+                // Latin/CJK output stays byte-identical.
+                let touches_arabic = |t: &str| {
+                    t.chars().any(|c| {
+                        ('\u{0600}'..='\u{06FF}').contains(&c)
+                            || ('\u{0750}'..='\u{077F}').contains(&c)
+                            || ('\u{08A0}'..='\u{08FF}').contains(&c)
+                    })
+                };
+                let n = current.char_widths.len();
+                let span_chars = span.text.chars().count();
+                if n >= 2
+                    && span_chars >= 1
+                    && span_chars < n
+                    && (touches_arabic(&current.text) || touches_arabic(&span.text))
+                {
+                    // Index of the merged-in span's FIRST glyph in the (possibly
+                    // space-inserted) merged text, and its target relative x.
+                    let first_idx = n - span_chars;
+                    let prefix: f32 = current.char_widths[..first_idx].iter().sum();
+                    let want = span.bbox.x - current.bbox.x;
+                    let adjust = want - prefix;
+                    if adjust.abs() > 0.01 {
+                        // Put the gap into the advance leading into that glyph.
+                        current.char_widths[first_idx - 1] += adjust;
+                    }
+                }
+
                 // After a cross-font glue, adopt the longer run's font
                 // metadata. The single-letter side was typographic
                 // decoration, not semantic emphasis, so the dominant-run
