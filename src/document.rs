@@ -10601,6 +10601,20 @@ impl PdfDocument {
         body_sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let body_size = body_sizes[body_sizes.len() / 2];
 
+        // Span indices sorted by left edge, and the widest font on the page, so
+        // each initial only probes spans whose left edge falls in its narrow
+        // candidate x-window (was a full O(n) rescan per initial). A continuation
+        // satisfies `gap in [-fs*0.5, fs*0.12]`, i.e. its left edge is within
+        // [init_right - max_fs*0.5, init_right + max_fs*0.12]; using the page max
+        // font widens the window conservatively, and the exact per-candidate gap
+        // test below reproduces the original filter — so this is byte-identical.
+        let order: Vec<usize> = {
+            let mut o: Vec<usize> = (0..n).collect();
+            o.sort_by(|&a, &b| crate::utils::safe_float_cmp(spans[a].bbox.x, spans[b].bbox.x));
+            o
+        };
+        let max_fs = spans.iter().map(|s| s.font_size).fold(0.0_f32, f32::max);
+
         // For each initial candidate, the closest qualifying body span to its right.
         let mut target: Vec<Option<usize>> = vec![None; n];
         for i in 0..n {
@@ -10620,9 +10634,19 @@ impl PdfDocument {
                 continue; // initial must be clearly oversized vs normal body text
             }
             let init_right = init.bbox.x + init.bbox.width;
+            // Candidates: spans whose left edge is in the conservative window.
+            // Collect their indices and visit in ASCENDING ORIGINAL ORDER so the
+            // strict-`<` min keeps the same first-wins tie-break as the old scan.
+            let lo_x = init_right - max_fs * 0.5;
+            let hi_x = init_right + max_fs * 0.12;
+            let lo = order.partition_point(|&k| spans[k].bbox.x < lo_x);
+            let hi = order.partition_point(|&k| spans[k].bbox.x <= hi_x);
+            let mut cands: Vec<usize> = order[lo..hi].to_vec();
+            cands.sort_unstable();
             let mut best: Option<usize> = None;
             let mut best_gap = f32::MAX;
-            for (j, body) in spans.iter().enumerate() {
+            for &j in &cands {
+                let body = &spans[j];
                 if j == i || body.font_size <= 0.0 {
                     continue;
                 }
