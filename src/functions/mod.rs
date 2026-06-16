@@ -38,6 +38,7 @@
 #![forbid(unsafe_code)]
 
 use crate::error::{Error, Result};
+use crate::object::Object;
 
 /// A parsed instruction in a Type 4 PostScript calculator program.
 #[derive(Debug, Clone, PartialEq)]
@@ -970,6 +971,300 @@ fn bool_or_bitwise(
     Ok(())
 }
 
+// ── Separation / DeviceN tint-transform evaluation (Types 0/2/3/4) ──────────
+//
+// A single spec-faithful evaluator (ISO 32000-1:2008 §7.10) shared by the
+// rendering composite path and the image extractor, so neither hand-rolls a
+// partial copy. It lives in this non-rendering-gated module so the image
+// extractor can reach it without pulling in the `rendering` feature.
+
+#[inline]
+fn obj_to_f32(o: &Object) -> Option<f32> {
+    o.as_real()
+        .map(|r| r as f32)
+        .or_else(|| o.as_integer().map(|i| i as f32))
+}
+
+/// Evaluate a PDF tint-transform / sampled function against `inputs`,
+/// dispatching across function types 0/2/3/4 per §7.10. `func_resolved` is
+/// the already-dereferenced function object. Returns `None` for any
+/// unsupported or malformed function so callers can fall back gracefully.
+///
+///  - **Type 0** (sampled, §7.10.2) — n→m via n-linear interpolation of the
+///    surrounding 2ⁿ samples in the packed stream (8-bit samples).
+///  - **Type 2** (exponential, §7.10.3) — 1→m; only `inputs[0]` is used.
+///  - **Type 3** (stitching, §7.10.4) — 1→m; selects and recurses into the
+///    subfunction whose subdomain contains the input.
+///  - **Type 4** (PostScript calculator, §7.10.5) — n→m via [`Program`].
+///
+/// `doc` is required only to resolve a Type 3 subfunction's references; pass
+/// `None` when no document is available (Type 3 then yields `None`).
+pub(crate) fn evaluate_tint_function(
+    doc: Option<&crate::document::PdfDocument>,
+    func_resolved: &Object,
+    inputs: &[f32],
+) -> Option<Vec<f32>> {
+    let func_dict = func_resolved.as_dict()?;
+    let func_type = func_dict.get("FunctionType").and_then(Object::as_integer)?;
+    match func_type {
+        0 => evaluate_type0_sampled(func_resolved, func_dict, inputs),
+        2 => Some(evaluate_type2_exponential(func_dict, inputs.first().copied().unwrap_or(0.0))),
+        3 => evaluate_type3_stitching(doc, func_dict, inputs.first().copied().unwrap_or(0.0)),
+        4 => {
+            let bytes = match func_resolved {
+                Object::Stream { .. } => func_resolved.decode_stream_data().ok()?,
+                _ => return None,
+            };
+            let program = Program::compile(&bytes).ok()?;
+            let in64: Vec<f64> = inputs.iter().map(|&v| v as f64).collect();
+            let out = program.evaluate(&in64).ok()?;
+            Some(out.into_iter().map(|v| v as f32).collect())
+        },
+        _ => None,
+    }
+}
+
+/// Type 2 (exponential interpolation), §7.10.3: `y_j = C0_j + xᴺ·(C1_j - C0_j)`.
+fn evaluate_type2_exponential(
+    dict: &std::collections::HashMap<String, Object>,
+    x: f32,
+) -> Vec<f32> {
+    let n_pow = dict
+        .get("N")
+        .and_then(|o| o.as_real().or_else(|| o.as_integer().map(|i| i as f64)))
+        .unwrap_or(1.0) as f32;
+    let c0 = dict.get("C0").and_then(|o| o.as_array());
+    let c1 = dict.get("C1").and_then(|o| o.as_array());
+    let len = c0.map(|a| a.len()).max(c1.map(|a| a.len())).unwrap_or(1);
+    let x_pow = if n_pow == 1.0 { x } else { x.powf(n_pow) };
+    let mut out = Vec::with_capacity(len);
+    for j in 0..len {
+        let c0j = c0
+            .and_then(|a| a.get(j))
+            .and_then(obj_to_f32)
+            .unwrap_or(0.0);
+        let c1j = c1
+            .and_then(|a| a.get(j))
+            .and_then(obj_to_f32)
+            .unwrap_or(1.0);
+        out.push(c0j + x_pow * (c1j - c0j));
+    }
+    out
+}
+
+/// Type 3 (stitching), §7.10.4. Recursively evaluates the subfunction whose
+/// subdomain contains `x`. Subfunctions may be any type the dispatcher
+/// accepts; references are resolved through `doc`.
+fn evaluate_type3_stitching(
+    doc: Option<&crate::document::PdfDocument>,
+    dict: &std::collections::HashMap<String, Object>,
+    x: f32,
+) -> Option<Vec<f32>> {
+    let domain_arr = dict.get("Domain").and_then(|o| o.as_array())?;
+    if domain_arr.len() != 2 {
+        return None;
+    }
+    let x0 = obj_to_f32(domain_arr.first()?)?;
+    let x1 = obj_to_f32(domain_arr.get(1)?)?;
+
+    let funcs_arr = dict.get("Functions").and_then(|o| o.as_array())?;
+    if funcs_arr.is_empty() {
+        return None;
+    }
+    let k = funcs_arr.len();
+
+    let bounds_arr = dict.get("Bounds").and_then(|o| o.as_array())?;
+    if bounds_arr.len() != k - 1 {
+        return None;
+    }
+    let mut bounds: Vec<f32> = Vec::with_capacity(k - 1);
+    for b in bounds_arr {
+        bounds.push(obj_to_f32(b)?);
+    }
+
+    let encode_arr = dict.get("Encode").and_then(|o| o.as_array())?;
+    if encode_arr.len() != 2 * k {
+        return None;
+    }
+
+    let x_clipped = x.clamp(x0, x1);
+    let i = bounds
+        .iter()
+        .copied()
+        .filter(|b| x_clipped >= *b)
+        .count()
+        .min(k - 1);
+    let lo_i = if i == 0 { x0 } else { bounds[i - 1] };
+    let hi_i = if i == k - 1 { x1 } else { bounds[i] };
+    let e_lo = obj_to_f32(encode_arr.get(2 * i)?)?;
+    let e_hi = obj_to_f32(encode_arr.get(2 * i + 1)?)?;
+    let encoded = if (hi_i - lo_i).abs() <= f32::EPSILON {
+        e_lo
+    } else {
+        e_lo + (x_clipped - lo_i) * (e_hi - e_lo) / (hi_i - lo_i)
+    };
+
+    let sub_obj = funcs_arr.get(i)?;
+    // `resolve_object` is rendering-gated; use the always-available
+    // `load_object` for the reference case and pass direct objects through.
+    // `doc` is needed only to resolve a referenced subfunction.
+    let sub_resolved = match sub_obj.as_reference() {
+        Some(r) => doc?.load_object(r).ok()?,
+        None => sub_obj.clone(),
+    };
+    evaluate_tint_function(doc, &sub_resolved, &[encoded])
+}
+
+/// Type 0 (sampled), §7.10.2. The function is a packed stream of m·∏Sizeᵢ
+/// samples; each input is remapped via `Encode` to a continuous sample index,
+/// n-linearly interpolated among the 2ⁿ surrounding integer-grid samples, and
+/// remapped through `Decode` into the output range. Returns `None` for any
+/// shape the evaluator cannot satisfy (missing /Size or /Range, non-8-bit
+/// /BitsPerSample, arity mismatch, truncated stream, malformed array).
+fn evaluate_type0_sampled(
+    obj: &Object,
+    dict: &std::collections::HashMap<String, Object>,
+    bc: &[f32],
+) -> Option<Vec<f32>> {
+    let domain_arr = dict.get("Domain").and_then(|o| o.as_array())?;
+    let range_arr = dict.get("Range").and_then(|o| o.as_array())?;
+    if domain_arr.len() % 2 != 0 || range_arr.len() % 2 != 0 {
+        return None;
+    }
+    let n_in = domain_arr.len() / 2;
+    let n_out = range_arr.len() / 2;
+    if n_in == 0 || n_out == 0 || bc.len() < n_in {
+        return None;
+    }
+
+    let size_arr = dict.get("Size").and_then(|o| o.as_array())?;
+    if size_arr.len() != n_in {
+        return None;
+    }
+    let mut sizes: Vec<usize> = Vec::with_capacity(n_in);
+    let mut total_samples: usize = 1;
+    for s in size_arr {
+        let v = s.as_integer()? as usize;
+        if v == 0 {
+            return None;
+        }
+        sizes.push(v);
+        total_samples = total_samples.checked_mul(v)?;
+    }
+    total_samples = total_samples.checked_mul(n_out)?;
+
+    let bps = dict
+        .get("BitsPerSample")
+        .and_then(Object::as_integer)
+        .unwrap_or(8);
+    if bps != 8 {
+        // §7.10.2 admits 1/2/4/8/12/16/24/32. We accept the canonical
+        // 8-bit case used by tint-transform PDFs in the wild; wider depths
+        // fall through to None so the caller records the unsupported case.
+        return None;
+    }
+    let max_sample = 255.0_f32;
+
+    let bytes = match obj {
+        Object::Stream { .. } => obj.decode_stream_data().ok()?,
+        _ => return None,
+    };
+    if bytes.len() < total_samples {
+        return None;
+    }
+
+    // Encode: linearly remap each domain input to a continuous index in
+    // `[0, Size_i - 1]`. Defaults to `[0 Size_i - 1]` per spec.
+    let encode_arr = dict.get("Encode").and_then(|o| o.as_array());
+    let mut encoded_idx: Vec<f32> = Vec::with_capacity(n_in);
+    for i in 0..n_in {
+        let d_lo = obj_to_f32(domain_arr.get(2 * i)?)?;
+        let d_hi = obj_to_f32(domain_arr.get(2 * i + 1)?)?;
+        let (e_lo, e_hi) = if let Some(arr) = encode_arr {
+            if arr.len() == 2 * n_in {
+                (obj_to_f32(arr.get(2 * i)?)?, obj_to_f32(arr.get(2 * i + 1)?)?)
+            } else {
+                (0.0, (sizes[i] - 1) as f32)
+            }
+        } else {
+            (0.0, (sizes[i] - 1) as f32)
+        };
+        let x = bc[i].clamp(d_lo, d_hi);
+        let mapped = if (d_hi - d_lo).abs() <= f32::EPSILON {
+            e_lo
+        } else {
+            e_lo + (x - d_lo) * (e_hi - e_lo) / (d_hi - d_lo)
+        };
+        let clamped = mapped.clamp(0.0, (sizes[i] - 1) as f32);
+        encoded_idx.push(clamped);
+    }
+
+    // N-linear interpolation among the 2ⁿ surrounding integer-grid points.
+    let mut lo: Vec<usize> = Vec::with_capacity(n_in);
+    let mut frac: Vec<f32> = Vec::with_capacity(n_in);
+    for i in 0..n_in {
+        let v = encoded_idx[i];
+        let lo_i = (v.floor() as isize).max(0) as usize;
+        let lo_i = lo_i.min(sizes[i] - 1);
+        let f_i = if lo_i + 1 >= sizes[i] {
+            0.0
+        } else {
+            v - lo_i as f32
+        };
+        lo.push(lo_i);
+        frac.push(f_i);
+    }
+
+    // Stride per dimension. Dimension 0 varies fastest: stride[0] = n_out,
+    // stride[i] = stride[i-1] * sizes[i-1].
+    let mut strides: Vec<usize> = Vec::with_capacity(n_in);
+    let mut acc = n_out;
+    for size in &sizes {
+        strides.push(acc);
+        acc = acc.checked_mul(*size)?;
+    }
+
+    let decode_arr = dict.get("Decode").and_then(|o| o.as_array());
+
+    let mut out = Vec::with_capacity(n_out);
+    let combinations = 1usize << n_in;
+    for j in 0..n_out {
+        let (d_lo, d_hi) = if let Some(arr) = decode_arr {
+            if arr.len() == 2 * n_out {
+                (obj_to_f32(arr.get(2 * j)?)?, obj_to_f32(arr.get(2 * j + 1)?)?)
+            } else {
+                (obj_to_f32(range_arr.get(2 * j)?)?, obj_to_f32(range_arr.get(2 * j + 1)?)?)
+            }
+        } else {
+            (obj_to_f32(range_arr.get(2 * j)?)?, obj_to_f32(range_arr.get(2 * j + 1)?)?)
+        };
+        let r_lo = obj_to_f32(range_arr.get(2 * j)?)?;
+        let r_hi = obj_to_f32(range_arr.get(2 * j + 1)?)?;
+
+        let mut accum = 0.0_f32;
+        for c in 0..combinations {
+            let mut offset = j;
+            let mut weight = 1.0_f32;
+            for i in 0..n_in {
+                let upper = (c >> i) & 1 == 1;
+                let idx_i = if upper {
+                    (lo[i] + 1).min(sizes[i] - 1)
+                } else {
+                    lo[i]
+                };
+                offset += idx_i * strides[i];
+                let w_i = if upper { frac[i] } else { 1.0 - frac[i] };
+                weight *= w_i;
+            }
+            let raw = bytes[offset] as f32;
+            let decoded = d_lo + (raw / max_sample) * (d_hi - d_lo);
+            accum += weight * decoded;
+        }
+        out.push(accum.clamp(r_lo, r_hi));
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1520,5 +1815,86 @@ mod tests {
         assert_eq!(result.len(), 1);
         // The result should be a valid i64 close to i64::MAX
         assert!(result[0] > 0.0 && result[0] < i64::MAX as f64);
+    }
+
+    // ── Shared tint-transform evaluator (Types 0/2/3/4) ──────────────────
+
+    fn int_array(vals: &[i64]) -> Object {
+        Object::Array(vals.iter().map(|&v| Object::Integer(v)).collect())
+    }
+
+    #[test]
+    fn tint_type2_exponential() {
+        let mut d = std::collections::HashMap::new();
+        d.insert("FunctionType".to_string(), Object::Integer(2));
+        d.insert("N".to_string(), Object::Integer(1));
+        d.insert("Domain".to_string(), int_array(&[0, 1]));
+        d.insert("C0".to_string(), int_array(&[0, 0, 0, 0]));
+        d.insert("C1".to_string(), int_array(&[1, 0, 0, 0]));
+        let func = Object::Dictionary(d);
+
+        let out = evaluate_tint_function(None, &func, &[0.5]).expect("type 2 evaluates");
+        assert_eq!(out.len(), 4);
+        assert!((out[0] - 0.5).abs() < 1e-6, "C interpolates to 0.5: {out:?}");
+        assert_eq!(&out[1..], &[0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn tint_type0_sampled_interpolates() {
+        let mut d = std::collections::HashMap::new();
+        d.insert("FunctionType".to_string(), Object::Integer(0));
+        d.insert("Domain".to_string(), int_array(&[0, 1]));
+        d.insert("Range".to_string(), int_array(&[0, 1, 0, 1, 0, 1, 0, 1]));
+        d.insert("Size".to_string(), int_array(&[2]));
+        d.insert("BitsPerSample".to_string(), Object::Integer(8));
+        // grid 0 → (0,0,0,0); grid 1 → (255,0,0,0).
+        let func = Object::Stream {
+            dict: d,
+            data: bytes::Bytes::from_static(&[0, 0, 0, 0, 255, 0, 0, 0]),
+        };
+
+        // Full tint hits grid sample 1.
+        let hi = evaluate_tint_function(None, &func, &[1.0]).expect("type 0 evaluates");
+        assert!((hi[0] - 1.0).abs() < 1e-6, "{hi:?}");
+        // Midpoint linearly interpolates the two grid samples.
+        let mid = evaluate_tint_function(None, &func, &[0.5]).expect("type 0 evaluates");
+        assert!((mid[0] - 0.5).abs() < 1e-6, "midpoint interpolates: {mid:?}");
+    }
+
+    #[test]
+    fn tint_type3_stitching_inline_subfunctions() {
+        // Two Type 2 subfunctions stitched at 0.5, each a 1→1 ramp.
+        let sub = |c0: i64, c1: i64| {
+            let mut d = std::collections::HashMap::new();
+            d.insert("FunctionType".to_string(), Object::Integer(2));
+            d.insert("N".to_string(), Object::Integer(1));
+            d.insert("Domain".to_string(), int_array(&[0, 1]));
+            d.insert("C0".to_string(), int_array(&[c0]));
+            d.insert("C1".to_string(), int_array(&[c1]));
+            Object::Dictionary(d)
+        };
+        let mut d = std::collections::HashMap::new();
+        d.insert("FunctionType".to_string(), Object::Integer(3));
+        d.insert("Domain".to_string(), int_array(&[0, 1]));
+        d.insert("Functions".to_string(), Object::Array(vec![sub(0, 1), sub(1, 0)]));
+        d.insert("Bounds".to_string(), Object::Array(vec![Object::Real(0.5)]));
+        d.insert("Encode".to_string(), int_array(&[0, 1, 0, 1]));
+        let func = Object::Dictionary(d);
+
+        // x=0.25 → first subfn, encoded to 0.5 → ramp 0→1 yields 0.5.
+        // doc=None is fine because the subfunctions are inline (not refs).
+        let lo = evaluate_tint_function(None, &func, &[0.25]).expect("type 3 evaluates");
+        assert!((lo[0] - 0.5).abs() < 1e-6, "first subinterval: {lo:?}");
+        // x=0.75 → second subfn, encoded to 0.5 → ramp 1→0 yields 0.5.
+        let hi = evaluate_tint_function(None, &func, &[0.75]).expect("type 3 evaluates");
+        assert!((hi[0] - 0.5).abs() < 1e-6, "second subinterval: {hi:?}");
+    }
+
+    #[test]
+    fn tint_unsupported_type_returns_none() {
+        let mut d = std::collections::HashMap::new();
+        d.insert("FunctionType".to_string(), Object::Integer(42));
+        let func = Object::Dictionary(d);
+        assert!(evaluate_tint_function(None, &func, &[0.5]).is_none());
     }
 }

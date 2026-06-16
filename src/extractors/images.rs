@@ -935,11 +935,22 @@ pub fn extract_image_from_xobject_expanded(
         cs_obj.clone()
     };
 
-    // NB: `expand_separation_to_alt` below indexes the decoded stream as one
-    // byte per tint sample, i.e. it assumes 8 bits per component (the norm for
-    // spot-colour raster artwork). Sub-byte (1/2/4) and 16-bpc Separation /
-    // DeviceN streams would need unpacking to one byte per sample before this
-    // path could be trusted on them; full BPC expansion is not yet wired here.
+    // `expand_separation_to_alt` indexes the decoded stream as one byte per
+    // tint sample, i.e. it requires 8 bits per component. Sub-byte (1/2/4) and
+    // 16-bpc Separation/DeviceN streams would be misread as garbage, so skip
+    // expansion for them and keep the raw samples (graceful fallback).
+    if image.bits_per_component() != 8 {
+        use std::sync::Once;
+        static WARN: Once = Once::new();
+        WARN.call_once(|| {
+            log::warn!(
+                "Separation/DeviceN image with non-8-bpc samples: skipping tint \
+                 expansion and keeping raw samples (only 8 bpc is supported)"
+            )
+        });
+        return Ok(image);
+    }
+
     let sep = match resolve_separation_tint(doc, &resolved)? {
         Some(s) => s,
         // Malformed / unsupported tint transform: leave the raw image as-is
@@ -954,7 +965,22 @@ pub fn extract_image_from_xobject_expanded(
         ImageData::Jpeg(_) => return Ok(image),
     };
 
-    let expanded = expand_separation_to_alt(&raw, &sep, image.width, image.height)?;
+    // Best-effort: an unsupported / malformed tint transform yields None —
+    // keep the raw samples rather than failing the whole extraction.
+    let expanded = match expand_separation_to_alt(doc, &raw, &sep, image.width, image.height) {
+        Some(px) => px,
+        None => {
+            use std::sync::Once;
+            static WARN: Once = Once::new();
+            WARN.call_once(|| {
+                log::warn!(
+                    "Separation/DeviceN image with an unsupported tint transform: \
+                     keeping raw samples"
+                )
+            });
+            return Ok(image);
+        },
+    };
     image.data = ImageData::Raw {
         pixels: expanded,
         format: sep.alt_fmt,
@@ -1150,93 +1176,30 @@ fn resolve_separation_tint(
     }))
 }
 
-/// Evaluate a tint-transform function for a single input vector.
-///
-/// Supports FunctionType 2 (exponential interpolation, §7.10.3) and
-/// FunctionType 4 (PostScript calculator, §7.10.5) — the two forms used
-/// by Separation / DeviceN tint transforms in practice. Returns `None`
-/// for unsupported / malformed functions so the caller can fall back.
-fn evaluate_tint_function(func_obj: &crate::object::Object, inputs: &[f32]) -> Option<Vec<f32>> {
-    use crate::object::Object;
-
-    let dict = func_obj.as_dict()?;
-    let func_type = dict.get("FunctionType").and_then(|o| o.as_integer())?;
-
-    let obj_to_f32 = |o: &Object| -> f32 {
-        o.as_real()
-            .or_else(|| o.as_integer().map(|i| i as f64))
-            .unwrap_or(0.0) as f32
-    };
-
-    match func_type {
-        2 => {
-            // y_j = C0_j + x^N * (C1_j - C0_j). Type 2 takes a single
-            // scalar input; for a multi-input DeviceN this form is not
-            // valid, so require exactly one input.
-            if inputs.len() != 1 {
-                return None;
-            }
-            let x = inputs[0];
-            let n = dict.get("N").map(&obj_to_f32).unwrap_or(1.0);
-            let c0 = dict.get("C0").and_then(|o| o.as_array());
-            let c1 = dict.get("C1").and_then(|o| o.as_array());
-            let len = c0.map(|a| a.len()).max(c1.map(|a| a.len())).unwrap_or(1);
-            let x_pow = if n == 1.0 { x } else { x.powf(n) };
-            let mut out = Vec::with_capacity(len);
-            for j in 0..len {
-                let c0j = c0.and_then(|a| a.get(j)).map(&obj_to_f32).unwrap_or(0.0);
-                let c1j = c1.and_then(|a| a.get(j)).map(&obj_to_f32).unwrap_or(1.0);
-                out.push(c0j + x_pow * (c1j - c0j));
-            }
-            Some(out)
-        },
-        4 => {
-            let Object::Stream { dict, .. } = func_obj else {
-                return None;
-            };
-            let bytes = func_obj.decode_stream_data().ok()?;
-            let pairs = |key: &str| -> Vec<[f64; 2]> {
-                dict.get(key)
-                    .and_then(|o| o.as_array())
-                    .map(|a| {
-                        a.chunks_exact(2)
-                            .map(|c| [obj_to_f32(&c[0]) as f64, obj_to_f32(&c[1]) as f64])
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            };
-            let domain = pairs("Domain");
-            let range = pairs("Range");
-            let inputs_f64: Vec<f64> = inputs.iter().map(|&v| v as f64).collect();
-            let out =
-                crate::functions::evaluate_type4_clamped(&bytes, &inputs_f64, &domain, &range)
-                    .ok()?;
-            Some(out.into_iter().map(|v| v as f32).collect())
-        },
-        _ => None,
-    }
-}
-
 /// Map decoded 8-bit Separation / DeviceN tint samples through the tint
 /// transform into the alternate colour space's native byte layout.
 ///
-/// `raw` is the decoded sample stream: `n_inputs` bytes per pixel, one
-/// tint per colorant (8 bpc). Output is `width * height *
-/// alt_fmt.bytes_per_pixel()` bytes in the alternate space. For the
-/// common single-input Separation case a 256-entry lookup table makes
+/// `raw` is the decoded sample stream: `n_inputs` bytes per pixel, one tint
+/// per colorant (8 bpc — the caller must reject other depths). Output is
+/// `width * height * alt_fmt.bytes_per_pixel()` bytes in the alternate space.
+/// For the common single-input Separation case a 256-entry lookup table makes
 /// this a table lookup per pixel; multi-input DeviceN evaluates the tint
 /// transform per pixel.
+///
+/// The tint transform is the shared evaluator [`crate::functions::
+/// evaluate_tint_function`], covering PDF function types 0/2/3/4. Returns
+/// `None` when the tint transform is unsupported / malformed, so the caller
+/// can fall back to the raw samples rather than emit wrong colour.
 fn expand_separation_to_alt(
+    doc: Option<&crate::document::PdfDocument>,
     raw: &[u8],
     sep: &SeparationResolution,
     width: u32,
     height: u32,
-) -> Result<Vec<u8>> {
+) -> Option<Vec<u8>> {
     let n_in = sep.n_inputs;
     let n_out = sep.alt_fmt.bytes_per_pixel();
-    let pixel_count = (width as usize)
-        .checked_mul(height as usize)
-        .ok_or_else(|| Error::Image("Separation image dimensions overflow".to_string()))?;
+    let pixel_count = (width as usize).checked_mul(height as usize)?;
 
     // Quantise an alternate-space f32 vector to the output byte layout.
     let to_bytes = |vals: &[f32], out: &mut Vec<u8>| {
@@ -1253,8 +1216,7 @@ fn expand_separation_to_alt(
         let mut lut: Vec<Vec<u8>> = Vec::with_capacity(256);
         for v in 0u32..256 {
             let t = v as f32 / 255.0;
-            let alt = evaluate_tint_function(&sep.tint_fn, &[t])
-                .ok_or_else(|| Error::Image("Unsupported Separation tint transform".to_string()))?;
+            let alt = crate::functions::evaluate_tint_function(doc, &sep.tint_fn, &[t])?;
             let mut entry = Vec::with_capacity(n_out);
             to_bytes(&alt, &mut entry);
             lut.push(entry);
@@ -1273,13 +1235,12 @@ fn expand_separation_to_alt(
             for (c, slot) in inputs.iter_mut().enumerate() {
                 *slot = raw.get(base + c).copied().unwrap_or(0) as f32 / 255.0;
             }
-            let alt = evaluate_tint_function(&sep.tint_fn, &inputs)
-                .ok_or_else(|| Error::Image("Unsupported DeviceN tint transform".to_string()))?;
+            let alt = crate::functions::evaluate_tint_function(doc, &sep.tint_fn, &inputs)?;
             to_bytes(&alt, &mut output);
         }
     }
 
-    Ok(output)
+    Some(output)
 }
 
 /// Resolve an Indexed color space's base color space and palette lookup bytes.
@@ -2603,6 +2564,162 @@ mod indexed_tests {
             g as i32 > r as i32 + 30,
             "Cyan tint must be green-dominant over red: R={r}, G={g}, B={b}"
         );
+    }
+
+    // ── Separation/DeviceN image tint-expansion correctness ──────────────
+
+    fn separation_cmyk_cs_with_tint(tint_fn: crate::object::Object) -> crate::object::Object {
+        use crate::object::Object;
+        Object::Array(vec![
+            Object::Name("Separation".to_string()),
+            Object::Name("Spot".to_string()),
+            Object::Name("DeviceCMYK".to_string()),
+            tint_fn,
+        ])
+    }
+
+    fn separation_image_xobject(
+        bpc: i64,
+        width: i64,
+        height: i64,
+        cs: crate::object::Object,
+        data: &'static [u8],
+    ) -> crate::object::Object {
+        use crate::object::Object;
+        use std::collections::HashMap;
+        let mut dict = HashMap::new();
+        dict.insert("Subtype".to_string(), Object::Name("Image".to_string()));
+        dict.insert("Width".to_string(), Object::Integer(width));
+        dict.insert("Height".to_string(), Object::Integer(height));
+        dict.insert("BitsPerComponent".to_string(), Object::Integer(bpc));
+        dict.insert("ColorSpace".to_string(), cs);
+        Object::Stream {
+            dict,
+            data: bytes::Bytes::from_static(data),
+        }
+    }
+
+    /// A non-8-bpc Separation image must NOT be run through the tint
+    /// expansion: `expand_separation_to_alt` reads one byte per sample, so a
+    /// sub-byte packed stream would decode as garbage. The expander must
+    /// leave the raw samples untouched (graceful fallback) rather than emit
+    /// wrong colour.
+    #[test]
+    fn separation_non_8bpc_image_skips_tint_expansion() {
+        use crate::object::Object;
+        use std::collections::HashMap;
+
+        // A Type 2 tint that would expand fine at 8 bpc.
+        let mut func = HashMap::new();
+        func.insert("FunctionType".to_string(), Object::Integer(2));
+        func.insert("N".to_string(), Object::Integer(1));
+        func.insert(
+            "Domain".to_string(),
+            Object::Array(vec![Object::Integer(0), Object::Integer(1)]),
+        );
+        func.insert("C0".to_string(), Object::Array(vec![Object::Integer(0); 4]));
+        func.insert(
+            "C1".to_string(),
+            Object::Array(vec![
+                Object::Integer(1),
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(0),
+            ]),
+        );
+        let cs = separation_cmyk_cs_with_tint(Object::Dictionary(func));
+        // One byte packs the two 4-bit samples of a 2×1 row.
+        let xobject = separation_image_xobject(4, 2, 1, cs, &[0xF0]);
+
+        let plain = extract_image_from_xobject(None, &xobject, None, None).unwrap();
+        let expanded = extract_image_from_xobject_expanded(None, &xobject, None, None).unwrap();
+
+        match (&plain.data, &expanded.data) {
+            (
+                ImageData::Raw {
+                    pixels: a,
+                    format: fa,
+                },
+                ImageData::Raw {
+                    pixels: b,
+                    format: fb,
+                },
+            ) => {
+                assert_eq!(a, b, "non-8-bpc Separation must not be tint-expanded");
+                assert_eq!(fa, fb, "pixel format must be unchanged when expansion is skipped");
+            },
+            _ => panic!("expected Raw image data"),
+        }
+    }
+
+    /// Type 0 (sampled) tint transforms must expand, not silently fall back
+    /// to literal samples. A 1-input → 4-output (CMYK) sampled function with
+    /// two grid samples, evaluated at full tint, must yield the second grid
+    /// sample (pure cyan).
+    #[test]
+    fn separation_type0_sampled_tint_expands() {
+        use crate::object::Object;
+        use std::collections::HashMap;
+
+        let mut func = HashMap::new();
+        func.insert("FunctionType".to_string(), Object::Integer(0));
+        func.insert(
+            "Domain".to_string(),
+            Object::Array(vec![Object::Integer(0), Object::Integer(1)]),
+        );
+        func.insert(
+            "Range".to_string(),
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(1),
+                Object::Integer(0),
+                Object::Integer(1),
+                Object::Integer(0),
+                Object::Integer(1),
+                Object::Integer(0),
+                Object::Integer(1),
+            ]),
+        );
+        func.insert("Size".to_string(), Object::Array(vec![Object::Integer(2)]));
+        func.insert("BitsPerSample".to_string(), Object::Integer(8));
+        // grid sample 0 → (0,0,0,0); grid sample 1 → pure cyan (255,0,0,0).
+        let tint = Object::Stream {
+            dict: func,
+            data: bytes::Bytes::from_static(&[0, 0, 0, 0, 255, 0, 0, 0]),
+        };
+        let cs = separation_cmyk_cs_with_tint(tint);
+        let xobject = separation_image_xobject(8, 1, 1, cs, &[255]);
+
+        let img = extract_image_from_xobject_expanded(None, &xobject, None, None).unwrap();
+        match img.data {
+            ImageData::Raw { ref pixels, format } => {
+                assert_eq!(format, PixelFormat::CMYK, "Separation/DeviceCMYK expands to CMYK");
+                assert_eq!(&pixels[..4], &[255, 0, 0, 0], "full tint → grid sample 1 (pure cyan)");
+            },
+            _ => panic!("expected Raw CMYK data"),
+        }
+    }
+
+    /// An unsupported / malformed tint transform must leave the raw samples
+    /// in place (graceful fallback) rather than failing the whole extraction.
+    #[test]
+    fn separation_unsupported_tint_falls_back_to_raw() {
+        use crate::object::Object;
+        use std::collections::HashMap;
+
+        let mut func = HashMap::new();
+        func.insert("FunctionType".to_string(), Object::Integer(42)); // no such type
+        let cs = separation_cmyk_cs_with_tint(Object::Dictionary(func));
+        let xobject = separation_image_xobject(8, 1, 1, cs, &[128]);
+
+        let img = extract_image_from_xobject_expanded(None, &xobject, None, None)
+            .expect("unsupported tint must not error the extraction");
+        match img.data {
+            ImageData::Raw { ref pixels, .. } => {
+                assert_eq!(pixels.as_slice(), &[128], "raw samples preserved on unsupported tint");
+            },
+            _ => panic!("expected Raw data"),
+        }
     }
 }
 
