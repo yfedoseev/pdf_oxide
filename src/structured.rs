@@ -266,7 +266,7 @@ fn detect_gutter_x(body: &[&TextSpan], page_width: f32) -> Option<f32> {
 }
 
 /// Build a [`StructuredPage`] from reading-order spans + page dimensions.
-/// Column-detection mode for [`build_structured_page_with_mode`] (issue #734
+/// Column-detection mode for `build_structured_page_with_mode` (issue #734
 /// Fix 3). The geometric column split is heuristic — ISO 32000-1:2008 defines
 /// no reading order for untagged content (§14.8.2.3) — so a consumer who knows
 /// their layout may override the heuristic. This override applies only to the

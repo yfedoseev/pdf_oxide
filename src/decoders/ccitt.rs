@@ -18,7 +18,7 @@ use crate::extractors::ccitt_bilevel::transitions_to_bytes;
 /// CCITTFaxDecode stream filter (pass-through).
 ///
 /// The raw CCITT codestream is kept compressed in the filter chain; actual
-/// image decompression happens in [`decode`] at image-extraction time.
+/// image decompression happens in `decode` at image-extraction time.
 pub struct CcittFaxDecoder;
 
 impl StreamDecoder for CcittFaxDecoder {
