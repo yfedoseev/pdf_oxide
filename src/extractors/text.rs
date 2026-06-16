@@ -6688,10 +6688,41 @@ impl<'doc> TextExtractor<'doc> {
                             // pays for the rebuild. Cheap O(form-spans) scan, no
                             // allocation; keeps large form-heavy docs fast.
                             if self.spans[spans_before..].iter().any(|s| !inside(s)) {
-                                let added = self.spans.split_off(spans_before);
-                                let kept: Vec<TextSpan> =
-                                    added.into_iter().filter(|s| inside(s)).collect();
-                                self.spans.extend(kept);
+                                // Out-of-BBox spans exist. Distinguish a real
+                                // figure form (whose stray out-of-BBox text is a
+                                // draft-galley underlay safe to drop) from a
+                                // full-page content-frame wrapper whose declared
+                                // BBox happens to exclude real body text. A
+                                // conformant *renderer* clips both, but every text
+                                // *extractor* (poppler/pdftotext, the common
+                                // reference) keeps a wrapper's body — and that body
+                                // may be its only copy. The discriminator is
+                                // coverage: a figure occupies a sub-region of the
+                                // page; a wrapper covers most of it. Only clip when
+                                // the form is figure-sized, so the galley-dedup win
+                                // stays while page-wrapper bodies are preserved.
+                                let clip_area = (max_x - min_x) * (max_y - min_y);
+                                let page_idx = match self.mcid_scope_stack.first() {
+                                    Some(crate::structure::McidScope::Page(p)) => *p as usize,
+                                    _ => 0,
+                                };
+                                let page_area = self
+                                    .document
+                                    .and_then(|d| d.get_page_media_box(page_idx).ok())
+                                    .map(|(llx, lly, urx, ury)| {
+                                        ((urx - llx) * (ury - lly)).abs()
+                                    })
+                                    .filter(|a| *a > 0.0);
+                                // ≥60% of page area ⇒ content-frame wrapper, not a
+                                // figure (figures measured ≤27%; wrappers ≥82%).
+                                let is_page_wrapper =
+                                    page_area.map_or(false, |pa| clip_area >= 0.6 * pa);
+                                if !is_page_wrapper {
+                                    let added = self.spans.split_off(spans_before);
+                                    let kept: Vec<TextSpan> =
+                                        added.into_iter().filter(|s| inside(s)).collect();
+                                    self.spans.extend(kept);
+                                }
                             }
                         }
                     }
