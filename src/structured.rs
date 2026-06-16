@@ -484,6 +484,7 @@ mod tests {
     ///     gutter-centred page number get merged into the body — either of
     ///     which bridges the gutter in a 1-D x-projection and defeats
     ///     `detect_gutter_x`.
+    ///
     /// Per-verse MCIDs are present (verse 1 = mcid 5, verse 14 = mcid 18, …),
     /// which is the signal the spec-aligned fix uses to vote per logical unit.
     #[test]

@@ -2693,7 +2693,7 @@ impl<'doc> TextExtractor<'doc> {
             span_sequence_counter: 0, // Initialize sequence counter
             marked_content_stack: Vec::new(), // Track marked content contexts
             saw_reversed_chars: false,
-            inside_artifact: false,   // Track artifact state
+            inside_artifact: false, // Track artifact state
             excluded_layers: HashSet::new(),
             inside_excluded_layer: false,
             excluded_inks: HashSet::new(),
@@ -6709,14 +6709,12 @@ impl<'doc> TextExtractor<'doc> {
                                 let page_area = self
                                     .document
                                     .and_then(|d| d.get_page_media_box(page_idx).ok())
-                                    .map(|(llx, lly, urx, ury)| {
-                                        ((urx - llx) * (ury - lly)).abs()
-                                    })
+                                    .map(|(llx, lly, urx, ury)| ((urx - llx) * (ury - lly)).abs())
                                     .filter(|a| *a > 0.0);
                                 // ≥60% of page area ⇒ content-frame wrapper, not a
                                 // figure (figures measured ≤27%; wrappers ≥82%).
                                 let is_page_wrapper =
-                                    page_area.map_or(false, |pa| clip_area >= 0.6 * pa);
+                                    page_area.is_some_and(|pa| clip_area >= 0.6 * pa);
                                 if !is_page_wrapper {
                                     let added = self.spans.split_off(spans_before);
                                     let kept: Vec<TextSpan> =

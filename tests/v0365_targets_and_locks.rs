@@ -167,34 +167,56 @@ fn rw1_full_width_title_reads_contiguously() {
     // Geometry mirrors a real MDPI first page: x_min≈50, body column starts ~28%
     // from the left (a narrow sidebar, gutter left-of-centre), title spans full
     // width on top. Needs enough lines that the sidebar/body classifier engages.
-    let title = ["A", "Prospective", "Study", "Comparing", "Laparoscopic", "Methods"];
-    let title_x = [55.0f32, 80.0, 175.0, 235.0, 300.0, 430.0];
+    // A real journal title line is emitted as one full-width text run on the top
+    // baseline (one show operator → one span), starting at the left margin and
+    // crossing the body gutter. That single wide band is what the plain XY-cut
+    // would otherwise slice along the gutter; `sidebar_body_reading_order` keeps
+    // it on top and reads the body before the metadata sidebar.
     let mut owned: Vec<String> = Vec::new();
     let mut items: Vec<Text> = Vec::new();
-    for (s, x) in title.iter().zip(title_x) {
-        items.push(Text { x, y: 752.0, s });
-    }
+    items.push(Text {
+        x: 55.0,
+        y: 752.0,
+        s: "A Prospective Study Comparing Laparoscopic Methods",
+    });
     // Narrow left metadata sidebar (short lines ending well before the gutter
     // ~185), as a block near the top — distinct baselines from the body below.
-    // (Counts keep the total span set above the classifier's small-page floor,
-    // as a real first page would.)
-    for i in 0..8 {
-        owned.push(format!("Citation {i}"));
+    // A real publisher sidebar carries several DISTINCT furniture labels
+    // (Citation / Received / Accepted / DOI …); the classifier requires >=2
+    // distinct ones so plain narrow columns and label:value forms never engage.
+    let furniture = [
+        "Citation 0",
+        "Received 24",
+        "Accepted 24",
+        "Published 24",
+        "Copyright 24",
+        "Licensee X",
+        "ISSN 1234",
+        "Publisher Y",
+    ];
+    for line in furniture {
+        owned.push(line.to_string());
     }
     // Wide right body column (long lines from x≈195 across to ≈545), below the
     // sidebar block (real first-page layout: metadata block, then the body flow).
-    for i in 0..18 {
-        owned.push(format!(
-            "Body line {i} reads across the wide main column of the page here now"
-        ));
+    for i in 0..24 {
+        owned.push(format!("Body line {i} reads across the wide main column of the page here now"));
     }
     let mut k = 0;
     for i in 0..8 {
-        items.push(Text { x: 52.0, y: 730.0 - i as f32 * 13.0, s: &owned[k] });
+        items.push(Text {
+            x: 52.0,
+            y: 730.0 - i as f32 * 13.0,
+            s: &owned[k],
+        });
         k += 1;
     }
-    for i in 0..18 {
-        items.push(Text { x: 195.0, y: 612.0 - i as f32 * 13.0, s: &owned[k] });
+    for i in 0..24 {
+        items.push(Text {
+            x: 195.0,
+            y: 612.0 - i as f32 * 13.0,
+            s: &owned[k],
+        });
         k += 1;
     }
     let t = text_of(helvetica_pdf(&items));
@@ -236,7 +258,12 @@ fn rtl_visual_pdf(x: f32, y: f32, logical: &str) -> Vec<u8> {
     }
     let text: String = visual.into_iter().collect();
     let codes: Vec<u16> = (1..=text.chars().count() as u16).collect();
-    type0_pdf(&[Run { x, y, text: &text, codes: &codes }])
+    type0_pdf(&[Run {
+        x,
+        y,
+        text: &text,
+        codes: &codes,
+    }])
 }
 
 // ===========================================================================

@@ -123,7 +123,11 @@ pub fn decode(data: &[u8], params: &CcittParams) -> Result<CcittDecoded> {
         return Err(Error::Decode("CCITT: no output produced".to_string()));
     }
 
-    Ok(CcittDecoded { data: out, rows_decoded: decoded_rows, recovered_partial: recovered })
+    Ok(CcittDecoded {
+        data: out,
+        rows_decoded: decoded_rows,
+        recovered_partial: recovered,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -280,7 +284,7 @@ fn next_color(
             *pos += 1;
             continue;
         }
-        if (*pos % 2 == 0) != want_black {
+        if (*pos).is_multiple_of(2) != want_black {
             *pos += 1;
         }
         break;
@@ -348,8 +352,7 @@ fn decode_row_g4(
                 }
             },
             Mode::Vertical(delta) => {
-                let b1 =
-                    next_color(reference, &mut pos, a0, !black, start_of_row).unwrap_or(width);
+                let b1 = next_color(reference, &mut pos, a0, !black, start_of_row).unwrap_or(width);
                 let a1i = b1 as i32 + delta as i32;
                 if a1i < 0 || a1i > width as i32 {
                     break; // malformed → end the line, keep what we have
@@ -513,7 +516,12 @@ mod tests {
     #[test]
     fn g4_all_white_row_v0() {
         // 8-wide, 1 row. V0 against the imaginary white ref → all-white row.
-        let params = CcittParams { k: -1, columns: 8, rows: Some(1), ..Default::default() };
+        let params = CcittParams {
+            k: -1,
+            columns: 8,
+            rows: Some(1),
+            ..Default::default()
+        };
         let d = p(params, "1").unwrap();
         assert_eq!(d.rows_decoded, 1);
         assert_eq!(d.data, vec![0u8]); // all white
@@ -525,7 +533,12 @@ mod tests {
         // 8-wide row: Horizontal (001) + white run 3 (1000) + black run 2 (11)
         // ⇒ transitions [3,5], leaving a0=5; a trailing V0 (1) extends the final
         // white run to the right edge, completing the row.
-        let params = CcittParams { k: -1, columns: 8, rows: Some(1), ..Default::default() };
+        let params = CcittParams {
+            k: -1,
+            columns: 8,
+            rows: Some(1),
+            ..Default::default()
+        };
         let d = p(params, "001 1000 11 1").unwrap();
         // pixels: white[0..3) black[3..5) white[5..8) ⇒ 0b00011000 = 0x18
         assert_eq!(d.data, vec![0b0001_1000]);
@@ -550,7 +563,10 @@ mod tests {
         assert_eq!(d.data, vec![0u8, 0u8]); // both rows white
         assert!(!d.recovered_partial);
 
-        let unaligned = CcittParams { encoded_byte_align: false, ..aligned };
+        let unaligned = CcittParams {
+            encoded_byte_align: false,
+            ..aligned
+        };
         let d2 = decode(&[0x80, 0x80], &unaligned).unwrap();
         // Without alignment the 2nd row can't be found → 1 row decoded, the rest
         // recovered (white-padded) — NOT a silently-blank full page.
@@ -561,15 +577,25 @@ mod tests {
     #[test]
     fn g4_zero_rows_errs_not_white() {
         // Garbage that cannot start a row → Err, NOT an all-white Ok buffer.
-        let params = CcittParams { k: -1, columns: 8, rows: Some(4), ..Default::default() };
+        let params = CcittParams {
+            k: -1,
+            columns: 8,
+            rows: Some(4),
+            ..Default::default()
+        };
         // "000000000000000" is the EOL/EOFB region but with no valid first mode
         // before data ends → no rows.
         let d = p(params, "000000000001"); // single EOL = immediate EOFB
-        // EOFB on the very first read → EndOfBlock with 0 rows → padded white.
-        // That is a legitimately-blank scan, so it returns Ok(all white). A
-        // truly undecodable stream errors instead:
+                                           // EOFB on the very first read → EndOfBlock with 0 rows → padded white.
+                                           // That is a legitimately-blank scan, so it returns Ok(all white). A
+                                           // truly undecodable stream errors instead:
         assert!(d.is_ok());
-        let bad = CcittParams { k: -1, columns: 8, rows: Some(4), ..Default::default() };
+        let bad = CcittParams {
+            k: -1,
+            columns: 8,
+            rows: Some(4),
+            ..Default::default()
+        };
         // 0b0000001 = Extension as the very first mode → Error, 0 rows → Err.
         assert!(p(bad, "0000001").is_err());
     }

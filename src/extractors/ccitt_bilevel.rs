@@ -96,8 +96,7 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
                 params.encoded_byte_align,
                 e
             );
-            let expected_bytes =
-                params.rows.unwrap_or(1) as usize * (width as usize).div_ceil(8);
+            let expected_bytes = params.rows.unwrap_or(1) as usize * (width as usize).div_ceil(8);
             Ok(vec![0; expected_bytes.max((width as usize).div_ceil(8))])
         },
     }

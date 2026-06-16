@@ -2835,10 +2835,12 @@ impl PdfDocument {
         let is_numbered_marker = |i: usize| -> bool {
             let t = spans[i].text.trim_start();
             let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
-            digits >= 1 && digits <= 3 && t[digits..].starts_with(['.', ')'])
+            (1..=3).contains(&digits) && t[digits..].starts_with(['.', ')'])
         };
         let numbered_excluded: HashSet<usize> = {
-            let markers: Vec<usize> = (0..spans.len()).filter(|&i| is_numbered_marker(i)).collect();
+            let markers: Vec<usize> = (0..spans.len())
+                .filter(|&i| is_numbered_marker(i))
+                .collect();
             if markers.len() >= 3 {
                 let mut xs: Vec<f32> = markers.iter().map(|&i| spans[i].bbox.x).collect();
                 xs.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
@@ -2848,7 +2850,8 @@ impl PdfDocument {
                     .copied()
                     .filter(|&i| (spans[i].bbox.x - median_x).abs() <= 6.0)
                     .collect();
-                let rows: HashSet<i32> = cluster.iter().map(|&i| band_of(spans[i].bbox.y)).collect();
+                let rows: HashSet<i32> =
+                    cluster.iter().map(|&i| band_of(spans[i].bbox.y)).collect();
                 if cluster.len() >= 3 && rows.len() >= 3 {
                     cluster.into_iter().collect()
                 } else {
@@ -11829,7 +11832,11 @@ impl PdfDocument {
             // *below* the opposite column rather than beside it.
             let mut heights: Vec<f32> = buf.iter().map(|s| s.bbox.height).collect();
             heights.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
-            let line_h = heights.get(heights.len() / 2).copied().unwrap_or(10.0).max(1.0);
+            let line_h = heights
+                .get(heights.len() / 2)
+                .copied()
+                .unwrap_or(10.0)
+                .max(1.0);
             // Left column (centre < gutter) by y, then right column by y.
             let (mut left, mut right): (Vec<TextSpan>, Vec<TextSpan>) = std::mem::take(buf)
                 .into_iter()
@@ -11847,7 +11854,8 @@ impl PdfDocument {
             // "below" = smaller y. Only fires when the opposite column has real
             // content (>=2 spans) and the block clears its bottom by a line, so
             // balanced 2-col bodies (columns ending at ~equal y) are untouched.
-            let bottom_y = |v: &[TextSpan]| v.iter().map(|s| s.bbox.y).fold(f32::INFINITY, f32::min);
+            let bottom_y =
+                |v: &[TextSpan]| v.iter().map(|s| s.bbox.y).fold(f32::INFINITY, f32::min);
             let right_bottom = bottom_y(&right);
             let left_bottom = bottom_y(&left);
             let mut trailing: Vec<TextSpan> = Vec::new();
@@ -12348,7 +12356,7 @@ impl PdfDocument {
         // anchored at x_min). The gutter is just left of it.
         let body_left = {
             const BIN: f32 = 5.0;
-            let nbins = ((width / BIN).ceil() as usize).max(1).min(4096);
+            let nbins = ((width / BIN).ceil() as usize).clamp(1, 4096);
             let mut hist = vec![0usize; nbins];
             for l in &lines {
                 if l.min_left > x_min + width * 0.10 {
@@ -12400,8 +12408,14 @@ impl PdfDocument {
         }
         // Sidebar genuinely narrower than the body column.
         let col_width = |v: &[usize]| -> f32 {
-            let lo = v.iter().map(|&i| spans[i].bbox.left()).fold(f32::MAX, f32::min);
-            let hi = v.iter().map(|&i| spans[i].bbox.right()).fold(f32::MIN, f32::max);
+            let lo = v
+                .iter()
+                .map(|&i| spans[i].bbox.left())
+                .fold(f32::MAX, f32::min);
+            let hi = v
+                .iter()
+                .map(|&i| spans[i].bbox.right())
+                .fold(f32::MIN, f32::max);
             (hi - lo).max(0.0)
         };
         let sw = col_width(&sidebar);
@@ -12463,7 +12477,7 @@ impl PdfDocument {
             safe_float_cmp(by, ay).then_with(|| safe_float_cmp(ax, bx))
         });
         let mut out: Vec<crate::layout::TextSpan> = Vec::with_capacity(spans.len());
-        for i in main.into_iter().chain(sidebar.into_iter()) {
+        for i in main.into_iter().chain(sidebar) {
             out.push(spans[i].clone());
         }
         Some(out)
@@ -22054,7 +22068,7 @@ mod tests {
             font_size: 12.0,
             ..TextSpan::default()
         };
-        let spans = vec![body, theh];
+        let spans = [body, theh];
         let line: Vec<&TextSpan> = spans.iter().collect();
         assert!(
             PdfDocument::rtl_line_needs_glyph_reorder(&line),

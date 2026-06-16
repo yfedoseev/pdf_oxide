@@ -417,7 +417,9 @@ mod tests {
     fn test_right_joining_arabic() {
         // Joining_Type = R (right-joining only): alef, dal, thal, reh, zain,
         // waw, teh marbuta.
-        for r in [0x0627, 0x0622, 0x0623, 0x0625, 0x062F, 0x0630, 0x0631, 0x0632, 0x0648, 0x0629] {
+        for r in [
+            0x0627, 0x0622, 0x0623, 0x0625, 0x062F, 0x0630, 0x0631, 0x0632, 0x0648, 0x0629,
+        ] {
             assert!(is_right_joining_arabic(r), "{r:#06X} should be right-joining");
         }
         // Dual-joining letters (beh, teh, lam, qaf, …) and yeh-hamza are NOT R.
