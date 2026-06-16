@@ -17206,6 +17206,19 @@ impl PdfDocument {
         }
 
         // Step 7: Process through pipeline (applies reading order strategy)
+        // Repair the cross-span Arabic glyph-interleave defect on the RAW spans,
+        // BEFORE the pipeline merges/orders them. The zero-width mark/consonant
+        // spans that land inside a word's x-range are only still standalone here;
+        // once `pipeline.process` merges adjacent spans the gate can no longer
+        // see them (the reason the post-order `OrderedTextSpan` patch never
+        // fired). Collapsing each gated pure-RTL line to one visual-order span
+        // now lets md/html reconstruct Arabic/Hebrew at glyph fidelity, matching
+        // the plain-text path. Returns None — byte-identical — for any page
+        // without the interleave, so LTR output is untouched.
+        let spans = match Self::merge_interleaved_rtl_lines(&spans) {
+            Some(merged) => merged,
+            None => spans,
+        };
         let mut ordered_spans = pipeline.process(spans, context)?;
 
         // Annotate ordered spans with the per-MCID structural role
@@ -17630,6 +17643,19 @@ impl PdfDocument {
         };
 
         // Step 6: Process through pipeline (applies reading order strategy)
+        // Repair the cross-span Arabic glyph-interleave defect on the RAW spans,
+        // BEFORE the pipeline merges/orders them. The zero-width mark/consonant
+        // spans that land inside a word's x-range are only still standalone here;
+        // once `pipeline.process` merges adjacent spans the gate can no longer
+        // see them (the reason the post-order `OrderedTextSpan` patch never
+        // fired). Collapsing each gated pure-RTL line to one visual-order span
+        // now lets md/html reconstruct Arabic/Hebrew at glyph fidelity, matching
+        // the plain-text path. Returns None — byte-identical — for any page
+        // without the interleave, so LTR output is untouched.
+        let spans = match Self::merge_interleaved_rtl_lines(&spans) {
+            Some(merged) => merged,
+            None => spans,
+        };
         let mut ordered_spans = pipeline.process(spans, context)?;
 
         // Apply struct-tree-scope /ActualText; see `to_markdown` for
@@ -17825,6 +17851,19 @@ impl PdfDocument {
         let context = ReadingOrderContext::new().with_page(page_index as u32);
 
         // Step 6: Process through pipeline (applies reading order strategy)
+        // Repair the cross-span Arabic glyph-interleave defect on the RAW spans,
+        // BEFORE the pipeline merges/orders them. The zero-width mark/consonant
+        // spans that land inside a word's x-range are only still standalone here;
+        // once `pipeline.process` merges adjacent spans the gate can no longer
+        // see them (the reason the post-order `OrderedTextSpan` patch never
+        // fired). Collapsing each gated pure-RTL line to one visual-order span
+        // now lets md/html reconstruct Arabic/Hebrew at glyph fidelity, matching
+        // the plain-text path. Returns None — byte-identical — for any page
+        // without the interleave, so LTR output is untouched.
+        let spans = match Self::merge_interleaved_rtl_lines(&spans) {
+            Some(merged) => merged,
+            None => spans,
+        };
         let mut ordered_spans = pipeline.process(spans, context)?;
 
         // Apply struct-tree-scope /ActualText; see `to_markdown` for
