@@ -50,9 +50,10 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
         log::debug!("CCITT Group 4 decompression requested");
     }
 
-    // Primary: the in-house Group 4 decoder. It honors /EncodedByteAlign (which
-    // the fax crate cannot — its bit reader is private) and recovers partial
-    // content from truncated/damaged streams instead of blanking the page.
+    // Primary: the in-house decoder (Group 4 T.6, and Group 3 T.4 for K >= 0).
+    // It honors /EncodedByteAlign (which the fax crate cannot — its bit reader
+    // is private) and recovers partial content from truncated/damaged streams
+    // instead of blanking the page.
     let in_house = crate::decoders::ccitt::decode(data, params);
     let fax_result = match in_house {
         Ok(decoded) => {
@@ -68,7 +69,7 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
             Ok(decoded.data)
         },
         Err(in_house_err) => {
-            // Group 3, or a Group 4 stream the in-house decoder rejected: fall
+            // A stream the in-house decoder couldn't make progress on: fall
             // back to the legacy fax crate before giving up.
             log::debug!("CCITT in-house decode declined ({in_house_err}); trying fax crate");
             decompress_with_fax(data, width, height_opt, params)

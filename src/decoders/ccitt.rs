@@ -46,10 +46,11 @@ pub struct CcittDecoded {
     pub recovered_partial: bool,
 }
 
-/// Decode a CCITT **Group 4** (T.6) codestream to packed bilevel bytes.
+/// Decode a CCITT codestream to packed bilevel bytes, dispatching on `/K`:
+/// Group 4 (T.6, `K < 0`) here, Group 3 (T.4, `K >= 0`) in [`decode_g3`].
 ///
 /// Returns `Err` only when zero usable rows could be produced (genuinely
-/// undecodable) or the scheme is not Group 4 — the caller may then fall back.
+/// undecodable) — the caller may then fall back.
 /// `BlackIs1` is NOT applied here; the caller owns that inversion.
 pub fn decode(data: &[u8], params: &CcittParams) -> Result<CcittDecoded> {
     let width = params.columns as u16;
@@ -57,8 +58,8 @@ pub fn decode(data: &[u8], params: &CcittParams) -> Result<CcittDecoded> {
         return Err(Error::Decode("CCITT decode requires /Columns".to_string()));
     }
     if !params.is_group_4() {
-        // Group 3 (K >= 0) is not handled in-house yet; caller falls back.
-        return Err(Error::Decode("in-house CCITT decoder handles Group 4 only".to_string()));
+        // Group 3: K == 0 is pure 1-D (Modified Huffman); K > 0 is mixed 1-D/2-D.
+        return decode_g3(data, params);
     }
 
     let bytes_per_row = (width as usize).div_ceil(8);
@@ -128,6 +129,169 @@ pub fn decode(data: &[u8], params: &CcittParams) -> Result<CcittDecoded> {
         rows_decoded: decoded_rows,
         recovered_partial: recovered,
     })
+}
+
+/// Decode a CCITT **Group 3** (T.4) codestream. `params.k == 0` is pure 1-D
+/// (Modified Huffman); `params.k > 0` is mixed 1-D/2-D where a tag bit after the
+/// line's EOL selects that line's coding (`1` = 1-D, `0` = 2-D-relative). EOL
+/// codes (`000000000001`, absorbing any leading fill bits) delimit lines and are
+/// tolerated whether or not `/EndOfLine` is declared; six consecutive EOLs is the
+/// return-to-control terminator. Shares the run tables, reference-line walk and
+/// recovery contract with the Group 4 path. `BlackIs1` is the caller's to apply.
+fn decode_g3(data: &[u8], params: &CcittParams) -> Result<CcittDecoded> {
+    let width = params.columns as u16;
+    let two_dimensional = params.k > 0;
+    let bytes_per_row = (width as usize).div_ceil(8);
+    let mut reader = BitReader::new(data);
+    let mut reference: Vec<u16> = Vec::new(); // imaginary all-white line above row 0
+    let mut current: Vec<u16> = Vec::new();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes_per_row * params.rows.unwrap_or(0) as usize);
+    let mut decoded_rows = 0usize;
+    let mut byte_align = params.encoded_byte_align;
+    let mut recovered = false;
+
+    loop {
+        if let Some(h) = params.rows {
+            if decoded_rows >= h as usize {
+                break;
+            }
+        }
+        if byte_align && decoded_rows > 0 {
+            byte_align_skip(&mut reader, &mut byte_align);
+        }
+        // Swallow the line's EOL (plus fill); 6+ in a row is RTC = end of page.
+        let eols = skip_eols(&mut reader);
+        if reader.eod() {
+            if let Some(h) = params.rows {
+                if decoded_rows < h as usize {
+                    recovered = true;
+                }
+            }
+            break;
+        }
+        if eols >= 6 {
+            break;
+        }
+
+        // Mixed 2-D streams prefix every line with a 1-D/2-D tag bit.
+        let one_d = if two_dimensional {
+            match reader.peek(1) {
+                Some(b) => {
+                    reader.consume(1);
+                    b == 1
+                },
+                None => break,
+            }
+        } else {
+            true
+        };
+
+        current.clear();
+        let status = if one_d {
+            decode_row_g3_1d(&mut reader, width, &mut current)
+        } else {
+            decode_row_g4(&mut reader, &reference, width, &mut current)
+        };
+        match status {
+            RowStatus::EndOfBlock => break,
+            RowStatus::Error => {
+                if decoded_rows >= 1 {
+                    recovered = true; // keep decoded rows; do NOT blank the page
+                    break;
+                }
+                return Err(Error::Decode(
+                    "CCITT G3: stream undecodable from first row".to_string(),
+                ));
+            },
+            RowStatus::Ok => {
+                out.extend_from_slice(&transitions_to_bytes(&current, width as usize));
+                std::mem::swap(&mut reference, &mut current);
+                decoded_rows += 1;
+            },
+        }
+    }
+
+    if let Some(h) = params.rows {
+        let white_row = vec![0u8; bytes_per_row];
+        while out.len() / bytes_per_row.max(1) < h as usize {
+            out.extend_from_slice(&white_row);
+        }
+    }
+    if out.is_empty() {
+        return Err(Error::Decode("CCITT G3: no output produced".to_string()));
+    }
+
+    Ok(CcittDecoded {
+        data: out,
+        rows_decoded: decoded_rows,
+        recovered_partial: recovered,
+    })
+}
+
+/// Decode one Group 3 1-D (Modified Huffman) row: runs alternate white→black
+/// from the left edge, each a make-up+terminating MH code. Pushes color-flip
+/// columns (first run white) into `current`, matching the G4 row contract so the
+/// shared `transitions_to_bytes` packs it identically.
+fn decode_row_g3_1d(reader: &mut BitReader, width: u16, current: &mut Vec<u16>) -> RowStatus {
+    let mut a0: u16 = 0;
+    let mut white = true;
+    let mut any = false;
+    while a0 < width {
+        let run = match read_run(reader, white) {
+            Some(v) => v,
+            // The run tables can't read an EOL/EOFB or fill: a clean line ends
+            // here if we already placed a run, otherwise the row is undecodable.
+            None => return if any { RowStatus::Ok } else { RowStatus::Error },
+        };
+        let a1 = match a0.checked_add(run) {
+            Some(v) => v,
+            None => return RowStatus::Error,
+        };
+        any = true;
+        if a1 >= width {
+            break; // final run reaches the right edge; no trailing flip to push
+        }
+        current.push(a1);
+        a0 = a1;
+        white = !white;
+    }
+    RowStatus::Ok
+}
+
+/// Consume a maximal run of EOL codes at the cursor (`>= 11` zero bits — fill
+/// included — followed by a `1`), returning how many were eaten. Leaves the
+/// reader untouched when the next bits are not an EOL; when a trailing fill of
+/// `>= 11` zeros runs into the end of data it is treated as a terminator and
+/// the reader is left at EOD.
+fn skip_eols(reader: &mut BitReader) -> usize {
+    let mut count = 0usize;
+    loop {
+        let save = reader.bit;
+        let mut zeros = 0u32;
+        loop {
+            match reader.peek(1) {
+                Some(0) => {
+                    reader.consume(1);
+                    zeros += 1;
+                },
+                Some(_) => break, // the terminating 1 bit of an EOL
+                None => {
+                    // Ran out of data inside the zero run.
+                    if zeros < 11 {
+                        reader.bit = save; // not an EOL — leave the cursor put
+                    }
+                    return count;
+                },
+            }
+        }
+        if zeros >= 11 {
+            reader.consume(1); // eat the EOL's terminating 1
+            count += 1;
+        } else {
+            reader.bit = save; // a short zero run is real code, not an EOL
+            return count;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -598,5 +762,132 @@ mod tests {
         };
         // 0b0000001 = Extension as the very first mode → Error, 0 rows → Err.
         assert!(p(bad, "0000001").is_err());
+    }
+
+    // -- Group 3 (T.4) --------------------------------------------------------
+
+    #[test]
+    fn g3_1d_all_white_row() {
+        // 8-wide K=0 row: a single white run of 8 (MH code 10011).
+        let params = CcittParams {
+            k: 0,
+            columns: 8,
+            rows: Some(1),
+            ..Default::default()
+        };
+        let d = p(params, "10011").unwrap();
+        assert_eq!(d.rows_decoded, 1);
+        assert_eq!(d.data, vec![0u8]); // all white
+        assert!(!d.recovered_partial);
+    }
+
+    #[test]
+    fn g3_1d_white3_black2() {
+        // 8-wide K=0 row: white run 3 (1000) + black run 2 (11) + white run 3
+        // (1000) ⇒ transitions [3,5] ⇒ 0b0001_1000, identical to the G4 case.
+        let params = CcittParams {
+            k: 0,
+            columns: 8,
+            rows: Some(1),
+            ..Default::default()
+        };
+        let d = p(params, "1000 11 1000").unwrap();
+        assert_eq!(d.data, vec![0b0001_1000]);
+    }
+
+    #[test]
+    fn g3_1d_eol_delimited_rows() {
+        // Two all-white rows, each preceded by an EOL (000000000001) as a real
+        // T.4 stream emits. The EOLs must be swallowed, not mis-read as runs.
+        let params = CcittParams {
+            k: 0,
+            columns: 8,
+            rows: Some(2),
+            end_of_line: true,
+            ..Default::default()
+        };
+        let d = p(params, "000000000001 10011 000000000001 10011").unwrap();
+        assert_eq!(d.rows_decoded, 2);
+        assert_eq!(d.data, vec![0u8, 0u8]);
+        assert!(!d.recovered_partial);
+    }
+
+    #[test]
+    fn g3_1d_rtc_terminates() {
+        // One white row then a return-to-control (6 EOLs) ⇒ stop cleanly; the
+        // declared 3rd/4th rows are white-padded, not reported as decoded.
+        let params = CcittParams {
+            k: 0,
+            columns: 8,
+            rows: Some(4),
+            ..Default::default()
+        };
+        let rtc = "000000000001".repeat(6);
+        let d = p(params, &format!("10011 {rtc}")).unwrap();
+        assert_eq!(d.rows_decoded, 1);
+        assert_eq!(d.data, vec![0u8; 4]); // padded to declared height
+    }
+
+    // Real libtiff output for one 128×64 bilevel image, encoded both ways. The
+    // G4 path is already trusted, so decoding the G3 (K=0) stream to the *same*
+    // bitmap proves the new Modified-Huffman path — this is the codestream shape
+    // behind the blank-page reports (K=0 / Group 3 1-D), which the in-house
+    // decoder previously rejected outright.
+    #[rustfmt::skip]
+    const G3_1D_STREAM: &[u8] = &[
+        0,17,192,240,103,0,24,3,193,104,0,77,120,3,192,172,0,77,92,1,224,176,0,38,165,0,120,19,128,9,168,176,7,
+        129,184,0,154,132,128,60,20,192,4,212,60,1,224,202,0,38,162,137,1,224,160,0,77,69,18,3,193,64,0,154,138,
+        36,7,130,128,1,53,20,72,15,5,0,2,106,40,144,30,10,0,4,212,81,32,60,20,0,9,168,162,64,120,40,0,19,81,68,
+        128,240,80,0,38,162,137,1,224,160,0,77,69,18,3,193,64,0,154,138,36,7,130,128,1,53,20,72,15,5,0,2,106,40,
+        144,30,10,0,4,212,81,64,60,54,0,9,168,162,74,5,138,0,252,0,77,69,18,160,199,221,15,14,7,160,1,53,20,72,
+        227,29,142,99,129,232,0,77,69,18,29,138,224,126,0,38,162,137,9,10,12,112,61,0,9,168,162,65,45,14,135,135,
+        3,208,0,154,138,36,20,117,8,120,112,61,0,9,168,162,65,97,112,31,128,9,168,162,64,196,1,240,0,154,138,36,
+        25,224,15,64,2,106,40,144,108,176,102,0,19,81,68,128,188,1,96,0,154,138,36,25,80,11,32,2,106,40,144,102,
+        64,20,0,9,168,162,64,209,0,112,0,38,162,137,3,84,1,32,0,154,138,36,26,80,10,64,2,106,40,144,106,64,50,0,
+        9,168,162,65,173,0,172,0,38,160,120,49,0,168,0,38,160,120,103,128,218,0,19,80,60,54,64,54,0,9,168,30,10,
+        32,53,128,4,212,15,3,16,26,128,2,106,7,134,92,6,144,0,154,129,225,155,0,212,0,38,160,120,52,192,52,0,9,
+        168,30,13,112,25,128,2,106,7,134,156,6,80,0,154,129,225,171,0,92,0,77,64,240,215,128,110,0,38,160,120,54,
+        192,104,0,19,80,60,54,224,8,0,19,80,60,21,96,23,0,19,80,60,21,224,28,0,77,64,240,101,128,224,2,106,7,130,
+        156,4,0,19,80,60,13,224,80,1,53,3,192,158,8,0,77,64,240,88,134,0,38,160,120,21,198,0,38,160,120,45,64,
+    ];
+    #[rustfmt::skip]
+    const G4_STREAM: &[u8] = &[
+        35,129,224,206,28,17,227,12,60,48,240,195,195,15,12,60,138,37,255,255,255,255,255,255,195,225,21,4,88,52,
+        120,97,160,71,116,8,195,248,97,164,227,248,99,16,151,134,202,128,200,224,122,236,66,40,114,135,253,132,16,
+        255,226,16,66,15,196,53,225,135,225,131,240,97,248,97,248,97,248,97,248,97,248,97,248,97,248,97,226,24,120,
+        97,225,135,134,30,24,120,97,225,135,134,30,24,120,97,225,135,134,30,24,120,97,225,135,134,30,24,120,97,225,
+        135,134,30,24,120,97,225,134,0,32,2,
+    ];
+
+    #[test]
+    fn g3_1d_matches_g4_for_same_image() {
+        let g3 = decode(
+            G3_1D_STREAM,
+            &CcittParams {
+                k: 0,
+                columns: 128,
+                rows: Some(64),
+                end_of_line: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let g4 = decode(
+            G4_STREAM,
+            &CcittParams {
+                k: -1,
+                columns: 128,
+                rows: Some(64),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(g3.rows_decoded, 64);
+        assert!(!g3.recovered_partial);
+        assert_eq!(g3.data.len(), 16 * 64);
+        // Both encode the identical bitmap; the trusted G4 path is the oracle.
+        assert_eq!(g3.data, g4.data);
+        // And it is not a degenerate all-white decode.
+        assert!(g3.data.iter().any(|&b| b != 0));
     }
 }
