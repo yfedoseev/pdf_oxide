@@ -50,42 +50,55 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
         log::debug!("CCITT Group 4 decompression requested");
     }
 
-    match decompress_with_fax(data, width, height_opt, params) {
-        Ok(mut output) => {
-            let rows = output.len() / (width as usize).div_ceil(8);
-            log::debug!(
-                "CCITT decompressed: {} bytes -> {} bytes ({} rows)",
-                data.len(),
-                output.len(),
-                rows
-            );
+    // Primary: the in-house Group 4 decoder. It honors /EncodedByteAlign (which
+    // the fax crate cannot — its bit reader is private) and recovers partial
+    // content from truncated/damaged streams instead of blanking the page.
+    let in_house = crate::decoders::ccitt::decode(data, params);
+    let fax_result = match in_house {
+        Ok(decoded) => {
+            if decoded.recovered_partial {
+                log::warn!(
+                    "CCITT: recovered {} rows then padded white (truncated/damaged stream, {}x{}, {} bytes)",
+                    decoded.rows_decoded,
+                    params.columns,
+                    params.rows.unwrap_or(0),
+                    data.len()
+                );
+            }
+            Ok(decoded.data)
+        },
+        Err(in_house_err) => {
+            // Group 3, or a Group 4 stream the in-house decoder rejected: fall
+            // back to the legacy fax crate before giving up.
+            log::debug!("CCITT in-house decode declined ({in_house_err}); trying fax crate");
+            decompress_with_fax(data, width, height_opt, params)
+        },
+    };
 
-            // Handle /BlackIs1 parameter if needed
+    match fax_result {
+        Ok(mut output) => {
             if params.black_is_1 {
                 invert_bilevel_pixels(&mut output);
             }
-
-            log::trace!("CCITT decompression successful!");
             Ok(output)
         },
         Err(e) => {
+            // Both decoders failed. Do NOT silently return an all-white page
+            // (the old behavior that produced the blank-page bug) — warn loudly
+            // and surface a controlled white fallback only as a last resort so
+            // the failure is visible in logs rather than masked as success.
             log::warn!(
-                "CCITT decompression failed: {}x{} pixels, {} bytes: {}",
+                "CCITT decompression failed ({}x{}, {} bytes, K={}, EncodedByteAlign={}): {} — substituting blank image (DECODE FAILED, not a blank scan)",
                 params.columns,
                 params.rows.unwrap_or(0),
                 data.len(),
+                params.k,
+                params.encoded_byte_align,
                 e
             );
-            log::trace!(
-                "Check /DecodeParms: /EndOfLine={}, /EncodedByteAlign={}, /EndOfBlock={}",
-                params.end_of_line,
-                params.encoded_byte_align,
-                params.end_of_block
-            );
-            // Fallback: return white pixels
-            let expected_bytes = height_opt.unwrap_or(1) as usize * (width as usize).div_ceil(8);
-            log::trace!("Returning {} bytes of white pixels as fallback", expected_bytes);
-            Ok(vec![0; expected_bytes])
+            let expected_bytes =
+                params.rows.unwrap_or(1) as usize * (width as usize).div_ceil(8);
+            Ok(vec![0; expected_bytes.max((width as usize).div_ceil(8))])
         },
     }
 }
@@ -228,7 +241,7 @@ fn try_decode_with_fax(
 /// - Pixels 0-2: white
 /// - Pixels 3-4: black
 /// - Pixels 5-7: white
-fn transitions_to_bytes(transitions: &[u16], width: usize) -> Vec<u8> {
+pub(crate) fn transitions_to_bytes(transitions: &[u16], width: usize) -> Vec<u8> {
     let bytes_per_row = width.div_ceil(8);
     let mut row_bytes = vec![0u8; bytes_per_row];
 

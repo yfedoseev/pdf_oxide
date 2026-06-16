@@ -18,7 +18,7 @@ use crate::parser_config::ParserOptions;
 mod ascii85;
 mod ascii_hex;
 mod brotli;
-mod ccitt;
+pub(crate) mod ccitt;
 mod dct;
 mod flate;
 mod jbig2;
