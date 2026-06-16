@@ -7824,7 +7824,7 @@ fn project_iccbased_to_rgb(
     let dict = stream_resolved.as_dict()?;
     let n = dict.get("N").and_then(|o| o.as_integer()).unwrap_or(3);
 
-    #[cfg(any(feature = "icc-qcms", feature = "icc-lcms2"))]
+    #[cfg(any(feature = "icc-qcms", feature = "icc-lcms2", feature = "icc-tintbox"))]
     {
         if let Ok(bytes) = stream_resolved.decode_stream_data() {
             if let Some(profile) = crate::color::IccProfile::parse(bytes, n.clamp(0, 255) as u8) {

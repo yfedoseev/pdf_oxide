@@ -1,6 +1,6 @@
 //! ICC colour-management backend abstraction.
 //!
-//! Two backends ship behind feature flags:
+//! Three CMM backends ship behind feature flags:
 //!
 //!  - `QcmsBackend` (`icc-qcms`, the default): Firefox's pure-Rust
 //!    qcms 0.3 engine. Covers source-profile → sRGB conversion for
@@ -13,18 +13,28 @@
 //!    `lcms2` crate. Press-grade — CMYK→CMYK profile retargeting
 //!    through the Lab PCS, Black Point Compensation for relative-
 //!    colorimetric (the press default), and rendering-intent dispatch
-//!    the spec asks for. Adds a C dependency (`lcms2-sys`) so it's
-//!    opt-in; consumers building for WASM or C# AOT keep the qcms
-//!    default.
+//!    the spec asks for. Adds a C dependency (`lcms2-sys`).
 //!
-//! At most one backend is active per build. When both features are
-//! enabled, lcms2 wins — it's the strict capability superset.
+//!  - `TintboxBackend` (`icc-tintbox`, opt-in): Little CMS reimplemented
+//!    in pure Rust (`tintbox`). Same press-grade capability surface as
+//!    the lcms2 backend — CMYK→CMYK retargeting, BPC, per-intent
+//!    dispatch — with no C dependency, so the full press pipeline stays
+//!    available on WASM / C# AOT targets that otherwise fall back to
+//!    qcms. tintbox is a byte-for-byte reimplementation of lcms2 on the
+//!    unoptimized code path; it differs only in that its lossy curve
+//!    optimizer is opt-in (off here) where lcms2's is on by default.
+//!
+//! At most one backend is *active* per build, selected by capability
+//! precedence: tintbox > lcms2 > qcms > none. When several features are
+//! enabled the others stay compiled (so the parity differential can
+//! drive lcms2 and tintbox side by side) but `ActiveIccBackend` resolves
+//! to the highest-precedence one.
 //!
 //! The [`IccBackend`] trait shape exists so the rest of `crate::color`
-//! never imports `qcms` or `lcms2` directly: every call site goes
-//! through [`Transform`](super::Transform) which is built on top of
-//! `ActiveIccBackend`. This keeps `color.rs` free of backend cfg
-//! gates and confines the qcms/lcms2 differences to this file.
+//! never imports `qcms` / `lcms2` / `tintbox` directly: every call site
+//! goes through [`Transform`](super::Transform) which is built on top of
+//! `ActiveIccBackend`. This keeps `color.rs` free of backend cfg gates
+//! and confines the per-engine differences to this file.
 
 use super::{IccProfile, RenderingIntent};
 
@@ -589,7 +599,273 @@ pub use lcms2_impl::{
 };
 
 // ============================================================================
-// NoOpBackend — fallback when neither icc-qcms nor icc-lcms2 is enabled.
+// TintboxBackend — Little CMS reimplemented in pure Rust (`tintbox`).
+// ============================================================================
+
+/// tintbox-backed [`IccBackend`]. Same press-grade capability surface as
+/// the `Lcms2Backend` — CMYK→CMYK retargeting through the Lab PCS, Black
+/// Point Compensation, and per-intent dispatch — but with no C
+/// dependency, so the full press pipeline stays available on the
+/// pure-Rust WASM / C# AOT targets that otherwise fall back to qcms.
+///
+/// tintbox is a byte-for-byte reimplementation of Little CMS, so the
+/// compiled transforms match lcms2's on the *unoptimized* code path.
+/// The one behavioural difference that matters here: lcms2 enables its
+/// lossy curve/matrix optimizer by default, whereas tintbox's optimizer
+/// is opt-in (the simple constructors pass `NOOPTIMIZE`). We use the
+/// simple constructors, so tintbox takes the accurate path — which is
+/// the *more* faithful colour, not a regression.
+#[cfg(feature = "icc-tintbox")]
+pub struct TintboxBackend;
+
+#[cfg(feature = "icc-tintbox")]
+mod tintbox_impl {
+    use super::*;
+    use tintbox::format::decode::{TYPE_CMYK_8, TYPE_GRAY_8, TYPE_RGB_8};
+    use tintbox::opt::OptimizationStrategy;
+    use tintbox::profile::{ColorSpace, Profile};
+    use tintbox::transform::Transform;
+
+    /// Transforms are built with the `AccurateFast` strategy — tintbox's
+    /// LOSSLESS optimizer. It is byte-for-byte identical to the default
+    /// `Accurate` path (= lcms2 `-NOOPTIMIZE`; verified by the parity tests)
+    /// but routes the CLUT/matrix-shaper eval through a batched path with the
+    /// interpolator + input curves resolved once. After tintbox sized its
+    /// batched scratch to `min(n, tile)` (so a small-chunk call no longer
+    /// allocates a full tile), `AccurateFast` is never slower than `Accurate`
+    /// at any chunk size and measured ~25% faster end-to-end on CMYK pages —
+    /// so it is the right default here. The lossy `Lcms2Compat` optimizer
+    /// stays unused (it would change output bits).
+    const TB_STRATEGY: OptimizationStrategy = OptimizationStrategy::AccurateFast;
+
+    /// Holder so the public trait stays backend-agnostic. tintbox's
+    /// `Transform` owns its compiled LUT and has no interior mutability,
+    /// so it is `Send + Sync` as-is — no cache-disabling flag is needed
+    /// to share it in the per-page `Arc<Transform>` across rayon worker
+    /// threads (contrast the lcms2 backend, which must pass `NO_CACHE`).
+    pub struct SrgbTransform {
+        pub(super) inner: Transform,
+        pub(super) source_components: u8,
+    }
+
+    /// CMYK→CMYK retarget. `TYPE_CMYK_8` on both sides; the unit-interval
+    /// f32 trait surface quantises to/from 8-bit at the boundary for the
+    /// same reason the lcms2 backend does — press hardware serialises
+    /// plates as 8-bit, so the round-trip is faithful, not lossy by
+    /// accident.
+    pub struct CmykRetarget {
+        pub(super) inner: Transform,
+    }
+
+    /// sRGB → destination CMYK (the transparency sidecar's RGB→plate
+    /// mirror). Source is the sRGB virtual, destination the document
+    /// OutputIntent CMYK profile; the link flows sRGB → Lab PCS →
+    /// destination CMYK exactly as the lcms2 path does.
+    pub struct SrgbToCmykTransform {
+        pub(super) inner: Transform,
+    }
+
+    fn tintbox_intent(intent: RenderingIntent) -> tintbox::profile::RenderingIntent {
+        match intent {
+            RenderingIntent::Perceptual => tintbox::profile::RenderingIntent::Perceptual,
+            RenderingIntent::RelativeColorimetric => {
+                tintbox::profile::RenderingIntent::RelativeColorimetric
+            },
+            RenderingIntent::Saturation => tintbox::profile::RenderingIntent::Saturation,
+            RenderingIntent::AbsoluteColorimetric => {
+                tintbox::profile::RenderingIntent::AbsoluteColorimetric
+            },
+        }
+    }
+
+    /// The sRGB virtual destination profile — byte-identical to lcms2's
+    /// `cmsCreate_sRGBProfile` by tintbox's design, so source→sRGB
+    /// transforms compare apples-to-apples with the lcms2 backend.
+    fn srgb_profile() -> Option<Profile<'static>> {
+        Profile::from_writable(&tintbox::profile::virtuals::build_srgb_profile()).ok()
+    }
+
+    fn src_format(n_components: u8) -> Option<u32> {
+        match n_components {
+            1 => Some(TYPE_GRAY_8),
+            3 => Some(TYPE_RGB_8),
+            4 => Some(TYPE_CMYK_8),
+            _ => None,
+        }
+    }
+
+    impl IccBackend for TintboxBackend {
+        type SrgbTransform = SrgbTransform;
+        type CmykRetarget = CmykRetarget;
+        type SrgbToCmykTransform = SrgbToCmykTransform;
+
+        fn build_srgb_transform(
+            profile: &IccProfile,
+            intent: RenderingIntent,
+            flags: TransformFlags,
+        ) -> Option<Self::SrgbTransform> {
+            let src = Profile::open(profile.bytes()).ok()?;
+            let dst = srgb_profile()?;
+            let in_fmt = src_format(profile.n_components())?;
+            let inner = Transform::new_simple_with_formats_strategy(
+                &src,
+                &dst,
+                tintbox_intent(intent),
+                flags.black_point_compensation,
+                in_fmt,
+                TYPE_RGB_8,
+                TB_STRATEGY,
+            )
+            .ok()?;
+            Some(SrgbTransform {
+                inner,
+                source_components: profile.n_components(),
+            })
+        }
+
+        fn convert_cmyk_pixel(transform: &Self::SrgbTransform, cmyk: [u8; 4]) -> Option<[u8; 3]> {
+            if transform.source_components != 4 {
+                return None;
+            }
+            let mut dst = [0u8; 3];
+            transform.inner.do_transform(&cmyk, &mut dst, 1);
+            Some(dst)
+        }
+
+        fn convert_cmyk_buffer(transform: &Self::SrgbTransform, cmyk: &[u8]) -> Option<Vec<u8>> {
+            if transform.source_components != 4 {
+                return None;
+            }
+            let pixels = cmyk.len() / 4;
+            let mut out = vec![0u8; pixels * 3];
+            transform.inner.do_transform(cmyk, &mut out, pixels);
+            Some(out)
+        }
+
+        fn convert_rgb_buffer(transform: &Self::SrgbTransform, rgb: &[u8]) -> Option<Vec<u8>> {
+            if transform.source_components != 3 {
+                return None;
+            }
+            let pixels = rgb.len() / 3;
+            let mut out = vec![0u8; rgb.len()];
+            transform.inner.do_transform(rgb, &mut out, pixels);
+            Some(out)
+        }
+
+        fn convert_gray_buffer(transform: &Self::SrgbTransform, gray: &[u8]) -> Option<Vec<u8>> {
+            if transform.source_components != 1 {
+                return None;
+            }
+            let pixels = gray.len();
+            let mut out = vec![0u8; pixels * 3];
+            transform.inner.do_transform(gray, &mut out, pixels);
+            Some(out)
+        }
+
+        fn build_cmyk_retarget(
+            src_profile: &IccProfile,
+            dst_profile: &IccProfile,
+            intent: RenderingIntent,
+            flags: TransformFlags,
+        ) -> Option<Self::CmykRetarget> {
+            if src_profile.n_components() != 4 || dst_profile.n_components() != 4 {
+                return None;
+            }
+            let src = Profile::open(src_profile.bytes()).ok()?;
+            let dst = Profile::open(dst_profile.bytes()).ok()?;
+            // Both sides must advertise CMYK in the header — a printer
+            // profile that secretly emits Lab would otherwise silently
+            // produce garbage plates.
+            if src.header().color_space != ColorSpace::Cmyk
+                || dst.header().color_space != ColorSpace::Cmyk
+            {
+                return None;
+            }
+            let inner = Transform::new_simple_with_formats_strategy(
+                &src,
+                &dst,
+                tintbox_intent(intent),
+                flags.black_point_compensation,
+                TYPE_CMYK_8,
+                TYPE_CMYK_8,
+                TB_STRATEGY,
+            )
+            .ok()?;
+            Some(CmykRetarget { inner })
+        }
+
+        fn retarget_cmyk_pixel(transform: &Self::CmykRetarget, cmyk: [f32; 4]) -> [f32; 4] {
+            let src = [
+                (cmyk[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+                (cmyk[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+                (cmyk[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+                (cmyk[3].clamp(0.0, 1.0) * 255.0).round() as u8,
+            ];
+            let mut dst = [0u8; 4];
+            transform.inner.do_transform(&src, &mut dst, 1);
+            [
+                dst[0] as f32 / 255.0,
+                dst[1] as f32 / 255.0,
+                dst[2] as f32 / 255.0,
+                dst[3] as f32 / 255.0,
+            ]
+        }
+
+        fn build_srgb_to_cmyk(
+            dst_profile: &IccProfile,
+            intent: RenderingIntent,
+            flags: TransformFlags,
+        ) -> Option<Self::SrgbToCmykTransform> {
+            if dst_profile.n_components() != 4 {
+                return None;
+            }
+            let src = srgb_profile()?;
+            let dst = Profile::open(dst_profile.bytes()).ok()?;
+            if dst.header().color_space != ColorSpace::Cmyk {
+                return None;
+            }
+            let inner = Transform::new_simple_with_formats_strategy(
+                &src,
+                &dst,
+                tintbox_intent(intent),
+                flags.black_point_compensation,
+                TYPE_RGB_8,
+                TYPE_CMYK_8,
+                TB_STRATEGY,
+            )
+            .ok()?;
+            Some(SrgbToCmykTransform { inner })
+        }
+
+        fn convert_srgb_to_cmyk_pixel(
+            transform: &Self::SrgbToCmykTransform,
+            rgb: [f32; 3],
+        ) -> [f32; 4] {
+            let src = [
+                (rgb[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+                (rgb[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+                (rgb[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+            ];
+            let mut dst = [0u8; 4];
+            transform.inner.do_transform(&src, &mut dst, 1);
+            [
+                dst[0] as f32 / 255.0,
+                dst[1] as f32 / 255.0,
+                dst[2] as f32 / 255.0,
+                dst[3] as f32 / 255.0,
+            ]
+        }
+    }
+}
+
+#[cfg(feature = "icc-tintbox")]
+pub use tintbox_impl::{
+    CmykRetarget as TintboxCmykRetarget, SrgbToCmykTransform as TintboxSrgbToCmykTransform,
+    SrgbTransform as TintboxSrgbTransform,
+};
+
+// ============================================================================
+// NoOpBackend — fallback when no ICC backend feature is enabled.
 // ============================================================================
 
 /// No-CMM backend. Every `build_*` returns `None` so call sites in
@@ -597,10 +873,10 @@ pub use lcms2_impl::{
 /// additive-clamp formula. This is the path WASM / C# AOT consumers
 /// hit when they build with `--no-default-features` and don't opt
 /// into either ICC feature.
-#[cfg(not(any(feature = "icc-qcms", feature = "icc-lcms2")))]
+#[cfg(not(any(feature = "icc-qcms", feature = "icc-lcms2", feature = "icc-tintbox")))]
 pub struct NoOpBackend;
 
-#[cfg(not(any(feature = "icc-qcms", feature = "icc-lcms2")))]
+#[cfg(not(any(feature = "icc-qcms", feature = "icc-lcms2", feature = "icc-tintbox")))]
 mod noop_impl {
     use super::*;
 
@@ -662,7 +938,7 @@ mod noop_impl {
     }
 }
 
-#[cfg(not(any(feature = "icc-qcms", feature = "icc-lcms2")))]
+#[cfg(not(any(feature = "icc-qcms", feature = "icc-lcms2", feature = "icc-tintbox")))]
 pub use noop_impl::{
     CmykRetarget as NoOpCmykRetarget, SrgbToCmykTransform as NoOpSrgbToCmykTransform,
     SrgbTransform as NoOpSrgbTransform,
@@ -673,36 +949,602 @@ pub use noop_impl::{
 // ============================================================================
 
 // ActiveIccBackend: the backend the rest of `crate::color` dispatches
-// through. Resolved at compile time from the feature flag combination:
-//   icc-lcms2                          → Lcms2Backend
-//   icc-qcms (and not icc-lcms2)      → QcmsBackend
-//   neither                            → NoOpBackend
+// through. Resolved at compile time from the feature flag combination
+// by capability precedence — tintbox > lcms2 > qcms > none:
+//   icc-tintbox                                       → TintboxBackend
+//   icc-lcms2 (and not icc-tintbox)                   → Lcms2Backend
+//   icc-qcms (and not icc-lcms2 / icc-tintbox)        → QcmsBackend
+//   none                                              → NoOpBackend
+// tintbox wins over lcms2 because it is the same press-grade capability
+// surface with no C dependency; both stay compiled when both features
+// are on so the parity differential can drive them side by side.
 
 /// Active ICC backend (compile-time selected — see module docs).
-#[cfg(feature = "icc-lcms2")]
+#[cfg(feature = "icc-tintbox")]
+pub type ActiveIccBackend = TintboxBackend;
+
+/// Active ICC backend (compile-time selected — see module docs).
+#[cfg(all(feature = "icc-lcms2", not(feature = "icc-tintbox")))]
 pub type ActiveIccBackend = Lcms2Backend;
 
 /// Active ICC backend (compile-time selected — see module docs).
-#[cfg(all(feature = "icc-qcms", not(feature = "icc-lcms2")))]
+#[cfg(all(
+    feature = "icc-qcms",
+    not(feature = "icc-lcms2"),
+    not(feature = "icc-tintbox")
+))]
 pub type ActiveIccBackend = QcmsBackend;
 
 /// Active ICC backend (compile-time selected — see module docs).
-#[cfg(not(any(feature = "icc-qcms", feature = "icc-lcms2")))]
+#[cfg(not(any(feature = "icc-qcms", feature = "icc-lcms2", feature = "icc-tintbox")))]
 pub type ActiveIccBackend = NoOpBackend;
 
 /// Backend-name diagnostic for `Debug` output and the
 /// `BACKEND_NAME` reporting hook the round-7 probes consume.
 pub const fn active_backend_name() -> &'static str {
-    #[cfg(feature = "icc-lcms2")]
+    #[cfg(feature = "icc-tintbox")]
+    {
+        "tintbox"
+    }
+    #[cfg(all(feature = "icc-lcms2", not(feature = "icc-tintbox")))]
     {
         "lcms2"
     }
-    #[cfg(all(feature = "icc-qcms", not(feature = "icc-lcms2")))]
+    #[cfg(all(
+        feature = "icc-qcms",
+        not(feature = "icc-lcms2"),
+        not(feature = "icc-tintbox")
+    ))]
     {
         "qcms"
     }
-    #[cfg(not(any(feature = "icc-qcms", feature = "icc-lcms2")))]
+    #[cfg(not(any(feature = "icc-qcms", feature = "icc-lcms2", feature = "icc-tintbox")))]
     {
         "noop"
+    }
+}
+
+// ============================================================================
+// Parity differential — tintbox vs lcms2 (both backends compiled in).
+// ============================================================================
+//
+// These tests run only when BOTH `icc-lcms2` and `icc-tintbox` are enabled, so
+// the two engines can be driven side by side over identical real-profile bytes.
+// They are the colour-accuracy harness: every test prints its full statistics
+// (`cargo test ... -- --nocapture`) before asserting, so a parity break shows
+// its magnitude rather than just failing.
+//
+// Profiles are loaded from the host's standard ColorSync / Adobe profile
+// directories. When none are present (e.g. CI on a non-macOS box without the
+// Adobe pack) the tests skip with a printed notice rather than fail — committing
+// the binary profiles is blocked by their redistribution terms (see
+// tests/fixtures/icc/README.md).
+#[cfg(all(test, feature = "icc-lcms2", feature = "icc-tintbox"))]
+mod tintbox_lcms2_parity {
+    use super::*;
+
+    fn read_first(candidates: &[&str]) -> Option<Vec<u8>> {
+        candidates.iter().find_map(|p| std::fs::read(p).ok())
+    }
+
+    fn srgb_bytes() -> Option<Vec<u8>> {
+        read_first(&[
+            "/System/Library/ColorSync/Profiles/sRGB Profile.icc",
+            "/usr/share/color/icc/sRGB.icc",
+        ])
+    }
+
+    /// Two distinct real CMYK press profiles for the retarget path.
+    fn cmyk_a_bytes() -> Option<Vec<u8>> {
+        read_first(&[
+            "/Library/Application Support/Adobe/Color/Profiles/Recommended/USWebCoatedSWOP.icc",
+            "/System/Library/ColorSync/Profiles/Generic CMYK Profile.icc",
+        ])
+    }
+    fn cmyk_b_bytes() -> Option<Vec<u8>> {
+        read_first(&[
+            "/Library/Application Support/Adobe/Color/Profiles/Recommended/CoatedFOGRA39.icc",
+            "/Library/Application Support/Adobe/Color/Profiles/EuroscaleCoated.icc",
+        ])
+    }
+
+    fn lcms2_intent() -> lcms2::Intent {
+        lcms2::Intent::RelativeColorimetric
+    }
+    fn tb_intent() -> tintbox::profile::RenderingIntent {
+        tintbox::profile::RenderingIntent::RelativeColorimetric
+    }
+
+    // ---- lcms2 oracles (byte buffers, BPC on = press default) ----
+    fn lcms2_convert(
+        src_bytes: &[u8],
+        dst_bytes: &[u8],
+        in_fmt: lcms2::PixelFormat,
+        out_fmt: lcms2::PixelFormat,
+        optimize: bool,
+        input: &[u8],
+        out_channels: usize,
+    ) -> Vec<u8> {
+        let src = lcms2::Profile::new_icc(src_bytes).unwrap();
+        let dst = lcms2::Profile::new_icc(dst_bytes).unwrap();
+        // NO_CACHE only disables lcms2's internal 1-pixel memoization; it does
+        // not change results, so we omit it here and keep all flags AllowCache
+        // (the default Transform cache type) for a single-threaded test.
+        let mut flags = lcms2::Flags::BLACKPOINT_COMPENSATION;
+        if !optimize {
+            flags = flags | lcms2::Flags::NO_OPTIMIZE;
+        }
+        let t: lcms2::Transform<u8, u8> =
+            lcms2::Transform::new_flags(&src, in_fmt, &dst, out_fmt, lcms2_intent(), flags)
+                .unwrap();
+        let pixels = input.len() / in_fmt_channels(in_fmt);
+        let mut out = vec![0u8; pixels * out_channels];
+        t.transform_pixels(input, &mut out);
+        out
+    }
+
+    fn in_fmt_channels(f: lcms2::PixelFormat) -> usize {
+        match f {
+            lcms2::PixelFormat::GRAY_8 => 1,
+            lcms2::PixelFormat::RGB_8 => 3,
+            lcms2::PixelFormat::CMYK_8 => 4,
+            _ => unreachable!(),
+        }
+    }
+
+    // ---- tintbox oracles (NOOPTIMIZE via the simple constructor) ----
+    fn tb_convert(
+        src_bytes: &[u8],
+        dst_bytes: Option<&[u8]>,
+        in_fmt: u32,
+        out_fmt: u32,
+        in_channels: usize,
+        out_channels: usize,
+        input: &[u8],
+    ) -> Vec<u8> {
+        use tintbox::profile::Profile;
+        let src = Profile::open(src_bytes).unwrap();
+        let dst = match dst_bytes {
+            Some(b) => Profile::open(b).unwrap(),
+            None => {
+                Profile::from_writable(&tintbox::profile::virtuals::build_srgb_profile()).unwrap()
+            },
+        };
+        // Build with the `AccurateFast` strategy — exactly what the shipped
+        // TintboxBackend uses. Asserting this matches lcms2 NO_OPTIMIZE
+        // bit-for-bit validates both tintbox's lossless guarantee
+        // (AccurateFast == Accurate) and the path pdf_oxide renders through.
+        let t = tintbox::transform::Transform::new_simple_with_formats_strategy(
+            &src,
+            &dst,
+            tb_intent(),
+            true, // BPC on
+            in_fmt,
+            out_fmt,
+            tintbox::opt::OptimizationStrategy::AccurateFast,
+        )
+        .unwrap();
+        let pixels = input.len() / in_channels;
+        let mut out = vec![0u8; pixels * out_channels];
+        t.do_transform(input, &mut out, pixels);
+        out
+    }
+
+    struct Stats {
+        n: usize,
+        differing: usize,
+        max_abs: u16,
+        sum_abs: u64,
+    }
+    fn diff_stats(a: &[u8], b: &[u8]) -> Stats {
+        assert_eq!(a.len(), b.len());
+        let mut s = Stats {
+            n: a.len(),
+            differing: 0,
+            max_abs: 0,
+            sum_abs: 0,
+        };
+        for (x, y) in a.iter().zip(b.iter()) {
+            let d = (*x as i16 - *y as i16).unsigned_abs();
+            if d != 0 {
+                s.differing += 1;
+            }
+            s.max_abs = s.max_abs.max(d);
+            s.sum_abs += d as u64;
+        }
+        s
+    }
+    fn report(label: &str, s: &Stats) {
+        println!(
+            "  {label:<46} bytes={:<7} differ={:<7} ({:>5.2}%)  maxΔ={:<3}  meanΔ={:.4}",
+            s.n,
+            s.differing,
+            100.0 * s.differing as f64 / s.n as f64,
+            s.max_abs,
+            s.sum_abs as f64 / s.n as f64,
+        );
+    }
+
+    fn cmyk_lattice(step: u16) -> Vec<u8> {
+        let vals: Vec<u8> = (0..=255u16)
+            .step_by(step as usize)
+            .map(|v| v as u8)
+            .collect();
+        let mut out = Vec::new();
+        for &c in &vals {
+            for &m in &vals {
+                for &y in &vals {
+                    for &k in &vals {
+                        out.extend_from_slice(&[c, m, y, k]);
+                    }
+                }
+            }
+        }
+        out
+    }
+    fn rgb_lattice(step: u16) -> Vec<u8> {
+        let vals: Vec<u8> = (0..=255u16)
+            .step_by(step as usize)
+            .map(|v| v as u8)
+            .collect();
+        let mut out = Vec::new();
+        for &r in &vals {
+            for &g in &vals {
+                for &b in &vals {
+                    out.extend_from_slice(&[r, g, b]);
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn cmyk_to_srgb_parity_and_optimizer_drift() {
+        let (Some(cmyk), Some(srgb)) = (cmyk_a_bytes(), srgb_bytes()) else {
+            eprintln!("SKIP cmyk_to_srgb_parity: standard ICC profiles not present");
+            return;
+        };
+        let input = cmyk_lattice(17); // 16^4 = 65536 CMYK pixels
+        let tb = tb_convert(
+            &cmyk,
+            Some(&srgb),
+            tintbox::format::decode::TYPE_CMYK_8,
+            tintbox::format::decode::TYPE_RGB_8,
+            4,
+            3,
+            &input,
+        );
+        let lc_noopt = lcms2_convert(
+            &cmyk,
+            &srgb,
+            lcms2::PixelFormat::CMYK_8,
+            lcms2::PixelFormat::RGB_8,
+            false,
+            &input,
+            3,
+        );
+        let lc_opt = lcms2_convert(
+            &cmyk,
+            &srgb,
+            lcms2::PixelFormat::CMYK_8,
+            lcms2::PixelFormat::RGB_8,
+            true,
+            &input,
+            3,
+        );
+        println!("\nCMYK→sRGB (relative+BPC), {} pixels:", input.len() / 4);
+        let parity = diff_stats(&tb, &lc_noopt);
+        report("tintbox  vs  lcms2(NO_OPTIMIZE)  [parity]", &parity);
+        report(
+            "lcms2(default) vs lcms2(NO_OPTIMIZE) [optimizer]",
+            &diff_stats(&lc_opt, &lc_noopt),
+        );
+        report("tintbox  vs  lcms2(default)          [as-shipped]", &diff_stats(&tb, &lc_opt));
+        assert_eq!(
+            parity.max_abs, 0,
+            "tintbox must be bit-identical to lcms2 on the unoptimized path"
+        );
+    }
+
+    #[test]
+    fn rgb_to_srgb_parity() {
+        let Some(srgb) = srgb_bytes() else {
+            eprintln!("SKIP rgb_to_srgb_parity: sRGB profile not present");
+            return;
+        };
+        // Source = a different RGB profile so the transform is non-identity.
+        let Some(src_rgb) = read_first(&[
+            "/System/Library/ColorSync/Profiles/Generic RGB Profile.icc",
+            "/System/Library/ColorSync/Profiles/AdobeRGB1998.icc",
+        ]) else {
+            eprintln!("SKIP rgb_to_srgb_parity: source RGB profile not present");
+            return;
+        };
+        let input = rgb_lattice(15); // ~18^3
+        let tb = tb_convert(
+            &src_rgb,
+            Some(&srgb),
+            tintbox::format::decode::TYPE_RGB_8,
+            tintbox::format::decode::TYPE_RGB_8,
+            3,
+            3,
+            &input,
+        );
+        let lc_noopt = lcms2_convert(
+            &src_rgb,
+            &srgb,
+            lcms2::PixelFormat::RGB_8,
+            lcms2::PixelFormat::RGB_8,
+            false,
+            &input,
+            3,
+        );
+        let lc_opt = lcms2_convert(
+            &src_rgb,
+            &srgb,
+            lcms2::PixelFormat::RGB_8,
+            lcms2::PixelFormat::RGB_8,
+            true,
+            &input,
+            3,
+        );
+        println!("\nRGB→sRGB (relative+BPC), {} pixels:", input.len() / 3);
+        let parity = diff_stats(&tb, &lc_noopt);
+        report("tintbox  vs  lcms2(NO_OPTIMIZE)  [parity]", &parity);
+        report(
+            "lcms2(default) vs lcms2(NO_OPTIMIZE) [optimizer]",
+            &diff_stats(&lc_opt, &lc_noopt),
+        );
+        assert_eq!(parity.max_abs, 0, "RGB→sRGB tintbox parity");
+    }
+
+    #[test]
+    fn cmyk_to_cmyk_retarget_parity() {
+        let (Some(a), Some(b)) = (cmyk_a_bytes(), cmyk_b_bytes()) else {
+            eprintln!("SKIP cmyk_to_cmyk_retarget_parity: two CMYK profiles not present");
+            return;
+        };
+        let input = cmyk_lattice(17);
+        let tb = tb_convert(
+            &a,
+            Some(&b),
+            tintbox::format::decode::TYPE_CMYK_8,
+            tintbox::format::decode::TYPE_CMYK_8,
+            4,
+            4,
+            &input,
+        );
+        let lc_noopt = lcms2_convert(
+            &a,
+            &b,
+            lcms2::PixelFormat::CMYK_8,
+            lcms2::PixelFormat::CMYK_8,
+            false,
+            &input,
+            4,
+        );
+        let lc_opt = lcms2_convert(
+            &a,
+            &b,
+            lcms2::PixelFormat::CMYK_8,
+            lcms2::PixelFormat::CMYK_8,
+            true,
+            &input,
+            4,
+        );
+        println!("\nCMYK→CMYK retarget (relative+BPC), {} pixels:", input.len() / 4);
+        let parity = diff_stats(&tb, &lc_noopt);
+        report("tintbox  vs  lcms2(NO_OPTIMIZE)  [parity]", &parity);
+        report(
+            "lcms2(default) vs lcms2(NO_OPTIMIZE) [optimizer]",
+            &diff_stats(&lc_opt, &lc_noopt),
+        );
+        report("tintbox  vs  lcms2(default)          [as-shipped]", &diff_stats(&tb, &lc_opt));
+        assert_eq!(parity.max_abs, 0, "CMYK→CMYK retarget tintbox parity");
+    }
+
+    #[test]
+    fn srgb_to_cmyk_parity() {
+        let (Some(srgb), Some(cmyk)) = (srgb_bytes(), cmyk_a_bytes()) else {
+            eprintln!("SKIP srgb_to_cmyk_parity: profiles not present");
+            return;
+        };
+        let input = rgb_lattice(15);
+        let tb = tb_convert(
+            &srgb,
+            Some(&cmyk),
+            tintbox::format::decode::TYPE_RGB_8,
+            tintbox::format::decode::TYPE_CMYK_8,
+            3,
+            4,
+            &input,
+        );
+        let lc_noopt = lcms2_convert(
+            &srgb,
+            &cmyk,
+            lcms2::PixelFormat::RGB_8,
+            lcms2::PixelFormat::CMYK_8,
+            false,
+            &input,
+            4,
+        );
+        println!("\nsRGB→CMYK (relative+BPC), {} pixels:", input.len() / 3);
+        let parity = diff_stats(&tb, &lc_noopt);
+        report("tintbox  vs  lcms2(NO_OPTIMIZE)  [parity]", &parity);
+        assert_eq!(parity.max_abs, 0, "sRGB→CMYK tintbox parity");
+    }
+
+    /// The compiled tintbox transform must be `Send + Sync` so it can live in
+    /// the per-page `Arc<Transform>` shared across rayon workers.
+    #[test]
+    fn tintbox_handles_are_send_sync() {
+        fn assert_ss<T: Send + Sync>() {}
+        assert_ss::<TintboxSrgbTransform>();
+        assert_ss::<TintboxCmykRetarget>();
+        assert_ss::<TintboxSrgbToCmykTransform>();
+    }
+
+    /// With both features on, tintbox wins the precedence cascade.
+    #[test]
+    fn active_backend_is_tintbox_when_both_enabled() {
+        assert_eq!(active_backend_name(), "tintbox");
+    }
+
+    // =====================================================================
+    // CMM kernel throughput microbench (perf, not correctness).
+    //
+    //   cargo test --release --features icc-lcms2,icc-tintbox \
+    //       color::backend::tintbox_lcms2_parity::kernel_throughput \
+    //       -- --ignored --nocapture --test-threads=1
+    //
+    // Isolates the transform kernel (no rendering) so a SIMD / interpolation
+    // change shows up undiluted by rasterisation + encode. Reports MPx/s for
+    // tintbox AccurateFast vs Accurate vs lcms2 (NO_OPTIMIZE and default), on
+    // real press profiles, for the two shapes pdf_oxide drives: CMYK→sRGB
+    // (image convert) and CMYK→CMYK (process retarget). Build is the only
+    // thing that varies between runs, so this is the number to watch when
+    // benchmarking a tintbox kernel change in isolation.
+    // =====================================================================
+    #[test]
+    #[ignore = "perf microbench; run with --ignored --release --nocapture"]
+    fn kernel_throughput() {
+        use std::time::Instant;
+        use tintbox::format::decode::{TYPE_CMYK_8, TYPE_RGB_8};
+        use tintbox::opt::OptimizationStrategy;
+        use tintbox::profile::Profile;
+
+        const N: usize = 2_000_000; // pixels per pass
+        const ITERS: usize = 20;
+
+        // Pseudo-varied CMYK so the curves + CLUT do real work (not a constant
+        // that would let a cache short-circuit the interpolation).
+        let input: Vec<u8> = (0..N * 4)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+
+        let mpx = |secs: f64| (N as f64 * ITERS as f64) / secs / 1e6;
+
+        let Some(cmyk) = cmyk_a_bytes() else {
+            eprintln!("SKIP kernel_throughput: no CMYK profile present");
+            return;
+        };
+
+        macro_rules! bench_tb {
+            ($label:expr, $dst:expr, $in_fmt:expr, $out_fmt:expr, $out_ch:expr, $strat:expr) => {{
+                let src = Profile::open(&cmyk).unwrap();
+                let t = tintbox::transform::Transform::new_simple_with_formats_strategy(
+                    &src,
+                    $dst,
+                    tb_intent(),
+                    true,
+                    $in_fmt,
+                    $out_fmt,
+                    $strat,
+                )
+                .unwrap();
+                let mut out = vec![0u8; N * $out_ch];
+                t.do_transform(&input, &mut out, N); // warm
+                let s = Instant::now();
+                for _ in 0..ITERS {
+                    t.do_transform(&input, &mut out, N);
+                }
+                println!("  {:38} {:7.2} MPx/s", $label, mpx(s.elapsed().as_secs_f64()));
+            }};
+        }
+        macro_rules! bench_lcms2 {
+            ($label:expr, $dst_bytes:expr, $in_pf:expr, $out_pf:expr, $out_ch:expr, $opt:expr) => {{
+                let src = lcms2::Profile::new_icc(&cmyk).unwrap();
+                let dst = lcms2::Profile::new_icc($dst_bytes).unwrap();
+                let mut flags = lcms2::Flags::BLACKPOINT_COMPENSATION;
+                if !$opt {
+                    flags = flags | lcms2::Flags::NO_OPTIMIZE;
+                }
+                let t: lcms2::Transform<u8, u8> =
+                    lcms2::Transform::new_flags(&src, $in_pf, &dst, $out_pf, lcms2_intent(), flags)
+                        .unwrap();
+                let mut out = vec![0u8; N * $out_ch];
+                t.transform_pixels(&input, &mut out); // warm
+                let s = Instant::now();
+                for _ in 0..ITERS {
+                    t.transform_pixels(&input, &mut out);
+                }
+                println!("  {:38} {:7.2} MPx/s", $label, mpx(s.elapsed().as_secs_f64()));
+            }};
+        }
+
+        println!("\nCMM kernel throughput — {N} px × {ITERS} iters (higher = faster)\n");
+
+        if let Some(srgb) = srgb_bytes() {
+            let dst = Profile::open(&srgb).unwrap();
+            bench_tb!(
+                "tintbox CMYK→sRGB AccurateFast",
+                &dst,
+                TYPE_CMYK_8,
+                TYPE_RGB_8,
+                3,
+                OptimizationStrategy::AccurateFast
+            );
+            bench_tb!(
+                "tintbox CMYK→sRGB Accurate",
+                &dst,
+                TYPE_CMYK_8,
+                TYPE_RGB_8,
+                3,
+                OptimizationStrategy::Accurate
+            );
+            bench_lcms2!(
+                "lcms2   CMYK→sRGB NO_OPTIMIZE",
+                &srgb,
+                lcms2::PixelFormat::CMYK_8,
+                lcms2::PixelFormat::RGB_8,
+                3,
+                false
+            );
+            bench_lcms2!(
+                "lcms2   CMYK→sRGB default",
+                &srgb,
+                lcms2::PixelFormat::CMYK_8,
+                lcms2::PixelFormat::RGB_8,
+                3,
+                true
+            );
+        }
+
+        if let Some(dstb) = cmyk_b_bytes() {
+            println!();
+            let dst = Profile::open(&dstb).unwrap();
+            bench_tb!(
+                "tintbox CMYK→CMYK AccurateFast",
+                &dst,
+                TYPE_CMYK_8,
+                TYPE_CMYK_8,
+                4,
+                OptimizationStrategy::AccurateFast
+            );
+            bench_tb!(
+                "tintbox CMYK→CMYK Accurate",
+                &dst,
+                TYPE_CMYK_8,
+                TYPE_CMYK_8,
+                4,
+                OptimizationStrategy::Accurate
+            );
+            bench_lcms2!(
+                "lcms2   CMYK→CMYK NO_OPTIMIZE",
+                &dstb,
+                lcms2::PixelFormat::CMYK_8,
+                lcms2::PixelFormat::CMYK_8,
+                4,
+                false
+            );
+            bench_lcms2!(
+                "lcms2   CMYK→CMYK default",
+                &dstb,
+                lcms2::PixelFormat::CMYK_8,
+                lcms2::PixelFormat::CMYK_8,
+                4,
+                true
+            );
+        }
     }
 }

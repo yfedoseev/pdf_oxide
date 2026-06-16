@@ -274,9 +274,45 @@ impl Transform {
     /// Convert a packed CMYK byte slice to RGB. When the CMM is
     /// available this is a single batched call; otherwise it falls
     /// back to the per-pixel §10.3.5 formula.
+    ///
+    /// Under the `parallel` feature a large buffer is split into
+    /// one disjoint pixel range per rayon worker, each calling the
+    /// shared (`Sync`) backend transform on its slice. The CMM stays
+    /// single-threaded per slice — this is the idiomatic reentrant-CMM
+    /// threading model (engine is shared read-only; the caller splits
+    /// the work), and the output is byte-identical to the serial path
+    /// because each slice is the same backend call over the same bytes.
     pub fn convert_cmyk_buffer(&self, cmyk: &[u8]) -> Vec<u8> {
         if let Some(holder) = &self.inner {
             if self.source_components == 4 {
+                #[cfg(feature = "parallel")]
+                {
+                    use rayon::prelude::*;
+                    // Below this, rayon's fork/join overhead outweighs the win.
+                    const PAR_MIN_PIXELS: usize = 32 * 1024;
+                    let pixels = cmyk.len() / 4;
+                    let threads = rayon::current_num_threads().max(1);
+                    if pixels >= PAR_MIN_PIXELS && threads > 1 {
+                        let chunk_px = pixels.div_ceil(threads);
+                        let mut out = vec![0u8; pixels * 3];
+                        let ok = std::sync::atomic::AtomicBool::new(true);
+                        out.par_chunks_mut(chunk_px * 3)
+                            .zip(cmyk.par_chunks(chunk_px * 4))
+                            .for_each(|(o, c)| {
+                                match <ActiveIccBackend as IccBackend>::convert_cmyk_buffer(
+                                    holder, c,
+                                ) {
+                                    Some(r) if r.len() == o.len() => o.copy_from_slice(&r),
+                                    _ => ok.store(false, std::sync::atomic::Ordering::Relaxed),
+                                }
+                            });
+                        if ok.load(std::sync::atomic::Ordering::Relaxed) {
+                            return out;
+                        }
+                        // A chunk declined (CMM present but couldn't convert) —
+                        // fall through to the serial path below for correctness.
+                    }
+                }
                 if let Some(out) =
                     <ActiveIccBackend as IccBackend>::convert_cmyk_buffer(holder, cmyk)
                 {
@@ -451,7 +487,7 @@ impl std::fmt::Debug for CmykRetargetTransform {
 /// fallback. Compile-time constant so dead-code elimination keeps the
 /// qcms-only build's hot path inlined.
 pub const fn active_backend_supports_cmyk_retarget() -> bool {
-    cfg!(feature = "icc-lcms2")
+    cfg!(any(feature = "icc-lcms2", feature = "icc-tintbox"))
 }
 
 /// A compiled sRGB → destination-CMYK transform.
@@ -533,7 +569,7 @@ impl std::fmt::Debug for SrgbToCmykTransform {
 /// fallback). Compile-time constant so the rendering hot path can be
 /// branched at the call site without a runtime check.
 pub const fn active_backend_supports_srgb_to_cmyk() -> bool {
-    cfg!(feature = "icc-lcms2")
+    cfg!(any(feature = "icc-lcms2", feature = "icc-tintbox"))
 }
 
 #[cfg(test)]
@@ -625,9 +661,9 @@ mod tests {
     #[test]
     fn active_backend_retarget_capability_matches_feature() {
         let cap = active_backend_supports_cmyk_retarget();
-        #[cfg(feature = "icc-lcms2")]
-        assert!(cap, "icc-lcms2 build must report retarget capable");
-        #[cfg(not(feature = "icc-lcms2"))]
-        assert!(!cap, "non-lcms2 build must report retarget UNcapable");
+        #[cfg(any(feature = "icc-lcms2", feature = "icc-tintbox"))]
+        assert!(cap, "press-grade build must report retarget capable");
+        #[cfg(not(any(feature = "icc-lcms2", feature = "icc-tintbox")))]
+        assert!(!cap, "non-press build must report retarget UNcapable");
     }
 }

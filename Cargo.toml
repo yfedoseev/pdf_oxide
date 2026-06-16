@@ -26,8 +26,9 @@ ignored = [
     # WASM-only runtime deps (gated on `wasm` feature)
     "getrandom_02",
     "web-sys",
-    # Press-grade ICC backend (gated on `icc-lcms2` feature)
+    # Press-grade ICC backends (gated on `icc-lcms2` / `icc-tintbox` features)
     "lcms2",
+    "tintbox",
 ]
 ignored-paths = [
     # Runnable examples — not declared as [[example]] targets because they use
@@ -291,6 +292,7 @@ office_oxide = { version = "0.1.2", default-features = false }
 x509-tsp = { version = "0.1", optional = true }
 ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
 cmpv2 = { version = "0.2", optional = true }
+tintbox = { version = "0.2.0", optional = true }
 
 # `getrandom`'s `wasm_js` backend is only meaningful when targeting
 # `wasm32-unknown-unknown` (browser / WASI runtimes that route entropy
@@ -363,7 +365,7 @@ fips = ["dep:aws-lc-rs", "aws-lc-rs/fips"]
 
 # Real ICC colour management.
 #
-# Three modes:
+# Four modes:
 #
 #  - `icc-qcms` (default, via the `icc` alias): pure-Rust Firefox-derived
 #    colour engine. CMYK→RGB through the embedded profile, no CMYK→CMYK
@@ -375,14 +377,27 @@ fips = ["dep:aws-lc-rs", "aws-lc-rs/fips"]
 #    profile-mismatch gap for prepress/packaging workloads), BPC, and
 #    per-intent dispatch the spec asks for. Drags in lcms2-sys (C).
 #
-#  - both: when both `icc-qcms` and `icc-lcms2` are enabled the active
-#    backend is lcms2 — it's the strict superset.
+#  - `icc-tintbox`: pure-Rust press-grade CMM. Same capability surface as
+#    icc-lcms2 (CMYK→CMYK retargeting through Lab PCS, BPC, per-intent
+#    dispatch) but with no C toolchain dependency — so the full press
+#    pipeline stays available on WASM / C# AOT targets. tintbox's lossy
+#    curve optimizer is opt-out (off by the simple constructors), so the
+#    shipped transforms take the accurate (unoptimized) path.
+#
+#  - several enabled at once: the active backend is selected by capability
+#    precedence — tintbox > lcms2 > qcms. tintbox and lcms2 are the
+#    capability superset; tintbox wins because it carries no C dependency.
 #
 # Backwards-compat alias: `icc` resolves to `icc-qcms`. Users who built
 # with `--features icc` keep the same behaviour and the same dep graph.
 icc = ["icc-qcms"]
 icc-qcms = ["dep:qcms"]
 icc-lcms2 = ["dep:lcms2"]
+icc-tintbox = ["dep:tintbox"]
+# Opt-in SIMD acceleration for the tintbox CMM. Lossless (bit-identical to the
+# scalar path); pulls in the `wide` crate only when enabled. Off by default —
+# the win is concentrated on the matrix stage of CLUT transforms and is modest.
+icc-tintbox-simd = ["icc-tintbox", "tintbox/simd"]
 
 # Gate MD5 key-derivation (R≤4 PDF Standard Security) and RC4 cipher
 # behind this feature. Default-on so existing users keep full R≤4 read/write

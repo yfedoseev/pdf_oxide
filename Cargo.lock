@@ -3069,6 +3069,7 @@ dependencies = [
  "taffy",
  "tempfile",
  "thiserror 2.0.18",
+ "tintbox",
  "tiny-skia",
  "tokenizers",
  "tract-onnx",
@@ -4639,6 +4640,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tintbox"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f689ac8b49271264a1435c179cad6ac97e43ec7017b456059021e14efd4cd16"
+dependencies = [
+ "wide",
+]
+
+[[package]]
 name = "tiny-skia"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5292,9 +5302,9 @@ checksum = "d4ca08e5ef825b65b056d9efbd95c8750683f0a6d0466d02e96dc2e4e360f3d2"
 
 [[package]]
 name = "wide"
-version = "1.4.0"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a7714cd0430a663154667c74da5d09325c2387695bee18b3f7f72825aa3693a"
+checksum = "dfdfe6a32973f2d1b268b8895845a8a96cac2f0191e72c27cc929036060dbf89"
 dependencies = [
  "bytemuck",
  "safe_arch",
