@@ -2,6 +2,30 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.65] - 2026-06-16
+
+> Multilingual and layout extraction quality — right-to-left bidi reconstruction for Arabic and Hebrew, multi-region reading order for publisher sidebars and two-column academic pages, and CJK/Indic word segmentation — plus an in-house CCITT Group 4 fax decoder that honours `EncodedByteAlign`, structured two-column surfacing, and a batch of O(n²) hot-path removals.
+
+### Added
+
+- **Two-column structured extraction and tagged-structure surfacing (#734)** — `extract_structured` now reports a per-line `column_index` for multi-column pages and, on tagged PDFs, surfaces marginal labels (`Lbl` → marginal label) and the nearest enclosing section (`Sect`/`Art`/`Part` → a document-stable `section_id` with cross-page continuity), per ISO 32000-1 §14.8.4. Additive and zero-risk for untagged input. Thanks @lggcs.
+- **Reading-order threads for linked content (#458)** — article-thread (`/Threads` → `/B` bead) ordering is surfaced so content that flows across columns and pages can be read in author-intended order.
+- **In-house CCITT Group 4 (T.6) fax decoder (#738)** — a from-scratch decoder for `CCITTFaxDecode` images that correctly honours `EncodedByteAlign` (ITU-T T.6 2D mode codes, Modified-Huffman run tables, reference-line changing-element walk), with partial-row recovery on truncated streams. Replaces a path that could silently fall back to an all-white image; bilevel fax images now decode to their real content. Thanks @potatochipcoconut.
+
+### Fixed
+
+- **Right-to-left Arabic/Hebrew text reconstructed in logical order** — several classes of RTL extraction defect are corrected so Arabic and Hebrew read correctly instead of scrambled:
+  - **Cross-span cluster reversal (SEG-AR)** — producers that draw an Arabic word as interleaved base-glyph and zero-width mark spans (the mark's x falling *inside* a neighbouring word) had their letters atom-sorted to word edges, scrambling e.g. `الثدييات` → `ثالدييات`. Pure-RTL lines with such zero-width-inside-a-span runs are now collapsed into a single visual-order span — glyphs ordered by x, combining marks bound to their base, word boundaries taken from the producer's own standalone space spans — then reversed to logical order (UAX #9 L2). A representative Arabic page improved from a heavily garbled paragraph to fully correct text.
+  - **RTL number preservation (SEG-AR / SEG-HE)** — Arabic-Indic and Latin digit runs embedded in RTL text are no longer reversed: `٤٣٤١` now reads `١٤٣٤` (1434) and a Hebrew `ל ,2009-` now reads `ל-2009,`, matching a conformant bidi reorder.
+  - **Glyph-advance preservation when merging scrambled-RTL spans** — merging adjacent RTL spans no longer corrupts true glyph positions, and a real word break bordering non-cursive punctuation is kept (rather than suppressed as a cursive-shatter space) on `/ReversedChars` producers.
+- **Multi-region reading order for publisher sidebars and two-column pages** — narrow publisher-metadata sidebars are now segregated from the body and emitted after it (title and body merged top-to-bottom, sidebar last) instead of being interleaved, across text, Markdown, and HTML. Bottom-spanning blocks that follow a multi-column region are peeled correctly, numbered-list markers are skipped in rowspan-label reordering, and two-column prose is linearised column-major. A figure Form XObject's `/BBox` clip (ISO 32000-1 §8.10.1) now drops a draft-galley underlay a conformant renderer would clip — gated to figure-sized forms so a full-page content-frame wrapper keeps its body.
+- **CJK and Indic word segmentation** — Korean number/counter spacing and line-break rejoining (`1 만년` → `1만년`), and stray spaces before Bengali/Devanagari/Latin punctuation (`प्राणी ।` → `प्राणी।`), are corrected. Adobe predefined CIDFont collections decode through the documented CID → Unicode path (ISO 32000-1 §9.3.3).
+
+### Changed
+
+- **Performance — O(n²) and O(n·m) hot-path removals** — drop-cap initial pairing uses a windowed binary search; the rotated-character filter is skipped entirely on unrotated pages; and table filtering, XY-cut, hyphen merging, and word extraction lose their quadratic hot paths. Text/Markdown/HTML output is unchanged by these changes.
+- **Redundant clip-mask clone dropped in `apply_pending_clip` (#654)** — the render path no longer clones the clip mask when it is about to be replaced, trimming an allocation per clipped paint. Pixel output is sub-perceptually unchanged. Thanks @RayVR.
+
 ## [0.3.64] - 2026-06-12
 
 > Composite-CJK page rendering — a bundled Droid Sans fallback now paints embed-less Type 0 fonts and the Adobe predefined CIDFont collections — plus a §11 transparency compositing surface with optional lcms2 colour management, cross-document font-cache correctness, valid annotation appearance streams, and math/CJK text-extraction polish (prime-notation spacing, signed unit exponents, CJK bracket spacing, table-header Markdown).

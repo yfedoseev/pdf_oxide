@@ -82,4 +82,4 @@ def test_open_error():
 
 
 def test_version():
-    assert pdf_oxide.VERSION == "0.3.64"
+    assert pdf_oxide.VERSION == "0.3.65"
