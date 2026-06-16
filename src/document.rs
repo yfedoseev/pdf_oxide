@@ -5940,6 +5940,31 @@ impl PdfDocument {
                             if !text.ends_with('\n') {
                                 text.push('\n');
                             }
+                        } else if gap < -fs * 3.0 && y_diff > fs * 0.5 && delta_x <= fs * 0.5 {
+                            // Soft-wrapped next line (carriage return). Three
+                            // signals must coincide so inline math/super-scripts
+                            // and chart labels are NOT mistaken for a wrap:
+                            //   • `gap < -fs*3` — the previous span ended far to
+                            //     the RIGHT of where this one starts, i.e. the
+                            //     line filled and wrapped (adjacent math glyphs
+                            //     like `21`/`,Fj` have a near-zero gap, so they
+                            //     are excluded);
+                            //   • `y_diff > fs*0.5` — a real baseline drop (a
+                            //     super/sub-script shift is smaller);
+                            //   • `delta_x <= fs*0.5` — it returned to ~the line's
+                            //     left margin.
+                            // Its leading sits UNDER `same_line_threshold`
+                            // (single-spaced body at ~1.0 em vs the 1.2 em
+                            // threshold) so the y-newline branch above never
+                            // fired, leaving the line-final and line-initial words
+                            // glued (`tidetables`, `atthe`). A line break encodes
+                            // no space (ISO 32000 §9.4.2 — positioning is
+                            // geometric); synthesize one as a newline, which the
+                            // downstream join / `normalize_text` collapses to a
+                            // space and de-hyphenates, matching pdfium / pymupdf.
+                            if !hangul_midword_wrap && !text.ends_with('\n') {
+                                text.push('\n');
+                            }
                         } else if prev.font_name != span.font_name
                             && span_end_x > prev_end_x + 0.5
                             && !text.ends_with(' ')
