@@ -1218,7 +1218,7 @@ impl MarkdownOutputConverter {
             out
         }
 
-        for span in sorted.iter() {
+        for (idx, span) in sorted.iter().enumerate() {
             // Skip artifacts (pagination, headers, footers)
             if span.span.artifact_type.is_some() {
                 continue;
@@ -1230,6 +1230,16 @@ impl MarkdownOutputConverter {
             // semantic value but pollute output as lone-line paragraphs.
             // Bullet characters are excluded from this filter since they
             // are meaningful list markers handled downstream.
+            //
+            // EXCEPTION: a space-bearing punctuation span (" ," / " .") that is
+            // FLANKED by right-to-left text on its own baseline is a
+            // producer-drawn inter-word separator, not decoration. RTL scripts
+            // emit the comma/period between two words as its own span, so
+            // dropping it glues the words ("הטורפים, ממשפחת" → "הטורפיםממשפחת").
+            // The RTL-context gate is deliberate: a lone decorative mark, or an
+            // isolated punctuation fragment in a left-to-right data region,
+            // has no RTL neighbour on its line and is still dropped (keeping it
+            // there would fragment the line into one paragraph per mark).
             {
                 let t = span.span.text.trim();
                 let char_count = t.chars().count();
@@ -1239,7 +1249,19 @@ impl MarkdownOutputConverter {
                     && !Self::is_bullet_span(t)
                     && !Self::starts_with_bullet(t)
                 {
-                    continue;
+                    let carries_space = span.span.text.chars().any(|c| c.is_whitespace());
+                    let rtl_separator = carries_space && {
+                        let y = span.span.bbox.y;
+                        let tol = span.span.font_size.max(1.0) * 1.5;
+                        sorted.iter().enumerate().any(|(j, other)| {
+                            j != idx
+                                && (other.span.bbox.y - y).abs() <= tol
+                                && crate::text::bidi::looks_rtl(&other.span.text)
+                        })
+                    };
+                    if !rtl_separator {
+                        continue;
+                    }
                 }
             }
 
@@ -2246,8 +2268,16 @@ fn is_column_gap(prev: &OrderedTextSpan, current: &OrderedTextSpan) -> bool {
     // flow (it has no direction of its own), so it must not break the RTL
     // context — otherwise every word→space→word step inside a right-to-left
     // line reads as a same-baseline column gap and the line shatters into one
-    // paragraph per word.
-    let rtl_friendly = |t: &str| crate::text::bidi::looks_rtl(t) || t.trim().is_empty();
+    // paragraph per word. This covers both a pure-space separator and a short
+    // neutral-punctuation one (e.g. " ," / " ." between two words): per UAX #9
+    // such neutrals inherit the surrounding right-to-left direction, so a span
+    // of ≤2 non-alphanumeric chars is RTL-friendly too.
+    let rtl_friendly = |t: &str| {
+        let s = t.trim();
+        crate::text::bidi::looks_rtl(t)
+            || s.is_empty()
+            || (s.chars().count() <= 2 && !s.chars().any(|c| c.is_alphanumeric()))
+    };
     let both_rtl = rtl_friendly(&prev.span.text)
         && rtl_friendly(&current.span.text)
         && (crate::text::bidi::looks_rtl(&prev.span.text)
@@ -3628,6 +3658,34 @@ mod tests {
         ];
         let md = converter.convert(&spans, &config).unwrap();
         assert!(md.contains("hello world"), "lost joining space: {md:?}");
+    }
+
+    #[test]
+    fn md_rtl_interword_punct_separator_is_kept_and_not_paragraph_broken() {
+        // A right-to-left line emits the comma/period between two words as its
+        // own space-bearing span (" ,"). It must (a) survive the noise filter
+        // so the flanking words are NOT glued, and (b) not be treated as a
+        // same-baseline column gap that shatters the line into one paragraph
+        // per word. Mirrors the wiki-cat-he front-matter line
+        // `…הטורפים, ממשפחת…`.
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        // RTL reading order steps left (decreasing x), same baseline.
+        let spans = vec![
+            make_span_w("הטורפים", 200.0, 100.0, 60.0, 13.0, FontWeight::Normal),
+            make_span_w(" ,", 190.0, 100.0, 7.0, 13.0, FontWeight::Normal),
+            make_span_w("ממשפחת", 130.0, 100.0, 55.0, 13.0, FontWeight::Normal),
+        ];
+        let md = converter.convert(&spans, &config).unwrap();
+        assert!(md.contains("הטורפים"), "lost first word: {md:?}");
+        assert!(md.contains("ממשפחת"), "lost second word: {md:?}");
+        assert!(!md.contains("הטורפיםממשפחת"), "words glued — separator was dropped: {md:?}");
+        let para_count = md
+            .trim()
+            .split("\n\n")
+            .filter(|p| !p.trim().is_empty())
+            .count();
+        assert_eq!(para_count, 1, "RTL line shattered into paragraphs: {md:?}");
     }
 
     #[test]
