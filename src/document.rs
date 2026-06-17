@@ -5748,7 +5748,24 @@ impl PdfDocument {
             // XY-cut column ordering. Re-sorting with row-aware would
             // interleave left/right columns line-by-line, producing garbled
             // output like "accompaally" instead of "accompanying table".
-            if !Self::is_multi_column_page(&spans) {
+            // A poppler/Breuel topological block order for genuine multi-region
+            // pages (a two-column body/footer, a sidebar beside the body) that a
+            // flat row-aware (y,x) sort interleaves. The gate (substantial,
+            // text-dense, dominant side-by-side blocks) rejects single-column,
+            // tables, TOCs and forms; it de-interleaves real two-column bodies
+            // (CFR, bibliographies, arxiv) and the real-academic sidebar+body
+            // (PMC8165481 order_score 0.704→0.976, CER 0.656→0.252 ≈ pymupdf).
+            // Opt-in via PDFOXIDE_TOPO_ORDER until one pathological case remains
+            // (a chess-diagram parallel table whose header fragments under
+            // union-find); default OFF keeps production byte-identical.
+            let mut topo_applied = false;
+            if let Some(reordered) = Self::topological_block_order(&spans) {
+                spans = reordered;
+                topo_applied = true;
+            }
+            if topo_applied {
+                // Topological block order replaced the row-aware sort.
+            } else if !Self::is_multi_column_page(&spans) {
                 spans.sort_by(|a, b| {
                     let cmp =
                         crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x);
@@ -12600,6 +12617,268 @@ impl PdfDocument {
             out.push(spans[i].clone());
         }
         Some(out)
+    }
+
+    /// Order spans by a poppler/Breuel-style topological sort over text BLOCKS,
+    /// for pages with genuine side-by-side regions (a two-column body, a
+    /// two-column footer, a sidebar beside the body) that a flat row-aware (y,x)
+    /// sort interleaves row-by-row (`MCC is a Christian organization formed
+    /// illustrates the origins …`). Returns `None` for any page WITHOUT two
+    /// horizontally-disjoint, vertically-overlapping blocks (single-column and
+    /// simple stacked layouts), so their output stays byte-identical.
+    ///
+    /// Coordinate convention (see `row_aware_span_cmp`): larger Y = higher on the
+    /// page, read first; `bottom()` is a span's UPPER edge, `top()` its LOWER edge.
+    fn topological_block_order(
+        spans: &[crate::layout::TextSpan],
+    ) -> Option<Vec<crate::layout::TextSpan>> {
+        use crate::utils::safe_float_cmp;
+        if spans.len() < 8 {
+            return None;
+        }
+        let hi = |s: &crate::layout::TextSpan| s.bbox.bottom(); // upper edge (larger y)
+        let lo = |s: &crate::layout::TextSpan| s.bbox.top(); // lower edge (smaller y)
+        let med_h = {
+            let mut hs: Vec<f32> = spans
+                .iter()
+                .map(|s| (hi(s) - lo(s)).abs())
+                .filter(|h| h.is_finite() && *h > 0.0)
+                .collect();
+            if hs.is_empty() {
+                return None;
+            }
+            hs.sort_by(|a, b| safe_float_cmp(*a, *b));
+            hs[hs.len() / 2].max(1.0)
+        };
+
+        // --- Union-find: connect spans in the same text region. Two spans join
+        // iff they are on the same line and horizontally adjacent (a normal word
+        // gap, NOT a column gutter), OR vertically stacked with overlapping X and
+        // a small inter-line gap. A column gutter (≥ ~1 em of whitespace) never
+        // connects, so left/right columns become separate blocks even when their
+        // lines share Y bands. ---
+        let n = spans.len();
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        }
+        // Index spans by reading order so each only tests a local window.
+        let mut ord: Vec<usize> = (0..n).collect();
+        ord.sort_by(|&a, &b| {
+            safe_float_cmp(hi(&spans[b]), hi(&spans[a]))
+                .then_with(|| safe_float_cmp(spans[a].bbox.left(), spans[b].bbox.left()))
+        });
+        let x_overlap = |a: &crate::layout::TextSpan, b: &crate::layout::TextSpan| -> f32 {
+            (a.bbox.right().min(b.bbox.right()) - a.bbox.left().max(b.bbox.left())).max(0.0)
+        };
+        for (p, &i) in ord.iter().enumerate() {
+            let si = &spans[i];
+            // Look ahead over a bounded window of following spans in reading order.
+            for &j in ord.iter().skip(p + 1).take(40) {
+                let sj = &spans[j];
+                let dy_centers = ((hi(si) + lo(si)) - (hi(sj) + lo(sj))).abs() * 0.5;
+                let same_line = dy_centers < med_h * 0.5;
+                let connect = if same_line {
+                    // Horizontal neighbour: gap below ~1 em (word space), not a gutter.
+                    let gap = (si.bbox.left().max(sj.bbox.left()))
+                        - (si.bbox.right().min(sj.bbox.right()));
+                    gap < med_h * 1.0
+                } else {
+                    // Vertical neighbour: overlap in X and a small inter-line gap.
+                    let vgap = (lo(si).min(lo(sj)) - hi(si).max(hi(sj))).abs();
+                    // (distance between the nearer edges)
+                    let near = (lo(si) - hi(sj)).abs().min((lo(sj) - hi(si)).abs());
+                    x_overlap(si, sj) > med_h * 0.3 && near < med_h * 1.5 && vgap < med_h * 6.0
+                };
+                if connect {
+                    let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                    if ri != rj {
+                        parent[ri] = rj;
+                    }
+                }
+            }
+        }
+
+        // --- Build blocks from the union-find components. A BTreeMap (not a
+        // HashMap) keys the components by root index so `into_values()` is
+        // DETERMINISTIC — HashMap iteration order is randomized per run, which
+        // would make the block order (and thus the extracted text) flaky for
+        // pages where two blocks tie on the seed sort key. ---
+        use std::collections::BTreeMap;
+        let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for i in 0..n {
+            let r = find(&mut parent, i);
+            groups.entry(r).or_default().push(i);
+        }
+        struct Block {
+            x0: f32,
+            x1: f32,
+            y_hi: f32,
+            y_lo: f32,
+            members: Vec<usize>,
+        }
+        let blocks: Vec<Block> = groups
+            .into_values()
+            .map(|members| {
+                let mut b = Block {
+                    x0: f32::MAX,
+                    x1: f32::MIN,
+                    y_hi: f32::MIN,
+                    y_lo: f32::MAX,
+                    members,
+                };
+                for &i in &b.members {
+                    let s = &spans[i];
+                    b.x0 = b.x0.min(s.bbox.left());
+                    b.x1 = b.x1.max(s.bbox.right());
+                    b.y_hi = b.y_hi.max(hi(s));
+                    b.y_lo = b.y_lo.min(lo(s));
+                }
+                b
+            })
+            .collect();
+        if blocks.len() < 2 {
+            return None;
+        }
+
+        // A STRUCTURED/TABULAR page (a chess-move table, a data grid, a TOC with a
+        // page-number rail) shatters into many tiny fragment blocks the union-find
+        // cannot coalesce — isolated cells, page numbers, single-letter column
+        // heads — interleaved with the column runs. Flowing multi-column prose and
+        // a sidebar+body do not: they are a handful of big blocks. So when fragment
+        // blocks (< 4 spans) outnumber the substantial ones, the page is tabular
+        // and must stay row-aware, NOT be read column-major.
+        let fragments = blocks.iter().filter(|b| b.members.len() < 4).count();
+        if fragments > blocks.len() - fragments {
+            return None;
+        }
+
+        // --- GATE: require ≥2 blocks that are horizontally DISJOINT yet overlap
+        // in Y (genuine side-by-side regions). Single-column / stacked layouts
+        // have none, so they return None and stay byte-identical. ---
+        let y_ov = |a: &Block, b: &Block| (a.y_hi.min(b.y_hi) - a.y_lo.max(b.y_lo)) > med_h * 0.5;
+        let x_disjoint = |a: &Block, b: &Block| a.x1 <= b.x0 || b.x1 <= a.x0;
+        // Character density per block (≈ chars per text line). A page-number
+        // column in a TOC, or the value column of a label:value form/table, is
+        // text-SPARSE (a few chars per line); genuine prose columns and a
+        // publisher metadata sidebar are text-DENSE. Used to reject row-paired
+        // tables/TOCs/forms (which must read row-wise, NOT column-major).
+        let char_density = |b: &Block| -> f32 {
+            let mut ys: Vec<f32> = b.members.iter().map(|&i| hi(&spans[i])).collect();
+            ys.sort_by(|p, q| safe_float_cmp(*p, *q));
+            let mut lines = 1usize;
+            for w in ys.windows(2) {
+                if (w[1] - w[0]).abs() > med_h * 0.6 {
+                    lines += 1;
+                }
+            }
+            let chars: usize = b
+                .members
+                .iter()
+                .map(|&i| spans[i].text.trim().chars().count())
+                .sum();
+            chars as f32 / lines as f32
+        };
+
+        // Both side-by-side blocks must be SUBSTANTIAL, text-DENSE, multi-line
+        // regions that overlap over several lines — a genuine 2-column body/footer
+        // or a sidebar+body. Incidental overlaps (a drop cap, a page number, a
+        // margin note, a fragmented poem line) involve tiny blocks or a sliver of
+        // Y-overlap; row-paired tables/TOCs/forms have a text-sparse value column.
+        // Neither must engage the reorder, or single-column poetry, decorated
+        // pages, and TOCs scramble.
+        let side_by_side = blocks.iter().enumerate().any(|(i, a)| {
+            blocks.iter().skip(i + 1).any(|b| {
+                x_disjoint(a, b)
+                    && a.members.len() >= 8
+                    && b.members.len() >= 8
+                    && (a.y_hi.min(b.y_hi) - a.y_lo.max(b.y_lo)) > med_h * 3.0
+                    && char_density(a) >= 12.0
+                    && char_density(b) >= 12.0
+                    // The two side-by-side blocks must be the page's DOMINANT
+                    // content (≥ half the spans). A genuine 2-column body or
+                    // sidebar+body lives in two big blocks; a table / chess
+                    // diagram / dense diagram fragments into many small blocks
+                    // that the union-find cannot coalesce, so the dominant pair
+                    // never reaches half — leaving such pages on the row-aware path.
+                    && (a.members.len() + b.members.len()) * 2 >= n
+            })
+        });
+        if !side_by_side {
+            return None;
+        }
+
+        // --- Topological order (poppler Rule 1 + Rule 2). A precedes B if they
+        // overlap in X and A is above B (vertical stack), OR A is left of B and
+        // they overlap in Y (side-by-side columns: left first). DFS with a visited
+        // guard appends a block only after all its predecessors, and terminates on
+        // any rule cycle. ---
+        let nb = blocks.len();
+        let before = |a: &Block, b: &Block| -> bool {
+            let x_ov = (a.x1.min(b.x1) - a.x0.max(b.x0)) > med_h * 0.3;
+            if x_ov && a.y_hi > b.y_hi && a.y_lo > b.y_lo {
+                return true; // A stacked above B
+            }
+            if a.x1 <= b.x0 && y_ov(a, b) {
+                return true; // A is the left column of a side-by-side pair
+            }
+            false
+        };
+        let mut visited = vec![false; nb];
+        let mut result_blocks: Vec<usize> = Vec::with_capacity(nb);
+        // Seed in reading order (top-left first) for a stable result.
+        let mut seeds: Vec<usize> = (0..nb).collect();
+        seeds.sort_by(|&a, &b| {
+            safe_float_cmp(blocks[b].y_hi, blocks[a].y_hi)
+                .then_with(|| safe_float_cmp(blocks[a].x0, blocks[b].x0))
+        });
+        // Iterative DFS to avoid recursion limits on pathological pages.
+        for &s in &seeds {
+            if visited[s] {
+                continue;
+            }
+            let mut stack = vec![(s, false)];
+            while let Some((bi, processed)) = stack.pop() {
+                if processed {
+                    if !visited[bi] {
+                        visited[bi] = true;
+                        result_blocks.push(bi);
+                    }
+                    continue;
+                }
+                if visited[bi] {
+                    continue;
+                }
+                stack.push((bi, true));
+                for (k, blk) in blocks.iter().enumerate() {
+                    if k != bi && !visited[k] && before(blk, &blocks[bi]) {
+                        stack.push((k, false));
+                    }
+                }
+            }
+        }
+
+        // --- Emit: each block's spans in reading order (y desc, x asc). ---
+        let mut out: Vec<crate::layout::TextSpan> = Vec::with_capacity(n);
+        for &bi in &result_blocks {
+            let mut members = blocks[bi].members.clone();
+            members.sort_by(|&a, &b| {
+                safe_float_cmp(hi(&spans[b]), hi(&spans[a]))
+                    .then_with(|| safe_float_cmp(spans[a].bbox.left(), spans[b].bbox.left()))
+            });
+            for i in members {
+                out.push(spans[i].clone());
+            }
+        }
+        if out.len() == n {
+            Some(out)
+        } else {
+            None
+        }
     }
 
     /// True if the spans cluster into lines whose leftmost X positions
@@ -21591,6 +21870,88 @@ mod tests {
         let current = make_test_span("World", 56.0, 100.0, 50.0, 12.0);
         // 6pt gap (> 0.25 * 12 = 3pt)
         assert!(PdfDocument::should_insert_space(&prev, &current));
+    }
+
+    // --- topological_block_order (multi-region reading order) -----------------
+    // Larger Y = higher on the page (read first). Two columns separated by a
+    // gutter (a > ~1 em horizontal gap) must be read column-major (left column
+    // fully, then right), and only genuine multi-column PROSE should engage it —
+    // single-column, fragmented tables and TOC page-number rails must be left on
+    // the row-aware path (return None) so their output is unchanged.
+
+    fn two_dense_columns(left_dense: bool, right_dense: bool) -> Vec<TextSpan> {
+        let mut spans = Vec::new();
+        for k in 0..8 {
+            let y = 200.0 - k as f32 * 12.0;
+            let l = if left_dense {
+                format!("left column body sentence number {k} here")
+            } else {
+                format!("{k}")
+            };
+            let r = if right_dense {
+                format!("right column body sentence number {k} here")
+            } else {
+                format!("{}", (k + 1) * 10) // short page-number-like values
+            };
+            spans.push(make_test_span(&l, 0.0, y, 90.0, 10.0));
+            spans.push(make_test_span(&r, 120.0, y, 90.0, 10.0));
+        }
+        spans
+    }
+
+    #[test]
+    fn topo_two_column_prose_reads_column_major() {
+        let spans = two_dense_columns(true, true);
+        let out = PdfDocument::topological_block_order(&spans)
+            .expect("genuine two-column prose must be reordered");
+        assert_eq!(out.len(), spans.len());
+        let texts: Vec<&str> = out.iter().map(|s| s.text.as_str()).collect();
+        let last_left = texts.iter().rposition(|t| t.starts_with("left")).unwrap();
+        let first_right = texts.iter().position(|t| t.starts_with("right")).unwrap();
+        // Whole left column before whole right column (de-interleaved).
+        assert!(last_left < first_right, "columns interleaved: {texts:?}");
+    }
+
+    #[test]
+    fn topo_single_column_returns_none() {
+        let mut spans = Vec::new();
+        for k in 0..10 {
+            let y = 200.0 - k as f32 * 12.0;
+            spans.push(make_test_span(
+                &format!("single column body line {k} of running text"),
+                0.0,
+                y,
+                190.0,
+                10.0,
+            ));
+        }
+        // No side-by-side region → unchanged (row-aware path).
+        assert!(PdfDocument::topological_block_order(&spans).is_none());
+    }
+
+    #[test]
+    fn topo_toc_sparse_page_number_column_returns_none() {
+        // Left = chapter titles (dense), right = page numbers (sparse). The
+        // text-density gate must reject it so a TOC is not read column-major
+        // (which would divorce each title from its page number).
+        let spans = two_dense_columns(true, false);
+        assert!(PdfDocument::topological_block_order(&spans).is_none());
+    }
+
+    #[test]
+    fn topo_fragmented_table_returns_none() {
+        // Two dense columns PLUS many isolated single-token fragment blocks
+        // (page numbers / cell labels) the union-find cannot coalesce — the
+        // signature of a structured table (chess diagram, data grid), which must
+        // stay row-aware rather than be read column-major.
+        let mut spans = two_dense_columns(true, true);
+        for k in 0..10 {
+            // Widely scattered short tokens → each its own fragment block.
+            let x = 230.0 + (k as f32) * 30.0;
+            let y = 205.0 - (k as f32) * 17.0;
+            spans.push(make_test_span(&format!("{}", k * 7), x, y, 8.0, 10.0));
+        }
+        assert!(PdfDocument::topological_block_order(&spans).is_none());
     }
 
     #[test]
