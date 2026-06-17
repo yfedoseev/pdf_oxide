@@ -7036,6 +7036,81 @@ impl PdfDocument {
         false
     }
 
+    /// True when a candidate run contains spans whose X-extents OVERLAP — the
+    /// signature of two (or more) distinct text lines that the same-line Y
+    /// tolerance merged into one band, NOT a single line. A real line lays its
+    /// spans out left-to-right with non-overlapping advances; only stacked lines
+    /// (leading just under `same_line_threshold`, e.g. a two-line title or a
+    /// running head sitting above a `published:` line) put two spans at the same
+    /// horizontal position. X-sorting such a band interleaves the lines word by
+    /// word (`BookThe Story Review: of the …`), so the caller must leave it in
+    /// row order instead. Mirrors [`run_has_large_x_gap`] for the opposite defect.
+    fn run_has_x_overlap(run: &[TextSpan]) -> bool {
+        if run.len() < 2 {
+            return false;
+        }
+
+        let mut edges: Vec<(f32, f32, f32)> = run
+            .iter()
+            .map(|s| (s.bbox.x, s.bbox.x + s.bbox.width, s.font_size))
+            .collect();
+
+        edges.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
+
+        for pair in edges.windows(2) {
+            let prev = pair[0];
+            let cur = pair[1];
+
+            // prev.right - cur.left > 0 ⇒ the next span starts before the previous
+            // one ends (horizontal overlap). Half an em of overlap is well beyond
+            // kerning/italic side-bearing and only happens across stacked lines.
+            let overlap = prev.1 - cur.0;
+            let max_fs = prev.2.max(cur.2).max(1.0);
+            if overlap > 0.5 * max_fs {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// True when a run is structurally two-or-more stacked text LINES: it has at
+    /// least two distinct Y levels that EACH carry at least two spans. This
+    /// separates a real two-line title / running-head block (many words on each
+    /// of two baselines) — where de-interleaving is correct — from a single span
+    /// that merely overlaps a line in X (a drop cap, a `©`/`c` mark, a lone
+    /// super-script), where the existing X-sort already does the right thing and
+    /// reordering by Y would misplace the stray glyph (`EAcrobat …`).
+    fn run_is_stacked_lines(run: &[TextSpan]) -> bool {
+        if run.len() < 4 {
+            return false; // need ≥2 lines × ≥2 spans
+        }
+        let mut rows: Vec<(f32, f32)> = run.iter().map(|s| (s.bbox.y, s.font_size)).collect();
+        rows.sort_by(|a, b| crate::utils::safe_float_cmp(b.0, a.0));
+
+        let mut multi_rows = 0usize;
+        let mut anchor_y = f32::NAN;
+        let mut count = 0usize;
+        for (y, fs) in rows {
+            if anchor_y.is_nan() || (anchor_y - y).abs() <= 0.5 * fs.max(1.0) {
+                if anchor_y.is_nan() {
+                    anchor_y = y;
+                }
+                count += 1;
+            } else {
+                if count >= 2 {
+                    multi_rows += 1;
+                }
+                anchor_y = y;
+                count = 1;
+            }
+        }
+        if count >= 2 {
+            multi_rows += 1;
+        }
+        multi_rows >= 2
+    }
+
     /// Re-sort same-line spans by X after row-aware band sorting.
     ///
     /// Row-aware sorting can place off-baseline glyphs such as superscripts or
@@ -7074,9 +7149,28 @@ impl PdfDocument {
 
             if j - i > 1 {
                 if Self::run_has_large_x_gap(&spans[i..j]) {
-                    // Candidate spans are vertically close, but not horizontally
-                    // contiguous. Do not X-sort them into a fake line; preserve
-                    // the row-aware order established before this helper.
+                    // Candidate spans are vertically close but not horizontally
+                    // contiguous (disjoint header/footer columns). Do not X-sort
+                    // them into a fake line; preserve the row-aware order.
+                    i = j;
+                    continue;
+                }
+
+                if Self::run_has_x_overlap(&spans[i..j]) && Self::run_is_stacked_lines(&spans[i..j])
+                {
+                    // Spans OVERLAP horizontally AND form ≥2 lines of ≥2 spans each:
+                    // two stacked lines the Y tolerance merged into one band (a
+                    // two-line title, a running head above a `published:` line). A
+                    // flat X-sort interleaves them word by word (`BookThe Story
+                    // Review: …`). De-interleave by ordering on (Y-descending, then
+                    // X) so each real line stays contiguous and in reading order. The
+                    // stacked-lines gate keeps a lone overlapping glyph (drop cap,
+                    // `©`, super-script) on the normal X-sort path below.
+                    spans[i..j].sort_by(|a, b| {
+                        crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y)
+                            .then(crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x))
+                            .then(a.sequence.cmp(&b.sequence))
+                    });
                     i = j;
                     continue;
                 }
