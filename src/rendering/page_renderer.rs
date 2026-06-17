@@ -5924,15 +5924,52 @@ impl PageRenderer {
                     c_alpha,
                 );
 
+                // Visible composite (overprint preview): spot ink overlaid
+                // for the composite while the sidecar (mc/mm/my/mk) preserves
+                // the process plates; identical to the sidecar for process
+                // sources.
+                let vc = overprint_visible_channel(
+                    source.class,
+                    ProcessChannel::C,
+                    sc,
+                    dc,
+                    opm,
+                    c_alpha,
+                );
+                let vm = overprint_visible_channel(
+                    source.class,
+                    ProcessChannel::M,
+                    sm,
+                    dm,
+                    opm,
+                    c_alpha,
+                );
+                let vy = overprint_visible_channel(
+                    source.class,
+                    ProcessChannel::Y,
+                    sy,
+                    dy,
+                    opm,
+                    c_alpha,
+                );
+                let vk = overprint_visible_channel(
+                    source.class,
+                    ProcessChannel::K,
+                    sk,
+                    dk_existing,
+                    opm,
+                    c_alpha,
+                );
+
                 let (r_byte, g_byte, b_byte) = if let Some(transform) = icc_transform.as_ref() {
-                    let mc_u8 = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
-                    let mm_u8 = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
-                    let my_u8 = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
-                    let mk_u8 = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let mc_u8 = (vc.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let mm_u8 = (vm.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let my_u8 = (vy.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let mk_u8 = (vk.clamp(0.0, 1.0) * 255.0).round() as u8;
                     let rgb = transform.convert_cmyk_pixel(mc_u8, mm_u8, my_u8, mk_u8);
                     (rgb[0], rgb[1], rgb[2])
                 } else {
-                    let (rr, rg, rb) = cmyk_to_rgb(mc, mm, my, mk);
+                    let (rr, rg, rb) = cmyk_to_rgb(vc, vm, vy, vk);
                     (
                         (rr * 255.0).round().clamp(0.0, 255.0) as u8,
                         (rg * 255.0).round().clamp(0.0, 255.0) as u8,
@@ -6751,17 +6788,55 @@ impl PageRenderer {
                     c_alpha,
                 );
 
+                // Visible composite (overprint preview). For process sources
+                // this equals the sidecar values; for a Separation/DeviceN
+                // spot the ink is overlaid onto the backdrop so it shows in
+                // the composite even though the sidecar (mc/mm/my/mk) keeps
+                // the process plates preserved.
+                let vc = overprint_visible_channel(
+                    source.class,
+                    ProcessChannel::C,
+                    sc,
+                    dc,
+                    opm,
+                    c_alpha,
+                );
+                let vm = overprint_visible_channel(
+                    source.class,
+                    ProcessChannel::M,
+                    sm,
+                    dm,
+                    opm,
+                    c_alpha,
+                );
+                let vy = overprint_visible_channel(
+                    source.class,
+                    ProcessChannel::Y,
+                    sy,
+                    dy,
+                    opm,
+                    c_alpha,
+                );
+                let vk = overprint_visible_channel(
+                    source.class,
+                    ProcessChannel::K,
+                    sk,
+                    dk_existing,
+                    opm,
+                    c_alpha,
+                );
+
                 // CMYK → RGB conversion. ICC path for the press-accurate
                 // case; additive-clamp `cmyk_to_rgb` for the fallback.
                 let (r_byte, g_byte, b_byte) = if let Some(transform) = icc_transform.as_ref() {
-                    let mc_u8 = (mc.clamp(0.0, 1.0) * 255.0).round() as u8;
-                    let mm_u8 = (mm.clamp(0.0, 1.0) * 255.0).round() as u8;
-                    let my_u8 = (my.clamp(0.0, 1.0) * 255.0).round() as u8;
-                    let mk_u8 = (mk.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let mc_u8 = (vc.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let mm_u8 = (vm.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let my_u8 = (vy.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let mk_u8 = (vk.clamp(0.0, 1.0) * 255.0).round() as u8;
                     let rgb = transform.convert_cmyk_pixel(mc_u8, mm_u8, my_u8, mk_u8);
                     (rgb[0], rgb[1], rgb[2])
                 } else {
-                    let (rr, rg, rb) = cmyk_to_rgb(mc, mm, my, mk);
+                    let (rr, rg, rb) = cmyk_to_rgb(vc, vm, vy, vk);
                     (
                         (rr * 255.0).round().clamp(0.0, 255.0) as u8,
                         (rg * 255.0).round().clamp(0.0, 255.0) as u8,
@@ -9324,9 +9399,21 @@ fn source_for_overprint(gs: &GraphicsState, fill_side: bool) -> Option<Overprint
                     cmyk,
                 })
             } else if !spot_inks.is_empty() {
+                // Pure Separation / DeviceN with no process attribution.
+                // Process lanes preserve backdrop in the separations sidecar
+                // (Table 149 row 3, via `compose_overprint_channel`), but the
+                // composite *preview* must still show the spot ink — so carry
+                // the spot's composite appearance (its alternate-space colour,
+                // already rasterised to RGB) as the source CMYK via the
+                // §10.3.5 additive-clamp inverse. `overprint_visible_channel`
+                // overlays it onto the backdrop; the sidecar ignores it.
+                let (r, g, b) = color_rgb;
+                let c = (1.0 - r).clamp(0.0, 1.0);
+                let m = (1.0 - g).clamp(0.0, 1.0);
+                let y = (1.0 - b).clamp(0.0, 1.0);
                 Some(OverprintSource {
                     class: SourceCsClass::SeparationOrDeviceN,
-                    cmyk: (0.0, 0.0, 0.0, 0.0),
+                    cmyk: (c, m, y, 0.0),
                 })
             } else {
                 let (r, g, b) = color_rgb;
@@ -9390,6 +9477,39 @@ fn compose_overprint_channel(
     };
     let alpha = alpha.clamp(0.0, 1.0);
     alpha * b + (1.0 - alpha) * c_b
+}
+
+/// Visible-composite (overprint-PREVIEW) value for one process channel.
+///
+/// For the process source classes this is byte-identical to
+/// [`compose_overprint_channel`] — the composite RGB and the separations
+/// sidecar agree, so it delegates.
+///
+/// For a `Separation` / non-process `DeviceN` spot the two intentionally
+/// diverge. [`compose_overprint_channel`] preserves the process plates
+/// (`B = c_b`) because the spot rides its own plate in the separations
+/// sidecar (§11.7.4.3 Table 149 row 3). But the **composite preview** has no
+/// separate spot plane to recombine, so the spot ink must be shown directly:
+/// it is overlaid subtractively onto the backdrop, `B = c_b + c_s − c_b·c_s`
+/// (ink-on-ink, the additive-subtractive overprint model). Without this an
+/// overprinting spot — e.g. a technical dieline / "Cut" ink — would be
+/// reverted to the backdrop and render invisibly in the composite.
+fn overprint_visible_channel(
+    class: SourceCsClass,
+    channel: ProcessChannel,
+    c_s: f32,
+    c_b: f32,
+    opm: u8,
+    alpha: f32,
+) -> f32 {
+    match class {
+        SourceCsClass::SeparationOrDeviceN => {
+            let overlay = c_b + c_s - c_b * c_s;
+            let alpha = alpha.clamp(0.0, 1.0);
+            alpha * overlay + (1.0 - alpha) * c_b
+        },
+        _ => compose_overprint_channel(class, channel, c_s, c_b, opm, alpha),
+    }
 }
 
 fn apply_pending_clip(
@@ -9614,6 +9734,71 @@ mod tests {
         assert!((r - 1.0).abs() < 0.001);
         assert!((g - 1.0).abs() < 0.001);
         assert!((b - 1.0).abs() < 0.001);
+    }
+
+    // ── Overprint-preview compositing for spots (§11.7.4.3) ──────────────
+
+    #[test]
+    fn overprint_visible_shows_spot_over_white_backdrop() {
+        // A Separation/DeviceN spot at full ink over a white (c_b = 0)
+        // backdrop must be VISIBLE in the composite preview (the spot ink is
+        // overlaid), while the separations sidecar lane preserves the
+        // backdrop process plates. Without this divergence an overprinting
+        // spot (e.g. a technical dieline) renders invisibly.
+        let visible = overprint_visible_channel(
+            SourceCsClass::SeparationOrDeviceN,
+            ProcessChannel::K,
+            1.0,
+            0.0,
+            0,
+            1.0,
+        );
+        assert!((visible - 1.0).abs() < 1e-6, "spot must show in composite: {visible}");
+
+        let sidecar = compose_overprint_channel(
+            SourceCsClass::SeparationOrDeviceN,
+            ProcessChannel::K,
+            1.0,
+            0.0,
+            0,
+            1.0,
+        );
+        assert!((sidecar - 0.0).abs() < 1e-6, "sidecar lane must preserve backdrop: {sidecar}");
+    }
+
+    #[test]
+    fn overprint_visible_overlays_spot_onto_coloured_backdrop() {
+        // Overprint preview is subtractive ink overlay, not knockout/replace:
+        // c_b = 0.4, c_s = 0.5 -> 0.4 + 0.5 - 0.4*0.5 = 0.7.
+        let v = overprint_visible_channel(
+            SourceCsClass::SeparationOrDeviceN,
+            ProcessChannel::M,
+            0.5,
+            0.4,
+            0,
+            1.0,
+        );
+        assert!((v - 0.7).abs() < 1e-6, "overlay expected 0.7, got {v}");
+    }
+
+    #[test]
+    fn overprint_visible_matches_compose_for_process_classes() {
+        // Process source classes are unchanged: the composite RGB and the
+        // sidecar agree, so the visible value delegates byte-for-byte.
+        for class in [SourceCsClass::DeviceCmykDirect, SourceCsClass::OtherProcess] {
+            for &(cs, cb, opm, a) in &[
+                (0.5_f32, 0.2_f32, 0u8, 1.0_f32),
+                (0.0, 0.7, 1, 0.5),
+                (1.0, 0.0, 0, 0.3),
+            ] {
+                let v = overprint_visible_channel(class, ProcessChannel::C, cs, cb, opm, a);
+                let c = compose_overprint_channel(class, ProcessChannel::C, cs, cb, opm, a);
+                assert!(
+                    (v - c).abs() < 1e-9,
+                    "process class {class:?} must be unchanged: {v} vs {c}"
+                );
+            }
+        }
     }
 
     #[test]
