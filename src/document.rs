@@ -27275,6 +27275,44 @@ mod tests {
         assert_eq!(texts, vec!["September", "11", "th"]);
     }
 
+    #[test]
+    fn reorder_same_line_runs_de_interleaves_two_stacked_lines() {
+        use crate::geometry::Rect;
+        use crate::layout::TextSpan;
+
+        // Two lines the same-line tolerance merged into one band: at fs=10 the
+        // threshold is max(10*1.2, 10*0.3)=12, and the lines are 8pt apart — so
+        // they group as one run, yet 8 > 0.5*fs (=5) makes them TWO stacked rows
+        // of two spans each. Their X-extents overlap, so a flat X-sort would
+        // interleave them word-by-word ("The Story Book Review"). The
+        // de-interleave path must instead order (Y-desc, then X) so each real
+        // line stays contiguous: line one ("The Book") then line two
+        // ("Story Review"). Input is given in the interleaved X order the
+        // row-aware sort would produce.
+        let span = |t: &str, x: f32, y: f32, w: f32, seq: usize| TextSpan {
+            text: t.to_string(),
+            bbox: Rect::new(x, y, w, 10.0),
+            font_size: 10.0,
+            sequence: seq,
+            ..Default::default()
+        };
+        let mut spans = vec![
+            span("The", 100.0, 200.0, 30.0, 0),
+            span("Story", 110.0, 192.0, 40.0, 1),
+            span("Book", 140.0, 200.0, 40.0, 2),
+            span("Review", 150.0, 192.0, 55.0, 3),
+        ];
+
+        PdfDocument::reorder_same_line_runs(&mut spans);
+
+        let texts: Vec<&str> = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["The", "Book", "Story", "Review"],
+            "stacked lines must de-interleave, not X-sort into one fake line"
+        );
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Optional Content (PDF "layer") name resolution — OCG `/Name` decoding,
     // OCMD `/OCGs` following, and the `/Properties` name-reference path
