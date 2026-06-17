@@ -21,7 +21,7 @@ fn two_line_pdf() -> Vec<u8> {
     let content = "BT /F1 10 Tf 1 0 0 1 72 700 Tm (the spring tide) Tj ET\n\
                    BT /F1 10 Tf 1 0 0 1 72 691 Tm (tables now posted) Tj ET\n";
     let mut buf: Vec<u8> = Vec::new();
-    let mut off = vec![0usize; 6];
+    let mut off = [0usize; 6];
     buf.extend_from_slice(b"%PDF-1.7\n");
     let mut obj = |buf: &mut Vec<u8>, id: usize, body: String| {
         off[id] = buf.len();

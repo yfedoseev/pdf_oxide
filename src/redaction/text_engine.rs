@@ -597,7 +597,7 @@ mod tests {
             false
         }
         fn redaction_safe_show(&self, _f: &str, bytes: &[u8]) -> bool {
-            bytes.len() % 2 == 0
+            bytes.len().is_multiple_of(2)
         }
     }
 

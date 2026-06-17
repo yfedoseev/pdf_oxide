@@ -22927,7 +22927,7 @@ mod tests {
             "split line not rejoined (delta must reform); got {texts:?}"
         );
         assert!(
-            !texts.iter().any(|t| *t == "alpha beta gamma del"),
+            !texts.contains(&"alpha beta gamma del"),
             "split fragment must be gone after coalescing; got {texts:?}"
         );
         // Body per-column runs (never cross the midline) stay as-is.

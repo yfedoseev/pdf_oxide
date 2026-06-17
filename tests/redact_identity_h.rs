@@ -51,7 +51,7 @@ fn identity_h_pdf(runs: &[Run]) -> Vec<u8> {
     }
 
     let mut buf: Vec<u8> = Vec::new();
-    let mut off = vec![0usize; 9];
+    let mut off = [0usize; 9];
     buf.extend_from_slice(b"%PDF-1.7\n");
     let mut obj = |buf: &mut Vec<u8>, id: usize, body: String| {
         off[id] = buf.len();
