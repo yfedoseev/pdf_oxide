@@ -12046,7 +12046,18 @@ impl PdfDocument {
                     let cur = &spans[line[m]];
                     let fs = prev.font_size.max(cur.font_size).max(1.0);
                     let gap = cur.bbox.x - (prev.bbox.x + prev.bbox.width);
-                    if gap > 0.5 * fs || (cur.font_size - prev.font_size).abs() > 0.1 {
+                    // Keep a run UNIFORM in styling. `merge_same_line_run` takes
+                    // the first span's style for the whole merged span, so a run
+                    // that mixes weights/italics would silently erase an interior
+                    // emphasis span (a lone bold word bracketed by body text loses
+                    // its `**`). A genuine mid-word gutter split is always one
+                    // word in one style, so requiring uniform weight+italic keeps
+                    // that fix while never dropping emphasis.
+                    if gap > 0.5 * fs
+                        || (cur.font_size - prev.font_size).abs() > 0.1
+                        || cur.font_weight != prev.font_weight
+                        || cur.is_italic != prev.is_italic
+                    {
                         break;
                     }
                     m += 1;
