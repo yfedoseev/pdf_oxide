@@ -71,6 +71,28 @@ pub trait FontMetrics {
     fn is_simple(&self, _font: &str) -> bool {
         true
     }
+
+    /// Whether the engine can prune individual glyphs for `font` reliably
+    /// enough to redact it. A superset of [`Self::is_simple`]: a real
+    /// implementation may also support a multi-byte encoding whose
+    /// code→glyph→box mapping it can reconstruct deterministically (e.g.
+    /// Identity-H, whose 2-byte codes equal their CIDs, ISO 32000-1
+    /// §9.7.5.2). Anything this returns `false` for is **refused** (fail
+    /// closed). Default delegates to `is_simple` so existing single-byte
+    /// behaviour is unchanged.
+    fn can_prune(&self, font: &str) -> bool {
+        self.is_simple(font)
+    }
+
+    /// Whether one show string is well-formed for `font` under the
+    /// encoding the engine claims to support. For a fixed-width multi-byte
+    /// encoding (Identity-H: 2 bytes per code) a string whose length is not
+    /// a whole number of codes is malformed; pruning it could misalign code
+    /// boundaries and silently under-redact, so the engine **refuses**.
+    /// Default `true` (single-byte fonts have no alignment constraint).
+    fn redaction_safe_show(&self, _font: &str, _bytes: &[u8]) -> bool {
+        true
+    }
 }
 
 /// One font's removed glyph codes, for `font_scrub` (G2).
@@ -477,12 +499,38 @@ fn refuse_unsupported(
     out: &mut Vec<Operator>,
     op: &Operator,
 ) -> bool {
-    if !regions.is_empty() && !fonts.is_simple(font) {
+    if regions.is_empty() {
+        return false;
+    }
+    // Refuse a font whose glyphs cannot be pruned reliably, OR a show whose
+    // bytes do not align to the font's code length (a malformed multi-byte
+    // string we must not risk mis-decoding). Either way emit the show
+    // unchanged and flag the hard refusal.
+    let aligned = show_strings(op)
+        .iter()
+        .all(|s| fonts.redaction_safe_show(font, s));
+    if !fonts.can_prune(font) || !aligned {
         result.unsupported_font = true;
         out.push(op.clone());
-        true
-    } else {
-        false
+        return true;
+    }
+    false
+}
+
+/// The raw show-string payload(s) carried by a text-showing operator, in
+/// order. Non-show operators yield an empty list.
+fn show_strings(op: &Operator) -> Vec<&[u8]> {
+    match op {
+        Operator::Tj { text } | Operator::Quote { text } => vec![text.as_slice()],
+        Operator::DoubleQuote { text, .. } => vec![text.as_slice()],
+        Operator::TJ { array } => array
+            .iter()
+            .filter_map(|el| match el {
+                TextElement::String(s) => Some(s.as_slice()),
+                TextElement::Offset(_) => None,
+            })
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -522,6 +570,34 @@ mod tests {
         }
         fn is_simple(&self, _f: &str) -> bool {
             false
+        }
+    }
+
+    /// Identity-H stub: full-em (1000) glyphs, 2-byte codes (CID = code),
+    /// prunable, never a word space, odd-length shows refused — mirroring
+    /// `FontInfoMetrics`'s real Identity-H behaviour so the engine's
+    /// multi-byte pruning is testable in isolation.
+    struct IdentityHStub;
+    impl FontMetrics for IdentityHStub {
+        fn width(&self, _f: &str, _c: u32) -> f32 {
+            1000.0
+        }
+        fn is_simple(&self, _f: &str) -> bool {
+            false
+        }
+        fn can_prune(&self, _f: &str) -> bool {
+            true
+        }
+        fn decode(&self, _f: &str, s: &[u8]) -> Vec<(u32, Vec<u8>)> {
+            s.chunks_exact(2)
+                .map(|p| (u32::from(u16::from_be_bytes([p[0], p[1]])), p.to_vec()))
+                .collect()
+        }
+        fn is_word_space(&self, _f: &str, _c: u32) -> bool {
+            false
+        }
+        fn redaction_safe_show(&self, _f: &str, bytes: &[u8]) -> bool {
+            bytes.len() % 2 == 0
         }
     }
 
@@ -612,6 +688,44 @@ mod tests {
             })
             .unwrap();
         assert!((tm.0 - 100.0).abs() < 1e-3 && (tm.1 - 100.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn identity_h_middle_cid_removed_others_survive() {
+        // Identity-H: three 2-byte CIDs (1, 2, 3) → bytes 00 01 00 02 00 03.
+        // Full-em glyphs at 10pt from (100,100): CID1 [100,110], CID2
+        // [110,120], CID3 [120,130]. A tight region inside CID2 must remove
+        // exactly that CID's two bytes and keep CID1 and CID3 intact.
+        let ops = doc([1.0, 0.0, 0.0, 1.0, 100.0, 100.0], &[0, 1, 0, 2, 0, 3]);
+        let r = regions(113.0, 95.0, 117.0, 115.0);
+        let out = redact_text_stream(&ops, &r, DEFAULT_EDGE_PADDING, &IdentityHStub);
+        assert!(!out.unsupported_font, "Identity-H must be prunable, not refused");
+        assert_eq!(out.glyphs_removed, 1, "only the middle CID is in the region");
+        // CID1 and CID3 survive as their original 2-byte codes, in order.
+        assert_eq!(tj_text(&out.operators), vec![vec![0u8, 1], vec![0u8, 3]]);
+    }
+
+    #[test]
+    fn identity_h_fully_covered_run_removed() {
+        let ops = doc([1.0, 0.0, 0.0, 1.0, 100.0, 100.0], &[0, 1, 0, 2, 0, 3]);
+        let r = regions(90.0, 95.0, 140.0, 115.0); // covers all three CIDs
+        let out = redact_text_stream(&ops, &r, DEFAULT_EDGE_PADDING, &IdentityHStub);
+        assert!(!out.unsupported_font);
+        assert_eq!(out.glyphs_removed, 3);
+        assert!(tj_text(&out.operators).is_empty(), "no target bytes may survive");
+    }
+
+    #[test]
+    fn identity_h_odd_length_show_is_refused_fail_closed() {
+        // A malformed 5-byte Identity-H show (not a whole number of 2-byte
+        // codes) must be refused rather than mis-decoded — fail closed.
+        let ops = doc([1.0, 0.0, 0.0, 1.0, 100.0, 100.0], &[0, 1, 0, 2, 9]);
+        let r = regions(90.0, 95.0, 140.0, 115.0);
+        let out = redact_text_stream(&ops, &r, DEFAULT_EDGE_PADDING, &IdentityHStub);
+        assert!(out.unsupported_font, "odd-length Identity-H show must refuse");
+        // The original (unredacted) show is emitted unchanged; the caller
+        // discards the whole result on refusal, so nothing is persisted.
+        assert_eq!(tj_text(&out.operators), vec![vec![0u8, 1, 0, 2, 9]]);
     }
 
     #[test]
