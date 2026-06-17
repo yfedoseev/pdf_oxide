@@ -352,6 +352,21 @@ impl PdfImage {
                 } else {
                     let dynamic_image = self.to_dynamic_image()?;
                     let rgb = dynamic_image.to_rgb8();
+                    // `ImageBuffer::from_raw` accepts a buffer at least as long
+                    // as the image needs, so a mis-declared depth can leave the
+                    // RGB buffer larger than width×height×3. Reject that here
+                    // with a recoverable error instead of handing the encoder a
+                    // mismatched buffer, which it asserts on (panicking through
+                    // the FFI boundary where callers cannot catch it).
+                    if rgb.as_raw().len() != expected_rgb {
+                        return Err(Error::Encode(format!(
+                            "image buffer length {} does not match {}x{} RGB image ({} expected)",
+                            rgb.as_raw().len(),
+                            self.width,
+                            self.height,
+                            expected_rgb
+                        )));
+                    }
                     encoder
                         .write_image(
                             rgb.as_raw(),
@@ -831,8 +846,23 @@ pub fn extract_image_from_xobject(
             }
         } else {
             let pixel_format = color_space_to_pixel_format(&color_space);
+            // ISO 32000-1 §8.9.5.2: BitsPerComponent 16 stores each colour
+            // sample as a big-endian 16-bit value. The rest of the image
+            // pipeline assumes 8-bit samples, so collapse each sample to its
+            // high byte. Without this the raw buffer is twice the expected
+            // length; the lenient `ImageBuffer::from_raw` then builds an
+            // oversized image whose buffer the PNG encoder rejects with a
+            // panic (`assertion left == right failed: Invalid buffer length`).
+            let pixels = if bits_per_component == 16 {
+                decoded_data
+                    .chunks_exact(2)
+                    .map(|sample| sample[0])
+                    .collect()
+            } else {
+                decoded_data
+            };
             ImageData::Raw {
-                pixels: decoded_data,
+                pixels,
                 format: pixel_format,
             }
         }
@@ -841,7 +871,14 @@ pub fn extract_image_from_xobject(
     // JBIG2 decode produces 8-bit-per-channel pixels regardless of the
     // XObject's BitsPerComponent (which is 1).  Override to 8 so that
     // to_dynamic_image() does not try to CCITT-decompress the output.
-    let effective_bpc = if is_jbig2 { 8 } else { bits_per_component };
+    // 16-bit samples were collapsed to their high byte above (and an Indexed
+    // base always expands to 8-bit RGB), so the stored pixels are 8-bit per
+    // component in those cases too.
+    let effective_bpc = if is_jbig2 || bits_per_component == 16 {
+        8
+    } else {
+        bits_per_component
+    };
     let mut image = PdfImage::new(width, height, color_space, effective_bpc, data);
 
     // Attach the ICC profile if we found one — prefer the direct ICCBased
@@ -2965,5 +3002,57 @@ mod handle_color_space_tests {
         .unwrap();
         assert_eq!(handle.color_space, ColorSpace::Indexed);
         assert_eq!(handle.indexed_base(), Some(ColorSpace::DeviceRGB));
+    }
+}
+
+#[cfg(test)]
+mod png_bytes_panic_safety_tests {
+    use super::*;
+
+    /// A raw RGB buffer longer than width×height×3 (e.g. a 16-bit-per-component
+    /// image whose samples were not collapsed to 8-bit) must NOT panic the PNG
+    /// encoder — it must surface a recoverable `Error` that crosses the FFI
+    /// boundary so Python/other callers can catch it. Regression for the
+    /// `assertion left == right failed: Invalid buffer length` panic.
+    #[test]
+    fn to_png_bytes_rejects_oversized_rgb_buffer_without_panicking() {
+        let (w, h) = (4u32, 2u32);
+        // Twice the bytes a 4x2 RGB image needs (mimics undownsampled 16-bit).
+        let pixels = vec![0u8; (w * h * 3 * 2) as usize];
+        let img = PdfImage::new(
+            w,
+            h,
+            ColorSpace::DeviceRGB,
+            8,
+            ImageData::Raw {
+                pixels,
+                format: PixelFormat::RGB,
+            },
+        );
+        let result = img.to_png_bytes();
+        assert!(
+            result.is_err(),
+            "oversized RGB buffer must yield a recoverable Err, not a panic"
+        );
+    }
+
+    /// A correctly sized 8-bit RGB buffer (the shape produced after 16-bit
+    /// samples are downsampled at parse time) encodes to a valid PNG.
+    #[test]
+    fn to_png_bytes_encodes_correctly_sized_rgb() {
+        let (w, h) = (4u32, 2u32);
+        let pixels = vec![128u8; (w * h * 3) as usize];
+        let img = PdfImage::new(
+            w,
+            h,
+            ColorSpace::DeviceRGB,
+            8,
+            ImageData::Raw {
+                pixels,
+                format: PixelFormat::RGB,
+            },
+        );
+        let png = img.to_png_bytes().expect("correctly sized RGB must encode");
+        assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "valid PNG signature");
     }
 }
