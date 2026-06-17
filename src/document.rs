@@ -7737,7 +7737,8 @@ impl PdfDocument {
             // non-cursive script such as Hebrew can legitimately carry a
             // space-separated pair in one show string, so it is left alone.
             tmp.text =
-                Self::reverse_rtl_keeping_marks(&Self::strip_interior_arabic_spaces(&span.text));
+                Self::reverse_rtl_keeping_marks(&Self::strip_interior_arabic_spaces(&span.text))
+                    .replace(Self::RTL_WORD_BOUNDARY, " ");
             Self::push_span_text(out, &tmp);
         } else if rtl_run && Self::is_reversible_rtl_neutral_span(&span.text) {
             // A neutral-only span (separator / terminator punctuation plus
@@ -9669,7 +9670,19 @@ impl PdfDocument {
         let mut by_y: Vec<&crate::layout::TextSpan> = spans.iter().collect();
         by_y.sort_by(|a, b| safe_float_cmp(b.bbox.y, a.bbox.y));
         let mut lines: Vec<Vec<&crate::layout::TextSpan>> = Vec::new();
-        let mut anchor_y = f32::NAN;
+        // Roll the line-break reference forward to the PREVIOUS span's y rather
+        // than pinning it to the band's first (topmost) span. RTL producers seat
+        // a line's glyphs across a few points of vertical jitter — combining
+        // marks ride high, a line-final letter can sit a few points low (P2: a
+        // width-0 `ي` at dy≈3pt below the baseline). Against a fixed top anchor
+        // the line's own span furthest above the baseline sets the band ceiling,
+        // so the lowest glyph can exceed `0.5·fs` and split onto its own "line"
+        // — which then reverses and lands after the sentence terminator
+        // (`في العالم.` → `ف العالم.ي`). Comparing each span to its immediate
+        // predecessor keeps a line whose internal step is < tol intact while a
+        // real inter-line gap (leading ≈ one full em, well over tol) still opens
+        // the next band.
+        let mut prev_y = f32::NAN;
         let mut tol = 0.0f32;
         for s in by_y {
             let fs = if s.font_size.is_finite() && s.font_size > 1.0 {
@@ -9677,13 +9690,12 @@ impl PdfDocument {
             } else {
                 10.0
             };
-            let new_line =
-                anchor_y.is_finite() && (!s.bbox.y.is_finite() || anchor_y - s.bbox.y > tol);
-            if anchor_y.is_nan() || new_line {
+            let new_line = prev_y.is_finite() && (!s.bbox.y.is_finite() || prev_y - s.bbox.y > tol);
+            if prev_y.is_nan() || new_line {
                 lines.push(Vec::new());
-                anchor_y = s.bbox.y;
                 tol = 0.5 * fs;
             }
+            prev_y = s.bbox.y;
             lines.last_mut().unwrap().push(s);
         }
 
@@ -9746,6 +9758,17 @@ impl PdfDocument {
     /// a single space at genuine inter-word x-gaps. The downstream
     /// [`push_span_text_bidi`] then reverses this to correct logical order with
     /// marks kept attached (`reverse_rtl_keeping_marks`).
+    /// Private-use sentinel that [`merge_rtl_line_to_visual_span`] emits in place
+    /// of a SPACE at an AUTHORITATIVE producer-segmented Arabic word boundary, so
+    /// the downstream [`strip_interior_arabic_spaces`] (which strips only U+0020)
+    /// leaves it intact instead of mistaking a genuine word break for a
+    /// cursive-shatter artefact. Every output site restores it to a SPACE right
+    /// after the strip ([`push_span_text_bidi`] for plain text,
+    /// [`apply_rtl_logical_order_to_ordered_spans`] for md/html). U+F8FF is in the
+    /// Unicode private-use area and never appears in real producer text reaching
+    /// the pure-RTL merge path.
+    const RTL_WORD_BOUNDARY: char = '\u{F8FF}';
+
     fn merge_rtl_line_to_visual_span(line: &[&crate::layout::TextSpan]) -> crate::layout::TextSpan {
         use crate::text::rtl_detector::is_rtl_diacritic;
         use crate::utils::safe_float_cmp;
@@ -9825,14 +9848,21 @@ impl PdfDocument {
             trailing[best].push(*mc);
         }
         // Emit visual (ascending-x) order: each base then its marks, with a single
-        // space wherever a producer word-boundary x falls between two bases. The
-        // downstream reverse maps this to logical order with words intact.
+        // word-boundary marker wherever a producer word-boundary x falls between two
+        // bases. The marker is the private-use sentinel [`Self::RTL_WORD_BOUNDARY`],
+        // not a plain SPACE, so the downstream `strip_interior_arabic_spaces` (which
+        // only removes U+0020) cannot mistake this AUTHORITATIVE producer-segmented
+        // word break for a cursive-shatter artefact and delete it; each output site
+        // restores it to a SPACE right after the strip. The downstream reverse maps
+        // this to logical order with words intact.
         let mut text = String::new();
         let mut prev_x: Option<f32> = None;
         for (i, (bx, bc)) in bases.iter().enumerate() {
             if let Some(px) = prev_x {
-                if word_space_x.iter().any(|sx| *sx > px && *sx < *bx) && !text.ends_with(' ') {
-                    text.push(' ');
+                if word_space_x.iter().any(|sx| *sx > px && *sx < *bx)
+                    && !text.ends_with(Self::RTL_WORD_BOUNDARY)
+                {
+                    text.push(Self::RTL_WORD_BOUNDARY);
                 }
             }
             text.push(*bc);
@@ -9976,7 +10006,8 @@ impl PdfDocument {
                     if rtl >= 2 && !latin {
                         s.span.text = Self::reverse_rtl_keeping_marks(
                             &Self::strip_interior_arabic_spaces(&s.span.text),
-                        );
+                        )
+                        .replace(Self::RTL_WORD_BOUNDARY, " ");
                     } else if Self::is_reversible_rtl_neutral_span(&s.span.text) {
                         s.span.text = s.span.text.chars().rev().collect();
                     }
@@ -9990,6 +10021,13 @@ impl PdfDocument {
         // reorder) only take effect once that field reflects the new sequence.
         for (idx, s) in spans.iter_mut().enumerate() {
             s.reading_order = idx;
+            // Defensive: restore any word-boundary sentinel that the reorder
+            // branch above did not reach (e.g. a merged pure-RTL span that ended
+            // up Y-banded with a Latin neighbour so its line took the LTR path),
+            // so the marker can never leak into md/html output.
+            if s.span.text.contains(Self::RTL_WORD_BOUNDARY) {
+                s.span.text = s.span.text.replace(Self::RTL_WORD_BOUNDARY, " ");
+            }
         }
     }
 
@@ -11924,6 +11962,184 @@ impl PdfDocument {
             return None;
         }
         Some(gutter_x)
+    }
+
+    /// B1: merge a contiguous same-line run of spans that *crosses the page
+    /// midline* into a single span, so the converter pipeline's column cut
+    /// cannot shred a full-width line that the producer happened to draw as two
+    /// adjacent show-strings. A generator may emit a full-width heading line
+    /// above a two-column body as two fragments split mid-word at the gutter;
+    /// each fragment's centre-x then falls in a different column, so the
+    /// geometric reading order buckets them apart and the second half surfaces
+    /// far away in the other column's stream. The plain-text path never hits
+    /// this because it runs `merge_adjacent_spans` *before* column detection;
+    /// this mirrors that for the md/html converter paths.
+    ///
+    /// Returns `Some(new spans)` only when at least one gutter-crossing run was
+    /// merged, else `None` (the caller keeps the original spans, byte-identical).
+    /// Tightly scoped: fires only on a multi-column page, and only merges a run
+    /// whose member spans are contiguous (small inter-span gap, same font size)
+    /// AND whose combined x-extent straddles the content midline — the unique
+    /// signature of a full-width line drawn as multiple fragments. A normal
+    /// per-column body run never crosses the midline (the gutter gap breaks the
+    /// contiguity at the column edge), so those pages are untouched.
+    fn coalesce_gutter_crossing_runs(
+        spans: &[crate::layout::TextSpan],
+    ) -> Option<Vec<crate::layout::TextSpan>> {
+        use crate::utils::safe_float_cmp;
+        if spans.len() < 2 || !Self::is_multi_column_page(spans) {
+            return None;
+        }
+        let finite = |s: &crate::layout::TextSpan| {
+            s.bbox.x.is_finite() && s.bbox.y.is_finite() && s.bbox.width.is_finite()
+        };
+        let cmin = spans
+            .iter()
+            .filter(|s| finite(s) && !s.text.trim().is_empty())
+            .map(|s| s.bbox.x)
+            .fold(f32::INFINITY, f32::min);
+        let cmax = spans
+            .iter()
+            .filter(|s| finite(s) && !s.text.trim().is_empty())
+            .map(|s| s.bbox.x + s.bbox.width)
+            .fold(f32::NEG_INFINITY, f32::max);
+        if !cmin.is_finite() || !cmax.is_finite() || cmax - cmin < 100.0 {
+            return None;
+        }
+        let mid = (cmin + cmax) * 0.5;
+
+        // Group original indices into visual lines by a font-relative Y band.
+        let mut order: Vec<usize> = (0..spans.len()).filter(|&i| finite(&spans[i])).collect();
+        order.sort_by(|&a, &b| {
+            safe_float_cmp(spans[b].bbox.y, spans[a].bbox.y)
+                .then_with(|| safe_float_cmp(spans[a].bbox.x, spans[b].bbox.x))
+        });
+
+        // index → action: a merged span replaces the run's first member; the
+        // rest are dropped. Everything else is kept in its original position.
+        let mut replacement: std::collections::HashMap<usize, crate::layout::TextSpan> =
+            std::collections::HashMap::new();
+        let mut dropped: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+        let mut li = 0;
+        while li < order.len() {
+            let anchor_y = spans[order[li]].bbox.y;
+            let mut lj = li + 1;
+            while lj < order.len() {
+                let fs = spans[order[li]]
+                    .font_size
+                    .max(spans[order[lj]].font_size)
+                    .max(1.0);
+                if (spans[order[lj]].bbox.y - anchor_y).abs() > 0.5 * fs {
+                    break;
+                }
+                lj += 1;
+            }
+            // `order[li..lj]` is one visual line, already x-ascending.
+            let line = &order[li..lj];
+            let mut k = 0;
+            while k < line.len() {
+                // Extend a contiguous run: small inter-span gap + matching font size.
+                let mut m = k + 1;
+                while m < line.len() {
+                    let prev = &spans[line[m - 1]];
+                    let cur = &spans[line[m]];
+                    let fs = prev.font_size.max(cur.font_size).max(1.0);
+                    let gap = cur.bbox.x - (prev.bbox.x + prev.bbox.width);
+                    if gap > 0.5 * fs || (cur.font_size - prev.font_size).abs() > 0.1 {
+                        break;
+                    }
+                    m += 1;
+                }
+                let run = &line[k..m];
+                if run.len() >= 2 {
+                    let run_min = spans[run[0]].bbox.x;
+                    let last = &spans[run[run.len() - 1]];
+                    let run_max = last.bbox.x + last.bbox.width;
+                    // Only stitch a gutter-crossing run that actually carries a
+                    // MID-WORD split straddling the midline: an adjacent pair
+                    // joined by a hairline/negative gap whose two sides are both
+                    // alphanumeric (the producer broke one word into two
+                    // show-strings across the gutter). A legitimate full-width
+                    // line drawn as several fragments breaks at WORD boundaries
+                    // (space-width gaps) or non-letter glyph edges, so it never
+                    // matches and stays byte-identical — this keeps the change
+                    // scoped to the split-word case alone.
+                    let has_midword_split_across_mid = run.windows(2).any(|w| {
+                        let prev = &spans[w[0]];
+                        let cur = &spans[w[1]];
+                        let fs = prev.font_size.max(cur.font_size).max(1.0);
+                        let gap = cur.bbox.x - (prev.bbox.x + prev.bbox.width);
+                        gap <= 0.15 * fs
+                            && prev.bbox.x < mid
+                            && cur.bbox.x + cur.bbox.width > mid
+                            && prev
+                                .text
+                                .chars()
+                                .last()
+                                .is_some_and(|c| c.is_alphanumeric())
+                            && cur.text.chars().next().is_some_and(|c| c.is_alphanumeric())
+                    });
+                    if run_min < mid && run_max > mid && has_midword_split_across_mid {
+                        replacement.insert(run[0], Self::merge_same_line_run(spans, run));
+                        for &idx in &run[1..] {
+                            dropped.insert(idx);
+                        }
+                    }
+                }
+                k = m;
+            }
+            li = lj;
+        }
+
+        if replacement.is_empty() {
+            return None;
+        }
+        // Rebuild in original order, substituting merged spans and dropping the
+        // swallowed fragments; non-finite spans pass through untouched.
+        let mut out = Vec::with_capacity(spans.len());
+        for (i, s) in spans.iter().enumerate() {
+            if dropped.contains(&i) {
+                continue;
+            }
+            match replacement.remove(&i) {
+                Some(merged) => out.push(merged),
+                None => out.push(s.clone()),
+            }
+        }
+        Some(out)
+    }
+
+    /// Merge a contiguous, x-ascending run of same-line spans (indices into
+    /// `spans`) into one span: union the bounding box, take styling/MCID from the
+    /// first member, and join the text with a single space wherever the
+    /// inter-span gap is wide enough to be a word break. A negative / hairline
+    /// gap is a mid-word fragment boundary and is concatenated directly, so the
+    /// two halves of a word split across the gutter rejoin without a stray space.
+    fn merge_same_line_run(
+        spans: &[crate::layout::TextSpan],
+        run: &[usize],
+    ) -> crate::layout::TextSpan {
+        let mut merged = spans[run[0]].clone();
+        let mut x_max = merged.bbox.x + merged.bbox.width;
+        for &idx in &run[1..] {
+            let s = &spans[idx];
+            let fs = merged.font_size.max(s.font_size).max(1.0);
+            let gap = s.bbox.x - x_max;
+            if gap > 0.25 * fs
+                && !merged.text.ends_with(' ')
+                && !s.text.starts_with(' ')
+                && !merged.text.is_empty()
+            {
+                merged.text.push(' ');
+            }
+            merged.text.push_str(&s.text);
+            x_max = x_max.max(s.bbox.x + s.bbox.width);
+            merged.bbox.y = merged.bbox.y.min(s.bbox.y);
+        }
+        merged.bbox.width = (x_max - merged.bbox.x).max(0.0);
+        merged.char_widths = Vec::new();
+        merged
     }
 
     /// If `spans` is a genuine two-column-prose page (#734), reorder them
@@ -17409,6 +17625,16 @@ impl PdfDocument {
         // each carrying the MCID/position that drops it into reading order.
         spans.extend_from_slice(extra_spans);
 
+        // B1: stitch a full-width line that the producer drew as adjacent
+        // fragments straddling the gutter back into one span, so the column
+        // reorder below (and the geometric fallback) cannot bucket its halves
+        // into different columns and split it mid-word. Mirrors the plain-text
+        // path's pre-column `merge_adjacent_spans`; no-op (byte-identical) on any
+        // page without such a gutter-crossing run.
+        if let Some(coalesced) = Self::coalesce_gutter_crossing_runs(&spans) {
+            spans = coalesced;
+        }
+
         // Two-column-prose column-major reorder (#734): same gate + emit as the
         // plain-text path, so a two-column body reads column-by-column rather
         // than interleaving rows. When it fires (untagged pages only), the
@@ -17974,6 +18200,16 @@ impl PdfDocument {
         // Caller-supplied spans (e.g. OCR'd image text from the Auto extractor),
         // each carrying the MCID/position that drops it into reading order.
         spans.extend_from_slice(extra_spans);
+
+        // B1: stitch a full-width line that the producer drew as adjacent
+        // fragments straddling the gutter back into one span, so the column
+        // reorder below (and the geometric fallback) cannot bucket its halves
+        // into different columns and split it mid-word. Mirrors the plain-text
+        // path's pre-column `merge_adjacent_spans`; no-op (byte-identical) on any
+        // page without such a gutter-crossing run.
+        if let Some(coalesced) = Self::coalesce_gutter_crossing_runs(&spans) {
+            spans = coalesced;
+        }
 
         // Two-column-prose column-major reorder (#734): same gate + emit as the
         // plain-text path, so a two-column body reads column-by-column rather
@@ -22598,6 +22834,172 @@ mod tests {
         let mut out = String::new();
         PdfDocument::push_span_text_bidi(&mut out, &merged, true);
         assert_eq!(out, "الثدييات", "interleaved word not reconstructed, got {out:?}");
+    }
+
+    /// P3: a producer-segmented word boundary between two Arabic words must
+    /// survive the `merge_rtl_line_to_visual_span` → `push_span_text_bidi`
+    /// pipeline even when it falls after a DUAL-joining letter (ع in `أنواع`).
+    /// The merge records the boundary from the producer's STANDALONE space span;
+    /// without the word-boundary sentinel, `strip_interior_arabic_spaces`'s
+    /// sparse branch deletes it (a space after a dual-joining letter looks like a
+    /// cursive-shatter artefact), gluing `أنواع شائعة` → `أنواعشائعة`.
+    #[test]
+    fn test_merge_rtl_preserves_producer_word_boundary_after_dual_joining() {
+        use crate::geometry::Rect;
+        // Two words laid out left-to-right in VISUAL order (logical order is the
+        // reverse): word two `شائعة` (visual `ةعئاش`, x 100‒140), a standalone
+        // producer space span at x=150, then word one `أنواع` (visual `عاونأ`,
+        // x 160‒200). The logical boundary sits after ع (dual-joining).
+        let word_two = TextSpan {
+            text: "ةعئاش".to_string(),
+            bbox: Rect::new(100.0, 700.0, 50.0, 12.0),
+            char_widths: vec![10.0; 5],
+            font_size: 12.0,
+            ..TextSpan::default()
+        };
+        let space = TextSpan {
+            text: " ".to_string(),
+            bbox: Rect::new(150.0, 700.0, 8.0, 12.0),
+            font_size: 12.0,
+            ..TextSpan::default()
+        };
+        let word_one = TextSpan {
+            text: "عاونأ".to_string(),
+            bbox: Rect::new(160.0, 700.0, 50.0, 12.0),
+            char_widths: vec![10.0; 5],
+            font_size: 12.0,
+            ..TextSpan::default()
+        };
+        let spans = [word_two, space, word_one];
+        let line: Vec<&TextSpan> = spans.iter().collect();
+        let merged = PdfDocument::merge_rtl_line_to_visual_span(&line);
+        let mut out = String::new();
+        PdfDocument::push_span_text_bidi(&mut out, &merged, true);
+        assert_eq!(
+            out, "أنواع شائعة",
+            "producer word boundary after a dual-joining letter must be kept, got {out:?}"
+        );
+        assert!(
+            !out.contains(PdfDocument::RTL_WORD_BOUNDARY),
+            "word-boundary sentinel must be restored to a space, not leaked: {out:?}"
+        );
+    }
+
+    /// B1: a full-width line drawn by the producer as two adjacent fragments
+    /// split MID-WORD across the column gutter must be stitched back into one
+    /// span before the column reorder, so it is not bucketed into two columns
+    /// and torn apart. A normal two-column body row (a per-column run that does
+    /// not cross the midline) must be left untouched.
+    #[test]
+    fn test_coalesce_gutter_crossing_runs_rejoins_split_full_width_line() {
+        // Full-width heading (single span — one-member run, must NOT merge).
+        let mut spans = vec![make_test_span(
+            "Section heading spanning the page",
+            68.6,
+            705.0,
+            474.9,
+            20.0,
+        )];
+        // A full-width line drawn as two contiguous fragments split mid-word at
+        // the gutter: "delta" is broken into "del" + "ta" across the midline.
+        spans.push(make_test_span("alpha beta gamma del", 130.8, 669.8, 134.5, 13.0));
+        spans.push(make_test_span("ta epsilon zeta eta theta", 264.3, 669.8, 216.9, 13.0));
+        // Two-column body: left starts x=57, right starts x=319, on independent
+        // (offset) baselines so the page reads as multi-column with bimodal
+        // line-starts (the detector needs many lines on each side).
+        for i in 0..14 {
+            let y = 600.0 - i as f32 * 8.0;
+            spans.push(make_test_span(&format!("left body line {i}"), 57.0, y, 200.0, 13.0));
+            spans.push(make_test_span(
+                &format!("right body line {i}"),
+                319.0,
+                y - 4.0,
+                200.0,
+                13.0,
+            ));
+        }
+
+        let coalesced = PdfDocument::coalesce_gutter_crossing_runs(&spans)
+            .expect("a mid-word gutter-crossing run must be coalesced on a multi-column page");
+        let texts: Vec<&str> = coalesced.iter().map(|s| s.text.as_str()).collect();
+        assert!(
+            texts.contains(&"alpha beta gamma delta epsilon zeta eta theta"),
+            "split line not rejoined (delta must reform); got {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| *t == "alpha beta gamma del"),
+            "split fragment must be gone after coalescing; got {texts:?}"
+        );
+        // Body per-column runs (never cross the midline) stay as-is.
+        assert!(texts.contains(&"left body line 0") && texts.contains(&"right body line 0"));
+    }
+
+    /// B1 negative: a single-column page (no gutter) must be a no-op so its
+    /// output stays byte-identical.
+    #[test]
+    fn test_coalesce_gutter_crossing_runs_noop_single_column() {
+        let spans: Vec<TextSpan> = (0..8)
+            .map(|i| {
+                make_test_span(
+                    "ordinary body line of prose text",
+                    57.0,
+                    600.0 - i as f32 * 18.0,
+                    400.0,
+                    12.0,
+                )
+            })
+            .collect();
+        assert!(
+            PdfDocument::coalesce_gutter_crossing_runs(&spans).is_none(),
+            "single-column page must not be coalesced"
+        );
+    }
+
+    /// P2: a line-final zero-width glyph seated a few points below the baseline
+    /// (`ي` in `في`, drawn at dy≈3pt, width 0) must stay on its own line's band
+    /// rather than splitting off and reversing to land after the sentence
+    /// terminator (`في العالم.` → `ف العالم.ي`). The gated RTL line must collapse
+    /// to a single merged span with `ي` reattached before the full stop.
+    #[test]
+    fn test_merge_keeps_subbaseline_zero_width_glyph_on_line() {
+        use crate::geometry::Rect;
+        let span = |text: &str, x: f32, y: f32, w: f32| TextSpan {
+            text: text.to_string(),
+            bbox: Rect::new(x, y, w, 12.0),
+            font_size: 13.0,
+            ..TextSpan::default()
+        };
+        // Visual (ascending-x) fragments of "… استهلاكا في العالم.":
+        // "." (terminator, leftmost), العالم body, ي (zero-width, dy≈3 low),
+        // ف (zero-width), a standalone space, then a body word carrying a
+        // zero-width mark INSIDE it so the line trips the glyph-reorder gate.
+        let spans = vec![
+            span(".", 95.94, 664.5, 3.48),
+            span("ملاعلا", 99.42, 664.5, 27.71),
+            span(" ", 127.13, 664.5, 3.38),
+            span("ي", 132.92, 661.48, 0.0), // line-final, below baseline, width 0
+            span("ف", 141.99, 664.99, 0.0),
+            span(" ", 145.89, 664.5, 3.38),
+            span("االهسا", 149.26, 664.5, 41.64),
+            span("كً", 153.57, 666.57, 0.0), // zero-width mark INSIDE االهسا → gates
+        ];
+        let merged = PdfDocument::merge_interleaved_rtl_lines(&spans)
+            .expect("interleaved gate must fire on this RTL line");
+        assert_eq!(
+            merged.len(),
+            1,
+            "the sub-baseline ي must stay in the line's band, not split off (got {} spans)",
+            merged.len()
+        );
+        let mut out = String::new();
+        for s in &merged {
+            PdfDocument::push_span_text_bidi(&mut out, s, true);
+        }
+        assert!(out.contains("في"), "ي must reattach to ف as the word في; got {out:?}");
+        assert!(
+            !out.trim_end().ends_with('ي'),
+            "ي must not be stranded after the sentence terminator; got {out:?}"
+        );
     }
 
     /// Negative: a pure-RTL line with NO zero-width interleaved span (logical-
