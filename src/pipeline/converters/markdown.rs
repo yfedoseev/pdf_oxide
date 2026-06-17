@@ -1545,7 +1545,13 @@ impl MarkdownOutputConverter {
                             for _ in 0..spacing.min(20) {
                                 current_line.push(' ');
                             }
-                        } else {
+                        } else if !current_line.trim_end().ends_with('-') {
+                            // A line wrapped mid-word at a hyphen (`frozen-` /
+                            // `thawed`) joins WITHOUT a space — `frozen- thawed`
+                            // (a space after the hyphen) is never correct. Whether
+                            // to also DROP the hyphen is genuinely ambiguous (a real
+                            // compound `frozen-thawed` keeps it), so leave the hyphen
+                            // and only suppress the spurious space.
                             current_line.push(' ');
                         }
                     }
@@ -3594,6 +3600,34 @@ mod tests {
             },
             0,
         )
+    }
+
+    #[test]
+    fn md_wrapped_hyphen_line_joins_without_space() {
+        // A line that wraps mid-word at a hyphen must join WITHOUT a space:
+        // `frozen-` + `thawed` → `frozen-thawed`, never `frozen- thawed`.
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let spans = vec![
+            make_span_w("frozen-", 0.0, 100.0, 40.0, 10.0, FontWeight::Normal),
+            make_span_w("thawed", 0.0, 89.0, 40.0, 10.0, FontWeight::Normal),
+        ];
+        let md = converter.convert(&spans, &config).unwrap();
+        assert!(md.contains("frozen-thawed"), "not joined: {md:?}");
+        assert!(!md.contains("frozen- thawed"), "spurious space after hyphen: {md:?}");
+    }
+
+    #[test]
+    fn md_wrapped_plain_line_keeps_space() {
+        // Guard: a normal (non-hyphen) wrap still gets its joining space.
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let spans = vec![
+            make_span_w("hello", 0.0, 100.0, 40.0, 10.0, FontWeight::Normal),
+            make_span_w("world", 0.0, 89.0, 40.0, 10.0, FontWeight::Normal),
+        ];
+        let md = converter.convert(&spans, &config).unwrap();
+        assert!(md.contains("hello world"), "lost joining space: {md:?}");
     }
 
     #[test]
