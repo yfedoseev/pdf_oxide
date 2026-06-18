@@ -13211,6 +13211,15 @@ impl PdfDocument {
             hs[hs.len() / 2].max(1.0)
         };
 
+        // Item 4 (M3): measure the page's single central column gutter (if any).
+        // Used below to forbid a same-line union ACROSS the gutter regardless of
+        // the measured gap: on dense two-column pages with tight leading, an
+        // over-wide advance can make a cross-gutter gap < med_h, fusing the two
+        // columns into one block so the side_by_side gate then declines and the
+        // page falls to a row-major interleave. `None` (single-column /
+        // multi-corridor / off-centre) ⇒ the predicate is byte-identical.
+        let gutter_x = Self::measure_single_central_gutter(spans);
+
         // --- Union-find: connect spans in the same text region. Two spans join
         // iff they are on the same line and horizontally adjacent (a normal word
         // gap, NOT a column gutter), OR vertically stacked with overlapping X and
@@ -13246,7 +13255,17 @@ impl PdfDocument {
                     // Horizontal neighbour: gap below ~1 em (word space), not a gutter.
                     let gap = (si.bbox.left().max(sj.bbox.left()))
                         - (si.bbox.right().min(sj.bbox.right()));
-                    gap < med_h * 1.0
+                    // Item 4 (M3): never join two spans that straddle the measured
+                    // central gutter (one wholly left of it, the other wholly
+                    // right), independent of `gap` — a tight-leading over-wide
+                    // advance can otherwise make the cross-gutter gap < med_h and
+                    // fuse the columns. Purely subtractive: it can only PREVENT a
+                    // union, never create one, so `gutter_x == None` is byte-identical.
+                    let crosses_gutter = gutter_x.is_some_and(|gx| {
+                        (si.bbox.right() <= gx && sj.bbox.left() >= gx)
+                            || (sj.bbox.right() <= gx && si.bbox.left() >= gx)
+                    });
+                    !crosses_gutter && gap < med_h * 1.0
                 } else {
                     // Vertical neighbour: overlap in X and a small inter-line gap.
                     let vgap = (lo(si).min(lo(sj)) - hi(si).max(hi(sj))).abs();
@@ -22493,6 +22512,39 @@ mod tests {
         let first_right = texts.iter().position(|t| t.starts_with("right")).unwrap();
         // Whole left column before whole right column (de-interleaved).
         assert!(last_left < first_right, "columns interleaved: {texts:?}");
+    }
+
+    #[test]
+    fn topo_tight_leading_two_columns_stay_separate() {
+        // Two dense columns whose gutter (18 pt) is NARROWER than med_h (font
+        // size 20): the same-row gap (18) is below med_h*1.0 (20), so WITHOUT the
+        // Item 4 gutter veto the union-find fuses left+right into one block and
+        // the side_by_side gate then declines → None → row-major interleave. With
+        // the veto the two columns stay separate and read column-major.
+        let mut spans = Vec::new();
+        for k in 0..8 {
+            let y = 200.0 - k as f32 * 24.0;
+            spans.push(make_test_span(
+                &format!("left column body sentence number {k} here"),
+                0.0,
+                y,
+                90.0,
+                20.0,
+            )); // →90
+            spans.push(make_test_span(
+                &format!("right column body sentence number {k} here"),
+                108.0,
+                y,
+                90.0,
+                20.0,
+            )); // gutter 108-90 = 18 (< med_h 20)
+        }
+        let out = PdfDocument::topological_block_order(&spans)
+            .expect("tight-gutter two columns must stay separate and reorder");
+        let texts: Vec<&str> = out.iter().map(|s| s.text.as_str()).collect();
+        let last_left = texts.iter().rposition(|t| t.starts_with("left")).unwrap();
+        let first_right = texts.iter().position(|t| t.starts_with("right")).unwrap();
+        assert!(last_left < first_right, "tight-gutter columns fused: {texts:?}");
     }
 
     #[test]
