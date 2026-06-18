@@ -874,9 +874,9 @@ impl FontInfo {
                     let looks_like_cipher = builtin_encoding_looks_like_cipher(prog_enc, &std_name);
 
                     if looks_like_cipher {
-                        // Trust the producer-declared named encoding (what
-                        // poppler/pdftotext honor); the built-in cipher would corrupt
-                        // it. Leave `parsed_enc` as the named Standard encoding.
+                        // Trust the producer-declared named encoding; the built-in
+                        // cipher would corrupt it. Leave `parsed_enc` as the named
+                        // Standard encoding.
                         log::debug!(
                             "Font '{base_font}': built-in encoding disagrees with {std_name} on most overlapping codes — treating as a subset cipher and keeping the named encoding"
                         );

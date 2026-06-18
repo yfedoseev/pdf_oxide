@@ -5745,19 +5745,18 @@ impl PdfDocument {
             // superscripts, and centered multi-line labels).
             //
             // Skip for multi-column pages: extract_spans() already applied
-            // XY-cut column ordering. Re-sorting with row-aware would
-            // interleave left/right columns line-by-line, producing garbled
-            // output like "accompaally" instead of "accompanying table".
-            // A poppler/Breuel topological block order for genuine multi-region
-            // pages (a two-column body/footer, a sidebar beside the body) that a
-            // flat row-aware (y,x) sort interleaves. The gate (substantial,
-            // text-dense, dominant side-by-side blocks) rejects single-column,
-            // tables, TOCs and forms; it de-interleaves real two-column bodies
-            // (CFR, bibliographies, arxiv) and the real-academic sidebar+body
-            // (PMC8165481 order_score 0.704→0.976, CER 0.656→0.252 ≈ pymupdf).
-            // Opt-in via PDFOXIDE_TOPO_ORDER until one pathological case remains
-            // (a chess-diagram parallel table whose header fragments under
-            // union-find); default OFF keeps production byte-identical.
+            // XY-cut column ordering. Re-sorting with row-aware would interleave
+            // left/right columns line-by-line, splicing words from adjacent
+            // columns into each other. A topological block order (a precede
+            // relation over text blocks) handles genuine multi-region pages (a
+            // two-column body/footer, a sidebar beside the body) that a flat
+            // row-aware (y,x) sort interleaves. The gate (substantial, text-dense,
+            // dominant side-by-side blocks) rejects single-column pages, tables,
+            // TOCs and forms; it de-interleaves real two-column bodies and
+            // sidebar+body layouts. Opt-in via PDFOXIDE_TOPO_ORDER until one
+            // pathological case remains (a parallel diagram/table whose header
+            // fragments under union-find); default OFF keeps production
+            // byte-identical.
             let mut topo_applied = false;
             if let Some(reordered) = Self::topological_block_order(&spans) {
                 spans = reordered;
@@ -5964,8 +5963,7 @@ impl PdfDocument {
                             //   • `gap < -fs*3` — the previous span ended far to
                             //     the RIGHT of where this one starts, i.e. the
                             //     line filled and wrapped (adjacent math glyphs
-                            //     like `21`/`,Fj` have a near-zero gap, so they
-                            //     are excluded);
+                            //     have a near-zero gap, so they are excluded);
                             //   • `y_diff > fs*0.5` — a real baseline drop (a
                             //     super/sub-script shift is smaller);
                             //   • `delta_x <= fs*0.5` — it returned to ~the line's
@@ -5974,11 +5972,11 @@ impl PdfDocument {
                             // (single-spaced body at ~1.0 em vs the 1.2 em
                             // threshold) so the y-newline branch above never
                             // fired, leaving the line-final and line-initial words
-                            // glued (`tidetables`, `atthe`). A line break encodes
-                            // no space (ISO 32000 §9.4.2 — positioning is
-                            // geometric); synthesize one as a newline, which the
-                            // downstream join / `normalize_text` collapses to a
-                            // space and de-hyphenates, matching pdfium / pymupdf.
+                            // glued together. A line break encodes no space (ISO
+                            // 32000 §9.4.2 — positioning is geometric); synthesize
+                            // one as a newline, which the downstream join /
+                            // `normalize_text` collapses to a space and
+                            // de-hyphenates.
                             if !hangul_midword_wrap && !text.ends_with('\n') {
                                 text.push('\n');
                             }
@@ -7058,10 +7056,10 @@ impl PdfDocument {
     /// tolerance merged into one band, NOT a single line. A real line lays its
     /// spans out left-to-right with non-overlapping advances; only stacked lines
     /// (leading just under `same_line_threshold`, e.g. a two-line title or a
-    /// running head sitting above a `published:` line) put two spans at the same
-    /// horizontal position. X-sorting such a band interleaves the lines word by
-    /// word (`BookThe Story Review: of the …`), so the caller must leave it in
-    /// row order instead. Mirrors [`run_has_large_x_gap`] for the opposite defect.
+    /// running head sitting above the line below it) put two spans at the same
+    /// horizontal position. X-sorting such a band interleaves the two lines word
+    /// by word, so the caller must leave it in row order instead. Mirrors
+    /// [`run_has_large_x_gap`] for the opposite defect.
     fn run_has_x_overlap(run: &[TextSpan]) -> bool {
         if run.len() < 2 {
             return false;
@@ -7097,7 +7095,7 @@ impl PdfDocument {
     /// of two baselines) — where de-interleaving is correct — from a single span
     /// that merely overlaps a line in X (a drop cap, a `©`/`c` mark, a lone
     /// super-script), where the existing X-sort already does the right thing and
-    /// reordering by Y would misplace the stray glyph (`EAcrobat …`).
+    /// reordering by Y would misplace the stray glyph.
     fn run_is_stacked_lines(run: &[TextSpan]) -> bool {
         if run.len() < 4 {
             return false; // need ≥2 lines × ≥2 spans
@@ -7177,12 +7175,12 @@ impl PdfDocument {
                 {
                     // Spans OVERLAP horizontally AND form ≥2 lines of ≥2 spans each:
                     // two stacked lines the Y tolerance merged into one band (a
-                    // two-line title, a running head above a `published:` line). A
-                    // flat X-sort interleaves them word by word (`BookThe Story
-                    // Review: …`). De-interleave by ordering on (Y-descending, then
-                    // X) so each real line stays contiguous and in reading order. The
-                    // stacked-lines gate keeps a lone overlapping glyph (drop cap,
-                    // `©`, super-script) on the normal X-sort path below.
+                    // two-line title, a running head above the line below it). A
+                    // flat X-sort interleaves them word by word. De-interleave by
+                    // ordering on (Y-descending, then X) so each real line stays
+                    // contiguous and in reading order. The stacked-lines gate keeps
+                    // a lone overlapping glyph (drop cap, `©`, super-script) on the
+                    // normal X-sort path below.
                     spans[i..j].sort_by(|a, b| {
                         crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y)
                             .then(crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x))
@@ -9674,11 +9672,11 @@ impl PdfDocument {
         // than pinning it to the band's first (topmost) span. RTL producers seat
         // a line's glyphs across a few points of vertical jitter — combining
         // marks ride high, a line-final letter can sit a few points low (P2: a
-        // width-0 `ي` at dy≈3pt below the baseline). Against a fixed top anchor
-        // the line's own span furthest above the baseline sets the band ceiling,
-        // so the lowest glyph can exceed `0.5·fs` and split onto its own "line"
-        // — which then reverses and lands after the sentence terminator
-        // (`في العالم.` → `ف العالم.ي`). Comparing each span to its immediate
+        // width-0 final glyph at dy≈3pt below the baseline). Against a fixed top
+        // anchor the line's own span furthest above the baseline sets the band
+        // ceiling, so the lowest glyph can exceed `0.5·fs` and split onto its own
+        // "line" — which then reverses and lands after the sentence terminator,
+        // detaching the line's final letter. Comparing each span to its immediate
         // predecessor keeps a line whose internal step is < tol intact while a
         // real inter-line gap (leading ≈ one full em, well over tol) still opens
         // the next band.
@@ -12083,29 +12081,26 @@ impl PdfDocument {
                         let gap = cur.bbox.x - (prev.bbox.x + prev.bbox.width);
                         let prev_tok = prev.text.split_whitespace().last().unwrap_or("");
                         let cur_tok = cur.text.split_whitespace().next().unwrap_or("");
-                        // A genuine producer split breaks ONE word/number into two
-                        // adjacent show-strings (`20`+`25`→`2025`, an author line
-                        // `… M. T`+`anaka`→`… M. Tanaka`): the break leaves a tiny
-                        // fragment on one side — a lone uppercase initial (`T`) or the
-                        // two digits of a split number. On a tight multi-column
-                        // page a font with over-estimated advance widths inflates each
-                        // column line's bbox so a left-column line overruns the gutter
-                        // and abuts the next column, making two DIFFERENT full words
-                        // look like a hairline split (`the`+`even`, `gross`+`deduction`,
-                        // `income`+`1116`, even a 2-letter word `on`+`deduction`). Those
-                        // join two COMPLETE tokens, so the split is real only when a
-                        // boundary token is a lone uppercase letter (a name initial) or
-                        // the two digits of a split number — never a 2-letter word
-                        // (`on`), a complete word, or a
-                        // bare figure/table digit (`Table 3`). The gap can't separate
-                        // them (a genuine split overlaps as deeply as a column line),
-                        // but a deep overlap (≥ half an em) is always a column abut.
+                        // A genuine producer split breaks ONE word or number into two
+                        // adjacent show-strings, leaving a tiny fragment on one side:
+                        // a lone uppercase initial (a name abbreviation) or the two
+                        // halves of a digit pair. On a tight multi-column page a font
+                        // with over-estimated advance widths inflates each column
+                        // line's bbox so a left-column line overruns the gutter and
+                        // abuts the next column, making two DIFFERENT complete words
+                        // look like a hairline split. Those join two complete tokens,
+                        // so the split is real only when a boundary token is a lone
+                        // uppercase letter or a two-digit number — never a 2-letter
+                        // word, a complete word, or a bare figure/table digit. The gap
+                        // can't separate the two cases (a genuine split overlaps as
+                        // deeply as a column line), but a deep overlap (≥ half an em)
+                        // is always a column abut.
                         let tok_is_fragment = |t: &str| {
                             let mut cs = t.chars();
                             match (cs.next(), cs.next(), cs.next()) {
-                                // A lone uppercase letter — a name initial (`M. T`).
+                                // A lone uppercase letter — a name initial.
                                 (Some(c), None, _) => c.is_alphabetic() && c.is_uppercase(),
-                                // The two digits of a split number (`20`+`25`).
+                                // The two digits of a split number.
                                 (Some(a), Some(b), None) => {
                                     a.is_ascii_digit() && b.is_ascii_digit()
                                 },
@@ -12878,13 +12873,13 @@ impl PdfDocument {
         Some(out)
     }
 
-    /// Order spans by a poppler/Breuel-style topological sort over text BLOCKS,
+    /// Order spans by a topological sort over text BLOCKS (a precede relation),
     /// for pages with genuine side-by-side regions (a two-column body, a
     /// two-column footer, a sidebar beside the body) that a flat row-aware (y,x)
-    /// sort interleaves row-by-row (`MCC is a Christian organization formed
-    /// illustrates the origins …`). Returns `None` for any page WITHOUT two
-    /// horizontally-disjoint, vertically-overlapping blocks (single-column and
-    /// simple stacked layouts), so their output stays byte-identical.
+    /// sort interleaves row-by-row (splicing one region's line into the other's).
+    /// Returns `None` for any page WITHOUT two horizontally-disjoint,
+    /// vertically-overlapping blocks (single-column and simple stacked layouts),
+    /// so their output stays byte-identical.
     ///
     /// Coordinate convention (see `row_aware_span_cmp`): larger Y = higher on the
     /// page, read first; `bottom()` is a span's UPPER edge, `top()` its LOWER edge.
@@ -13071,7 +13066,7 @@ impl PdfDocument {
             return None;
         }
 
-        // --- Topological order (poppler Rule 1 + Rule 2). A precedes B if they
+        // --- Topological order (two precede rules). A precedes B if they
         // overlap in X and A is above B (vertical stack), OR A is left of B and
         // they overlap in Y (side-by-side columns: left first). DFS with a visited
         // guard appends a block only after all its predecessors, and terminates on
@@ -22928,14 +22923,14 @@ mod tests {
         );
     }
 
-    /// B1: a SHORT word/number the producer split into two adjacent show-strings
-    /// across the column gutter (an author initial `M. T`+`anaka`→`M. Tanaka`, a
-    /// year `20`+`25`→`2025`) must be stitched back before the column reorder, so
-    /// it is not bucketed into two columns and torn apart. The discriminator is
-    /// fragment size: a genuine split is at most a word or two per side. Two FULL
+    /// B1: a SHORT word the producer split into two adjacent show-strings across
+    /// the column gutter — leaving a lone uppercase initial on one side — must be
+    /// stitched back before the column reorder, so it is not bucketed into two
+    /// columns and torn apart. The discriminator is the boundary-token shape: a
+    /// genuine split has a lone-initial (or two-digit) fragment. Two FULL
     /// multi-word column lines whose over-wide bboxes happen to abut at the gutter
-    /// must NOT be merged (that is the `theeven`/`grossdeduction` column glue). A
-    /// normal per-column body row (no midline crossing) is left untouched.
+    /// must NOT be merged (the column-glue trap). A normal per-column body row (no
+    /// midline crossing) is left untouched.
     #[test]
     fn test_coalesce_gutter_crossing_runs_rejoins_split_full_width_line() {
         // Full-width heading (single span — one-member run, must NOT merge).
@@ -22946,20 +22941,15 @@ mod tests {
             474.9,
             20.0,
         )];
-        // A short author-name fragment split mid-word at the gutter: "Tanaka" is
-        // broken into "M. T" + "anaka" across the midline (≤2 words each side).
-        spans.push(make_test_span("A. Rivera, K. Osei, M. T", 80.0, 669.8, 220.5, 13.0));
-        spans.push(make_test_span("anaka", 300.3, 669.8, 30.0, 13.0));
+        // A short name fragment split mid-word at the gutter: a word is broken
+        // after its leading initial ("Eee F" + "ghij" → "Eee Fghij") across the
+        // midline; the lone uppercase "F" marks a true mid-word split.
+        spans.push(make_test_span("Aaa Bbb, Ccc Ddd, Eee F", 80.0, 669.8, 220.5, 13.0));
+        spans.push(make_test_span("ghij", 300.3, 669.8, 30.0, 13.0));
         // A FULL multi-word line per side whose over-wide left bbox abuts the
-        // right fragment at the gutter — the column-glue trap, must NOT merge.
-        spans.push(make_test_span("even if it is not taxable by that", 70.0, 650.0, 240.0, 13.0));
-        spans.push(make_test_span(
-            "complete lines 2, 3a, and 4 on Form",
-            300.0,
-            650.0,
-            240.0,
-            13.0,
-        ));
+        // right line at the gutter — the column-glue trap, must NOT merge.
+        spans.push(make_test_span("alpha beta gamma delta epsilon", 70.0, 650.0, 240.0, 13.0));
+        spans.push(make_test_span("zeta eta theta iota kappa", 300.0, 650.0, 240.0, 13.0));
         // Two-column body: left starts x=57, right starts x=319, on independent
         // (offset) baselines so the page reads as multi-column with bimodal
         // line-starts (the detector needs many lines on each side).
@@ -22980,20 +22970,20 @@ mod tests {
         );
         let texts: Vec<&str> = coalesced.iter().map(|s| s.text.as_str()).collect();
         assert!(
-            texts.contains(&"A. Rivera, K. Osei, M. Tanaka"),
-            "short author split not rejoined (Tanaka must reform); got {texts:?}"
+            texts.contains(&"Aaa Bbb, Ccc Ddd, Eee Fghij"),
+            "short lone-initial split not rejoined (must reform); got {texts:?}"
         );
         assert!(
-            !texts.contains(&"A. Rivera, K. Osei, M. T"),
+            !texts.contains(&"Aaa Bbb, Ccc Ddd, Eee F"),
             "split fragment must be gone after coalescing; got {texts:?}"
         );
-        // The full multi-word column lines must stay SEPARATE (no `thatcomplete`).
+        // The full multi-word column lines must stay SEPARATE (no boundary glue).
         assert!(
-            !texts.iter().any(|t| t.contains("thatcomplete")),
+            !texts.iter().any(|t| t.contains("epsilonzeta")),
             "full multi-word column lines must not be glued at the gutter; got {texts:?}"
         );
         assert!(
-            texts.contains(&"even if it is not taxable by that"),
+            texts.contains(&"alpha beta gamma delta epsilon"),
             "left column line must be preserved verbatim; got {texts:?}"
         );
         // Body per-column runs (never cross the midline) stay as-is.
