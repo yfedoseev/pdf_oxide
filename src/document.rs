@@ -7596,11 +7596,21 @@ impl PdfDocument {
                     || matches!(c, '\u{00B2}' | '\u{00B3}' | '\u{00B9}')
                     || ('\u{2070}'..='\u{209F}').contains(&c)
             };
-            if !sub.text.chars().all(is_sub_char) && !is_index_cluster(&sub.text) {
+            // M4 (item 5c): a span the producer explicitly raised/lowered with the
+            // Text Rise operator (ISO 32000-1 §9.3.7 `Ts`) is an authoritative
+            // sub/superscript even when it is NOT shrunk and is not in the ASCII /
+            // Unicode sub-glyph set (e.g. a math operator superscript). `text_rise`
+            // is stored as the Ts/font-size ratio, so |ratio| ≥ 0.10 marks a real
+            // shift. Such a span bypasses the charset and font-size gates below; the
+            // x/y proximity gates in the base search still apply, so a genuinely
+            // detached different-row marker is not over-merged.
+            let ts_flagged = sub.text_rise.abs() >= 0.10;
+            if !ts_flagged && !sub.text.chars().all(is_sub_char) && !is_index_cluster(&sub.text) {
                 continue;
             }
-            // Must be clearly smaller than the dominant font on this page.
-            if sub.font_size >= max_fs * 0.80 {
+            // Must be clearly smaller than the dominant font on this page (unless
+            // the producer flagged it via Ts).
+            if !ts_flagged && sub.font_size >= max_fs * 0.80 {
                 continue;
             }
             let sub_fs = sub.font_size;
@@ -7616,8 +7626,10 @@ impl PdfDocument {
                     continue;
                 }
                 let base = &spans[j];
-                // Base must be at least 25 % larger than the sub (sub_fs ≤ 0.80×base_fs).
-                if base.font_size < sub_fs * 1.25 {
+                // Base must be at least 25 % larger than the sub (sub_fs ≤ 0.80×base_fs),
+                // UNLESS the producer flagged the sub via Ts (then it may be the same
+                // size as its base — the rise itself, not the size, marks it).
+                if !ts_flagged && base.font_size < sub_fs * 1.25 {
                     continue;
                 }
                 // Base span must be a valid subscript host:
@@ -22917,6 +22929,21 @@ mod tests {
         PdfDocument::merge_sub_superscript_spans(&mut spans);
         assert_eq!(spans.len(), 1, "index cluster must merge into base");
         assert_eq!(spans[0].text, "F4,176");
+    }
+
+    #[test]
+    fn merge_sub_superscript_accepts_text_rise_flagged() {
+        // M4 (item 5c): a Ts-raised glyph (e.g. a math superscript) that is NOT
+        // shrunk and not in the ASCII/Unicode sub-glyph set must still merge into
+        // its base because the producer flagged it via Text Rise (§9.3.7).
+        let mut base = make_test_span("M", 0.0, 100.0, 10.0, 12.0);
+        base.text_rise = 0.0;
+        let mut sup = make_test_span("\u{22C6}", 10.5, 103.0, 6.0, 12.0); // ⋆, same size
+        sup.text_rise = 0.30; // Ts/font-size ratio
+        let mut spans = vec![base, sup];
+        PdfDocument::merge_sub_superscript_spans(&mut spans);
+        assert_eq!(spans.len(), 1, "Ts-flagged superscript must merge into base");
+        assert_eq!(spans[0].text, "M\u{22C6}");
     }
 
     #[test]
