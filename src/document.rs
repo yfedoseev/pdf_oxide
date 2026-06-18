@@ -13618,6 +13618,35 @@ impl PdfDocument {
         out.trim().to_string()
     }
 
+    /// Item 6B (M5): does a running-band literal look like a CONSTANT-text
+    /// pagination / citation string — a DOI, a journal volume/issue/article
+    /// reference, or a journal URL host — accompanied by a digit? Such strings
+    /// recur identically on every page (so the varying-literal gate never catches
+    /// them) yet are furniture that leaks into the body. The gate is deliberately
+    /// narrow: it requires a recognised citation/URL token AND a digit, so a
+    /// repeated facility name, document title, or ordinary sentence is NEVER
+    /// matched (miss-rather-than-drop — a false positive deletes real content).
+    fn looks_like_stable_pagination(literal: &str) -> bool {
+        let l = literal.to_ascii_lowercase();
+        if !l.chars().any(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        if l.contains("doi.org") || l.contains("doi:") || l.contains("/doi/") {
+            return true;
+        }
+        // Journal volume/issue/article reference. NB: "no." is deliberately
+        // EXCLUDED — it also matches government-form control numbers like
+        // "OMB No. 1545-0115", which are form content, not running furniture.
+        if ["volume", "vol.", "article", "issue"]
+            .iter()
+            .any(|kw| l.contains(kw))
+        {
+            return true;
+        }
+        // Journal URL host in a running footer, e.g. "www.frontiersin.org 1".
+        l.contains("www.") && (l.contains(".org") || l.contains(".com") || l.contains(".net"))
+    }
+
     /// Ensure running-artifact signatures are computed (once) and return a
     /// clone for matching. The computation scans every page's raw spans,
     /// collects normalized text that appears in the top or bottom 12% of
@@ -13730,16 +13759,28 @@ impl PdfDocument {
         let signatures: std::collections::HashMap<String, usize> = occurrences
             .into_iter()
             .filter(|(sig, (count, _))| {
-                if *count < threshold.max(2) {
-                    return false;
-                }
-                // Only suppress if the literal text varied across pages — i.e., the
-                // digits changed, indicating a page number or date that updates per page.
-                // Signatures where all occurrences have the same literal text are
-                // substantive content (facility names, document IDs, etc.) that pdftotext
-                // and pdfium both preserve; suppressing them hurts word-F1 scores.
                 let variants = literal_variants.get(sig).map(|s| s.len()).unwrap_or(0);
-                variants >= 2
+                // Varying-literal path (page numbers / dates): the digits change per
+                // page. Recurs on >=50% of body pages.
+                if *count >= threshold.max(2) && variants >= 2 {
+                    return true;
+                }
+                // Item 6B (M5): CONSTANT-literal pagination/citation (DOI, volume/
+                // article, journal URL + digit). The literal never changes, so the
+                // varying-literal gate above misses it. Require a STRICTER >=60%
+                // recurrence AND the narrow citation/URL shape gate, so substantive
+                // repeated content (facility names, titles) is never suppressed.
+                let strict = (page_count as f32 * 0.6).ceil() as usize;
+                if *count >= strict.max(2)
+                    && variants < 2
+                    && literal_variants
+                        .get(sig)
+                        .and_then(|s| s.iter().next())
+                        .is_some_and(|lit| Self::looks_like_stable_pagination(lit))
+                {
+                    return true;
+                }
+                false
             })
             .map(|(sig, _)| {
                 // Use the earliest page the signature appeared on — which
@@ -23756,6 +23797,35 @@ mod tests {
             "", "0", "10000", "12345", "1a", "iv", "Page", "1.2", "-1", "1,2",
         ] {
             assert!(!PdfDocument::is_bare_page_number_text(no), "{no:?} must NOT be a page number");
+        }
+    }
+
+    #[test]
+    fn test_looks_like_stable_pagination() {
+        for yes in [
+            "https://doi.org/10.1234/abcd",
+            "doi:10.1000/xyz",
+            "Volume 14 | Article 153",
+            "Vol. 7, No. 3",
+            "www.frontiersin.org 1",
+        ] {
+            assert!(
+                PdfDocument::looks_like_stable_pagination(yes),
+                "{yes:?} should be stable pagination furniture"
+            );
+        }
+        for no in [
+            "Acme Regional Hospital",
+            "Donna J. Calu",
+            "Introduction",
+            "Table 3",
+            "Department of Neuroscience 2024",
+            "volume of distribution", // citation keyword but NO digit
+        ] {
+            assert!(
+                !PdfDocument::looks_like_stable_pagination(no),
+                "{no:?} must NOT be classified as furniture"
+            );
         }
     }
 
