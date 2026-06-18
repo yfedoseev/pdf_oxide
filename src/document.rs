@@ -11839,6 +11839,94 @@ impl PdfDocument {
     /// (`label:value`), TOCs (`title…page#`), tables and N-up — all of which
     /// share a clean gutter but must read row-wise. A real two-column body has
     /// full-length text on both sides of the gutter.
+    /// Measure a single central vertical gutter (a column-separating whitespace
+    /// corridor) as a PURE geometric read. Returns the gutter's mid-X when the
+    /// page has EXACTLY ONE corridor ≥ `MIN_GUTTER_PT` wide near mid-page
+    /// (`0.30..=0.70` of content width); `None` for single-column, multi-corridor
+    /// (grid/table/form), off-centre, or too-narrow pages — so a caller that
+    /// gates on `Some` is byte-identical on all of those.
+    ///
+    /// Shared by the marginalia pre-filter (Item 2) and the topological
+    /// union-find gutter veto (Item 4). Deliberately NOT a refactor of
+    /// `prose_two_column_gutter` / `has_clean_column_gutter`: those use different
+    /// corridor thresholds (12 / 18) and additional structural guards, and
+    /// unifying them is high blast radius for no benefit. This is a separate,
+    /// conservative 18 pt central-corridor probe.
+    #[allow(dead_code)] // wired by Items 2 (P3) and 4 (P4)
+    fn measure_single_central_gutter(spans: &[crate::layout::TextSpan]) -> Option<f32> {
+        const MIN_GUTTER_PT: f32 = 18.0;
+        let body: Vec<&crate::layout::TextSpan> = spans
+            .iter()
+            .filter(|s| {
+                !s.text.trim().is_empty()
+                    && s.bbox.width > 0.0
+                    && s.bbox.x.is_finite()
+                    && s.bbox.width.is_finite()
+            })
+            .collect();
+        if body.len() < 8 {
+            return None;
+        }
+        let cmin = body.iter().map(|s| s.bbox.x).fold(f32::INFINITY, f32::min);
+        let cmax = body
+            .iter()
+            .map(|s| s.bbox.x + s.bbox.width)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let content_w = cmax - cmin;
+        if content_w < 100.0 {
+            return None;
+        }
+        // Exclude full-width spanning rows (headings/footers) so they don't mask
+        // the corridor (same exclusion as the prose/clean-gutter sweeps).
+        let mut boxes: Vec<(f32, f32)> = body
+            .iter()
+            .filter(|s| s.bbox.width <= 0.6 * content_w)
+            .map(|s| (s.bbox.x, s.bbox.x + s.bbox.width))
+            .collect();
+        if boxes.len() < 8 {
+            return None;
+        }
+        boxes.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
+        let mut cover = boxes[0].1;
+        let (mut corridors, mut gutter_x) = (0usize, 0.0f32);
+        for &(l, r) in &boxes[1..] {
+            if l - cover >= MIN_GUTTER_PT {
+                corridors += 1;
+                gutter_x = (cover + l) * 0.5;
+            }
+            cover = cover.max(r);
+        }
+        if corridors != 1 || !(0.30..=0.70).contains(&((gutter_x - cmin) / content_w)) {
+            return None;
+        }
+        Some(gutter_x)
+    }
+
+    /// Characters-per-text-line density for a set of spans (≈ chars per line).
+    /// Lines are counted by clustering span upper edges (`bbox.bottom()`, larger
+    /// y) with a `med_h * 0.6` gap. A page-number rail or a form's value column
+    /// is text-SPARSE (a few chars per line); genuine prose columns and metadata
+    /// sidebars are text-DENSE. Shared by the topological side-by-side gate
+    /// (Item 1) and the marginalia sparsity gate (Item 2) — same formula the
+    /// `topological_block_order` `char_density` closure uses.
+    #[allow(dead_code)] // wired by Items 1 (P4) and 2 (P3)
+    fn block_char_density(spans: &[&crate::layout::TextSpan], med_h: f32) -> f32 {
+        if spans.is_empty() {
+            return 0.0;
+        }
+        let med_h = med_h.max(1.0);
+        let mut ys: Vec<f32> = spans.iter().map(|s| s.bbox.bottom()).collect();
+        ys.sort_by(|p, q| crate::utils::safe_float_cmp(*p, *q));
+        let mut lines = 1usize;
+        for w in ys.windows(2) {
+            if (w[1] - w[0]).abs() > med_h * 0.6 {
+                lines += 1;
+            }
+        }
+        let chars: usize = spans.iter().map(|s| s.text.trim().chars().count()).sum();
+        chars as f32 / lines as f32
+    }
+
     fn prose_two_column_gutter(spans: &[crate::layout::TextSpan]) -> Option<f32> {
         let body: Vec<&crate::layout::TextSpan> = spans
             .iter()
@@ -26458,6 +26546,69 @@ mod tests {
             PdfDocument::has_persistent_gutter_corridor(&spans, 300.0, 10_000.0),
             "two-column prose with a minority of full-width display rows must hold"
         );
+    }
+
+    // ========================================================================
+    // P2 shared helpers: measure_single_central_gutter / block_char_density
+    // ========================================================================
+
+    #[test]
+    fn measure_gutter_accepts_centered_two_columns() {
+        // Left col →170, right col 300→450: a wide central corridor at ~235,
+        // which is 0.46 of the [50,450] content width (inside 0.30..=0.70).
+        let mut spans = Vec::new();
+        for i in 0..8 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(corridor_span("Lorem ipsum dolor", 50.0, y, 120.0));
+            spans.push(corridor_span("sit amet consectetur", 300.0, y, 150.0));
+        }
+        let g = PdfDocument::measure_single_central_gutter(&spans);
+        assert!(g.is_some(), "centered two columns must yield a gutter");
+        assert!((g.unwrap() - 235.0).abs() < 5.0, "gutter mid-x ≈ 235, got {g:?}");
+    }
+
+    #[test]
+    fn measure_gutter_rejects_single_column() {
+        // One full-width column → no corridor → None (byte-identical caller).
+        let mut spans = Vec::new();
+        for i in 0..10 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(corridor_span("Full width single column line", 50.0, y, 400.0));
+        }
+        assert!(PdfDocument::measure_single_central_gutter(&spans).is_none());
+    }
+
+    #[test]
+    fn measure_gutter_rejects_three_column_grid() {
+        // Three columns ⇒ two corridors ⇒ not a single central gutter ⇒ None
+        // (grids/tables stay on their existing row-aware/structural path).
+        let mut spans = Vec::new();
+        for i in 0..6 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(corridor_span("colA", 50.0, y, 60.0)); // →110
+            spans.push(corridor_span("colB", 140.0, y, 60.0)); // →200
+            spans.push(corridor_span("colC", 230.0, y, 60.0)); // →290
+        }
+        assert!(PdfDocument::measure_single_central_gutter(&spans).is_none());
+    }
+
+    #[test]
+    fn block_char_density_separates_dense_from_sparse() {
+        // 5 lines of prose (~21 chars/line) is DENSE; 5 lines of bare numbers
+        // (~2 chars/line) is SPARSE. med_h = 10 (corridor_span height).
+        let dense: Vec<_> = (0..5)
+            .map(|i| corridor_span("twenty chars of text!", 50.0, 700.0 - i as f32 * 14.0, 120.0))
+            .collect();
+        let sparse: Vec<_> = (0..5)
+            .map(|i| corridor_span("12", 50.0, 700.0 - i as f32 * 14.0, 12.0))
+            .collect();
+        let dref: Vec<&_> = dense.iter().collect();
+        let sref: Vec<&_> = sparse.iter().collect();
+        let dd = PdfDocument::block_char_density(&dref, 10.0);
+        let sd = PdfDocument::block_char_density(&sref, 10.0);
+        assert!(dd > 15.0, "dense density should be high, got {dd}");
+        assert!(sd < 4.0, "sparse density should be low, got {sd}");
+        assert!(dd > sd * 4.0, "dense must clearly exceed sparse");
     }
 
     // ========================================================================
