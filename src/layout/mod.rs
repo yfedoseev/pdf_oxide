@@ -11,6 +11,7 @@ pub mod clustering;
 pub mod document_analyzer;
 pub mod font_stats;
 pub mod reading_order;
+pub mod region_classifier;
 pub mod text_block;
 
 // Phase 2: Core architectural components
@@ -22,6 +23,7 @@ pub use area_filter::{LayoutObjectSpatial, RectFilterMode, SpatialCollectionFilt
 pub use document_analyzer::{AdaptiveLayoutParams, DocumentProperties};
 pub use font_stats::PageFontStats;
 pub use reading_order::graph_based_reading_order;
+pub use region_classifier::{classify_region, RegionClass};
 pub use text_block::{Color, FontWeight, PageText, TextBlock, TextChar, TextLine, TextSpan, Word};
 
 // Re-export Phase 2 components
