@@ -12409,11 +12409,23 @@ impl PdfDocument {
         if (ly1 - ly0) < 0.5 * body_h || (ry1 - ry0) < 0.5 * body_h {
             return None;
         }
-        // Both halves must classify as reorderable prose/reference. This is the
-        // load-bearing gate: tables/forms classify Table/Form and are rejected.
-        if !crate::layout::classify_region(spans, &left_idx).is_reorderable_column()
-            || !crate::layout::classify_region(spans, &right_idx).is_reorderable_column()
-        {
+        // Class gate (load-bearing). NEITHER half may be Table/Form — that is the
+        // hard table/form rejection (tables classify Table via mean_chars<10,
+        // label/value pages classify Form). AND at least one half must be clearly
+        // Prose/Reference, to anchor that this really is a text body. A `Mixed`
+        // half is admitted alongside a Prose/Reference half: a dense results
+        // column often classifies Mixed (figures, equations, and inline-citation
+        // fragments lower its wide-line ratio below the Prose threshold), but it
+        // is NOT a table (those are Table, not Mixed), so column-major reading is
+        // still correct. Two Mixed halves (no clear prose anchor) stay rejected.
+        use crate::layout::RegionClass;
+        let lc = crate::layout::classify_region(spans, &left_idx);
+        let rc = crate::layout::classify_region(spans, &right_idx);
+        let is_table_or_form = |c| matches!(c, RegionClass::Table | RegionClass::Form);
+        if is_table_or_form(lc) || is_table_or_form(rc) {
+            return None;
+        }
+        if !(lc.is_reorderable_column() || rc.is_reorderable_column()) {
             return None;
         }
         Some(gutter)
