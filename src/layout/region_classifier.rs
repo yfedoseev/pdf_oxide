@@ -9,8 +9,7 @@
 //! page column-major" cannot tell a two-column *prose* / *reference* body from a
 //! *table* / *form* using thresholds alone. Loosen a gate to admit ragged
 //! reference columns and it swallows tables; tighten it to protect tables and it
-//! rejects the references. This was hit three independent times (v0.3.67 Items 1
-//! & 3 reverts, and the v0.3.53 XY-cut `min_valley_width` lock), each reverted by
+//! rejects the references. Prior threshold-only attempts were each reverted by
 //! the corpus sweep on `google_doc_document.pdf`'s population table.
 //!
 //! The seed of the right answer already lived in
@@ -24,7 +23,7 @@
 //!   reorder gates (reorder column-major), but named distinctly so a future pass
 //!   can apply reference-specific entry grouping.
 //! * [`RegionClass::Form`] — label / value rows (a large intra-line gap with text
-//!   on both sides), the IRS-form shape that the relaxed v0.3.67 prose gate
+//!   on both sides), the IRS-form shape that a relaxed prose gate would otherwise
 //!   mis-read as a prose gutter.
 //!
 //! # Contract

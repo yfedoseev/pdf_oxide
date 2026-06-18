@@ -5798,8 +5798,8 @@ impl PdfDocument {
             } else if let Some(gutter_x) = Self::prose_two_column_gutter(&spans)
                 .or_else(|| Self::classifier_column_gutter(&spans))
             {
-                // #734: genuine two-column prose (content-balance gated — forms /
-                // TOC / tables / figures are rejected), OR (v0.3.68) a ragged
+                // Genuine two-column prose (content-balance gated — forms /
+                // TOC / tables / figures are rejected), OR a ragged
                 // reference list / dense results body that the clean corridor
                 // sweep and `is_multi_column_page` MISS but the per-column region
                 // classifier confirms (`classifier_column_gutter`). Both read
@@ -12246,17 +12246,15 @@ impl PdfDocument {
                 return None;
             }
         }
-        // Per-column region classification (v0.3.68). The genuine discriminator
-        // between a two-column PROSE/REFERENCE body (read column-major) and a
-        // table / form / TOC that merely has one central gap (read row-wise) is
-        // the STRUCTURE of each column, not a cross-gutter row-balance ratio. The
-        // old balance / short-right / median gates here measured cross-gutter row
-        // alignment, which ragged reference lists and dense results columns do
-        // not have — so those (the real-academic M1/M3 deficit) were wrongly
-        // rejected and fell to a row-major interleave. Classifying each half on
-        // its own structure admits them while still rejecting tables/forms (which
-        // classify as Table/Form). Proven on the 5 corpus discriminator PDFs that
-        // reverted every prior attempt — see `examples/classify_probe.rs`.
+        // Per-column region classification. The genuine discriminator between a
+        // two-column PROSE/REFERENCE body (read column-major) and a table / form /
+        // TOC that merely has one central gap (read row-wise) is the STRUCTURE of
+        // each column, not a cross-gutter row-balance ratio. A cross-gutter
+        // row-alignment gate measures alignment that ragged reference lists and
+        // dense results columns do not have, so those were wrongly rejected and
+        // fell to a row-major interleave. Classifying each half on its own
+        // structure admits them while still rejecting tables/forms (which classify
+        // as Table/Form). See `examples/classify_probe.rs`.
         let body_side = |want_left: bool| -> Vec<usize> {
             spans
                 .iter()
@@ -12279,8 +12277,8 @@ impl PdfDocument {
         Some(gutter_x)
     }
 
-    /// v0.3.68: robust classifier-gated two-column detector for bodies the clean
-    /// corridor sweep (`prose_two_column_gutter`) and `is_multi_column_page`
+    /// Robust classifier-gated two-column detector for bodies the clean corridor
+    /// sweep (`prose_two_column_gutter`) and `is_multi_column_page`
     /// MISS — ragged reference lists and dense results columns. Their lines do
     /// not leave the single perfectly-clean empty corridor those detectors
     /// require (long entries occasionally bridge, ragged tails create extra
