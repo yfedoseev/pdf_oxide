@@ -818,6 +818,7 @@ fn extract_cell(
                         heading_level: None,
                         rotation_degrees: 0.0,
                         wmode: 0,
+                        text_rise: 0.0,
                     });
                     prev_block = Some(block);
                     break;
@@ -1147,6 +1148,7 @@ mod tests {
         use crate::layout::text_block::{Color, FontWeight};
 
         crate::layout::TextSpan {
+            text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),
             bbox: Rect::new(0.0, 0.0, 50.0, 12.0),
@@ -1339,6 +1341,7 @@ mod tests {
         //   "（"    x=353.83 w=10.56 end=364.39   gap=-0.18 (overlap → no space)
         //   "peu/d" x=364.39 w=25.24             gap=0.00  (touching → no space)
         let base = crate::layout::TextSpan {
+            text_rise: 0.0,
             artifact_type: None,
             text: String::new(),
             bbox: Rect::new(0.0, 678.0, 0.0, 10.56),
@@ -1413,6 +1416,7 @@ mod tests {
         table_elem.add_child(StructChild::StructElem(Box::new(tr)));
 
         let base = crate::layout::TextSpan {
+            text_rise: 0.0,
             artifact_type: None,
             text: String::new(),
             bbox: Rect::new(0.0, 0.0, 0.0, 12.0),
@@ -1486,6 +1490,7 @@ mod tests {
         table_elem.add_child(StructChild::StructElem(Box::new(tr)));
 
         let base = crate::layout::TextSpan {
+            text_rise: 0.0,
             artifact_type: None,
             text: String::new(),
             bbox: Rect::new(0.0, 0.0, 0.0, 12.0),
@@ -1585,6 +1590,7 @@ mod tests {
         table_elem.add_child(StructChild::StructElem(Box::new(tr)));
 
         let base = crate::layout::TextSpan {
+            text_rise: 0.0,
             artifact_type: None,
             text: String::new(),
             bbox: Rect::new(0.0, 100.0, 0.0, 10.0),
@@ -1667,6 +1673,7 @@ mod tests {
         table_elem.add_child(StructChild::StructElem(Box::new(tr)));
 
         let base = crate::layout::TextSpan {
+            text_rise: 0.0,
             artifact_type: None,
             text: String::new(),
             bbox: Rect::new(0.0, 100.0, 0.0, 10.0),

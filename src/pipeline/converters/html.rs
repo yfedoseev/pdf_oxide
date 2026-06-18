@@ -758,6 +758,7 @@ mod tests {
     ) -> OrderedTextSpan {
         OrderedTextSpan::new(
             TextSpan {
+                text_rise: 0.0,
                 artifact_type: None,
                 text: text.to_string(),
                 bbox: Rect::new(x, y, 50.0, font_size),
@@ -1148,6 +1149,7 @@ mod tests {
         italic: bool,
     ) -> TextSpan {
         TextSpan {
+            text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),
             bbox: Rect::new(x, y, width, font_size),

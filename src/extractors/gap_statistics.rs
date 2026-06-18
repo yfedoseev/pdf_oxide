@@ -822,6 +822,7 @@ mod tests {
 
         let spans = vec![
             TextSpan {
+                text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
                 bbox: Rect::new(0.0, 0.0, 30.0, 12.0),
@@ -846,6 +847,7 @@ mod tests {
                 wmode: 0,
             },
             TextSpan {
+                text_rise: 0.0,
                 artifact_type: None,
                 text: "World".to_string(),
                 bbox: Rect::new(35.0, 0.0, 30.0, 12.0),
@@ -955,6 +957,7 @@ mod tests {
 
         let spans = vec![
             TextSpan {
+                text_rise: 0.0,
                 artifact_type: None,
                 text: "A".to_string(),
                 bbox: Rect::new(0.0, 0.0, 10.0, 12.0),
@@ -979,6 +982,7 @@ mod tests {
                 wmode: 0,
             },
             TextSpan {
+                text_rise: 0.0,
                 artifact_type: None,
                 text: "B".to_string(),
                 bbox: Rect::new(15.0, 0.0, 10.0, 12.0),

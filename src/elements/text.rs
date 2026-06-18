@@ -169,6 +169,7 @@ impl From<TextContent> for TextSpan {
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,
+            text_rise: 0.0,
         }
     }
 }
@@ -315,6 +316,7 @@ mod tests {
     #[test]
     fn test_text_span_conversion() {
         let span = TextSpan {
+            text_rise: 0.0,
             artifact_type: None,
             text: "Test".to_string(),
             bbox: Rect::new(10.0, 20.0, 40.0, 12.0),

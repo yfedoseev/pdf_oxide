@@ -778,6 +778,7 @@ mod tests {
         // TextSpan represents complete strings from Tj/TJ operators, not individual chars
         let spans = vec![
             TextSpan {
+                text_rise: 0.0,
                 artifact_type: None,
                 text: "First".to_string(),
                 bbox: Rect::new(10.0, 20.0, 30.0, 12.0), // width ~= 5 chars * 6pt
@@ -802,6 +803,7 @@ mod tests {
                 wmode: 0,
             },
             TextSpan {
+                text_rise: 0.0,
                 artifact_type: None,
                 text: "Second".to_string(),
                 bbox: Rect::new(10.0, 40.0, 36.0, 12.0), // width ~= 6 chars * 6pt

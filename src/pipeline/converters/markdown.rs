@@ -3569,6 +3569,7 @@ mod tests {
     ) -> OrderedTextSpan {
         OrderedTextSpan::new(
             TextSpan {
+                text_rise: 0.0,
                 artifact_type: None,
                 text: text.to_string(),
                 bbox: Rect::new(x, y, width, font_size),
@@ -3605,6 +3606,7 @@ mod tests {
     ) -> OrderedTextSpan {
         OrderedTextSpan::new(
             TextSpan {
+                text_rise: 0.0,
                 artifact_type: None,
                 text: text.to_string(),
                 bbox: Rect::new(x, y, 50.0, font_size),
@@ -4187,6 +4189,7 @@ mod tests {
     ) -> OrderedTextSpan {
         let mut s = OrderedTextSpan::new(
             TextSpan {
+                text_rise: 0.0,
                 artifact_type: None,
                 text: text.to_string(),
                 bbox: Rect::new(x, y, width, font_size),
@@ -4957,6 +4960,7 @@ mod tests {
     #[test]
     fn test_issue8_table_cell_renders_bold_marker() {
         let bold_span = TextSpan {
+            text_rise: 0.0,
             artifact_type: None,
             text: "Critical".to_string(),
             bbox: Rect::new(0.0, 0.0, 50.0, 12.0),

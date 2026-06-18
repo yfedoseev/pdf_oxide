@@ -4120,6 +4120,7 @@ mod tests {
 
     fn create_test_span(text: &str, x: f32, y: f32, width: f32, height: f32) -> TextSpan {
         TextSpan {
+            text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),
             bbox: Rect::new(x, y, width, height),
@@ -6468,6 +6469,7 @@ mod tests {
     /// rule actually reads: bbox, font_size, and text.
     fn ts(text: &str, x: f32, y: f32, width: f32, fs: f32) -> TextSpan {
         TextSpan {
+            text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),
             bbox: Rect::new(x, y, width, fs),

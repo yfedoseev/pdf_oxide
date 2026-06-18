@@ -111,6 +111,17 @@ pub struct TextSpan {
     /// left-to-right path.
     #[serde(skip_serializing_if = "is_zero_u8", default)]
     pub wmode: u8,
+    /// Baseline shift of this run as a ratio of font size (`Ts ÷ font_size`),
+    /// from the text-rise text-state parameter (ISO 32000-1 §9.3.7). `Ts > 0`
+    /// raises the baseline (superscript), `Ts < 0` lowers it (subscript); `0.0`
+    /// for ordinary on-baseline text. Stored as a ratio (rather than raw points)
+    /// so it is independent of the text/CTM scale and directly comparable to the
+    /// font-size-ratio used by the sub/superscript rejoin. Reading order uses a
+    /// non-zero value as the authoritative, untagged-available signal that the
+    /// run is an off-baseline super/subscript to be rejoined inline rather than
+    /// split onto its own line by the row-band sort.
+    #[serde(skip_serializing_if = "is_zero_f32", default)]
+    pub text_rise: f32,
 }
 
 /// serde skip helper: omit a `0` writing mode (horizontal, the common case)
@@ -150,6 +161,7 @@ impl Default for TextSpan {
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,
+            text_rise: 0.0,
         }
     }
 }
@@ -837,5 +849,29 @@ mod tests {
         assert!((chars[0].bbox.width - 10.0).abs() < 0.001);
         assert!((chars[1].bbox.width - 10.0).abs() < 0.001);
         assert!((chars[2].bbox.width - 10.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn text_rise_zero_serde_omitted() {
+        // A default (on-baseline) span must NOT serialize a `text_rise` key, so
+        // existing fixtures stay byte-identical now that the field exists.
+        let span = TextSpan {
+            text: "x".to_string(),
+            ..TextSpan::default()
+        };
+        let json = serde_json::to_string(&span).unwrap();
+        assert!(
+            !json.contains("text_rise"),
+            "zero text_rise must be omitted from serialized output: {json}"
+        );
+
+        // A non-zero rise IS serialized (the rejoin signal must survive a round-trip).
+        let raised = TextSpan {
+            text: "2".to_string(),
+            text_rise: 0.33,
+            ..TextSpan::default()
+        };
+        let json = serde_json::to_string(&raised).unwrap();
+        assert!(json.contains("text_rise"), "non-zero text_rise must be serialized: {json}");
     }
 }

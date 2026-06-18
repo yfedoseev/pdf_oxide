@@ -8361,6 +8361,7 @@ impl PdfDocument {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                text_rise: 0.0,
             });
         }
 
@@ -8528,6 +8529,7 @@ impl PdfDocument {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                text_rise: 0.0,
             });
         }
 
@@ -15606,6 +15608,7 @@ impl PdfDocument {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                text_rise: 0.0,
             })
             .collect();
 
@@ -17346,6 +17349,7 @@ impl PdfDocument {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                text_rise: 0.0,
             })
             .collect();
 
@@ -22108,6 +22112,7 @@ mod tests {
 
     fn make_test_span(text: &str, x: f32, y: f32, width: f32, font_size: f32) -> TextSpan {
         TextSpan {
+            text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),
             bbox: crate::geometry::Rect {
@@ -22435,6 +22440,7 @@ mod tests {
         font_size: f32,
     ) -> TextSpan {
         TextSpan {
+            text_rise: 0.0,
             text: text.to_string(),
             bbox: crate::geometry::Rect {
                 x: 0.0,
@@ -26245,6 +26251,7 @@ mod tests {
 
         fn make_span(label: &str, x: f32, y: f32) -> TextSpan {
             TextSpan {
+                text_rise: 0.0,
                 artifact_type: None,
                 text: label.to_string(),
                 bbox: Rect::new(x, y, 80.0, 12.0),
@@ -26310,6 +26317,7 @@ mod tests {
         use crate::geometry::Rect;
         use crate::layout::{Color, FontWeight, TextSpan};
         TextSpan {
+            text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),
             bbox: Rect::new(x, y, w, 10.0),
@@ -26702,6 +26710,7 @@ mod tests {
 
         fn mk(text: &str, x: f32, y: f32, w: f32) -> TextSpan {
             TextSpan {
+                text_rise: 0.0,
                 artifact_type: None,
                 text: text.to_string(),
                 bbox: crate::geometry::Rect::new(x, y, w, 10.0),
@@ -26773,6 +26782,7 @@ mod tests {
 
         fn mk(text: &str, x: f32, y: f32) -> TextSpan {
             TextSpan {
+                text_rise: 0.0,
                 artifact_type: None,
                 text: text.to_string(),
                 bbox: crate::geometry::Rect::new(x, y, 80.0, 10.0),
@@ -26843,6 +26853,7 @@ mod tests {
 
         fn mk(text: &str, x: f32, y: f32, w: f32) -> TextSpan {
             TextSpan {
+                text_rise: 0.0,
                 artifact_type: None,
                 text: text.to_string(),
                 bbox: crate::geometry::Rect::new(x, y, w, 10.0),

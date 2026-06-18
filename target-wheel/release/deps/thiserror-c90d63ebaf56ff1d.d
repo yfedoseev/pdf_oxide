@@ -1,0 +1,14 @@
+/home/yfedoseev/projects/pdf_oxide_fixes3/target-wheel/release/deps/thiserror-c90d63ebaf56ff1d.d: /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/lib.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/aserror.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/display.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/var.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/private.rs /home/yfedoseev/projects/pdf_oxide_fixes3/target-wheel/release/build/thiserror-5164c90665f98331/out/private.rs
+
+/home/yfedoseev/projects/pdf_oxide_fixes3/target-wheel/release/deps/libthiserror-c90d63ebaf56ff1d.rlib: /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/lib.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/aserror.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/display.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/var.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/private.rs /home/yfedoseev/projects/pdf_oxide_fixes3/target-wheel/release/build/thiserror-5164c90665f98331/out/private.rs
+
+/home/yfedoseev/projects/pdf_oxide_fixes3/target-wheel/release/deps/libthiserror-c90d63ebaf56ff1d.rmeta: /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/lib.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/aserror.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/display.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/var.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/private.rs /home/yfedoseev/projects/pdf_oxide_fixes3/target-wheel/release/build/thiserror-5164c90665f98331/out/private.rs
+
+/home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/lib.rs:
+/home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/aserror.rs:
+/home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/display.rs:
+/home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/var.rs:
+/home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/private.rs:
+/home/yfedoseev/projects/pdf_oxide_fixes3/target-wheel/release/build/thiserror-5164c90665f98331/out/private.rs:
+
+# env-dep:OUT_DIR=/home/yfedoseev/projects/pdf_oxide_fixes3/target-wheel/release/build/thiserror-5164c90665f98331/out

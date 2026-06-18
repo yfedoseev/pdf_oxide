@@ -1,0 +1,12 @@
+/home/yfedoseev/projects/pdf_oxide_fixes3/target-wheel/release/deps/spki-47c29baf29c9ec65.d: /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/lib.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/algorithm.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/error.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/spki.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/traits.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/../README.md
+
+/home/yfedoseev/projects/pdf_oxide_fixes3/target-wheel/release/deps/libspki-47c29baf29c9ec65.rlib: /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/lib.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/algorithm.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/error.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/spki.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/traits.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/../README.md
+
+/home/yfedoseev/projects/pdf_oxide_fixes3/target-wheel/release/deps/libspki-47c29baf29c9ec65.rmeta: /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/lib.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/algorithm.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/error.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/spki.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/traits.rs /home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/../README.md
+
+/home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/lib.rs:
+/home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/algorithm.rs:
+/home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/error.rs:
+/home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/spki.rs:
+/home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/traits.rs:
+/home/yfedoseev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spki-0.8.0/src/../README.md:
