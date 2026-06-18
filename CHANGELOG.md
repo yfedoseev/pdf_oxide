@@ -2,6 +2,24 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.66] - 2026-06-18
+
+> Extraction-quality release — multi-region and two-column reading order, right-to-left Arabic/Hebrew reconstruction in Markdown and HTML, soft-wrap de-gluing and de-hyphenation, and a subset-font cipher-encoding fix — plus destructive redaction of Identity-H (composite) text, CCITT Group 3 fax decoding, and a 16-bit-per-component image fix.
+
+### Added
+
+- **Destructive redaction of Identity-H composite (Type 0) text (#748)** — destructive redaction previously refused all Type 0 fonts. It now supports the common Identity-H case (`Type0` + `Encoding /Identity-H`, horizontal writing mode): 2-byte big-endian CIDs are decoded and widths read from `/W` (ISO 32000-1 §9.7.4.3 / §9.7.5.2), target glyphs are removed, and the engine stays fail-closed — refusing Identity-V, legacy embedded CMaps, and odd-length strings it cannot safely rewrite. Thanks @shota-sh.
+- **CCITT Group 3 (T.4) fax decoding (#738)** — extends the in-house CCITT decoder (Group 4 landed in v0.3.65) to Group 3: pure 1-D Modified Huffman (`K = 0`) and mixed 1-D/2-D (`K > 0`), with end-of-line handling and the same partial-row recovery contract as the Group 4 path. Group-3-encoded fax images that previously rendered blank now decode to their real content. Thanks @potatochipcoconut.
+
+### Fixed
+
+- **16-bit-per-component images no longer panic on extraction (#750)** — extracting an image with `/BitsPerComponent 16` hit an internal assertion (an uncatchable panic across the FFI boundary) because 16-bit big-endian samples were stored verbatim into a double-sized buffer. 16-bit samples are now down-converted to 8-bit at parse time, and the PNG encoder rejects a mismatched buffer with a recoverable error instead of asserting. Thanks @shtyker.
+- **Multi-region and two-column reading order** — pages with genuine side-by-side regions (two-column bodies, a publisher sidebar beside the body, multi-column newsletters and forms) are now linearised with a topological block order — a precede relation over text blocks — instead of a flat row-aware sort that interleaved columns line by line. Two stacked text lines merged by the same-line Y tolerance are de-interleaved by baseline rather than X-sorted into each other. Self-gating: pages without horizontally-disjoint, vertically-overlapping regions are unchanged.
+- **Right-to-left Markdown and HTML reconstruction** — Arabic and Hebrew now read correctly in Markdown and HTML, not only in plain text. RTL lines are reconstructed at glyph fidelity from the raw spans before the converter orders them; an inter-word punctuation span between two RTL words is kept (instead of being dropped as decoration and gluing the words); a line-final word that sits just below its baseline band is rejoined to its line; and the producer's authoritative inter-word space after a dual-joining letter is preserved.
+- **Soft-wrap de-gluing and de-hyphenation** — generator PDFs that emit one show-string per visual line with no trailing separator no longer glue the last word of a wrapped line to the first word of the next line; a line-break separator is synthesised, since text positioning is purely geometric and a line break encodes no space character (ISO 32000-1 §9.4). The spurious space left after a line-final hyphen on a wrapped line is suppressed so hyphenated words rejoin cleanly.
+- **Markdown/HTML gutter-crossing word rejoin** — a word the producer split into two show-strings across the column gutter (a lone name initial, the two digits of a split number) is rejoined for Markdown and HTML, while genuinely separate adjacent column lines are kept apart and an interior emphasis (bold/italic) span inside a rejoined run is no longer dropped.
+- **Subset-font cipher encoding no longer overrides the named encoding** — a Type1/CFF subset font whose re-indexed built-in encoding disagrees with the producer-declared named `/Encoding` (e.g. WinAnsi / MacRoman) on most overlapping codes is detected as a subset cipher and the named encoding is kept, fixing whole-page mojibake on affected documents.
+
 ## [0.3.65] - 2026-06-16
 
 > Multilingual and layout extraction quality — right-to-left bidi reconstruction for Arabic and Hebrew, multi-region reading order for publisher sidebars and two-column academic pages, and CJK/Indic word segmentation — plus an in-house CCITT Group 4 fax decoder that honours `EncodedByteAlign`, structured two-column surfacing, and a batch of O(n²) hot-path removals.
