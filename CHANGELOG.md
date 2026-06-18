@@ -20,6 +20,10 @@ All notable changes to PDFOxide are documented here.
 - **Markdown/HTML gutter-crossing word rejoin** — a word the producer split into two show-strings across the column gutter (a lone name initial, the two digits of a split number) is rejoined for Markdown and HTML, while genuinely separate adjacent column lines are kept apart and an interior emphasis (bold/italic) span inside a rejoined run is no longer dropped.
 - **Subset-font cipher encoding no longer overrides the named encoding** — a Type1/CFF subset font whose re-indexed built-in encoding disagrees with the producer-declared named `/Encoding` (e.g. WinAnsi / MacRoman) on most overlapping codes is detected as a subset cipher and the named encoding is kept, fixing whole-page mojibake on affected documents.
 
+### Dependencies
+
+- Bumped `taffy` 0.10.1 → 0.11.0 (#741), `pdfium-render` 0.9.1 → 0.9.2 (#743), `regex` 1.12.3 → 1.12.4 (#746), `brotli` 8.0.3 → 8.0.4 (#744), and `pyo3-log` 0.13.3 → 0.13.4 (#745); CI bumps for `ruby/setup-ruby` (#742) and `taiki-e/install-action` (#740).
+
 ## [0.3.65] - 2026-06-16
 
 > Multilingual and layout extraction quality — right-to-left bidi reconstruction for Arabic and Hebrew, multi-region reading order for publisher sidebars and two-column academic pages, and CJK/Indic word segmentation — plus an in-house CCITT Group 4 fax decoder that honours `EncodedByteAlign`, structured two-column surfacing, and a batch of O(n²) hot-path removals.
