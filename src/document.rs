@@ -12081,15 +12081,47 @@ impl PdfDocument {
                         let cur = &spans[w[1]];
                         let fs = prev.font_size.max(cur.font_size).max(1.0);
                         let gap = cur.bbox.x - (prev.bbox.x + prev.bbox.width);
-                        gap <= 0.15 * fs
+                        let prev_tok = prev.text.split_whitespace().last().unwrap_or("");
+                        let cur_tok = cur.text.split_whitespace().next().unwrap_or("");
+                        // A genuine producer split breaks ONE word/number into two
+                        // adjacent show-strings (`20`+`25`→`2025`, an author line
+                        // `… M. T`+`anaka`→`… M. Tanaka`): the break leaves a tiny
+                        // fragment on one side — a lone uppercase initial (`T`) or the
+                        // two digits of a split number. On a tight multi-column
+                        // page a font with over-estimated advance widths inflates each
+                        // column line's bbox so a left-column line overruns the gutter
+                        // and abuts the next column, making two DIFFERENT full words
+                        // look like a hairline split (`the`+`even`, `gross`+`deduction`,
+                        // `income`+`1116`, even a 2-letter word `on`+`deduction`). Those
+                        // join two COMPLETE tokens, so the split is real only when a
+                        // boundary token is a lone uppercase letter (a name initial) or
+                        // the two digits of a split number — never a 2-letter word
+                        // (`on`), a complete word, or a
+                        // bare figure/table digit (`Table 3`). The gap can't separate
+                        // them (a genuine split overlaps as deeply as a column line),
+                        // but a deep overlap (≥ half an em) is always a column abut.
+                        let tok_is_fragment = |t: &str| {
+                            let mut cs = t.chars();
+                            match (cs.next(), cs.next(), cs.next()) {
+                                // A lone uppercase letter — a name initial (`M. T`).
+                                (Some(c), None, _) => c.is_alphabetic() && c.is_uppercase(),
+                                // The two digits of a split number (`20`+`25`).
+                                (Some(a), Some(b), None) => {
+                                    a.is_ascii_digit() && b.is_ascii_digit()
+                                },
+                                _ => false,
+                            }
+                        };
+                        gap >= -0.5 * fs
+                            && gap <= 0.15 * fs
                             && prev.bbox.x < mid
                             && cur.bbox.x + cur.bbox.width > mid
-                            && prev
-                                .text
+                            && (tok_is_fragment(prev_tok) || tok_is_fragment(cur_tok))
+                            && prev_tok
                                 .chars()
-                                .last()
+                                .next_back()
                                 .is_some_and(|c| c.is_alphanumeric())
-                            && cur.text.chars().next().is_some_and(|c| c.is_alphanumeric())
+                            && cur_tok.chars().next().is_some_and(|c| c.is_alphanumeric())
                     });
                     if run_min < mid && run_max > mid && has_midword_split_across_mid {
                         replacement.insert(run[0], Self::merge_same_line_run(spans, run));
@@ -22896,11 +22928,14 @@ mod tests {
         );
     }
 
-    /// B1: a full-width line drawn by the producer as two adjacent fragments
-    /// split MID-WORD across the column gutter must be stitched back into one
-    /// span before the column reorder, so it is not bucketed into two columns
-    /// and torn apart. A normal two-column body row (a per-column run that does
-    /// not cross the midline) must be left untouched.
+    /// B1: a SHORT word/number the producer split into two adjacent show-strings
+    /// across the column gutter (an author initial `M. T`+`anaka`→`M. Tanaka`, a
+    /// year `20`+`25`→`2025`) must be stitched back before the column reorder, so
+    /// it is not bucketed into two columns and torn apart. The discriminator is
+    /// fragment size: a genuine split is at most a word or two per side. Two FULL
+    /// multi-word column lines whose over-wide bboxes happen to abut at the gutter
+    /// must NOT be merged (that is the `theeven`/`grossdeduction` column glue). A
+    /// normal per-column body row (no midline crossing) is left untouched.
     #[test]
     fn test_coalesce_gutter_crossing_runs_rejoins_split_full_width_line() {
         // Full-width heading (single span — one-member run, must NOT merge).
@@ -22911,10 +22946,20 @@ mod tests {
             474.9,
             20.0,
         )];
-        // A full-width line drawn as two contiguous fragments split mid-word at
-        // the gutter: "delta" is broken into "del" + "ta" across the midline.
-        spans.push(make_test_span("alpha beta gamma del", 130.8, 669.8, 134.5, 13.0));
-        spans.push(make_test_span("ta epsilon zeta eta theta", 264.3, 669.8, 216.9, 13.0));
+        // A short author-name fragment split mid-word at the gutter: "Tanaka" is
+        // broken into "M. T" + "anaka" across the midline (≤2 words each side).
+        spans.push(make_test_span("A. Rivera, K. Osei, M. T", 80.0, 669.8, 220.5, 13.0));
+        spans.push(make_test_span("anaka", 300.3, 669.8, 30.0, 13.0));
+        // A FULL multi-word line per side whose over-wide left bbox abuts the
+        // right fragment at the gutter — the column-glue trap, must NOT merge.
+        spans.push(make_test_span("even if it is not taxable by that", 70.0, 650.0, 240.0, 13.0));
+        spans.push(make_test_span(
+            "complete lines 2, 3a, and 4 on Form",
+            300.0,
+            650.0,
+            240.0,
+            13.0,
+        ));
         // Two-column body: left starts x=57, right starts x=319, on independent
         // (offset) baselines so the page reads as multi-column with bimodal
         // line-starts (the detector needs many lines on each side).
@@ -22930,16 +22975,26 @@ mod tests {
             ));
         }
 
-        let coalesced = PdfDocument::coalesce_gutter_crossing_runs(&spans)
-            .expect("a mid-word gutter-crossing run must be coalesced on a multi-column page");
+        let coalesced = PdfDocument::coalesce_gutter_crossing_runs(&spans).expect(
+            "a short mid-word gutter-crossing split must be coalesced on a multi-column page",
+        );
         let texts: Vec<&str> = coalesced.iter().map(|s| s.text.as_str()).collect();
         assert!(
-            texts.contains(&"alpha beta gamma delta epsilon zeta eta theta"),
-            "split line not rejoined (delta must reform); got {texts:?}"
+            texts.contains(&"A. Rivera, K. Osei, M. Tanaka"),
+            "short author split not rejoined (Tanaka must reform); got {texts:?}"
         );
         assert!(
-            !texts.contains(&"alpha beta gamma del"),
+            !texts.contains(&"A. Rivera, K. Osei, M. T"),
             "split fragment must be gone after coalescing; got {texts:?}"
+        );
+        // The full multi-word column lines must stay SEPARATE (no `thatcomplete`).
+        assert!(
+            !texts.iter().any(|t| t.contains("thatcomplete")),
+            "full multi-word column lines must not be glued at the gutter; got {texts:?}"
+        );
+        assert!(
+            texts.contains(&"even if it is not taxable by that"),
+            "left column line must be preserved verbatim; got {texts:?}"
         );
         // Body per-column runs (never cross the midline) stay as-is.
         assert!(texts.contains(&"left body line 0") && texts.contains(&"right body line 0"));
