@@ -2,6 +2,17 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.67] - 2026-06-18
+
+> Reading-order quality release for untagged scientific papers — manuscript-line-number rails lifted out of the body, dense two-column bodies kept apart at a measured gutter, comma-bearing statistic subscripts rejoined, and repeated journal pagination footers suppressed.
+
+### Fixed
+
+- **Marginalia line-number rails no longer interleave into the body** — a narrow, sparse, body-aligned left-margin rail of numerals (manuscript line numbers `118 119 120 …`, a folio rail) is now lifted out before geometric column ordering and re-appended at the end of the reading order, instead of being woven into the prose by a flat row-aware sort. Tightly gated (narrow outer band, sparse, ≥3 lines, predominantly numeric, a clear detached gutter, running alongside the body) so genuine narrow first columns, table label columns, and ordinary pages are unaffected.
+- **Dense two-column bodies are kept apart at a measured gutter** — the multi-region block builder now refuses to join two spans that straddle the page's measured central gutter, even when a tight-leading over-wide advance makes the cross-gutter gap look like a normal word space. This stops the two columns from fusing into one block (which previously left the page on a row-major interleave) on dense, tightly-led academic two-column pages. Purely subtractive — single-column, grid, and off-centre pages are unchanged.
+- **Comma-bearing statistic subscripts rejoin to their base** — an F-statistic's degrees of freedom (`4,176` in `F4,176`) or a multi-affiliation marker (`1,2`), which the producer set as a single comma-joined subscript, is now merged back into its base instead of being stranded as separate `F` / `4` / `176` tokens.
+- **Repeated journal pagination footers are suppressed** — a constant-text running citation/pagination line (a DOI, a journal `Volume … | Article …` reference, or a journal URL host with a digit) that recurs in the top/bottom margin on a strong majority of pages is now treated as furniture and excluded from the body, matching how reference extractors handle running heads and folios (ISO 32000-1 §14.8.2.2). The shape gate is deliberately narrow — government-form control numbers such as `OMB No. 1545-0115` are kept.
+
 ## [0.3.66] - 2026-06-18
 
 > Extraction-quality release — multi-region and two-column reading order, right-to-left Arabic/Hebrew reconstruction in Markdown and HTML, soft-wrap de-gluing and de-hyphenation, and a subset-font cipher-encoding fix — plus destructive redaction of Identity-H (composite) text, CCITT Group 3 fax decoding, and a 16-bit-per-component image fix.

@@ -2993,7 +2993,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_oxide"
-version = "0.3.66"
+version = "0.3.67"
 dependencies = [
  "aes",
  "aws-lc-rs",
