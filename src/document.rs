@@ -7547,6 +7547,20 @@ impl PdfDocument {
             return;
         }
 
+        // Item 5b (M4): an INDEX CLUSTER is a comma-joined run of digits that the
+        // producer set as a single subscript/superscript — an F-statistic's
+        // degrees of freedom (`4,176` in `F4,176`) or a multi-affiliation marker
+        // (`1,2`). These exceed the 3-char limit and contain a comma, so the plain
+        // sub-char gate rejected them, stranding `F`, `4`, `176` as separate
+        // tokens. Recognised here so the comma cluster merges back into its base.
+        let is_index_cluster = |t: &str| -> bool {
+            t.chars().count() >= 3
+                && t.contains(',')
+                && t.chars().all(|c| c.is_ascii_digit() || c == ',')
+                && !t.starts_with(',')
+                && !t.ends_with(',')
+        };
+
         // For each candidate sub/superscript span, record which base span to merge into.
         let mut to_merge: Vec<(usize, usize)> = Vec::new(); // (base_idx, sub_idx)
         let mut already_sub: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -7557,7 +7571,8 @@ impl PdfDocument {
             // UTF-8 sequences and U+2070..U+209F are 3-byte, so the
             // earlier byte-length check would have dropped a legitimate
             // 3-digit Unicode subscript like "₁₂₃" (9 bytes).
-            if sub.text.is_empty() || sub.text.chars().count() > 3 {
+            if sub.text.is_empty() || (sub.text.chars().count() > 3 && !is_index_cluster(&sub.text))
+            {
                 continue;
             }
             // Accept the raw ASCII the extractor produces AND the
@@ -7571,7 +7586,7 @@ impl PdfDocument {
                     || matches!(c, '\u{00B2}' | '\u{00B3}' | '\u{00B9}')
                     || ('\u{2070}'..='\u{209F}').contains(&c)
             };
-            if !sub.text.chars().all(is_sub_char) {
+            if !sub.text.chars().all(is_sub_char) && !is_index_cluster(&sub.text) {
                 continue;
             }
             // Must be clearly smaller than the dominant font on this page.
@@ -22673,6 +22688,31 @@ mod tests {
         assert_eq!(spans.len(), 4, "word-spaced standalone capital is not a drop cap");
         assert_eq!(spans[2].text, "A");
         assert_eq!(spans[3].text, "Perspective");
+    }
+
+    #[test]
+    fn merge_sub_superscript_accepts_fstatistic() {
+        // Item 5b (M4): an F-statistic `F4,176` — the comma-bearing degrees-of-
+        // freedom cluster `4,176` is a single subscript that must merge into `F`.
+        let mut spans = vec![
+            make_test_span("F", 0.0, 100.0, 8.0, 12.0),
+            make_test_span("4,176", 8.0, 98.0, 12.0, 8.0),
+        ];
+        PdfDocument::merge_sub_superscript_spans(&mut spans);
+        assert_eq!(spans.len(), 1, "index cluster must merge into base");
+        assert_eq!(spans[0].text, "F4,176");
+    }
+
+    #[test]
+    fn merge_sub_superscript_keeps_table_number_separate() {
+        // Guard: a bare figure/table number after a WORD base is not an index
+        // cluster (no comma) and the word base is invalid — stays separate.
+        let mut spans = vec![
+            make_test_span("Table", 0.0, 100.0, 30.0, 12.0),
+            make_test_span("3", 31.0, 100.0, 6.0, 12.0),
+        ];
+        PdfDocument::merge_sub_superscript_spans(&mut spans);
+        assert_eq!(spans.len(), 2, "Table 3 must not merge");
     }
 
     #[test]
