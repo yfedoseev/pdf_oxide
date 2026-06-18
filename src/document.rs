@@ -5757,6 +5757,37 @@ impl PdfDocument {
             // it self-gates to None unless the page has dominant side-by-side
             // text-dense blocks (see its side_by_side gate), so single-column,
             // table, and TOC pages are byte-identical.
+            //
+            // Item 2 (M2): first lift a narrow, sparse, body-aligned marginalia
+            // rail (manuscript line numbers / a folio rail) OUT of the body, so
+            // the column dispatch below sees a clean body. A rail otherwise
+            // injects a spurious second corridor (disqualifying prose detection)
+            // and a sparse block (defeating the topological side-by-side gate),
+            // and a flat (y,x) sort then weaves its numerals into the prose. The
+            // rail is re-appended at the end of the reading order after the
+            // ladder, before the artifact retain. No-op (None) on ordinary pages
+            // → byte-identical.
+            let marginalia_trailing: Vec<crate::layout::TextSpan> =
+                if let Some(idx) = Self::lift_marginalia_column(&spans) {
+                    let idxset: std::collections::HashSet<usize> = idx.into_iter().collect();
+                    let mut keep = Vec::with_capacity(spans.len());
+                    let mut marg = Vec::new();
+                    for (i, s) in std::mem::take(&mut spans).into_iter().enumerate() {
+                        if idxset.contains(&i) {
+                            marg.push(s);
+                        } else {
+                            keep.push(s);
+                        }
+                    }
+                    marg.sort_by(|a, b| {
+                        crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
+                    });
+                    spans = keep;
+                    marg
+                } else {
+                    Vec::new()
+                };
+
             let mut topo_applied = false;
             if let Some(reordered) = Self::topological_block_order(&spans) {
                 spans = reordered;
@@ -5800,6 +5831,11 @@ impl PdfDocument {
                 // (bibliography interleave) or shattering wrapped hyphenated
                 // lines in dense two-column bodies.
             }
+
+            // Re-append the lifted marginalia rail at the end of the body
+            // reading order (Item 2 / M2). Done before the artifact retain so
+            // any artifact-marked rail spans are still dropped.
+            spans.extend(marginalia_trailing);
 
             // OCR fallback for scanned PDFs
             #[cfg(feature = "ocr")]
@@ -11925,6 +11961,186 @@ impl PdfDocument {
         }
         let chars: usize = spans.iter().map(|s| s.text.trim().chars().count()).sum();
         chars as f32 / lines as f32
+    }
+
+    /// Detect a marginalia column (Item 2 / M2): a narrow, sparse, body-aligned
+    /// numeric rail at the extreme left or right of the page — manuscript line
+    /// numbers (`118 119 120 …`), a folio rail. Returns the indices of the rail
+    /// spans (into `spans`) so the caller can lift them OUT of the body before
+    /// geometric column dispatch (a rail otherwise injects a spurious second
+    /// corridor / sparse block that disqualifies prose/topo detection) and
+    /// re-append them at the end of the reading order.
+    ///
+    /// Tight 7-gate conjunction so it is a strict no-op (`None`) on ordinary
+    /// pages and never lifts a genuine narrow first column (which is text-DENSE
+    /// and multi-word → fails the sparsity + numeric-shape gates). `None` keeps
+    /// the caller byte-identical.
+    fn lift_marginalia_column(spans: &[crate::layout::TextSpan]) -> Option<Vec<usize>> {
+        use crate::utils::safe_float_cmp;
+        // Gate 1: a substantial multi-span body page.
+        let texties: Vec<usize> = (0..spans.len())
+            .filter(|&i| {
+                !spans[i].text.trim().is_empty()
+                    && spans[i].bbox.x.is_finite()
+                    && spans[i].bbox.width.is_finite()
+                    && spans[i].bbox.width > 0.0
+            })
+            .collect();
+        if texties.len() < 12 {
+            return None;
+        }
+        let median = |mut v: Vec<f32>| -> Option<f32> {
+            if v.is_empty() {
+                return None;
+            }
+            v.sort_by(|a, b| safe_float_cmp(*a, *b));
+            Some(v[v.len() / 2].max(1.0))
+        };
+        let med_fs = median(
+            texties
+                .iter()
+                .filter(|&&i| spans[i].text.trim().chars().count() >= 2 && spans[i].font_size > 0.0)
+                .map(|&i| spans[i].font_size)
+                .collect(),
+        )?;
+        let med_h = median(
+            texties
+                .iter()
+                .map(|&i| spans[i].bbox.height.abs())
+                .filter(|h| h.is_finite() && *h > 0.0)
+                .collect(),
+        )?;
+        let cmin = texties
+            .iter()
+            .map(|&i| spans[i].bbox.x)
+            .fold(f32::INFINITY, f32::min);
+        let cmax = texties
+            .iter()
+            .map(|&i| spans[i].bbox.x + spans[i].bbox.width)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let content_w = cmax - cmin;
+        if content_w < 100.0 {
+            return None;
+        }
+        let xband = 3.0 * med_fs; // Gate 2: narrow strip width.
+
+        // M2 targets LEFT-margin manuscript line-number rails (the documented
+        // mechanism — "narrow left-margin numerals woven into the prose stream").
+        // A right-margin narrow numeric column is predominantly a TOC/table-of-
+        // contents PAGE-NUMBER reference that pairs 1:1 with its entry row;
+        // lifting it would regroup the page numbers away from their entries (a
+        // reorder that hurts TOC pages, observed on CFR Title 36). So only the
+        // left rail is considered. The symmetric right-side geometry below is
+        // retained so a future TOC-discriminating gate can re-enable it safely.
+        for left_side in core::iter::once(true) {
+            let in_band = |i: usize| -> bool {
+                let l = spans[i].bbox.x;
+                let r = spans[i].bbox.x + spans[i].bbox.width;
+                if left_side {
+                    r <= cmin + xband
+                } else {
+                    l >= cmax - xband
+                }
+            };
+            let strip: Vec<usize> = texties.iter().copied().filter(|&i| in_band(i)).collect();
+            if strip.len() < 3 {
+                continue;
+            }
+            let strip_set: std::collections::HashSet<usize> = strip.iter().copied().collect();
+            let body: Vec<usize> = texties
+                .iter()
+                .copied()
+                .filter(|i| !strip_set.contains(i))
+                .collect();
+            if body.len() < 8 {
+                continue; // need a real body to order around the rail
+            }
+
+            // Gate 3: SPARSE (few chars per line).
+            let strip_refs: Vec<&crate::layout::TextSpan> =
+                strip.iter().map(|&i| &spans[i]).collect();
+            if Self::block_char_density(&strip_refs, med_h) >= 4.0 {
+                continue;
+            }
+
+            // Gate 7: at least 3 rail lines (a recurring rail, not a stray number).
+            let mut ys: Vec<f32> = strip.iter().map(|&i| spans[i].bbox.bottom()).collect();
+            ys.sort_by(|p, q| safe_float_cmp(*p, *q));
+            let lines = 1 + ys
+                .windows(2)
+                .filter(|w| (w[1] - w[0]).abs() > med_h * 0.6)
+                .count();
+            if lines < 3 {
+                continue;
+            }
+
+            // Gate 6: NUMERIC-SHAPE — ≥70% pure digits or ≤3-char tokens. This is
+            // the discriminator vs a real narrow prose column (multi-word lines).
+            let numeric = strip
+                .iter()
+                .filter(|&&i| {
+                    let t = spans[i].text.trim();
+                    (!t.is_empty() && t.chars().all(|c| c.is_ascii_digit()))
+                        || t.chars().count() <= 3
+                })
+                .count();
+            if (numeric as f32) < 0.70 * strip.len() as f32 {
+                continue;
+            }
+
+            // Gate 4: DETACHED — a clear ≥18 pt empty gutter between the rail's
+            // inner edge and the body's outer edge (the rail is geometrically
+            // separate, not just the first words of body lines).
+            let (strip_inner, body_outer) = if left_side {
+                (
+                    strip
+                        .iter()
+                        .map(|&i| spans[i].bbox.x + spans[i].bbox.width)
+                        .fold(f32::NEG_INFINITY, f32::max),
+                    body.iter()
+                        .map(|&i| spans[i].bbox.x)
+                        .fold(f32::INFINITY, f32::min),
+                )
+            } else {
+                (
+                    strip
+                        .iter()
+                        .map(|&i| spans[i].bbox.x)
+                        .fold(f32::INFINITY, f32::min),
+                    body.iter()
+                        .map(|&i| spans[i].bbox.x + spans[i].bbox.width)
+                        .fold(f32::NEG_INFINITY, f32::max),
+                )
+            };
+            let gutter = if left_side {
+                body_outer - strip_inner
+            } else {
+                strip_inner - body_outer
+            };
+            if gutter < 18.0 {
+                continue;
+            }
+
+            // Gate 5: BODY-ALIGNED — the rail runs ALONGSIDE the body (Y-overlap
+            // > half the rail height), not above/below it.
+            let (sy0, sy1) = strip
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &i| {
+                    (a.min(spans[i].bbox.y), b.max(spans[i].bbox.y + spans[i].bbox.height))
+                });
+            let (by0, by1) = body
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &i| {
+                    (a.min(spans[i].bbox.y), b.max(spans[i].bbox.y + spans[i].bbox.height))
+                });
+            let overlap = sy1.min(by1) - sy0.max(by0);
+            if overlap <= 0.5 * (sy1 - sy0).max(1.0) {
+                continue;
+            }
+
+            return Some(strip);
+        }
+        None
     }
 
     fn prose_two_column_gutter(spans: &[crate::layout::TextSpan]) -> Option<f32> {
@@ -26609,6 +26825,72 @@ mod tests {
         assert!(dd > 15.0, "dense density should be high, got {dd}");
         assert!(sd < 4.0, "sparse density should be low, got {sd}");
         assert!(dd > sd * 4.0, "dense must clearly exceed sparse");
+    }
+
+    // ========================================================================
+    // P3 / Item 2: marginalia rail lift (lift_marginalia_column)
+    // ========================================================================
+
+    #[test]
+    fn lift_marginalia_column_lifts_left_line_numbers() {
+        // A wide body column at x=100→400, plus a detached narrow numeric rail
+        // at x=50→65 (manuscript line numbers 118..131). The rail must be lifted.
+        let mut spans = Vec::new();
+        for i in 0..14 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(corridor_span("Body prose line of real text here", 100.0, y, 300.0));
+            spans.push(corridor_span(&format!("{}", 118 + i), 50.0, y, 15.0));
+        }
+        let lifted = PdfDocument::lift_marginalia_column(&spans).expect("rail must be lifted");
+        assert_eq!(lifted.len(), 14, "all 14 line numbers lifted");
+        // Every lifted span is a bare numeral (never a body word).
+        for &i in &lifted {
+            assert!(
+                spans[i].text.trim().chars().all(|c| c.is_ascii_digit()),
+                "lifted span must be a numeral: {:?}",
+                spans[i].text
+            );
+        }
+    }
+
+    #[test]
+    fn lift_marginalia_column_skips_dense_first_column() {
+        // Genuine two-column prose: both columns are wide + multi-word, so
+        // neither sits inside the narrow outer strip → no lift (byte-identical).
+        let mut spans = Vec::new();
+        for i in 0..14 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(corridor_span("Lorem ipsum dolor sit", 50.0, y, 120.0)); // →170
+            spans.push(corridor_span("amet consectetur elit", 300.0, y, 150.0));
+            // →450
+        }
+        assert!(PdfDocument::lift_marginalia_column(&spans).is_none());
+    }
+
+    #[test]
+    fn lift_marginalia_column_skips_abutting_label_column() {
+        // A narrow short-token left column whose gutter to the body is < 18 pt
+        // (an abutting table label column, not a detached rail) → no lift.
+        let mut spans = Vec::new();
+        for i in 0..10 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(corridor_span("AB", 50.0, y, 15.0)); // →65
+            spans.push(corridor_span("Body prose text here long", 70.0, y, 200.0));
+            // gutter 5pt
+        }
+        assert!(PdfDocument::lift_marginalia_column(&spans).is_none());
+    }
+
+    #[test]
+    fn lift_marginalia_column_skips_single_page_number() {
+        // A single stray numeral (1 rail line) fails the ≥3-line gate → no lift.
+        let mut spans = Vec::new();
+        for i in 0..12 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(corridor_span("Body prose line of real text", 100.0, y, 300.0));
+        }
+        spans.push(corridor_span("7", 50.0, 500.0, 12.0));
+        assert!(PdfDocument::lift_marginalia_column(&spans).is_none());
     }
 
     // ========================================================================
