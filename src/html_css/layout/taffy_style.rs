@@ -375,24 +375,24 @@ fn get_keyword(styles: &ComputedStyles<'_>, prop: &str) -> Option<String> {
 
 fn align_items_keyword(styles: &ComputedStyles<'_>, prop: &str) -> Option<AlignItems> {
     Some(match get_keyword(styles, prop)?.as_str() {
-        "flex-start" | "start" => AlignItems::Start,
-        "flex-end" | "end" => AlignItems::End,
-        "center" => AlignItems::Center,
-        "stretch" => AlignItems::Stretch,
-        "baseline" => AlignItems::Baseline,
+        "flex-start" | "start" => AlignItems::START,
+        "flex-end" | "end" => AlignItems::END,
+        "center" => AlignItems::CENTER,
+        "stretch" => AlignItems::STRETCH,
+        "baseline" => AlignItems::BASELINE,
         _ => return None,
     })
 }
 
 fn align_content_keyword(styles: &ComputedStyles<'_>, prop: &str) -> Option<AlignContent> {
     Some(match get_keyword(styles, prop)?.as_str() {
-        "flex-start" | "start" => AlignContent::Start,
-        "flex-end" | "end" => AlignContent::End,
-        "center" => AlignContent::Center,
-        "stretch" => AlignContent::Stretch,
-        "space-between" => AlignContent::SpaceBetween,
-        "space-around" => AlignContent::SpaceAround,
-        "space-evenly" => AlignContent::SpaceEvenly,
+        "flex-start" | "start" => AlignContent::START,
+        "flex-end" | "end" => AlignContent::END,
+        "center" => AlignContent::CENTER,
+        "stretch" => AlignContent::STRETCH,
+        "space-between" => AlignContent::SPACE_BETWEEN,
+        "space-around" => AlignContent::SPACE_AROUND,
+        "space-evenly" => AlignContent::SPACE_EVENLY,
         _ => return None,
     })
 }
