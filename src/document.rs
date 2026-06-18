@@ -12322,6 +12322,22 @@ impl PdfDocument {
             .fold(f32::NEG_INFINITY, f32::max);
         let body_h = (ymax - ymin).max(1.0);
 
+        // COLUMN-CONTENT spans = those NOT spanning most of the content width.
+        // Full-width spans (titles, the abstract block, section headings, running
+        // footers) are BANDS, excluded from gutter detection and classification:
+        // counting them would (a) hide the corridor on a mixed page whose top is a
+        // full-width title/abstract and bottom is two columns (every paper's
+        // page 1), and (b) pollute the per-column class. The corridor, balance,
+        // height, and class gates all operate on column-content spans;
+        // `reorder_column_major_with_bands` re-emits the bands at their own Y.
+        let band_w = 0.6 * content_w;
+        let col_idx: Vec<usize> = (0..spans.len())
+            .filter(|&i| finite(&spans[i]) && spans[i].bbox.width <= band_w)
+            .collect();
+        if col_idx.len() < 16 {
+            return None;
+        }
+
         // Scan the central band [0.30, 0.70] at fine resolution and find the
         // WIDEST near-empty vertical corridor — the real inter-column gutter —
         // then place the gutter at its midpoint. Picking the widest run (not just
@@ -12331,16 +12347,19 @@ impl PdfDocument {
         // column's hanging entry numbers and its indented text. The decoy is
         // narrower, so the widest-run rule lands the gutter correctly between the
         // columns (otherwise the entry numbers fall into the left column). A
-        // single-column body has NO wide empty central corridor (lines cross the
-        // centre), so it returns None and keeps prior behaviour.
+        // single-column body has NO wide empty central corridor (its lines are
+        // full-width → excluded above → too few column spans), so it returns None.
         let lo = cmin + 0.30 * content_w;
         let hi = cmin + 0.70 * content_w;
         let step = (content_w / 400.0).clamp(0.5, 3.0);
         // "Empty" tolerates a few stray straddlers (noise / a rare long token).
-        let empty_max = (0.01 * body.len() as f32).ceil() as usize;
+        let empty_max = (0.01 * col_idx.len() as f32).ceil() as usize;
         let straddle_at = |x: f32| -> usize {
-            body.iter()
-                .filter(|s| s.bbox.x + 2.0 < x && s.bbox.x + s.bbox.width - 2.0 > x)
+            col_idx
+                .iter()
+                .filter(|&&i| {
+                    spans[i].bbox.x + 2.0 < x && spans[i].bbox.x + spans[i].bbox.width - 2.0 > x
+                })
                 .count()
         };
         let (mut best_lo, mut best_hi) = (f32::NAN, f32::NAN);
@@ -12377,14 +12396,12 @@ impl PdfDocument {
         }
         let gutter = (best_lo + best_hi) * 0.5;
 
-        // Balanced, tall columns on both sides of the gutter.
+        // Balanced, tall columns on both sides of the gutter (column-content only).
         let (mut left_idx, mut right_idx): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
         let (mut ly0, mut ly1) = (f32::INFINITY, f32::NEG_INFINITY);
         let (mut ry0, mut ry1) = (f32::INFINITY, f32::NEG_INFINITY);
-        for (i, s) in spans.iter().enumerate() {
-            if !finite(s) {
-                continue;
-            }
+        for &i in &col_idx {
+            let s = &spans[i];
             if s.bbox.x + s.bbox.width * 0.5 < gutter {
                 left_idx.push(i);
                 ly0 = ly0.min(s.bbox.y);
@@ -12399,14 +12416,19 @@ impl PdfDocument {
         if nb == 0 {
             return None;
         }
-        // Each side carries a real share of the body (rejects 1 col + margin note).
+        // Each side carries a real share of the column content (rejects
+        // 1 col + margin note).
         if (left_idx.len() as f32) < 0.30 * nb as f32 || (right_idx.len() as f32) < 0.30 * nb as f32
         {
             return None;
         }
-        // Both columns must span most of the body height (rejects a short side
-        // caption/figure label beside a tall body column).
-        if (ly1 - ly0) < 0.5 * body_h || (ry1 - ry0) < 0.5 * body_h {
+        // Both columns must be tall and of comparable height — they sit BESIDE
+        // each other. This rejects a short side-caption/figure-label beside a tall
+        // body column, while allowing a mixed page where the columns occupy only
+        // the lower portion below a full-width title/abstract (so the floor is
+        // 0.4·body_h, not 0.5). `body_h` spans the whole page (title included).
+        let (lext, rext) = (ly1 - ly0, ry1 - ry0);
+        if lext < 0.4 * body_h || rext < 0.4 * body_h || lext.min(rext) < 0.5 * lext.max(rext) {
             return None;
         }
         // Class gate (load-bearing). NEITHER half may be Table/Form — that is the
