@@ -5753,10 +5753,10 @@ impl PdfDocument {
             // row-aware (y,x) sort interleaves. The gate (substantial, text-dense,
             // dominant side-by-side blocks) rejects single-column pages, tables,
             // TOCs and forms; it de-interleaves real two-column bodies and
-            // sidebar+body layouts. Opt-in via PDFOXIDE_TOPO_ORDER until one
-            // pathological case remains (a parallel diagram/table whose header
-            // fragments under union-find); default OFF keeps production
-            // byte-identical.
+            // sidebar+body layouts. topological_block_order runs unconditionally;
+            // it self-gates to None unless the page has dominant side-by-side
+            // text-dense blocks (see its side_by_side gate), so single-column,
+            // table, and TOC pages are byte-identical.
             let mut topo_applied = false;
             if let Some(reordered) = Self::topological_block_order(&spans) {
                 spans = reordered;
