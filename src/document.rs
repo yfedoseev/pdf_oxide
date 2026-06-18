@@ -5795,6 +5795,17 @@ impl PdfDocument {
             }
             if topo_applied {
                 // Topological block order replaced the row-aware sort.
+            } else if let Some(ordered) = Self::sidebar_body_reading_order(&spans) {
+                // Narrow metadata SIDEBAR + wide body (e.g. an MDPI first page
+                // whose left rail carries Citation:/Received:/Accepted:/Copyright
+                // furniture). The row-aware (y,x) sort otherwise threads that rail
+                // INTO the body paragraphs at matching Y-bands; segregating it so
+                // each region reads contiguously matches a block-based extractor
+                // and stops the rail-into-body interleave. Already used by the
+                // md/html/structured paths; this wires the SAME ordering into the
+                // plain-text path. Tightly gated (≥30 spans, narrow sidebar with
+                // ≥2 furniture labels), so it is a no-op (None) on ordinary pages.
+                spans = ordered;
             } else if let Some(gutter_x) = Self::prose_two_column_gutter(&spans)
                 .or_else(|| Self::classifier_column_gutter(&spans))
             {
