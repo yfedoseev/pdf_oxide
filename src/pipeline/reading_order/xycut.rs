@@ -1583,6 +1583,64 @@ impl XYCutStrategy {
             return None;
         }
 
+        // Table-row guard (#7 / PMC8025747). A genuine column gutter is a
+        // vertical CORRIDOR: the left column's glyphs END before the gutter
+        // and the right column's glyphs BEGIN after it, so the two sides are
+        // X-disjoint. A data-table row, by contrast, starts at the left
+        // margin but its cells run the FULL width of the region; partitioning
+        // such rows by left edge throws the wide rows into `left` while the
+        // right-hand cells (their own spans) land in `right`. Taking the cut
+        // anyway slices the table's rows into shattered left/right cell groups
+        // — the canonical PMC8025747 p2 failure (a prose column stacked above
+        // a full-width data table), and the google_doc population-table hazard
+        // the post-mortem at lines 73–101 records.
+        //
+        // Table-row SIGNATURE: SEVERAL left-side rows each span the ENTIRE
+        // right column — their glyph content reaches past the right column's
+        // far edge (`right_x_max`). A data table has MANY full-width rows (the
+        // header and every data row run the whole region width), so when rows
+        // are bucketed into `left` by their left edge, multiple of them blanket
+        // the whole right column. By contrast:
+        //   * a genuine left prose / reference column ENDS before the gutter,
+        //     so its lines stop well short of `right_x_max` (never counted);
+        //   * a single wide mis-split OCR line (alice) yields at most one or
+        //     two straddling spans — never the recurring full-width pattern;
+        //   * the single-column google_doc population table short-circuits at
+        //     `is_single_column_region` and never reaches here.
+        // Requiring ≥ 3 such rows is what isolates the real table from those
+        // cases, so the guard is SUBTRACTIVE: it only ever REJECTS a column
+        // cut that would shred a table (the recursion then falls back to a row
+        // cut and reads the table row-major), never adds or reorders anything.
+        //
+        // `core_right` (left edge + non-whitespace-char count × ~0.5 em) is
+        // used instead of `bbox.right` so trailing-whitespace / advance-width
+        // bbox inflation on a real left column's last word is not mistaken for
+        // a glyph crossing the gutter. `overlap_tol` (~ one body em) lets a
+        // single straddling glyph slip past.
+        let mut right_x_max = f32::MIN;
+        let mut max_font = 0.0f32;
+        for &i in &right {
+            right_x_max = right_x_max.max(all_spans[i].bbox.right());
+            max_font = max_font.max(all_spans[i].bbox.height.abs());
+        }
+        let overlap_tol = max_font.max(10.0);
+        let full_width_left_rows = left
+            .iter()
+            .filter(|&&i| {
+                let s = &all_spans[i];
+                let nonws = s.text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32;
+                let approx_char_width = (s.font_size * 0.45).max(2.5);
+                s.bbox.left() + nonws * approx_char_width >= right_x_max - overlap_tol
+            })
+            .count();
+        if full_width_left_rows >= 3 {
+            // ≥ 3 left rows each blanket the right column ⇒ this is a table-row
+            // slice, not a column gutter. Don't take the column cut; the
+            // recursion falls back to a row (horizontal) split and reads the
+            // table row-major.
+            return None;
+        }
+
         Some((left, right))
     }
 
