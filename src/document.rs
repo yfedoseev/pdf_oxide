@@ -13947,6 +13947,18 @@ impl PdfDocument {
                 .sum();
             chars as f32 / lines as f32
         };
+        // Number of baseline rows a block spans (same Y-clustering as char_density).
+        let block_lines = |b: &Block| -> usize {
+            let mut ys: Vec<f32> = b.members.iter().map(|&i| hi(&spans[i])).collect();
+            ys.sort_by(|p, q| safe_float_cmp(*p, *q));
+            let mut lines = 1usize;
+            for w in ys.windows(2) {
+                if (w[1] - w[0]).abs() > med_h * 0.6 {
+                    lines += 1;
+                }
+            }
+            lines
+        };
 
         // Both side-by-side blocks must be SUBSTANTIAL, text-DENSE, multi-line
         // regions that overlap over several lines — a genuine 2-column body/footer
@@ -13961,6 +13973,15 @@ impl PdfDocument {
                     && a.members.len() >= 8
                     && b.members.len() >= 8
                     && (a.y_hi.min(b.y_hi) - a.y_lo.max(b.y_lo)) > med_h * 3.0
+                    // Each side must be a genuine MULTI-LINE column (≥ 4 rows). A
+                    // single-column page whose body happens to end in just a
+                    // couple of lines can have a wide intra-line word gap (a
+                    // sentence space after a period) split those lines into two
+                    // x-disjoint blocks that otherwise pass this gate and emit as
+                    // fake columns (alice_old "Looking-Glass House" p.226). A real
+                    // two-column body / sidebar spans many rows.
+                    && block_lines(a) >= 4
+                    && block_lines(b) >= 4
                     && char_density(a) >= 12.0
                     && char_density(b) >= 12.0
                     // The two side-by-side blocks must be the page's DOMINANT

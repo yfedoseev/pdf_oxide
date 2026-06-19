@@ -2254,7 +2254,7 @@ wheels = [
 
 [[package]]
 name = "pdf-oxide"
-version = "0.3.66"
+version = "0.3.67"
 source = { editable = "." }
 
 [package.optional-dependencies]

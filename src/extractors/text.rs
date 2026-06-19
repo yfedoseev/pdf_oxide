@@ -2581,6 +2581,18 @@ pub struct TextExtractor<'doc> {
     /// Text inside a placed-PDF figure is the placed artwork's own glyphs and is
     /// suppressed (it is a figure, not logical text). See `MarkedContentContext::is_placed_pdf`.
     inside_placed_pdf: bool,
+    /// When true, `/PlacedPDF` text is KEPT instead of suppressed for this page.
+    ///
+    /// The placed-PDF suppression assumes the placed region is a *decorative
+    /// figure overlay* whose glyphs duplicate logical text that lives OUTSIDE it
+    /// (the PMC8100493 draft-galley case). But some publishers (e.g. MATEC Web of
+    /// Conferences) place the ENTIRE article body inside a single `/PlacedPDF`
+    /// region, leaving almost nothing outside — there the placed text IS the
+    /// page's logical content and suppressing it drops the whole page. Set by a
+    /// cheap page-content-stream pre-scan (`placed_pdf_text_dominates`) that
+    /// flips this on only when the placed text dominates and the non-placed text
+    /// is negligible. pymupdf/pdftotext likewise extract the body in that case.
+    placed_pdf_keep: bool,
     /// Ink / separation names to exclude from extraction.
     ///
     /// When a `cs` operator sets a Separation or DeviceN color space whose ink name(s)
@@ -2725,6 +2737,7 @@ impl<'doc> TextExtractor<'doc> {
             excluded_layers: HashSet::new(),
             inside_excluded_layer: false,
             inside_placed_pdf: false,
+            placed_pdf_keep: false,
             excluded_inks: HashSet::new(),
             inside_excluded_ink: false,
             tj_offset_history: Vec::with_capacity(1000), // Track TJ offsets for statistical analysis
@@ -3064,7 +3077,84 @@ impl<'doc> TextExtractor<'doc> {
     /// Note: artifact filtering is handled separately via span metadata and
     /// downstream filtering, so `inside_artifact` is intentionally not checked here.
     fn is_content_suppressed(&self) -> bool {
-        self.inside_excluded_layer || self.inside_excluded_ink || self.inside_placed_pdf
+        self.inside_excluded_layer
+            || self.inside_excluded_ink
+            || (self.inside_placed_pdf && !self.placed_pdf_keep)
+    }
+
+    /// Decide whether `/PlacedPDF` text should be kept (not suppressed) for a page.
+    ///
+    /// Cheap read-only pre-scan of the page content stream: sum the byte length of
+    /// text-show operands (`Tj`/`TJ`/`'`/`"`) emitted INSIDE a `/PlacedPDF`
+    /// marked-content scope vs. OUTSIDE it. The placed region is treated as the
+    /// page's real content (kept) only when it carries a substantial body of text
+    /// AND the non-placed text is a small fraction of it — i.e. the publisher
+    /// placed the whole article as a PlacedPDF (MATEC), not a decorative figure
+    /// overlay duplicating outside text (PMC8100493). Conservative on purpose:
+    /// when placed text is in a nested XObject the page-stream scan undercounts it
+    /// and falls back to suppression (the prior behaviour), so this can only ADD
+    /// recovery on the whole-body-placed case, never remove the de-dup win.
+    fn placed_pdf_text_dominates(content_stream: &[u8]) -> bool {
+        // Gate: only pages that actually carry the InDesign tag pay for a parse.
+        if !content_stream
+            .windows(b"PlacedPDF".len())
+            .any(|w| w == b"PlacedPDF")
+        {
+            return false;
+        }
+        let Ok(operators) = parse_content_stream(content_stream) else {
+            return false;
+        };
+        let mut placed_stack: Vec<bool> = Vec::new();
+        let mut placed_chars: usize = 0;
+        let mut other_chars: usize = 0;
+        let inside = |stack: &[bool]| stack.iter().any(|&p| p);
+        for op in &operators {
+            match op {
+                Operator::BeginMarkedContent { tag } => {
+                    placed_stack.push(tag == "PlacedPDF");
+                },
+                Operator::BeginMarkedContentDict { tag, .. } => {
+                    placed_stack.push(tag == "PlacedPDF");
+                },
+                Operator::EndMarkedContent => {
+                    placed_stack.pop();
+                },
+                Operator::Tj { text } | Operator::Quote { text } => {
+                    if inside(&placed_stack) {
+                        placed_chars += text.len();
+                    } else {
+                        other_chars += text.len();
+                    }
+                },
+                Operator::DoubleQuote { text, .. } => {
+                    if inside(&placed_stack) {
+                        placed_chars += text.len();
+                    } else {
+                        other_chars += text.len();
+                    }
+                },
+                Operator::TJ { array } => {
+                    let n: usize = array
+                        .iter()
+                        .map(|e| match e {
+                            TextElement::String(s) => s.len(),
+                            TextElement::Offset(_) => 0,
+                        })
+                        .sum();
+                    if inside(&placed_stack) {
+                        placed_chars += n;
+                    } else {
+                        other_chars += n;
+                    }
+                },
+                _ => {},
+            }
+        }
+        // Keep placed text only when it is a substantial body AND the non-placed
+        // text is a small minority of it (≈3:1). MATEC: other≈header ≪ placed;
+        // PMC8100493: other = a full paper ≫ 1/3 of the duplicated galley.
+        placed_chars >= 800 && other_chars.saturating_mul(3) < placed_chars
     }
 
     /// Parse artifact type and subtype from artifact properties dictionary.
@@ -3528,6 +3618,9 @@ impl<'doc> TextExtractor<'doc> {
         self.extract_spans = true;
         self.spans.clear();
         self.span_sequence_counter = 0; // Reset sequence counter for this page
+                                        // Decide per page whether a whole-body `/PlacedPDF` region must be kept
+                                        // rather than suppressed (see `placed_pdf_text_dominates`).
+        self.placed_pdf_keep = Self::placed_pdf_text_dominates(content_stream);
 
         extract_log_debug!("Parsing content stream for text extraction");
         if self.excluded_inks.is_empty() {
@@ -3592,6 +3685,7 @@ impl<'doc> TextExtractor<'doc> {
         self.extract_spans = false;
         self.chars.clear();
         self.spans.clear(); // Ensure spans are clear so they don't poison xobject_spans_cache
+        self.placed_pdf_keep = Self::placed_pdf_text_dominates(content_stream);
 
         let operators = if self.excluded_inks.is_empty() {
             parse_content_stream_text_only(content_stream)?
@@ -10316,6 +10410,50 @@ mod tests {
         extractor.update_layer_state();
         assert!(!extractor.inside_placed_pdf);
         assert!(!extractor.is_content_suppressed());
+    }
+
+    #[test]
+    fn test_placed_pdf_kept_when_it_is_the_whole_page_body() {
+        // A publisher that places the ENTIRE article body inside one /PlacedPDF
+        // region (e.g. MATEC Web of Conferences) leaves almost nothing outside.
+        // There the placed text IS the page's logical content and must NOT be
+        // suppressed (pymupdf/pdftotext extract it). The coverage pre-scan flags
+        // this: placed text dominates, non-placed text is a tiny header.
+        let body: String = std::iter::repeat(
+            "(This is the full article body typeset inside a placed PDF region) Tj\n",
+        )
+        .take(20)
+        .collect();
+        let stream = format!("/PlacedPDF BMC\nBT\n{body}ET\nEMC\nBT (Journal vol 1) Tj ET\n");
+        assert!(
+            TextExtractor::placed_pdf_text_dominates(stream.as_bytes()),
+            "whole-body /PlacedPDF must be KEPT (not suppressed)"
+        );
+    }
+
+    #[test]
+    fn test_placed_pdf_suppressed_when_minority_overlay() {
+        // The decorative-figure case (PMC8100493): a small /PlacedPDF galley
+        // duplicate sits amid a full page of real text OUTSIDE it. The placed
+        // text is the minority, so it stays suppressed (the de-dup win).
+        let outside: String = std::iter::repeat(
+            "(Real published paragraph of the article that lives outside the placed region) Tj\n",
+        )
+        .take(20)
+        .collect();
+        let stream = format!("BT\n{outside}ET\n/PlacedPDF BMC\nBT (draft galley) Tj ET\nEMC\n");
+        assert!(
+            !TextExtractor::placed_pdf_text_dominates(stream.as_bytes()),
+            "minority-overlay /PlacedPDF must stay suppressed"
+        );
+    }
+
+    #[test]
+    fn test_placed_pdf_coverage_noop_without_tag() {
+        // No /PlacedPDF tag anywhere: the pre-scan must short-circuit to false
+        // (keep the default suppression state; pay nothing for ordinary pages).
+        let stream = b"BT (ordinary single column page of text) Tj ET\n";
+        assert!(!TextExtractor::placed_pdf_text_dominates(stream));
     }
 
     #[test]

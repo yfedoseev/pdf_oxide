@@ -14,7 +14,11 @@ fn main() {
                 .unwrap()
                 .then(a.bbox.x.partial_cmp(&b.bbox.x).unwrap())
         });
-        for s in spans.iter().take(20) {
+        let lim: usize = std::env::var("N")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(20);
+        for s in spans.iter().take(lim) {
             println!(
                 "x={:6.1} r={:6.1} y={:6.1} w={:5.1} | {}",
                 s.bbox.x,

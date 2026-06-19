@@ -298,7 +298,7 @@ cargo install pdf_oxide_mcp             # Cargo
   <dependency>
     <groupId>fyi.oxide</groupId>
     <artifactId>pdf-oxide</artifactId>
-    <version>0.3.66</version>
+    <version>0.3.67</version>
   </dependency>
   ```
 
