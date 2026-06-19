@@ -2471,6 +2471,17 @@ struct MarkedContentContext {
     ///
     /// Set when tag is "OC" and the OCG /Name matches one of the excluded layers.
     is_excluded_layer: bool,
+    /// Whether this marked content context is an InDesign "placed PDF" figure.
+    ///
+    /// Set when the tag is `/PlacedPDF` — an Adobe InDesign-specific
+    /// marked-content tag that wraps an imported/placed PDF rendered AS a
+    /// figure (always nested inside a `/Figure` structure element). Its text
+    /// content is the placed artwork's own glyphs (e.g. a draft galley of the
+    /// manuscript with line numbers), NOT the document's logical text — the
+    /// authoritative copy is re-typeset outside the placed region. Treating it
+    /// as a figure (suppressing its text) matches what pdftotext/PyMuPDF do
+    /// and removes duplicated / mojibake overlay text. See `is_content_suppressed`.
+    is_placed_pdf: bool,
     /// MCID declared by this BDC (only BDC; BMC carries no /MCID).
     ///
     /// Stored here so EMC can restore the outer scope's MCID instead
@@ -2564,6 +2575,12 @@ pub struct TextExtractor<'doc> {
     ///
     /// True when any ancestor in the marked_content_stack has is_excluded_layer=true.
     inside_excluded_layer: bool,
+    /// Whether we're currently inside an InDesign `/PlacedPDF` figure region.
+    ///
+    /// True when any ancestor in the marked_content_stack has is_placed_pdf=true.
+    /// Text inside a placed-PDF figure is the placed artwork's own glyphs and is
+    /// suppressed (it is a figure, not logical text). See `MarkedContentContext::is_placed_pdf`.
+    inside_placed_pdf: bool,
     /// Ink / separation names to exclude from extraction.
     ///
     /// When a `cs` operator sets a Separation or DeviceN color space whose ink name(s)
@@ -2707,6 +2724,7 @@ impl<'doc> TextExtractor<'doc> {
             inside_artifact: false, // Track artifact state
             excluded_layers: HashSet::new(),
             inside_excluded_layer: false,
+            inside_placed_pdf: false,
             excluded_inks: HashSet::new(),
             inside_excluded_ink: false,
             tj_offset_history: Vec::with_capacity(1000), // Track TJ offsets for statistical analysis
@@ -3029,6 +3047,10 @@ impl<'doc> TextExtractor<'doc> {
             .marked_content_stack
             .iter()
             .any(|ctx| ctx.is_excluded_layer);
+        self.inside_placed_pdf = self
+            .marked_content_stack
+            .iter()
+            .any(|ctx| ctx.is_placed_pdf);
     }
 
     /// Whether content emission should be suppressed.
@@ -3037,11 +3059,12 @@ impl<'doc> TextExtractor<'doc> {
     /// extracted text should be discarded. Currently checks:
     /// - Inside an excluded OCG layer (`inside_excluded_layer`)
     /// - Inside an excluded ink / separation color space (`inside_excluded_ink`)
+    /// - Inside an InDesign `/PlacedPDF` figure region (`inside_placed_pdf`)
     ///
     /// Note: artifact filtering is handled separately via span metadata and
     /// downstream filtering, so `inside_artifact` is intentionally not checked here.
     fn is_content_suppressed(&self) -> bool {
-        self.inside_excluded_layer || self.inside_excluded_ink
+        self.inside_excluded_layer || self.inside_excluded_ink || self.inside_placed_pdf
     }
 
     /// Parse artifact type and subtype from artifact properties dictionary.
@@ -6061,6 +6084,8 @@ impl<'doc> TextExtractor<'doc> {
                 }
                 // BMC doesn't have properties, but the tag can indicate artifacts
                 let is_artifact = tag == "Artifact";
+                // InDesign placed-PDF figure region (see MarkedContentContext::is_placed_pdf).
+                let is_placed_pdf = tag == "PlacedPDF";
                 self.marked_content_stack.push(MarkedContentContext {
                     tag: tag.clone(),
                     is_artifact,
@@ -6069,9 +6094,11 @@ impl<'doc> TextExtractor<'doc> {
                     actual_text_emitted: false,
                     expansion: None,          // BMC doesn't have expansion
                     is_excluded_layer: false, // BMC cannot carry OCG properties
-                    own_mcid: None,           // BMC carries no MCID
+                    is_placed_pdf,
+                    own_mcid: None, // BMC carries no MCID
                 });
                 self.update_artifact_state();
+                self.update_layer_state();
 
                 if is_artifact {
                     log::debug!("Entered /Artifact marked content (BMC, no subtype)");
@@ -6137,6 +6164,8 @@ impl<'doc> TextExtractor<'doc> {
 
                 // Check if this is an artifact (per PDF Spec Section 14.6)
                 let is_artifact = tag == "Artifact";
+                // InDesign placed-PDF figure region (see MarkedContentContext::is_placed_pdf).
+                let is_placed_pdf = tag == "PlacedPDF";
                 self.marked_content_stack.push(MarkedContentContext {
                     tag: tag.clone(),
                     is_artifact,
@@ -6145,6 +6174,7 @@ impl<'doc> TextExtractor<'doc> {
                     actual_text_emitted: false,
                     expansion,
                     is_excluded_layer,
+                    is_placed_pdf,
                     own_mcid,
                 });
                 self.update_artifact_state();
@@ -10227,11 +10257,65 @@ mod tests {
             actual_text: None,
             expansion: None,
             is_excluded_layer: false,
+            is_placed_pdf: false,
             actual_text_emitted: false,
             own_mcid: None,
         });
         extractor.update_artifact_state();
         assert!(extractor.inside_artifact);
+    }
+
+    #[test]
+    fn test_placed_pdf_suppresses_content() {
+        // Text inside an InDesign /PlacedPDF figure region (the placed
+        // artwork's own glyphs — e.g. a draft galley) must be suppressed,
+        // matching pdftotext/PyMuPDF. Entering a /PlacedPDF BDC sets
+        // inside_placed_pdf, which feeds is_content_suppressed().
+        let mut extractor = TextExtractor::new();
+        assert!(!extractor.inside_placed_pdf);
+        assert!(!extractor.is_content_suppressed());
+
+        extractor.marked_content_stack.push(MarkedContentContext {
+            artifact_type: None,
+            tag: "PlacedPDF".to_string(),
+            is_artifact: false,
+            actual_text: None,
+            expansion: None,
+            is_excluded_layer: false,
+            is_placed_pdf: true,
+            actual_text_emitted: false,
+            own_mcid: None,
+        });
+        extractor.update_layer_state();
+        assert!(extractor.inside_placed_pdf);
+        assert!(extractor.is_content_suppressed(), "text inside /PlacedPDF must be suppressed");
+
+        // Leaving the region restores normal extraction.
+        extractor.marked_content_stack.pop();
+        extractor.update_layer_state();
+        assert!(!extractor.inside_placed_pdf);
+        assert!(!extractor.is_content_suppressed());
+    }
+
+    #[test]
+    fn test_non_placed_pdf_tag_does_not_suppress() {
+        // A regular (non-PlacedPDF) marked-content tag such as /Figure must
+        // NOT suppress its text — only the placed-PDF wrapper does.
+        let mut extractor = TextExtractor::new();
+        extractor.marked_content_stack.push(MarkedContentContext {
+            artifact_type: None,
+            tag: "Figure".to_string(),
+            is_artifact: false,
+            actual_text: None,
+            expansion: None,
+            is_excluded_layer: false,
+            is_placed_pdf: false,
+            actual_text_emitted: false,
+            own_mcid: None,
+        });
+        extractor.update_layer_state();
+        assert!(!extractor.inside_placed_pdf);
+        assert!(!extractor.is_content_suppressed());
     }
 
     #[test]
@@ -10244,6 +10328,7 @@ mod tests {
             actual_text: None,
             expansion: None,
             is_excluded_layer: false,
+            is_placed_pdf: false,
             actual_text_emitted: false,
             own_mcid: None,
         });
@@ -10254,6 +10339,7 @@ mod tests {
             actual_text: None,
             expansion: None,
             is_excluded_layer: false,
+            is_placed_pdf: false,
             actual_text_emitted: false,
             own_mcid: None,
         });
@@ -14617,6 +14703,7 @@ mod tests {
             actual_text: None,
             expansion: None,
             is_excluded_layer: false,
+            is_placed_pdf: false,
             actual_text_emitted: false,
             own_mcid: None,
         });
@@ -15167,6 +15254,7 @@ fn test_marked_content_context_with_actual_text() {
         actual_text: Some("fi".to_string()), // Ligature expansion
         expansion: None,
         is_excluded_layer: false,
+        is_placed_pdf: false,
         actual_text_emitted: false,
         own_mcid: None,
     };
@@ -15185,6 +15273,7 @@ fn test_marked_content_context_with_expansion() {
         actual_text: None,
         expansion: Some("Portable Document Format".to_string()),
         is_excluded_layer: false,
+        is_placed_pdf: false,
         actual_text_emitted: false,
         own_mcid: None,
     };
@@ -15202,6 +15291,7 @@ fn test_marked_content_context_artifact_with_actual_text() {
         actual_text: Some("Header text".to_string()),
         expansion: None,
         is_excluded_layer: false,
+        is_placed_pdf: false,
         actual_text_emitted: false,
         own_mcid: None,
     };
@@ -15223,6 +15313,7 @@ fn test_get_current_actual_text_finds_first() {
         actual_text: Some("outer text".to_string()),
         expansion: None,
         is_excluded_layer: false,
+        is_placed_pdf: false,
         actual_text_emitted: false,
         own_mcid: None,
     });
@@ -15234,6 +15325,7 @@ fn test_get_current_actual_text_finds_first() {
         actual_text: Some("inner text".to_string()),
         expansion: None,
         is_excluded_layer: false,
+        is_placed_pdf: false,
         actual_text_emitted: false,
         own_mcid: None,
     });
@@ -15256,6 +15348,7 @@ fn test_get_current_actual_text_skips_none() {
         actual_text: Some("replacement text".to_string()),
         expansion: None,
         is_excluded_layer: false,
+        is_placed_pdf: false,
         actual_text_emitted: false,
         own_mcid: None,
     });
@@ -15268,6 +15361,7 @@ fn test_get_current_actual_text_skips_none() {
         actual_text: None,
         expansion: None,
         is_excluded_layer: false,
+        is_placed_pdf: false,
         actual_text_emitted: false,
         own_mcid: None,
     });
