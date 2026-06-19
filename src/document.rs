@@ -12859,10 +12859,18 @@ impl PdfDocument {
         let crosses =
             |s: &TextSpan| s.bbox.x < gutter_x - 8.0 && s.bbox.x + s.bbox.width > gutter_x + 8.0;
         let mut src = std::mem::take(spans);
-        // Top→bottom, then left→right within a row.
+        // Top→bottom, then left→right within a row. Quantize Y to the row band
+        // (`row_aware_span_cmp`) so sub-point baseline jitter between spans on
+        // the SAME visual line (font-metric rounding, a superscript citation's
+        // slightly different Y) cannot invert their X order: a 0.001pt Y
+        // difference under a raw `safe_float_cmp` would sort a mid-line span
+        // ahead of the line's left-edge span, scrambling the line
+        // (PMC8129076 "phase and amplitude of clock-controlled genes83. Thus,
+        // it is clear" — the "83" citation lifts ". Thus" onto a 0.001pt-higher
+        // baseline). The downstream row grouping already uses a 3pt tolerance;
+        // matching it here keeps the two consistent.
         src.sort_by(|a, b| {
-            crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y)
-                .then_with(|| crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x))
+            crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
         });
         let mut out: Vec<TextSpan> = Vec::with_capacity(src.len());
         let mut col_buf: Vec<TextSpan> = Vec::new();
@@ -12883,9 +12891,11 @@ impl PdfDocument {
             let (mut left, mut right): (Vec<TextSpan>, Vec<TextSpan>) = std::mem::take(buf)
                 .into_iter()
                 .partition(|s| s.bbox.x + s.bbox.width * 0.5 < gutter_x);
+            // Row-banded (Y quantized to ROW_BAND_TOLERANCE_PT) so sub-point
+            // baseline jitter on a single visual line cannot invert the X order
+            // within that line; see the pre-sort note above.
             let by_yx = |a: &TextSpan, b: &TextSpan| {
-                crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y)
-                    .then_with(|| crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x))
+                crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
             };
             // Trailing-block peel: a block lying a full line-height BELOW the
             // entire opposite column is a bottom-spanning block (e.g. a
