@@ -7665,14 +7665,35 @@ impl PdfDocument {
                 //   • 1-char bases (single math variable: k, γ, ρ, H, ∆, …)
                 //   • 2-char bases that are NOT two lowercase-ASCII letters
                 //     (accepts "Pr", "εp", "ρε" but rejects "of", "to")
+                //   • longer bases ENDING in an acronym — a run of ≥2 trailing
+                //     uppercase ASCII letters (e.g. a wide body span
+                //     "…activation of VPAC", or "CA1"'s "CA"). Receptor/region
+                //     names (VPAC, CA, PAC, GABA, NMDA, …) carry a subscript on
+                //     their trailing acronym, but the producer emits the whole
+                //     wrapped line as one span, so the ≤2-char gate stranded the
+                //     subscript and the row-band sort glued it onto a later word
+                //     ("…of VPAC receptors … pyramidal1"). The subscript text is
+                //     appended to the base's END, which is exactly the acronym, so
+                //     it reconstructs "VPAC1". The x-edge gate below still requires
+                //     the sub to sit at the base's advance edge, and the trailing
+                //     run being UPPERCASE keeps ordinary prose (which ends in a
+                //     lowercase letter or punctuation) from ever matching.
                 // Multi-char lowercase-only strings like "and", "let", "sup"
                 // are English words or common operators; their adjacent digit
                 // spans are handled by the assembly loop and char_widths_boundary_split.
                 let chars: Vec<char> = base.text.chars().collect();
+                let ends_in_acronym = || {
+                    let trailing_upper = chars
+                        .iter()
+                        .rev()
+                        .take_while(|c| c.is_ascii_uppercase())
+                        .count();
+                    trailing_upper >= 2
+                };
                 let is_valid_base = match chars.len() {
                     1 => true,
                     2 => chars.iter().any(|c| !c.is_ascii_lowercase()),
-                    _ => false,
+                    _ => ends_in_acronym(),
                 };
                 if !is_valid_base {
                     continue;
