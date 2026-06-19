@@ -11986,6 +11986,121 @@ impl PdfDocument {
         Some(gutter_x)
     }
 
+    /// Valley-DEPTH central gutter probe. Like `measure_single_central_gutter`,
+    /// returns the mid-X of a single central column-separating corridor, but uses
+    /// a 2-D span-PROJECTION density (the emptiest vertical channel over the whole
+    /// Y-extent) instead of a 1-D running-cover scan. This finds gutters that the
+    /// cover scan misses because a full-width header/footer that is NOT quite wide
+    /// enough to be band-excluded (it spans, say, 0.55 of the content width) jumps
+    /// the running cover past the corridor; the projection only counts spans that
+    /// actually straddle a given x, so a single bridging line is absorbed by the
+    /// tolerance. It also catches the TIGHT (≈ 10–14 pt) real gutters of dense
+    /// two-column journal bodies, below the conservative 18 pt cover threshold.
+    ///
+    /// A true gutter is a vertical band of near-zero straddle density; a phantom
+    /// word/indent gap has moderate density (many lines carry text there). Returns
+    /// the gutter mid-X only when EXACTLY ONE such near-empty central corridor of
+    /// real width exists; `None` otherwise. Used (OR-ed with the cover scan) as
+    /// the topological union-find gutter veto, so it can only PREVENT a
+    /// cross-gutter union — never create one — keeping non-2-column pages
+    /// byte-identical.
+    fn density_central_gutter(spans: &[crate::layout::TextSpan]) -> Option<f32> {
+        let finite = |s: &crate::layout::TextSpan| {
+            !s.text.trim().is_empty()
+                && s.bbox.width > 0.0
+                && s.bbox.x.is_finite()
+                && s.bbox.width.is_finite()
+        };
+        let body: Vec<&crate::layout::TextSpan> = spans.iter().filter(|s| finite(s)).collect();
+        if body.len() < 12 {
+            return None;
+        }
+        let cmin = body.iter().map(|s| s.bbox.x).fold(f32::INFINITY, f32::min);
+        let cmax = body
+            .iter()
+            .map(|s| s.bbox.x + s.bbox.width)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let content_w = cmax - cmin;
+        if !content_w.is_finite() || content_w < 100.0 {
+            return None;
+        }
+        // Column-content spans only (exclude true full-width bands). A real
+        // gutter is invisible under titles/abstracts/footers, so they must not
+        // count toward straddle density.
+        let band_w = 0.6 * content_w;
+        let cols: Vec<(f32, f32)> = body
+            .iter()
+            .filter(|s| s.bbox.width <= band_w)
+            .map(|s| (s.bbox.x, s.bbox.x + s.bbox.width))
+            .collect();
+        if cols.len() < 12 {
+            return None;
+        }
+        // Scan the central band; "empty" tolerates ~1 % stray straddlers (a rare
+        // long token or a header just under the band-exclusion width).
+        let lo = cmin + 0.30 * content_w;
+        let hi = cmin + 0.70 * content_w;
+        let step = (content_w / 400.0).clamp(0.5, 3.0);
+        let empty_max = (0.01 * cols.len() as f32).ceil() as usize;
+        let straddle_at = |x: f32| -> usize {
+            cols.iter()
+                .filter(|(l, r)| *l + 2.0 < x && *r - 2.0 > x)
+                .count()
+        };
+        // Find ALL near-empty corridors and the widest one; require EXACTLY ONE
+        // (a 3-column grid has two, and must stay row-aware).
+        let (mut corridors, mut best_w, mut best_mid) = (0usize, 0.0f32, f32::NAN);
+        let (mut run_start, mut in_run) = (lo, false);
+        let mut x = lo;
+        let close = |run_start: f32,
+                     end: f32,
+                     corridors: &mut usize,
+                     best_w: &mut f32,
+                     best_mid: &mut f32| {
+            let w = end - run_start;
+            if w >= 6.0 {
+                *corridors += 1;
+                if w > *best_w {
+                    *best_w = w;
+                    *best_mid = (run_start + end) * 0.5;
+                }
+            }
+        };
+        while x <= hi {
+            if straddle_at(x) <= empty_max {
+                if !in_run {
+                    run_start = x;
+                    in_run = true;
+                }
+            } else if in_run {
+                close(run_start, x, &mut corridors, &mut best_w, &mut best_mid);
+                in_run = false;
+            }
+            x += step;
+        }
+        if in_run {
+            close(run_start, hi, &mut corridors, &mut best_w, &mut best_mid);
+        }
+        if corridors != 1 || !best_mid.is_finite() {
+            return None;
+        }
+        // Balanced columns: each side carries a real share of the column spans
+        // (rejects a single column beside a sparse margin rail).
+        let (mut left, mut right) = (0usize, 0usize);
+        for (l, r) in &cols {
+            if (l + r) * 0.5 < best_mid {
+                left += 1;
+            } else {
+                right += 1;
+            }
+        }
+        let n = left + right;
+        if n == 0 || (left * 4 < n) || (right * 4 < n) {
+            return None;
+        }
+        Some(best_mid)
+    }
+
     /// Characters-per-text-line density for a set of spans (≈ chars per line).
     /// Lines are counted by clustering span upper edges (`bbox.bottom()`, larger
     /// y) with a `med_h * 0.6` gap. A page-number rail or a form's value column
@@ -13431,7 +13546,8 @@ impl PdfDocument {
         // columns into one block so the side_by_side gate then declines and the
         // page falls to a row-major interleave. `None` (single-column /
         // multi-corridor / off-centre) ⇒ the predicate is byte-identical.
-        let gutter_x = Self::measure_single_central_gutter(spans);
+        let gutter_x = Self::measure_single_central_gutter(spans)
+            .or_else(|| Self::density_central_gutter(spans));
 
         // --- Union-find: connect spans in the same text region. Two spans join
         // iff they are on the same line and horizontally adjacent (a normal word
@@ -13547,6 +13663,43 @@ impl PdfDocument {
         let fragments = blocks.iter().filter(|b| b.members.len() < 4).count();
         if fragments > blocks.len() - fragments {
             return None;
+        }
+
+        // Item 4 follow-up (M3): if the page has a clean central column gutter but
+        // the union-find STILL produced a block that fuses the two columns across
+        // it, the topological emit would interleave them (the block's spans get
+        // sorted row-aware within the block). This happens on dense two-column
+        // bodies where a producer-malformed full-width fragment, or a chain of
+        // vertical unions through a wide line, bridges the columns despite the
+        // same-line cross-gutter veto. A correct two-column block decomposition
+        // has NO block straddling the gutter with substantial content on BOTH
+        // sides. When one exists, bail to None so the dispatch falls through to
+        // the band-aware column-major reader (`classifier_column_gutter` /
+        // `reorder_column_major_with_bands`), which separates the columns and
+        // re-emits full-width bands at their own Y. Gated on a measured gutter, so
+        // pages without one (the common case) are byte-identical.
+        if let Some(gx) = gutter_x {
+            let fused = blocks.iter().any(|b| {
+                if b.x0 >= gx - med_h || b.x1 <= gx + med_h {
+                    return false; // does not straddle the gutter
+                }
+                // Count this block's members clearly on each side of the gutter.
+                let mut l = 0usize;
+                let mut r = 0usize;
+                for &i in &b.members {
+                    let s = &spans[i];
+                    if s.bbox.right() <= gx {
+                        l += 1;
+                    } else if s.bbox.left() >= gx {
+                        r += 1;
+                    }
+                }
+                // Substantial content on BOTH sides ⇒ fused columns, not a band.
+                l >= 4 && r >= 4
+            });
+            if fused {
+                return None;
+            }
         }
 
         // --- GATE: require ≥2 blocks that are horizontally DISJOINT yet overlap
@@ -27181,6 +27334,55 @@ mod tests {
             spans.push(corridor_span("colC", 230.0, y, 60.0)); // →290
         }
         assert!(PdfDocument::measure_single_central_gutter(&spans).is_none());
+    }
+
+    #[test]
+    fn density_gutter_finds_tight_gutter_under_bridging_header() {
+        // Dense two columns separated by a TIGHT ~12 pt gutter (left →291,
+        // right 304→552), below the 18 pt cover-scan threshold, PLUS one
+        // full-width header line that bridges the gutter (43→308). The 1-D cover
+        // scan jumps its running max past the corridor and misses it; the 2-D
+        // projection only counts spans that actually straddle a given x, so the
+        // lone header is absorbed by the tolerance and the gutter at ~297 is
+        // found. This is the PMC8129076 defect-2 case.
+        let mut spans = Vec::new();
+        // Bridging full-width header at the top.
+        spans.push(corridor_span("NATURE COMMUNICATIONS header line", 43.0, 760.0, 265.0));
+        for i in 0..16 {
+            let y = 740.0 - i as f32 * 12.0;
+            spans.push(corridor_span("left column body text here ok", 43.0, y, 248.0)); // →291
+            spans.push(corridor_span("right column body text here ok", 304.0, y, 248.0));
+            // 304→552
+        }
+        let g = PdfDocument::density_central_gutter(&spans);
+        assert!(g.is_some(), "tight gutter under a bridging header must be found");
+        assert!((g.unwrap() - 297.5).abs() < 8.0, "gutter mid-x ≈ 297, got {g:?}");
+        // The conservative cover scan misses this (gutter < 18 pt and a header
+        // bridges it), confirming the density probe adds genuinely new coverage.
+        assert!(PdfDocument::measure_single_central_gutter(&spans).is_none());
+    }
+
+    #[test]
+    fn density_gutter_rejects_single_column() {
+        let mut spans = Vec::new();
+        for i in 0..16 {
+            let y = 700.0 - i as f32 * 12.0;
+            spans.push(corridor_span("Full width single column line of text", 50.0, y, 400.0));
+        }
+        assert!(PdfDocument::density_central_gutter(&spans).is_none());
+    }
+
+    #[test]
+    fn density_gutter_rejects_three_column_grid() {
+        // Three columns ⇒ two central corridors ⇒ not a single gutter ⇒ None.
+        let mut spans = Vec::new();
+        for i in 0..12 {
+            let y = 700.0 - i as f32 * 12.0;
+            spans.push(corridor_span("colA", 50.0, y, 60.0)); // →110
+            spans.push(corridor_span("colB", 140.0, y, 60.0)); // →200
+            spans.push(corridor_span("colC", 230.0, y, 60.0)); // →290
+        }
+        assert!(PdfDocument::density_central_gutter(&spans).is_none());
     }
 
     #[test]
