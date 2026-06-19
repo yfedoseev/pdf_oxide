@@ -5832,7 +5832,25 @@ impl PdfDocument {
                 // ahead of the previous reference's indented continuation
                 // (bibliography interleave) or shattering wrapped hyphenated
                 // lines in dense two-column bodies.
-            } else if !Self::is_multi_column_page(&spans) {
+            } else if !Self::is_multi_column_page(&spans)
+                || (!tables.is_empty() && Self::multicol_signal_is_tabular(&spans, &tables))
+            {
+                // Either a genuine single-column page, OR a single-column page
+                // whose only multi-column geometric signal comes from a TABLE
+                // (a data grid whose column-aligned cells trip
+                // `is_multi_column_page`). In the latter case the genuine
+                // two-column branches (topological / prose-gutter / classifier)
+                // above all declined, so the page is NOT a two-column body; the
+                // multi-column false positive is purely tabular. The correct
+                // reading order is then the row-aware (y desc, x asc) band sort
+                // — it linearises both the surrounding prose AND the table rows.
+                // Without it the page keeps raw content-stream order, which on
+                // these journal pages interleaves the table's column-major cell
+                // stream INTO the prose paragraph (PMC8078162 §3.1). Gated on a
+                // detected table whose region accounts for the multi-column
+                // signal (`multicol_signal_is_tabular`), so genuine two-column
+                // pages — which the column branches catch first, and which carry
+                // no page-dominating table — are unaffected.
                 spans.sort_by(|a, b| {
                     let cmp =
                         crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x);
@@ -12928,6 +12946,88 @@ impl PdfDocument {
         }
         flush(&mut col_buf, &mut out);
         *spans = out;
+    }
+
+    /// True when the page's multi-column geometric signal is explained by a
+    /// detected TABLE rather than a genuine two-column text body.
+    ///
+    /// Used by the geometric reading-order dispatch: when the genuine
+    /// two-column branches (topological / prose-gutter / classifier) all
+    /// declined yet `is_multi_column_page` is still true, the page is either a
+    /// single-column body with a data table (whose column-aligned cells trip the
+    /// detector) or a two-column body the column branches missed. We only want
+    /// to override the multi-column gate (and apply the row-aware band sort) in
+    /// the FIRST case.
+    ///
+    /// Discriminator: cluster the per-line left edges of the spans OUTSIDE the
+    /// detected table regions (the surrounding prose). A single-column body has
+    /// ONE dominant left edge there; a genuine two-column body has two. We
+    /// require a strong single dominant left-edge cluster (≥ 70% of non-table
+    /// lines), so a two-column page — whose non-table prose still splits into two
+    /// left-edge clusters — is rejected. Spans inside the table contribute their
+    /// own column-aligned left edges and are deliberately excluded.
+    fn multicol_signal_is_tabular(
+        spans: &[crate::layout::TextSpan],
+        tables: &[crate::structure::table_extractor::Table],
+    ) -> bool {
+        // Expand each table bbox slightly upward to absorb header rows the
+        // spatial extractor often leaves just above the captured cell grid.
+        let in_table = |s: &crate::layout::TextSpan| -> bool {
+            let cx = s.bbox.x + s.bbox.width * 0.5;
+            let cy = s.bbox.y + s.bbox.height * 0.5;
+            tables.iter().any(|t| {
+                t.bbox.is_some_and(|b| {
+                    cx >= b.x - 2.0
+                        && cx <= b.x + b.width + 2.0
+                        && cy >= b.y - 2.0
+                        && cy <= b.y + b.height + 14.0
+                })
+            })
+        };
+        let outside: Vec<&crate::layout::TextSpan> = spans
+            .iter()
+            .filter(|s| !s.text.trim().is_empty() && s.bbox.width > 0.0 && !in_table(s))
+            .collect();
+        if outside.len() < 8 {
+            // The table is essentially the whole page; the row-aware band sort
+            // linearises it correctly, so treat the signal as tabular.
+            return true;
+        }
+        // Per-line (Y-band) minimum left edge.
+        let mut by_band: std::collections::BTreeMap<i32, f32> = std::collections::BTreeMap::new();
+        for s in &outside {
+            let band = (s.bbox.y / 2.0).round() as i32;
+            let e = by_band.entry(band).or_insert(f32::INFINITY);
+            *e = e.min(s.bbox.x);
+        }
+        let mut lefts: Vec<f32> = by_band
+            .values()
+            .copied()
+            .filter(|v| v.is_finite())
+            .collect();
+        if lefts.len() < 6 {
+            return true;
+        }
+        lefts.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+        // Cluster left edges with a 12pt gap (≈ one indent); the largest cluster
+        // is the body's left margin.
+        let mut clusters: Vec<usize> = Vec::new();
+        let mut run = 1usize;
+        let mut prev = lefts[0];
+        for &v in &lefts[1..] {
+            if v - prev > 12.0 {
+                clusters.push(run);
+                run = 0;
+            }
+            run += 1;
+            prev = v;
+        }
+        clusters.push(run);
+        let total = lefts.len();
+        let top = *clusters.iter().max().unwrap_or(&0);
+        // Strong single dominant left edge ⇒ single-column prose ⇒ the
+        // multi-column signal came from the table.
+        top as f32 >= 0.70 * total as f32
     }
 
     fn is_multi_column_page(spans: &[crate::layout::TextSpan]) -> bool {
