@@ -13531,19 +13531,86 @@ impl PdfDocument {
             return None;
         }
 
+        // A full-width TITLE/heading row is typeset as many narrow word spans, so
+        // no single span satisfies the per-span band test below; its leftmost words
+        // (right edge ≤ gutter) would be miswept into the SIDEBAR and emitted last,
+        // shattering the title (e.g. an MDPI first page where the title sits in a
+        // large font across the full width, above the metadata sidebar + body).
+        // Detect these per LINE: a baseline line whose member words FLOW
+        // CONTINUOUSLY across the gutter (collective extent crosses it, ≥40% of the
+        // page width, and no large internal gap straddling the gutter) is a true
+        // full-width band — its words are evenly spaced, unlike a sidebar-label +
+        // body-line that merely SHARE a baseline (e.g. "Accepted: 1 March 2021"
+        // next to "1. Introduction"), which leaves a wide empty gutter corridor
+        // between the two columns. Members of such band lines are forced into the
+        // BAND group so the whole title row stays together at its vertical slot.
+        // The straddling-gap gate keeps shared sidebar/body baselines split.
+        let mut band_line_members: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+        const MAX_STRADDLE_GAP_FRAC: f32 = 0.06; // ≈ gutter-corridor width
+                                                 // The title/author band sits ABOVE the body column (the body starts at the
+                                                 // affiliations/abstract). Restrict band promotion to lines above the
+                                                 // topmost PURE-BODY line (a line whose words all begin at/right of the
+                                                 // gutter, with no left-of-gutter member). Below that Y the page is the
+                                                 // two-column sidebar+body region, where a wide crossing line is a
+                                                 // sidebar-label + body-line sharing a baseline (e.g. "Switzerland." next to
+                                                 // "cancer, atrial fibrillation…") whose tight gutter corridor would
+                                                 // otherwise pass the straddle-gap gate and wrongly glue the sidebar inline.
+                                                 // Larger bottom-y == higher on the page (PDF user space).
+        let body_top_y = lines
+            .iter()
+            .filter(|l| l.min_left >= gutter)
+            .map(|l| l.top_y)
+            .fold(f32::NEG_INFINITY, f32::max);
+        for line in &lines {
+            if !(line.min_left < gutter
+                && line.max_right > gutter
+                && (line.max_right - line.min_left) > width * 0.40)
+            {
+                continue;
+            }
+            // Only the top-of-page title/author band, above the body column.
+            if body_top_y.is_finite() && line.top_y < body_top_y {
+                continue;
+            }
+            // Largest gap between consecutive members that straddles the gutter.
+            let mut xs: Vec<(f32, f32)> = line
+                .members
+                .iter()
+                .map(|&i| (spans[i].bbox.left(), spans[i].bbox.right()))
+                .collect();
+            xs.sort_by(|a, b| safe_float_cmp(a.0, b.0));
+            let mut max_straddle_gap = 0.0f32;
+            let mut prev_right = f32::NEG_INFINITY;
+            for &(l, r) in &xs {
+                if prev_right.is_finite() && prev_right < gutter && l > gutter {
+                    max_straddle_gap = max_straddle_gap.max(l - prev_right);
+                }
+                prev_right = prev_right.max(r);
+            }
+            if max_straddle_gap < width * MAX_STRADDLE_GAP_FRAC {
+                for &i in &line.members {
+                    band_line_members.insert(i);
+                }
+            }
+        }
+
         // Classify each SPAN by the gutter. A publisher-metadata sidebar and the
         // body usually SHARE baselines (the metadata column interleaves with body
         // lines by Y), so a per-line cluster would fuse them into one full-width
         // line and hide the sidebar — classify per span instead. BAND = a span
-        // genuinely spanning the gutter (a wide full-width title/heading). SIDEBAR
-        // = a span entirely left of the gutter. BODY = everything at/right of it.
+        // genuinely spanning the gutter (a wide full-width title/heading), or a
+        // member of a continuous full-width band LINE (above). SIDEBAR = a span
+        // entirely left of the gutter. BODY = everything at/right of it.
         let mut band: Vec<usize> = Vec::new();
         let mut sidebar: Vec<usize> = Vec::new();
         let mut body: Vec<usize> = Vec::new();
         for (i, s) in spans.iter().enumerate() {
             let l = s.bbox.left();
             let r = s.bbox.right();
-            if l < gutter && r > gutter && (r - l) > width * 0.40 {
+            if band_line_members.contains(&i)
+                || (l < gutter && r > gutter && (r - l) > width * 0.40)
+            {
                 band.push(i);
             } else if r <= gutter {
                 sidebar.push(i);
