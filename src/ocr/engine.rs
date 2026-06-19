@@ -73,6 +73,7 @@ impl OcrSpan {
             offset_semantic: false,
             char_spacing: 0.0,
             word_spacing: 0.0,
+            text_rise: 0.0,
             horizontal_scaling: 100.0,
             primary_detected: false,
             char_widths: Vec::new(),
