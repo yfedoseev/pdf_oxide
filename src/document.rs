@@ -7646,6 +7646,20 @@ impl PdfDocument {
             let sub_x = sub.bbox.x;
             let sub_y = sub.bbox.y;
 
+            // A purely NUMERIC sub-run (digits, optionally comma-joined) at a
+            // base's advance edge is an inline super/subscript even when its
+            // bbox shares the base's baseline. Some producers raise a glyph with
+            // a small font but emit it on the SAME text-line baseline (the
+            // visual rise lives in the glyph's own bbox, not the line's), so the
+            // extractor records y_diff_abs ≈ 0. The 12 %-of-em vertical lower
+            // bound (which screens out same-line small caps) would then strand
+            // the marker — e.g. the isotope label `123` in `[123I]FP-CIT`, or an
+            // author-affiliation marker `1,2`. Small caps are never bare digits,
+            // so dropping the lower bound for numeric subs is safe; the smaller-
+            // font, x-edge, valid-base, and upper-y gates still apply.
+            let sub_is_numeric =
+                sub.text.chars().all(|c| c.is_ascii_digit() || c == ',') && !ts_flagged;
+
             // Search backwards for the best-matching base span.
             let search_limit = 30.min(i);
             let mut best: Option<(usize, f32)> = None; // (idx, |x_dist|)
@@ -7715,7 +7729,14 @@ impl PdfDocument {
                 // Lower bound 12 % of base_fs ensures same-line small caps are excluded.
                 // Upper bound 75 % excludes large line-to-line y differences (e.g.
                 // author affiliation numbers on a different baseline row).
-                if y_diff_abs < base.font_size * 0.12 || y_diff_abs > base.font_size * 0.75 {
+                // Numeric subs (digits/commas) may sit on the base baseline, so
+                // skip the small-caps lower bound for them; all other subs keep it.
+                let y_lo = if sub_is_numeric {
+                    0.0
+                } else {
+                    base.font_size * 0.12
+                };
+                if y_diff_abs < y_lo || y_diff_abs > base.font_size * 0.75 {
                     continue;
                 }
                 let score = x_dist.abs();
@@ -23306,6 +23327,32 @@ mod tests {
         PdfDocument::merge_sub_superscript_spans(&mut spans);
         assert_eq!(spans.len(), 1, "Ts-flagged superscript must merge into base");
         assert_eq!(spans[0].text, "M\u{22C6}");
+    }
+
+    #[test]
+    fn merge_sub_superscript_accepts_same_baseline_numeric() {
+        // An isotope/footnote-style numeric superscript whose bbox shares the
+        // base's baseline (y_diff_abs ≈ 0) — e.g. the `123` in `[123I]`. The
+        // smaller font + advance-edge x are the only super/superscript cues;
+        // the 12 %-of-em vertical lower bound is skipped for purely numeric subs.
+        let base = make_test_span("[", 0.0, 100.0, 6.0, 18.0);
+        let sup = make_test_span("123", 6.0, 100.0, 20.0, 13.0); // same y, smaller fs
+        let mut spans = vec![base, sup];
+        PdfDocument::merge_sub_superscript_spans(&mut spans);
+        assert_eq!(spans.len(), 1, "same-baseline numeric superscript must merge");
+        assert_eq!(spans[0].text, "[123");
+    }
+
+    #[test]
+    fn merge_sub_superscript_rejects_same_baseline_alpha() {
+        // Guard: a same-baseline SMALLER non-numeric run (e.g. small caps) must
+        // still be rejected by the vertical lower bound — the relaxation is
+        // numeric-only, so this preserves the small-caps screen.
+        let base = make_test_span("A", 0.0, 100.0, 12.0, 18.0);
+        let sub = make_test_span("bc", 12.0, 100.0, 8.0, 13.0); // same y, smaller, alpha
+        let mut spans = vec![base, sub];
+        PdfDocument::merge_sub_superscript_spans(&mut spans);
+        assert_eq!(spans.len(), 2, "same-baseline alpha run must not merge");
     }
 
     #[test]
