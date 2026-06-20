@@ -66,6 +66,11 @@ jobs:
         uses: DeLaGuardo/setup-clojure@52716660ff0e592e21f16f47743ee9e996cb96be # 13.4
         with:
           cli: latest
+          clj-kondo: latest
+
+      - name: Lint (clj-kondo)
+        working-directory: clojure
+        run: clj-kondo --lint src test
 
       - name: Test (api-coverage, jna.library.path -> cdylib)
         working-directory: clojure
