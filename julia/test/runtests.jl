@@ -2,10 +2,18 @@
 # used by every pdf_oxide binding. Self-contained: builds its own PDF.
 using PdfOxide
 using Test
+using Aqua
 
 sample_pdf() = save_to_bytes(
     from_markdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n"),
 )
+
+# Package-quality checks (stale deps, [compat] coverage, undefined exports,
+# project-file consistency). persistent_tasks disabled — this is an FFI shim
+# that loads a native lib, not relevant to that probe.
+@testset "Aqua quality" begin
+    Aqua.test_all(PdfOxide; persistent_tasks = false)
+end
 
 @testset "PdfOxide api coverage" begin
     # ── Pdf builder ───────────────────────────────────────────────────────────

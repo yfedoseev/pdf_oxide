@@ -172,3 +172,38 @@ SEXP r_doc_extract_structured_json(SEXP ext, SEXP page) {
                            doc_ptr(ext), Rf_asInteger(page), &code),
                        code, "extract_structured_json");
 }
+
+/* ── Native routine registration (R Writing-R-Extensions §5.4) ──────────────
+ * Backs `useDynLib(pdfoxide, .registration = TRUE, .fixes = "C_")` so R resolves
+ * each .Call via a registered symbol object rather than a runtime string lookup,
+ * and `R CMD check` reports no missing-registration NOTE. */
+#include <R_ext/Rdynload.h>
+
+#define CDEF(name, n) {#name, (DL_FUNC) &name, n}
+static const R_CallMethodDef CallEntries[] = {
+    CDEF(r_pdf_from_markdown, 1),
+    CDEF(r_pdf_from_html, 1),
+    CDEF(r_pdf_from_text, 1),
+    CDEF(r_pdf_save, 2),
+    CDEF(r_pdf_save_to_bytes, 1),
+    CDEF(r_doc_open, 1),
+    CDEF(r_doc_open_from_bytes, 1),
+    CDEF(r_doc_open_with_password, 2),
+    CDEF(r_doc_page_count, 1),
+    CDEF(r_doc_version, 1),
+    CDEF(r_doc_is_encrypted, 1),
+    CDEF(r_doc_has_structure_tree, 1),
+    CDEF(r_doc_extract_text, 2),
+    CDEF(r_doc_to_plain_text, 2),
+    CDEF(r_doc_to_markdown, 2),
+    CDEF(r_doc_to_html, 2),
+    CDEF(r_doc_to_markdown_all, 1),
+    CDEF(r_doc_extract_structured_json, 2),
+    {NULL, NULL, 0}
+};
+
+void R_init_pdfoxide(DllInfo *dll) {
+    R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
+    R_useDynamicSymbols(dll, FALSE);
+    R_forceSymbols(dll, TRUE);
+}

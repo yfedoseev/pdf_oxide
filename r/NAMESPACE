@@ -1,4 +1,4 @@
-useDynLib(pdfoxide, .registration = TRUE)
+useDynLib(pdfoxide, .registration = TRUE, .fixes = "C_")
 export(pdf_from_markdown, pdf_from_html, pdf_from_text, pdf_save, pdf_save_to_bytes)
 export(pdf_open, pdf_open_bytes, pdf_page_count, pdf_version, pdf_is_encrypted)
 export(pdf_has_structure_tree, pdf_extract_text, pdf_to_plain_text)
