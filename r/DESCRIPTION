@@ -2,7 +2,7 @@ Package: pdfoxide
 Type: Package
 Title: Fast PDF Text, Markdown and HTML Extraction (pdf_oxide)
 Version: 0.3.68
-Authors@R: person("PDF Oxide Contributors", email = "yfedoseev@gmail.com", role = c("aut", "cre"))
+Authors@R: person("Yury", "Fedoseev", email = "yfedoseev@gmail.com", role = c("aut", "cre"))
 Description: Idiomatic R bindings for the pdf_oxide engine, providing fast
     extraction of reading-order text, Markdown and HTML from PDF documents, plus
     building PDFs from Markdown, HTML or text. Wraps the pdf_oxide C ABI.

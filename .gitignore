@@ -411,3 +411,11 @@ r/src/*.so
 r/src/*.dll
 r/..Rcheck/
 r/*.tar.gz
+
+# Kotlin binding artifacts
+/kotlin/.gradle/
+/kotlin/build/
+/kotlin/.kotlin/
+
+# Julia binding artifacts
+/julia/Manifest.toml

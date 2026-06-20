@@ -1,0 +1,44 @@
+// pdf_oxide — Kotlin/JVM (+ Android-ready) bindings over the C ABI via JNA.
+//
+// Pure-Kotlin FFI (no native compile): JNA loads libpdf_oxide.{so,dylib,dll} at
+// runtime. The native library directory is taken from the `jna.library.path`
+// system property or PDF_OXIDE_LIB_DIR (see PdfOxideNative).
+plugins {
+    kotlin("jvm") version "2.2.20"
+    `java-library`
+}
+
+group = "fyi.oxide"
+version = "0.3.68"
+
+repositories { mavenCentral() }
+
+dependencies {
+    implementation("net.java.dev.jna:jna:5.14.0")
+    api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
+    testImplementation(kotlin("test"))
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+}
+
+kotlin { jvmToolchain(17) }
+
+tasks.test {
+    useJUnitPlatform()
+    // Point JNA at the freshly built cdylib (override with -DPDF_OXIDE_LIB_DIR=…).
+    val libDir = System.getProperty("PDF_OXIDE_LIB_DIR")
+        ?: System.getenv("PDF_OXIDE_LIB_DIR")
+        ?: "${rootDir}/../target/release"
+    systemProperty("jna.library.path", libDir)
+    testLogging { events("passed", "failed", "skipped") }
+}
+
+// `./gradlew runExample` — runs the smoke example with the cdylib on the path.
+tasks.register<JavaExec>("runExample") {
+    group = "application"
+    mainClass.set("examples.BasicExtractionKt")
+    classpath = sourceSets.main.get().runtimeClasspath
+    val libDir = System.getProperty("PDF_OXIDE_LIB_DIR")
+        ?: System.getenv("PDF_OXIDE_LIB_DIR")
+        ?: "${rootDir}/../target/release"
+    systemProperty("jna.library.path", libDir)
+}
