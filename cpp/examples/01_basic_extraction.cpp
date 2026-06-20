@@ -20,10 +20,8 @@ int main() {
         auto v = doc.version();
         std::cout << "version: " << static_cast<int>(v.major) << "."
                   << static_cast<int>(v.minor) << "\n";
-        std::cout << "--- text (page 0) ---\n"
-                  << doc.extract_text(0) << "\n";
-        std::cout << "--- markdown (all) ---\n"
-                  << doc.to_markdown_all() << "\n";
+        std::cout << "--- text (page 0) ---\n" << doc.extract_text(0) << "\n";
+        std::cout << "--- markdown (all) ---\n" << doc.to_markdown_all() << "\n";
         return 0;
     } catch (const pdf_oxide::Error& e) {
         std::cerr << "error: " << e.what() << "\n";

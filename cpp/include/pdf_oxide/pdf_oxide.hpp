@@ -24,14 +24,14 @@ namespace pdf_oxide {
 
 /// Thrown on any non-success C-ABI error code.
 class Error : public std::runtime_error {
-public:
+  public:
     explicit Error(int32_t code, const std::string& op)
         : std::runtime_error("pdf_oxide: " + op + " failed (error code " +
                              std::to_string(code) + ")"),
           code_(code) {}
     int32_t code() const noexcept { return code_; }
 
-private:
+  private:
     int32_t code_;
 };
 
@@ -69,7 +69,7 @@ struct Version {
 
 /// An opened PDF for extraction/inspection. Move-only; frees on destruction.
 class Document {
-public:
+  public:
     /// Open a PDF from a filesystem path.
     static Document open(const std::string& path) {
         int32_t code = 0;
@@ -83,8 +83,7 @@ public:
     /// Open a PDF from in-memory bytes.
     static Document open_from_bytes(const std::vector<std::uint8_t>& data) {
         int32_t code = 0;
-        PdfDocument* h =
-            pdf_document_open_from_bytes(data.data(), data.size(), &code);
+        PdfDocument* h = pdf_document_open_from_bytes(data.data(), data.size(), &code);
         if (h == nullptr) {
             throw Error(code, "Document::open_from_bytes");
         }
@@ -121,9 +120,7 @@ public:
     }
 
     /// True if the document is encrypted.
-    bool is_encrypted() const {
-        return pdf_document_is_encrypted(handle_.get());
-    }
+    bool is_encrypted() const { return pdf_document_is_encrypted(handle_.get()); }
 
     /// True if the document carries a logical structure tree (tagged PDF).
     bool has_structure_tree() const {
@@ -165,24 +162,23 @@ public:
     /// Markdown for the whole document.
     std::string to_markdown_all() const {
         int32_t code = 0;
-        return detail::take_string(
-            pdf_document_to_markdown_all(handle_.get(), &code), code,
-            "Document::to_markdown_all");
+        return detail::take_string(pdf_document_to_markdown_all(handle_.get(), &code),
+                                   code, "Document::to_markdown_all");
     }
 
     /// Structured content as a JSON string.
     std::string extract_structured_json(int page_index) const {
         int32_t code = 0;
         return detail::take_string(
-            pdf_document_extract_structured_to_json(handle_.get(), page_index,
-                                                    &code),
+            pdf_document_extract_structured_to_json(handle_.get(), page_index, &code),
             code, "Document::extract_structured_json");
     }
 
-private:
+  private:
     struct Deleter {
         void operator()(PdfDocument* h) const noexcept {
-            if (h) pdf_document_free(h);
+            if (h)
+                pdf_document_free(h);
         }
     };
     explicit Document(PdfDocument* h) : handle_(h) {}
@@ -191,7 +187,7 @@ private:
 
 /// A PDF produced by a builder (from markdown/html/text). Move-only.
 class Pdf {
-public:
+  public:
     /// Build a PDF from Markdown.
     static Pdf from_markdown(const std::string& markdown) {
         int32_t code = 0;
@@ -235,14 +231,15 @@ public:
         int32_t code = 0;
         int32_t len = 0;
         std::uint8_t* p = pdf_save_to_bytes(handle_.get(), &len, &code);
-        return detail::take_bytes(p, static_cast<std::size_t>(len < 0 ? 0 : len),
-                                  code, "Pdf::save_to_bytes");
+        return detail::take_bytes(p, static_cast<std::size_t>(len < 0 ? 0 : len), code,
+                                  "Pdf::save_to_bytes");
     }
 
-private:
+  private:
     struct Deleter {
         void operator()(::Pdf* h) const noexcept {
-            if (h) pdf_free(h);
+            if (h)
+                pdf_free(h);
         }
     };
     explicit Pdf(::Pdf* h) : handle_(h) {}

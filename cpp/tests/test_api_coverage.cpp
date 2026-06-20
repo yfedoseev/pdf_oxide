@@ -9,13 +9,12 @@
 #include <vector>
 
 static int g_failures = 0;
-#define CHECK(cond)                                                            \
-    do {                                                                       \
-        if (!(cond)) {                                                         \
-            std::fprintf(stderr, "FAIL %s:%d  %s\n", __FILE__, __LINE__,       \
-                         #cond);                                               \
-            ++g_failures;                                                      \
-        }                                                                      \
+#define CHECK(cond)                                                                    \
+    do {                                                                               \
+        if (!(cond)) {                                                                 \
+            std::fprintf(stderr, "FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond);       \
+            ++g_failures;                                                              \
+        }                                                                              \
     } while (0)
 
 // NB: do not `using namespace pdf_oxide;` — the C header defines a global
@@ -44,7 +43,8 @@ int main() {
         a.save(path); // save
         std::FILE* f = std::fopen(path.c_str(), "rb");
         CHECK(f != nullptr);
-        if (f) std::fclose(f);
+        if (f)
+            std::fclose(f);
         std::remove(path.c_str());
     }
 
@@ -61,17 +61,17 @@ int main() {
     }
 
     // ── Document inspection + extraction ─────────────────────────────────
-    CHECK(doc.page_count() >= 1);                  // page_count
-    Version v = doc.version();                      // version
+    CHECK(doc.page_count() >= 1); // page_count
+    Version v = doc.version();    // version
     CHECK(v.major >= 1);
-    CHECK(doc.is_encrypted() == false);            // is_encrypted
-    (void)doc.has_structure_tree();                // has_structure_tree
-    CHECK(doc.extract_text(0).find("Alpha") != std::string::npos);   // extract_text
-    CHECK(!doc.to_plain_text(0).empty());          // to_plain_text
-    CHECK(!doc.to_markdown(0).empty());            // to_markdown
-    CHECK(doc.to_html(0).find('<') != std::string::npos);            // to_html
-    CHECK(!doc.to_markdown_all().empty());         // to_markdown_all
-    CHECK(!doc.extract_structured_json(0).empty());// extract_structured_json
+    CHECK(doc.is_encrypted() == false);                            // is_encrypted
+    (void)doc.has_structure_tree();                                // has_structure_tree
+    CHECK(doc.extract_text(0).find("Alpha") != std::string::npos); // extract_text
+    CHECK(!doc.to_plain_text(0).empty());                          // to_plain_text
+    CHECK(!doc.to_markdown(0).empty());                            // to_markdown
+    CHECK(doc.to_html(0).find('<') != std::string::npos);          // to_html
+    CHECK(!doc.to_markdown_all().empty());                         // to_markdown_all
+    CHECK(!doc.extract_structured_json(0).empty()); // extract_structured_json
 
     // ── Error path (open a bogus file throws Error) ──────────────────────
     bool threw = false;

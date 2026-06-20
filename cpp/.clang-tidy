@@ -1,0 +1,11 @@
+# Curated, high-signal checks for the header-only C++ binding.
+Checks: >
+  bugprone-*,
+  performance-*,
+  modernize-use-nullptr,
+  modernize-use-override,
+  readability-redundant-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-exception-escape
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'pdf_oxide/.*\.hpp'

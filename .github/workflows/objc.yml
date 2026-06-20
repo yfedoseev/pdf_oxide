@@ -53,7 +53,14 @@ jobs:
       - name: Build cdylib (release, shipped binding feature set)
         run: cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
 
-      - name: Build (clang)
+      - name: clang-format check (blocking)
+        working-directory: objc
+        shell: bash
+        run: |
+          find include src examples tests \( -name '*.h' -o -name '*.m' \) \
+            | xargs clang-format --dry-run --Werror --style=file:.clang-format
+
+      - name: Build (clang, -Wall -Wextra)
         working-directory: objc
         run: make build PDF_OXIDE_INCLUDE_DIR="${PDF_OXIDE_INCLUDE_DIR}" PDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}"
 

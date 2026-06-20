@@ -26,6 +26,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  PDF_OXIDE_INCLUDE_DIR: ${{ github.workspace }}/include
   PDF_OXIDE_LIB_DIR: ${{ github.workspace }}/target/release
 
 jobs:
@@ -56,16 +57,24 @@ jobs:
       - name: Build cdylib (release, shipped binding feature set)
         run: cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
 
-      - name: clang-format check
+      - name: Install clang tooling
+        run: sudo apt-get update && sudo apt-get install -y clang-format clang-tidy
+        if: runner.os == 'Linux'
+
+      - name: clang-format check (blocking)
         shell: bash
         run: |
-          if command -v clang-format >/dev/null 2>&1; then
-            find cpp/include cpp/examples cpp/tests -name '*.hpp' -o -name '*.cpp' \
-              | xargs clang-format --dry-run --Werror --style=file:cpp/.clang-format || \
-              { echo "::warning::clang-format differences (non-blocking until .clang-format is tuned)"; }
-          else
-            echo "clang-format not available; skipping"
-          fi
+          files=$(find cpp/include cpp/examples cpp/tests \( -name '*.hpp' -o -name '*.cpp' \))
+          echo "$files" | xargs clang-format --dry-run --Werror --style=file:cpp/.clang-format
+
+      - name: clang-tidy (static analysis)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          for f in cpp/examples/*.cpp cpp/tests/*.cpp; do
+            clang-tidy "$f" --config-file=cpp/.clang-tidy -- \
+              -std=c++17 -Icpp/include -I"${PDF_OXIDE_INCLUDE_DIR:-include}"
+          done
 
       - name: Configure (CMake)
         run: cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release -DPDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}"
