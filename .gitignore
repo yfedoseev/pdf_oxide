@@ -440,3 +440,7 @@ r/*.tar.gz
 /objc/test_api_coverage
 /objc/basic_extraction
 /objc/*.o
+
+# Swift binding artifacts
+/swift/.build/
+/swift/Package.resolved

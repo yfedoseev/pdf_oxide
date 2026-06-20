@@ -1,0 +1,5 @@
+module CPdfOxide {
+    header "shim.h"
+    link "pdf_oxide"
+    export *
+}
