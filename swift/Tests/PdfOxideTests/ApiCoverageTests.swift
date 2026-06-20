@@ -27,7 +27,7 @@ final class ApiCoverageTests: XCTestCase {
 
     // ── Document open paths ──────────────────────────────────────────────────
     func testOpenFromBytesAndPageCount() throws {
-        let doc = try Document.open(bytes: try samplePdf())
+        let doc = try Document.openFromBytes(try samplePdf())
         XCTAssertGreaterThanOrEqual(try doc.pageCount(), 1)
     }
     func testOpenPath() throws {
@@ -40,16 +40,26 @@ final class ApiCoverageTests: XCTestCase {
 
     // ── Document inspection + extraction ─────────────────────────────────────
     func testInspectionAndExtraction() throws {
-        let doc = try Document.open(bytes: try samplePdf())
-        XCTAssertGreaterThanOrEqual(doc.version().major, 1)   // version
-        XCTAssertFalse(doc.isEncrypted)                        // isEncrypted
-        _ = doc.hasStructureTree                               // hasStructureTree (smoke)
+        let doc = try Document.openFromBytes(try samplePdf())
+        XCTAssertGreaterThanOrEqual(try doc.version().major, 1) // version
+        XCTAssertFalse(try doc.isEncrypted())                  // isEncrypted
+        _ = try doc.hasStructureTree()                        // hasStructureTree (smoke)
         XCTAssertTrue(try doc.extractText(0).contains("Alpha"))// extractText
         XCTAssertFalse(try doc.toPlainText(0).isEmpty)         // toPlainText
         XCTAssertFalse(try doc.toMarkdown(0).isEmpty)          // toMarkdown
         XCTAssertTrue(try doc.toHtml(0).contains("<"))         // toHtml
         XCTAssertFalse(try doc.toMarkdownAll().isEmpty)        // toMarkdownAll
         XCTAssertFalse(try doc.extractStructuredJson(0).isEmpty) // extractStructuredJson
+    }
+
+    // ── close() is idempotent; use-after-close throws ───────────────────────
+    func testClose() throws {
+        let doc = try Document.openFromBytes(try samplePdf())
+        doc.close()
+        doc.close() // idempotent
+        XCTAssertThrowsError(try doc.pageCount()) { error in
+            XCTAssertTrue(error is PdfOxideError)
+        }
     }
 
     // ── Error path ───────────────────────────────────────────────────────────

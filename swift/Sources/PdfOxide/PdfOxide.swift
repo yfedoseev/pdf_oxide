@@ -32,10 +32,15 @@ private func takeString(_ ptr: UnsafeMutablePointer<CChar>?, _ code: Int32, _ op
 
 /// An opened PDF for extraction/inspection.
 public final class Document {
-    private let handle: OpaquePointer
+    private var handle: OpaquePointer?
 
     private init(_ handle: OpaquePointer) { self.handle = handle }
-    deinit { pdf_document_free(handle) }
+    deinit { if let h = handle { pdf_document_free(h) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "Document is closed") }
+        return h
+    }
 
     /// Open a PDF from a filesystem path.
     public static func open(_ path: String) throws -> Document {
@@ -45,7 +50,7 @@ public final class Document {
     }
 
     /// Open a PDF from in-memory bytes.
-    public static func open(bytes: [UInt8]) throws -> Document {
+    public static func openFromBytes(_ bytes: [UInt8]) throws -> Document {
         var code: Int32 = 0
         let h = bytes.withUnsafeBufferPointer { buf in
             pdf_document_open_from_bytes(buf.baseAddress, buf.count, &code)
@@ -55,7 +60,7 @@ public final class Document {
     }
 
     /// Open a password-protected PDF.
-    public static func open(_ path: String, password: String) throws -> Document {
+    public static func openWithPassword(_ path: String, password: String) throws -> Document {
         var code: Int32 = 0
         guard let h = pdf_document_open_with_password(path, password, &code) else {
             throw PdfOxideError(code: code, op: "openWithPassword")
@@ -65,52 +70,62 @@ public final class Document {
 
     public func pageCount() throws -> Int {
         var code: Int32 = 0
-        let n = pdf_document_get_page_count(handle, &code)
+        let n = pdf_document_get_page_count(try ptr(), &code)
         if n < 0 { throw PdfOxideError(code: code, op: "pageCount") }
         return Int(n)
     }
 
-    public func version() -> PdfVersion {
+    public func version() throws -> PdfVersion {
         var major: UInt8 = 0, minor: UInt8 = 0
-        pdf_document_get_version(handle, &major, &minor)
+        pdf_document_get_version(try ptr(), &major, &minor)
         return PdfVersion(major: Int(major), minor: Int(minor))
     }
 
-    public var isEncrypted: Bool { pdf_document_is_encrypted(handle) }
-    public var hasStructureTree: Bool { pdf_document_has_structure_tree(handle) }
+    public func isEncrypted() throws -> Bool { pdf_document_is_encrypted(try ptr()) }
+    public func hasStructureTree() throws -> Bool { pdf_document_has_structure_tree(try ptr()) }
 
     public func extractText(_ page: Int) throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_document_extract_text(handle, Int32(page), &code), code, "extractText")
+        return try takeString(pdf_document_extract_text(try ptr(), Int32(page), &code), code, "extractText")
     }
     public func toPlainText(_ page: Int) throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_document_to_plain_text(handle, Int32(page), &code), code, "toPlainText")
+        return try takeString(pdf_document_to_plain_text(try ptr(), Int32(page), &code), code, "toPlainText")
     }
     public func toMarkdown(_ page: Int) throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_document_to_markdown(handle, Int32(page), &code), code, "toMarkdown")
+        return try takeString(pdf_document_to_markdown(try ptr(), Int32(page), &code), code, "toMarkdown")
     }
     public func toHtml(_ page: Int) throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_document_to_html(handle, Int32(page), &code), code, "toHtml")
+        return try takeString(pdf_document_to_html(try ptr(), Int32(page), &code), code, "toHtml")
     }
     public func toMarkdownAll() throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_document_to_markdown_all(handle, &code), code, "toMarkdownAll")
+        return try takeString(pdf_document_to_markdown_all(try ptr(), &code), code, "toMarkdownAll")
     }
     public func extractStructuredJson(_ page: Int) throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_document_extract_structured_to_json(handle, Int32(page), &code), code, "extractStructuredJson")
+        return try takeString(pdf_document_extract_structured_to_json(try ptr(), Int32(page), &code), code, "extractStructuredJson")
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_document_free(h); handle = nil }
     }
 }
 
 /// A PDF produced by a builder.
 public final class Pdf {
-    private let handle: OpaquePointer
+    private var handle: OpaquePointer?
 
     private init(_ handle: OpaquePointer) { self.handle = handle }
-    deinit { pdf_free(handle) }
+    deinit { if let h = handle { pdf_free(h) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "Pdf is closed") }
+        return h
+    }
 
     public static func fromMarkdown(_ md: String) throws -> Pdf {
         var code: Int32 = 0
@@ -130,14 +145,20 @@ public final class Pdf {
 
     public func save(_ path: String) throws {
         var code: Int32 = 0
-        if pdf_save(handle, path, &code) != 0 { throw PdfOxideError(code: code, op: "save") }
+        if pdf_save(try ptr(), path, &code) != 0 { throw PdfOxideError(code: code, op: "save") }
     }
 
     public func saveToBytes() throws -> [UInt8] {
         var len: Int32 = 0, code: Int32 = 0
-        guard let p = pdf_save_to_bytes(handle, &len, &code) else { throw PdfOxideError(code: code, op: "saveToBytes") }
-        defer { free_string(UnsafeMutableRawPointer(p).assumingMemoryBound(to: CChar.self)) }
+        guard let p = pdf_save_to_bytes(try ptr(), &len, &code) else { throw PdfOxideError(code: code, op: "saveToBytes") }
+        // Raw byte buffers free via free_bytes, not free_string.
+        defer { free_bytes(p) }
         let n = len < 0 ? 0 : Int(len)
         return Array(UnsafeBufferPointer(start: p, count: n))
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_free(h); handle = nil }
     }
 }
