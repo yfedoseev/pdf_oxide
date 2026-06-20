@@ -43,26 +43,26 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
     return [[self alloc] initWithHandle:h];
 }
 
-+ (instancetype)openData:(NSData*)data error:(NSError**)error {
++ (instancetype)openFromBytes:(NSData*)data error:(NSError**)error {
     int32_t code = 0;
     PdfDocument* h = pdf_document_open_from_bytes(data.bytes, data.length, &code);
     if (!h) {
         if (error)
-            *error = POXMakeError(code, @"openData");
+            *error = POXMakeError(code, @"openFromBytes");
         return nil;
     }
     return [[self alloc] initWithHandle:h];
 }
 
-+ (instancetype)openPath:(NSString*)path
-                password:(NSString*)password
-                   error:(NSError**)error {
++ (instancetype)openWithPassword:(NSString*)path
+                        password:(NSString*)password
+                           error:(NSError**)error {
     int32_t code = 0;
     PdfDocument* h =
         pdf_document_open_with_password(path.UTF8String, password.UTF8String, &code);
     if (!h) {
         if (error)
-            *error = POXMakeError(code, @"openPassword");
+            *error = POXMakeError(code, @"openWithPassword");
         return nil;
     }
     return [[self alloc] initWithHandle:h];
@@ -91,8 +91,10 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
     return n;
 }
 
-- (void)getVersionMajor:(uint8_t*)major minor:(uint8_t*)minor {
-    pdf_document_get_version(_handle, major, minor);
+- (POXVersion)version {
+    POXVersion v = {0, 0};
+    pdf_document_get_version(_handle, &v.major, &v.minor);
+    return v;
 }
 
 - (BOOL)isEncrypted {
@@ -122,7 +124,7 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
     return POXTakeString(pdf_document_to_html(_handle, (int32_t)page, &code), code,
                          @"toHtml", error);
 }
-- (NSString*)toMarkdownAllError:(NSError**)error {
+- (NSString*)toMarkdownAllWithError:(NSError**)error {
     int32_t code = 0;
     return POXTakeString(pdf_document_to_markdown_all(_handle, &code), code,
                          @"toMarkdownAll", error);
@@ -132,6 +134,13 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
     return POXTakeString(
         pdf_document_extract_structured_to_json(_handle, (int32_t)page, &code), code,
         @"extractStructuredJson", error);
+}
+
+- (void)close {
+    if (_handle) {
+        pdf_document_free(_handle);
+        _handle = NULL;
+    }
 }
 
 @end
@@ -204,6 +213,13 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
     NSData* out = [NSData dataWithBytes:p length:(len < 0 ? 0 : (NSUInteger)len)];
     free_bytes(p);
     return out;
+}
+
+- (void)close {
+    if (_handle) {
+        pdf_free(_handle);
+        _handle = NULL;
+    }
 }
 
 @end

@@ -14,21 +14,20 @@ int main(void) {
             return 1;
         }
 
-        POXDocument* doc = [POXDocument openData:[pdf saveToBytesError:&err]
-                                           error:&err];
+        POXDocument* doc = [POXDocument openFromBytes:[pdf saveToBytesError:&err]
+                                                error:&err];
         if (!doc) {
             fprintf(stderr, "error: %s\n", err.localizedDescription.UTF8String);
             return 1;
         }
 
         printf("pages:   %ld\n", (long)[doc pageCountError:&err]);
-        uint8_t maj = 0, min = 0;
-        [doc getVersionMajor:&maj minor:&min];
-        printf("version: %d.%d\n", maj, min);
+        POXVersion ver = [doc version];
+        printf("version: %d.%d\n", ver.major, ver.minor);
         printf("--- text (page 0) ---\n%s\n",
                [doc extractText:0 error:&err].UTF8String);
         printf("--- markdown (all) ---\n%s\n",
-               [doc toMarkdownAllError:&err].UTF8String);
+               [doc toMarkdownAllWithError:&err].UTF8String);
         return 0;
     }
 }

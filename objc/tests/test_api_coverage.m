@@ -42,7 +42,8 @@ int main(void) {
         }
 
         // ── Document open paths ──────────────────────────────────────────────
-        POXDocument* doc = [POXDocument openData:samplePdf() error:&err]; // openData
+        POXDocument* doc = [POXDocument openFromBytes:samplePdf()
+                                                error:&err]; // openFromBytes
         CHECK(doc != nil);
         CHECK([doc pageCountError:&err] >= 1); // pageCount
         {
@@ -55,18 +56,21 @@ int main(void) {
         }
 
         // ── Document inspection + extraction ─────────────────────────────────
-        uint8_t maj = 0, min = 0;
-        [doc getVersionMajor:&maj minor:&min]; // getVersion
-        CHECK(maj >= 1);
+        POXVersion ver = [doc version]; // version
+        CHECK(ver.major >= 1);
         CHECK([doc isEncrypted] == NO); // isEncrypted
         (void)[doc hasStructureTree];   // hasStructureTree
         CHECK([[doc extractText:0 error:&err] containsString:@"Alpha"]); // extractText
         CHECK([[doc toPlainText:0 error:&err] length] > 0);              // toPlainText
         CHECK([[doc toMarkdown:0 error:&err] length] > 0);               // toMarkdown
         CHECK([[doc toHtml:0 error:&err] containsString:@"<"]);          // toHtml
-        CHECK([[doc toMarkdownAllError:&err] length] > 0); // toMarkdownAll
+        CHECK([[doc toMarkdownAllWithError:&err] length] > 0); // toMarkdownAll
         CHECK([[doc extractStructuredJson:0
                                     error:&err] length] > 0); // extractStructuredJson
+
+        // ── close (idempotent) ───────────────────────────────────────────────
+        [doc close];
+        [doc close]; // idempotent — safe to call twice
 
         // ── Error path ───────────────────────────────────────────────────────
         NSError* e2 = nil;
