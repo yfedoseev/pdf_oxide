@@ -1,169 +1,65 @@
-;; One test per public fn — mirrors the api_coverage convention used by every
-;; pdf_oxide binding. Self-contained: builds its own PDF from Markdown.
+;; Coverage for the Clojure facade over the Java binding. Self-contained: builds
+;; its own PDF from Markdown, then exercises the main entry points. Java handles
+;; are AutoCloseable -> `with-open`.
 (ns pdf-oxide.core-test
-  (:require [clojure.test :refer [deftest is testing]]
-            [pdf-oxide.core :as pdf])
-  (:import [java.io File]))
+  (:require [clojure.test :refer [deftest is]]
+            [pdf-oxide.core :as pdf]))
 
 (defn sample-pdf ^bytes []
-  (with-open [p (pdf/from-markdown "# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n")]
-    (pdf/to-bytes p)))
+  (with-open [p (pdf/from-markdown "# Alpha Heading\n\nHello world from the Clojure facade. Beta gamma.\n")]
+    (pdf/save p)))
 
-(deftest pdf-builder
-  (testing "from-markdown + to-bytes"
-    (with-open [p (pdf/from-markdown "# md\n\nbody\n")] (is (> (alength (pdf/to-bytes p)) 100))))
-  (testing "from-html"
-    (with-open [p (pdf/from-html "<h1>h</h1><p>b</p>")] (is (> (alength (pdf/to-bytes p)) 100))))
-  (testing "from-text"
-    (with-open [p (pdf/from-text "plain text body")] (is (> (alength (pdf/to-bytes p)) 100))))
-  (testing "save"
-    (let [f (File/createTempFile "pdfoxide-clj" ".pdf")]
-      (with-open [p (pdf/from-markdown "# f\n\nx\n")] (pdf/save p (.getAbsolutePath f)))
-      (is (> (.length f) 100)) (.delete f))))
+(deftest pdf-from-markdown-and-save
+  (let [bytes (sample-pdf)]
+    (is (> (count bytes) 100))
+    (is (= (byte \%) (aget bytes 0)))))
 
-(deftest document-open
-  (testing "open-from-bytes + page-count"
-    (with-open [d (pdf/open-from-bytes (sample-pdf))] (is (>= (pdf/page-count d) 1))))
-  (testing "open (path)"
-    (let [f (File/createTempFile "pdfoxide-clj-open" ".pdf")]
-      (with-open [p (pdf/from-markdown "# f\n\nx\n")] (pdf/save p (.getAbsolutePath f)))
-      (with-open [d (pdf/open (.getAbsolutePath f))] (is (>= (pdf/page-count d) 1)))
-      (.delete f))))
+(deftest document-open-and-extraction
+  (with-open [d (pdf/open (sample-pdf))]
+    (is (pdf/open? d))
+    (is (>= (pdf/page-count d) 1))
+    (let [t (pdf/extract-text d 0)]
+      (is (or (.contains t "Hello") (.contains t "Alpha"))))
+    (is (seq (pdf/to-markdown d)))
+    (is (.contains (pdf/to-html d) "<"))))
 
-(deftest document-inspection-extraction
-  (with-open [d (pdf/open-from-bytes (sample-pdf))]
-    (is (>= (:major (pdf/version d)) 1))           ; version
-    (is (false? (pdf/encrypted? d)))               ; encrypted?
-    (pdf/structure-tree? d)                         ; structure-tree? (smoke)
-    (is (re-find #"Alpha" (pdf/extract-text d 0)))  ; extract-text
-    (is (seq (pdf/to-plain-text d 0)))              ; to-plain-text
-    (is (seq (pdf/to-markdown d 0)))                ; to-markdown
-    (is (re-find #"<" (pdf/to-html d 0)))           ; to-html
-    (is (seq (pdf/to-markdown-all d)))              ; to-markdown-all
-    (is (re-find #"<" (pdf/to-html-all d)))         ; to-html-all
-    (is (seq (pdf/to-plain-text-all d)))            ; to-plain-text-all
-    (is (instance? Boolean (pdf/authenticate d "")) ); authenticate (returns a bool, no error)
-    (let [pg (pdf/page d 0)]                         ; page (0-based)
-      (is (re-find #"Alpha" (pdf/page-text pg)))     ; page-text
-      (is (seq (pdf/page-markdown pg)))              ; page-markdown
-      (is (seq (pdf/page-html pg)))                  ; page-html
-      (is (seq (pdf/page-plain-text pg))))           ; page-plain-text
-    (is (seq (pdf/extract-structured-json d 0)))))  ; extract-structured-json
+(deftest page-element-extraction
+  (with-open [d (pdf/open (sample-pdf))]
+    (let [pg (pdf/page d 0)
+          ws (pdf/words pg)]
+      (is (pos? (.width pg)))
+      (is (seq ws))
+      (is (seq (.text (first ws))))
+      (is (vector? (pdf/lines pg)))
+      (is (vector? (pdf/chars pg)))
+      (is (vector? (pdf/tables pg)))
+      (is (vector? (pdf/images pg)))
+      (is (vector? (pdf/annotations pg))))))
 
-(deftest phase1-element-extraction
-  (with-open [d (pdf/open-from-bytes (sample-pdf))]
-    (testing "extract-words (0-based)"
-      (let [words (pdf/extract-words d 0)]
-        (is (seq words))                                  ; non-empty
-        (is (seq (:text (first words))))                  ; word[0].text non-empty
-        (is (map? (:bbox (first words))))                 ; word[0] has a bbox
-        (is (number? (:x (:bbox (first words)))))
-        (is (instance? Boolean (:bold (first words))))))
-    (testing "extract-chars (0-based)"
-      (let [chars (pdf/extract-chars d 0)]
-        (is (seq chars))                                  ; non-empty
-        (is (integer? (:character (first chars))))        ; codepoint as int
-        (is (map? (:bbox (first chars))))))
-    (testing "extract-text-lines (0-based)"
-      (let [lines (pdf/extract-text-lines d 0)]
-        (is (seq lines))                                  ; non-empty
-        (is (seq (:text (first lines))))
-        (is (integer? (:word-count (first lines))))))
-    (testing "extract-tables (0-based) returns a list without error"
-      (let [tables (pdf/extract-tables d 0)]
-        (is (sequential? tables))                         ; may be empty
-        (doseq [t tables]
-          (is (integer? (:row-count t)))
-          (is (integer? (:col-count t)))
-          (is (instance? Boolean (:has-header t)))
-          (is (fn? (:cell t))))))))
+(deftest search-and-forms
+  (with-open [d (pdf/open (sample-pdf))]
+    (let [ms (pdf/search d "Hello")]
+      (is (seq ms))
+      (is (.contains (.text (first ms)) "Hello")))
+    (is (vector? (pdf/form-fields d)))))
 
-(deftest phase2-element-extraction
-  (with-open [d (pdf/open-from-bytes (sample-pdf))]
-    (testing "embedded-fonts (0-based) returns a list without error"
-      (let [fonts (pdf/embedded-fonts d 0)]
-        (is (sequential? fonts))                          ; may be empty
-        (doseq [ft fonts]
-          (is (string? (:name ft)))
-          (is (string? (:type ft)))
-          (is (string? (:encoding ft)))
-          (is (instance? Boolean (:embedded ft)))
-          (is (instance? Boolean (:subset ft))))))
-    (testing "embedded-images (0-based) returns a list without error"
-      (let [images (pdf/embedded-images d 0)]
-        (is (sequential? images))                         ; may be empty
-        (doseq [im images]
-          (is (integer? (:width im)))
-          (is (integer? (:height im)))
-          (is (integer? (:bits-per-component im)))
-          (is (string? (:format im)))
-          (is (string? (:colorspace im)))
-          (is (bytes? (:data im))))))
-    (testing "page-annotations (0-based) returns a list without error"
-      (let [anns (pdf/page-annotations d 0)]
-        (is (sequential? anns))                           ; may be empty
-        (doseq [a anns]
-          (is (string? (:type a)))
-          (is (string? (:subtype a)))
-          (is (string? (:content a)))
-          (is (string? (:author a)))
-          (is (map? (:rect a)))
-          (is (number? (:border-width a))))))
-    (testing "extract-paths (0-based) returns a list without error"
-      (let [paths (pdf/extract-paths d 0)]
-        (is (sequential? paths))                          ; may be empty
-        (doseq [p paths]
-          (is (map? (:bbox p)))
-          (is (number? (:stroke-width p)))
-          (is (instance? Boolean (:has-stroke p)))
-          (is (instance? Boolean (:has-fill p)))
-          (is (integer? (:operation-count p))))))
-    (testing "search (0-based)"
-      (let [results (pdf/search d 0 "Alpha" false)]
-        (is (seq results))                                ; non-empty
-        (is (re-find #"Alpha" (:text (first results))))   ; first result contains Alpha
-        (is (>= (:page (first results)) 0))               ; page >= 0
-        (is (map? (:bbox (first results))))))
-    (testing "search-all"
-      (let [results (pdf/search-all d "Alpha" false)]
-        (is (seq results))                                ; non-empty
-        (is (re-find #"Alpha" (:text (first results))))   ; first result contains Alpha
-        (is (>= (:page (first results)) 0))))))           ; page >= 0
+(deftest render-page
+  (with-open [d (pdf/open (sample-pdf))]
+    (is (> (count (pdf/render d 0)) 100))))
 
-(deftest phase3-page-rendering
-  (with-open [d (pdf/open-from-bytes (sample-pdf))]
-    (testing "render-page (0-based, PNG)"
-      (with-open [img (pdf/render-page d 0 0)]
-        (is (> (pdf/rendered-image-width img) 0))         ; width > 0
-        (is (> (pdf/rendered-image-height img) 0))        ; height > 0
-        (is (bytes? (pdf/rendered-image-data img)))
-        (is (pos? (alength (pdf/rendered-image-data img)))) ; non-empty data
-        (testing "rendered-image-save"
-          (let [f (File/createTempFile "pdfoxide-clj-render" ".png")]
-            (pdf/rendered-image-save img (.getAbsolutePath f))
-            (is (> (.length f) 0)) (.delete f)))))
-    (testing "render-page (default format = PNG)"
-      (with-open [img (pdf/render-page d 0)]
-        (is (> (pdf/rendered-image-width img) 0))))
-    (testing "render-page-zoom returns without error"
-      (with-open [img (pdf/render-page-zoom d 0 2.0)]
-        (is (> (pdf/rendered-image-width img) 0))))
-    (testing "render-page-thumbnail returns without error"
-      (with-open [img (pdf/render-page-thumbnail d 0 64)]
-        (is (> (pdf/rendered-image-width img) 0))))))
+(deftest metadata-optional->nil
+  (with-open [d (pdf/open (sample-pdf))]
+    ;; Optional.empty -> nil; just assert the accessors are callable.
+    (is (or (nil? (pdf/producer d)) (string? (pdf/producer d))))
+    (is (or (nil? (pdf/creator d)) (string? (pdf/creator d))))))
 
-(deftest document-editor
-  (with-open [e (pdf/open-editor-from-bytes (sample-pdf))]
-    (is (>= (pdf/editor-page-count e) 1))                  ; open-editor-from-bytes + page-count
-    (is (instance? Boolean (pdf/editor-modified? e)))      ; is-modified -> bool
-    (pdf/editor-rotate-all-pages e 90)                     ; rotate-all-pages succeeds (no throw)
-    (is (integer? (pdf/editor-page-rotation e 0)))         ; get-page-rotation -> int
-    (is (= 90 (pdf/editor-page-rotation e 0)))             ; rotation now 90
-    (pdf/set-editor-producer e "x")                         ; set-producer succeeds
-    (is (string? (pdf/editor-producer e)))                 ; get-producer
-    (let [out (pdf/editor-save-to-bytes e)]                ; save-to-bytes -> non-empty
-      (is (bytes? out))
-      (is (pos? (alength out))))))
+(deftest document-editor-round-trip
+  (with-open [ed (pdf/editor (sample-pdf))]
+    (is (pdf/open? ed))
+    (pdf/scrub-metadata ed)
+    (is (> (count (pdf/editor-save ed)) 100))))
 
-(deftest error-path
-  (is (thrown? clojure.lang.ExceptionInfo (pdf/open "/nonexistent/nope.pdf"))))
+(deftest auto-extractor
+  (with-open [d (pdf/open (sample-pdf))]
+    (let [t (pdf/auto-text (pdf/auto-extractor d))]
+      (is (or (.contains t "Hello") (.contains t "Alpha"))))))

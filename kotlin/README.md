@@ -1,61 +1,71 @@
 # pdf_oxide — Kotlin bindings
 
-Idiomatic Kotlin/JVM bindings (Android-ready) over the pdf_oxide C ABI via
-**JNA** — pure Kotlin, no native compile step. JNA loads
-`libpdf_oxide.{so,dylib,dll}` at runtime; handles are `AutoCloseable`; returned
-C strings/buffers are copied into Kotlin and freed via `free_string`; C-ABI
-error codes throw `PdfOxideException`. Suspending coroutine helpers run the
-CPU-bound native work off the caller's thread.
+Idiomatic Kotlin/JVM bindings (Android-ready) — a **thin facade** over the
+mature [`fyi.oxide:pdf-oxide`](../java) Java binding, which owns the single JNI
+native bridge (the `pdf_oxide_jni` crate). This module adds **zero native code**:
+it re-exports the Java types (`PdfDocument`, `Pdf`, `PdfPage`, `DocumentEditor`,
+`PdfSigner`, `PdfValidator`, `AutoExtractor`, the `geometry`/`text`/`table`/
+`search` value types, …) and layers Kotlin sugar — `Optional<T>` → `T?`
+(`producerOrNull()`, `valueOrNull()`, …) and `use { }` on the `AutoCloseable`
+handles.
+
+> Why a facade? Java, Kotlin, and Scala all run on the JVM, so the native bridge
+> is written and tested **once** (in the Java binding). The Kotlin module is a
+> pure-JVM library that depends on it.
 
 ## Build & test
 
-The binding links the **default-feature cdylib** (not the Python wheel):
+The Java binding owns the JNI library (`pdf_oxide_jni`); build it, install the
+Java artifact to your local Maven repo, then build the facade:
 
 ```bash
-# 1. build the native library (shipped binding feature set)
-cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
+# 1. build the JNI native library (full feature set)
+cargo build --release -p pdf_oxide_jni --features full
 
-# 2. test (JNA finds the cdylib via jna.library.path)
+# 2. install the Java binding to ~/.m2 (skip the dev profile's Rust rebuild)
+( cd java && mvn -P'!dev' -DskipTests install )
+
+# 3. test the Kotlin facade (JNI lib located via fyi.oxide.pdf.lib.path)
 cd kotlin
-gradle test -DPDF_OXIDE_LIB_DIR="$PWD/../target/release"
-gradle runExample -DPDF_OXIDE_LIB_DIR="$PWD/../target/release"
+gradle test      -DPDF_OXIDE_JNI_LIB="$PWD/../target/release/libpdf_oxide_jni.so"
+gradle runExample -DPDF_OXIDE_JNI_LIB="$PWD/../target/release/libpdf_oxide_jni.so"
 ```
 
-`jna.library.path` is set from `-DPDF_OXIDE_LIB_DIR`, the `PDF_OXIDE_LIB_DIR`
-env var, or `../target/release` by default. On Android, ship the `.so` in
-`jniLibs/<abi>/` and JNA resolves it automatically.
+`PDF_OXIDE_JNI_LIB` points the Java `NativeLoader` at the JNI library (via the
+`-Dfyi.oxide.pdf.lib.path` system property); it defaults to
+`../target/release/libpdf_oxide_jni.so`. On Android, ship the `.so` in
+`jniLibs/<abi>/` and load it via `System.loadLibrary("pdf_oxide_jni")`.
 
 ## Use
 
 ```kotlin
 import fyi.oxide.pdf.Pdf
 import fyi.oxide.pdf.PdfDocument
+import fyi.oxide.pdf.producerOrNull
 
 Pdf.fromMarkdown("# Hello\n\nbody\n").use { pdf ->
-    PdfDocument.openFromBytes(pdf.toBytes()).use { doc ->
+    PdfDocument.open(pdf.save()).use { doc ->
         println(doc.pageCount())
         println(doc.extractText(0))
-        println(doc.toMarkdownAll())
+        println(doc.toMarkdown())
+        println(doc.page(0).words().map { it.text() })
+        println(doc.producerOrNull() ?: "(no producer)")   // Optional -> nullable
     }
 }
-
-// Coroutine-friendly:
-val md = doc.toMarkdownAllAsync()   // suspends on Dispatchers.Default
 ```
 
 ## Layout
 
 ```
 kotlin/
-  src/main/kotlin/fyi/oxide/pdf/PdfOxide.kt     JNA wrapper (PdfDocument, Pdf)
-  src/main/kotlin/fyi/oxide/pdf/Coroutines.kt   suspending extensions
+  src/main/kotlin/fyi/oxide/pdf/PdfOxide.kt     Kotlin idioms (Optional -> nullable extensions)
   src/main/kotlin/examples/BasicExtraction.kt   runnable example (asserted in CI)
-  src/test/kotlin/fyi/oxide/pdf/ApiCoverageTest.kt  one test per public method
+  src/test/kotlin/fyi/oxide/pdf/ApiCoverageTest.kt  coverage over the Java-backed API
   build.gradle.kts / settings.gradle.kts
 ```
 
-## Verification (CI — same set as every binding)
+## Verification (CI)
 
-`.github/workflows/kotlin.yml` on Linux + macOS: build cdylib → JDK 17 + Gradle
-→ `gradle test` (api-coverage incl. coroutine helpers) → run example with an
-output assertion.
+`.github/workflows/kotlin.yml` on Linux + macOS: build the JNI cdylib → install
+the Java binding to local Maven → JDK 17 + Gradle → ktlint + detekt → `gradle
+test` (api-coverage) → run example with an output assertion.

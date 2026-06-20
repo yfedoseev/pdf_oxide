@@ -1,134 +1,73 @@
-// One test per public method — mirrors the api_coverage convention used by
-// every pdf_oxide binding. Self-contained: builds its own PDF from Markdown.
+// Coverage for the Scala facade over the Java binding. Self-contained: builds
+// its own PDF from Markdown, then exercises the main Java entry points plus the
+// Scala idioms (Optional -> Option, List -> Seq, Using on AutoCloseable).
 package fyi.oxide.pdf
 
 import org.scalatest.funsuite.AnyFunSuite
-import java.io.File
 import scala.util.Using
 
 class ApiCoverageSpec extends AnyFunSuite:
+  private val md = "# Alpha Heading\n\nHello world from the Scala facade. Beta gamma delta.\n"
+
   private def samplePdf(): Array[Byte] =
-    Using.resource(
-      Pdf.fromMarkdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n")
-    )(_.toBytes())
+    Using.resource(Pdf.fromMarkdown(md))(_.save())
 
-  // ── Pdf builder ────────────────────────────────────────────────────────────
-  test("fromMarkdown + toBytes"):
-    Using.resource(Pdf.fromMarkdown("# md\n\nbody\n"))(p => assert(p.toBytes().length > 100))
-  test("fromHtml"):
-    Using.resource(Pdf.fromHtml("<h1>h</h1><p>b</p>"))(p => assert(p.toBytes().length > 100))
-  test("fromText"):
-    Using.resource(Pdf.fromText("plain text body"))(p => assert(p.toBytes().length > 100))
-  test("save"):
-    val f = File.createTempFile("pdfoxide-scala", ".pdf")
-    Using.resource(Pdf.fromMarkdown("# f\n\nx\n"))(_.save(f.getAbsolutePath))
-    assert(f.length() > 100); f.delete()
+  test("Pdf.fromMarkdown + save"):
+    val bytes = samplePdf()
+    assert(bytes.length > 100)
+    assert(bytes(0) == '%'.toByte) // %PDF header
 
-  // ── Document open paths ──────────────────────────────────────────────────────
-  test("openFromBytes + pageCount"):
-    Using.resource(PdfDocument.openFromBytes(samplePdf()))(d => assert(d.pageCount() >= 1))
-  test("open (path)"):
-    val f = File.createTempFile("pdfoxide-scala-open", ".pdf")
-    Using.resource(Pdf.fromMarkdown("# f\n\nx\n"))(_.save(f.getAbsolutePath))
-    Using.resource(PdfDocument.open(f.getAbsolutePath))(d => assert(d.pageCount() >= 1)); f.delete()
+  test("PdfDocument open + core extraction"):
+    Using.resource(PdfDocument.open(samplePdf())): doc =>
+      assert(doc.isOpen)
+      assert(doc.pageCount() >= 1)
+      val text = doc.extractText(0)
+      assert(text.contains("Hello") || text.contains("Alpha"))
+      assert(doc.toMarkdown().nonEmpty)
+      assert(doc.toHtml().contains("<"))
 
-  // ── Document inspection + extraction ─────────────────────────────────────────
-  test("inspection + extraction"):
-    Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
-      assert(doc.version().major >= 1) // version
-      assert(!doc.isEncrypted()) // isEncrypted
-      doc.hasStructureTree() // hasStructureTree (smoke)
-      assert(doc.extractText(0).contains("Alpha")) // extractText
-      assert(doc.toPlainText(0).nonEmpty) // toPlainText
-      assert(doc.toMarkdown(0).nonEmpty) // toMarkdown
-      assert(doc.toHtml(0).contains("<")) // toHtml
-      assert(doc.toMarkdownAll().nonEmpty) // toMarkdownAll
-      assert(doc.toHtmlAll().contains("<")) // toHtmlAll
-      assert(doc.toPlainTextAll().nonEmpty) // toPlainTextAll
-      assert(doc.extractStructuredJson(0).nonEmpty) // extractStructuredJson
-
-  // ── Phase-1 element extraction ───────────────────────────────────────────────
-  test("extractWords / extractChars / extractTextLines / extractTables"):
-    Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
-      val words = doc.extractWords(0) // extractWords
+  test("PdfPage element extraction as Seq"):
+    Using.resource(PdfDocument.open(samplePdf())): doc =>
+      val page = doc.page(0)
+      assert(page.width() > 0 && page.height() > 0)
+      val words = page.wordsSeq
       assert(words.nonEmpty)
-      assert(words.head.text.nonEmpty) // word[0].text non-empty
-      val b = words.head.bbox // word[0] has a bbox
-      assert(b.width >= 0 && b.height >= 0)
-      assert(doc.extractChars(0).nonEmpty) // extractChars
-      assert(doc.extractTextLines(0).nonEmpty) // extractTextLines
-      val tables = doc.extractTables(0) // extractTables (may be empty)
-      assert(tables ne null)
+      assert(words.head.text.nonEmpty)
+      assert(words.head.bbox.width >= 0)
+      assert(page.linesSeq != null)
+      assert(page.charsSeq != null)
+      assert(page.tablesSeq != null)
+      assert(page.imagesSeq != null)
+      assert(page.annotationsSeq != null)
 
-  // ── Phase-2 element extraction ───────────────────────────────────────────────
-  test("embeddedFonts / embeddedImages / pageAnnotations / extractPaths"):
-    Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
-      val fonts = doc.embeddedFonts(0) // embeddedFonts (may be empty)
-      assert(fonts ne null)
-      val images = doc.embeddedImages(0) // embeddedImages (may be empty)
-      assert(images ne null)
-      val annots = doc.pageAnnotations(0) // pageAnnotations (may be empty)
-      assert(annots ne null)
-      val paths = doc.extractPaths(0) // extractPaths (may be empty)
-      assert(paths ne null)
+  test("search + forms"):
+    Using.resource(PdfDocument.open(samplePdf())): doc =>
+      val matches = doc.searchSeq("Hello")
+      assert(matches.nonEmpty)
+      assert(matches.head.text.contains("Hello"))
+      assert(doc.formFieldsSeq != null)
 
-  test("search / searchAll"):
-    Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
-      val hits = doc.search(0, "Alpha", false) // search
-      assert(hits.nonEmpty)
-      assert(hits.head.text.contains("Alpha")) // first hit text contains Alpha
-      assert(hits.head.page >= 0) // page >= 0
-      val allHits = doc.searchAll("Alpha", false) // searchAll
-      assert(allHits.nonEmpty)
-      assert(allHits.head.text.contains("Alpha"))
-      assert(allHits.head.page >= 0)
+  test("render page"):
+    Using.resource(PdfDocument.open(samplePdf())): doc =>
+      val png = doc.render(0)
+      assert(png.length > 100)
 
-  // ── authenticate ─────────────────────────────────────────────────────────────
-  test("authenticate"):
-    Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
-      val ok: Boolean = doc.authenticate("anything") // returns a bool without error
-      assert(ok == true || ok == false)
+  test("metadata Optional -> Option"):
+    Using.resource(PdfDocument.open(samplePdf())): doc =>
+      val producer: Option[String] = doc.producerOption
+      val creator: Option[String] = doc.creatorOption
+      assert(producer.forall(_.nonEmpty))
+      assert(creator.forall(_.nonEmpty))
 
-  // ── Phase-3 page rendering ───────────────────────────────────────────────────
-  test("renderPage / renderPageZoom / renderPageThumbnail"):
-    Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
-      Using.resource(doc.renderPage(0)): img => // renderPage (PNG, 0-based)
-        assert(img.width > 0) // width > 0
-        assert(img.height > 0) // height > 0
-        assert(img.data.nonEmpty) // non-empty encoded image data
-      Using.resource(doc.renderPageZoom(0, 2.0f)): img => // renderPageZoom
-        assert(img.width > 0 && img.height > 0)
-      Using.resource(doc.renderPageThumbnail(0, 64)): img => // renderPageThumbnail
-        assert(img.width > 0 && img.height > 0)
+  test("DocumentEditor round-trip"):
+    Using.resource(DocumentEditor.open(samplePdf())): ed =>
+      assert(ed.isOpen)
+      ed.scrubMetadata()
+      val out = ed.save()
+      assert(out.length > 100)
 
-  test("RenderedImage.save"):
-    val f = File.createTempFile("pdfoxide-scala-render", ".png")
-    Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
-      Using.resource(doc.renderPage(0))(_.save(f.getAbsolutePath))
-    assert(f.length() > 0); f.delete()
-
-  // ── Page model ───────────────────────────────────────────────────────────────
-  test("page model"):
-    Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
-      val page = doc.page(0) // page(index)
-      assert(page.text().contains("Alpha")) // text
-      assert(page.markdown().nonEmpty) // markdown
-      assert(page.html().nonEmpty) // html
-      assert(page.plainText().nonEmpty) // plainText
-
-  // ── DocumentEditor (in-place editing) ────────────────────────────────────────
-  test("DocumentEditor open / edit / save round-trip"):
-    Using.resource(DocumentEditor.openFromBytes(samplePdf())): ed =>
-      assert(ed.pageCount() >= 1) // pageCount
-      val modifiedFlag: Boolean = ed.isModified() // isModified is a bool
-      assert(modifiedFlag == true || modifiedFlag == false)
-      ed.rotateAllPages(90) // rotateAllPages succeeds
-      val rot: Int = ed.getPageRotation(0) // getPageRotation returns an int
-      assert(rot == 90 || rot >= 0)
-      ed.setProducer("x") // setProducer + getProducer succeed
-      assert(ed.getProducer() ne null)
-      assert(ed.saveToBytes().nonEmpty) // saveToBytes returns non-empty bytes
-
-  // ── Error path ───────────────────────────────────────────────────────────────
-  test("open nonexistent throws PdfOxideException"):
-    assertThrows[PdfOxideException](PdfDocument.open("/nonexistent/nope.pdf"))
+  test("AutoExtractor"):
+    Using.resource(PdfDocument.open(samplePdf())): doc =>
+      val auto = AutoExtractor.of(doc)
+      val text = auto.extractText()
+      assert(text.contains("Hello") || text.contains("Alpha"))

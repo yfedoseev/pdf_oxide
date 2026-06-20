@@ -1,25 +1,35 @@
 # pdf_oxide — Clojure bindings
 
-Idiomatic Clojure bindings over the pdf_oxide C ABI via **JNA** (same FFI
-mechanism as the Kotlin/Scala bindings). JNA loads
-`libpdf_oxide.{so,dylib,dll}` at runtime; document/pdf handles are `Closeable`
-(use with `with-open`); returned C strings/buffers are copied into Clojure and
-freed via `free_string`; non-success C-ABI error codes throw `ex-info` carrying
-`{:code …}`.
+Idiomatic Clojure bindings — a **thin wrapper** over the mature
+[`fyi.oxide:pdf-oxide`](../java) Java binding, which owns the single JNI native
+bridge (the `pdf_oxide_jni` crate). This namespace adds **zero native code**: it
+calls the Java classes directly via interop and returns Clojure-friendly values
+(`java.util.List` → vector, `java.util.Optional` → value-or-`nil`). The handle
+types (`Pdf`, `PdfDocument`, `DocumentEditor`) are `AutoCloseable`, so use
+`with-open`.
+
+> Why a wrapper, not a separate FFI? Java and Clojure both run on the JVM, so the
+> native bridge is written and tested **once** (in the Java binding); Clojure-Java
+> interop is trivial.
 
 ## Build & test
 
-The binding links the **default-feature cdylib** (not the Python wheel):
-
 ```bash
-# 1. build the native library (shipped binding feature set)
-cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
+# 1. build the JNI native library (full feature set)
+cargo build --release -p pdf_oxide_jni --features full
 
-# 2. test (JNA finds the cdylib via jna.library.path)
+# 2. install the Java binding to ~/.m2 (skip the dev profile's Rust rebuild)
+( cd java && mvn -P'!dev' -DskipTests install )
+
+# 3. test the Clojure wrapper (JNI lib located via fyi.oxide.pdf.lib.path)
 cd clojure
-clojure -J-Djna.library.path="$PWD/../target/release" -M:test
-clojure -J-Djna.library.path="$PWD/../target/release" -M:example
+clojure -J-Dfyi.oxide.pdf.lib.path="$PWD/../target/release/libpdf_oxide_jni.so" -M:test
+clojure -J-Dfyi.oxide.pdf.lib.path="$PWD/../target/release/libpdf_oxide_jni.so" -M:example
 ```
+
+The `:test`/`:example` aliases also set `-Djava.library.path=../target/release`,
+so `System.loadLibrary("pdf_oxide_jni")` resolves the lib when run from this
+directory; pass an absolute `-Dfyi.oxide.pdf.lib.path` to override.
 
 ## Use
 
@@ -27,24 +37,26 @@ clojure -J-Djna.library.path="$PWD/../target/release" -M:example
 (require '[pdf-oxide.core :as pdf])
 
 (with-open [p (pdf/from-markdown "# Hello\n\nbody\n")
-            d (pdf/open-bytes (pdf/to-bytes p))]
-  (pdf/page-count d)
-  (pdf/extract-text d 0)
-  (pdf/to-markdown-all d))
+            d (pdf/open (pdf/save p))]
+  (println (pdf/page-count d))
+  (println (pdf/extract-text d 0))
+  (println (pdf/to-markdown d))
+  (println (map #(.text %) (pdf/words (pdf/page d 0))))  ; List -> vector
+  (println (or (pdf/producer d) "(none)")))              ; Optional -> nil
 ```
 
 ## Layout
 
 ```
 clojure/
-  src/pdf_oxide/core.clj     JNA wrapper (Document, Pdf, fns)
-  src/pdf_oxide/example.clj  runnable example (asserted in CI)
-  test/pdf_oxide/core_test.clj  one test per public fn
+  src/pdf_oxide/core.clj      idiomatic fns over the Java classes (List -> vec, Optional -> nil)
+  src/pdf_oxide/example.clj   runnable example (asserted in CI)
+  test/pdf_oxide/core_test.clj  coverage over the Java-backed API
   deps.edn
 ```
 
-## Verification (CI — same set as every binding)
+## Verification (CI)
 
-`.github/workflows/clojure.yml` on Linux + macOS: build cdylib → JDK 17 +
-Clojure CLI → `clojure -M:test` (api-coverage) → run example with an output
-assertion.
+`.github/workflows/clojure.yml` on Linux + macOS: build the JNI cdylib → install
+the Java binding to local Maven → JDK 17 + Clojure CLI → clj-kondo → `-M:test`
+(api-coverage) → run example with an output assertion.

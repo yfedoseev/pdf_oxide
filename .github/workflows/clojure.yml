@@ -5,8 +5,9 @@ on:
     branches: [ main, develop ]
     paths:
       - 'clojure/**'
+      - 'java/**'
+      - 'pdf_oxide_jni/**'
       - 'src/**'
-      - 'include/pdf_oxide_c/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/clojure.yml'
@@ -14,8 +15,9 @@ on:
     branches: [ main, develop ]
     paths:
       - 'clojure/**'
+      - 'java/**'
+      - 'pdf_oxide_jni/**'
       - 'src/**'
-      - 'include/pdf_oxide_c/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/clojure.yml'
@@ -29,7 +31,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  PDF_OXIDE_LIB_DIR: ${{ github.workspace }}/target/release
 
 jobs:
   test:
@@ -56,8 +57,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-build-release-
 
-      - name: Build cdylib (release, shipped binding feature set)
-        run: cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
+      # The Clojure facade has no native code: it calls the Java binding, which
+      # owns the single JNI bridge (pdf_oxide_jni crate).
+      - name: Build JNI cdylib (release, full feature set)
+        run: cargo build --release -p pdf_oxide_jni --features full
+
+      - name: Resolve JNI library path (per OS)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            echo "PDF_OXIDE_JNI_LIB=${{ github.workspace }}/target/release/libpdf_oxide_jni.dylib" >> "$GITHUB_ENV"
+          else
+            echo "PDF_OXIDE_JNI_LIB=${{ github.workspace }}/target/release/libpdf_oxide_jni.so" >> "$GITHUB_ENV"
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4
@@ -71,20 +83,26 @@ jobs:
           cli: latest
           clj-kondo: latest
 
+      # Install the Java binding to the local Maven repo so deps.edn resolves
+      # `fyi.oxide:pdf-oxide` (skip the dev profile's Rust rebuild + tests).
+      - name: Build & install Java binding to local Maven repo
+        working-directory: java
+        run: mvn -q -B -P'!dev' -DskipTests install
+
       - name: Lint (clj-kondo)
         working-directory: clojure
         run: clj-kondo --lint src test
 
-      - name: Test (api-coverage, jna.library.path -> cdylib)
+      - name: Test (api-coverage, JNI lib via fyi.oxide.pdf.lib.path)
         working-directory: clojure
         shell: bash
-        run: clojure -J-Djna.library.path="${PDF_OXIDE_LIB_DIR}" -M:test
+        run: clojure -J-Dfyi.oxide.pdf.lib.path="${PDF_OXIDE_JNI_LIB}" -M:test
 
       - name: Run example (with assertion)
         working-directory: clojure
         shell: bash
         run: |
           set -uo pipefail
-          OUT="$(clojure -J-Djna.library.path="${PDF_OXIDE_LIB_DIR}" -M:example)"
+          OUT="$(clojure -J-Dfyi.oxide.pdf.lib.path="${PDF_OXIDE_JNI_LIB}" -M:example)"
           echo "$OUT"
           echo "$OUT" | grep -q "Hello pdf_oxide" || { echo "::error::example output missing expected text"; exit 1; }

@@ -86,6 +86,11 @@ def rules() -> list[tuple[str, str, bool]]:
         ("julia/Project.toml", r'(?m)^version\s*=\s*"([^"]+)"', False),
         ("kotlin/build.gradle.kts", r'(?m)^version\s*=\s*"([^"]+)"', False),
         ("scala/build.sbt", r'ThisBuild / version := "([^"]+)"', False),
+        # JVM facades depend on the Java binding artifact at the same version —
+        # keep these dependency coordinates in lock-step.
+        ("kotlin/build.gradle.kts", r'fyi\.oxide:pdf-oxide:([0-9][^"]+)"', False),
+        ("scala/build.sbt", r'"fyi\.oxide" % "pdf-oxide" % "([0-9][^"]+)"', False),
+        ("clojure/deps.edn", r'fyi\.oxide/pdf-oxide \{:mvn/version "([^"]+)"', False),
         ("zig/build.zig.zon", r'\.version\s*=\s*"([^"]+)"', False),
         ("cpp/CMakeLists.txt", r"project\(pdf_oxide_cpp VERSION ([0-9][^\s]+)", False),
         ("elixir/mix.exs", r'version:\s*"([^"]+)"', False),

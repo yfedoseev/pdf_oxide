@@ -1,8 +1,11 @@
-// pdf_oxide — Kotlin/JVM (+ Android-ready) bindings over the C ABI via JNA.
+// pdf_oxide — Kotlin/JVM (+ Android-ready) bindings.
 //
-// Pure-Kotlin FFI (no native compile): JNA loads libpdf_oxide.{so,dylib,dll} at
-// runtime. The native library directory is taken from the `jna.library.path`
-// system property or PDF_OXIDE_LIB_DIR (see PdfOxideNative).
+// Thin idiomatic facade over the mature `fyi.oxide:pdf-oxide` Java binding
+// (which owns the single JNI native bridge via the `pdf_oxide_jni` crate). This
+// module adds ZERO native code: it depends on the Java artifact and layers
+// Kotlin sugar (Optional -> nullable, AutoCloseable `use`, fluent helpers).
+// The JNI library is loaded by the Java NativeLoader via System.loadLibrary or
+// the `-Dfyi.oxide.pdf.lib.path=<libpdf_oxide_jni.so>` override.
 plugins {
     kotlin("jvm") version "2.2.20"
     `java-library`
@@ -15,7 +18,10 @@ plugins {
 group = "fyi.oxide"
 version = "0.3.68"
 
-repositories { mavenCentral() }
+repositories {
+    mavenCentral()
+    mavenLocal() // resolve the locally-installed fyi.oxide:pdf-oxide during dev/CI
+}
 
 // Static analysis. detekt 1.23.x runs on its own bundled Kotlin analyzer
 // (independent of the project's Kotlin 2.2.20), so K2 compatibility is a
@@ -29,21 +35,24 @@ detekt {
 }
 
 dependencies {
-    implementation("net.java.dev.jna:jna:5.14.0")
-    api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
+    // The Java binding owns the JNI bridge; we re-export its types (api scope)
+    // so Kotlin callers `import fyi.oxide.pdf.*` and get them transitively.
+    api("fyi.oxide:pdf-oxide:0.3.68")
     testImplementation(kotlin("test"))
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 }
 
 kotlin { jvmToolchain(17) }
 
+// Resolve the JNI cdylib (built from the `pdf_oxide_jni` crate) for the Java
+// NativeLoader. Override with -DPDF_OXIDE_JNI_LIB=<full path to the .so/.dylib>.
+fun jniLibPath(): String =
+    System.getProperty("PDF_OXIDE_JNI_LIB")
+        ?: System.getenv("PDF_OXIDE_JNI_LIB")
+        ?: "${rootDir}/../target/release/libpdf_oxide_jni.so"
+
 tasks.test {
     useJUnitPlatform()
-    // Point JNA at the freshly built cdylib (override with -DPDF_OXIDE_LIB_DIR=…).
-    val libDir = System.getProperty("PDF_OXIDE_LIB_DIR")
-        ?: System.getenv("PDF_OXIDE_LIB_DIR")
-        ?: "${rootDir}/../target/release"
-    systemProperty("jna.library.path", libDir)
+    systemProperty("fyi.oxide.pdf.lib.path", jniLibPath())
     testLogging { events("passed", "failed", "skipped") }
 }
 
@@ -57,7 +66,7 @@ mavenPublishing {
     coordinates("fyi.oxide", "pdf-oxide-kotlin", version.toString())
     pom {
         name.set("pdf_oxide Kotlin bindings")
-        description.set("Idiomatic Kotlin/JVM bindings for pdf_oxide — fast PDF text/Markdown/HTML extraction over the C ABI via JNA.")
+        description.set("Idiomatic Kotlin/JVM bindings for pdf_oxide — a thin facade over the fyi.oxide:pdf-oxide Java binding (JNI).")
         url.set("https://github.com/yfedoseev/pdf_oxide")
         licenses {
             license {
@@ -85,8 +94,5 @@ tasks.register<JavaExec>("runExample") {
     group = "application"
     mainClass.set("examples.BasicExtractionKt")
     classpath = sourceSets.main.get().runtimeClasspath
-    val libDir = System.getProperty("PDF_OXIDE_LIB_DIR")
-        ?: System.getenv("PDF_OXIDE_LIB_DIR")
-        ?: "${rootDir}/../target/release"
-    systemProperty("jna.library.path", libDir)
+    systemProperty("fyi.oxide.pdf.lib.path", jniLibPath())
 }

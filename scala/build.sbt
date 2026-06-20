@@ -1,4 +1,7 @@
-// pdf_oxide — Scala bindings over the C ABI via JNA (same mechanism as Kotlin).
+// pdf_oxide — Scala 3 bindings: a thin idiomatic facade over the
+// `fyi.oxide:pdf-oxide` Java binding (which owns the single JNI native bridge).
+// No native code here — depend on the Java artifact and add Scala sugar
+// (Optional -> Option, java.util.List -> Seq, Using on AutoCloseable handles).
 ThisBuild / organization := "fyi.oxide"
 ThisBuild / organizationName := "PDF Oxide"
 ThisBuild / version := "0.3.68"
@@ -26,18 +29,20 @@ ThisBuild / sonatypeProfileName := "fyi.oxide"
 lazy val root = (project in file("."))
   .settings(
     name := "pdf-oxide-scala",
-    description := "Idiomatic Scala 3 bindings for pdf_oxide — fast PDF text/Markdown/HTML extraction over the C ABI via JNA.",
+    description := "Idiomatic Scala 3 bindings for pdf_oxide — a thin facade over the fyi.oxide:pdf-oxide Java binding (JNI).",
+    resolvers += Resolver.mavenLocal, // resolve the locally-installed Java artifact during dev/CI
     libraryDependencies ++= Seq(
-      "net.java.dev.jna" % "jna" % "5.14.0",
+      "fyi.oxide" % "pdf-oxide" % "0.3.68",
       "org.scalatest" %% "scalatest" % "3.2.19" % Test
     ),
-    // JNA finds the freshly built cdylib via jna.library.path.
+    // The Java NativeLoader resolves the JNI cdylib via this property; override
+    // with -DPDF_OXIDE_JNI_LIB=<full path to libpdf_oxide_jni.so/.dylib>.
     Test / javaOptions += {
-      val dir = sys.props.getOrElse(
-        "PDF_OXIDE_LIB_DIR",
-        sys.env.getOrElse("PDF_OXIDE_LIB_DIR", s"${baseDirectory.value}/../target/release")
+      val so = sys.props.getOrElse(
+        "PDF_OXIDE_JNI_LIB",
+        sys.env.getOrElse("PDF_OXIDE_JNI_LIB", s"${baseDirectory.value}/../target/release/libpdf_oxide_jni.so")
       )
-      s"-Djna.library.path=$dir"
+      s"-Dfyi.oxide.pdf.lib.path=$so"
     },
     Test / fork := true
   )

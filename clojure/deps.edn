@@ -1,14 +1,21 @@
-;; pdf_oxide — Clojure bindings over the C ABI via JNA (same mechanism as Kotlin).
+;; pdf_oxide — Clojure bindings: a thin idiomatic wrapper over the
+;; `fyi.oxide:pdf-oxide` Java binding (which owns the single JNI native bridge).
+;; No JNA / native code — we call the Java classes directly via interop, and the
+;; Java NativeLoader resolves the JNI cdylib via the `fyi.oxide.pdf.lib.path`
+;; system property (pointed at the freshly built libpdf_oxide_jni below).
 {:paths ["src"]
- :deps {net.java.dev.jna/jna {:mvn/version "5.14.0"}}
+ :deps {fyi.oxide/pdf-oxide {:mvn/version "0.3.68"}}
  :aliases
  {:test
   {:extra-paths ["test"]
    :extra-deps {io.github.cognitect-labs/test-runner
                 {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
-   ;; JNA finds the freshly built cdylib via jna.library.path.
-   :jvm-opts ["-Djna.library.path=../target/release"]
+   ;; The Java NativeLoader falls back to System.loadLibrary("pdf_oxide_jni"),
+   ;; which searches java.library.path (relative entries resolve against the CWD,
+   ;; i.e. this `clojure/` dir). Override the override-prop with an ABSOLUTE path
+   ;; via -Dfyi.oxide.pdf.lib.path=/abs/... if preferred.
+   :jvm-opts ["-Djava.library.path=../target/release"]
    :main-opts ["-m" "cognitect.test-runner"]}
   :example
-  {:jvm-opts ["-Djna.library.path=../target/release"]
+  {:jvm-opts ["-Dfyi.oxide.pdf.lib.path=../target/release/libpdf_oxide_jni.so"]
    :main-opts ["-m" "pdf-oxide.example"]}}}
