@@ -57,8 +57,8 @@ void main() {
       expect(d.pageCount, greaterThanOrEqualTo(1));
     });
     test('version', () => expect(doc.version.major, greaterThanOrEqualTo(1)));
-    test('isEncrypted', () => expect(doc.isEncrypted, isFalse));
-    test('hasStructureTree', () => doc.hasStructureTree); // smoke
+    test('isEncrypted', () => expect(doc.isEncrypted(), isFalse));
+    test('hasStructureTree', () => doc.hasStructureTree()); // smoke
     test('extractText', () => expect(doc.extractText(0), contains('Alpha')));
     test('toPlainText', () => expect(doc.toPlainText(0), isNotEmpty));
     test('toMarkdown', () => expect(doc.toMarkdown(0), isNotEmpty));

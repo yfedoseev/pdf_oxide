@@ -91,8 +91,7 @@ class _Native {
             lib.lookupFunction<_SaveBytesC, _SaveBytesD>('pdf_save_to_bytes'),
         freeString =
             lib.lookupFunction<_FreeStringC, _FreeStringD>('free_string'),
-        freeBytes =
-            lib.lookupFunction<_FreeBytesC, _FreeBytesD>('free_bytes');
+        freeBytes = lib.lookupFunction<_FreeBytesC, _FreeBytesD>('free_bytes');
 
   final DynamicLibrary lib;
   final _OpenD open;
@@ -246,12 +245,12 @@ class PdfDocument implements Finalizable {
     }
   }
 
-  bool get isEncrypted {
+  bool isEncrypted() {
     _check();
     return _n.isEncrypted(_handle);
   }
 
-  bool get hasStructureTree {
+  bool hasStructureTree() {
     _check();
     return _n.hasTree(_handle);
   }
