@@ -54,8 +54,8 @@ fn main() {
     let mut scanned = 0usize;
 
     println!(
-        "{:<6} {:>6} {:<10} {:<10} {:<10} {}",
-        "page", "spans", "whole", "left", "right", "flag"
+        "{:<6} {:>6} {:<10} {:<10} {:<10} flag",
+        "page", "spans", "whole", "left", "right"
     );
     for p in 0..pages {
         let spans = match doc.extract_spans(p) {

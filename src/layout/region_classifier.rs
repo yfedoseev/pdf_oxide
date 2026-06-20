@@ -339,7 +339,7 @@ mod tests {
 
     /// A line of prose: one wide span ~`chars` characters long at `top`.
     fn prose_line(top: f32, left: f32, chars: usize) -> TextSpan {
-        let text: String = std::iter::repeat('x').take(chars).collect();
+        let text: String = "x".repeat(chars);
         span(&text, left, top, chars as f32 * 5.0, 10.0)
     }
 

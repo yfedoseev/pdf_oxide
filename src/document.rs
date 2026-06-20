@@ -12469,10 +12469,78 @@ impl PdfDocument {
         };
         let left_class = crate::layout::classify_region(spans, &body_side(true));
         let right_class = crate::layout::classify_region(spans, &body_side(false));
-        if !(left_class.is_reorderable_column() && right_class.is_reorderable_column()) {
-            return None;
+        if left_class.is_reorderable_column() && right_class.is_reorderable_column() {
+            return Some(gutter_x);
         }
-        Some(gutter_x)
+        // Fallback: the v0.3.66 cross-gutter content-balance test. The per-column
+        // classifier (above) admits ragged reference lists / dense results columns
+        // the balance test rejected, but it also REJECTS some genuine balanced
+        // two-column PROSE the balance test accepted — short, ragged verse/body
+        // lines on a narrow-gutter page (a reference-Bible / two-column page with a
+        // full-width title, issue #734). Without this they fall off the
+        // column-major path and the first row interleaves across the gutter. Tried
+        // only AFTER the classifier (academic pages keep the classifier path) and
+        // behind the same corridor + two-column-start preamble, so single-column /
+        // grid / N-up pages never reach it.
+        if Self::two_column_rows_balanced(spans, gutter_x) {
+            return Some(gutter_x);
+        }
+        None
+    }
+
+    /// v0.3.66 cross-gutter content-balance test: true when spanning rows carry
+    /// substantial text on BOTH sides of `gutter_x` (prose), not a short
+    /// right-hand value / page number (form / TOC). Fallback for
+    /// `prose_two_column_gutter` after the per-column classifier declines.
+    fn two_column_rows_balanced(spans: &[crate::layout::TextSpan], gutter_x: f32) -> bool {
+        let mut ordered: Vec<&crate::layout::TextSpan> = spans
+            .iter()
+            .filter(|s| {
+                !s.text.trim().is_empty()
+                    && s.bbox.width > 0.0
+                    && s.bbox.x.is_finite()
+                    && s.bbox.width.is_finite()
+            })
+            .collect();
+        ordered.sort_by(|a, b| crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y));
+        let (mut total, mut spanning, mut short_r) = (0usize, 0usize, 0usize);
+        let (mut lefts, mut rights): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
+        let mut i = 0;
+        while i < ordered.len() {
+            let y0 = ordered[i].bbox.y;
+            let (mut lc, mut rc) = (0usize, 0usize);
+            while i < ordered.len() && (ordered[i].bbox.y - y0).abs() <= 3.0 {
+                let s = ordered[i];
+                let n = s.text.trim().chars().count();
+                if s.bbox.x + s.bbox.width * 0.5 < gutter_x {
+                    lc += n;
+                } else {
+                    rc += n;
+                }
+                i += 1;
+            }
+            total += 1;
+            if lc > 0 && rc > 0 {
+                spanning += 1;
+                lefts.push(lc);
+                rights.push(rc);
+                if rc < 15 {
+                    short_r += 1;
+                }
+            }
+        }
+        if total < 6 || spanning == 0 || (spanning as f32) < 0.60 * total as f32 {
+            return false;
+        }
+        if (short_r as f32) > 0.30 * spanning as f32 {
+            return false;
+        }
+        let med = |v: &mut [usize]| -> f32 {
+            v.sort_unstable();
+            v[v.len() / 2] as f32
+        };
+        let (ml, mr) = (med(&mut lefts), med(&mut rights));
+        mr >= 25.0 && (0.45..=2.2).contains(&(mr / ml.max(1.0)))
     }
 
     /// Robust classifier-gated two-column detector for bodies the clean corridor

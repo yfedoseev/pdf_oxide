@@ -10419,11 +10419,8 @@ mod tests {
         // There the placed text IS the page's logical content and must NOT be
         // suppressed (pymupdf/pdftotext extract it). The coverage pre-scan flags
         // this: placed text dominates, non-placed text is a tiny header.
-        let body: String = std::iter::repeat(
-            "(This is the full article body typeset inside a placed PDF region) Tj\n",
-        )
-        .take(20)
-        .collect();
+        let body =
+            "(This is the full article body typeset inside a placed PDF region) Tj\n".repeat(20);
         let stream = format!("/PlacedPDF BMC\nBT\n{body}ET\nEMC\nBT (Journal vol 1) Tj ET\n");
         assert!(
             TextExtractor::placed_pdf_text_dominates(stream.as_bytes()),
@@ -10436,11 +10433,9 @@ mod tests {
         // The decorative-figure case (PMC8100493): a small /PlacedPDF galley
         // duplicate sits amid a full page of real text OUTSIDE it. The placed
         // text is the minority, so it stays suppressed (the de-dup win).
-        let outside: String = std::iter::repeat(
-            "(Real published paragraph of the article that lives outside the placed region) Tj\n",
-        )
-        .take(20)
-        .collect();
+        let outside =
+            "(Real published paragraph of the article that lives outside the placed region) Tj\n"
+                .repeat(20);
         let stream = format!("BT\n{outside}ET\n/PlacedPDF BMC\nBT (draft galley) Tj ET\nEMC\n");
         assert!(
             !TextExtractor::placed_pdf_text_dominates(stream.as_bytes()),
