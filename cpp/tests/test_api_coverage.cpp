@@ -83,6 +83,20 @@ int main() {
     }
     CHECK(threw);
 
+    // ── close() is explicit + idempotent; use-after-close throws ─────────────
+    {
+        auto d = Document::open_from_bytes(bytes);
+        d.close();
+        d.close(); // idempotent
+        bool closedThrew = false;
+        try {
+            d.page_count();
+        } catch (const Error&) {
+            closedThrew = true;
+        }
+        CHECK(closedThrew);
+    }
+
     if (g_failures == 0) {
         std::printf("ok: all C++ api-coverage checks passed\n");
         return 0;

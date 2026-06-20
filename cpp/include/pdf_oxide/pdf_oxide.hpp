@@ -106,7 +106,7 @@ class Document {
     /// Number of pages.
     int page_count() const {
         int32_t code = 0;
-        int32_t n = pdf_document_get_page_count(handle_.get(), &code);
+        int32_t n = pdf_document_get_page_count(ptr(), &code);
         if (n < 0) {
             throw Error(code, "Document::page_count");
         }
@@ -116,64 +116,62 @@ class Document {
     /// PDF version.
     Version version() const {
         Version v{0, 0};
-        pdf_document_get_version(handle_.get(), &v.major, &v.minor);
+        pdf_document_get_version(ptr(), &v.major, &v.minor);
         return v;
     }
 
     /// True if the document is encrypted.
-    bool is_encrypted() const { return pdf_document_is_encrypted(handle_.get()); }
+    bool is_encrypted() const { return pdf_document_is_encrypted(ptr()); }
 
     /// True if the document carries a logical structure tree (tagged PDF).
-    bool has_structure_tree() const {
-        return pdf_document_has_structure_tree(handle_.get());
-    }
+    bool has_structure_tree() const { return pdf_document_has_structure_tree(ptr()); }
 
     /// Extract reading-order text for one page (0-based).
     std::string extract_text(int page_index) const {
         int32_t code = 0;
-        return detail::take_string(
-            pdf_document_extract_text(handle_.get(), page_index, &code), code,
-            "Document::extract_text");
+        return detail::take_string(pdf_document_extract_text(ptr(), page_index, &code),
+                                   code, "Document::extract_text");
     }
 
     /// Plain text for one page.
     std::string to_plain_text(int page_index) const {
         int32_t code = 0;
-        return detail::take_string(
-            pdf_document_to_plain_text(handle_.get(), page_index, &code), code,
-            "Document::to_plain_text");
+        return detail::take_string(pdf_document_to_plain_text(ptr(), page_index, &code),
+                                   code, "Document::to_plain_text");
     }
 
     /// Markdown for one page.
     std::string to_markdown(int page_index) const {
         int32_t code = 0;
-        return detail::take_string(
-            pdf_document_to_markdown(handle_.get(), page_index, &code), code,
-            "Document::to_markdown");
+        return detail::take_string(pdf_document_to_markdown(ptr(), page_index, &code),
+                                   code, "Document::to_markdown");
     }
 
     /// HTML for one page.
     std::string to_html(int page_index) const {
         int32_t code = 0;
-        return detail::take_string(
-            pdf_document_to_html(handle_.get(), page_index, &code), code,
-            "Document::to_html");
+        return detail::take_string(pdf_document_to_html(ptr(), page_index, &code), code,
+                                   "Document::to_html");
     }
 
     /// Markdown for the whole document.
     std::string to_markdown_all() const {
         int32_t code = 0;
-        return detail::take_string(pdf_document_to_markdown_all(handle_.get(), &code),
-                                   code, "Document::to_markdown_all");
+        return detail::take_string(pdf_document_to_markdown_all(ptr(), &code), code,
+                                   "Document::to_markdown_all");
     }
 
     /// Structured content as a JSON string.
     std::string extract_structured_json(int page_index) const {
         int32_t code = 0;
         return detail::take_string(
-            pdf_document_extract_structured_to_json(handle_.get(), page_index, &code),
-            code, "Document::extract_structured_json");
+            pdf_document_extract_structured_to_json(ptr(), page_index, &code), code,
+            "Document::extract_structured_json");
     }
+
+    /// Free the native handle now (idempotent). RAII also frees at scope exit;
+    /// this is the explicit close for API symmetry with the other bindings.
+    void close() { handle_.reset(); }
 
   private:
     struct Deleter {
@@ -183,6 +181,11 @@ class Document {
         }
     };
     explicit Document(PdfDocument* h) : handle_(h) {}
+    PdfDocument* ptr() const {
+        if (!handle_)
+            throw Error(0, "Document is closed");
+        return handle_.get();
+    }
     std::unique_ptr<PdfDocument, Deleter> handle_;
 };
 
@@ -222,7 +225,7 @@ class Pdf {
     /// Write the PDF to a path.
     void save(const std::string& path) const {
         int32_t code = 0;
-        if (pdf_save(handle_.get(), path.c_str(), &code) != 0) {
+        if (pdf_save(ptr(), path.c_str(), &code) != 0) {
             throw Error(code, "Pdf::save");
         }
     }
@@ -231,10 +234,13 @@ class Pdf {
     std::vector<std::uint8_t> save_to_bytes() const {
         int32_t code = 0;
         int32_t len = 0;
-        std::uint8_t* p = pdf_save_to_bytes(handle_.get(), &len, &code);
+        std::uint8_t* p = pdf_save_to_bytes(ptr(), &len, &code);
         return detail::take_bytes(p, static_cast<std::size_t>(len < 0 ? 0 : len), code,
                                   "Pdf::save_to_bytes");
     }
+
+    /// Free the native handle now (idempotent). RAII also frees at scope exit.
+    void close() { handle_.reset(); }
 
   private:
     struct Deleter {
@@ -244,6 +250,11 @@ class Pdf {
         }
     };
     explicit Pdf(::Pdf* h) : handle_(h) {}
+    ::Pdf* ptr() const {
+        if (!handle_)
+            throw Error(0, "Pdf is closed");
+        return handle_.get();
+    }
     std::unique_ptr<::Pdf, Deleter> handle_;
 };
 
