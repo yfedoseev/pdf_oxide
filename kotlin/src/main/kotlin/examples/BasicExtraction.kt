@@ -6,7 +6,8 @@ import fyi.oxide.pdf.Pdf
 import fyi.oxide.pdf.PdfDocument
 
 fun main() {
-    Pdf.fromMarkdown("# Hello pdf_oxide\n\nThis is a **Kotlin** binding smoke example.\n")
+    Pdf
+        .fromMarkdown("# Hello pdf_oxide\n\nThis is a **Kotlin** binding smoke example.\n")
         .use { pdf ->
             PdfDocument.openFromBytes(pdf.saveToBytes()).use { doc ->
                 println("pages:   ${doc.pageCount()}")

@@ -16,43 +16,130 @@ import com.sun.jna.ptr.ByteByReference
 import com.sun.jna.ptr.IntByReference
 
 /** Thrown on any non-success C-ABI error code. */
-class PdfOxideException(val code: Int, val op: String) :
-    RuntimeException("pdf_oxide: $op failed (error code $code)")
+class PdfOxideException(
+    val code: Int,
+    val op: String,
+) : RuntimeException("pdf_oxide: $op failed (error code $code)")
 
 /** PDF version (e.g. 1.7). */
-data class PdfVersion(val major: Int, val minor: Int) {
+data class PdfVersion(
+    val major: Int,
+    val minor: Int,
+) {
     override fun toString() = "$major.$minor"
 }
 
 /** Raw JNA binding to the pdf_oxide C ABI (internal). */
 internal interface CLib : Library {
-    fun pdf_document_open(path: String, code: IntByReference): Pointer?
-    fun pdf_document_open_from_bytes(data: ByteArray, len: Long, code: IntByReference): Pointer?
-    fun pdf_document_open_with_password(path: String, pw: String, code: IntByReference): Pointer?
+    fun pdf_document_open(
+        path: String,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_document_open_from_bytes(
+        data: ByteArray,
+        len: Long,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_document_open_with_password(
+        path: String,
+        pw: String,
+        code: IntByReference,
+    ): Pointer?
+
     fun pdf_document_free(h: Pointer)
-    fun pdf_document_get_page_count(h: Pointer, code: IntByReference): Int
-    fun pdf_document_get_version(h: Pointer, major: ByteByReference, minor: ByteByReference)
+
+    fun pdf_document_get_page_count(
+        h: Pointer,
+        code: IntByReference,
+    ): Int
+
+    fun pdf_document_get_version(
+        h: Pointer,
+        major: ByteByReference,
+        minor: ByteByReference,
+    )
+
     fun pdf_document_is_encrypted(h: Pointer): Boolean
+
     fun pdf_document_has_structure_tree(h: Pointer): Boolean
-    fun pdf_document_extract_text(h: Pointer, page: Int, code: IntByReference): Pointer?
-    fun pdf_document_to_plain_text(h: Pointer, page: Int, code: IntByReference): Pointer?
-    fun pdf_document_to_markdown(h: Pointer, page: Int, code: IntByReference): Pointer?
-    fun pdf_document_to_html(h: Pointer, page: Int, code: IntByReference): Pointer?
-    fun pdf_document_to_markdown_all(h: Pointer, code: IntByReference): Pointer?
-    fun pdf_document_extract_structured_to_json(h: Pointer, page: Int, code: IntByReference): Pointer?
-    fun pdf_from_markdown(md: String, code: IntByReference): Pointer?
-    fun pdf_from_html(html: String, code: IntByReference): Pointer?
-    fun pdf_from_text(text: String, code: IntByReference): Pointer?
+
+    fun pdf_document_extract_text(
+        h: Pointer,
+        page: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_document_to_plain_text(
+        h: Pointer,
+        page: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_document_to_markdown(
+        h: Pointer,
+        page: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_document_to_html(
+        h: Pointer,
+        page: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_document_to_markdown_all(
+        h: Pointer,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_document_extract_structured_to_json(
+        h: Pointer,
+        page: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_from_markdown(
+        md: String,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_from_html(
+        html: String,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_from_text(
+        text: String,
+        code: IntByReference,
+    ): Pointer?
+
     fun pdf_free(h: Pointer)
-    fun pdf_save(h: Pointer, path: String, code: IntByReference): Int
-    fun pdf_save_to_bytes(h: Pointer, len: IntByReference, code: IntByReference): Pointer?
+
+    fun pdf_save(
+        h: Pointer,
+        path: String,
+        code: IntByReference,
+    ): Int
+
+    fun pdf_save_to_bytes(
+        h: Pointer,
+        len: IntByReference,
+        code: IntByReference,
+    ): Pointer?
+
     fun free_string(p: Pointer)
 }
 
 internal object Native_ {
     val lib: CLib = Native.load("pdf_oxide", CLib::class.java)
 
-    fun takeString(p: Pointer?, code: Int, op: String): String {
+    fun takeString(
+        p: Pointer?,
+        code: Int,
+        op: String,
+    ): String {
         if (p == null) throw PdfOxideException(code, op)
         val s = p.getString(0)
         lib.free_string(p)
@@ -61,31 +148,39 @@ internal object Native_ {
 }
 
 /** An opened PDF for extraction/inspection. Close when done (AutoCloseable). */
-class PdfDocument internal constructor(private var handle: Pointer?) : AutoCloseable {
+class PdfDocument internal constructor(
+    private var handle: Pointer?,
+) : AutoCloseable {
     private fun ptr(): Pointer = handle ?: throw IllegalStateException("PdfDocument is closed")
 
     companion object {
         @JvmStatic
         fun open(path: String): PdfDocument {
             val code = IntByReference()
-            val h = Native_.lib.pdf_document_open(path, code)
-                ?: throw PdfOxideException(code.value, "open")
+            val h =
+                Native_.lib.pdf_document_open(path, code)
+                    ?: throw PdfOxideException(code.value, "open")
             return PdfDocument(h)
         }
 
         @JvmStatic
         fun openFromBytes(data: ByteArray): PdfDocument {
             val code = IntByReference()
-            val h = Native_.lib.pdf_document_open_from_bytes(data, data.size.toLong(), code)
-                ?: throw PdfOxideException(code.value, "openFromBytes")
+            val h =
+                Native_.lib.pdf_document_open_from_bytes(data, data.size.toLong(), code)
+                    ?: throw PdfOxideException(code.value, "openFromBytes")
             return PdfDocument(h)
         }
 
         @JvmStatic
-        fun openWithPassword(path: String, password: String): PdfDocument {
+        fun openWithPassword(
+            path: String,
+            password: String,
+        ): PdfDocument {
             val code = IntByReference()
-            val h = Native_.lib.pdf_document_open_with_password(path, password, code)
-                ?: throw PdfOxideException(code.value, "openWithPassword")
+            val h =
+                Native_.lib.pdf_document_open_with_password(path, password, code)
+                    ?: throw PdfOxideException(code.value, "openWithPassword")
             return PdfDocument(h)
         }
     }
@@ -105,6 +200,7 @@ class PdfDocument internal constructor(private var handle: Pointer?) : AutoClose
     }
 
     fun isEncrypted(): Boolean = Native_.lib.pdf_document_is_encrypted(ptr())
+
     fun hasStructureTree(): Boolean = Native_.lib.pdf_document_has_structure_tree(ptr())
 
     fun extractText(page: Int): String {
@@ -135,16 +231,24 @@ class PdfDocument internal constructor(private var handle: Pointer?) : AutoClose
     fun extractStructuredJson(page: Int): String {
         val code = IntByReference()
         return Native_.takeString(
-            Native_.lib.pdf_document_extract_structured_to_json(ptr(), page, code), code.value, "extractStructuredJson")
+            Native_.lib.pdf_document_extract_structured_to_json(ptr(), page, code),
+            code.value,
+            "extractStructuredJson",
+        )
     }
 
     override fun close() {
-        handle?.let { Native_.lib.pdf_document_free(it); handle = null }
+        handle?.let {
+            Native_.lib.pdf_document_free(it)
+            handle = null
+        }
     }
 }
 
 /** A PDF produced by a builder. Close when done (AutoCloseable). */
-class Pdf internal constructor(private var handle: Pointer?) : AutoCloseable {
+class Pdf internal constructor(
+    private var handle: Pointer?,
+) : AutoCloseable {
     private fun ptr(): Pointer = handle ?: throw IllegalStateException("Pdf is closed")
 
     companion object {
@@ -178,8 +282,9 @@ class Pdf internal constructor(private var handle: Pointer?) : AutoCloseable {
     fun saveToBytes(): ByteArray {
         val len = IntByReference()
         val code = IntByReference()
-        val p = Native_.lib.pdf_save_to_bytes(ptr(), len, code)
-            ?: throw PdfOxideException(code.value, "saveToBytes")
+        val p =
+            Native_.lib.pdf_save_to_bytes(ptr(), len, code)
+                ?: throw PdfOxideException(code.value, "saveToBytes")
         val n = if (len.value < 0) 0 else len.value
         val out = p.getByteArray(0, n)
         Native_.lib.free_string(p)
@@ -187,6 +292,9 @@ class Pdf internal constructor(private var handle: Pointer?) : AutoCloseable {
     }
 
     override fun close() {
-        handle?.let { Native_.lib.pdf_free(it); handle = null }
+        handle?.let {
+            Native_.lib.pdf_free(it)
+            handle = null
+        }
     }
 }

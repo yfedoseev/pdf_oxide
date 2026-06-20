@@ -65,6 +65,15 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@06832c7b30a0129d7fb559bcc6e43d26f6374244 # v4
 
+      - name: Install ktlint
+        run: |
+          curl -sSLO https://github.com/pinterest/ktlint/releases/download/1.8.0/ktlint
+          chmod +x ktlint && sudo mv ktlint /usr/local/bin/
+
+      - name: ktlint check
+        working-directory: kotlin
+        run: ktlint "src/**/*.kt"
+
       - name: Test (api-coverage, jna.library.path -> cdylib)
         working-directory: kotlin
         run: gradle test --no-daemon --console=plain -DPDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}"

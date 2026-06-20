@@ -1,0 +1,7 @@
+[*.kt]
+# The JNA binding interface (CLib) must use snake_case method names to map the
+# C-ABI symbols, and the internal `Native_` object name mirrors the C namespace —
+# disable the two naming rules that conflict with these FFI requirements. All
+# other ktlint standard rules remain enforced.
+ktlint_standard_function-naming = disabled
+ktlint_standard_class-naming = disabled

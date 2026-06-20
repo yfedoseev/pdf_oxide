@@ -7,13 +7,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /** Suspending whole-document Markdown extraction. */
-suspend fun PdfDocument.toMarkdownAllAsync(): String =
-    withContext(Dispatchers.Default) { toMarkdownAll() }
+suspend fun PdfDocument.toMarkdownAllAsync(): String = withContext(Dispatchers.Default) { toMarkdownAll() }
 
 /** Suspending per-page text extraction. */
-suspend fun PdfDocument.extractTextAsync(page: Int): String =
-    withContext(Dispatchers.Default) { extractText(page) }
+suspend fun PdfDocument.extractTextAsync(page: Int): String = withContext(Dispatchers.Default) { extractText(page) }
 
 /** Suspending per-page Markdown extraction. */
-suspend fun PdfDocument.toMarkdownAsync(page: Int): String =
-    withContext(Dispatchers.Default) { toMarkdown(page) }
+suspend fun PdfDocument.toMarkdownAsync(page: Int): String = withContext(Dispatchers.Default) { toMarkdown(page) }
