@@ -13,7 +13,7 @@ export open_document, open_from_bytes, open_with_password
 export page_count, version, is_encrypted, has_structure_tree
 export extract_text,
     to_plain_text, to_markdown, to_html, to_markdown_all, extract_structured_json
-export from_markdown, from_html, from_text, save, save_to_bytes, close!
+export from_markdown, from_html, from_text, save, to_bytes, close!
 
 # Native library resolution: PDF_OXIDE_LIB_PATH (full path) -> PDF_OXIDE_LIB_DIR
 # -> common build dirs -> bare name (system loader).
@@ -239,7 +239,7 @@ function save(p::Pdf, path::AbstractString)
 end
 
 """Serialize the built PDF to a `Vector{UInt8}`."""
-function save_to_bytes(p::Pdf)
+function to_bytes(p::Pdf)
     len = Ref{Int32}(0);
     code = Ref{Int32}(0)
     ptr = ccall(
@@ -250,7 +250,7 @@ function save_to_bytes(p::Pdf)
         len,
         code,
     )
-    ptr == C_NULL && throw(PdfOxideError(code[], "save_to_bytes"))
+    ptr == C_NULL && throw(PdfOxideError(code[], "to_bytes"))
     n = len[] < 0 ? 0 : Int(len[])
     out = copy(unsafe_wrap(Array, ptr, n))
     # Raw byte buffers free via free_bytes, not free_string (which does strlen).

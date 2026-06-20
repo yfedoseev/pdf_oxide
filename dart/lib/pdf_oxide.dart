@@ -339,13 +339,13 @@ class Pdf implements Finalizable {
     }
   }
 
-  Uint8List saveToBytes() {
+  Uint8List toBytes() {
     _check();
     final len = calloc<Int32>();
     final code = calloc<Int32>();
     try {
       final p = _n.saveBytes(_handle, len, code);
-      if (p == nullptr) throw PdfOxideError(code.value, 'saveToBytes');
+      if (p == nullptr) throw PdfOxideError(code.value, 'toBytes');
       final out =
           Uint8List.fromList(p.asTypedList(len.value < 0 ? 0 : len.value));
       _n.freeBytes(p);

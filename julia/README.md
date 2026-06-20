@@ -29,7 +29,7 @@ Native library resolution: `PDF_OXIDE_LIB_PATH` (full path) → `PDF_OXIDE_LIB_D
 using PdfOxide
 
 pdf = from_markdown("# Hello\n\nbody\n")
-doc = open_from_bytes(save_to_bytes(pdf))
+doc = open_from_bytes(to_bytes(pdf))
 
 page_count(doc)
 extract_text(doc, 0)     # 0-based page index

@@ -28,7 +28,7 @@ DYLD_LIBRARY_PATH="$PWD/../target/release" ./basic_extraction
 
 NSError *err = nil;
 POXPdf *pdf = [POXPdf fromMarkdown:@"# Hello\n\nbody\n" error:&err];
-POXDocument *doc = [POXDocument openData:[pdf saveToBytesError:&err] error:&err];
+POXDocument *doc = [POXDocument openData:[pdf toBytesWithError:&err] error:&err];
 
 NSInteger pages = [doc pageCountError:&err];
 NSString *text = [doc extractText:0 error:&err];

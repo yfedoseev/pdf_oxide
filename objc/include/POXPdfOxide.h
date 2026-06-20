@@ -56,7 +56,7 @@ typedef struct {
 + (nullable instancetype)fromText:(NSString*)text error:(NSError**)error;
 
 - (BOOL)saveToPath:(NSString*)path error:(NSError**)error;
-- (nullable NSData*)saveToBytesError:(NSError**)error;
+- (nullable NSData*)toBytesWithError:(NSError**)error;
 
 /// Free the native handle now (idempotent).
 - (void)close;

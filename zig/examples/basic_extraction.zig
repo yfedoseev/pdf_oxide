@@ -11,7 +11,7 @@ pub fn main() !void {
     );
     defer pdf.deinit();
 
-    const bytes = try pdf.saveToBytes(a);
+    const bytes = try pdf.toBytes(a);
     defer a.free(bytes);
 
     var doc = try pdf_oxide.Document.openFromBytes(bytes);

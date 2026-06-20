@@ -28,7 +28,7 @@ DYLD_LIBRARY_PATH="$PDF_OXIDE_LIB_DIR" swift run basic_extraction
 import PdfOxide
 
 let pdf = try Pdf.fromMarkdown("# Hello\n\nbody\n")
-let doc = try Document.open(bytes: try pdf.saveToBytes())
+let doc = try Document.open(bytes: try pdf.toBytes())
 
 let pages = try doc.pageCount()
 let text  = try doc.extractText(0)

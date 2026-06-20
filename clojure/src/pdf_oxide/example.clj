@@ -5,7 +5,7 @@
 
 (defn -main [& _]
   (with-open [p (pdf/from-markdown "# Hello pdf_oxide\n\nThis is a **Clojure** binding smoke example.\n")
-              d (pdf/open-from-bytes (pdf/save-to-bytes p))]
+              d (pdf/open-from-bytes (pdf/to-bytes p))]
     (println "pages:  " (pdf/page-count d))
     (println "version:" (let [v (pdf/version d)] (str (:major v) "." (:minor v))))
     (println "--- text (page 0) ---")

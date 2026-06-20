@@ -4,7 +4,7 @@ library(pdfoxide)
 
 pdf <- pdf_from_markdown(
   "# Hello pdf_oxide\n\nThis is an **R** binding smoke example.\n")
-doc <- pdf_open_from_bytes(pdf_save_to_bytes(pdf))
+doc <- pdf_open_from_bytes(pdf_to_bytes(pdf))
 
 cat("pages:  ", pdf_page_count(doc), "\n")
 v <- pdf_version(doc)

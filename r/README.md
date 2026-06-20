@@ -28,7 +28,7 @@ LD_LIBRARY_PATH="$PWD/target/release" \
 library(pdfoxide)
 
 pdf <- pdf_from_markdown("# Hello\n\nbody\n")
-doc <- pdf_open_bytes(pdf_save_to_bytes(pdf))
+doc <- pdf_open_bytes(pdf_to_bytes(pdf))
 
 pdf_page_count(doc)
 pdf_extract_text(doc, 0)     # 0-based page index

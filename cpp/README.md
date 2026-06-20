@@ -39,7 +39,7 @@ CMake inputs:
 int main() {
     // Build a PDF from Markdown, then read it back.
     auto pdf  = pdf_oxide::Pdf::from_markdown("# Hello\n\nbody\n");
-    auto doc  = pdf_oxide::Document::open_from_bytes(pdf.save_to_bytes());
+    auto doc  = pdf_oxide::Document::open_from_bytes(pdf.to_bytes());
 
     int pages = doc.page_count();
     std::string text = doc.extract_text(0);

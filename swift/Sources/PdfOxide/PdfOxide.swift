@@ -148,9 +148,9 @@ public final class Pdf {
         if pdf_save(try ptr(), path, &code) != 0 { throw PdfOxideError(code: code, op: "save") }
     }
 
-    public func saveToBytes() throws -> [UInt8] {
+    public func toBytes() throws -> [UInt8] {
         var len: Int32 = 0, code: Int32 = 0
-        guard let p = pdf_save_to_bytes(try ptr(), &len, &code) else { throw PdfOxideError(code: code, op: "saveToBytes") }
+        guard let p = pdf_save_to_bytes(try ptr(), &len, &code) else { throw PdfOxideError(code: code, op: "toBytes") }
         // Raw byte buffers free via free_bytes, not free_string.
         defer { free_bytes(p) }
         let n = len < 0 ? 0 : Int(len)

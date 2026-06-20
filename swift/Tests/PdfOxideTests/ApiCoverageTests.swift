@@ -5,18 +5,18 @@ import XCTest
 
 final class ApiCoverageTests: XCTestCase {
     private func samplePdf() throws -> [UInt8] {
-        try Pdf.fromMarkdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n").saveToBytes()
+        try Pdf.fromMarkdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n").toBytes()
     }
 
     // ── Pdf builder ──────────────────────────────────────────────────────────
     func testFromMarkdownAndSaveToBytes() throws {
-        XCTAssertGreaterThan(try Pdf.fromMarkdown("# md\n\nbody\n").saveToBytes().count, 100)
+        XCTAssertGreaterThan(try Pdf.fromMarkdown("# md\n\nbody\n").toBytes().count, 100)
     }
     func testFromHtml() throws {
-        XCTAssertGreaterThan(try Pdf.fromHtml("<h1>h</h1><p>b</p>").saveToBytes().count, 100)
+        XCTAssertGreaterThan(try Pdf.fromHtml("<h1>h</h1><p>b</p>").toBytes().count, 100)
     }
     func testFromText() throws {
-        XCTAssertGreaterThan(try Pdf.fromText("plain text body").saveToBytes().count, 100)
+        XCTAssertGreaterThan(try Pdf.fromText("plain text body").toBytes().count, 100)
     }
     func testSave() throws {
         let path = NSTemporaryDirectory() + "pdfoxide_swift.pdf"

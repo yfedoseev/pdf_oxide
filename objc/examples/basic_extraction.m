@@ -14,7 +14,7 @@ int main(void) {
             return 1;
         }
 
-        POXDocument* doc = [POXDocument openFromBytes:[pdf saveToBytesError:&err]
+        POXDocument* doc = [POXDocument openFromBytes:[pdf toBytesWithError:&err]
                                                 error:&err];
         if (!doc) {
             fprintf(stderr, "error: %s\n", err.localizedDescription.UTF8String);

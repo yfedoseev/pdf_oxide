@@ -26,7 +26,7 @@ LD_LIBRARY_PATH="$PWD/../target/release" mix run examples/basic_extraction.exs
 
 ```elixir
 {:ok, pdf}  = PdfOxide.from_markdown("# Hello\n\nbody\n")
-{:ok, data} = PdfOxide.save_to_bytes(pdf)
+{:ok, data} = PdfOxide.to_bytes(pdf)
 {:ok, doc}  = PdfOxide.open_bytes(data)
 
 {:ok, n}    = PdfOxide.page_count(doc)

@@ -7,15 +7,15 @@
 
 (defn sample-pdf ^bytes []
   (with-open [p (pdf/from-markdown "# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n")]
-    (pdf/save-to-bytes p)))
+    (pdf/to-bytes p)))
 
 (deftest pdf-builder
-  (testing "from-markdown + save-to-bytes"
-    (with-open [p (pdf/from-markdown "# md\n\nbody\n")] (is (> (alength (pdf/save-to-bytes p)) 100))))
+  (testing "from-markdown + to-bytes"
+    (with-open [p (pdf/from-markdown "# md\n\nbody\n")] (is (> (alength (pdf/to-bytes p)) 100))))
   (testing "from-html"
-    (with-open [p (pdf/from-html "<h1>h</h1><p>b</p>")] (is (> (alength (pdf/save-to-bytes p)) 100))))
+    (with-open [p (pdf/from-html "<h1>h</h1><p>b</p>")] (is (> (alength (pdf/to-bytes p)) 100))))
   (testing "from-text"
-    (with-open [p (pdf/from-text "plain text body")] (is (> (alength (pdf/save-to-bytes p)) 100))))
+    (with-open [p (pdf/from-text "plain text body")] (is (> (alength (pdf/to-bytes p)) 100))))
   (testing "save"
     (let [f (File/createTempFile "pdfoxide-clj" ".pdf")]
       (with-open [p (pdf/from-markdown "# f\n\nx\n")] (pdf/save p (.getAbsolutePath f)))

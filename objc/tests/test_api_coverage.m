@@ -18,7 +18,7 @@ static NSData* samplePdf(void) {
     POXPdf* p = [POXPdf
         fromMarkdown:@"# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n"
                error:&err];
-    return [p saveToBytesError:&err];
+    return [p toBytesWithError:&err];
 }
 
 int main(void) {
@@ -27,11 +27,11 @@ int main(void) {
 
         // ── Pdf builder ──────────────────────────────────────────────────────
         CHECK([[[POXPdf fromMarkdown:@"# md\n\nbody\n"
-                               error:&err] saveToBytesError:&err] length] > 100);
+                               error:&err] toBytesWithError:&err] length] > 100);
         CHECK([[[POXPdf fromHtml:@"<h1>h</h1><p>b</p>"
-                           error:&err] saveToBytesError:&err] length] > 100);
+                           error:&err] toBytesWithError:&err] length] > 100);
         CHECK([[[POXPdf fromText:@"plain text body"
-                           error:&err] saveToBytesError:&err] length] > 100);
+                           error:&err] toBytesWithError:&err] length] > 100);
         {
             NSString* path = [NSTemporaryDirectory()
                 stringByAppendingPathComponent:@"pdfoxide_objc.pdf"];

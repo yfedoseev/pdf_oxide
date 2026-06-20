@@ -3,14 +3,14 @@
 library(pdfoxide)
 
 sample_pdf <- function() {
-  pdf_save_to_bytes(pdf_from_markdown(
+  pdf_to_bytes(pdf_from_markdown(
     "# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n"))
 }
 
 # ── Pdf builder ───────────────────────────────────────────────────────────────
-expect_true(length(pdf_save_to_bytes(pdf_from_markdown("# md\n\nbody\n"))) > 100)
-expect_true(length(pdf_save_to_bytes(pdf_from_html("<h1>h</h1><p>b</p>"))) > 100)
-expect_true(length(pdf_save_to_bytes(pdf_from_text("plain text body"))) > 100)
+expect_true(length(pdf_to_bytes(pdf_from_markdown("# md\n\nbody\n"))) > 100)
+expect_true(length(pdf_to_bytes(pdf_from_html("<h1>h</h1><p>b</p>"))) > 100)
+expect_true(length(pdf_to_bytes(pdf_from_text("plain text body"))) > 100)
 tmp <- tempfile(fileext = ".pdf")
 pdf_save(pdf_from_markdown("# f\n\nx\n"), tmp)
 expect_true(file.exists(tmp)); unlink(tmp)

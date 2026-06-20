@@ -27,7 +27,7 @@ clojure -J-Djna.library.path="$PWD/../target/release" -M:example
 (require '[pdf-oxide.core :as pdf])
 
 (with-open [p (pdf/from-markdown "# Hello\n\nbody\n")
-            d (pdf/open-bytes (pdf/save-to-bytes p))]
+            d (pdf/open-bytes (pdf/to-bytes p))]
   (pdf/page-count d)
   (pdf/extract-text d 0)
   (pdf/to-markdown-all d))

@@ -113,9 +113,9 @@
     (when-not (zero? (->int "pdf_save" [(pdf-ptr p) path code]))
       (throw (ex-info "pdf_oxide: save failed" {:code (.getValue code) :op "save"})))))
 
-(defn save-to-bytes ^bytes [^Pdf p]
+(defn to-bytes ^bytes [^Pdf p]
   (let [len (IntByReference.) code (IntByReference.)
         ptr (->ptr "pdf_save_to_bytes" [(pdf-ptr p) len code])]
-    (when (nil? ptr) (throw (ex-info "pdf_oxide: save-to-bytes failed" {:code (.getValue code)})))
+    (when (nil? ptr) (throw (ex-info "pdf_oxide: to-bytes failed" {:code (.getValue code)})))
     (let [n (max 0 (.getValue len)) out (.getByteArray ptr 0 n)]
       (free-bytes ptr) out)))

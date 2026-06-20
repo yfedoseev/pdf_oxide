@@ -8,24 +8,24 @@ import 'package:test/test.dart';
 
 Uint8List _samplePdf() => Pdf.fromMarkdown(
         '# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n')
-    .saveToBytes();
+    .toBytes();
 
 void main() {
   group('Pdf builder', () {
-    test('fromMarkdown + saveToBytes', () {
+    test('fromMarkdown + toBytes', () {
       final p = Pdf.fromMarkdown('# md\n\nbody\n');
       addTearDown(p.close);
-      expect(p.saveToBytes().length, greaterThan(100));
+      expect(p.toBytes().length, greaterThan(100));
     });
     test('fromHtml', () {
       final p = Pdf.fromHtml('<h1>html</h1><p>body</p>');
       addTearDown(p.close);
-      expect(p.saveToBytes().length, greaterThan(100));
+      expect(p.toBytes().length, greaterThan(100));
     });
     test('fromText', () {
       final p = Pdf.fromText('plain text body');
       addTearDown(p.close);
-      expect(p.saveToBytes().length, greaterThan(100));
+      expect(p.toBytes().length, greaterThan(100));
     });
     test('save', () {
       final p = Pdf.fromMarkdown('# f\n\nx\n');

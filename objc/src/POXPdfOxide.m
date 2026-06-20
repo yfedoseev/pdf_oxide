@@ -202,7 +202,7 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
     return YES;
 }
 
-- (NSData*)saveToBytesError:(NSError**)error {
+- (NSData*)toBytesWithError:(NSError**)error {
     int32_t len = 0, code = 0;
     uint8_t* p = pdf_save_to_bytes(_handle, &len, &code);
     if (!p) {

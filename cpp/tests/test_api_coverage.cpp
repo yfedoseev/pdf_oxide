@@ -26,18 +26,18 @@ using pdf_oxide::Version;
 static std::vector<std::uint8_t> sample_pdf() {
     return pdf_oxide::Pdf::from_markdown(
                "# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n")
-        .save_to_bytes();
+        .to_bytes();
 }
 
 int main() {
     // ── Pdf builder ──────────────────────────────────────────────────────
     {
         auto a = pdf_oxide::Pdf::from_markdown("# md\n\nbody\n");
-        CHECK(a.save_to_bytes().size() > 100); // save_to_bytes
+        CHECK(a.to_bytes().size() > 100); // to_bytes
         auto b = pdf_oxide::Pdf::from_html("<h1>html</h1><p>body</p>");
-        CHECK(b.save_to_bytes().size() > 100);
+        CHECK(b.to_bytes().size() > 100);
         auto c = pdf_oxide::Pdf::from_text("plain text body");
-        CHECK(c.save_to_bytes().size() > 100);
+        CHECK(c.to_bytes().size() > 100);
         // save to a temp path
         std::string path = std::string(std::tmpnam(nullptr)) + ".pdf";
         a.save(path); // save

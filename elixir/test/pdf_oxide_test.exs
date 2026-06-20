@@ -4,18 +4,20 @@ defmodule PdfOxideTest do
   use ExUnit.Case
 
   defp sample_pdf do
-    {:ok, p} = PdfOxide.from_markdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n")
-    {:ok, bytes} = PdfOxide.save_to_bytes(p)
+    {:ok, p} =
+      PdfOxide.from_markdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n")
+
+    {:ok, bytes} = PdfOxide.to_bytes(p)
     bytes
   end
 
-  test "builder: from_markdown/from_html/from_text + save_to_bytes" do
+  test "builder: from_markdown/from_html/from_text + to_bytes" do
     for {:ok, p} <- [
           PdfOxide.from_markdown("# md\n\nbody\n"),
           PdfOxide.from_html("<h1>h</h1><p>b</p>"),
           PdfOxide.from_text("plain text body")
         ] do
-      assert {:ok, bytes} = PdfOxide.save_to_bytes(p)
+      assert {:ok, bytes} = PdfOxide.to_bytes(p)
       assert byte_size(bytes) > 100
     end
   end
@@ -40,7 +42,9 @@ defmodule PdfOxideTest do
     end
 
     test "open (path)" do
-      path = Path.join(System.tmp_dir!(), "pdfoxide_ex_open_#{System.unique_integer([:positive])}.pdf")
+      path =
+        Path.join(System.tmp_dir!(), "pdfoxide_ex_open_#{System.unique_integer([:positive])}.pdf")
+
       {:ok, p} = PdfOxide.from_markdown("# f\n\nx\n")
       :ok = PdfOxide.save(p, path)
       assert {:ok, doc} = PdfOxide.open(path)

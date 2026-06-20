@@ -38,7 +38,7 @@ pdf_save <- function(pdf, path) {
 #' @param pdf A `pdfoxide_pdf`.
 #' @return A `raw` vector.
 #' @export
-pdf_save_to_bytes <- function(pdf) {
+pdf_to_bytes <- function(pdf) {
   .Call(C_r_pdf_save_to_bytes, pdf)
 }
 

@@ -4,9 +4,8 @@ using PdfOxide
 using Test
 using Aqua
 
-sample_pdf() = save_to_bytes(
-    from_markdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n"),
-)
+sample_pdf() =
+    to_bytes(from_markdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n"))
 
 # Package-quality checks (stale deps, [compat] coverage, undefined exports,
 # project-file consistency). persistent_tasks disabled — this is an FFI shim
@@ -17,9 +16,9 @@ end
 
 @testset "PdfOxide api coverage" begin
     # ── Pdf builder ───────────────────────────────────────────────────────────
-    @test length(save_to_bytes(from_markdown("# md\n\nbody\n"))) > 100
-    @test length(save_to_bytes(from_html("<h1>h</h1><p>b</p>"))) > 100
-    @test length(save_to_bytes(from_text("plain text body"))) > 100
+    @test length(to_bytes(from_markdown("# md\n\nbody\n"))) > 100
+    @test length(to_bytes(from_html("<h1>h</h1><p>b</p>"))) > 100
+    @test length(to_bytes(from_text("plain text body"))) > 100
     let tmp = tempname() * ".pdf"
         save(from_markdown("# f\n\nx\n"), tmp)
         @test isfile(tmp)

@@ -31,7 +31,7 @@ const pdf_oxide = @import("pdf_oxide");
 
 var pdf = try pdf_oxide.Pdf.fromMarkdown("# Hello\n\nbody\n");
 defer pdf.deinit();
-const bytes = try pdf.saveToBytes(allocator);
+const bytes = try pdf.toBytes(allocator);
 defer allocator.free(bytes);
 
 var doc = try pdf_oxide.Document.openFromBytes(bytes);

@@ -231,12 +231,12 @@ class Pdf {
     }
 
     /// Serialize the PDF to bytes.
-    std::vector<std::uint8_t> save_to_bytes() const {
+    std::vector<std::uint8_t> to_bytes() const {
         int32_t code = 0;
         int32_t len = 0;
         std::uint8_t* p = pdf_save_to_bytes(ptr(), &len, &code);
         return detail::take_bytes(p, static_cast<std::size_t>(len < 0 ? 0 : len), code,
-                                  "Pdf::save_to_bytes");
+                                  "Pdf::to_bytes");
     }
 
     /// Free the native handle now (idempotent). RAII also frees at scope exit.

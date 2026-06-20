@@ -3,7 +3,7 @@
 import PdfOxide
 
 let pdf = try Pdf.fromMarkdown("# Hello pdf_oxide\n\nThis is a **Swift** binding smoke example.\n")
-let doc = try Document.openFromBytes(try pdf.saveToBytes())
+let doc = try Document.openFromBytes(try pdf.toBytes())
 
 print("pages:   \(try doc.pageCount())")
 print("version: \(try doc.version())")

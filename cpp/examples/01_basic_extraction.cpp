@@ -13,7 +13,7 @@ int main() {
             "# Hello pdf_oxide\n\nThis is a **C++** binding smoke example.\n");
 
         // Serialize and re-open it.
-        std::vector<std::uint8_t> bytes = pdf.save_to_bytes();
+        std::vector<std::uint8_t> bytes = pdf.to_bytes();
         auto doc = pdf_oxide::Document::open_from_bytes(bytes);
 
         std::cout << "pages:   " << doc.page_count() << "\n";

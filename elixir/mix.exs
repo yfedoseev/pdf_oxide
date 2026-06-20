@@ -10,7 +10,8 @@ defmodule PdfOxide.MixProject do
       make_targets: ["all"],
       make_clean: ["clean"],
       deps: deps(),
-      description: "Idiomatic Elixir bindings for pdf_oxide — fast PDF text/Markdown/HTML extraction.",
+      description:
+        "Idiomatic Elixir bindings for pdf_oxide — fast PDF text/Markdown/HTML extraction.",
       package: [licenses: ["MIT"], links: %{"GitHub" => "https://github.com/yfedoseev/pdf_oxide"}]
     ]
   end

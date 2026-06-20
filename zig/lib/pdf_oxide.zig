@@ -152,7 +152,7 @@ pub const Pdf = struct {
     }
 
     /// Serialize to bytes; caller owns the returned slice.
-    pub fn saveToBytes(self: Pdf, alloc: std.mem.Allocator) Error![]u8 {
+    pub fn toBytes(self: Pdf, alloc: std.mem.Allocator) Error![]u8 {
         var len: i32 = 0;
         var code: i32 = 0;
         const p = c.pdf_save_to_bytes(self.handle, &len, &code) orelse return fail(code);
@@ -168,29 +168,29 @@ const testing = std.testing;
 fn samplePdf(alloc: std.mem.Allocator) ![]u8 {
     var pdf = try Pdf.fromMarkdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n");
     defer pdf.deinit();
-    return pdf.saveToBytes(alloc);
+    return pdf.toBytes(alloc);
 }
 
-test "Pdf builder: fromMarkdown/fromHtml/fromText/saveToBytes/save" {
+test "Pdf builder: fromMarkdown/fromHtml/fromText/toBytes/save" {
     const a = testing.allocator;
     {
         var p = try Pdf.fromMarkdown("# md\n\nbody\n");
         defer p.deinit();
-        const b = try p.saveToBytes(a);
+        const b = try p.toBytes(a);
         defer a.free(b);
         try testing.expect(b.len > 100);
     }
     {
         var p = try Pdf.fromHtml("<h1>h</h1><p>b</p>");
         defer p.deinit();
-        const b = try p.saveToBytes(a);
+        const b = try p.toBytes(a);
         defer a.free(b);
         try testing.expect(b.len > 100);
     }
     {
         var p = try Pdf.fromText("plain text body");
         defer p.deinit();
-        const b = try p.saveToBytes(a);
+        const b = try p.toBytes(a);
         defer a.free(b);
         try testing.expect(b.len > 100);
     }

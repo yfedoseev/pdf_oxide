@@ -39,7 +39,7 @@ defmodule PdfOxide do
   @doc "Write a built PDF to `path`."
   def save(%Pdf{ref: ref}, path), do: Native.pdf_save(ref, path)
   @doc "Serialize a built PDF to a binary."
-  def save_to_bytes(%Pdf{ref: ref}), do: Native.pdf_save_to_bytes(ref)
+  def to_bytes(%Pdf{ref: ref}), do: Native.pdf_save_to_bytes(ref)
 
   @doc "Free a document or built PDF's native handle now (idempotent)."
   def close(%Document{ref: ref}), do: Native.doc_close(ref)

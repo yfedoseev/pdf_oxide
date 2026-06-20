@@ -3,7 +3,7 @@
 using PdfOxide
 
 pdf = from_markdown("# Hello pdf_oxide\n\nThis is a **Julia** binding smoke example.\n")
-doc = open_from_bytes(save_to_bytes(pdf))
+doc = open_from_bytes(to_bytes(pdf))
 
 println("pages:   ", page_count(doc))
 v = version(doc)

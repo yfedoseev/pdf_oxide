@@ -31,7 +31,7 @@ import 'package:pdf_oxide/pdf_oxide.dart';
 
 void main() {
   final pdf = Pdf.fromMarkdown('# Hello\n\nbody\n');
-  final doc = PdfDocument.openFromBytes(pdf.saveToBytes());
+  final doc = PdfDocument.openFromBytes(pdf.toBytes());
   try {
     print('pages: ${doc.pageCount}');
     print(doc.extractText(0));
