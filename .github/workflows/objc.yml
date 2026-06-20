@@ -1,0 +1,71 @@
+name: Objective-C Bindings CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'objc/**'
+      - 'src/**'
+      - 'include/pdf_oxide_c/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/objc.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'objc/**'
+      - 'src/**'
+      - 'include/pdf_oxide_c/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/objc.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  PDF_OXIDE_INCLUDE_DIR: ${{ github.workspace }}/include
+  PDF_OXIDE_LIB_DIR: ${{ github.workspace }}/target/release
+
+jobs:
+  test:
+    name: Objective-C on macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: false
+          rustflags: ''
+
+      - name: Cache Cargo build
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-release-
+
+      - name: Build cdylib (release, shipped binding feature set)
+        run: cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
+
+      - name: Build (clang)
+        working-directory: objc
+        run: make build PDF_OXIDE_INCLUDE_DIR="${PDF_OXIDE_INCLUDE_DIR}" PDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}"
+
+      - name: Test (api-coverage)
+        working-directory: objc
+        run: DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}" ./test_api_coverage
+
+      - name: Run example (basic_extraction, with assertion)
+        working-directory: objc
+        shell: bash
+        run: |
+          set -uo pipefail
+          OUT="$(DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}" ./basic_extraction)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "Hello pdf_oxide" || { echo "::error::example output missing expected text"; exit 1; }

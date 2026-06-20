@@ -435,3 +435,8 @@ r/*.tar.gz
 /clojure/.cpcache/
 /clojure/.clj-kondo/
 /clojure/target/
+
+# Objective-C binding build artifacts
+/objc/test_api_coverage
+/objc/basic_extraction
+/objc/*.o
