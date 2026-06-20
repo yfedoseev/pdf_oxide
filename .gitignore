@@ -28,6 +28,8 @@ lib/
 !dart/lib/**
 !zig/lib/
 !zig/lib/**
+!elixir/lib/
+!elixir/lib/**
 lib64/
 parts/
 sdist/
@@ -444,3 +446,9 @@ r/*.tar.gz
 # Swift binding artifacts
 /swift/.build/
 /swift/Package.resolved
+
+# Elixir binding artifacts
+/elixir/_build/
+/elixir/deps/
+/elixir/priv/
+/elixir/mix.lock
