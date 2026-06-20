@@ -24,6 +24,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'release' }}
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   PDF_OXIDE_INCLUDE_DIR: ${{ github.workspace }}/include

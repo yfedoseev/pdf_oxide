@@ -24,6 +24,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'release' }}
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   PDF_OXIDE_LIB_DIR: ${{ github.workspace }}/target/release
@@ -65,9 +68,10 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@06832c7b30a0129d7fb559bcc6e43d26f6374244 # v4
 
-      - name: Install ktlint
+      - name: Install ktlint (pinned + checksum-verified)
         run: |
           curl -sSLO https://github.com/pinterest/ktlint/releases/download/1.8.0/ktlint
+          echo "a3fd620207d5c40da6ca789b95e7f823c54e854b7fade7f613e91096a3706d75  ktlint" | sha256sum -c -
           chmod +x ktlint && sudo mv ktlint /usr/local/bin/
 
       - name: ktlint check

@@ -24,6 +24,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'release' }}
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   PDF_OXIDE_INCLUDE_DIR: ${{ github.workspace }}/include
@@ -52,6 +55,10 @@ jobs:
 
       - name: Build cdylib (release, shipped binding feature set)
         run: cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
+
+      - name: Format check (swift-format)
+        working-directory: swift
+        run: swift format lint --strict --recursive --configuration .swift-format Sources Tests
 
       - name: Test (api-coverage)
         working-directory: swift

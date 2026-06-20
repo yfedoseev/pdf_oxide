@@ -24,6 +24,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'release' }}
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   PDF_OXIDE_INCLUDE_DIR: ${{ github.workspace }}/include
@@ -63,7 +66,10 @@ jobs:
           r-version: 'release'
 
       - name: Install R deps
-        run: Rscript -e 'install.packages("tinytest", repos="https://cloud.r-project.org")'
+        run: Rscript -e 'install.packages(c("tinytest", "lintr"), repos="https://cloud.r-project.org")'
+
+      - name: Lint (lintr)
+        run: Rscript -e 'library(lintr); l <- lint_dir("r/R"); print(l); quit(status = if (length(l) > 0) 1L else 0L)'
 
       - name: R CMD INSTALL
         run: R CMD INSTALL r/
