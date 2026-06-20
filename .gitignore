@@ -404,3 +404,10 @@ ruby/.bundle/
 /dart/.dart_tool/
 /dart/pubspec.lock
 /dart/.packages
+
+# R binding build artifacts
+r/src/*.o
+r/src/*.so
+r/src/*.dll
+r/..Rcheck/
+r/*.tar.gz

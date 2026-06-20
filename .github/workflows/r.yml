@@ -1,0 +1,86 @@
+name: R Bindings CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'r/**'
+      - 'src/**'
+      - 'include/pdf_oxide_c/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/r.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'r/**'
+      - 'src/**'
+      - 'include/pdf_oxide_c/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/r.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  PDF_OXIDE_INCLUDE_DIR: ${{ github.workspace }}/include
+  PDF_OXIDE_LIB_DIR: ${{ github.workspace }}/target/release
+
+jobs:
+  test:
+    name: R on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: false
+          rustflags: ''
+
+      - name: Cache Cargo build
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-release-
+
+      - name: Build cdylib (release, shipped binding feature set)
+        run: cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@bd49c52ffe281809afa6f0fecbf37483c5dd0b93 # v2
+        with:
+          r-version: 'release'
+
+      - name: Install R deps
+        run: Rscript -e 'install.packages("tinytest", repos="https://cloud.r-project.org")'
+
+      - name: R CMD INSTALL
+        run: R CMD INSTALL r/
+
+      - name: Run tests (tinytest api-coverage)
+        shell: bash
+        run: |
+          export LD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${DYLD_LIBRARY_PATH:-}"
+          Rscript -e 'library(tinytest); out <- test_package("pdfoxide"); print(out); if (any(!sapply(out, isTRUE))) quit(status=1)'
+
+      - name: Run example (basic_extraction, with assertion)
+        shell: bash
+        run: |
+          set -uo pipefail
+          export LD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${DYLD_LIBRARY_PATH:-}"
+          OUT="$(Rscript r/inst/examples/basic_extraction.R)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "Hello pdf_oxide" || { echo "::error::example output missing expected text"; exit 1; }
