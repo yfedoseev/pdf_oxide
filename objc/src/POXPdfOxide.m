@@ -63,6 +63,46 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
                            cells:(NSArray<NSArray<NSString*>*>*)cells;
 @end
 
+// ── Phase-2 element model types ──────────────────────────────────────────────
+
+@interface POXFont ()
+- (instancetype)initWithName:(NSString*)name
+                        type:(NSString*)type
+                    encoding:(NSString*)encoding
+                    embedded:(BOOL)embedded
+                      subset:(BOOL)subset;
+@end
+
+@interface POXImage ()
+- (instancetype)initWithWidth:(NSInteger)width
+                       height:(NSInteger)height
+             bitsPerComponent:(NSInteger)bitsPerComponent
+                       format:(NSString*)format
+                   colorspace:(NSString*)colorspace
+                         data:(NSData*)data;
+@end
+
+@interface POXAnnotation ()
+- (instancetype)initWithType:(NSString*)type
+                     subtype:(NSString*)subtype
+                     content:(NSString*)content
+                      author:(NSString*)author
+                        rect:(POXBbox)rect
+                 borderWidth:(float)borderWidth;
+@end
+
+@interface POXPath ()
+- (instancetype)initWithBbox:(POXBbox)bbox
+                 strokeWidth:(float)strokeWidth
+                   hasStroke:(BOOL)hasStroke
+                     hasFill:(BOOL)hasFill
+              operationCount:(NSInteger)operationCount;
+@end
+
+@interface POXSearchResult ()
+- (instancetype)initWithText:(NSString*)text page:(NSInteger)page bbox:(POXBbox)bbox;
+@end
+
 @implementation POXChar
 - (instancetype)initWithCharacter:(uint32_t)character
                              bbox:(POXBbox)bbox
@@ -130,6 +170,89 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
     if (col < 0 || col >= (NSInteger)r.count)
         return nil;
     return r[col];
+}
+@end
+
+@implementation POXFont
+- (instancetype)initWithName:(NSString*)name
+                        type:(NSString*)type
+                    encoding:(NSString*)encoding
+                    embedded:(BOOL)embedded
+                      subset:(BOOL)subset {
+    if ((self = [super init])) {
+        _name = [name copy];
+        _type = [type copy];
+        _encoding = [encoding copy];
+        _embedded = embedded;
+        _subset = subset;
+    }
+    return self;
+}
+@end
+
+@implementation POXImage
+- (instancetype)initWithWidth:(NSInteger)width
+                       height:(NSInteger)height
+             bitsPerComponent:(NSInteger)bitsPerComponent
+                       format:(NSString*)format
+                   colorspace:(NSString*)colorspace
+                         data:(NSData*)data {
+    if ((self = [super init])) {
+        _width = width;
+        _height = height;
+        _bitsPerComponent = bitsPerComponent;
+        _format = [format copy];
+        _colorspace = [colorspace copy];
+        _data = [data copy];
+    }
+    return self;
+}
+@end
+
+@implementation POXAnnotation
+- (instancetype)initWithType:(NSString*)type
+                     subtype:(NSString*)subtype
+                     content:(NSString*)content
+                      author:(NSString*)author
+                        rect:(POXBbox)rect
+                 borderWidth:(float)borderWidth {
+    if ((self = [super init])) {
+        _type = [type copy];
+        _subtype = [subtype copy];
+        _content = [content copy];
+        _author = [author copy];
+        _rect = rect;
+        _borderWidth = borderWidth;
+    }
+    return self;
+}
+@end
+
+@implementation POXPath
+- (instancetype)initWithBbox:(POXBbox)bbox
+                 strokeWidth:(float)strokeWidth
+                   hasStroke:(BOOL)hasStroke
+                     hasFill:(BOOL)hasFill
+              operationCount:(NSInteger)operationCount {
+    if ((self = [super init])) {
+        _bbox = bbox;
+        _strokeWidth = strokeWidth;
+        _hasStroke = hasStroke;
+        _hasFill = hasFill;
+        _operationCount = operationCount;
+    }
+    return self;
+}
+@end
+
+@implementation POXSearchResult
+- (instancetype)initWithText:(NSString*)text page:(NSInteger)page bbox:(POXBbox)bbox {
+    if ((self = [super init])) {
+        _text = [text copy];
+        _page = page;
+        _bbox = bbox;
+    }
+    return self;
 }
 @end
 
@@ -384,6 +507,188 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
     }
     pdf_oxide_table_list_free(list);
     return out;
+}
+
+- (NSArray<POXFont*>*)embeddedFonts:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    FfiFontList* list = pdf_document_get_embedded_fonts(_handle, (int32_t)page, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"embeddedFonts");
+        return nil;
+    }
+    int32_t n = pdf_oxide_font_count(list);
+    NSMutableArray<POXFont*>* out = [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        NSString* name =
+            POXTakeString(pdf_oxide_font_get_name(list, i, &c), c, @"fontName", NULL);
+        NSString* type =
+            POXTakeString(pdf_oxide_font_get_type(list, i, &c), c, @"fontType", NULL);
+        NSString* encoding = POXTakeString(pdf_oxide_font_get_encoding(list, i, &c), c,
+                                           @"fontEncoding", NULL);
+        bool embedded = pdf_oxide_font_is_embedded(list, i, &c) != 0;
+        bool subset = pdf_oxide_font_is_subset(list, i, &c) != 0;
+        [out addObject:[[POXFont alloc]
+                           initWithName:(name ?: @"")
+                                   type:(type ?: @"")encoding:(encoding ?: @"")embedded
+                                       :(embedded ? YES : NO)subset
+                                       :(subset ? YES : NO)]];
+    }
+    pdf_oxide_font_list_free(list);
+    return out;
+}
+
+- (NSArray<POXImage*>*)embeddedImages:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    FfiImageList* list =
+        pdf_document_get_embedded_images(_handle, (int32_t)page, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"embeddedImages");
+        return nil;
+    }
+    int32_t n = pdf_oxide_image_count(list);
+    NSMutableArray<POXImage*>* out = [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        int32_t width = pdf_oxide_image_get_width(list, i, &c);
+        int32_t height = pdf_oxide_image_get_height(list, i, &c);
+        int32_t bpc = pdf_oxide_image_get_bits_per_component(list, i, &c);
+        NSString* format = POXTakeString(pdf_oxide_image_get_format(list, i, &c), c,
+                                         @"imageFormat", NULL);
+        NSString* colorspace = POXTakeString(
+            pdf_oxide_image_get_colorspace(list, i, &c), c, @"imageColorspace", NULL);
+        int32_t dataLen = 0;
+        uint8_t* p = pdf_oxide_image_get_data(list, i, &dataLen, &c);
+        NSData* data =
+            p ? [NSData dataWithBytes:p length:(dataLen < 0 ? 0 : (NSUInteger)dataLen)]
+              : [NSData data];
+        if (p)
+            free_bytes(p);
+        [out addObject:[[POXImage alloc] initWithWidth:width
+                                                height:height
+                                      bitsPerComponent:bpc
+                                                format:(format ?: @"")colorspace
+                                                      :(colorspace ?: @"")data:data]];
+    }
+    pdf_oxide_image_list_free(list);
+    return out;
+}
+
+- (NSArray<POXAnnotation*>*)pageAnnotations:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    FfiAnnotationList* list =
+        pdf_document_get_page_annotations(_handle, (int32_t)page, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"pageAnnotations");
+        return nil;
+    }
+    int32_t n = pdf_oxide_annotation_count(list);
+    NSMutableArray<POXAnnotation*>* out =
+        [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        NSString* type = POXTakeString(pdf_oxide_annotation_get_type(list, i, &c), c,
+                                       @"annotationType", NULL);
+        NSString* subtype = POXTakeString(pdf_oxide_annotation_get_subtype(list, i, &c),
+                                          c, @"annotationSubtype", NULL);
+        NSString* content = POXTakeString(pdf_oxide_annotation_get_content(list, i, &c),
+                                          c, @"annotationContent", NULL);
+        NSString* author = POXTakeString(pdf_oxide_annotation_get_author(list, i, &c),
+                                         c, @"annotationAuthor", NULL);
+        float x = 0, y = 0, w = 0, h = 0;
+        pdf_oxide_annotation_get_rect(list, i, &x, &y, &w, &h, &c);
+        float borderWidth = pdf_oxide_annotation_get_border_width(list, i, &c);
+        POXBbox rect = {x, y, w, h};
+        [out addObject:[[POXAnnotation alloc]
+                           initWithType:(type ?: @"")
+                                subtype:(subtype ?: @"")content:(content ?: @"")author
+                                       :(author ?: @"")rect:rect
+                            borderWidth:borderWidth]];
+    }
+    pdf_oxide_annotation_list_free(list);
+    return out;
+}
+
+- (NSArray<POXPath*>*)extractPaths:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    FfiPathList* list = pdf_document_extract_paths(_handle, (int32_t)page, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"extractPaths");
+        return nil;
+    }
+    int32_t n = pdf_oxide_path_count(list);
+    NSMutableArray<POXPath*>* out = [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        float x = 0, y = 0, w = 0, h = 0;
+        pdf_oxide_path_get_bbox(list, i, &x, &y, &w, &h, &c);
+        float strokeWidth = pdf_oxide_path_get_stroke_width(list, i, &c);
+        bool hasStroke = pdf_oxide_path_has_stroke(list, i, &c);
+        bool hasFill = pdf_oxide_path_has_fill(list, i, &c);
+        int32_t operationCount = pdf_oxide_path_get_operation_count(list, i, &c);
+        POXBbox bbox = {x, y, w, h};
+        [out addObject:[[POXPath alloc] initWithBbox:bbox
+                                         strokeWidth:strokeWidth
+                                           hasStroke:(hasStroke ? YES : NO)hasFill
+                                                    :(hasFill ? YES : NO)operationCount
+                                                    :operationCount]];
+    }
+    pdf_oxide_path_list_free(list);
+    return out;
+}
+
+// Marshal a FfiSearchResults handle into an array of POXSearchResult, then free it.
+static NSArray<POXSearchResult*>* POXTakeSearchResults(FfiSearchResults* list) {
+    int32_t n = pdf_oxide_search_result_count(list);
+    NSMutableArray<POXSearchResult*>* out =
+        [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        NSString* text = POXTakeString(pdf_oxide_search_result_get_text(list, i, &c), c,
+                                       @"searchResultText", NULL);
+        int32_t resultPage = pdf_oxide_search_result_get_page(list, i, &c);
+        float x = 0, y = 0, w = 0, h = 0;
+        pdf_oxide_search_result_get_bbox(list, i, &x, &y, &w, &h, &c);
+        POXBbox bbox = {x, y, w, h};
+        [out addObject:[[POXSearchResult alloc] initWithText:(text ?: @"")
+                                                        page:resultPage
+                                                        bbox:bbox]];
+    }
+    pdf_oxide_search_result_free(list);
+    return out;
+}
+
+- (NSArray<POXSearchResult*>*)search:(NSInteger)page
+                                term:(NSString*)term
+                       caseSensitive:(BOOL)caseSensitive
+                               error:(NSError**)error {
+    int32_t code = 0;
+    FfiSearchResults* list = pdf_document_search_page(
+        _handle, (int32_t)page, term.UTF8String, caseSensitive ? true : false, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"search");
+        return nil;
+    }
+    return POXTakeSearchResults(list);
+}
+
+- (NSArray<POXSearchResult*>*)searchAll:(NSString*)term
+                          caseSensitive:(BOOL)caseSensitive
+                                  error:(NSError**)error {
+    int32_t code = 0;
+    FfiSearchResults* list = pdf_document_search_all(
+        _handle, term.UTF8String, caseSensitive ? true : false, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"searchAll");
+        return nil;
+    }
+    return POXTakeSearchResults(list);
 }
 
 - (void)close {

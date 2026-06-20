@@ -85,6 +85,23 @@ typedef _CellC = Pointer<Utf8> Function(
 typedef _CellD = Pointer<Utf8> Function(
     Pointer<Void>, int, int, int, Pointer<Int32>);
 
+// element-extraction (Phase 2). `font_is_embedded`/`is_subset` return int32 in
+// the C ABI (0/1); image data uses an int32 data_len out-param + free_bytes;
+// search lists open with a term string (+ case-sensitive bool) and free with
+// `pdf_oxide_search_result_free` (NOT a `*_list_free`).
+typedef _ListBytesC = Pointer<Uint8> Function(
+    Pointer<Void>, Int32, Pointer<Int32>, Pointer<Int32>);
+typedef _ListBytesD = Pointer<Uint8> Function(
+    Pointer<Void>, int, Pointer<Int32>, Pointer<Int32>);
+typedef _SearchPageC = Pointer<Void> Function(
+    Pointer<Void>, Int32, Pointer<Utf8>, Bool, Pointer<Int32>);
+typedef _SearchPageD = Pointer<Void> Function(
+    Pointer<Void>, int, Pointer<Utf8>, bool, Pointer<Int32>);
+typedef _SearchAllC = Pointer<Void> Function(
+    Pointer<Void>, Pointer<Utf8>, Bool, Pointer<Int32>);
+typedef _SearchAllD = Pointer<Void> Function(
+    Pointer<Void>, Pointer<Utf8>, bool, Pointer<Int32>);
+
 /// Resolved native library + bound functions (loaded once).
 class _Native {
   _Native(this.lib)
@@ -188,7 +205,94 @@ class _Native {
         tableHasHeader = lib.lookupFunction<_ListBoolC, _ListBoolD>(
             'pdf_oxide_table_has_header'),
         tableListFree = lib.lookupFunction<_ListFreeC, _ListFreeD>(
-            'pdf_oxide_table_list_free');
+            'pdf_oxide_table_list_free'),
+        // fonts
+        extractFonts = lib.lookupFunction<_ExtractC, _ExtractD>(
+            'pdf_document_get_embedded_fonts'),
+        fontCount = lib
+            .lookupFunction<_ListCountC, _ListCountD>('pdf_oxide_font_count'),
+        fontGetName =
+            lib.lookupFunction<_ListStrC, _ListStrD>('pdf_oxide_font_get_name'),
+        fontGetType =
+            lib.lookupFunction<_ListStrC, _ListStrD>('pdf_oxide_font_get_type'),
+        fontGetEncoding = lib.lookupFunction<_ListStrC, _ListStrD>(
+            'pdf_oxide_font_get_encoding'),
+        fontIsEmbedded = lib
+            .lookupFunction<_ListI32C, _ListI32D>('pdf_oxide_font_is_embedded'),
+        fontIsSubset = lib
+            .lookupFunction<_ListI32C, _ListI32D>('pdf_oxide_font_is_subset'),
+        fontListFree = lib
+            .lookupFunction<_ListFreeC, _ListFreeD>('pdf_oxide_font_list_free'),
+        // images
+        extractImages = lib.lookupFunction<_ExtractC, _ExtractD>(
+            'pdf_document_get_embedded_images'),
+        imageCount = lib
+            .lookupFunction<_ListCountC, _ListCountD>('pdf_oxide_image_count'),
+        imageGetWidth = lib
+            .lookupFunction<_ListI32C, _ListI32D>('pdf_oxide_image_get_width'),
+        imageGetHeight = lib
+            .lookupFunction<_ListI32C, _ListI32D>('pdf_oxide_image_get_height'),
+        imageGetBitsPerComponent = lib.lookupFunction<_ListI32C, _ListI32D>(
+            'pdf_oxide_image_get_bits_per_component'),
+        imageGetFormat = lib
+            .lookupFunction<_ListStrC, _ListStrD>('pdf_oxide_image_get_format'),
+        imageGetColorspace = lib.lookupFunction<_ListStrC, _ListStrD>(
+            'pdf_oxide_image_get_colorspace'),
+        imageGetData = lib.lookupFunction<_ListBytesC, _ListBytesD>(
+            'pdf_oxide_image_get_data'),
+        imageListFree = lib.lookupFunction<_ListFreeC, _ListFreeD>(
+            'pdf_oxide_image_list_free'),
+        // annotations
+        extractAnnotations = lib.lookupFunction<_ExtractC, _ExtractD>(
+            'pdf_document_get_page_annotations'),
+        annotationCount = lib.lookupFunction<_ListCountC, _ListCountD>(
+            'pdf_oxide_annotation_count'),
+        annotationGetType = lib.lookupFunction<_ListStrC, _ListStrD>(
+            'pdf_oxide_annotation_get_type'),
+        annotationGetSubtype = lib.lookupFunction<_ListStrC, _ListStrD>(
+            'pdf_oxide_annotation_get_subtype'),
+        annotationGetContent = lib.lookupFunction<_ListStrC, _ListStrD>(
+            'pdf_oxide_annotation_get_content'),
+        annotationGetAuthor = lib.lookupFunction<_ListStrC, _ListStrD>(
+            'pdf_oxide_annotation_get_author'),
+        annotationGetRect = lib.lookupFunction<_ListBboxC, _ListBboxD>(
+            'pdf_oxide_annotation_get_rect'),
+        annotationGetBorderWidth = lib.lookupFunction<_ListF32C, _ListF32D>(
+            'pdf_oxide_annotation_get_border_width'),
+        annotationListFree = lib.lookupFunction<_ListFreeC, _ListFreeD>(
+            'pdf_oxide_annotation_list_free'),
+        // paths
+        extractPaths = lib
+            .lookupFunction<_ExtractC, _ExtractD>('pdf_document_extract_paths'),
+        pathCount = lib
+            .lookupFunction<_ListCountC, _ListCountD>('pdf_oxide_path_count'),
+        pathGetBbox = lib
+            .lookupFunction<_ListBboxC, _ListBboxD>('pdf_oxide_path_get_bbox'),
+        pathGetStrokeWidth = lib.lookupFunction<_ListF32C, _ListF32D>(
+            'pdf_oxide_path_get_stroke_width'),
+        pathHasStroke = lib.lookupFunction<_ListBoolC, _ListBoolD>(
+            'pdf_oxide_path_has_stroke'),
+        pathHasFill = lib
+            .lookupFunction<_ListBoolC, _ListBoolD>('pdf_oxide_path_has_fill'),
+        pathGetOperationCount = lib.lookupFunction<_ListI32C, _ListI32D>(
+            'pdf_oxide_path_get_operation_count'),
+        pathListFree = lib
+            .lookupFunction<_ListFreeC, _ListFreeD>('pdf_oxide_path_list_free'),
+        // search
+        searchPage = lib.lookupFunction<_SearchPageC, _SearchPageD>(
+            'pdf_document_search_page'),
+        searchAll = lib.lookupFunction<_SearchAllC, _SearchAllD>(
+            'pdf_document_search_all'),
+        searchResultCount = lib.lookupFunction<_ListCountC, _ListCountD>(
+            'pdf_oxide_search_result_count'),
+        searchResultGetText = lib.lookupFunction<_ListStrC, _ListStrD>(
+            'pdf_oxide_search_result_get_text'),
+        searchResultGetPage = lib.lookupFunction<_ListI32C, _ListI32D>(
+            'pdf_oxide_search_result_get_page'),
+        searchResultGetBbox = lib.lookupFunction<_ListBboxC, _ListBboxD>(
+            'pdf_oxide_search_result_get_bbox'),
+        searchResultFree = lib.lookupFunction<_ListFreeC, _ListFreeD>(
+            'pdf_oxide_search_result_free');
 
   final DynamicLibrary lib;
   final _OpenD open;
@@ -240,6 +344,52 @@ class _Native {
   final _CellD tableGetCellText;
   final _ListBoolD tableHasHeader;
   final _ListFreeD tableListFree;
+  // fonts
+  final _ExtractD extractFonts;
+  final _ListCountD fontCount;
+  final _ListStrD fontGetName;
+  final _ListStrD fontGetType;
+  final _ListStrD fontGetEncoding;
+  final _ListI32D fontIsEmbedded;
+  final _ListI32D fontIsSubset;
+  final _ListFreeD fontListFree;
+  // images
+  final _ExtractD extractImages;
+  final _ListCountD imageCount;
+  final _ListI32D imageGetWidth;
+  final _ListI32D imageGetHeight;
+  final _ListI32D imageGetBitsPerComponent;
+  final _ListStrD imageGetFormat;
+  final _ListStrD imageGetColorspace;
+  final _ListBytesD imageGetData;
+  final _ListFreeD imageListFree;
+  // annotations
+  final _ExtractD extractAnnotations;
+  final _ListCountD annotationCount;
+  final _ListStrD annotationGetType;
+  final _ListStrD annotationGetSubtype;
+  final _ListStrD annotationGetContent;
+  final _ListStrD annotationGetAuthor;
+  final _ListBboxD annotationGetRect;
+  final _ListF32D annotationGetBorderWidth;
+  final _ListFreeD annotationListFree;
+  // paths
+  final _ExtractD extractPaths;
+  final _ListCountD pathCount;
+  final _ListBboxD pathGetBbox;
+  final _ListF32D pathGetStrokeWidth;
+  final _ListBoolD pathHasStroke;
+  final _ListBoolD pathHasFill;
+  final _ListI32D pathGetOperationCount;
+  final _ListFreeD pathListFree;
+  // search
+  final _SearchPageD searchPage;
+  final _SearchAllD searchAll;
+  final _ListCountD searchResultCount;
+  final _ListStrD searchResultGetText;
+  final _ListI32D searchResultGetPage;
+  final _ListBboxD searchResultGetBbox;
+  final _ListFreeD searchResultFree;
 }
 
 typedef _OpenD = Pointer<Void> Function(Pointer<Utf8>, Pointer<Int32>);
@@ -340,6 +490,59 @@ class Table {
 
   /// Text of the cell at 0-based [row]/[col].
   String cell(int row, int col) => _cell(row, col);
+}
+
+/// An embedded font referenced by a page.
+class Font {
+  const Font(this.name, this.type, this.encoding, this.embedded, this.subset);
+  final String name;
+  final String type;
+  final String encoding;
+  final bool embedded;
+  final bool subset;
+}
+
+/// An embedded image. [data] holds the raw image bytes.
+class Image {
+  const Image(this.width, this.height, this.bitsPerComponent, this.format,
+      this.colorspace, this.data);
+  final int width;
+  final int height;
+  final int bitsPerComponent;
+  final String format;
+  final String colorspace;
+  final Uint8List data;
+}
+
+/// A page annotation.
+class Annotation {
+  const Annotation(this.type, this.subtype, this.content, this.author,
+      this.rect, this.borderWidth);
+  final String type;
+  final String subtype;
+  final String content;
+  final String author;
+  final Bbox rect;
+  final double borderWidth;
+}
+
+/// A vector path (graphics) element on a page.
+class Path {
+  const Path(this.bbox, this.strokeWidth, this.hasStroke, this.hasFill,
+      this.operationCount);
+  final Bbox bbox;
+  final double strokeWidth;
+  final bool hasStroke;
+  final bool hasFill;
+  final int operationCount;
+}
+
+/// A single search hit.
+class SearchResult {
+  const SearchResult(this.text, this.page, this.bbox);
+  final String text;
+  final int page;
+  final Bbox bbox;
 }
 
 /// An opened PDF for extraction/inspection. Call [close] when done (or rely on
@@ -592,6 +795,177 @@ class PdfDocument implements Finalizable {
       return out;
     } finally {
       _n.tableListFree(list);
+      calloc.free(code);
+    }
+  }
+
+  // ── element extraction (Phase 2) ───────────────────────────────────────────
+
+  /// Embedded fonts referenced by 0-based [page].
+  List<Font> embeddedFonts(int page) {
+    final list = _openList(_n.extractFonts, page, 'embeddedFonts');
+    final code = calloc<Int32>();
+    try {
+      final n = _n.fontCount(list);
+      final out = <Font>[];
+      for (var i = 0; i < n; i++) {
+        final name = _takeString(
+            _n.fontGetName(list, i, code), code.value, 'embeddedFonts');
+        final type = _takeString(
+            _n.fontGetType(list, i, code), code.value, 'embeddedFonts');
+        final encoding = _takeString(
+            _n.fontGetEncoding(list, i, code), code.value, 'embeddedFonts');
+        final embedded = _n.fontIsEmbedded(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, 'embeddedFonts');
+        final subset = _n.fontIsSubset(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, 'embeddedFonts');
+        out.add(Font(name, type, encoding, embedded != 0, subset != 0));
+      }
+      return out;
+    } finally {
+      _n.fontListFree(list);
+      calloc.free(code);
+    }
+  }
+
+  /// Embedded images on 0-based [page].
+  List<Image> embeddedImages(int page) {
+    final list = _openList(_n.extractImages, page, 'embeddedImages');
+    final code = calloc<Int32>();
+    final len = calloc<Int32>();
+    try {
+      final n = _n.imageCount(list);
+      final out = <Image>[];
+      for (var i = 0; i < n; i++) {
+        final width = _n.imageGetWidth(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, 'embeddedImages');
+        final height = _n.imageGetHeight(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, 'embeddedImages');
+        final bpc = _n.imageGetBitsPerComponent(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, 'embeddedImages');
+        final format = _takeString(
+            _n.imageGetFormat(list, i, code), code.value, 'embeddedImages');
+        final colorspace = _takeString(
+            _n.imageGetColorspace(list, i, code), code.value, 'embeddedImages');
+        final p = _n.imageGetData(list, i, len, code);
+        if (p == nullptr) throw PdfOxideError(code.value, 'embeddedImages');
+        final data =
+            Uint8List.fromList(p.asTypedList(len.value < 0 ? 0 : len.value));
+        _n.freeBytes(p);
+        out.add(Image(width, height, bpc, format, colorspace, data));
+      }
+      return out;
+    } finally {
+      _n.imageListFree(list);
+      calloc.free(code);
+      calloc.free(len);
+    }
+  }
+
+  /// Annotations on 0-based [page].
+  List<Annotation> pageAnnotations(int page) {
+    final list = _openList(_n.extractAnnotations, page, 'pageAnnotations');
+    final code = calloc<Int32>();
+    try {
+      final n = _n.annotationCount(list);
+      final out = <Annotation>[];
+      for (var i = 0; i < n; i++) {
+        final type = _takeString(
+            _n.annotationGetType(list, i, code), code.value, 'pageAnnotations');
+        final subtype = _takeString(_n.annotationGetSubtype(list, i, code),
+            code.value, 'pageAnnotations');
+        final content = _takeString(_n.annotationGetContent(list, i, code),
+            code.value, 'pageAnnotations');
+        final author = _takeString(_n.annotationGetAuthor(list, i, code),
+            code.value, 'pageAnnotations');
+        final rect = _bbox(_n.annotationGetRect, list, i, 'pageAnnotations');
+        final borderWidth = _n.annotationGetBorderWidth(list, i, code);
+        if (code.value != 0) {
+          throw PdfOxideError(code.value, 'pageAnnotations');
+        }
+        out.add(Annotation(type, subtype, content, author, rect, borderWidth));
+      }
+      return out;
+    } finally {
+      _n.annotationListFree(list);
+      calloc.free(code);
+    }
+  }
+
+  /// Vector paths on 0-based [page].
+  List<Path> extractPaths(int page) {
+    final list = _openList(_n.extractPaths, page, 'extractPaths');
+    final code = calloc<Int32>();
+    try {
+      final n = _n.pathCount(list);
+      final out = <Path>[];
+      for (var i = 0; i < n; i++) {
+        final bbox = _bbox(_n.pathGetBbox, list, i, 'extractPaths');
+        final strokeWidth = _n.pathGetStrokeWidth(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, 'extractPaths');
+        final hasStroke = _n.pathHasStroke(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, 'extractPaths');
+        final hasFill = _n.pathHasFill(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, 'extractPaths');
+        final operationCount = _n.pathGetOperationCount(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, 'extractPaths');
+        out.add(Path(bbox, strokeWidth, hasStroke, hasFill, operationCount));
+      }
+      return out;
+    } finally {
+      _n.pathListFree(list);
+      calloc.free(code);
+    }
+  }
+
+  /// Read a search-results list (already opened) into [SearchResult]s, then
+  /// free it via `pdf_oxide_search_result_free`.
+  List<SearchResult> _readSearch(Pointer<Void> list, String op) {
+    final code = calloc<Int32>();
+    try {
+      final n = _n.searchResultCount(list);
+      final out = <SearchResult>[];
+      for (var i = 0; i < n; i++) {
+        final text =
+            _takeString(_n.searchResultGetText(list, i, code), code.value, op);
+        final hitPage = _n.searchResultGetPage(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, op);
+        final bbox = _bbox(_n.searchResultGetBbox, list, i, op);
+        out.add(SearchResult(text, hitPage, bbox));
+      }
+      return out;
+    } finally {
+      _n.searchResultFree(list);
+      calloc.free(code);
+    }
+  }
+
+  /// Search a single 0-based [page] for [term].
+  List<SearchResult> search(int page, String term, bool caseSensitive) {
+    _check();
+    final cTerm = term.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      final list = _n.searchPage(_handle, page, cTerm, caseSensitive, code);
+      if (list == nullptr) throw PdfOxideError(code.value, 'search');
+      return _readSearch(list, 'search');
+    } finally {
+      calloc.free(cTerm);
+      calloc.free(code);
+    }
+  }
+
+  /// Search the whole document for [term].
+  List<SearchResult> searchAll(String term, bool caseSensitive) {
+    _check();
+    final cTerm = term.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      final list = _n.searchAll(_handle, cTerm, caseSensitive, code);
+      if (list == nullptr) throw PdfOxideError(code.value, 'searchAll');
+      return _readSearch(list, 'searchAll');
+    } finally {
+      calloc.free(cTerm);
       calloc.free(code);
     }
   }

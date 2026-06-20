@@ -115,6 +115,37 @@ defmodule PdfOxideTest do
       assert is_list(tables)
     end
 
+    test "element extraction (phase 2)", %{doc: doc} do
+      assert {:ok, fonts} = PdfOxide.embedded_fonts(doc, 0)
+      assert is_list(fonts)
+
+      assert {:ok, images} = PdfOxide.embedded_images(doc, 0)
+      assert is_list(images)
+
+      assert {:ok, annots} = PdfOxide.page_annotations(doc, 0)
+      assert is_list(annots)
+
+      assert {:ok, paths} = PdfOxide.extract_paths(doc, 0)
+      assert is_list(paths)
+    end
+
+    test "search + search_all", %{doc: doc} do
+      assert {:ok, results} = PdfOxide.search(doc, 0, "Alpha", false)
+      assert is_list(results)
+      assert length(results) > 0
+      r = hd(results)
+      assert r.text =~ "Alpha"
+      assert is_integer(r.page) and r.page >= 0
+      assert %PdfOxide.Bbox{} = r.bbox
+
+      assert {:ok, all} = PdfOxide.search_all(doc, "Alpha", false)
+      assert is_list(all)
+      assert length(all) > 0
+      a = hd(all)
+      assert a.text =~ "Alpha"
+      assert a.page >= 0
+    end
+
     test "authenticate returns a bool", %{doc: doc} do
       assert {:ok, result} = PdfOxide.authenticate(doc, "")
       assert is_boolean(result)

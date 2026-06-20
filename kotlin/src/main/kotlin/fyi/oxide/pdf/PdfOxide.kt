@@ -76,6 +76,51 @@ data class Table(
     ): String = cells[row][col]
 }
 
+/** An embedded font on a page. */
+data class Font(
+    val name: String,
+    val type: String,
+    val encoding: String,
+    val embedded: Boolean,
+    val subset: Boolean,
+)
+
+/** An embedded image on a page; [data] is the raw image bytes. */
+data class Image(
+    val width: Int,
+    val height: Int,
+    val bitsPerComponent: Int,
+    val format: String,
+    val colorspace: String,
+    val data: ByteArray,
+)
+
+/** A page annotation. */
+data class Annotation(
+    val type: String,
+    val subtype: String,
+    val content: String,
+    val author: String,
+    val rect: Bbox,
+    val borderWidth: Float,
+)
+
+/** A vector path on a page. */
+data class Path(
+    val bbox: Bbox,
+    val strokeWidth: Float,
+    val hasStroke: Boolean,
+    val hasFill: Boolean,
+    val operationCount: Int,
+)
+
+/** A single text search hit. */
+data class SearchResult(
+    val text: String,
+    val page: Int,
+    val bbox: Bbox,
+)
+
 /** Raw JNA binding to the pdf_oxide C ABI (internal). */
 internal interface CLib : Library {
     fun pdf_document_open(
@@ -316,6 +361,233 @@ internal interface CLib : Library {
     ): Boolean
 
     fun pdf_oxide_table_list_free(list: Pointer)
+
+    // ── Phase-2 element extraction: fonts ─────────────────────────────────────
+    fun pdf_document_get_embedded_fonts(
+        h: Pointer,
+        page: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_font_count(list: Pointer): Int
+
+    fun pdf_oxide_font_get_name(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_font_get_type(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_font_get_encoding(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_font_is_embedded(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Boolean
+
+    fun pdf_oxide_font_is_subset(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Boolean
+
+    fun pdf_oxide_font_list_free(list: Pointer)
+
+    // ── Phase-2 element extraction: images ────────────────────────────────────
+    fun pdf_document_get_embedded_images(
+        h: Pointer,
+        page: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_image_count(list: Pointer): Int
+
+    fun pdf_oxide_image_get_width(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Int
+
+    fun pdf_oxide_image_get_height(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Int
+
+    fun pdf_oxide_image_get_bits_per_component(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Int
+
+    fun pdf_oxide_image_get_format(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_image_get_colorspace(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_image_get_data(
+        list: Pointer,
+        index: Int,
+        dataLen: IntByReference,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_image_list_free(list: Pointer)
+
+    // ── Phase-2 element extraction: annotations ───────────────────────────────
+    fun pdf_document_get_page_annotations(
+        h: Pointer,
+        page: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_annotation_count(list: Pointer): Int
+
+    fun pdf_oxide_annotation_get_type(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_annotation_get_subtype(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_annotation_get_content(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_annotation_get_author(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_annotation_get_rect(
+        list: Pointer,
+        index: Int,
+        x: FloatByReference,
+        y: FloatByReference,
+        w: FloatByReference,
+        h: FloatByReference,
+        code: IntByReference,
+    )
+
+    fun pdf_oxide_annotation_get_border_width(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Float
+
+    fun pdf_oxide_annotation_list_free(list: Pointer)
+
+    // ── Phase-2 element extraction: paths ─────────────────────────────────────
+    fun pdf_document_extract_paths(
+        h: Pointer,
+        page: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_path_count(list: Pointer): Int
+
+    fun pdf_oxide_path_get_bbox(
+        list: Pointer,
+        index: Int,
+        x: FloatByReference,
+        y: FloatByReference,
+        w: FloatByReference,
+        h: FloatByReference,
+        code: IntByReference,
+    )
+
+    fun pdf_oxide_path_get_stroke_width(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Float
+
+    fun pdf_oxide_path_has_stroke(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Boolean
+
+    fun pdf_oxide_path_has_fill(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Boolean
+
+    fun pdf_oxide_path_get_operation_count(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Int
+
+    fun pdf_oxide_path_list_free(list: Pointer)
+
+    // ── Phase-2 element extraction: search ────────────────────────────────────
+    fun pdf_document_search_page(
+        h: Pointer,
+        page: Int,
+        term: String,
+        caseSensitive: Boolean,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_document_search_all(
+        h: Pointer,
+        term: String,
+        caseSensitive: Boolean,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_search_result_count(list: Pointer): Int
+
+    fun pdf_oxide_search_result_get_text(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_search_result_get_page(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Int
+
+    fun pdf_oxide_search_result_get_bbox(
+        list: Pointer,
+        index: Int,
+        x: FloatByReference,
+        y: FloatByReference,
+        w: FloatByReference,
+        h: FloatByReference,
+        code: IntByReference,
+    )
+
+    fun pdf_oxide_search_result_free(list: Pointer)
 
     fun pdf_from_markdown(
         md: String,
@@ -592,6 +864,170 @@ class PdfDocument internal constructor(
             return out
         } finally {
             Native_.lib.pdf_oxide_table_list_free(list)
+        }
+    }
+
+    /** Extract embedded fonts from the 0-based [pageIndex]. */
+    @Suppress("ThrowsCount")
+    fun embeddedFonts(pageIndex: Int): List<Font> {
+        val code = IntByReference()
+        val list =
+            Native_.lib.pdf_document_get_embedded_fonts(ptr(), pageIndex, code)
+                ?: throw PdfOxideException(code.value, "embeddedFonts")
+        try {
+            val n = Native_.lib.pdf_oxide_font_count(list)
+            val out = ArrayList<Font>(if (n < 0) 0 else n)
+            for (i in 0 until n) {
+                val name = Native_.readString(Native_.lib.pdf_oxide_font_get_name(list, i, code), code, "embeddedFonts")
+                val type = Native_.readString(Native_.lib.pdf_oxide_font_get_type(list, i, code), code, "embeddedFonts")
+                val encoding = Native_.readString(Native_.lib.pdf_oxide_font_get_encoding(list, i, code), code, "embeddedFonts")
+                val embedded = Native_.lib.pdf_oxide_font_is_embedded(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "embeddedFonts")
+                val subset = Native_.lib.pdf_oxide_font_is_subset(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "embeddedFonts")
+                out.add(Font(name, type, encoding, embedded, subset))
+            }
+            return out
+        } finally {
+            Native_.lib.pdf_oxide_font_list_free(list)
+        }
+    }
+
+    /** Extract embedded images from the 0-based [pageIndex]. */
+    @Suppress("ThrowsCount")
+    fun embeddedImages(pageIndex: Int): List<Image> {
+        val code = IntByReference()
+        val list =
+            Native_.lib.pdf_document_get_embedded_images(ptr(), pageIndex, code)
+                ?: throw PdfOxideException(code.value, "embeddedImages")
+        try {
+            val n = Native_.lib.pdf_oxide_image_count(list)
+            val out = ArrayList<Image>(if (n < 0) 0 else n)
+            for (i in 0 until n) {
+                val width = Native_.lib.pdf_oxide_image_get_width(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "embeddedImages")
+                val height = Native_.lib.pdf_oxide_image_get_height(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "embeddedImages")
+                val bpc = Native_.lib.pdf_oxide_image_get_bits_per_component(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "embeddedImages")
+                val format = Native_.readString(Native_.lib.pdf_oxide_image_get_format(list, i, code), code, "embeddedImages")
+                val colorspace = Native_.readString(Native_.lib.pdf_oxide_image_get_colorspace(list, i, code), code, "embeddedImages")
+                val len = IntByReference()
+                val p =
+                    Native_.lib.pdf_oxide_image_get_data(list, i, len, code)
+                        ?: throw PdfOxideException(code.value, "embeddedImages")
+                val nBytes = if (len.value < 0) 0 else len.value
+                val data = p.getByteArray(0, nBytes)
+                Native_.lib.free_bytes(p)
+                out.add(Image(width, height, bpc, format, colorspace, data))
+            }
+            return out
+        } finally {
+            Native_.lib.pdf_oxide_image_list_free(list)
+        }
+    }
+
+    /** Extract annotations from the 0-based [pageIndex]. */
+    @Suppress("ThrowsCount")
+    fun pageAnnotations(pageIndex: Int): List<Annotation> {
+        val code = IntByReference()
+        val list =
+            Native_.lib.pdf_document_get_page_annotations(ptr(), pageIndex, code)
+                ?: throw PdfOxideException(code.value, "pageAnnotations")
+        try {
+            val n = Native_.lib.pdf_oxide_annotation_count(list)
+            val out = ArrayList<Annotation>(if (n < 0) 0 else n)
+            for (i in 0 until n) {
+                val type = Native_.readString(Native_.lib.pdf_oxide_annotation_get_type(list, i, code), code, "pageAnnotations")
+                val subtype = Native_.readString(Native_.lib.pdf_oxide_annotation_get_subtype(list, i, code), code, "pageAnnotations")
+                val content = Native_.readString(Native_.lib.pdf_oxide_annotation_get_content(list, i, code), code, "pageAnnotations")
+                val author = Native_.readString(Native_.lib.pdf_oxide_annotation_get_author(list, i, code), code, "pageAnnotations")
+                val rect =
+                    readBbox(code, "pageAnnotations") { x, y, w, h, c -> Native_.lib.pdf_oxide_annotation_get_rect(list, i, x, y, w, h, c) }
+                val borderWidth = Native_.lib.pdf_oxide_annotation_get_border_width(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "pageAnnotations")
+                out.add(Annotation(type, subtype, content, author, rect, borderWidth))
+            }
+            return out
+        } finally {
+            Native_.lib.pdf_oxide_annotation_list_free(list)
+        }
+    }
+
+    /** Extract vector paths from the 0-based [pageIndex]. */
+    @Suppress("ThrowsCount")
+    fun extractPaths(pageIndex: Int): List<Path> {
+        val code = IntByReference()
+        val list =
+            Native_.lib.pdf_document_extract_paths(ptr(), pageIndex, code)
+                ?: throw PdfOxideException(code.value, "extractPaths")
+        try {
+            val n = Native_.lib.pdf_oxide_path_count(list)
+            val out = ArrayList<Path>(if (n < 0) 0 else n)
+            for (i in 0 until n) {
+                val bbox = readBbox(code, "extractPaths") { x, y, w, h, c -> Native_.lib.pdf_oxide_path_get_bbox(list, i, x, y, w, h, c) }
+                val strokeWidth = Native_.lib.pdf_oxide_path_get_stroke_width(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "extractPaths")
+                val hasStroke = Native_.lib.pdf_oxide_path_has_stroke(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "extractPaths")
+                val hasFill = Native_.lib.pdf_oxide_path_has_fill(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "extractPaths")
+                val operationCount = Native_.lib.pdf_oxide_path_get_operation_count(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "extractPaths")
+                out.add(Path(bbox, strokeWidth, hasStroke, hasFill, operationCount))
+            }
+            return out
+        } finally {
+            Native_.lib.pdf_oxide_path_list_free(list)
+        }
+    }
+
+    /** Search the 0-based [pageIndex] for [term]. */
+    @Suppress("ThrowsCount")
+    fun search(
+        pageIndex: Int,
+        term: String,
+        caseSensitive: Boolean,
+    ): List<SearchResult> {
+        val code = IntByReference()
+        val list =
+            Native_.lib.pdf_document_search_page(ptr(), pageIndex, term, caseSensitive, code)
+                ?: throw PdfOxideException(code.value, "search")
+        return readSearchResults(list, code, "search")
+    }
+
+    /** Search all pages for [term]. */
+    @Suppress("ThrowsCount")
+    fun searchAll(
+        term: String,
+        caseSensitive: Boolean,
+    ): List<SearchResult> {
+        val code = IntByReference()
+        val list =
+            Native_.lib.pdf_document_search_all(ptr(), term, caseSensitive, code)
+                ?: throw PdfOxideException(code.value, "searchAll")
+        return readSearchResults(list, code, "searchAll")
+    }
+
+    @Suppress("ThrowsCount")
+    private fun readSearchResults(
+        list: Pointer,
+        code: IntByReference,
+        op: String,
+    ): List<SearchResult> {
+        try {
+            val n = Native_.lib.pdf_oxide_search_result_count(list)
+            val out = ArrayList<SearchResult>(if (n < 0) 0 else n)
+            for (i in 0 until n) {
+                val text = Native_.readString(Native_.lib.pdf_oxide_search_result_get_text(list, i, code), code, op)
+                val page = Native_.lib.pdf_oxide_search_result_get_page(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, op)
+                val bbox = readBbox(code, op) { x, y, w, h, c -> Native_.lib.pdf_oxide_search_result_get_bbox(list, i, x, y, w, h, c) }
+                out.add(SearchResult(text, page, bbox))
+            }
+            return out
+        } finally {
+            Native_.lib.pdf_oxide_search_result_free(list)
         }
     }
 

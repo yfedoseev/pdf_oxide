@@ -17,6 +17,8 @@ export to_html_all, to_plain_text_all, authenticate, page, text, markdown, html,
 export from_markdown, from_html, from_text, save, to_bytes, close!
 export Bbox, Char, Word, TextLine, Table
 export extract_chars, extract_words, extract_text_lines, extract_tables, cell
+export Font, Image, Annotation, Path, SearchResult
+export embedded_fonts, embedded_images, page_annotations, extract_paths, search, search_all
 
 # Native library resolution: PDF_OXIDE_LIB_PATH (full path) -> PDF_OXIDE_LIB_DIR
 # -> common build dirs -> bare name (system loader).
@@ -540,6 +542,358 @@ function extract_tables(d::PdfDocument, page::Integer)
     end
 end
 
+# ── Phase-2 extraction (fonts, images, annotations, paths, search) ──────────────
+"""An embedded font with `name`, `type`, `encoding`, `embedded`, `subset`."""
+struct Font
+    name::String
+    type::String
+    encoding::String
+    embedded::Bool
+    subset::Bool
+end
+
+"""An embedded image with `width`, `height`, `bitsPerComponent`, `format`, `colorspace`, `data`."""
+struct Image
+    width::Int
+    height::Int
+    bitsPerComponent::Int
+    format::String
+    colorspace::String
+    data::Vector{UInt8}
+end
+
+"""An annotation with `type`, `subtype`, `content`, `author`, `rect` (Bbox), `borderWidth`."""
+struct Annotation
+    type::String
+    subtype::String
+    content::String
+    author::String
+    rect::Bbox
+    borderWidth::Float64
+end
+
+"""A vector path with `bbox` (Bbox), `strokeWidth`, `hasStroke`, `hasFill`, `operationCount`."""
+struct Path
+    bbox::Bbox
+    strokeWidth::Float64
+    hasStroke::Bool
+    hasFill::Bool
+    operationCount::Int
+end
+
+"""A search hit with `text`, `page`, `bbox` (Bbox)."""
+struct SearchResult
+    text::String
+    page::Int
+    bbox::Bbox
+end
+
+# bbox readers for the Phase-2 lists — one per C function, generated with @eval so
+# each ccall uses a LITERAL symbol (ccall forbids a variable function name).
+for (jl_fn, c_fn) in (
+    (:_bbox_annotation, :pdf_oxide_annotation_get_rect),
+    (:_bbox_path, :pdf_oxide_path_get_bbox),
+    (:_bbox_search, :pdf_oxide_search_result_get_bbox),
+)
+    @eval function $jl_fn(list::Ptr{Cvoid}, index::Integer, op::String)
+        x = Ref{Float32}(0);
+        y = Ref{Float32}(0)
+        w = Ref{Float32}(0);
+        h = Ref{Float32}(0)
+        code = Ref{Int32}(0)
+        ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Cvoid,
+            (
+                Ptr{Cvoid},
+                Int32,
+                Ref{Float32},
+                Ref{Float32},
+                Ref{Float32},
+                Ref{Float32},
+                Ref{Int32},
+            ),
+            list,
+            Int32(index),
+            x,
+            y,
+            w,
+            h,
+            code,
+        )
+        code[] != 0 && throw(PdfOxideError(code[], op))
+        return Bbox(Float64(x[]), Float64(y[]), Float64(w[]), Float64(h[]))
+    end
+end
+
+# Phase-2 list openers — one per entry point (NULL on error -> throw).
+for (jl_fn, c_fn) in (
+    (:_open_fonts, :pdf_document_get_embedded_fonts),
+    (:_open_images, :pdf_document_get_embedded_images),
+    (:_open_annotations, :pdf_document_get_page_annotations),
+    (:_open_paths, :pdf_document_extract_paths),
+)
+    @eval function $jl_fn(d::PdfDocument, page::Integer, op::String)
+        code = Ref{Int32}(0)
+        list = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Ptr{Cvoid},
+            (Ptr{Cvoid}, Int32, Ref{Int32}),
+            _doc(d),
+            Int32(page),
+            code,
+        )
+        list == C_NULL && throw(PdfOxideError(code[], op))
+        return list
+    end
+end
+
+# Small string accessor helper for index-addressed lists, generated with @eval so
+# each ccall references its C function name as a LITERAL symbol.
+for (jl_fn, c_fn) in (
+    (:_str_font_name, :pdf_oxide_font_get_name),
+    (:_str_font_type, :pdf_oxide_font_get_type),
+    (:_str_font_encoding, :pdf_oxide_font_get_encoding),
+    (:_str_image_format, :pdf_oxide_image_get_format),
+    (:_str_image_colorspace, :pdf_oxide_image_get_colorspace),
+    (:_str_annotation_type, :pdf_oxide_annotation_get_type),
+    (:_str_annotation_subtype, :pdf_oxide_annotation_get_subtype),
+    (:_str_annotation_content, :pdf_oxide_annotation_get_content),
+    (:_str_annotation_author, :pdf_oxide_annotation_get_author),
+    (:_str_search_text, :pdf_oxide_search_result_get_text),
+)
+    @eval function $jl_fn(list::Ptr{Cvoid}, index::Integer, op::String)
+        code = Ref{Int32}(0)
+        ptr = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Ptr{UInt8},
+            (Ptr{Cvoid}, Int32, Ref{Int32}),
+            list,
+            Int32(index),
+            code,
+        )
+        return _take_string(ptr, code[], op)
+    end
+end
+
+# Int32 accessor helper, generated with @eval (LITERAL ccall symbol).
+for (jl_fn, c_fn) in (
+    (:_i32_image_width, :pdf_oxide_image_get_width),
+    (:_i32_image_height, :pdf_oxide_image_get_height),
+    (:_i32_image_bpc, :pdf_oxide_image_get_bits_per_component),
+    (:_i32_font_is_embedded, :pdf_oxide_font_is_embedded),
+    (:_i32_font_is_subset, :pdf_oxide_font_is_subset),
+    (:_i32_path_op_count, :pdf_oxide_path_get_operation_count),
+    (:_i32_search_page, :pdf_oxide_search_result_get_page),
+)
+    @eval function $jl_fn(list::Ptr{Cvoid}, index::Integer, op::String)
+        code = Ref{Int32}(0)
+        v = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Int32,
+            (Ptr{Cvoid}, Int32, Ref{Int32}),
+            list,
+            Int32(index),
+            code,
+        )
+        code[] != 0 && throw(PdfOxideError(code[], op))
+        return Int(v)
+    end
+end
+
+# Float32 accessor helper, generated with @eval (LITERAL ccall symbol).
+for (jl_fn, c_fn) in (
+    (:_f32_annotation_border_width, :pdf_oxide_annotation_get_border_width),
+    (:_f32_path_stroke_width, :pdf_oxide_path_get_stroke_width),
+)
+    @eval function $jl_fn(list::Ptr{Cvoid}, index::Integer, op::String)
+        code = Ref{Int32}(0)
+        v = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Float32,
+            (Ptr{Cvoid}, Int32, Ref{Int32}),
+            list,
+            Int32(index),
+            code,
+        )
+        code[] != 0 && throw(PdfOxideError(code[], op))
+        return Float64(v)
+    end
+end
+
+# Bool accessor helper, generated with @eval (LITERAL ccall symbol).
+for (jl_fn, c_fn) in (
+    (:_bool_path_has_stroke, :pdf_oxide_path_has_stroke),
+    (:_bool_path_has_fill, :pdf_oxide_path_has_fill),
+)
+    @eval function $jl_fn(list::Ptr{Cvoid}, index::Integer, op::String)
+        code = Ref{Int32}(0)
+        v = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Bool,
+            (Ptr{Cvoid}, Int32, Ref{Int32}),
+            list,
+            Int32(index),
+            code,
+        )
+        code[] != 0 && throw(PdfOxideError(code[], op))
+        return v
+    end
+end
+
+"""Embedded fonts on a (0-based) page as a `Vector{Font}`."""
+function embedded_fonts(d::PdfDocument, page::Integer)
+    list = _open_fonts(d, page, "embedded_fonts")
+    try
+        n = ccall((:pdf_oxide_font_count, LIB), Int32, (Ptr{Cvoid},), list)
+        out = Vector{Font}(undef, n < 0 ? 0 : Int(n))
+        for i = 0:(Int(n)-1)
+            name = _str_font_name(list, i, "embedded_fonts")
+            typ = _str_font_type(list, i, "embedded_fonts")
+            enc = _str_font_encoding(list, i, "embedded_fonts")
+            emb = _i32_font_is_embedded(list, i, "embedded_fonts") != 0
+            sub = _i32_font_is_subset(list, i, "embedded_fonts") != 0
+            out[i+1] = Font(name, typ, enc, emb, sub)
+        end
+        return out
+    finally
+        ccall((:pdf_oxide_font_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+"""Embedded images on a (0-based) page as a `Vector{Image}`."""
+function embedded_images(d::PdfDocument, page::Integer)
+    list = _open_images(d, page, "embedded_images")
+    try
+        n = ccall((:pdf_oxide_image_count, LIB), Int32, (Ptr{Cvoid},), list)
+        out = Vector{Image}(undef, n < 0 ? 0 : Int(n))
+        for i = 0:(Int(n)-1)
+            w = _i32_image_width(list, i, "embedded_images")
+            h = _i32_image_height(list, i, "embedded_images")
+            bpc = _i32_image_bpc(list, i, "embedded_images")
+            fmt = _str_image_format(list, i, "embedded_images")
+            cs = _str_image_colorspace(list, i, "embedded_images")
+            dlen = Ref{Int32}(0);
+            dcode = Ref{Int32}(0)
+            dptr = ccall(
+                (:pdf_oxide_image_get_data, LIB),
+                Ptr{UInt8},
+                (Ptr{Cvoid}, Int32, Ref{Int32}, Ref{Int32}),
+                list,
+                Int32(i),
+                dlen,
+                dcode,
+            )
+            data = if dptr == C_NULL
+                dcode[] != 0 && throw(PdfOxideError(dcode[], "embedded_images"))
+                UInt8[]
+            else
+                m = dlen[] < 0 ? 0 : Int(dlen[])
+                bytes = copy(unsafe_wrap(Array, dptr, m))
+                # Raw byte buffers free via free_bytes, not free_string.
+                ccall((:free_bytes, LIB), Cvoid, (Ptr{UInt8},), dptr)
+                bytes
+            end
+            out[i+1] = Image(w, h, bpc, fmt, cs, data)
+        end
+        return out
+    finally
+        ccall((:pdf_oxide_image_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+"""Annotations on a (0-based) page as a `Vector{Annotation}`."""
+function page_annotations(d::PdfDocument, page::Integer)
+    list = _open_annotations(d, page, "page_annotations")
+    try
+        n = ccall((:pdf_oxide_annotation_count, LIB), Int32, (Ptr{Cvoid},), list)
+        out = Vector{Annotation}(undef, n < 0 ? 0 : Int(n))
+        for i = 0:(Int(n)-1)
+            typ = _str_annotation_type(list, i, "page_annotations")
+            sub = _str_annotation_subtype(list, i, "page_annotations")
+            content = _str_annotation_content(list, i, "page_annotations")
+            author = _str_annotation_author(list, i, "page_annotations")
+            rect = _bbox_annotation(list, i, "page_annotations")
+            bw = _f32_annotation_border_width(list, i, "page_annotations")
+            out[i+1] = Annotation(typ, sub, content, author, rect, bw)
+        end
+        return out
+    finally
+        ccall((:pdf_oxide_annotation_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+"""Vector paths on a (0-based) page as a `Vector{Path}`."""
+function extract_paths(d::PdfDocument, page::Integer)
+    list = _open_paths(d, page, "extract_paths")
+    try
+        n = ccall((:pdf_oxide_path_count, LIB), Int32, (Ptr{Cvoid},), list)
+        out = Vector{Path}(undef, n < 0 ? 0 : Int(n))
+        for i = 0:(Int(n)-1)
+            bb = _bbox_path(list, i, "extract_paths")
+            sw = _f32_path_stroke_width(list, i, "extract_paths")
+            hs = _bool_path_has_stroke(list, i, "extract_paths")
+            hf = _bool_path_has_fill(list, i, "extract_paths")
+            oc = _i32_path_op_count(list, i, "extract_paths")
+            out[i+1] = Path(bb, sw, hs, hf, oc)
+        end
+        return out
+    finally
+        ccall((:pdf_oxide_path_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+# Shared marshaller for the two search entry points: count -> per-index
+# accessors -> pdf_oxide_search_result_free (NOT _list_free).
+function _search_results(list::Ptr{Cvoid}, op::String)
+    try
+        n = ccall((:pdf_oxide_search_result_count, LIB), Int32, (Ptr{Cvoid},), list)
+        out = Vector{SearchResult}(undef, n < 0 ? 0 : Int(n))
+        for i = 0:(Int(n)-1)
+            txt = _str_search_text(list, i, op)
+            pg = _i32_search_page(list, i, op)
+            bb = _bbox_search(list, i, op)
+            out[i+1] = SearchResult(txt, pg, bb)
+        end
+        return out
+    finally
+        ccall((:pdf_oxide_search_result_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+"""Search a single (0-based) page for `term`; returns a `Vector{SearchResult}`."""
+function search(d::PdfDocument, page::Integer, term::AbstractString, caseSensitive::Bool)
+    code = Ref{Int32}(0)
+    list = ccall(
+        (:pdf_document_search_page, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Int32, Cstring, Bool, Ref{Int32}),
+        _doc(d),
+        Int32(page),
+        term,
+        caseSensitive,
+        code,
+    )
+    list == C_NULL && throw(PdfOxideError(code[], "search"))
+    return _search_results(list, "search")
+end
+
+"""Search the whole document for `term`; returns a `Vector{SearchResult}`."""
+function search_all(d::PdfDocument, term::AbstractString, caseSensitive::Bool)
+    code = Ref{Int32}(0)
+    list = ccall(
+        (:pdf_document_search_all, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Cstring, Bool, Ref{Int32}),
+        _doc(d),
+        term,
+        caseSensitive,
+        code,
+    )
+    list == C_NULL && throw(PdfOxideError(code[], "search_all"))
+    return _search_results(list, "search_all")
+end
+
 # ── Page ────────────────────────────────────────────────────────────────────────
 # A lightweight view over one (0-based) page. Holds a strong reference to its
 # PdfDocument so the native handle outlives the page.
@@ -562,9 +916,17 @@ for (jl_fn, doc_fn) in (
     (:extract_words, :extract_words),
     (:extract_text_lines, :extract_text_lines),
     (:extract_tables, :extract_tables),
+    (:embedded_fonts, :embedded_fonts),
+    (:embedded_images, :embedded_images),
+    (:page_annotations, :page_annotations),
+    (:extract_paths, :extract_paths),
 )
     @eval $jl_fn(p::PdfPage) = $doc_fn(p.doc, p.index)
 end
+
+# Per-page search delegates carry the term + case-sensitivity arguments.
+search(p::PdfPage, term::AbstractString, caseSensitive::Bool) =
+    search(p.doc, p.index, term, caseSensitive)
 
 # ── Pdf builder ───────────────────────────────────────────────────────────────
 mutable struct Pdf

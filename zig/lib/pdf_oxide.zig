@@ -94,6 +94,51 @@ fn takeString(alloc: std.mem.Allocator, ptr: ?[*:0]u8, code: i32) Error![]u8 {
     return alloc.dupe(u8, span);
 }
 
+/// An embedded font on a page. `name`/`type`/`encoding` are allocator-owned.
+pub const Font = struct {
+    name: []u8,
+    type: []u8,
+    encoding: []u8,
+    embedded: bool,
+    subset: bool,
+};
+
+/// An embedded image on a page. `format`/`colorspace`/`data` are allocator-owned.
+pub const Image = struct {
+    width: i32,
+    height: i32,
+    bitsPerComponent: i32,
+    format: []u8,
+    colorspace: []u8,
+    data: []u8,
+};
+
+/// A page annotation. `type`/`subtype`/`content`/`author` are allocator-owned.
+pub const Annotation = struct {
+    type: []u8,
+    subtype: []u8,
+    content: []u8,
+    author: []u8,
+    rect: Bbox,
+    borderWidth: f32,
+};
+
+/// A vector path on a page.
+pub const Path = struct {
+    bbox: Bbox,
+    strokeWidth: f32,
+    hasStroke: bool,
+    hasFill: bool,
+    operationCount: i32,
+};
+
+/// A single search hit. `text` is allocator-owned (free it).
+pub const SearchResult = struct {
+    text: []u8,
+    page: i32,
+    bbox: Bbox,
+};
+
 /// An opened PDF for extraction/inspection.
 pub const Document = struct {
     handle: *c.PdfDocument,
@@ -363,6 +408,255 @@ pub const Document = struct {
         alloc.free(tables);
     }
 
+    /// Embedded fonts on a (0-based) page. Caller owns the returned slice and each
+    /// element's `name`/`type`/`encoding`; free with `freeFonts`.
+    pub fn embeddedFonts(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]Font {
+        var code: i32 = 0;
+        const list = c.pdf_document_get_embedded_fonts(self.handle, page_index, &code) orelse return fail(code);
+        defer c.pdf_oxide_font_list_free(list);
+        const n = c.pdf_oxide_font_count(list);
+        if (n < 0) return fail(code);
+        const count: usize = @intCast(n);
+        const out = try alloc.alloc(Font, count);
+        errdefer alloc.free(out);
+        var i: usize = 0;
+        errdefer for (out[0..i]) |ft| {
+            alloc.free(ft.name);
+            alloc.free(ft.type);
+            alloc.free(ft.encoding);
+        };
+        while (i < count) : (i += 1) {
+            const idx: i32 = @intCast(i);
+            const name = try takeString(alloc, c.pdf_oxide_font_get_name(list, idx, &code), code);
+            errdefer alloc.free(name);
+            const ftype = try takeString(alloc, c.pdf_oxide_font_get_type(list, idx, &code), code);
+            errdefer alloc.free(ftype);
+            const encoding = try takeString(alloc, c.pdf_oxide_font_get_encoding(list, idx, &code), code);
+            const embedded = c.pdf_oxide_font_is_embedded(list, idx, &code) != 0;
+            const subset = c.pdf_oxide_font_is_subset(list, idx, &code) != 0;
+            out[i] = .{
+                .name = name,
+                .type = ftype,
+                .encoding = encoding,
+                .embedded = embedded,
+                .subset = subset,
+            };
+        }
+        return out;
+    }
+
+    /// Free a slice returned by `embeddedFonts`.
+    pub fn freeFonts(alloc: std.mem.Allocator, fonts: []Font) void {
+        for (fonts) |ft| {
+            alloc.free(ft.name);
+            alloc.free(ft.type);
+            alloc.free(ft.encoding);
+        }
+        alloc.free(fonts);
+    }
+
+    /// Embedded images on a (0-based) page. Caller owns the returned slice and each
+    /// element's `format`/`colorspace`/`data`; free with `freeImages`.
+    pub fn embeddedImages(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]Image {
+        var code: i32 = 0;
+        const list = c.pdf_document_get_embedded_images(self.handle, page_index, &code) orelse return fail(code);
+        defer c.pdf_oxide_image_list_free(list);
+        const n = c.pdf_oxide_image_count(list);
+        if (n < 0) return fail(code);
+        const count: usize = @intCast(n);
+        const out = try alloc.alloc(Image, count);
+        errdefer alloc.free(out);
+        var i: usize = 0;
+        errdefer for (out[0..i]) |im| {
+            alloc.free(im.format);
+            alloc.free(im.colorspace);
+            alloc.free(im.data);
+        };
+        while (i < count) : (i += 1) {
+            const idx: i32 = @intCast(i);
+            const width = c.pdf_oxide_image_get_width(list, idx, &code);
+            const height = c.pdf_oxide_image_get_height(list, idx, &code);
+            const bpc = c.pdf_oxide_image_get_bits_per_component(list, idx, &code);
+            const format = try takeString(alloc, c.pdf_oxide_image_get_format(list, idx, &code), code);
+            errdefer alloc.free(format);
+            const colorspace = try takeString(alloc, c.pdf_oxide_image_get_colorspace(list, idx, &code), code);
+            errdefer alloc.free(colorspace);
+            var data_len: i32 = 0;
+            const data_ptr = c.pdf_oxide_image_get_data(list, idx, &data_len, &code) orelse return fail(code);
+            defer c.free_bytes(data_ptr);
+            const dn: usize = if (data_len < 0) 0 else @intCast(data_len);
+            const data = try alloc.dupe(u8, data_ptr[0..dn]);
+            out[i] = .{
+                .width = width,
+                .height = height,
+                .bitsPerComponent = bpc,
+                .format = format,
+                .colorspace = colorspace,
+                .data = data,
+            };
+        }
+        return out;
+    }
+
+    /// Free a slice returned by `embeddedImages`.
+    pub fn freeImages(alloc: std.mem.Allocator, images: []Image) void {
+        for (images) |im| {
+            alloc.free(im.format);
+            alloc.free(im.colorspace);
+            alloc.free(im.data);
+        }
+        alloc.free(images);
+    }
+
+    /// Annotations on a (0-based) page. Caller owns the returned slice and each
+    /// element's `type`/`subtype`/`content`/`author`; free with `freeAnnotations`.
+    pub fn pageAnnotations(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]Annotation {
+        var code: i32 = 0;
+        const list = c.pdf_document_get_page_annotations(self.handle, page_index, &code) orelse return fail(code);
+        defer c.pdf_oxide_annotation_list_free(list);
+        const n = c.pdf_oxide_annotation_count(list);
+        if (n < 0) return fail(code);
+        const count: usize = @intCast(n);
+        const out = try alloc.alloc(Annotation, count);
+        errdefer alloc.free(out);
+        var i: usize = 0;
+        errdefer for (out[0..i]) |an| {
+            alloc.free(an.type);
+            alloc.free(an.subtype);
+            alloc.free(an.content);
+            alloc.free(an.author);
+        };
+        while (i < count) : (i += 1) {
+            const idx: i32 = @intCast(i);
+            const atype = try takeString(alloc, c.pdf_oxide_annotation_get_type(list, idx, &code), code);
+            errdefer alloc.free(atype);
+            const subtype = try takeString(alloc, c.pdf_oxide_annotation_get_subtype(list, idx, &code), code);
+            errdefer alloc.free(subtype);
+            const content = try takeString(alloc, c.pdf_oxide_annotation_get_content(list, idx, &code), code);
+            errdefer alloc.free(content);
+            const author = try takeString(alloc, c.pdf_oxide_annotation_get_author(list, idx, &code), code);
+            errdefer alloc.free(author);
+            var x: f32 = 0;
+            var y: f32 = 0;
+            var w: f32 = 0;
+            var h: f32 = 0;
+            c.pdf_oxide_annotation_get_rect(list, idx, &x, &y, &w, &h, &code);
+            const border_width = c.pdf_oxide_annotation_get_border_width(list, idx, &code);
+            out[i] = .{
+                .type = atype,
+                .subtype = subtype,
+                .content = content,
+                .author = author,
+                .rect = .{ .x = x, .y = y, .width = w, .height = h },
+                .borderWidth = border_width,
+            };
+        }
+        return out;
+    }
+
+    /// Free a slice returned by `pageAnnotations`.
+    pub fn freeAnnotations(alloc: std.mem.Allocator, annotations: []Annotation) void {
+        for (annotations) |an| {
+            alloc.free(an.type);
+            alloc.free(an.subtype);
+            alloc.free(an.content);
+            alloc.free(an.author);
+        }
+        alloc.free(annotations);
+    }
+
+    /// Vector paths on a (0-based) page. Caller owns the returned slice; free with
+    /// `freePaths`.
+    pub fn extractPaths(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]Path {
+        var code: i32 = 0;
+        const list = c.pdf_document_extract_paths(self.handle, page_index, &code) orelse return fail(code);
+        defer c.pdf_oxide_path_list_free(list);
+        const n = c.pdf_oxide_path_count(list);
+        if (n < 0) return fail(code);
+        const count: usize = @intCast(n);
+        const out = try alloc.alloc(Path, count);
+        errdefer alloc.free(out);
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            const idx: i32 = @intCast(i);
+            var x: f32 = 0;
+            var y: f32 = 0;
+            var w: f32 = 0;
+            var h: f32 = 0;
+            c.pdf_oxide_path_get_bbox(list, idx, &x, &y, &w, &h, &code);
+            const stroke_width = c.pdf_oxide_path_get_stroke_width(list, idx, &code);
+            const has_stroke = c.pdf_oxide_path_has_stroke(list, idx, &code);
+            const has_fill = c.pdf_oxide_path_has_fill(list, idx, &code);
+            const op_count = c.pdf_oxide_path_get_operation_count(list, idx, &code);
+            out[i] = .{
+                .bbox = .{ .x = x, .y = y, .width = w, .height = h },
+                .strokeWidth = stroke_width,
+                .hasStroke = has_stroke,
+                .hasFill = has_fill,
+                .operationCount = op_count,
+            };
+        }
+        return out;
+    }
+
+    /// Free a slice returned by `extractPaths`.
+    pub fn freePaths(alloc: std.mem.Allocator, paths: []Path) void {
+        alloc.free(paths);
+    }
+
+    /// Marshal an `FfiSearchResults` handle into an owned slice. Frees `list` on
+    /// every path (including error). Caller owns each element's `text`.
+    fn collectSearchResults(alloc: std.mem.Allocator, list: *c.FfiSearchResults) Error![]SearchResult {
+        defer c.pdf_oxide_search_result_free(list);
+        var code: i32 = 0;
+        const n = c.pdf_oxide_search_result_count(list);
+        if (n < 0) return fail(code);
+        const count: usize = @intCast(n);
+        const out = try alloc.alloc(SearchResult, count);
+        errdefer alloc.free(out);
+        var i: usize = 0;
+        errdefer for (out[0..i]) |sr| alloc.free(sr.text);
+        while (i < count) : (i += 1) {
+            const idx: i32 = @intCast(i);
+            const result_text = try takeString(alloc, c.pdf_oxide_search_result_get_text(list, idx, &code), code);
+            errdefer alloc.free(result_text);
+            const page_no = c.pdf_oxide_search_result_get_page(list, idx, &code);
+            var x: f32 = 0;
+            var y: f32 = 0;
+            var w: f32 = 0;
+            var h: f32 = 0;
+            c.pdf_oxide_search_result_get_bbox(list, idx, &x, &y, &w, &h, &code);
+            out[i] = .{
+                .text = result_text,
+                .page = page_no,
+                .bbox = .{ .x = x, .y = y, .width = w, .height = h },
+            };
+        }
+        return out;
+    }
+
+    /// Search a single (0-based) page for `term`. Caller owns the returned slice
+    /// and each element's `text`; free with `freeSearchResults`.
+    pub fn search(self: Document, alloc: std.mem.Allocator, page_index: i32, term: [:0]const u8, case_sensitive: bool) Error![]SearchResult {
+        var code: i32 = 0;
+        const list = c.pdf_document_search_page(self.handle, page_index, term.ptr, case_sensitive, &code) orelse return fail(code);
+        return collectSearchResults(alloc, list);
+    }
+
+    /// Search every page for `term`. Caller owns the returned slice and each
+    /// element's `text`; free with `freeSearchResults`.
+    pub fn searchAll(self: Document, alloc: std.mem.Allocator, term: [:0]const u8, case_sensitive: bool) Error![]SearchResult {
+        var code: i32 = 0;
+        const list = c.pdf_document_search_all(self.handle, term.ptr, case_sensitive, &code) orelse return fail(code);
+        return collectSearchResults(alloc, list);
+    }
+
+    /// Free a slice returned by `search`/`searchAll`.
+    pub fn freeSearchResults(alloc: std.mem.Allocator, results: []SearchResult) void {
+        for (results) |sr| alloc.free(sr.text);
+        alloc.free(results);
+    }
+
     /// A lightweight view of a single (0-based) page. The returned `Page` borrows
     /// this `Document`'s handle, so the `Document` MUST outlive the `Page`.
     pub fn page(self: Document, index: i32) Page {
@@ -571,6 +865,45 @@ test "Document: element extraction (chars/words/lines/tables)" {
         const t = tables[0];
         _ = t.cell(0, 0); // cell accessor (smoke)
     }
+}
+
+test "Document: phase-2 extraction (fonts/images/annotations/paths/search)" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+
+    var doc = try Document.openFromBytes(bytes);
+    defer doc.deinit();
+
+    // embeddedFonts: returns a list (may be empty) without error
+    const fonts = try doc.embeddedFonts(a, 0);
+    defer Document.freeFonts(a, fonts);
+
+    // embeddedImages: returns a list (may be empty) without error
+    const images = try doc.embeddedImages(a, 0);
+    defer Document.freeImages(a, images);
+
+    // pageAnnotations: returns a list (may be empty) without error
+    const annotations = try doc.pageAnnotations(a, 0);
+    defer Document.freeAnnotations(a, annotations);
+
+    // extractPaths: returns a list (may be empty) without error
+    const paths = try doc.extractPaths(a, 0);
+    defer Document.freePaths(a, paths);
+
+    // search: non-empty, first result text contains "Alpha", page >= 0
+    const hits = try doc.search(a, 0, "Alpha", false);
+    defer Document.freeSearchResults(a, hits);
+    try testing.expect(hits.len > 0);
+    try testing.expect(std.mem.indexOf(u8, hits[0].text, "Alpha") != null);
+    try testing.expect(hits[0].page >= 0);
+
+    // searchAll: non-empty, first result text contains "Alpha", page >= 0
+    const all_hits = try doc.searchAll(a, "Alpha", false);
+    defer Document.freeSearchResults(a, all_hits);
+    try testing.expect(all_hits.len > 0);
+    try testing.expect(std.mem.indexOf(u8, all_hits[0].text, "Alpha") != null);
+    try testing.expect(all_hits[0].page >= 0);
 }
 
 test "error path: open nonexistent returns error" {

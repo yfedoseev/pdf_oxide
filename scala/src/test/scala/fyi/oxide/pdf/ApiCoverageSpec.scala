@@ -60,6 +60,29 @@ class ApiCoverageSpec extends AnyFunSuite:
       val tables = doc.extractTables(0) // extractTables (may be empty)
       assert(tables ne null)
 
+  // ── Phase-2 element extraction ───────────────────────────────────────────────
+  test("embeddedFonts / embeddedImages / pageAnnotations / extractPaths"):
+    Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
+      val fonts = doc.embeddedFonts(0) // embeddedFonts (may be empty)
+      assert(fonts ne null)
+      val images = doc.embeddedImages(0) // embeddedImages (may be empty)
+      assert(images ne null)
+      val annots = doc.pageAnnotations(0) // pageAnnotations (may be empty)
+      assert(annots ne null)
+      val paths = doc.extractPaths(0) // extractPaths (may be empty)
+      assert(paths ne null)
+
+  test("search / searchAll"):
+    Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
+      val hits = doc.search(0, "Alpha", false) // search
+      assert(hits.nonEmpty)
+      assert(hits.head.text.contains("Alpha")) // first hit text contains Alpha
+      assert(hits.head.page >= 0) // page >= 0
+      val allHits = doc.searchAll("Alpha", false) // searchAll
+      assert(allHits.nonEmpty)
+      assert(allHits.head.text.contains("Alpha"))
+      assert(allHits.head.page >= 0)
+
   // ── authenticate ─────────────────────────────────────────────────────────────
   test("authenticate"):
     Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>

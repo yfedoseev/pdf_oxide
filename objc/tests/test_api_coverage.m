@@ -91,6 +91,44 @@ int main(void) {
             CHECK(tables != nil && te == nil);
         }
 
+        // ── Phase-2 extraction ───────────────────────────────────────────────
+        {
+            NSError* fe = nil;
+            NSArray<POXFont*>* fonts =
+                [doc embeddedFonts:0 error:&fe]; // embeddedFonts (may be empty)
+            CHECK(fonts != nil && fe == nil);
+            NSError* ie = nil;
+            NSArray<POXImage*>* images =
+                [doc embeddedImages:0 error:&ie]; // embeddedImages (may be empty)
+            CHECK(images != nil && ie == nil);
+            NSError* ane = nil;
+            NSArray<POXAnnotation*>* annots =
+                [doc pageAnnotations:0 error:&ane]; // pageAnnotations (may be empty)
+            CHECK(annots != nil && ane == nil);
+            NSError* pe = nil;
+            NSArray<POXPath*>* paths =
+                [doc extractPaths:0 error:&pe]; // extractPaths (may be empty)
+            CHECK(paths != nil && pe == nil);
+
+            NSArray<POXSearchResult*>* hits = [doc search:0
+                                                     term:@"Alpha"
+                                            caseSensitive:NO
+                                                    error:&err]; // search
+            CHECK(hits != nil && hits.count > 0);
+            if (hits.count > 0) {
+                CHECK([hits[0].text containsString:@"Alpha"]);
+                CHECK(hits[0].page >= 0);
+            }
+            NSArray<POXSearchResult*>* allHits = [doc searchAll:@"Alpha"
+                                                  caseSensitive:NO
+                                                          error:&err]; // searchAll
+            CHECK(allHits != nil && allHits.count > 0);
+            if (allHits.count > 0) {
+                CHECK([allHits[0].text containsString:@"Alpha"]);
+                CHECK(allHits[0].page >= 0);
+            }
+        }
+
         // ── authenticate (wrong password on unencrypted doc returns a bool) ──
         {
             NSError* ae = nil;

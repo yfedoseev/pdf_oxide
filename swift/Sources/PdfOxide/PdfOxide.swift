@@ -77,6 +77,51 @@ public struct Table {
     }
 }
 
+/// A single embedded font.
+public struct Font {
+    public let name: String
+    public let type: String
+    public let encoding: String
+    public let embedded: Bool
+    public let subset: Bool
+}
+
+/// A single embedded image.
+public struct Image {
+    public let width: Int
+    public let height: Int
+    public let bitsPerComponent: Int
+    public let format: String
+    public let colorspace: String
+    public let data: [UInt8]
+}
+
+/// A single page annotation.
+public struct Annotation {
+    public let type: String
+    public let subtype: String
+    public let content: String
+    public let author: String
+    public let rect: Bbox
+    public let borderWidth: Double
+}
+
+/// A single vector path.
+public struct Path {
+    public let bbox: Bbox
+    public let strokeWidth: Double
+    public let hasStroke: Bool
+    public let hasFill: Bool
+    public let operationCount: Int
+}
+
+/// A single full-text search hit.
+public struct SearchResult {
+    public let text: String
+    public let page: Int
+    public let bbox: Bbox
+}
+
 // Copy a C string return into a Swift String and free it via free_string.
 private func takeString(_ ptr: UnsafeMutablePointer<CChar>?, _ code: Int32, _ op: String) throws -> String {
     guard let ptr else { throw PdfOxideError(code: code, op: op) }
@@ -293,6 +338,159 @@ public final class Document {
             result.append(Table(rowCount: rowCount, colCount: colCount, hasHeader: hasHeader, cells: cells))
         }
         return result
+    }
+
+    // ── Phase-2 element extraction ───────────────────────────────────────────
+
+    /// Extract embedded fonts from a (0-based) page.
+    public func embeddedFonts(_ pageIndex: Int) throws -> [Font] {
+        var code: Int32 = 0
+        guard let list = pdf_document_get_embedded_fonts(try ptr(), Int32(pageIndex), &code) else {
+            throw PdfOxideError(code: code, op: "embeddedFonts")
+        }
+        defer { pdf_oxide_font_list_free(list) }
+        let n = Int(pdf_oxide_font_count(list))
+        var result: [Font] = []
+        result.reserveCapacity(n)
+        for i in 0..<n {
+            let idx = Int32(i)
+            let name = try takeString(pdf_oxide_font_get_name(list, idx, &code), code, "embeddedFonts.name")
+            let type = try takeString(pdf_oxide_font_get_type(list, idx, &code), code, "embeddedFonts.type")
+            let encoding = try takeString(pdf_oxide_font_get_encoding(list, idx, &code), code, "embeddedFonts.encoding")
+            let embedded = pdf_oxide_font_is_embedded(list, idx, &code) != 0
+            let subset = pdf_oxide_font_is_subset(list, idx, &code) != 0
+            result.append(Font(name: name, type: type, encoding: encoding, embedded: embedded, subset: subset))
+        }
+        return result
+    }
+
+    /// Extract embedded images from a (0-based) page.
+    public func embeddedImages(_ pageIndex: Int) throws -> [Image] {
+        var code: Int32 = 0
+        guard let list = pdf_document_get_embedded_images(try ptr(), Int32(pageIndex), &code) else {
+            throw PdfOxideError(code: code, op: "embeddedImages")
+        }
+        defer { pdf_oxide_image_list_free(list) }
+        let n = Int(pdf_oxide_image_count(list))
+        var result: [Image] = []
+        result.reserveCapacity(n)
+        for i in 0..<n {
+            let idx = Int32(i)
+            let width = Int(pdf_oxide_image_get_width(list, idx, &code))
+            let height = Int(pdf_oxide_image_get_height(list, idx, &code))
+            let bpc = Int(pdf_oxide_image_get_bits_per_component(list, idx, &code))
+            let format = try takeString(pdf_oxide_image_get_format(list, idx, &code), code, "embeddedImages.format")
+            let colorspace = try takeString(pdf_oxide_image_get_colorspace(list, idx, &code), code, "embeddedImages.colorspace")
+            var dataLen: Int32 = 0
+            let data: [UInt8]
+            if let p = pdf_oxide_image_get_data(list, idx, &dataLen, &code) {
+                // Raw image buffers free via free_bytes, not free_string.
+                defer { free_bytes(p) }
+                let len = dataLen < 0 ? 0 : Int(dataLen)
+                data = Array(UnsafeBufferPointer(start: p, count: len))
+            } else {
+                data = []
+            }
+            result.append(Image(
+                width: width, height: height, bitsPerComponent: bpc,
+                format: format, colorspace: colorspace, data: data
+            ))
+        }
+        return result
+    }
+
+    /// Extract annotations from a (0-based) page.
+    public func pageAnnotations(_ pageIndex: Int) throws -> [Annotation] {
+        var code: Int32 = 0
+        guard let list = pdf_document_get_page_annotations(try ptr(), Int32(pageIndex), &code) else {
+            throw PdfOxideError(code: code, op: "pageAnnotations")
+        }
+        defer { pdf_oxide_annotation_list_free(list) }
+        let n = Int(pdf_oxide_annotation_count(list))
+        var result: [Annotation] = []
+        result.reserveCapacity(n)
+        for i in 0..<n {
+            let idx = Int32(i)
+            let type = try takeString(pdf_oxide_annotation_get_type(list, idx, &code), code, "pageAnnotations.type")
+            let subtype = try takeString(pdf_oxide_annotation_get_subtype(list, idx, &code), code, "pageAnnotations.subtype")
+            let content = try takeString(pdf_oxide_annotation_get_content(list, idx, &code), code, "pageAnnotations.content")
+            let author = try takeString(pdf_oxide_annotation_get_author(list, idx, &code), code, "pageAnnotations.author")
+            let borderWidth = pdf_oxide_annotation_get_border_width(list, idx, &code)
+            var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
+            pdf_oxide_annotation_get_rect(list, idx, &x, &y, &w, &h, &code)
+            result.append(Annotation(
+                type: type, subtype: subtype, content: content, author: author,
+                rect: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
+                borderWidth: Double(borderWidth)
+            ))
+        }
+        return result
+    }
+
+    /// Extract vector paths from a (0-based) page.
+    public func extractPaths(_ pageIndex: Int) throws -> [Path] {
+        var code: Int32 = 0
+        guard let list = pdf_document_extract_paths(try ptr(), Int32(pageIndex), &code) else {
+            throw PdfOxideError(code: code, op: "extractPaths")
+        }
+        defer { pdf_oxide_path_list_free(list) }
+        let n = Int(pdf_oxide_path_count(list))
+        var result: [Path] = []
+        result.reserveCapacity(n)
+        for i in 0..<n {
+            let idx = Int32(i)
+            let strokeWidth = pdf_oxide_path_get_stroke_width(list, idx, &code)
+            let hasStroke = pdf_oxide_path_has_stroke(list, idx, &code)
+            let hasFill = pdf_oxide_path_has_fill(list, idx, &code)
+            let operationCount = Int(pdf_oxide_path_get_operation_count(list, idx, &code))
+            var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
+            pdf_oxide_path_get_bbox(list, idx, &x, &y, &w, &h, &code)
+            result.append(Path(
+                bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
+                strokeWidth: Double(strokeWidth),
+                hasStroke: hasStroke, hasFill: hasFill, operationCount: operationCount
+            ))
+        }
+        return result
+    }
+
+    // Marshal an FfiSearchResults handle into [SearchResult]; frees the handle.
+    private func collectSearchResults(_ list: OpaquePointer, _ op: String) throws -> [SearchResult] {
+        defer { pdf_oxide_search_result_free(list) }
+        var code: Int32 = 0
+        let n = Int(pdf_oxide_search_result_count(list))
+        var result: [SearchResult] = []
+        result.reserveCapacity(n)
+        for i in 0..<n {
+            let idx = Int32(i)
+            let text = try takeString(pdf_oxide_search_result_get_text(list, idx, &code), code, "\(op).text")
+            let page = Int(pdf_oxide_search_result_get_page(list, idx, &code))
+            var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
+            pdf_oxide_search_result_get_bbox(list, idx, &x, &y, &w, &h, &code)
+            result.append(SearchResult(
+                text: text, page: page,
+                bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h))
+            ))
+        }
+        return result
+    }
+
+    /// Search a single (0-based) page for `term`.
+    public func search(_ pageIndex: Int, _ term: String, _ caseSensitive: Bool) throws -> [SearchResult] {
+        var code: Int32 = 0
+        guard let list = pdf_document_search_page(try ptr(), Int32(pageIndex), term, caseSensitive, &code) else {
+            throw PdfOxideError(code: code, op: "search")
+        }
+        return try collectSearchResults(list, "search")
+    }
+
+    /// Search the entire document for `term`.
+    public func searchAll(_ term: String, _ caseSensitive: Bool) throws -> [SearchResult] {
+        var code: Int32 = 0
+        guard let list = pdf_document_search_all(try ptr(), term, caseSensitive, &code) else {
+            throw PdfOxideError(code: code, op: "searchAll")
+        }
+        return try collectSearchResults(list, "searchAll")
     }
 
     /// A lightweight view of a single (0-based) page. Holds a strong reference to

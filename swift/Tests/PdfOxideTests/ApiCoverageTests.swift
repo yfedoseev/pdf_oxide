@@ -90,6 +90,55 @@ final class ApiCoverageTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(tables.count, 0)
     }
 
+    // ── Phase-2 element extraction ───────────────────────────────────────────
+    func testPhase2Extraction() throws {
+        let doc = try Document.openFromBytes(try samplePdf())
+
+        let fonts = try doc.embeddedFonts(0)           // embeddedFonts (may be empty)
+        for font in fonts {
+            _ = font.name; _ = font.type; _ = font.encoding; _ = font.embedded; _ = font.subset
+        }
+        XCTAssertGreaterThanOrEqual(fonts.count, 0)
+
+        let images = try doc.embeddedImages(0)         // embeddedImages (may be empty)
+        for image in images {
+            _ = image.width; _ = image.height; _ = image.bitsPerComponent
+            _ = image.format; _ = image.colorspace; _ = image.data
+        }
+        XCTAssertGreaterThanOrEqual(images.count, 0)
+
+        let annotations = try doc.pageAnnotations(0)   // pageAnnotations (may be empty)
+        for ann in annotations {
+            _ = ann.type; _ = ann.subtype; _ = ann.content; _ = ann.author
+            _ = ann.rect; _ = ann.borderWidth
+        }
+        XCTAssertGreaterThanOrEqual(annotations.count, 0)
+
+        let paths = try doc.extractPaths(0)            // extractPaths (may be empty)
+        for path in paths {
+            _ = path.bbox; _ = path.strokeWidth; _ = path.hasStroke
+            _ = path.hasFill; _ = path.operationCount
+        }
+        XCTAssertGreaterThanOrEqual(paths.count, 0)
+    }
+
+    // ── Full-text search ─────────────────────────────────────────────────────
+    func testSearch() throws {
+        let doc = try Document.openFromBytes(try samplePdf())
+
+        let hits = try doc.search(0, "Alpha", false)   // search
+        XCTAssertFalse(hits.isEmpty)
+        XCTAssertTrue(hits[0].text.contains("Alpha"))
+        XCTAssertGreaterThanOrEqual(hits[0].page, 0)
+        _ = hits[0].bbox
+
+        let allHits = try doc.searchAll("Alpha", false) // searchAll
+        XCTAssertFalse(allHits.isEmpty)
+        XCTAssertTrue(allHits[0].text.contains("Alpha"))
+        XCTAssertGreaterThanOrEqual(allHits[0].page, 0)
+        _ = allHits[0].bbox
+    }
+
     // ── Page model ───────────────────────────────────────────────────────────
     func testPage() throws {
         let doc = try Document.openFromBytes(try samplePdf())

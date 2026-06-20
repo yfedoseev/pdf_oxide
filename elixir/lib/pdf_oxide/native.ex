@@ -38,6 +38,12 @@ defmodule PdfOxide.Native do
   def doc_extract_words(_doc, _page), do: nif_error()
   def doc_extract_text_lines(_doc, _page), do: nif_error()
   def doc_extract_tables(_doc, _page), do: nif_error()
+  def doc_embedded_fonts(_doc, _page), do: nif_error()
+  def doc_embedded_images(_doc, _page), do: nif_error()
+  def doc_page_annotations(_doc, _page), do: nif_error()
+  def doc_extract_paths(_doc, _page), do: nif_error()
+  def doc_search_page(_doc, _page, _term, _case_sensitive), do: nif_error()
+  def doc_search_all(_doc, _term, _case_sensitive), do: nif_error()
   def doc_close(_doc), do: nif_error()
   def pdf_close(_pdf), do: nif_error()
 end

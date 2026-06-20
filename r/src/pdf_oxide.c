@@ -393,6 +393,241 @@ SEXP r_doc_extract_tables(SEXP ext, SEXP page) {
     return out;
 }
 
+/* ── Phase-2 element extraction ──────────────────────────────────────────────
+ * Same marshalling contract as Phase-1: open the C-ABI LIST handle, read each
+ * record into a named R list, copy owned char* fields with free_string, free the
+ * whole list once with the matching *_(list_)free, then return the R list. */
+
+SEXP r_doc_embedded_fonts(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    FfiFontList *list =
+        pdf_document_get_embedded_fonts(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "embedded_fonts");
+    int32_t n = pdf_oxide_font_count(list);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    for (int32_t i = 0; i < n; i++) {
+        code = 0;
+        char *name = pdf_oxide_font_get_name(list, i, &code);
+        if (!name) { pdf_oxide_font_list_free(list); pdfox_raise(code, "embedded_fonts"); }
+        code = 0;
+        char *type = pdf_oxide_font_get_type(list, i, &code);
+        if (!type) { free_string(name); pdf_oxide_font_list_free(list); pdfox_raise(code, "embedded_fonts"); }
+        code = 0;
+        char *enc = pdf_oxide_font_get_encoding(list, i, &code);
+        if (!enc) { free_string(name); free_string(type); pdf_oxide_font_list_free(list); pdfox_raise(code, "embedded_fonts"); }
+        code = 0;
+        bool emb = pdf_oxide_font_is_embedded(list, i, &code) != 0;
+        code = 0;
+        bool sub = pdf_oxide_font_is_subset(list, i, &code) != 0;
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 5));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 5));
+        SEXP nstr = PROTECT(Rf_mkChar(name)); free_string(name);
+        SET_VECTOR_ELT(rec, 0, Rf_ScalarString(nstr));          SET_STRING_ELT(nms, 0, Rf_mkChar("name"));
+        SEXP tstr = PROTECT(Rf_mkChar(type)); free_string(type);
+        SET_VECTOR_ELT(rec, 1, Rf_ScalarString(tstr));          SET_STRING_ELT(nms, 1, Rf_mkChar("type"));
+        SEXP estr = PROTECT(Rf_mkChar(enc)); free_string(enc);
+        SET_VECTOR_ELT(rec, 2, Rf_ScalarString(estr));          SET_STRING_ELT(nms, 2, Rf_mkChar("encoding"));
+        SET_VECTOR_ELT(rec, 3, Rf_ScalarLogical(emb));          SET_STRING_ELT(nms, 3, Rf_mkChar("embedded"));
+        SET_VECTOR_ELT(rec, 4, Rf_ScalarLogical(sub));          SET_STRING_ELT(nms, 4, Rf_mkChar("subset"));
+        Rf_setAttrib(rec, R_NamesSymbol, nms);
+        SET_VECTOR_ELT(out, i, rec);
+        UNPROTECT(5);
+    }
+    pdf_oxide_font_list_free(list);
+    UNPROTECT(1);
+    return out;
+}
+
+SEXP r_doc_embedded_images(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    FfiImageList *list =
+        pdf_document_get_embedded_images(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "embedded_images");
+    int32_t n = pdf_oxide_image_count(list);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    for (int32_t i = 0; i < n; i++) {
+        code = 0;
+        int32_t w = pdf_oxide_image_get_width(list, i, &code);
+        if (code != 0) { pdf_oxide_image_list_free(list); pdfox_raise(code, "embedded_images"); }
+        code = 0;
+        int32_t h = pdf_oxide_image_get_height(list, i, &code);
+        if (code != 0) { pdf_oxide_image_list_free(list); pdfox_raise(code, "embedded_images"); }
+        code = 0;
+        int32_t bpc = pdf_oxide_image_get_bits_per_component(list, i, &code);
+        if (code != 0) { pdf_oxide_image_list_free(list); pdfox_raise(code, "embedded_images"); }
+        code = 0;
+        char *fmt = pdf_oxide_image_get_format(list, i, &code);
+        if (!fmt) { pdf_oxide_image_list_free(list); pdfox_raise(code, "embedded_images"); }
+        code = 0;
+        char *cs = pdf_oxide_image_get_colorspace(list, i, &code);
+        if (!cs) { free_string(fmt); pdf_oxide_image_list_free(list); pdfox_raise(code, "embedded_images"); }
+        code = 0;
+        int32_t dlen = 0;
+        uint8_t *data = pdf_oxide_image_get_data(list, i, &dlen, &code);
+        if (!data) { free_string(fmt); free_string(cs); pdf_oxide_image_list_free(list); pdfox_raise(code, "embedded_images"); }
+        R_xlen_t dn = dlen < 0 ? 0 : (R_xlen_t)dlen;
+        SEXP raw = PROTECT(Rf_allocVector(RAWSXP, dn));
+        if (dn) memcpy(RAW(raw), data, (size_t)dn);
+        free_bytes(data);
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 6));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 6));
+        SET_VECTOR_ELT(rec, 0, Rf_ScalarInteger(w));            SET_STRING_ELT(nms, 0, Rf_mkChar("width"));
+        SET_VECTOR_ELT(rec, 1, Rf_ScalarInteger(h));            SET_STRING_ELT(nms, 1, Rf_mkChar("height"));
+        SET_VECTOR_ELT(rec, 2, Rf_ScalarInteger(bpc));          SET_STRING_ELT(nms, 2, Rf_mkChar("bits_per_component"));
+        SEXP fstr = PROTECT(Rf_mkChar(fmt)); free_string(fmt);
+        SET_VECTOR_ELT(rec, 3, Rf_ScalarString(fstr));          SET_STRING_ELT(nms, 3, Rf_mkChar("format"));
+        SEXP csstr = PROTECT(Rf_mkChar(cs)); free_string(cs);
+        SET_VECTOR_ELT(rec, 4, Rf_ScalarString(csstr));         SET_STRING_ELT(nms, 4, Rf_mkChar("colorspace"));
+        SET_VECTOR_ELT(rec, 5, raw);                            SET_STRING_ELT(nms, 5, Rf_mkChar("data"));
+        Rf_setAttrib(rec, R_NamesSymbol, nms);
+        SET_VECTOR_ELT(out, i, rec);
+        UNPROTECT(4);
+    }
+    pdf_oxide_image_list_free(list);
+    UNPROTECT(1);
+    return out;
+}
+
+SEXP r_doc_page_annotations(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    FfiAnnotationList *list =
+        pdf_document_get_page_annotations(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "page_annotations");
+    int32_t n = pdf_oxide_annotation_count(list);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    for (int32_t i = 0; i < n; i++) {
+        code = 0;
+        char *type = pdf_oxide_annotation_get_type(list, i, &code);
+        if (!type) { pdf_oxide_annotation_list_free(list); pdfox_raise(code, "page_annotations"); }
+        code = 0;
+        char *subtype = pdf_oxide_annotation_get_subtype(list, i, &code);
+        if (!subtype) { free_string(type); pdf_oxide_annotation_list_free(list); pdfox_raise(code, "page_annotations"); }
+        code = 0;
+        char *content = pdf_oxide_annotation_get_content(list, i, &code);
+        if (!content) { free_string(type); free_string(subtype); pdf_oxide_annotation_list_free(list); pdfox_raise(code, "page_annotations"); }
+        code = 0;
+        char *author = pdf_oxide_annotation_get_author(list, i, &code);
+        if (!author) { free_string(type); free_string(subtype); free_string(content); pdf_oxide_annotation_list_free(list); pdfox_raise(code, "page_annotations"); }
+        float x = 0, y = 0, w = 0, h = 0;
+        code = 0;
+        pdf_oxide_annotation_get_rect(list, i, &x, &y, &w, &h, &code);
+        if (code != 0) { free_string(type); free_string(subtype); free_string(content); free_string(author); pdf_oxide_annotation_list_free(list); pdfox_raise(code, "page_annotations"); }
+        code = 0;
+        float bw = pdf_oxide_annotation_get_border_width(list, i, &code);
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 6));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 6));
+        SEXP tstr = PROTECT(Rf_mkChar(type)); free_string(type);
+        SET_VECTOR_ELT(rec, 0, Rf_ScalarString(tstr));          SET_STRING_ELT(nms, 0, Rf_mkChar("type"));
+        SEXP ststr = PROTECT(Rf_mkChar(subtype)); free_string(subtype);
+        SET_VECTOR_ELT(rec, 1, Rf_ScalarString(ststr));         SET_STRING_ELT(nms, 1, Rf_mkChar("subtype"));
+        SEXP cstr = PROTECT(Rf_mkChar(content)); free_string(content);
+        SET_VECTOR_ELT(rec, 2, Rf_ScalarString(cstr));          SET_STRING_ELT(nms, 2, Rf_mkChar("content"));
+        SEXP astr = PROTECT(Rf_mkChar(author)); free_string(author);
+        SET_VECTOR_ELT(rec, 3, Rf_ScalarString(astr));          SET_STRING_ELT(nms, 3, Rf_mkChar("author"));
+        SET_VECTOR_ELT(rec, 4, make_bbox(x, y, w, h));          SET_STRING_ELT(nms, 4, Rf_mkChar("rect"));
+        SET_VECTOR_ELT(rec, 5, Rf_ScalarReal(bw));              SET_STRING_ELT(nms, 5, Rf_mkChar("border_width"));
+        Rf_setAttrib(rec, R_NamesSymbol, nms);
+        SET_VECTOR_ELT(out, i, rec);
+        UNPROTECT(5);
+    }
+    pdf_oxide_annotation_list_free(list);
+    UNPROTECT(1);
+    return out;
+}
+
+SEXP r_doc_extract_paths(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    FfiPathList *list =
+        pdf_document_extract_paths(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "extract_paths");
+    int32_t n = pdf_oxide_path_count(list);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    for (int32_t i = 0; i < n; i++) {
+        float x = 0, y = 0, w = 0, h = 0;
+        code = 0;
+        pdf_oxide_path_get_bbox(list, i, &x, &y, &w, &h, &code);
+        if (code != 0) { pdf_oxide_path_list_free(list); pdfox_raise(code, "extract_paths"); }
+        code = 0;
+        float sw = pdf_oxide_path_get_stroke_width(list, i, &code);
+        if (code != 0) { pdf_oxide_path_list_free(list); pdfox_raise(code, "extract_paths"); }
+        code = 0;
+        bool stroke = pdf_oxide_path_has_stroke(list, i, &code);
+        code = 0;
+        bool fill = pdf_oxide_path_has_fill(list, i, &code);
+        code = 0;
+        int32_t opc = pdf_oxide_path_get_operation_count(list, i, &code);
+        if (code != 0) { pdf_oxide_path_list_free(list); pdfox_raise(code, "extract_paths"); }
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 5));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 5));
+        SET_VECTOR_ELT(rec, 0, make_bbox(x, y, w, h));          SET_STRING_ELT(nms, 0, Rf_mkChar("bbox"));
+        SET_VECTOR_ELT(rec, 1, Rf_ScalarReal(sw));              SET_STRING_ELT(nms, 1, Rf_mkChar("stroke_width"));
+        SET_VECTOR_ELT(rec, 2, Rf_ScalarLogical(stroke));       SET_STRING_ELT(nms, 2, Rf_mkChar("has_stroke"));
+        SET_VECTOR_ELT(rec, 3, Rf_ScalarLogical(fill));         SET_STRING_ELT(nms, 3, Rf_mkChar("has_fill"));
+        SET_VECTOR_ELT(rec, 4, Rf_ScalarInteger(opc));          SET_STRING_ELT(nms, 4, Rf_mkChar("operation_count"));
+        Rf_setAttrib(rec, R_NamesSymbol, nms);
+        SET_VECTOR_ELT(out, i, rec);
+        UNPROTECT(3);
+    }
+    pdf_oxide_path_list_free(list);
+    UNPROTECT(1);
+    return out;
+}
+
+/* Build a SearchResult R list from an FfiSearchResults handle (shared by the
+ * page-scoped and document-wide search entry points). Frees the handle. */
+static SEXP search_results_to_list(FfiSearchResults *list, const char *op) {
+    int32_t code = 0;
+    int32_t n = pdf_oxide_search_result_count(list);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    for (int32_t i = 0; i < n; i++) {
+        code = 0;
+        char *txt = pdf_oxide_search_result_get_text(list, i, &code);
+        if (!txt) { pdf_oxide_search_result_free(list); pdfox_raise(code, op); }
+        code = 0;
+        int32_t pg = pdf_oxide_search_result_get_page(list, i, &code);
+        if (code != 0) { free_string(txt); pdf_oxide_search_result_free(list); pdfox_raise(code, op); }
+        float x = 0, y = 0, w = 0, h = 0;
+        code = 0;
+        pdf_oxide_search_result_get_bbox(list, i, &x, &y, &w, &h, &code);
+        if (code != 0) { free_string(txt); pdf_oxide_search_result_free(list); pdfox_raise(code, op); }
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 3));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 3));
+        SEXP tstr = PROTECT(Rf_mkChar(txt)); free_string(txt);
+        SET_VECTOR_ELT(rec, 0, Rf_ScalarString(tstr));          SET_STRING_ELT(nms, 0, Rf_mkChar("text"));
+        SET_VECTOR_ELT(rec, 1, Rf_ScalarInteger(pg));           SET_STRING_ELT(nms, 1, Rf_mkChar("page"));
+        SET_VECTOR_ELT(rec, 2, make_bbox(x, y, w, h));          SET_STRING_ELT(nms, 2, Rf_mkChar("bbox"));
+        Rf_setAttrib(rec, R_NamesSymbol, nms);
+        SET_VECTOR_ELT(out, i, rec);
+        UNPROTECT(3);
+    }
+    pdf_oxide_search_result_free(list);
+    UNPROTECT(1);
+    return out;
+}
+
+SEXP r_doc_search(SEXP ext, SEXP page, SEXP term, SEXP case_sensitive) {
+    int32_t code = 0;
+    FfiSearchResults *list = pdf_document_search_page(
+        doc_ptr(ext), Rf_asInteger(page), CHAR(STRING_ELT(term, 0)),
+        Rf_asLogical(case_sensitive) == TRUE, &code);
+    if (!list) pdfox_raise(code, "search");
+    return search_results_to_list(list, "search");
+}
+
+SEXP r_doc_search_all(SEXP ext, SEXP term, SEXP case_sensitive) {
+    int32_t code = 0;
+    FfiSearchResults *list = pdf_document_search_all(
+        doc_ptr(ext), CHAR(STRING_ELT(term, 0)),
+        Rf_asLogical(case_sensitive) == TRUE, &code);
+    if (!list) pdfox_raise(code, "search_all");
+    return search_results_to_list(list, "search_all");
+}
+
 /* Explicit, idempotent close: free the native handle now and clear the external
  * pointer so the GC finalizer is a no-op and later use raises "handle is closed". */
 SEXP r_doc_close(SEXP ext) {
@@ -439,6 +674,12 @@ static const R_CallMethodDef CallEntries[] = {
     CDEF(r_doc_extract_words, 2),
     CDEF(r_doc_extract_text_lines, 2),
     CDEF(r_doc_extract_tables, 2),
+    CDEF(r_doc_embedded_fonts, 2),
+    CDEF(r_doc_embedded_images, 2),
+    CDEF(r_doc_page_annotations, 2),
+    CDEF(r_doc_extract_paths, 2),
+    CDEF(r_doc_search, 4),
+    CDEF(r_doc_search_all, 3),
     CDEF(r_doc_close, 1),
     CDEF(r_pdf_close, 1),
     {NULL, NULL, 0}

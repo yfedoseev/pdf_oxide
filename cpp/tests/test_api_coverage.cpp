@@ -117,6 +117,69 @@ int main() {
         }
     }
 
+    // ── Phase-2 element extraction ───────────────────────────────────────
+    {
+        // fonts/images/paths/annotations may be empty on this doc; just
+        // assert each call succeeds and returns a list.
+        auto fonts = doc.embedded_fonts(0); // embedded_fonts
+        CHECK(fonts.size() >= 0);
+        for (const auto& f : fonts) {
+            (void)f.name;
+            (void)f.type;
+            (void)f.encoding;
+            (void)f.embedded;
+            (void)f.subset;
+        }
+
+        auto images = doc.embedded_images(0); // embedded_images
+        CHECK(images.size() >= 0);
+        for (const auto& im : images) {
+            (void)im.width;
+            (void)im.height;
+            (void)im.bits_per_component;
+            (void)im.format;
+            (void)im.colorspace;
+            (void)im.data;
+        }
+
+        auto annots = doc.page_annotations(0); // page_annotations
+        CHECK(annots.size() >= 0);
+        for (const auto& a : annots) {
+            (void)a.type;
+            (void)a.subtype;
+            (void)a.content;
+            (void)a.author;
+            (void)a.rect;
+            (void)a.border_width;
+        }
+
+        auto paths = doc.extract_paths(0); // extract_paths
+        CHECK(paths.size() >= 0);
+        for (const auto& p : paths) {
+            (void)p.bbox;
+            (void)p.stroke_width;
+            (void)p.has_stroke;
+            (void)p.has_fill;
+            (void)p.operation_count;
+        }
+
+        auto hits = doc.search(0, "Alpha", false); // search
+        CHECK(!hits.empty());
+        if (!hits.empty()) {
+            CHECK(hits[0].text.find("Alpha") != std::string::npos);
+            CHECK(hits[0].page >= 0);
+            (void)hits[0].bbox;
+        }
+
+        auto allHits = doc.search_all("Alpha", false); // search_all
+        CHECK(!allHits.empty());
+        if (!allHits.empty()) {
+            CHECK(allHits[0].text.find("Alpha") != std::string::npos);
+            CHECK(allHits[0].page >= 0);
+            (void)allHits[0].bbox;
+        }
+    }
+
     // authenticate returns a bool (no throw on an unencrypted/sample doc)
     {
         bool authed = doc.authenticate(""); // authenticate

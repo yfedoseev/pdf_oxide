@@ -81,12 +81,73 @@ end
         end
     end
 
+    # ── Phase-2 extraction ────────────────────────────────────────────────────
+    let fonts = embedded_fonts(doc, 0)            # embedded_fonts
+        @test fonts isa Vector{Font}              # may be empty — just call succeeds
+        for f in fonts
+            @test f.name isa String
+            @test f.type isa String
+            @test f.encoding isa String
+            @test f.embedded isa Bool
+            @test f.subset isa Bool
+        end
+    end
+    let images = embedded_images(doc, 0)          # embedded_images
+        @test images isa Vector{Image}            # may be empty — just call succeeds
+        for im in images
+            @test im.width >= 0
+            @test im.height >= 0
+            @test im.bitsPerComponent >= 0
+            @test im.format isa String
+            @test im.colorspace isa String
+            @test im.data isa Vector{UInt8}
+        end
+    end
+    let annots = page_annotations(doc, 0)         # page_annotations
+        @test annots isa Vector{Annotation}       # may be empty — just call succeeds
+        for a in annots
+            @test a.type isa String
+            @test a.subtype isa String
+            @test a.content isa String
+            @test a.author isa String
+            @test a.rect isa Bbox
+            @test a.borderWidth >= 0
+        end
+    end
+    let paths = extract_paths(doc, 0)             # extract_paths
+        @test paths isa Vector{Path}              # may be empty — just call succeeds
+        for pa in paths
+            @test pa.bbox isa Bbox
+            @test pa.strokeWidth >= 0
+            @test pa.hasStroke isa Bool
+            @test pa.hasFill isa Bool
+            @test pa.operationCount >= 0
+        end
+    end
+    let hits = search(doc, 0, "Alpha", false)     # search
+        @test !isempty(hits)
+        @test occursin("Alpha", hits[1].text)
+        @test hits[1].page >= 0
+        @test hits[1].bbox isa Bbox
+    end
+    let hits = search_all(doc, "Alpha", false)    # search_all
+        @test !isempty(hits)
+        @test occursin("Alpha", hits[1].text)
+        @test hits[1].page >= 0
+        @test hits[1].bbox isa Bbox
+    end
+
     # ── Page model ────────────────────────────────────────────────────────────
     let pg = page(doc, 0)                          # page
         @test occursin("Alpha", text(pg))         # Page.text
         @test !isempty(markdown(pg))              # Page.markdown
         @test occursin("<", html(pg))            # Page.html
         @test !isempty(plain_text(pg))           # Page.plain_text
+        @test embedded_fonts(pg) isa Vector{Font}        # Page.embedded_fonts
+        @test embedded_images(pg) isa Vector{Image}      # Page.embedded_images
+        @test page_annotations(pg) isa Vector{Annotation} # Page.page_annotations
+        @test extract_paths(pg) isa Vector{Path}         # Page.extract_paths
+        @test !isempty(search(pg, "Alpha", false))       # Page.search
     end
 
     # ── Error path ────────────────────────────────────────────────────────────

@@ -61,6 +61,51 @@ typedef struct {
 - (nullable NSString*)cellTextAtRow:(NSInteger)row col:(NSInteger)col;
 @end
 
+/// A single embedded font (Phase-2 extraction).
+@interface POXFont : NSObject
+@property(nonatomic, readonly, copy) NSString* name;
+@property(nonatomic, readonly, copy) NSString* type;
+@property(nonatomic, readonly, copy) NSString* encoding;
+@property(nonatomic, readonly) BOOL embedded;
+@property(nonatomic, readonly) BOOL subset;
+@end
+
+/// A single embedded image (Phase-2 extraction).
+@interface POXImage : NSObject
+@property(nonatomic, readonly) NSInteger width;
+@property(nonatomic, readonly) NSInteger height;
+@property(nonatomic, readonly) NSInteger bitsPerComponent;
+@property(nonatomic, readonly, copy) NSString* format;
+@property(nonatomic, readonly, copy) NSString* colorspace;
+@property(nonatomic, readonly, copy) NSData* data;
+@end
+
+/// A single page annotation (Phase-2 extraction).
+@interface POXAnnotation : NSObject
+@property(nonatomic, readonly, copy) NSString* type;
+@property(nonatomic, readonly, copy) NSString* subtype;
+@property(nonatomic, readonly, copy) NSString* content;
+@property(nonatomic, readonly, copy) NSString* author;
+@property(nonatomic, readonly) POXBbox rect;
+@property(nonatomic, readonly) float borderWidth;
+@end
+
+/// A single vector path (Phase-2 extraction).
+@interface POXPath : NSObject
+@property(nonatomic, readonly) POXBbox bbox;
+@property(nonatomic, readonly) float strokeWidth;
+@property(nonatomic, readonly) BOOL hasStroke;
+@property(nonatomic, readonly) BOOL hasFill;
+@property(nonatomic, readonly) NSInteger operationCount;
+@end
+
+/// A single text search result (Phase-2 extraction).
+@interface POXSearchResult : NSObject
+@property(nonatomic, readonly, copy) NSString* text;
+@property(nonatomic, readonly) NSInteger page;
+@property(nonatomic, readonly) POXBbox bbox;
+@end
+
 /// An opened PDF for extraction/inspection.
 @interface POXDocument : NSObject
 
@@ -95,6 +140,20 @@ typedef struct {
 - (nullable NSArray<POXTextLine*>*)extractTextLines:(NSInteger)page
                                               error:(NSError**)error;
 - (nullable NSArray<POXTable*>*)extractTables:(NSInteger)page error:(NSError**)error;
+
+/// Phase-2 extraction (page index is 0-based).
+- (nullable NSArray<POXFont*>*)embeddedFonts:(NSInteger)page error:(NSError**)error;
+- (nullable NSArray<POXImage*>*)embeddedImages:(NSInteger)page error:(NSError**)error;
+- (nullable NSArray<POXAnnotation*>*)pageAnnotations:(NSInteger)page
+                                               error:(NSError**)error;
+- (nullable NSArray<POXPath*>*)extractPaths:(NSInteger)page error:(NSError**)error;
+- (nullable NSArray<POXSearchResult*>*)search:(NSInteger)page
+                                         term:(NSString*)term
+                                caseSensitive:(BOOL)caseSensitive
+                                        error:(NSError**)error;
+- (nullable NSArray<POXSearchResult*>*)searchAll:(NSString*)term
+                                   caseSensitive:(BOOL)caseSensitive
+                                           error:(NSError**)error;
 
 /// Authenticate a password-protected PDF; returns YES on success, NO for a
 /// wrong password (no error). Sets `error` only on a genuine failure.

@@ -188,6 +188,71 @@ pdf_extract_tables <- function(doc, page) {
   .Call(C_r_doc_extract_tables, doc, as.integer(page))
 }
 
+# ── Phase-2 element extraction ────────────────────────────────────────────────
+
+#' Extract embedded fonts for one (0-based) page.
+#'
+#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @return A list of `Font` records, each `list(name=, type=, encoding=,
+#'   embedded=, subset=)`.
+#' @export
+pdf_embedded_fonts <- function(doc, page) {
+  .Call(C_r_doc_embedded_fonts, doc, as.integer(page))
+}
+
+#' Extract embedded images for one (0-based) page.
+#'
+#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @return A list of `Image` records, each `list(width=, height=,
+#'   bits_per_component=, format=, colorspace=, data=)` where `data` is a `raw`
+#'   vector of the image bytes.
+#' @export
+pdf_embedded_images <- function(doc, page) {
+  .Call(C_r_doc_embedded_images, doc, as.integer(page))
+}
+
+#' Extract annotations for one (0-based) page.
+#'
+#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @return A list of `Annotation` records, each `list(type=, subtype=, content=,
+#'   author=, rect=, border_width=)` where `rect` is `list(x=, y=, width=,
+#'   height=)`.
+#' @export
+pdf_page_annotations <- function(doc, page) {
+  .Call(C_r_doc_page_annotations, doc, as.integer(page))
+}
+
+#' Extract vector paths for one (0-based) page.
+#'
+#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @return A list of `Path` records, each `list(bbox=, stroke_width=, has_stroke=,
+#'   has_fill=, operation_count=)`.
+#' @export
+pdf_extract_paths <- function(doc, page) {
+  .Call(C_r_doc_extract_paths, doc, as.integer(page))
+}
+
+#' Search a single (0-based) page for a term.
+#'
+#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @param term The search term. @param case_sensitive Whether to match case.
+#' @return A list of `SearchResult` records, each `list(text=, page=, bbox=)`.
+#' @export
+pdf_search <- function(doc, page, term, case_sensitive = FALSE) {
+  .Call(C_r_doc_search, doc, as.integer(page), term,
+        isTRUE(case_sensitive))
+}
+
+#' Search the whole document for a term.
+#'
+#' @param doc A `pdfoxide_document`. @param term The search term.
+#' @param case_sensitive Whether to match case.
+#' @return A list of `SearchResult` records, each `list(text=, page=, bbox=)`.
+#' @export
+pdf_search_all <- function(doc, term, case_sensitive = FALSE) {
+  .Call(C_r_doc_search_all, doc, term, isTRUE(case_sensitive))
+}
+
 # ── Page ────────────────────────────────────────────────────────────────────
 
 #' A single (0-based) page of a document.

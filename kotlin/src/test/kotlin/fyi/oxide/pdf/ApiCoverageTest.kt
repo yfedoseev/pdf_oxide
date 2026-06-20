@@ -109,6 +109,41 @@ class ApiCoverageTest {
         assertTrue(tables.size >= 0)
     }
 
+    // ── Phase-2 element extraction ───────────────────────────────────────────
+    @Test fun embeddedFonts() {
+        val fonts = doc.embeddedFonts(0) // may be empty; must not throw
+        assertTrue(fonts.size >= 0)
+    }
+
+    @Test fun embeddedImages() {
+        val images = doc.embeddedImages(0) // may be empty; must not throw
+        assertTrue(images.size >= 0)
+    }
+
+    @Test fun pageAnnotations() {
+        val annotations = doc.pageAnnotations(0) // may be empty; must not throw
+        assertTrue(annotations.size >= 0)
+    }
+
+    @Test fun extractPaths() {
+        val paths = doc.extractPaths(0) // may be empty; must not throw
+        assertTrue(paths.size >= 0)
+    }
+
+    @Test fun search() {
+        val hits = doc.search(0, "Alpha", false)
+        assertTrue(hits.isNotEmpty())
+        assertContains(hits[0].text, "Alpha")
+        assertTrue(hits[0].page >= 0)
+    }
+
+    @Test fun searchAll() {
+        val hits = doc.searchAll("Alpha", false)
+        assertTrue(hits.isNotEmpty())
+        assertContains(hits[0].text, "Alpha")
+        assertTrue(hits[0].page >= 0)
+    }
+
     // ── Coroutine helpers ────────────────────────────────────────────────────
     @Test fun coroutineExtraction() =
         runTest {

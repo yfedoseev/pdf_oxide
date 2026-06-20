@@ -63,6 +63,25 @@ expect_true(lines[[1]]$word_count >= 1)
 tbls <- pdf_extract_tables(doc, 0)                      # pdf_extract_tables (may be empty)
 expect_true(is.list(tbls))
 
+# ── Phase-2 element extraction ────────────────────────────────────────────────
+fonts <- pdf_embedded_fonts(doc, 0)                    # pdf_embedded_fonts (may be empty)
+expect_true(is.list(fonts))
+images <- pdf_embedded_images(doc, 0)                  # pdf_embedded_images (may be empty)
+expect_true(is.list(images))
+annots <- pdf_page_annotations(doc, 0)                 # pdf_page_annotations (may be empty)
+expect_true(is.list(annots))
+paths <- pdf_extract_paths(doc, 0)                     # pdf_extract_paths (may be empty)
+expect_true(is.list(paths))
+
+hits <- pdf_search(doc, 0, "Alpha", FALSE)             # pdf_search (non-empty)
+expect_true(length(hits) > 0)
+expect_true(grepl("Alpha", hits[[1]]$text))
+expect_true(hits[[1]]$page >= 0)
+hits_all <- pdf_search_all(doc, "Alpha", FALSE)        # pdf_search_all (non-empty)
+expect_true(length(hits_all) > 0)
+expect_true(grepl("Alpha", hits_all[[1]]$text))
+expect_true(hits_all[[1]]$page >= 0)
+
 # ── close + open_with_password ────────────────────────────────────────────────
 pdf_close(doc); expect_true(TRUE)              # pdf_close (idempotent)
 pdf_close(doc)                                 # second close is a no-op

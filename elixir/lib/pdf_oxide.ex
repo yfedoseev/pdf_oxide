@@ -64,6 +64,31 @@ defmodule PdfOxide do
     defstruct [:row_count, :col_count, :has_header, :cells]
   end
 
+  defmodule Font do
+    @moduledoc "An embedded/referenced font on a page."
+    defstruct [:name, :type, :encoding, :embedded, :subset]
+  end
+
+  defmodule Image do
+    @moduledoc "An embedded image. `data` holds its raw bytes."
+    defstruct [:width, :height, :bits_per_component, :format, :colorspace, :data]
+  end
+
+  defmodule Annotation do
+    @moduledoc "A page annotation with its placement and style metadata."
+    defstruct [:type, :subtype, :content, :author, :rect, :border_width]
+  end
+
+  defmodule Path do
+    @moduledoc "An extracted vector path (its bbox and stroke/fill style)."
+    defstruct [:bbox, :stroke_width, :has_stroke, :has_fill, :operation_count]
+  end
+
+  defmodule SearchResult do
+    @moduledoc "A single search hit: its `text`, 0-based `page` and `bbox`."
+    defstruct [:text, :page, :bbox]
+  end
+
   # ── Pdf builder ────────────────────────────────────────────────────────────
   @doc "Build a PDF from Markdown."
   def from_markdown(md), do: wrap_pdf(Native.from_markdown(md))
@@ -201,6 +226,101 @@ defmodule PdfOxide do
   @doc "Text of a table's (0-based) `row`/`col` cell."
   def cell(%Table{cells: cells}, row, col),
     do: cells |> Enum.at(row, []) |> Enum.at(col)
+
+  @doc """
+  Extract the embedded/referenced fonts of a (0-based) page as a list of `Font`.
+  """
+  def embedded_fonts(%Document{ref: ref}, page) do
+    with {:ok, list} <- Native.doc_embedded_fonts(ref, page) do
+      {:ok,
+       Enum.map(list, fn {name, type, encoding, embedded, subset} ->
+         %Font{
+           name: name,
+           type: type,
+           encoding: encoding,
+           embedded: embedded,
+           subset: subset
+         }
+       end)}
+    end
+  end
+
+  @doc """
+  Extract the embedded images of a (0-based) page as a list of `Image`.
+  """
+  def embedded_images(%Document{ref: ref}, page) do
+    with {:ok, list} <- Native.doc_embedded_images(ref, page) do
+      {:ok,
+       Enum.map(list, fn {width, height, bpc, format, colorspace, data} ->
+         %Image{
+           width: width,
+           height: height,
+           bits_per_component: bpc,
+           format: format,
+           colorspace: colorspace,
+           data: data
+         }
+       end)}
+    end
+  end
+
+  @doc """
+  Extract the annotations of a (0-based) page as a list of `Annotation`.
+  """
+  def page_annotations(%Document{ref: ref}, page) do
+    with {:ok, list} <- Native.doc_page_annotations(ref, page) do
+      {:ok,
+       Enum.map(list, fn {type, subtype, content, author, x, y, w, h, border_width} ->
+         %Annotation{
+           type: type,
+           subtype: subtype,
+           content: content,
+           author: author,
+           rect: %Bbox{x: x, y: y, width: w, height: h},
+           border_width: border_width
+         }
+       end)}
+    end
+  end
+
+  @doc """
+  Extract the vector paths of a (0-based) page as a list of `Path`.
+  """
+  def extract_paths(%Document{ref: ref}, page) do
+    with {:ok, list} <- Native.doc_extract_paths(ref, page) do
+      {:ok,
+       Enum.map(list, fn {x, y, w, h, stroke_width, has_stroke, has_fill, operation_count} ->
+         %Path{
+           bbox: %Bbox{x: x, y: y, width: w, height: h},
+           stroke_width: stroke_width,
+           has_stroke: has_stroke,
+           has_fill: has_fill,
+           operation_count: operation_count
+         }
+       end)}
+    end
+  end
+
+  @doc """
+  Search a (0-based) page for `term`, returning a list of `SearchResult`.
+  """
+  def search(%Document{ref: ref}, page, term, case_sensitive) do
+    with {:ok, list} <- Native.doc_search_page(ref, page, term, case_sensitive) do
+      {:ok, Enum.map(list, &to_search_result/1)}
+    end
+  end
+
+  @doc """
+  Search the whole document for `term`, returning a list of `SearchResult`.
+  """
+  def search_all(%Document{ref: ref}, term, case_sensitive) do
+    with {:ok, list} <- Native.doc_search_all(ref, term, case_sensitive) do
+      {:ok, Enum.map(list, &to_search_result/1)}
+    end
+  end
+
+  defp to_search_result({text, page, x, y, w, h}),
+    do: %SearchResult{text: text, page: page, bbox: %Bbox{x: x, y: y, width: w, height: h}}
 
   # ── Page ─────────────────────────────────────────────────────────────────────
   @doc """

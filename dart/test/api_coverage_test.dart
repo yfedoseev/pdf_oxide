@@ -84,6 +84,28 @@ void main() {
     test('extractTextLines', () => expect(doc.extractTextLines(0), isNotEmpty));
     test('extractTables',
         () => expect(doc.extractTables(0), isA<List<Table>>()));
+
+    // Phase 2 — may be empty on this synthetic doc; assert the call succeeds.
+    test(
+        'embeddedFonts', () => expect(doc.embeddedFonts(0), isA<List<Font>>()));
+    test('embeddedImages',
+        () => expect(doc.embeddedImages(0), isA<List<Image>>()));
+    test('pageAnnotations',
+        () => expect(doc.pageAnnotations(0), isA<List<Annotation>>()));
+    test('extractPaths', () => expect(doc.extractPaths(0), isA<List<Path>>()));
+    test('search', () {
+      final hits = doc.search(0, 'Alpha', false);
+      expect(hits, isNotEmpty);
+      expect(hits.first.text, contains('Alpha'));
+      expect(hits.first.page, greaterThanOrEqualTo(0));
+      expect(hits.first.bbox, isA<Bbox>());
+    });
+    test('searchAll', () {
+      final hits = doc.searchAll('Alpha', false);
+      expect(hits, isNotEmpty);
+      expect(hits.first.text, contains('Alpha'));
+      expect(hits.first.page, greaterThanOrEqualTo(0));
+    });
   });
 
   test('error path: open nonexistent throws PdfOxideError', () {

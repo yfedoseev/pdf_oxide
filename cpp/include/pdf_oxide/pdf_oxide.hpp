@@ -113,6 +113,51 @@ struct Table {
     }
 };
 
+/// A single embedded font.
+struct Font {
+    std::string name;
+    std::string type;
+    std::string encoding;
+    bool embedded;
+    bool subset;
+};
+
+/// A single embedded image.
+struct Image {
+    int width;
+    int height;
+    int bits_per_component;
+    std::string format;
+    std::string colorspace;
+    std::vector<std::uint8_t> data;
+};
+
+/// A single page annotation.
+struct Annotation {
+    std::string type;
+    std::string subtype;
+    std::string content;
+    std::string author;
+    Bbox rect;
+    float border_width;
+};
+
+/// A single vector graphics path.
+struct Path {
+    Bbox bbox;
+    float stroke_width;
+    bool has_stroke;
+    bool has_fill;
+    int operation_count;
+};
+
+/// A single search hit.
+struct SearchResult {
+    std::string text;
+    int page;
+    Bbox bbox;
+};
+
 /// An opened PDF for extraction/inspection. Move-only; frees on destruction.
 class Document {
   public:
@@ -383,6 +428,176 @@ class Document {
         return out;
     }
 
+    /// Extract embedded fonts for one page (0-based).
+    std::vector<Font> embedded_fonts(int page_index) const {
+        int32_t code = 0;
+        FfiFontList* list = pdf_document_get_embedded_fonts(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::embedded_fonts");
+        }
+        std::vector<Font> out;
+        int32_t n = pdf_oxide_font_count(list);
+        out.reserve(n < 0 ? 0 : static_cast<std::size_t>(n));
+        try {
+            for (int32_t i = 0; i < n; ++i) {
+                Font f;
+                code = 0;
+                f.name = detail::take_string(pdf_oxide_font_get_name(list, i, &code),
+                                             code, "Document::embedded_fonts");
+                f.type = detail::take_string(pdf_oxide_font_get_type(list, i, &code),
+                                             code, "Document::embedded_fonts");
+                f.encoding =
+                    detail::take_string(pdf_oxide_font_get_encoding(list, i, &code),
+                                        code, "Document::embedded_fonts");
+                f.embedded = pdf_oxide_font_is_embedded(list, i, &code) != 0;
+                f.subset = pdf_oxide_font_is_subset(list, i, &code) != 0;
+                out.push_back(std::move(f));
+            }
+        } catch (...) {
+            pdf_oxide_font_list_free(list);
+            throw;
+        }
+        pdf_oxide_font_list_free(list);
+        return out;
+    }
+
+    /// Extract embedded images for one page (0-based).
+    std::vector<Image> embedded_images(int page_index) const {
+        int32_t code = 0;
+        FfiImageList* list = pdf_document_get_embedded_images(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::embedded_images");
+        }
+        std::vector<Image> out;
+        int32_t n = pdf_oxide_image_count(list);
+        out.reserve(n < 0 ? 0 : static_cast<std::size_t>(n));
+        try {
+            for (int32_t i = 0; i < n; ++i) {
+                Image img;
+                code = 0;
+                img.width = pdf_oxide_image_get_width(list, i, &code);
+                img.height = pdf_oxide_image_get_height(list, i, &code);
+                img.bits_per_component =
+                    pdf_oxide_image_get_bits_per_component(list, i, &code);
+                img.format =
+                    detail::take_string(pdf_oxide_image_get_format(list, i, &code),
+                                        code, "Document::embedded_images");
+                img.colorspace =
+                    detail::take_string(pdf_oxide_image_get_colorspace(list, i, &code),
+                                        code, "Document::embedded_images");
+                int32_t data_len = 0;
+                std::uint8_t* p = pdf_oxide_image_get_data(list, i, &data_len, &code);
+                img.data = detail::take_bytes(
+                    p, static_cast<std::size_t>(data_len < 0 ? 0 : data_len), code,
+                    "Document::embedded_images");
+                out.push_back(std::move(img));
+            }
+        } catch (...) {
+            pdf_oxide_image_list_free(list);
+            throw;
+        }
+        pdf_oxide_image_list_free(list);
+        return out;
+    }
+
+    /// Extract annotations for one page (0-based).
+    std::vector<Annotation> page_annotations(int page_index) const {
+        int32_t code = 0;
+        FfiAnnotationList* list =
+            pdf_document_get_page_annotations(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::page_annotations");
+        }
+        std::vector<Annotation> out;
+        int32_t n = pdf_oxide_annotation_count(list);
+        out.reserve(n < 0 ? 0 : static_cast<std::size_t>(n));
+        try {
+            for (int32_t i = 0; i < n; ++i) {
+                Annotation a;
+                code = 0;
+                a.type =
+                    detail::take_string(pdf_oxide_annotation_get_type(list, i, &code),
+                                        code, "Document::page_annotations");
+                a.subtype = detail::take_string(
+                    pdf_oxide_annotation_get_subtype(list, i, &code), code,
+                    "Document::page_annotations");
+                a.content = detail::take_string(
+                    pdf_oxide_annotation_get_content(list, i, &code), code,
+                    "Document::page_annotations");
+                a.author =
+                    detail::take_string(pdf_oxide_annotation_get_author(list, i, &code),
+                                        code, "Document::page_annotations");
+                Bbox b{0, 0, 0, 0};
+                pdf_oxide_annotation_get_rect(list, i, &b.x, &b.y, &b.width, &b.height,
+                                              &code);
+                a.rect = b;
+                a.border_width = pdf_oxide_annotation_get_border_width(list, i, &code);
+                out.push_back(std::move(a));
+            }
+        } catch (...) {
+            pdf_oxide_annotation_list_free(list);
+            throw;
+        }
+        pdf_oxide_annotation_list_free(list);
+        return out;
+    }
+
+    /// Extract vector graphics paths for one page (0-based).
+    std::vector<Path> extract_paths(int page_index) const {
+        int32_t code = 0;
+        FfiPathList* list = pdf_document_extract_paths(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::extract_paths");
+        }
+        std::vector<Path> out;
+        int32_t n = pdf_oxide_path_count(list);
+        out.reserve(n < 0 ? 0 : static_cast<std::size_t>(n));
+        try {
+            for (int32_t i = 0; i < n; ++i) {
+                Path p;
+                code = 0;
+                Bbox b{0, 0, 0, 0};
+                pdf_oxide_path_get_bbox(list, i, &b.x, &b.y, &b.width, &b.height,
+                                        &code);
+                p.bbox = b;
+                p.stroke_width = pdf_oxide_path_get_stroke_width(list, i, &code);
+                p.has_stroke = pdf_oxide_path_has_stroke(list, i, &code);
+                p.has_fill = pdf_oxide_path_has_fill(list, i, &code);
+                p.operation_count = pdf_oxide_path_get_operation_count(list, i, &code);
+                out.push_back(std::move(p));
+            }
+        } catch (...) {
+            pdf_oxide_path_list_free(list);
+            throw;
+        }
+        pdf_oxide_path_list_free(list);
+        return out;
+    }
+
+    /// Search a single page (0-based) for `term`.
+    std::vector<SearchResult> search(int page_index, const std::string& term,
+                                     bool case_sensitive) const {
+        int32_t code = 0;
+        FfiSearchResults* list = pdf_document_search_page(
+            ptr(), page_index, term.c_str(), case_sensitive, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::search");
+        }
+        return collect_search_results(list, "Document::search");
+    }
+
+    /// Search the whole document for `term`.
+    std::vector<SearchResult> search_all(const std::string& term,
+                                         bool case_sensitive) const {
+        int32_t code = 0;
+        FfiSearchResults* list =
+            pdf_document_search_all(ptr(), term.c_str(), case_sensitive, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::search_all");
+        }
+        return collect_search_results(list, "Document::search_all");
+    }
+
     /// Free the native handle now (idempotent). RAII also frees at scope exit;
     /// this is the explicit close for API symmetry with the other bindings.
     void close() { handle_.reset(); }
@@ -395,6 +610,34 @@ class Document {
         }
     };
     explicit Document(PdfDocument* h) : handle_(h) {}
+    /// Marshal an FfiSearchResults handle into SearchResult values, then free it
+    /// with pdf_oxide_search_result_free (NB: not a *_list_free).
+    static std::vector<SearchResult> collect_search_results(FfiSearchResults* list,
+                                                            const char* op) {
+        std::vector<SearchResult> out;
+        int32_t code = 0;
+        int32_t n = pdf_oxide_search_result_count(list);
+        out.reserve(n < 0 ? 0 : static_cast<std::size_t>(n));
+        try {
+            for (int32_t i = 0; i < n; ++i) {
+                SearchResult r;
+                code = 0;
+                r.text = detail::take_string(
+                    pdf_oxide_search_result_get_text(list, i, &code), code, op);
+                r.page = pdf_oxide_search_result_get_page(list, i, &code);
+                Bbox b{0, 0, 0, 0};
+                pdf_oxide_search_result_get_bbox(list, i, &b.x, &b.y, &b.width,
+                                                 &b.height, &code);
+                r.bbox = b;
+                out.push_back(std::move(r));
+            }
+        } catch (...) {
+            pdf_oxide_search_result_free(list);
+            throw;
+        }
+        pdf_oxide_search_result_free(list);
+        return out;
+    }
     PdfDocument* ptr() const {
         if (!handle_)
             throw Error(0, "Document is closed");

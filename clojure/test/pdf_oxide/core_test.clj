@@ -78,5 +78,57 @@
           (is (instance? Boolean (:has-header t)))
           (is (fn? (:cell t))))))))
 
+(deftest phase2-element-extraction
+  (with-open [d (pdf/open-from-bytes (sample-pdf))]
+    (testing "embedded-fonts (0-based) returns a list without error"
+      (let [fonts (pdf/embedded-fonts d 0)]
+        (is (sequential? fonts))                          ; may be empty
+        (doseq [ft fonts]
+          (is (string? (:name ft)))
+          (is (string? (:type ft)))
+          (is (string? (:encoding ft)))
+          (is (instance? Boolean (:embedded ft)))
+          (is (instance? Boolean (:subset ft))))))
+    (testing "embedded-images (0-based) returns a list without error"
+      (let [images (pdf/embedded-images d 0)]
+        (is (sequential? images))                         ; may be empty
+        (doseq [im images]
+          (is (integer? (:width im)))
+          (is (integer? (:height im)))
+          (is (integer? (:bits-per-component im)))
+          (is (string? (:format im)))
+          (is (string? (:colorspace im)))
+          (is (bytes? (:data im))))))
+    (testing "page-annotations (0-based) returns a list without error"
+      (let [anns (pdf/page-annotations d 0)]
+        (is (sequential? anns))                           ; may be empty
+        (doseq [a anns]
+          (is (string? (:type a)))
+          (is (string? (:subtype a)))
+          (is (string? (:content a)))
+          (is (string? (:author a)))
+          (is (map? (:rect a)))
+          (is (number? (:border-width a))))))
+    (testing "extract-paths (0-based) returns a list without error"
+      (let [paths (pdf/extract-paths d 0)]
+        (is (sequential? paths))                          ; may be empty
+        (doseq [p paths]
+          (is (map? (:bbox p)))
+          (is (number? (:stroke-width p)))
+          (is (instance? Boolean (:has-stroke p)))
+          (is (instance? Boolean (:has-fill p)))
+          (is (integer? (:operation-count p))))))
+    (testing "search (0-based)"
+      (let [results (pdf/search d 0 "Alpha" false)]
+        (is (seq results))                                ; non-empty
+        (is (re-find #"Alpha" (:text (first results))))   ; first result contains Alpha
+        (is (>= (:page (first results)) 0))               ; page >= 0
+        (is (map? (:bbox (first results))))))
+    (testing "search-all"
+      (let [results (pdf/search-all d "Alpha" false)]
+        (is (seq results))                                ; non-empty
+        (is (re-find #"Alpha" (:text (first results))))   ; first result contains Alpha
+        (is (>= (:page (first results)) 0))))))           ; page >= 0
+
 (deftest error-path
   (is (thrown? clojure.lang.ExceptionInfo (pdf/open "/nonexistent/nope.pdf"))))

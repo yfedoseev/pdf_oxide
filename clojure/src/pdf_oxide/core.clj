@@ -196,6 +196,121 @@
               (range n)))
       (finally (->void "pdf_oxide_table_list_free" [lst])))))
 
+;; ── Phase-2 element extraction ──────────────────────────────────────────────────
+;; Same shape as Phase-1: call the C-ABI list entry point (NULL → throw), read
+;; every element into Clojure maps, then free the list once. Owned C strings are
+;; copied + freed via take-string; bbox via the shared get-bbox out-param helper.
+(defn embedded-fonts
+  "Extract embedded fonts from a 0-based page.
+   Returns a vector of {:name :type :encoding :embedded :subset}."
+  [^Document d page]
+  (let [code (IntByReference.)
+        lst (->ptr "pdf_document_get_embedded_fonts" [(doc-ptr d) (int page) code])]
+    (when (nil? lst) (throw (ex-info "pdf_oxide: embedded-fonts failed" {:code (.getValue code) :op "embedded-fonts"})))
+    (try
+      (let [n (->int "pdf_oxide_font_count" [lst])]
+        (mapv (fn [i]
+                (let [c (IntByReference.)]
+                  {:name (take-string (->ptr "pdf_oxide_font_get_name" [lst (int i) c]) (.getValue c) "embedded-fonts")
+                   :type (take-string (->ptr "pdf_oxide_font_get_type" [lst (int i) c]) (.getValue c) "embedded-fonts")
+                   :encoding (take-string (->ptr "pdf_oxide_font_get_encoding" [lst (int i) c]) (.getValue c) "embedded-fonts")
+                   :embedded (->bool "pdf_oxide_font_is_embedded" [lst (int i) c])
+                   :subset (->bool "pdf_oxide_font_is_subset" [lst (int i) c])}))
+              (range n)))
+      (finally (->void "pdf_oxide_font_list_free" [lst])))))
+
+(defn embedded-images
+  "Extract embedded images from a 0-based page.
+   Returns a vector of {:width :height :bits-per-component :format :colorspace :data}."
+  [^Document d page]
+  (let [code (IntByReference.)
+        lst (->ptr "pdf_document_get_embedded_images" [(doc-ptr d) (int page) code])]
+    (when (nil? lst) (throw (ex-info "pdf_oxide: embedded-images failed" {:code (.getValue code) :op "embedded-images"})))
+    (try
+      (let [n (->int "pdf_oxide_image_count" [lst])]
+        (mapv (fn [i]
+                (let [c (IntByReference.) len (IntByReference.)
+                      ptr (->ptr "pdf_oxide_image_get_data" [lst (int i) len c])
+                      sz (max 0 (.getValue len))
+                      data (when ptr (let [b (.getByteArray ptr 0 sz)] (free-bytes ptr) b))]
+                  {:width (->int "pdf_oxide_image_get_width" [lst (int i) c])
+                   :height (->int "pdf_oxide_image_get_height" [lst (int i) c])
+                   :bits-per-component (->int "pdf_oxide_image_get_bits_per_component" [lst (int i) c])
+                   :format (take-string (->ptr "pdf_oxide_image_get_format" [lst (int i) c]) (.getValue c) "embedded-images")
+                   :colorspace (take-string (->ptr "pdf_oxide_image_get_colorspace" [lst (int i) c]) (.getValue c) "embedded-images")
+                   :data (or data (byte-array 0))}))
+              (range n)))
+      (finally (->void "pdf_oxide_image_list_free" [lst])))))
+
+(defn page-annotations
+  "Extract annotations from a 0-based page.
+   Returns a vector of {:type :subtype :content :author :rect :border-width}."
+  [^Document d page]
+  (let [code (IntByReference.)
+        lst (->ptr "pdf_document_get_page_annotations" [(doc-ptr d) (int page) code])]
+    (when (nil? lst) (throw (ex-info "pdf_oxide: page-annotations failed" {:code (.getValue code) :op "page-annotations"})))
+    (try
+      (let [n (->int "pdf_oxide_annotation_count" [lst])]
+        (mapv (fn [i]
+                (let [c (IntByReference.)]
+                  {:type (take-string (->ptr "pdf_oxide_annotation_get_type" [lst (int i) c]) (.getValue c) "page-annotations")
+                   :subtype (take-string (->ptr "pdf_oxide_annotation_get_subtype" [lst (int i) c]) (.getValue c) "page-annotations")
+                   :content (take-string (->ptr "pdf_oxide_annotation_get_content" [lst (int i) c]) (.getValue c) "page-annotations")
+                   :author (take-string (->ptr "pdf_oxide_annotation_get_author" [lst (int i) c]) (.getValue c) "page-annotations")
+                   :rect (get-bbox "pdf_oxide_annotation_get_rect" lst i)
+                   :border-width (->float "pdf_oxide_annotation_get_border_width" [lst (int i) c])}))
+              (range n)))
+      (finally (->void "pdf_oxide_annotation_list_free" [lst])))))
+
+(defn extract-paths
+  "Extract vector paths from a 0-based page.
+   Returns a vector of {:bbox :stroke-width :has-stroke :has-fill :operation-count}."
+  [^Document d page]
+  (let [code (IntByReference.)
+        lst (->ptr "pdf_document_extract_paths" [(doc-ptr d) (int page) code])]
+    (when (nil? lst) (throw (ex-info "pdf_oxide: extract-paths failed" {:code (.getValue code) :op "extract-paths"})))
+    (try
+      (let [n (->int "pdf_oxide_path_count" [lst])]
+        (mapv (fn [i]
+                (let [c (IntByReference.)]
+                  {:bbox (get-bbox "pdf_oxide_path_get_bbox" lst i)
+                   :stroke-width (->float "pdf_oxide_path_get_stroke_width" [lst (int i) c])
+                   :has-stroke (->bool "pdf_oxide_path_has_stroke" [lst (int i) c])
+                   :has-fill (->bool "pdf_oxide_path_has_fill" [lst (int i) c])
+                   :operation-count (->int "pdf_oxide_path_get_operation_count" [lst (int i) c])}))
+              (range n)))
+      (finally (->void "pdf_oxide_path_list_free" [lst])))))
+
+(defn- read-search-results
+  "Read a FfiSearchResults handle into a vector of {:text :page :bbox}, then free
+   it via pdf_oxide_search_result_free (NOT _list_free)."
+  [^Pointer lst op]
+  (try
+    (let [n (->int "pdf_oxide_search_result_count" [lst])]
+      (mapv (fn [i]
+              (let [c (IntByReference.)]
+                {:text (take-string (->ptr "pdf_oxide_search_result_get_text" [lst (int i) c]) (.getValue c) op)
+                 :page (->int "pdf_oxide_search_result_get_page" [lst (int i) c])
+                 :bbox (get-bbox "pdf_oxide_search_result_get_bbox" lst i)}))
+            (range n)))
+    (finally (->void "pdf_oxide_search_result_free" [lst]))))
+
+(defn search
+  "Search a 0-based page for `term`. Returns a vector of {:text :page :bbox}."
+  [^Document d page term case-sensitive]
+  (let [code (IntByReference.)
+        lst (->ptr "pdf_document_search_page" [(doc-ptr d) (int page) term (boolean case-sensitive) code])]
+    (when (nil? lst) (throw (ex-info "pdf_oxide: search failed" {:code (.getValue code) :op "search"})))
+    (read-search-results lst "search")))
+
+(defn search-all
+  "Search the whole document for `term`. Returns a vector of {:text :page :bbox}."
+  [^Document d term case-sensitive]
+  (let [code (IntByReference.)
+        lst (->ptr "pdf_document_search_all" [(doc-ptr d) term (boolean case-sensitive) code])]
+    (when (nil? lst) (throw (ex-info "pdf_oxide: search-all failed" {:code (.getValue code) :op "search-all"})))
+    (read-search-results lst "search-all")))
+
 ;; ── Page ────────────────────────────────────────────────────────────────────
 ;; Holds a strong reference to its Document (keeps it alive) plus a 0-based index;
 ;; methods delegate to the existing per-page Document fns.
