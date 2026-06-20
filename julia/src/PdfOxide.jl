@@ -115,19 +115,23 @@ is_encrypted(d::PdfDocument) =
 has_structure_tree(d::PdfDocument) =
     ccall((:pdf_document_has_structure_tree, LIB), Bool, (Ptr{Cvoid},), _doc(d))
 
-function _str_page(sym::Symbol, d::PdfDocument, page::Integer, op::String)
-    code = Ref{Int32}(0)
-    ptr = ccall((sym, LIB), Ptr{UInt8}, (Ptr{Cvoid}, Int32, Ref{Int32}), _doc(d), Int32(page), code)
-    return _take_string(ptr, code[], op)
+# Per-page text extractors. Generated with @eval so each ccall references its C
+# function name as a LITERAL symbol (ccall forbids a variable function name).
+for (jl_fn, c_fn) in (
+    (:extract_text, :pdf_document_extract_text),
+    (:to_plain_text, :pdf_document_to_plain_text),
+    (:to_markdown, :pdf_document_to_markdown),
+    (:to_html, :pdf_document_to_html),
+    (:extract_structured_json, :pdf_document_extract_structured_to_json),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(d::PdfDocument, page::Integer=0)
+        code = Ref{Int32}(0)
+        ptr = ccall(($(QuoteNode(c_fn)), LIB), Ptr{UInt8},
+                    (Ptr{Cvoid}, Int32, Ref{Int32}), _doc(d), Int32(page), code)
+        return _take_string(ptr, code[], $op)
+    end
 end
-
-"""Reading-order text for one (0-based) page."""
-extract_text(d::PdfDocument, page::Integer=0) = _str_page(:pdf_document_extract_text, d, page, "extract_text")
-to_plain_text(d::PdfDocument, page::Integer=0) = _str_page(:pdf_document_to_plain_text, d, page, "to_plain_text")
-to_markdown(d::PdfDocument, page::Integer=0) = _str_page(:pdf_document_to_markdown, d, page, "to_markdown")
-to_html(d::PdfDocument, page::Integer=0) = _str_page(:pdf_document_to_html, d, page, "to_html")
-extract_structured_json(d::PdfDocument, page::Integer=0) =
-    _str_page(:pdf_document_extract_structured_to_json, d, page, "extract_structured_json")
 
 """Markdown for the whole document."""
 function to_markdown_all(d::PdfDocument)
@@ -156,16 +160,20 @@ end
 
 _pdf(p::Pdf) = (p.handle == C_NULL && error("Pdf is closed"); p.handle)
 
-function _from(sym::Symbol, input::AbstractString, op::String)
-    code = Ref{Int32}(0)
-    h = ccall((sym, LIB), Ptr{Cvoid}, (Cstring, Ref{Int32}), input, code)
-    h == C_NULL && throw(PdfOxideError(code[], op))
-    return Pdf(h)
+# Builders. Generated with @eval so each ccall uses a LITERAL C function name.
+for (jl_fn, c_fn) in (
+    (:from_markdown, :pdf_from_markdown),
+    (:from_html, :pdf_from_html),
+    (:from_text, :pdf_from_text),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(input::AbstractString)
+        code = Ref{Int32}(0)
+        h = ccall(($(QuoteNode(c_fn)), LIB), Ptr{Cvoid}, (Cstring, Ref{Int32}), input, code)
+        h == C_NULL && throw(PdfOxideError(code[], $op))
+        return Pdf(h)
+    end
 end
-
-from_markdown(md::AbstractString) = _from(:pdf_from_markdown, md, "from_markdown")
-from_html(html::AbstractString) = _from(:pdf_from_html, html, "from_html")
-from_text(text::AbstractString) = _from(:pdf_from_text, text, "from_text")
 
 """Write the built PDF to a path."""
 function save(p::Pdf, path::AbstractString)
