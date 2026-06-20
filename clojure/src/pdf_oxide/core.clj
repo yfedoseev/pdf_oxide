@@ -38,21 +38,27 @@
   (or @(.-state d) (throw (ex-info "PdfDocument is closed" {}))))
 
 (defn open
-  "Open a PDF from a path. Optional :password."
-  [path & {:keys [password]}]
+  "Open a PDF from a path."
+  [path]
   (let [code (IntByReference.)
-        h (if password
-            (->ptr "pdf_document_open_with_password" [path password code])
-            (->ptr "pdf_document_open" [path code]))]
+        h (->ptr "pdf_document_open" [path code])]
     (when (nil? h) (throw (ex-info "pdf_oxide: open failed" {:code (.getValue code) :op "open"})))
     (Document. (atom h))))
 
-(defn open-bytes
+(defn open-with-password
+  "Open a password-protected PDF."
+  [path password]
+  (let [code (IntByReference.)
+        h (->ptr "pdf_document_open_with_password" [path password code])]
+    (when (nil? h) (throw (ex-info "pdf_oxide: open-with-password failed" {:code (.getValue code) :op "open-with-password"})))
+    (Document. (atom h))))
+
+(defn open-from-bytes
   "Open a PDF from a byte array."
   [^bytes data]
   (let [code (IntByReference.)
         h (->ptr "pdf_document_open_from_bytes" [data (long (alength data)) code])]
-    (when (nil? h) (throw (ex-info "pdf_oxide: open-bytes failed" {:code (.getValue code) :op "open-bytes"})))
+    (when (nil? h) (throw (ex-info "pdf_oxide: open-from-bytes failed" {:code (.getValue code) :op "open-from-bytes"})))
     (Document. (atom h))))
 
 (defn page-count [^Document d]
@@ -61,11 +67,11 @@
     n))
 
 (defn version
-  "PDF version as [major minor]."
+  "PDF version as a map {:major _ :minor _}."
   [^Document d]
   (let [maj (ByteByReference.) min (ByteByReference.)]
     (->void "pdf_document_get_version" [(doc-ptr d) maj min])
-    [(bit-and (.getValue maj) 0xff) (bit-and (.getValue min) 0xff)]))
+    {:major (bit-and (.getValue maj) 0xff) :minor (bit-and (.getValue min) 0xff)}))
 
 (defn encrypted? [^Document d] (->bool "pdf_document_is_encrypted" [(doc-ptr d)]))
 (defn structure-tree? [^Document d] (->bool "pdf_document_has_structure_tree" [(doc-ptr d)]))

@@ -22,8 +22,8 @@
       (is (> (.length f) 100)) (.delete f))))
 
 (deftest document-open
-  (testing "open-bytes + page-count"
-    (with-open [d (pdf/open-bytes (sample-pdf))] (is (>= (pdf/page-count d) 1))))
+  (testing "open-from-bytes + page-count"
+    (with-open [d (pdf/open-from-bytes (sample-pdf))] (is (>= (pdf/page-count d) 1))))
   (testing "open (path)"
     (let [f (File/createTempFile "pdfoxide-clj-open" ".pdf")]
       (with-open [p (pdf/from-markdown "# f\n\nx\n")] (pdf/save p (.getAbsolutePath f)))
@@ -31,8 +31,8 @@
       (.delete f))))
 
 (deftest document-inspection-extraction
-  (with-open [d (pdf/open-bytes (sample-pdf))]
-    (is (>= (first (pdf/version d)) 1))            ; version
+  (with-open [d (pdf/open-from-bytes (sample-pdf))]
+    (is (>= (:major (pdf/version d)) 1))           ; version
     (is (false? (pdf/encrypted? d)))               ; encrypted?
     (pdf/structure-tree? d)                         ; structure-tree? (smoke)
     (is (re-find #"Alpha" (pdf/extract-text d 0)))  ; extract-text
