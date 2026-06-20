@@ -63,6 +63,13 @@ jobs:
           find include src examples tests \( -name '*.h' -o -name '*.m' \) \
             | xargs clang-format --dry-run --Werror --style=file:.clang-format
 
+      - name: Static analysis (Clang Static Analyzer / scan-build)
+        working-directory: objc
+        run: |
+          make clean
+          scan-build --status-bugs make build \
+            PDF_OXIDE_INCLUDE_DIR="${PDF_OXIDE_INCLUDE_DIR}" PDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}"
+
       - name: Build (clang, -Wall -Wextra)
         working-directory: objc
         run: make build PDF_OXIDE_INCLUDE_DIR="${PDF_OXIDE_INCLUDE_DIR}" PDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}"

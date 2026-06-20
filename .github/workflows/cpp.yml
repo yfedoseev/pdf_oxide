@@ -97,3 +97,19 @@ jobs:
           OUT="$(cpp/build/example_01_basic_extraction)"
           echo "$OUT"
           echo "$OUT" | grep -q "Hello pdf_oxide" || { echo "::error::example output missing expected text"; exit 1; }
+
+      # Sanitizer lane: compile the api-coverage test with ASan+UBSan and run it.
+      # Catches memory/lifetime bugs at the C-ABI boundary that clang-tidy misses
+      # (e.g. a heap-buffer-overflow from freeing a byte buffer as a C string).
+      # detect_leaks=0 — leaks inside the Rust cdylib are out of this wrapper's scope.
+      - name: ASan + UBSan (api-coverage test)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -uo pipefail
+          c++ -std=c++17 -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Icpp/include -I"${PDF_OXIDE_INCLUDE_DIR}" \
+            cpp/tests/test_api_coverage.cpp -L"${PDF_OXIDE_LIB_DIR}" -lpdf_oxide -o /tmp/cov_asan
+          LD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}" \
+            ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+            /tmp/cov_asan
