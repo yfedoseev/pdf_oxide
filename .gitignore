@@ -425,3 +425,8 @@ r/*.tar.gz
 # Zig binding artifacts
 /zig/.zig-cache/
 /zig/zig-out/
+
+# Scala binding artifacts
+/scala/target/
+/scala/project/target/
+/scala/project/project/

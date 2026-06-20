@@ -1,0 +1,79 @@
+name: Scala Bindings CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'scala/**'
+      - 'src/**'
+      - 'include/pdf_oxide_c/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/scala.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'scala/**'
+      - 'src/**'
+      - 'include/pdf_oxide_c/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/scala.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  PDF_OXIDE_LIB_DIR: ${{ github.workspace }}/target/release
+
+jobs:
+  test:
+    name: Scala on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: false
+          rustflags: ''
+
+      - name: Cache Cargo build
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-release-
+
+      - name: Build cdylib (release, shipped binding feature set)
+        run: cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up sbt
+        uses: sbt/setup-sbt@234370af1319038bf8dc432f8a7e4b83078a1781 # v1
+
+      - name: Test (api-coverage, jna.library.path -> cdylib)
+        working-directory: scala
+        run: sbt -DPDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}" test
+
+      - name: Run example (BasicExtraction, with assertion)
+        working-directory: scala
+        shell: bash
+        run: |
+          set -uo pipefail
+          OUT="$(sbt -DPDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}" -Djna.library.path="${PDF_OXIDE_LIB_DIR}" --error 'set Test / fork := true' 'runMain examples.basicExtraction')"
+          echo "$OUT"
+          echo "$OUT" | grep -q "Hello pdf_oxide" || { echo "::error::example output missing expected text"; exit 1; }
