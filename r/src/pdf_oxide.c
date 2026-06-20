@@ -51,8 +51,31 @@ static Pdf *pdf_ptr(SEXP ext) {
     return h;
 }
 
+/* Raise a classed R condition carrying both the C-ABI `code` and the `op`
+ * (class "pdfoxide_error"), so callers get the same {code, op} payload the other
+ * bindings expose — not a bare message string. */
+static void pdfox_raise(int32_t code, const char *op) {
+    char msg[256];
+    snprintf(msg, sizeof msg, "pdf_oxide: %s failed (error code %d)", op, code);
+    SEXP cond = PROTECT(Rf_allocVector(VECSXP, 4));
+    SEXP nms = PROTECT(Rf_allocVector(STRSXP, 4));
+    SET_VECTOR_ELT(cond, 0, Rf_mkString(msg));       SET_STRING_ELT(nms, 0, Rf_mkChar("message"));
+    SET_VECTOR_ELT(cond, 1, R_NilValue);             SET_STRING_ELT(nms, 1, Rf_mkChar("call"));
+    SET_VECTOR_ELT(cond, 2, Rf_ScalarInteger(code)); SET_STRING_ELT(nms, 2, Rf_mkChar("code"));
+    SET_VECTOR_ELT(cond, 3, Rf_mkString(op));        SET_STRING_ELT(nms, 3, Rf_mkChar("op"));
+    Rf_setAttrib(cond, R_NamesSymbol, nms);
+    SEXP cls = PROTECT(Rf_allocVector(STRSXP, 3));
+    SET_STRING_ELT(cls, 0, Rf_mkChar("pdfoxide_error"));
+    SET_STRING_ELT(cls, 1, Rf_mkChar("error"));
+    SET_STRING_ELT(cls, 2, Rf_mkChar("condition"));
+    Rf_classgets(cond, cls);
+    SEXP call = PROTECT(Rf_lang2(Rf_install("stop"), cond));
+    Rf_eval(call, R_BaseEnv);
+    UNPROTECT(4); /* not reached */
+}
+
 static SEXP take_string(char *s, int32_t code, const char *op) {
-    if (s == NULL) Rf_error("pdf_oxide: %s failed (error code %d)", op, code);
+    if (s == NULL) pdfox_raise(code, op);
     SEXP out = PROTECT(Rf_mkString(s));
     free_string(s);
     UNPROTECT(1);
@@ -63,31 +86,31 @@ static SEXP take_string(char *s, int32_t code, const char *op) {
 SEXP r_pdf_from_markdown(SEXP md) {
     int32_t code = 0;
     Pdf *h = pdf_from_markdown(CHAR(STRING_ELT(md, 0)), &code);
-    if (!h) Rf_error("pdf_oxide: from_markdown failed (error code %d)", code);
+    if (!h) pdfox_raise(code, "from_markdown");
     return wrap_pdf(h);
 }
 SEXP r_pdf_from_html(SEXP html) {
     int32_t code = 0;
     Pdf *h = pdf_from_html(CHAR(STRING_ELT(html, 0)), &code);
-    if (!h) Rf_error("pdf_oxide: from_html failed (error code %d)", code);
+    if (!h) pdfox_raise(code, "from_html");
     return wrap_pdf(h);
 }
 SEXP r_pdf_from_text(SEXP text) {
     int32_t code = 0;
     Pdf *h = pdf_from_text(CHAR(STRING_ELT(text, 0)), &code);
-    if (!h) Rf_error("pdf_oxide: from_text failed (error code %d)", code);
+    if (!h) pdfox_raise(code, "from_text");
     return wrap_pdf(h);
 }
 SEXP r_pdf_save(SEXP ext, SEXP path) {
     int32_t code = 0;
     if (pdf_save(pdf_ptr(ext), CHAR(STRING_ELT(path, 0)), &code) != 0)
-        Rf_error("pdf_oxide: save failed (error code %d)", code);
+        pdfox_raise(code, "save");
     return R_NilValue;
 }
 SEXP r_pdf_save_to_bytes(SEXP ext) {
     int32_t code = 0, len = 0;
     uint8_t *p = pdf_save_to_bytes(pdf_ptr(ext), &len, &code);
-    if (!p) Rf_error("pdf_oxide: save_to_bytes failed (error code %d)", code);
+    if (!p) pdfox_raise(code, "save_to_bytes");
     R_xlen_t n = len < 0 ? 0 : (R_xlen_t)len;
     SEXP out = PROTECT(Rf_allocVector(RAWSXP, n));
     if (n) memcpy(RAW(out), p, (size_t)n);
@@ -100,26 +123,26 @@ SEXP r_pdf_save_to_bytes(SEXP ext) {
 SEXP r_doc_open(SEXP path) {
     int32_t code = 0;
     PdfDocument *h = pdf_document_open(CHAR(STRING_ELT(path, 0)), &code);
-    if (!h) Rf_error("pdf_oxide: open failed (error code %d)", code);
+    if (!h) pdfox_raise(code, "open");
     return wrap_doc(h);
 }
 SEXP r_doc_open_from_bytes(SEXP raw) {
     int32_t code = 0;
     PdfDocument *h = pdf_document_open_from_bytes(RAW(raw), (uintptr_t)XLENGTH(raw), &code);
-    if (!h) Rf_error("pdf_oxide: open_from_bytes failed (error code %d)", code);
+    if (!h) pdfox_raise(code, "open_from_bytes");
     return wrap_doc(h);
 }
 SEXP r_doc_open_with_password(SEXP path, SEXP pw) {
     int32_t code = 0;
     PdfDocument *h = pdf_document_open_with_password(
         CHAR(STRING_ELT(path, 0)), CHAR(STRING_ELT(pw, 0)), &code);
-    if (!h) Rf_error("pdf_oxide: open_with_password failed (error code %d)", code);
+    if (!h) pdfox_raise(code, "open_with_password");
     return wrap_doc(h);
 }
 SEXP r_doc_page_count(SEXP ext) {
     int32_t code = 0;
     int32_t n = pdf_document_get_page_count(doc_ptr(ext), &code);
-    if (n < 0) Rf_error("pdf_oxide: page_count failed (error code %d)", code);
+    if (n < 0) pdfox_raise(code, "page_count");
     return Rf_ScalarInteger(n);
 }
 SEXP r_doc_version(SEXP ext) {
@@ -173,6 +196,19 @@ SEXP r_doc_extract_structured_json(SEXP ext, SEXP page) {
                        code, "extract_structured_json");
 }
 
+/* Explicit, idempotent close: free the native handle now and clear the external
+ * pointer so the GC finalizer is a no-op and later use raises "handle is closed". */
+SEXP r_doc_close(SEXP ext) {
+    PdfDocument *h = (PdfDocument *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_document_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+SEXP r_pdf_close(SEXP ext) {
+    Pdf *h = (Pdf *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+
 /* ── Native routine registration (R Writing-R-Extensions §5.4) ──────────────
  * Backs `useDynLib(pdfoxide, .registration = TRUE, .fixes = "C_")` so R resolves
  * each .Call via a registered symbol object rather than a runtime string lookup,
@@ -199,6 +235,8 @@ static const R_CallMethodDef CallEntries[] = {
     CDEF(r_doc_to_html, 2),
     CDEF(r_doc_to_markdown_all, 1),
     CDEF(r_doc_extract_structured_json, 2),
+    CDEF(r_doc_close, 1),
+    CDEF(r_pdf_close, 1),
     {NULL, NULL, 0}
 };
 

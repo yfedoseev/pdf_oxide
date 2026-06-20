@@ -45,23 +45,27 @@ pdf_save_to_bytes <- function(pdf) {
 # ── Document ──────────────────────────────────────────────────────────────────
 
 #' Open a PDF document for extraction.
-#' @param path Path to a PDF. @param password Optional password.
+#' @param path Path to a PDF.
 #' @return A `pdfoxide_document` handle.
 #' @export
-pdf_open <- function(path, password = NULL) {
-  h <- if (is.null(password)) {
-    .Call(C_r_doc_open, path)
-  } else {
-    .Call(C_r_doc_open_with_password, path, password)
-  }
-  structure(h, class = "pdfoxide_document")
+pdf_open <- function(path) {
+  structure(.Call(C_r_doc_open, path), class = "pdfoxide_document")
+}
+
+#' Open a password-protected PDF document.
+#' @param path Path to a PDF. @param password The document password.
+#' @return A `pdfoxide_document` handle.
+#' @export
+pdf_open_with_password <- function(path, password) {
+  structure(.Call(C_r_doc_open_with_password, path, password),
+            class = "pdfoxide_document")
 }
 
 #' Open a PDF document from a raw vector.
 #' @param bytes A `raw` vector.
 #' @return A `pdfoxide_document` handle.
 #' @export
-pdf_open_bytes <- function(bytes) {
+pdf_open_from_bytes <- function(bytes) {
   structure(.Call(C_r_doc_open_from_bytes, bytes), class = "pdfoxide_document")
 }
 
@@ -70,10 +74,13 @@ pdf_open_bytes <- function(bytes) {
 #' @export
 pdf_page_count <- function(doc) .Call(C_r_doc_page_count, doc)
 
-#' PDF version as `c(major, minor)`.
+#' PDF version as a named list `list(major=, minor=)`.
 #' @param doc A `pdfoxide_document`.
 #' @export
-pdf_version <- function(doc) .Call(C_r_doc_version, doc)
+pdf_version <- function(doc) {
+  v <- .Call(C_r_doc_version, doc)
+  list(major = v[1], minor = v[2])
+}
 
 #' Whether the document is encrypted.
 #' @param doc A `pdfoxide_document`.
@@ -88,27 +95,27 @@ pdf_has_structure_tree <- function(doc) .Call(C_r_doc_has_structure_tree, doc)
 #' Extract reading-order text for one (0-based) page.
 #' @param doc A `pdfoxide_document`. @param page 0-based page index.
 #' @export
-pdf_extract_text <- function(doc, page = 0L) {
+pdf_extract_text <- function(doc, page) {
   .Call(C_r_doc_extract_text, doc, as.integer(page))
 }
 #' @rdname pdf_extract_text
 #' @export
-pdf_to_plain_text <- function(doc, page = 0L) {
+pdf_to_plain_text <- function(doc, page) {
   .Call(C_r_doc_to_plain_text, doc, as.integer(page))
 }
 #' @rdname pdf_extract_text
 #' @export
-pdf_to_markdown <- function(doc, page = 0L) {
+pdf_to_markdown <- function(doc, page) {
   .Call(C_r_doc_to_markdown, doc, as.integer(page))
 }
 #' @rdname pdf_extract_text
 #' @export
-pdf_to_html <- function(doc, page = 0L) {
+pdf_to_html <- function(doc, page) {
   .Call(C_r_doc_to_html, doc, as.integer(page))
 }
 #' @rdname pdf_extract_text
 #' @export
-pdf_extract_structured_json <- function(doc, page = 0L) {
+pdf_extract_structured_json <- function(doc, page) {
   .Call(C_r_doc_extract_structured_json, doc, as.integer(page))
 }
 
@@ -116,3 +123,16 @@ pdf_extract_structured_json <- function(doc, page = 0L) {
 #' @param doc A `pdfoxide_document`.
 #' @export
 pdf_to_markdown_all <- function(doc) .Call(C_r_doc_to_markdown_all, doc)
+
+#' Close a document or built PDF, freeing the native handle now (idempotent).
+#' @param x A `pdfoxide_document` or `pdfoxide_pdf` handle.
+#' @export
+pdf_close <- function(x) {
+  if (inherits(x, "pdfoxide_document")) {
+    invisible(.Call(C_r_doc_close, x))
+  } else if (inherits(x, "pdfoxide_pdf")) {
+    invisible(.Call(C_r_pdf_close, x))
+  } else {
+    stop("pdf_close: expected a pdfoxide_document or pdfoxide_pdf")
+  }
+}
