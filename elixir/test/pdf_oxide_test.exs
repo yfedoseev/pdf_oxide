@@ -30,11 +30,11 @@ defmodule PdfOxideTest do
 
   describe "document" do
     setup do
-      {:ok, doc} = PdfOxide.open_bytes(sample_pdf())
+      {:ok, doc} = PdfOxide.open_from_bytes(sample_pdf())
       {:ok, doc: doc}
     end
 
-    test "open_bytes + page_count", %{doc: doc} do
+    test "open_from_bytes + page_count", %{doc: doc} do
       assert {:ok, n} = PdfOxide.page_count(doc)
       assert n >= 1
     end
@@ -50,8 +50,14 @@ defmodule PdfOxideTest do
     end
 
     test "version", %{doc: doc} do
-      assert {maj, _min} = PdfOxide.version(doc)
+      assert %{major: maj} = PdfOxide.version(doc)
       assert maj >= 1
+    end
+
+    test "close (idempotent) + open_with_password exists" do
+      {:ok, doc} = PdfOxide.open_from_bytes(sample_pdf())
+      assert :ok = PdfOxide.close(doc)
+      assert function_exported?(PdfOxide, :open_with_password, 2)
     end
 
     test "encrypted?/structure_tree?", %{doc: doc} do

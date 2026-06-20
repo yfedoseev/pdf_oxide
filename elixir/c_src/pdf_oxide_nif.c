@@ -85,6 +85,7 @@ static ERL_NIF_TERM pdf_save_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[
     (void)argc;
     PdfRes *r;
     if (!enif_get_resource(env, a[0], PDF_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
     char *path = term_to_cstr(env, a[1]);
     if (!path) return enif_make_badarg(env);
     int32_t code = 0;
@@ -97,6 +98,7 @@ static ERL_NIF_TERM pdf_save_bytes_nif(ErlNifEnv *env, int argc, const ERL_NIF_T
     (void)argc;
     PdfRes *r;
     if (!enif_get_resource(env, a[0], PDF_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
     int32_t len = 0, code = 0;
     uint8_t *p = pdf_save_to_bytes(r->h, &len, &code);
     if (!p) return err_tuple(env, code);
@@ -151,6 +153,7 @@ static ERL_NIF_TERM doc_page_count(ErlNifEnv *env, int argc, const ERL_NIF_TERM 
     (void)argc;
     DocRes *r;
     if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
     int32_t code = 0;
     int32_t n = pdf_document_get_page_count(r->h, &code);
     if (n < 0) return err_tuple(env, code);
@@ -161,6 +164,7 @@ static ERL_NIF_TERM doc_version(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]
     (void)argc;
     DocRes *r;
     if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
     uint8_t maj = 0, min = 0;
     pdf_document_get_version(r->h, &maj, &min);
     return enif_make_tuple2(env, enif_make_int(env, maj), enif_make_int(env, min));
@@ -170,6 +174,7 @@ static ERL_NIF_TERM doc_is_encrypted(ErlNifEnv *env, int argc, const ERL_NIF_TER
     (void)argc;
     DocRes *r;
     if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
     return enif_make_atom(env, pdf_document_is_encrypted(r->h) ? "true" : "false");
 }
 
@@ -177,6 +182,7 @@ static ERL_NIF_TERM doc_has_tree(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[
     (void)argc;
     DocRes *r;
     if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
     return enif_make_atom(env, pdf_document_has_structure_tree(r->h) ? "true" : "false");
 }
 
@@ -189,6 +195,7 @@ static ERL_NIF_TERM doc_has_tree(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[
         if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||             \
             !enif_get_int(env, a[1], &page))                                   \
             return enif_make_badarg(env);                                      \
+        if (!r->h) return enif_make_badarg(env);                               \
         int32_t code = 0;                                                      \
         return ok_string(env, cfn(r->h, page, &code), code);                   \
     }
@@ -202,8 +209,26 @@ static ERL_NIF_TERM doc_to_markdown_all(ErlNifEnv *env, int argc, const ERL_NIF_
     (void)argc;
     DocRes *r;
     if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
     int32_t code = 0;
     return ok_string(env, pdf_document_to_markdown_all(r->h, &code), code);
+}
+
+/* Explicit, idempotent close: free the native handle now and null it so the GC
+ * destructor is a no-op and later use raises (badarg). */
+static ERL_NIF_TERM doc_close(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r)) return enif_make_badarg(env);
+    if (r->h) { pdf_document_free(r->h); r->h = NULL; }
+    return enif_make_atom(env, "ok");
+}
+static ERL_NIF_TERM pdf_close_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    PdfRes *r;
+    if (!enif_get_resource(env, a[0], PDF_RES, (void **)&r)) return enif_make_badarg(env);
+    if (r->h) { pdf_free(r->h); r->h = NULL; }
+    return enif_make_atom(env, "ok");
 }
 
 #define DIRTY ERL_NIF_DIRTY_JOB_CPU_BOUND
@@ -226,6 +251,8 @@ static ErlNifFunc funcs[] = {
     {"doc_to_html", 2, doc_to_html, DIRTY},
     {"doc_to_markdown_all", 1, doc_to_markdown_all, DIRTY},
     {"doc_extract_structured_json", 2, doc_struct_json, DIRTY},
+    {"doc_close", 1, doc_close, 0},
+    {"pdf_close", 1, pdf_close_nif, 0},
 };
 
 ERL_NIF_INIT(Elixir.PdfOxide.Native, funcs, load, NULL, NULL, NULL)

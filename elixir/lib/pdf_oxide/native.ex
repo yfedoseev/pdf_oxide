@@ -31,4 +31,6 @@ defmodule PdfOxide.Native do
   def doc_to_html(_doc, _page), do: nif_error()
   def doc_to_markdown_all(_doc), do: nif_error()
   def doc_extract_structured_json(_doc, _page), do: nif_error()
+  def doc_close(_doc), do: nif_error()
+  def pdf_close(_pdf), do: nif_error()
 end

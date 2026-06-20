@@ -41,39 +41,45 @@ defmodule PdfOxide do
   @doc "Serialize a built PDF to a binary."
   def save_to_bytes(%Pdf{ref: ref}), do: Native.pdf_save_to_bytes(ref)
 
+  @doc "Free a document or built PDF's native handle now (idempotent)."
+  def close(%Document{ref: ref}), do: Native.doc_close(ref)
+  def close(%Pdf{ref: ref}), do: Native.pdf_close(ref)
+
   # ── Document ─────────────────────────────────────────────────────────────────
-  @doc "Open a PDF from a path. Pass `password:` for encrypted files."
-  def open(path, opts \\ []) do
-    case Keyword.get(opts, :password) do
-      nil -> wrap_doc(Native.doc_open(path))
-      pw -> wrap_doc(Native.doc_open_pw(path, pw))
-    end
-  end
+  @doc "Open a PDF from a path."
+  def open(path), do: wrap_doc(Native.doc_open(path))
+
+  @doc "Open a password-protected PDF."
+  def open_with_password(path, password), do: wrap_doc(Native.doc_open_pw(path, password))
 
   @doc "Open a PDF from a binary."
-  def open_bytes(bytes), do: wrap_doc(Native.doc_open_bytes(bytes))
+  def open_from_bytes(bytes), do: wrap_doc(Native.doc_open_bytes(bytes))
 
   @doc "Number of pages."
   def page_count(%Document{ref: ref}), do: Native.doc_page_count(ref)
-  @doc "PDF version as `{major, minor}`."
-  def version(%Document{ref: ref}), do: Native.doc_version(ref)
+  @doc "PDF version as `%{major: _, minor: _}`."
+  def version(%Document{ref: ref}) do
+    {major, minor} = Native.doc_version(ref)
+    %{major: major, minor: minor}
+  end
+
   @doc "Whether the document is encrypted."
   def encrypted?(%Document{ref: ref}), do: Native.doc_is_encrypted(ref)
   @doc "Whether the document has a logical structure tree."
   def structure_tree?(%Document{ref: ref}), do: Native.doc_has_structure_tree(ref)
 
   @doc "Reading-order text for a (0-based) page."
-  def extract_text(%Document{ref: ref}, page \\ 0), do: Native.doc_extract_text(ref, page)
+  def extract_text(%Document{ref: ref}, page), do: Native.doc_extract_text(ref, page)
   @doc "Plain text for a page."
-  def to_plain_text(%Document{ref: ref}, page \\ 0), do: Native.doc_to_plain_text(ref, page)
+  def to_plain_text(%Document{ref: ref}, page), do: Native.doc_to_plain_text(ref, page)
   @doc "Markdown for a page."
-  def to_markdown(%Document{ref: ref}, page \\ 0), do: Native.doc_to_markdown(ref, page)
+  def to_markdown(%Document{ref: ref}, page), do: Native.doc_to_markdown(ref, page)
   @doc "HTML for a page."
-  def to_html(%Document{ref: ref}, page \\ 0), do: Native.doc_to_html(ref, page)
+  def to_html(%Document{ref: ref}, page), do: Native.doc_to_html(ref, page)
   @doc "Markdown for the whole document."
   def to_markdown_all(%Document{ref: ref}), do: Native.doc_to_markdown_all(ref)
   @doc "Structured content for a page as a JSON string."
-  def extract_structured_json(%Document{ref: ref}, page \\ 0),
+  def extract_structured_json(%Document{ref: ref}, page),
     do: Native.doc_extract_structured_json(ref, page)
 
   # ── helpers ──────────────────────────────────────────────────────────────────
