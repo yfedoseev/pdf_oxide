@@ -62,6 +62,10 @@ jobs:
         with:
           version: 0.14.0
 
+      - name: Format check (zig fmt)
+        working-directory: zig
+        run: zig fmt --check build.zig lib examples
+
       - name: Test (api-coverage)
         working-directory: zig
         shell: bash
