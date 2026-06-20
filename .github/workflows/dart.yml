@@ -39,6 +39,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # Test on current stable and the declared min SDK floor (pubspec ^3.4.0).
+        sdk: [stable, '3.4']
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
@@ -61,6 +63,8 @@ jobs:
 
       - name: Set up Dart
         uses: dart-lang/setup-dart@e51d8e571e22473a2ddebf0ef8a2123f0ab2c02c # v1.7.0
+        with:
+          sdk: ${{ matrix.sdk }}
 
       - name: pub get
         working-directory: dart
@@ -86,3 +90,11 @@ jobs:
           OUT="$(dart run example/basic_extraction.dart)"
           echo "$OUT"
           echo "$OUT" | grep -q "Hello pdf_oxide" || { echo "::error::example output missing expected text"; exit 1; }
+
+      # pub.dev package score (informational) — stable SDK only.
+      - name: pana (package score)
+        if: matrix.sdk == 'stable' && matrix.os == 'ubuntu-latest'
+        working-directory: dart
+        run: |
+          dart pub global activate pana
+          dart pub global run pana --no-warning --exit-code-threshold 200 . || true
