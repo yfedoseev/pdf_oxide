@@ -15,12 +15,29 @@ const c = @cImport({
 /// Any non-success C-ABI outcome.
 pub const Error = error{ PdfOxide, OutOfMemory };
 
+/// The C-ABI error code from the most recent failure on this thread. Zig error
+/// values cannot carry a payload, so the code is surfaced here (read it right
+/// after catching `Error.PdfOxide`). Mirrors the `{code, op}` payload the other
+/// bindings carry.
+pub threadlocal var last_error_code: i32 = 0;
+
+/// Code of the most recent failure on this thread.
+pub fn lastErrorCode() i32 {
+    return last_error_code;
+}
+
+/// Record `code` and return the binding's error (keeps call sites terse).
+fn fail(code: i32) Error {
+    last_error_code = code;
+    return Error.PdfOxide;
+}
+
 /// PDF version (e.g. 1.7).
 pub const Version = struct { major: u8, minor: u8 };
 
 /// Copy a C string return into an allocator-owned slice and free the C buffer.
-fn takeString(alloc: std.mem.Allocator, ptr: ?[*:0]u8) Error![]u8 {
-    const p = ptr orelse return Error.PdfOxide;
+fn takeString(alloc: std.mem.Allocator, ptr: ?[*:0]u8, code: i32) Error![]u8 {
+    const p = ptr orelse return fail(code);
     defer c.free_string(p);
     const span = std.mem.span(p);
     return alloc.dupe(u8, span);
@@ -33,7 +50,7 @@ pub const Document = struct {
     /// Open a PDF from a filesystem path (NUL-terminated).
     pub fn open(path: [:0]const u8) Error!Document {
         var code: i32 = 0;
-        const h = c.pdf_document_open(path.ptr, &code) orelse return Error.PdfOxide;
+        const h = c.pdf_document_open(path.ptr, &code) orelse return fail(code);
         return .{ .handle = h };
     }
 
@@ -41,7 +58,7 @@ pub const Document = struct {
     pub fn openFromBytes(data: []const u8) Error!Document {
         var code: i32 = 0;
         const h = c.pdf_document_open_from_bytes(data.ptr, data.len, &code) orelse
-            return Error.PdfOxide;
+            return fail(code);
         return .{ .handle = h };
     }
 
@@ -49,7 +66,7 @@ pub const Document = struct {
     pub fn openWithPassword(path: [:0]const u8, password: [:0]const u8) Error!Document {
         var code: i32 = 0;
         const h = c.pdf_document_open_with_password(path.ptr, password.ptr, &code) orelse
-            return Error.PdfOxide;
+            return fail(code);
         return .{ .handle = h };
     }
 
@@ -60,7 +77,7 @@ pub const Document = struct {
     pub fn pageCount(self: Document) Error!i32 {
         var code: i32 = 0;
         const n = c.pdf_document_get_page_count(self.handle, &code);
-        if (n < 0) return Error.PdfOxide;
+        if (n < 0) return fail(code);
         return n;
     }
 
@@ -81,27 +98,27 @@ pub const Document = struct {
 
     pub fn extractText(self: Document, alloc: std.mem.Allocator, page: i32) Error![]u8 {
         var code: i32 = 0;
-        return takeString(alloc, c.pdf_document_extract_text(self.handle, page, &code));
+        return takeString(alloc, c.pdf_document_extract_text(self.handle, page, &code), code);
     }
     pub fn toPlainText(self: Document, alloc: std.mem.Allocator, page: i32) Error![]u8 {
         var code: i32 = 0;
-        return takeString(alloc, c.pdf_document_to_plain_text(self.handle, page, &code));
+        return takeString(alloc, c.pdf_document_to_plain_text(self.handle, page, &code), code);
     }
     pub fn toMarkdown(self: Document, alloc: std.mem.Allocator, page: i32) Error![]u8 {
         var code: i32 = 0;
-        return takeString(alloc, c.pdf_document_to_markdown(self.handle, page, &code));
+        return takeString(alloc, c.pdf_document_to_markdown(self.handle, page, &code), code);
     }
     pub fn toHtml(self: Document, alloc: std.mem.Allocator, page: i32) Error![]u8 {
         var code: i32 = 0;
-        return takeString(alloc, c.pdf_document_to_html(self.handle, page, &code));
+        return takeString(alloc, c.pdf_document_to_html(self.handle, page, &code), code);
     }
     pub fn toMarkdownAll(self: Document, alloc: std.mem.Allocator) Error![]u8 {
         var code: i32 = 0;
-        return takeString(alloc, c.pdf_document_to_markdown_all(self.handle, &code));
+        return takeString(alloc, c.pdf_document_to_markdown_all(self.handle, &code), code);
     }
     pub fn extractStructuredJson(self: Document, alloc: std.mem.Allocator, page: i32) Error![]u8 {
         var code: i32 = 0;
-        return takeString(alloc, c.pdf_document_extract_structured_to_json(self.handle, page, &code));
+        return takeString(alloc, c.pdf_document_extract_structured_to_json(self.handle, page, &code), code);
     }
 };
 
@@ -111,17 +128,17 @@ pub const Pdf = struct {
 
     pub fn fromMarkdown(md: [:0]const u8) Error!Pdf {
         var code: i32 = 0;
-        const h = c.pdf_from_markdown(md.ptr, &code) orelse return Error.PdfOxide;
+        const h = c.pdf_from_markdown(md.ptr, &code) orelse return fail(code);
         return .{ .handle = h };
     }
     pub fn fromHtml(html: [:0]const u8) Error!Pdf {
         var code: i32 = 0;
-        const h = c.pdf_from_html(html.ptr, &code) orelse return Error.PdfOxide;
+        const h = c.pdf_from_html(html.ptr, &code) orelse return fail(code);
         return .{ .handle = h };
     }
     pub fn fromText(text: [:0]const u8) Error!Pdf {
         var code: i32 = 0;
-        const h = c.pdf_from_text(text.ptr, &code) orelse return Error.PdfOxide;
+        const h = c.pdf_from_text(text.ptr, &code) orelse return fail(code);
         return .{ .handle = h };
     }
 
@@ -131,14 +148,14 @@ pub const Pdf = struct {
 
     pub fn save(self: Pdf, path: [:0]const u8) Error!void {
         var code: i32 = 0;
-        if (c.pdf_save(self.handle, path.ptr, &code) != 0) return Error.PdfOxide;
+        if (c.pdf_save(self.handle, path.ptr, &code) != 0) return fail(code);
     }
 
     /// Serialize to bytes; caller owns the returned slice.
     pub fn saveToBytes(self: Pdf, alloc: std.mem.Allocator) Error![]u8 {
         var len: i32 = 0;
         var code: i32 = 0;
-        const p = c.pdf_save_to_bytes(self.handle, &len, &code) orelse return Error.PdfOxide;
+        const p = c.pdf_save_to_bytes(self.handle, &len, &code) orelse return fail(code);
         defer c.free_bytes(p);
         const n: usize = if (len < 0) 0 else @intCast(len);
         return alloc.dupe(u8, p[0..n]);
