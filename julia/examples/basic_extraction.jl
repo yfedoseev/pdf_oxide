@@ -7,7 +7,7 @@ doc = open_from_bytes(save_to_bytes(pdf))
 
 println("pages:   ", page_count(doc))
 v = version(doc)
-println("version: ", v[1], ".", v[2])
+println("version: ", v.major, ".", v.minor)
 println("--- text (page 0) ---")
 println(extract_text(doc, 0))
 println("--- markdown (all) ---")

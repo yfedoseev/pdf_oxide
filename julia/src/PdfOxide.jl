@@ -8,7 +8,7 @@
 # test/runtests.jl (one test per public method).
 module PdfOxide
 
-export PdfDocument, Pdf, PdfOxideError
+export PdfDocument, Pdf, PdfOxideError, PdfVersion
 export open_document, open_from_bytes, open_with_password
 export page_count, version, is_encrypted, has_structure_tree
 export extract_text,
@@ -40,6 +40,13 @@ struct PdfOxideError <: Exception
 end
 Base.showerror(io::IO, e::PdfOxideError) =
     print(io, "PdfOxideError: $(e.op) failed (error code $(e.code))")
+
+"""PDF version with named `major` / `minor` fields."""
+struct PdfVersion
+    major::Int
+    minor::Int
+end
+Base.show(io::IO, v::PdfVersion) = print(io, "$(v.major).$(v.minor)")
 
 # Copy a C string return into a Julia String and free it via free_string.
 function _take_string(ptr::Ptr{UInt8}, code::Int32, op::String)
@@ -136,7 +143,7 @@ function version(d::PdfDocument)
         maj,
         min,
     )
-    return (Int(maj[]), Int(min[]))
+    return PdfVersion(Int(maj[]), Int(min[]))
 end
 
 is_encrypted(d::PdfDocument) =
@@ -154,7 +161,7 @@ for (jl_fn, c_fn) in (
     (:extract_structured_json, :pdf_document_extract_structured_to_json),
 )
     op = String(jl_fn)
-    @eval function $jl_fn(d::PdfDocument, page::Integer = 0)
+    @eval function $jl_fn(d::PdfDocument, page::Integer)
         code = Ref{Int32}(0)
         ptr = ccall(
             ($(QuoteNode(c_fn)), LIB),

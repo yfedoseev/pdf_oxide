@@ -37,7 +37,7 @@ end
     end
 
     # ── Document inspection + extraction ──────────────────────────────────────
-    @test version(doc)[1] >= 1                     # version
+    @test version(doc).major >= 1                     # version
     @test is_encrypted(doc) == false              # is_encrypted
     has_structure_tree(doc)                        # has_structure_tree (smoke)
     @test occursin("Alpha", extract_text(doc, 0)) # extract_text
