@@ -26,6 +26,8 @@ lib/
 !ruby/lib/
 !dart/lib/
 !dart/lib/**
+!zig/lib/
+!zig/lib/**
 lib64/
 parts/
 sdist/
