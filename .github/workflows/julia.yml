@@ -61,6 +61,12 @@ jobs:
         with:
           version: '1'
 
+      - name: Format check (JuliaFormatter)
+        working-directory: julia
+        run: |
+          julia -e 'using Pkg; Pkg.add("JuliaFormatter")'
+          julia -e 'using JuliaFormatter; ok = format("."; overwrite=false); ok || (println("Run JuliaFormatter.format(\".\")"); exit(1))'
+
       - name: Test (api-coverage)
         working-directory: julia
         shell: bash

@@ -3,8 +3,9 @@
 using PdfOxide
 using Test
 
-sample_pdf() = save_to_bytes(from_markdown(
-    "# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n"))
+sample_pdf() = save_to_bytes(
+    from_markdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n"),
+)
 
 @testset "PdfOxide api coverage" begin
     # ── Pdf builder ───────────────────────────────────────────────────────────
@@ -14,7 +15,7 @@ sample_pdf() = save_to_bytes(from_markdown(
     let tmp = tempname() * ".pdf"
         save(from_markdown("# f\n\nx\n"), tmp)
         @test isfile(tmp)
-        rm(tmp; force=true)
+        rm(tmp; force = true)
     end
 
     # ── Document open paths ───────────────────────────────────────────────────
@@ -24,7 +25,7 @@ sample_pdf() = save_to_bytes(from_markdown(
         save(from_markdown("# f\n\nx\n"), tmp)
         d2 = open_document(tmp)                    # open_document
         @test page_count(d2) >= 1
-        rm(tmp; force=true)
+        rm(tmp; force = true)
     end
 
     # ── Document inspection + extraction ──────────────────────────────────────
