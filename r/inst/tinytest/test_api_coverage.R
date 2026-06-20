@@ -82,6 +82,21 @@ expect_true(length(hits_all) > 0)
 expect_true(grepl("Alpha", hits_all[[1]]$text))
 expect_true(hits_all[[1]]$page >= 0)
 
+# ── Phase-3 page rendering ────────────────────────────────────────────────────
+img <- pdf_render_page(doc, 0)                          # pdf_render_page (PNG)
+expect_inherits(img, "pdfoxide_rendered_image")
+expect_true(img$width > 0)
+expect_true(img$height > 0)
+expect_true(length(img$data) > 0)
+imgf <- tempfile(fileext = ".png")
+pdf_rendered_image_save(img, imgf)                      # pdf_rendered_image_save
+expect_true(file.exists(imgf)); unlink(imgf)
+pdf_rendered_image_close(img)                           # pdf_rendered_image_close (idempotent)
+imgz <- pdf_render_page_zoom(doc, 0, 1.5)               # pdf_render_page_zoom
+expect_true(imgz$width > 0 && imgz$height > 0)
+imgt <- pdf_render_page_thumbnail(doc, 0, 64L)          # pdf_render_page_thumbnail
+expect_true(imgt$width > 0 && imgt$height > 0)
+
 # ── close + open_with_password ────────────────────────────────────────────────
 pdf_close(doc); expect_true(TRUE)              # pdf_close (idempotent)
 pdf_close(doc)                                 # second close is a no-op

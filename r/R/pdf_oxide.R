@@ -253,6 +253,70 @@ pdf_search_all <- function(doc, term, case_sensitive = FALSE) {
   .Call(C_r_doc_search_all, doc, term, isTRUE(case_sensitive))
 }
 
+# ── Phase-3 page rendering ────────────────────────────────────────────────────
+
+#' Render a (0-based) page to a raster image.
+#'
+#' `format` is an integer image format (`0` = PNG, the default).
+#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @param zoom Scale factor (`render_page_zoom`). @param size Largest side in
+#'   pixels (`render_page_thumbnail`). @param format Image format (`0` = PNG).
+#' @return A `pdfoxide_rendered_image` with elements `width`, `height` and `data`
+#'   (a `raw` vector of the encoded image bytes), plus a `save(path)` method.
+#' @export
+pdf_render_page <- function(doc, page, format = 0L) {
+  img <- .Call(C_r_doc_render_page, doc, as.integer(page), as.integer(format))
+  new_rendered_image(img)
+}
+#' @rdname pdf_render_page
+#' @export
+pdf_render_page_zoom <- function(doc, page, zoom, format = 0L) {
+  img <- .Call(C_r_doc_render_page_zoom, doc, as.integer(page),
+               as.double(zoom), as.integer(format))
+  new_rendered_image(img)
+}
+#' @rdname pdf_render_page
+#' @export
+pdf_render_page_thumbnail <- function(doc, page, size, format = 0L) {
+  img <- .Call(C_r_doc_render_page_thumbnail, doc, as.integer(page),
+               as.integer(size), as.integer(format))
+  new_rendered_image(img)
+}
+
+# Build the RenderedImage model from a live FfiRenderedImage external pointer:
+# read width/height/data eagerly, keep the handle so `save(path)` can use it.
+new_rendered_image <- function(handle) {
+  structure(
+    list(
+      handle = handle,
+      width  = .Call(C_r_rendered_image_width, handle),
+      height = .Call(C_r_rendered_image_height, handle),
+      data   = .Call(C_r_rendered_image_data, handle)
+    ),
+    class = "pdfoxide_rendered_image")
+}
+
+#' Save a rendered image to a file path.
+#'
+#' Writes the encoded image (format chosen at render time) using the live native
+#' handle.
+#' @param image A `pdfoxide_rendered_image`. @param path Output file path.
+#' @export
+pdf_rendered_image_save <- function(image, path) {
+  if (!inherits(image, "pdfoxide_rendered_image"))
+    stop("pdf_rendered_image_save: expected a pdfoxide_rendered_image")
+  invisible(.Call(C_r_rendered_image_save, image$handle, path))
+}
+
+#' Free a rendered image's native handle now (idempotent).
+#' @param image A `pdfoxide_rendered_image`.
+#' @export
+pdf_rendered_image_close <- function(image) {
+  if (!inherits(image, "pdfoxide_rendered_image"))
+    stop("pdf_rendered_image_close: expected a pdfoxide_rendered_image")
+  invisible(.Call(C_r_rendered_image_close, image$handle))
+}
+
 # ── Page ────────────────────────────────────────────────────────────────────
 
 #' A single (0-based) page of a document.

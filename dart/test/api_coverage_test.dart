@@ -106,6 +106,36 @@ void main() {
       expect(hits.first.text, contains('Alpha'));
       expect(hits.first.page, greaterThanOrEqualTo(0));
     });
+
+    // Phase 3 — page rendering. The sample doc has a single page (index 0).
+    test('renderPage', () {
+      final img = doc.renderPage(0); // PNG (default format)
+      addTearDown(img.close);
+      expect(img.width, greaterThan(0));
+      expect(img.height, greaterThan(0));
+      expect(img.data, isNotEmpty);
+    });
+    test('renderPage.save', () {
+      final img = doc.renderPage(0);
+      addTearDown(img.close);
+      final path =
+          '${Directory.systemTemp.path}/pdfoxide_dart_render_${pid}.png';
+      img.save(path);
+      expect(File(path).existsSync(), isTrue);
+      File(path).deleteSync();
+    });
+    test('renderPageZoom', () {
+      final img = doc.renderPageZoom(0, 2.0);
+      addTearDown(img.close);
+      expect(img.width, greaterThan(0));
+      expect(img.height, greaterThan(0));
+    });
+    test('renderPageThumbnail', () {
+      final img = doc.renderPageThumbnail(0, 128);
+      addTearDown(img.close);
+      expect(img.width, greaterThan(0));
+      expect(img.height, greaterThan(0));
+    });
   });
 
   test('error path: open nonexistent throws PdfOxideError', () {

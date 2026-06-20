@@ -628,6 +628,90 @@ SEXP r_doc_search_all(SEXP ext, SEXP term, SEXP case_sensitive) {
     return search_results_to_list(list, "search_all");
 }
 
+/* ── Phase-3 page rendering ───────────────────────────────────────────────────
+ * The FfiRenderedImage handle is wrapped in its own external pointer (with a
+ * finalizer that calls pdf_rendered_image_free) so the GC frees it. The R-level
+ * RenderedImage model reads width/height/data eagerly from the live handle and
+ * keeps the handle so save(path) can call pdf_save_rendered_image on it. */
+static void rendered_image_finalizer(SEXP ext) {
+    FfiRenderedImage *h = (FfiRenderedImage *)R_ExternalPtrAddr(ext);
+    if (h) {
+        pdf_rendered_image_free(h);
+        R_ClearExternalPtr(ext);
+    }
+}
+static SEXP wrap_rendered_image(FfiRenderedImage *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, rendered_image_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+static FfiRenderedImage *rendered_image_ptr(SEXP ext) {
+    FfiRenderedImage *h = (FfiRenderedImage *)R_ExternalPtrAddr(ext);
+    if (!h) Rf_error("pdf_oxide: rendered image handle is closed");
+    return h;
+}
+
+SEXP r_doc_render_page(SEXP ext, SEXP page, SEXP format) {
+    int32_t code = 0;
+    FfiRenderedImage *img =
+        pdf_render_page(doc_ptr(ext), Rf_asInteger(page), Rf_asInteger(format), &code);
+    if (!img) pdfox_raise(code, "render_page");
+    return wrap_rendered_image(img);
+}
+SEXP r_doc_render_page_zoom(SEXP ext, SEXP page, SEXP zoom, SEXP format) {
+    int32_t code = 0;
+    FfiRenderedImage *img = pdf_render_page_zoom(
+        doc_ptr(ext), Rf_asInteger(page), (float)Rf_asReal(zoom),
+        Rf_asInteger(format), &code);
+    if (!img) pdfox_raise(code, "render_page_zoom");
+    return wrap_rendered_image(img);
+}
+SEXP r_doc_render_page_thumbnail(SEXP ext, SEXP page, SEXP size, SEXP format) {
+    int32_t code = 0;
+    FfiRenderedImage *img = pdf_render_page_thumbnail(
+        doc_ptr(ext), Rf_asInteger(page), Rf_asInteger(size),
+        Rf_asInteger(format), &code);
+    if (!img) pdfox_raise(code, "render_page_thumbnail");
+    return wrap_rendered_image(img);
+}
+SEXP r_rendered_image_width(SEXP ext) {
+    int32_t code = 0;
+    int32_t w = pdf_get_rendered_image_width(rendered_image_ptr(ext), &code);
+    if (code != 0) pdfox_raise(code, "rendered_image_width");
+    return Rf_ScalarInteger(w);
+}
+SEXP r_rendered_image_height(SEXP ext) {
+    int32_t code = 0;
+    int32_t h = pdf_get_rendered_image_height(rendered_image_ptr(ext), &code);
+    if (code != 0) pdfox_raise(code, "rendered_image_height");
+    return Rf_ScalarInteger(h);
+}
+SEXP r_rendered_image_data(SEXP ext) {
+    int32_t code = 0, len = 0;
+    uint8_t *p = pdf_get_rendered_image_data(rendered_image_ptr(ext), &len, &code);
+    if (!p) pdfox_raise(code, "rendered_image_data");
+    R_xlen_t n = len < 0 ? 0 : (R_xlen_t)len;
+    SEXP out = PROTECT(Rf_allocVector(RAWSXP, n));
+    if (n) memcpy(RAW(out), p, (size_t)n);
+    free_bytes(p);
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_rendered_image_save(SEXP ext, SEXP path) {
+    int32_t code = 0;
+    if (pdf_save_rendered_image(rendered_image_ptr(ext),
+                                CHAR(STRING_ELT(path, 0)), &code) != 0)
+        pdfox_raise(code, "save_rendered_image");
+    return R_NilValue;
+}
+/* Explicit, idempotent free of a rendered-image handle. */
+SEXP r_rendered_image_close(SEXP ext) {
+    FfiRenderedImage *h = (FfiRenderedImage *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_rendered_image_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+
 /* Explicit, idempotent close: free the native handle now and clear the external
  * pointer so the GC finalizer is a no-op and later use raises "handle is closed". */
 SEXP r_doc_close(SEXP ext) {
@@ -680,6 +764,14 @@ static const R_CallMethodDef CallEntries[] = {
     CDEF(r_doc_extract_paths, 2),
     CDEF(r_doc_search, 4),
     CDEF(r_doc_search_all, 3),
+    CDEF(r_doc_render_page, 3),
+    CDEF(r_doc_render_page_zoom, 4),
+    CDEF(r_doc_render_page_thumbnail, 4),
+    CDEF(r_rendered_image_width, 1),
+    CDEF(r_rendered_image_height, 1),
+    CDEF(r_rendered_image_data, 1),
+    CDEF(r_rendered_image_save, 2),
+    CDEF(r_rendered_image_close, 1),
     CDEF(r_doc_close, 1),
     CDEF(r_pdf_close, 1),
     {NULL, NULL, 0}

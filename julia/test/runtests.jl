@@ -137,6 +137,22 @@ end
         @test hits[1].bbox isa Bbox
     end
 
+    # ── Phase-3 rendering ─────────────────────────────────────────────────────
+    let img = render_page(doc, 0)                  # render_page (PNG default)
+        @test img isa RenderedImage
+        @test img.width > 0
+        @test img.height > 0
+        @test !isempty(img.data)
+        let tmp = tempname() * ".png"
+            save(img, tmp)                         # RenderedImage save
+            @test isfile(tmp)
+            rm(tmp; force = true)
+        end
+    end
+    @test render_page_zoom(doc, 0, 2.0f0) isa RenderedImage     # render_page_zoom
+    @test render_page_thumbnail(doc, 0, 128) isa RenderedImage  # render_page_thumbnail
+    @test renderPage(doc, 0) isa RenderedImage                  # camelCase alias
+
     # ── Page model ────────────────────────────────────────────────────────────
     let pg = page(doc, 0)                          # page
         @test occursin("Alpha", text(pg))         # Page.text
@@ -148,6 +164,7 @@ end
         @test page_annotations(pg) isa Vector{Annotation} # Page.page_annotations
         @test extract_paths(pg) isa Vector{Path}         # Page.extract_paths
         @test !isempty(search(pg, "Alpha", false))       # Page.search
+        @test render_page(pg) isa RenderedImage           # Page.render_page
     end
 
     # ── Error path ────────────────────────────────────────────────────────────

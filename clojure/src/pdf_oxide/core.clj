@@ -326,6 +326,75 @@
 (defn page-html [^Page pg] (to-html (.-doc pg) (.-index pg)))
 (defn page-plain-text [^Page pg] (to-plain-text (.-doc pg) (.-index pg)))
 
+;; ── Phase-3 page rendering ────────────────────────────────────────────────────
+;; A RenderedImage owns the native FfiRenderedImage handle (freed on close via
+;; pdf_rendered_image_free, so use with `with-open`). width/height/data are read
+;; eagerly into Clojure on construction; data bytes are copied out of the C buffer
+;; and freed via free_bytes. `save` uses the still-live handle.
+(deftype RenderedImage [state ^long width ^long height ^bytes data]   ; state = (atom Pointer-or-nil)
+  Closeable
+  (close [_] (when-let [h @state] (->void "pdf_rendered_image_free" [h]) (reset! state nil))))
+
+(defn rendered-image-width  ^long [^RenderedImage img] (.-width img))
+(defn rendered-image-height ^long [^RenderedImage img] (.-height img))
+(defn rendered-image-data  ^bytes [^RenderedImage img] (.-data img))
+
+(defn- img-ptr ^Pointer [^RenderedImage img]
+  (or @(.-state img) (throw (ex-info "RenderedImage is closed" {}))))
+
+(defn- wrap-rendered-image
+  "Read width/height/data eagerly off an FfiRenderedImage handle (copying + freeing
+   the data buffer via free_bytes) and return a RenderedImage owning the handle."
+  [^Pointer h op]
+  (let [code (IntByReference.)
+        w (->int "pdf_get_rendered_image_width" [h code])
+        ht (->int "pdf_get_rendered_image_height" [h code])
+        len (IntByReference.)
+        ptr (->ptr "pdf_get_rendered_image_data" [h len code])
+        sz (max 0 (.getValue len))
+        data (if ptr (let [b (.getByteArray ptr 0 sz)] (free-bytes ptr) b) (byte-array 0))]
+    (when (nil? ptr)
+      (->void "pdf_rendered_image_free" [h])
+      (throw (ex-info (str "pdf_oxide: " op " (image data) failed") {:code (.getValue code) :op op})))
+    (RenderedImage. (atom h) (long w) (long ht) data)))
+
+(defn rendered-image-save
+  "Save a RenderedImage to `path` (encoded by its format). Throws on error."
+  [^RenderedImage img path]
+  (let [code (IntByReference.)]
+    (when-not (zero? (->int "pdf_save_rendered_image" [(img-ptr img) path code]))
+      (throw (ex-info "pdf_oxide: rendered-image-save failed" {:code (.getValue code) :op "rendered-image-save"})))))
+
+(defn render-page
+  "Render a 0-based page to a RenderedImage. `format` is an int image format
+   (0 = PNG, default). Returns a Closeable RenderedImage."
+  ([^Document d page] (render-page d page 0))
+  ([^Document d page format]
+   (let [code (IntByReference.)
+         h (->ptr "pdf_render_page" [(doc-ptr d) (int page) (int format) code])]
+     (when (nil? h) (throw (ex-info "pdf_oxide: render-page failed" {:code (.getValue code) :op "render-page"})))
+     (wrap-rendered-image h "render-page"))))
+
+(defn render-page-zoom
+  "Render a 0-based page at `zoom` (float scale) to a RenderedImage.
+   `format` is an int image format (0 = PNG, default)."
+  ([^Document d page zoom] (render-page-zoom d page zoom 0))
+  ([^Document d page zoom format]
+   (let [code (IntByReference.)
+         h (->ptr "pdf_render_page_zoom" [(doc-ptr d) (int page) (float zoom) (int format) code])]
+     (when (nil? h) (throw (ex-info "pdf_oxide: render-page-zoom failed" {:code (.getValue code) :op "render-page-zoom"})))
+     (wrap-rendered-image h "render-page-zoom"))))
+
+(defn render-page-thumbnail
+  "Render a 0-based page fit to `size` pixels to a RenderedImage.
+   `format` is an int image format (0 = PNG, default)."
+  ([^Document d page size] (render-page-thumbnail d page size 0))
+  ([^Document d page size format]
+   (let [code (IntByReference.)
+         h (->ptr "pdf_render_page_thumbnail" [(doc-ptr d) (int page) (int size) (int format) code])]
+     (when (nil? h) (throw (ex-info "pdf_oxide: render-page-thumbnail failed" {:code (.getValue code) :op "render-page-thumbnail"})))
+     (wrap-rendered-image h "render-page-thumbnail"))))
+
 ;; ── Pdf builder ───────────────────────────────────────────────────────────────
 (deftype Pdf [state]   ; state = (atom Pointer-or-nil)
   Closeable

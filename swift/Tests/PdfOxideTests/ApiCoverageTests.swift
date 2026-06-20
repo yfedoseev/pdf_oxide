@@ -139,6 +139,32 @@ final class ApiCoverageTests: XCTestCase {
         _ = allHits[0].bbox
     }
 
+    // ── Phase-3 page rendering ───────────────────────────────────────────────
+    func testRenderPage() throws {
+        let doc = try Document.openFromBytes(try samplePdf())
+
+        let img = try doc.renderPage(0)                // renderPage (PNG)
+        XCTAssertGreaterThan(img.width, 0)
+        XCTAssertGreaterThan(img.height, 0)
+        XCTAssertFalse(img.data.isEmpty)
+
+        // save(_:) uses the live native handle.
+        let path = NSTemporaryDirectory() + "pdfoxide_swift_render.png"
+        try img.save(path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+        try? FileManager.default.removeItem(atPath: path)
+
+        let zoomed = try doc.renderPageZoom(0, zoom: 2.0)  // renderPageZoom
+        XCTAssertGreaterThan(zoomed.width, 0)
+        XCTAssertGreaterThan(zoomed.height, 0)
+        XCTAssertFalse(zoomed.data.isEmpty)
+
+        let thumb = try doc.renderPageThumbnail(0, size: 64) // renderPageThumbnail
+        XCTAssertGreaterThan(thumb.width, 0)
+        XCTAssertGreaterThan(thumb.height, 0)
+        XCTAssertFalse(thumb.data.isEmpty)
+    }
+
     // ── Page model ───────────────────────────────────────────────────────────
     func testPage() throws {
         let doc = try Document.openFromBytes(try samplePdf())

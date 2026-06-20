@@ -60,6 +60,59 @@ final case class Image(
     data: Array[Byte]
 )
 
+/** A rendered raster image of a page, owning the underlying native handle.
+  *
+  * `width`, `height` and `data` (the encoded image bytes, e.g. PNG) are read eagerly at
+  * construction; `data` is copied into the JVM and the native byte buffer freed via `free_bytes`.
+  * The native FfiRenderedImage handle is retained so [[save]] can encode directly from native; it
+  * is released by [[close]] (the type is AutoCloseable). Use it inside `scala.util.Using` or call
+  * [[close]] when done to avoid leaking the handle.
+  */
+final class RenderedImage private[pdf] (private var handle: Pointer) extends AutoCloseable:
+  private def ptr: Pointer =
+    if handle == null then throw IllegalStateException("RenderedImage is closed") else handle
+
+  /** Image width in pixels. */
+  val width: Int =
+    val code = IntByReference()
+    val w = Native_.lib.pdf_get_rendered_image_width(ptr, code)
+    if code.getValue != 0 then
+      Native_.lib.pdf_rendered_image_free(handle); handle = null
+      throw PdfOxideException(code.getValue, "renderedImageWidth")
+    w
+
+  /** Image height in pixels. */
+  val height: Int =
+    val code = IntByReference()
+    val h = Native_.lib.pdf_get_rendered_image_height(ptr, code)
+    if code.getValue != 0 then
+      Native_.lib.pdf_rendered_image_free(handle); handle = null
+      throw PdfOxideException(code.getValue, "renderedImageHeight")
+    h
+
+  /** The encoded image bytes (e.g. PNG), eagerly copied into the JVM. */
+  val data: Array[Byte] =
+    val len = IntByReference(); val code = IntByReference()
+    val p = Native_.lib.pdf_get_rendered_image_data(ptr, len, code)
+    if p == null then
+      Native_.lib.pdf_rendered_image_free(handle); handle = null
+      throw PdfOxideException(code.getValue, "renderedImageData")
+    val n = if len.getValue < 0 then 0 else len.getValue
+    val bytes = p.getByteArray(0, n)
+    Native_.lib.free_bytes(p)
+    bytes
+
+  /** Save the rendered image to `path`, encoding from the live native handle. */
+  def save(path: String): Unit =
+    val code = IntByReference()
+    if Native_.lib.pdf_save_rendered_image(ptr, path, code) != 0 then
+      throw PdfOxideException(code.getValue, "saveRenderedImage")
+
+  def close(): Unit =
+    if handle != null then
+      Native_.lib.pdf_rendered_image_free(handle)
+      handle = null
+
 /** A single page annotation. */
 final case class Annotation(
     `type`: String,
@@ -248,6 +301,31 @@ private[pdf] trait CLib extends Library:
   def pdf_free(h: Pointer): Unit
   def pdf_save(h: Pointer, path: String, code: IntByReference): Int
   def pdf_save_to_bytes(h: Pointer, len: IntByReference, code: IntByReference): Pointer
+  // ── Phase-3 page rendering ───────────────────────────────────────────────────
+  def pdf_render_page(h: Pointer, pageIndex: Int, format: Int, code: IntByReference): Pointer
+  def pdf_render_page_zoom(
+      h: Pointer,
+      pageIndex: Int,
+      zoom: Float,
+      format: Int,
+      code: IntByReference
+  ): Pointer
+  def pdf_render_page_thumbnail(
+      h: Pointer,
+      pageIndex: Int,
+      size: Int,
+      format: Int,
+      code: IntByReference
+  ): Pointer
+  def pdf_get_rendered_image_width(img: Pointer, code: IntByReference): Int
+  def pdf_get_rendered_image_height(img: Pointer, code: IntByReference): Int
+  def pdf_get_rendered_image_data(
+      img: Pointer,
+      dataLen: IntByReference,
+      code: IntByReference
+  ): Pointer
+  def pdf_save_rendered_image(img: Pointer, filePath: String, code: IntByReference): Int
+  def pdf_rendered_image_free(img: Pointer): Unit
   def free_string(p: Pointer): Unit
   def free_bytes(p: Pointer): Unit
 
@@ -645,6 +723,27 @@ final class PdfDocument private (private var handle: Pointer) extends AutoClosea
     val ok = Native_.lib.pdf_document_authenticate(ptr, password, code)
     if code.getValue != 0 then throw PdfOxideException(code.getValue, "authenticate")
     ok
+
+  /** Render a 0-based page to a [[RenderedImage]]. `format` is 0=PNG (default), 1=JPEG. */
+  def renderPage(pageIndex: Int, format: Int = 0): RenderedImage =
+    val code = IntByReference()
+    val img = Native_.lib.pdf_render_page(ptr, pageIndex, format, code)
+    if img == null then throw PdfOxideException(code.getValue, "renderPage")
+    RenderedImage(img)
+
+  /** Render a 0-based page at the given `zoom` factor. `format` is 0=PNG (default), 1=JPEG. */
+  def renderPageZoom(pageIndex: Int, zoom: Float, format: Int = 0): RenderedImage =
+    val code = IntByReference()
+    val img = Native_.lib.pdf_render_page_zoom(ptr, pageIndex, zoom, format, code)
+    if img == null then throw PdfOxideException(code.getValue, "renderPageZoom")
+    RenderedImage(img)
+
+  /** Render a thumbnail of a 0-based page fitting `size` pixels. `format` is 0=PNG (default). */
+  def renderPageThumbnail(pageIndex: Int, size: Int, format: Int = 0): RenderedImage =
+    val code = IntByReference()
+    val img = Native_.lib.pdf_render_page_thumbnail(ptr, pageIndex, size, format, code)
+    if img == null then throw PdfOxideException(code.getValue, "renderPageThumbnail")
+    RenderedImage(img)
 
   /** A lightweight view of a single (0-based) page; keeps its document alive. */
   def page(index: Int): PdfPage = PdfPage(this, index)

@@ -12,9 +12,11 @@
 
 static ErlNifResourceType *DOC_RES;
 static ErlNifResourceType *PDF_RES;
+static ErlNifResourceType *IMG_RES;
 
 typedef struct { PdfDocument *h; } DocRes;
 typedef struct { Pdf *h; } PdfRes;
+typedef struct { FfiRenderedImage *h; } ImgRes;
 
 static void doc_dtor(ErlNifEnv *env, void *obj) {
     (void)env;
@@ -26,13 +28,19 @@ static void pdf_dtor(ErlNifEnv *env, void *obj) {
     PdfRes *r = (PdfRes *)obj;
     if (r->h) { pdf_free(r->h); r->h = NULL; }
 }
+static void img_dtor(ErlNifEnv *env, void *obj) {
+    (void)env;
+    ImgRes *r = (ImgRes *)obj;
+    if (r->h) { pdf_rendered_image_free(r->h); r->h = NULL; }
+}
 
 static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     (void)priv; (void)info;
     int flags = ERL_NIF_RT_CREATE | ERL_NIF_RT_TAKEOVER;
     DOC_RES = enif_open_resource_type(env, NULL, "pdf_oxide_doc", doc_dtor, flags, NULL);
     PDF_RES = enif_open_resource_type(env, NULL, "pdf_oxide_pdf", pdf_dtor, flags, NULL);
-    return (DOC_RES && PDF_RES) ? 0 : 1;
+    IMG_RES = enif_open_resource_type(env, NULL, "pdf_oxide_img", img_dtor, flags, NULL);
+    return (DOC_RES && PDF_RES && IMG_RES) ? 0 : 1;
 }
 
 static ERL_NIF_TERM err_tuple(ErlNifEnv *env, int32_t code) {
@@ -568,6 +576,99 @@ static ERL_NIF_TERM doc_search_all(ErlNifEnv *env, int argc, const ERL_NIF_TERM 
     return search_results_term(env, list);
 }
 
+/* ── page rendering (phase 3) ────────────────────────────────────────────────
+ * Each render returns an FfiRenderedImage handle (NULL on error). The handle is
+ * wrapped in an IMG_RES resource whose destructor frees it via
+ * pdf_rendered_image_free; the live handle is kept so save/3 can call
+ * pdf_save_rendered_image. width/height/data are read once into the returned
+ * tuple; data bytes are copied into a binary and freed via free_bytes. All are
+ * dirty CPU-bound (rendering rasterises the page). */
+
+/* Read width/height/data from a rendered-image handle and return
+ * {:ok, {ref, width, height, data}}, keeping the handle live in IMG_RES. */
+static ERL_NIF_TERM make_rendered_image(ErlNifEnv *env, FfiRenderedImage *h) {
+    int32_t c = 0;
+    int32_t w = pdf_get_rendered_image_width(h, &c);
+    int32_t hgt = pdf_get_rendered_image_height(h, &c);
+    int32_t dlen = 0;
+    uint8_t *p = pdf_get_rendered_image_data(h, &dlen, &c);
+    size_t dn = (p && dlen > 0) ? (size_t)dlen : 0;
+    ERL_NIF_TERM data;
+    unsigned char *buf = enif_make_new_binary(env, dn, &data);
+    if (dn) memcpy(buf, p, dn);
+    if (p) free_bytes(p);
+    ImgRes *r = enif_alloc_resource(IMG_RES, sizeof(ImgRes));
+    r->h = h;
+    ERL_NIF_TERM ref = enif_make_resource(env, r);
+    enif_release_resource(r);
+    ERL_NIF_TERM tuple = enif_make_tuple4(env, ref, enif_make_int(env, w < 0 ? 0 : w),
+                                          enif_make_int(env, hgt < 0 ? 0 : hgt), data);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), tuple);
+}
+
+static ERL_NIF_TERM doc_render_page(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    int page_index, format;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||
+        !enif_get_int(env, a[1], &page_index) ||
+        !enif_get_int(env, a[2], &format))
+        return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    FfiRenderedImage *h = pdf_render_page(r->h, page_index, format, &code);
+    if (!h) return err_tuple(env, code);
+    return make_rendered_image(env, h);
+}
+
+static ERL_NIF_TERM doc_render_page_zoom(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    int page_index, format;
+    double zoom;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||
+        !enif_get_int(env, a[1], &page_index) ||
+        !enif_get_double(env, a[2], &zoom) ||
+        !enif_get_int(env, a[3], &format))
+        return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    FfiRenderedImage *h = pdf_render_page_zoom(r->h, page_index, (float)zoom, format, &code);
+    if (!h) return err_tuple(env, code);
+    return make_rendered_image(env, h);
+}
+
+static ERL_NIF_TERM doc_render_page_thumbnail(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    int page_index, size, format;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||
+        !enif_get_int(env, a[1], &page_index) ||
+        !enif_get_int(env, a[2], &size) ||
+        !enif_get_int(env, a[3], &format))
+        return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    FfiRenderedImage *h = pdf_render_page_thumbnail(r->h, page_index, size, format, &code);
+    if (!h) return err_tuple(env, code);
+    return make_rendered_image(env, h);
+}
+
+/* Save a rendered image to a file path via the live handle. Returns :ok or
+ * {:error, code}. */
+static ERL_NIF_TERM img_save(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    ImgRes *r;
+    if (!enif_get_resource(env, a[0], IMG_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    char *path = term_to_cstr(env, a[1]);
+    if (!path) return enif_make_badarg(env);
+    int32_t code = 0;
+    int rc = pdf_save_rendered_image(r->h, path, &code);
+    enif_free(path);
+    return rc == 0 ? enif_make_atom(env, "ok") : err_tuple(env, code);
+}
+
 /* Explicit, idempotent close: free the native handle now and null it so the GC
  * destructor is a no-op and later use raises (badarg). */
 static ERL_NIF_TERM doc_close(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
@@ -618,6 +719,10 @@ static ErlNifFunc funcs[] = {
     {"doc_extract_paths", 2, doc_extract_paths, DIRTY},
     {"doc_search_page", 4, doc_search_page, DIRTY},
     {"doc_search_all", 3, doc_search_all, DIRTY},
+    {"doc_render_page", 3, doc_render_page, DIRTY},
+    {"doc_render_page_zoom", 4, doc_render_page_zoom, DIRTY},
+    {"doc_render_page_thumbnail", 4, doc_render_page_thumbnail, DIRTY},
+    {"img_save", 2, img_save, DIRTY},
     {"doc_close", 1, doc_close, 0},
     {"pdf_close", 1, pdf_close_nif, 0},
 };

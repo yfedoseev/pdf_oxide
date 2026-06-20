@@ -89,6 +89,24 @@ class ApiCoverageSpec extends AnyFunSuite:
       val ok: Boolean = doc.authenticate("anything") // returns a bool without error
       assert(ok == true || ok == false)
 
+  // ── Phase-3 page rendering ───────────────────────────────────────────────────
+  test("renderPage / renderPageZoom / renderPageThumbnail"):
+    Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
+      Using.resource(doc.renderPage(0)): img => // renderPage (PNG, 0-based)
+        assert(img.width > 0) // width > 0
+        assert(img.height > 0) // height > 0
+        assert(img.data.nonEmpty) // non-empty encoded image data
+      Using.resource(doc.renderPageZoom(0, 2.0f)): img => // renderPageZoom
+        assert(img.width > 0 && img.height > 0)
+      Using.resource(doc.renderPageThumbnail(0, 64)): img => // renderPageThumbnail
+        assert(img.width > 0 && img.height > 0)
+
+  test("RenderedImage.save"):
+    val f = File.createTempFile("pdfoxide-scala-render", ".png")
+    Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
+      Using.resource(doc.renderPage(0))(_.save(f.getAbsolutePath))
+    assert(f.length() > 0); f.delete()
+
   // ── Page model ───────────────────────────────────────────────────────────────
   test("page model"):
     Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>

@@ -106,6 +106,20 @@ typedef struct {
 @property(nonatomic, readonly) POXBbox bbox;
 @end
 
+/// A rendered page image (Phase-3 rendering). Owns the native handle and frees
+/// it on -close/-dealloc; width/height/data are read eagerly, and -saveToPath:
+/// uses the live native handle.
+@interface POXRenderedImage : NSObject
+@property(nonatomic, readonly) NSInteger width;
+@property(nonatomic, readonly) NSInteger height;
+/// Encoded image bytes (e.g. PNG).
+@property(nonatomic, readonly, copy) NSData* data;
+/// Write the rendered image to a file; returns YES on success.
+- (BOOL)saveToPath:(NSString*)path error:(NSError**)error;
+/// Free the native handle now (idempotent).
+- (void)close;
+@end
+
 /// An opened PDF for extraction/inspection.
 @interface POXDocument : NSObject
 
@@ -154,6 +168,19 @@ typedef struct {
 - (nullable NSArray<POXSearchResult*>*)searchAll:(NSString*)term
                                    caseSensitive:(BOOL)caseSensitive
                                            error:(NSError**)error;
+
+/// Phase-3 page rendering (page index is 0-based; format 0 = PNG).
+- (nullable POXRenderedImage*)renderPage:(NSInteger)pageIndex
+                                  format:(int32_t)format
+                                   error:(NSError**)error;
+- (nullable POXRenderedImage*)renderPageZoom:(NSInteger)pageIndex
+                                        zoom:(float)zoom
+                                      format:(int32_t)format
+                                       error:(NSError**)error;
+- (nullable POXRenderedImage*)renderPageThumbnail:(NSInteger)pageIndex
+                                             size:(int32_t)size
+                                           format:(int32_t)format
+                                            error:(NSError**)error;
 
 /// Authenticate a password-protected PDF; returns YES on success, NO for a
 /// wrong password (no error). Sets `error` only on a genuine failure.

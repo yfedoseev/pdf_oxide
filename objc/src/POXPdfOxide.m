@@ -103,6 +103,12 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
 - (instancetype)initWithText:(NSString*)text page:(NSInteger)page bbox:(POXBbox)bbox;
 @end
 
+@interface POXRenderedImage ()
+// Takes ownership of a non-null FfiRenderedImage handle; reads width/height/data
+// eagerly. The handle is retained for -saveToPath: and freed on -close/-dealloc.
+- (instancetype)initWithHandle:(FfiRenderedImage*)handle;
+@end
+
 @implementation POXChar
 - (instancetype)initWithCharacter:(uint32_t)character
                              bbox:(POXBbox)bbox
@@ -253,6 +259,51 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
         _bbox = bbox;
     }
     return self;
+}
+@end
+
+@implementation POXRenderedImage {
+    FfiRenderedImage* _handle;
+}
+- (instancetype)initWithHandle:(FfiRenderedImage*)handle {
+    if ((self = [super init])) {
+        _handle = handle;
+        int32_t c = 0;
+        _width = pdf_get_rendered_image_width(handle, &c);
+        _height = pdf_get_rendered_image_height(handle, &c);
+        int32_t dataLen = 0;
+        uint8_t* p = pdf_get_rendered_image_data(handle, &dataLen, &c);
+        _data = p ? [NSData dataWithBytes:p
+                                  length:(dataLen < 0 ? 0 : (NSUInteger)dataLen)]
+                  : [NSData data];
+        if (p)
+            free_bytes(p);
+    }
+    return self;
+}
+- (BOOL)saveToPath:(NSString*)path error:(NSError**)error {
+    if (!_handle) {
+        if (error)
+            *error = POXMakeError(0, @"saveRenderedImage");
+        return NO;
+    }
+    int32_t code = 0;
+    if (pdf_save_rendered_image(_handle, path.UTF8String, &code) != 0) {
+        if (error)
+            *error = POXMakeError(code, @"saveRenderedImage");
+        return NO;
+    }
+    return YES;
+}
+- (void)close {
+    if (_handle) {
+        pdf_rendered_image_free(_handle);
+        _handle = NULL;
+    }
+}
+- (void)dealloc {
+    if (_handle)
+        pdf_rendered_image_free(_handle);
 }
 @end
 
@@ -689,6 +740,49 @@ static NSArray<POXSearchResult*>* POXTakeSearchResults(FfiSearchResults* list) {
         return nil;
     }
     return POXTakeSearchResults(list);
+}
+
+- (POXRenderedImage*)renderPage:(NSInteger)pageIndex
+                         format:(int32_t)format
+                          error:(NSError**)error {
+    int32_t code = 0;
+    FfiRenderedImage* img = pdf_render_page(_handle, (int32_t)pageIndex, format, &code);
+    if (!img) {
+        if (error)
+            *error = POXMakeError(code, @"renderPage");
+        return nil;
+    }
+    return [[POXRenderedImage alloc] initWithHandle:img];
+}
+
+- (POXRenderedImage*)renderPageZoom:(NSInteger)pageIndex
+                               zoom:(float)zoom
+                             format:(int32_t)format
+                              error:(NSError**)error {
+    int32_t code = 0;
+    FfiRenderedImage* img =
+        pdf_render_page_zoom(_handle, (int32_t)pageIndex, zoom, format, &code);
+    if (!img) {
+        if (error)
+            *error = POXMakeError(code, @"renderPageZoom");
+        return nil;
+    }
+    return [[POXRenderedImage alloc] initWithHandle:img];
+}
+
+- (POXRenderedImage*)renderPageThumbnail:(NSInteger)pageIndex
+                                    size:(int32_t)size
+                                  format:(int32_t)format
+                                   error:(NSError**)error {
+    int32_t code = 0;
+    FfiRenderedImage* img =
+        pdf_render_page_thumbnail(_handle, (int32_t)pageIndex, size, format, &code);
+    if (!img) {
+        if (error)
+            *error = POXMakeError(code, @"renderPageThumbnail");
+        return nil;
+    }
+    return [[POXRenderedImage alloc] initWithHandle:img];
 }
 
 - (void)close {

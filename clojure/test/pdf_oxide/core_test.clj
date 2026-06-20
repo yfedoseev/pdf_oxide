@@ -130,5 +130,27 @@
         (is (re-find #"Alpha" (:text (first results))))   ; first result contains Alpha
         (is (>= (:page (first results)) 0))))))           ; page >= 0
 
+(deftest phase3-page-rendering
+  (with-open [d (pdf/open-from-bytes (sample-pdf))]
+    (testing "render-page (0-based, PNG)"
+      (with-open [img (pdf/render-page d 0 0)]
+        (is (> (pdf/rendered-image-width img) 0))         ; width > 0
+        (is (> (pdf/rendered-image-height img) 0))        ; height > 0
+        (is (bytes? (pdf/rendered-image-data img)))
+        (is (pos? (alength (pdf/rendered-image-data img)))) ; non-empty data
+        (testing "rendered-image-save"
+          (let [f (File/createTempFile "pdfoxide-clj-render" ".png")]
+            (pdf/rendered-image-save img (.getAbsolutePath f))
+            (is (> (.length f) 0)) (.delete f)))))
+    (testing "render-page (default format = PNG)"
+      (with-open [img (pdf/render-page d 0)]
+        (is (> (pdf/rendered-image-width img) 0))))
+    (testing "render-page-zoom returns without error"
+      (with-open [img (pdf/render-page-zoom d 0 2.0)]
+        (is (> (pdf/rendered-image-width img) 0))))
+    (testing "render-page-thumbnail returns without error"
+      (with-open [img (pdf/render-page-thumbnail d 0 64)]
+        (is (> (pdf/rendered-image-width img) 0))))))
+
 (deftest error-path
   (is (thrown? clojure.lang.ExceptionInfo (pdf/open "/nonexistent/nope.pdf"))))

@@ -657,10 +657,84 @@ pub const Document = struct {
         alloc.free(results);
     }
 
+    /// Render a (0-based) page to an encoded image (`format`: 0 = PNG). Caller
+    /// owns the returned `RenderedImage`; free it with `deinit`.
+    pub fn renderPage(self: Document, alloc: std.mem.Allocator, page_index: i32, format: i32) Error!RenderedImage {
+        var code: i32 = 0;
+        const img = c.pdf_render_page(self.handle, page_index, format, &code) orelse return fail(code);
+        return RenderedImage.take(alloc, img);
+    }
+
+    /// Render a (0-based) page at the given `zoom` factor (`format`: 0 = PNG).
+    /// Caller owns the returned `RenderedImage`; free it with `deinit`.
+    pub fn renderPageZoom(self: Document, alloc: std.mem.Allocator, page_index: i32, zoom: f32, format: i32) Error!RenderedImage {
+        var code: i32 = 0;
+        const img = c.pdf_render_page_zoom(self.handle, page_index, zoom, format, &code) orelse return fail(code);
+        return RenderedImage.take(alloc, img);
+    }
+
+    /// Render a thumbnail of a (0-based) page fitting inside `size`×`size`
+    /// pixels (`format`: 0 = PNG). Caller owns the returned `RenderedImage`;
+    /// free it with `deinit`.
+    pub fn renderPageThumbnail(self: Document, alloc: std.mem.Allocator, page_index: i32, size: i32, format: i32) Error!RenderedImage {
+        var code: i32 = 0;
+        const img = c.pdf_render_page_thumbnail(self.handle, page_index, size, format, &code) orelse return fail(code);
+        return RenderedImage.take(alloc, img);
+    }
+
     /// A lightweight view of a single (0-based) page. The returned `Page` borrows
     /// this `Document`'s handle, so the `Document` MUST outlive the `Page`.
     pub fn page(self: Document, index: i32) Page {
         return .{ .doc = self, .index = index };
+    }
+};
+
+/// A rendered page image. Owns the native `FfiRenderedImage` handle so that
+/// `save` can defer to the Rust encoder; `width`/`height`/`data` are read
+/// eagerly and `data` is copied into an allocator-owned slice. Free with
+/// `deinit` (releases both the copied bytes and the native handle).
+pub const RenderedImage = struct {
+    handle: *c.FfiRenderedImage,
+    alloc: std.mem.Allocator,
+    width: i32,
+    height: i32,
+    data: []u8,
+
+    /// Adopt an `FfiRenderedImage` handle: read width/height, copy the encoded
+    /// bytes (freeing the C buffer), and keep the handle alive for `save`. The
+    /// handle is freed by `deinit`. On error the handle is freed here.
+    fn take(alloc: std.mem.Allocator, img: *c.FfiRenderedImage) Error!RenderedImage {
+        errdefer c.pdf_rendered_image_free(img);
+        var code: i32 = 0;
+        const width = c.pdf_get_rendered_image_width(img, &code);
+        if (width < 0) return fail(code);
+        const height = c.pdf_get_rendered_image_height(img, &code);
+        if (height < 0) return fail(code);
+        var data_len: i32 = 0;
+        const data_ptr = c.pdf_get_rendered_image_data(img, &data_len, &code) orelse return fail(code);
+        defer c.free_bytes(data_ptr);
+        const dn: usize = if (data_len < 0) 0 else @intCast(data_len);
+        const data = try alloc.dupe(u8, data_ptr[0..dn]);
+        return .{
+            .handle = img,
+            .alloc = alloc,
+            .width = width,
+            .height = height,
+            .data = data,
+        };
+    }
+
+    /// Write the rendered image to `file_path` (NUL-terminated) using the Rust
+    /// encoder. Uses the live native handle.
+    pub fn save(self: RenderedImage, file_path: [:0]const u8) Error!void {
+        var code: i32 = 0;
+        if (c.pdf_save_rendered_image(self.handle, file_path.ptr, &code) != 0) return fail(code);
+    }
+
+    /// Free the copied bytes and the native handle.
+    pub fn deinit(self: *RenderedImage) void {
+        self.alloc.free(self.data);
+        c.pdf_rendered_image_free(self.handle);
     }
 };
 
@@ -904,6 +978,48 @@ test "Document: phase-2 extraction (fonts/images/annotations/paths/search)" {
     try testing.expect(all_hits.len > 0);
     try testing.expect(std.mem.indexOf(u8, all_hits[0].text, "Alpha") != null);
     try testing.expect(all_hits[0].page >= 0);
+}
+
+test "Document: phase-3 page rendering (renderPage/renderPageZoom/renderPageThumbnail)" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+
+    var doc = try Document.openFromBytes(bytes);
+    defer doc.deinit();
+
+    // renderPage(0) as PNG: width > 0, height > 0, non-empty data
+    {
+        var img = try doc.renderPage(a, 0, 0); // renderPage
+        defer img.deinit();
+        try testing.expect(img.width > 0);
+        try testing.expect(img.height > 0);
+        try testing.expect(img.data.len > 0);
+
+        // RenderedImage.save: writes the image without error
+        try img.save("/tmp/pdfoxide_zig_render.png");
+        const f = try std.fs.cwd().openFile("/tmp/pdfoxide_zig_render.png", .{});
+        f.close();
+        try std.fs.cwd().deleteFile("/tmp/pdfoxide_zig_render.png");
+    }
+
+    // renderPageZoom: returns a RenderedImage without error
+    {
+        var img = try doc.renderPageZoom(a, 0, 2.0, 0); // renderPageZoom
+        defer img.deinit();
+        try testing.expect(img.width > 0);
+        try testing.expect(img.height > 0);
+        try testing.expect(img.data.len > 0);
+    }
+
+    // renderPageThumbnail: returns a RenderedImage without error
+    {
+        var img = try doc.renderPageThumbnail(a, 0, 128, 0); // renderPageThumbnail
+        defer img.deinit();
+        try testing.expect(img.width > 0);
+        try testing.expect(img.height > 0);
+        try testing.expect(img.data.len > 0);
+    }
 }
 
 test "error path: open nonexistent returns error" {

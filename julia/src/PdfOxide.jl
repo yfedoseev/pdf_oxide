@@ -19,6 +19,13 @@ export Bbox, Char, Word, TextLine, Table
 export extract_chars, extract_words, extract_text_lines, extract_tables, cell
 export Font, Image, Annotation, Path, SearchResult
 export embedded_fonts, embedded_images, page_annotations, extract_paths, search, search_all
+export RenderedImage,
+    render_page,
+    renderPage,
+    render_page_zoom,
+    renderPageZoom,
+    render_page_thumbnail,
+    renderPageThumbnail
 
 # Native library resolution: PDF_OXIDE_LIB_PATH (full path) -> PDF_OXIDE_LIB_DIR
 # -> common build dirs -> bare name (system loader).
@@ -927,6 +934,167 @@ end
 # Per-page search delegates carry the term + case-sensitivity arguments.
 search(p::PdfPage, term::AbstractString, caseSensitive::Bool) =
     search(p.doc, p.index, term, caseSensitive)
+
+# Per-page render delegates forward to the document renderers with the stored index.
+render_page(p::PdfPage, format::Integer = 0) = render_page(p.doc, p.index, format)
+render_page_zoom(p::PdfPage, zoom::Real, format::Integer = 0) =
+    render_page_zoom(p.doc, p.index, zoom, format)
+render_page_thumbnail(p::PdfPage, size::Integer, format::Integer = 0) =
+    render_page_thumbnail(p.doc, p.index, size, format)
+
+# ── Phase-3 page rendering ──────────────────────────────────────────────────────
+# A rendered raster of one page. Owns the native FfiRenderedImage handle so
+# `save(img, path)` can delegate to pdf_save_rendered_image; width/height/data
+# are read eagerly (data copied out and the C buffer freed via free_bytes). The
+# handle is released on close!/finalization.
+mutable struct RenderedImage
+    handle::Ptr{Cvoid}
+    width::Int
+    height::Int
+    data::Vector{UInt8}
+    function RenderedImage(h::Ptr{Cvoid})
+        code = Ref{Int32}(0)
+        w = ccall(
+            (:pdf_get_rendered_image_width, LIB),
+            Int32,
+            (Ptr{Cvoid}, Ref{Int32}),
+            h,
+            code,
+        )
+        if code[] != 0
+            ccall((:pdf_rendered_image_free, LIB), Cvoid, (Ptr{Cvoid},), h)
+            throw(PdfOxideError(code[], "render"))
+        end
+        hcode = Ref{Int32}(0)
+        ht = ccall(
+            (:pdf_get_rendered_image_height, LIB),
+            Int32,
+            (Ptr{Cvoid}, Ref{Int32}),
+            h,
+            hcode,
+        )
+        if hcode[] != 0
+            ccall((:pdf_rendered_image_free, LIB), Cvoid, (Ptr{Cvoid},), h)
+            throw(PdfOxideError(hcode[], "render"))
+        end
+        dlen = Ref{Int32}(0);
+        dcode = Ref{Int32}(0)
+        dptr = ccall(
+            (:pdf_get_rendered_image_data, LIB),
+            Ptr{UInt8},
+            (Ptr{Cvoid}, Ref{Int32}, Ref{Int32}),
+            h,
+            dlen,
+            dcode,
+        )
+        data = if dptr == C_NULL
+            if dcode[] != 0
+                ccall((:pdf_rendered_image_free, LIB), Cvoid, (Ptr{Cvoid},), h)
+                throw(PdfOxideError(dcode[], "render"))
+            end
+            UInt8[]
+        else
+            m = dlen[] < 0 ? 0 : Int(dlen[])
+            bytes = copy(unsafe_wrap(Array, dptr, m))
+            # Encoded image bytes free via free_bytes, not free_string.
+            ccall((:free_bytes, LIB), Cvoid, (Ptr{UInt8},), dptr)
+            bytes
+        end
+        img = new(h, Int(w), Int(ht), data)
+        finalizer(close!, img)
+        return img
+    end
+end
+
+"""Free the native rendered-image handle now (idempotent; also runs at finalization)."""
+function close!(img::RenderedImage)
+    if img.handle != C_NULL
+        ccall((:pdf_rendered_image_free, LIB), Cvoid, (Ptr{Cvoid},), img.handle)
+        img.handle = C_NULL
+    end
+    return nothing
+end
+
+"""Save the rendered image to `path` (format inferred by the native encoder)."""
+function save(img::RenderedImage, path::AbstractString)
+    img.handle == C_NULL && error("RenderedImage is closed")
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_save_rendered_image, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Ref{Int32}),
+        img.handle,
+        path,
+        code,
+    )
+    rc != 0 && throw(PdfOxideError(code[], "save_rendered_image"))
+    return nothing
+end
+
+"""Render a (0-based) page to a `RenderedImage`. `format` is 0=PNG (default)."""
+function render_page(d::PdfDocument, pageIndex::Integer, format::Integer = 0)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_render_page, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Int32, Int32, Ref{Int32}),
+        _doc(d),
+        Int32(pageIndex),
+        Int32(format),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "render_page"))
+    return RenderedImage(h)
+end
+
+"""Render a (0-based) page at a zoom factor. `format` is 0=PNG (default)."""
+function render_page_zoom(
+    d::PdfDocument,
+    pageIndex::Integer,
+    zoom::Real,
+    format::Integer = 0,
+)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_render_page_zoom, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Int32, Float32, Int32, Ref{Int32}),
+        _doc(d),
+        Int32(pageIndex),
+        Float32(zoom),
+        Int32(format),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "render_page_zoom"))
+    return RenderedImage(h)
+end
+
+"""Render a (0-based) page as a thumbnail fitting `size` pixels. `format` is 0=PNG (default)."""
+function render_page_thumbnail(
+    d::PdfDocument,
+    pageIndex::Integer,
+    size::Integer,
+    format::Integer = 0,
+)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_render_page_thumbnail, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Int32, Int32, Int32, Ref{Int32}),
+        _doc(d),
+        Int32(pageIndex),
+        Int32(size),
+        Int32(format),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "render_page_thumbnail"))
+    return RenderedImage(h)
+end
+
+# camelCase aliases matching the cross-binding naming convention.
+const renderPage = render_page
+const renderPageZoom = render_page_zoom
+const renderPageThumbnail = render_page_thumbnail
 
 # ── Pdf builder ───────────────────────────────────────────────────────────────
 mutable struct Pdf

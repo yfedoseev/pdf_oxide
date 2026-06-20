@@ -122,6 +122,57 @@ public struct SearchResult {
     public let bbox: Bbox
 }
 
+/// A rendered page image. Owns the native FfiRenderedImage handle so that
+/// `save(_:)` can delegate to the renderer's own encoder; `width`/`height`/`data`
+/// are read eagerly at construction. The handle is freed in `deinit`/`close()`.
+public final class RenderedImage {
+    private var handle: OpaquePointer?
+
+    /// Pixel width of the rendered image.
+    public let width: Int
+    /// Pixel height of the rendered image.
+    public let height: Int
+    /// The encoded image bytes (e.g. PNG), copied from the native buffer.
+    public let data: [UInt8]
+
+    // Takes ownership of `handle`; reads width/height/data eagerly.
+    fileprivate init(_ handle: OpaquePointer, _ op: String) throws {
+        self.handle = handle
+        var code: Int32 = 0
+        self.width = Int(pdf_get_rendered_image_width(handle, &code))
+        self.height = Int(pdf_get_rendered_image_height(handle, &code))
+        var dataLen: Int32 = 0
+        if let p = pdf_get_rendered_image_data(handle, &dataLen, &code) {
+            // Encoded image buffers free via free_bytes, not free_string.
+            defer { free_bytes(p) }
+            let len = dataLen < 0 ? 0 : Int(dataLen)
+            self.data = Array(UnsafeBufferPointer(start: p, count: len))
+        } else {
+            self.data = []
+        }
+    }
+
+    deinit { if let h = handle { pdf_rendered_image_free(h) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "RenderedImage is closed") }
+        return h
+    }
+
+    /// Save the rendered image to `path` using the renderer's own encoder.
+    public func save(_ path: String) throws {
+        var code: Int32 = 0
+        if pdf_save_rendered_image(try ptr(), path, &code) != 0 {
+            throw PdfOxideError(code: code, op: "RenderedImage.save")
+        }
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_rendered_image_free(h); handle = nil }
+    }
+}
+
 // Copy a C string return into a Swift String and free it via free_string.
 private func takeString(_ ptr: UnsafeMutablePointer<CChar>?, _ code: Int32, _ op: String) throws -> String {
     guard let ptr else { throw PdfOxideError(code: code, op: op) }
@@ -491,6 +542,35 @@ public final class Document {
             throw PdfOxideError(code: code, op: "searchAll")
         }
         return try collectSearchResults(list, "searchAll")
+    }
+
+    // ── Phase-3 page rendering ───────────────────────────────────────────────
+
+    /// Render a (0-based) page to an image. `format` is 0=PNG (default), 1=JPEG.
+    public func renderPage(_ pageIndex: Int, format: Int32 = 0) throws -> RenderedImage {
+        var code: Int32 = 0
+        guard let img = pdf_render_page(try ptr(), Int32(pageIndex), format, &code) else {
+            throw PdfOxideError(code: code, op: "renderPage")
+        }
+        return try RenderedImage(img, "renderPage")
+    }
+
+    /// Render a (0-based) page at the given `zoom` factor. `format` is 0=PNG, 1=JPEG.
+    public func renderPageZoom(_ pageIndex: Int, zoom: Float, format: Int32 = 0) throws -> RenderedImage {
+        var code: Int32 = 0
+        guard let img = pdf_render_page_zoom(try ptr(), Int32(pageIndex), zoom, format, &code) else {
+            throw PdfOxideError(code: code, op: "renderPageZoom")
+        }
+        return try RenderedImage(img, "renderPageZoom")
+    }
+
+    /// Render a thumbnail of a (0-based) page fitting `size` pixels. `format` is 0=PNG, 1=JPEG.
+    public func renderPageThumbnail(_ pageIndex: Int, size: Int, format: Int32 = 0) throws -> RenderedImage {
+        var code: Int32 = 0
+        guard let img = pdf_render_page_thumbnail(try ptr(), Int32(pageIndex), Int32(size), format, &code) else {
+            throw PdfOxideError(code: code, op: "renderPageThumbnail")
+        }
+        return try RenderedImage(img, "renderPageThumbnail")
     }
 
     /// A lightweight view of a single (0-based) page. Holds a strong reference to

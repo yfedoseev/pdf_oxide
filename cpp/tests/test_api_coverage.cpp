@@ -21,6 +21,7 @@ static int g_failures = 0;
 // `::Pdf` type that would make the unqualified name `Pdf` ambiguous. Qualify.
 using pdf_oxide::Document;
 using pdf_oxide::Error;
+using pdf_oxide::RenderedImage;
 using pdf_oxide::Version;
 
 static std::vector<std::uint8_t> sample_pdf() {
@@ -178,6 +179,32 @@ int main() {
             CHECK(allHits[0].page >= 0);
             (void)allHits[0].bbox;
         }
+    }
+
+    // ── Phase-3 page rendering ───────────────────────────────────────────
+    {
+        auto img = doc.render_page(0); // render_page (PNG)
+        CHECK(img.width() > 0);
+        CHECK(img.height() > 0);
+        CHECK(!img.data().empty());
+
+        // zoom + thumbnail just need to succeed without error.
+        auto zoomed = doc.render_page_zoom(0, 2.0f); // render_page_zoom
+        CHECK(zoomed.width() > 0);
+        CHECK(zoomed.height() > 0);
+
+        auto thumb = doc.render_page_thumbnail(0, 64); // render_page_thumbnail
+        CHECK(thumb.width() > 0);
+        CHECK(thumb.height() > 0);
+
+        // save the rendered image to a temp path.
+        std::string path = std::string(std::tmpnam(nullptr)) + ".png";
+        img.save(path); // RenderedImage::save
+        std::FILE* f = std::fopen(path.c_str(), "rb");
+        CHECK(f != nullptr);
+        if (f)
+            std::fclose(f);
+        std::remove(path.c_str());
     }
 
     // authenticate returns a bool (no throw on an unencrypted/sample doc)

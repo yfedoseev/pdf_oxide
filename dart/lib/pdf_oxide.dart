@@ -102,6 +102,35 @@ typedef _SearchAllC = Pointer<Void> Function(
 typedef _SearchAllD = Pointer<Void> Function(
     Pointer<Void>, Pointer<Utf8>, bool, Pointer<Int32>);
 
+// page rendering (Phase 3). Render entry points open an FfiRenderedImage handle
+// (NULL on error); accessors read width/height/data; `pdf_save_rendered_image`
+// writes the encoded bytes to disk; the handle is freed via
+// `pdf_rendered_image_free` (NOT free_bytes — only the data buffer is).
+typedef _RenderPageC = Pointer<Void> Function(
+    Pointer<Void>, Int32, Int32, Pointer<Int32>);
+typedef _RenderPageD = Pointer<Void> Function(
+    Pointer<Void>, int, int, Pointer<Int32>);
+typedef _RenderZoomC = Pointer<Void> Function(
+    Pointer<Void>, Int32, Float, Int32, Pointer<Int32>);
+typedef _RenderZoomD = Pointer<Void> Function(
+    Pointer<Void>, int, double, int, Pointer<Int32>);
+typedef _RenderThumbC = Pointer<Void> Function(
+    Pointer<Void>, Int32, Int32, Int32, Pointer<Int32>);
+typedef _RenderThumbD = Pointer<Void> Function(
+    Pointer<Void>, int, int, int, Pointer<Int32>);
+typedef _RenderedDimC = Int32 Function(Pointer<Void>, Pointer<Int32>);
+typedef _RenderedDimD = int Function(Pointer<Void>, Pointer<Int32>);
+typedef _RenderedDataC = Pointer<Uint8> Function(
+    Pointer<Void>, Pointer<Int32>, Pointer<Int32>);
+typedef _RenderedDataD = Pointer<Uint8> Function(
+    Pointer<Void>, Pointer<Int32>, Pointer<Int32>);
+typedef _RenderedSaveC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _RenderedSaveD = int Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _RenderedFreeC = Void Function(Pointer<Void>);
+typedef _RenderedFreeD = void Function(Pointer<Void>);
+
 /// Resolved native library + bound functions (loaded once).
 class _Native {
   _Native(this.lib)
@@ -292,7 +321,24 @@ class _Native {
         searchResultGetBbox = lib.lookupFunction<_ListBboxC, _ListBboxD>(
             'pdf_oxide_search_result_get_bbox'),
         searchResultFree = lib.lookupFunction<_ListFreeC, _ListFreeD>(
-            'pdf_oxide_search_result_free');
+            'pdf_oxide_search_result_free'),
+        // page rendering (Phase 3)
+        renderPage =
+            lib.lookupFunction<_RenderPageC, _RenderPageD>('pdf_render_page'),
+        renderPageZoom = lib
+            .lookupFunction<_RenderZoomC, _RenderZoomD>('pdf_render_page_zoom'),
+        renderPageThumbnail = lib.lookupFunction<_RenderThumbC, _RenderThumbD>(
+            'pdf_render_page_thumbnail'),
+        renderedImageWidth = lib.lookupFunction<_RenderedDimC, _RenderedDimD>(
+            'pdf_get_rendered_image_width'),
+        renderedImageHeight = lib.lookupFunction<_RenderedDimC, _RenderedDimD>(
+            'pdf_get_rendered_image_height'),
+        renderedImageData = lib.lookupFunction<_RenderedDataC, _RenderedDataD>(
+            'pdf_get_rendered_image_data'),
+        renderedImageSave = lib.lookupFunction<_RenderedSaveC, _RenderedSaveD>(
+            'pdf_save_rendered_image'),
+        renderedImageFree = lib.lookupFunction<_RenderedFreeC, _RenderedFreeD>(
+            'pdf_rendered_image_free');
 
   final DynamicLibrary lib;
   final _OpenD open;
@@ -390,6 +436,15 @@ class _Native {
   final _ListI32D searchResultGetPage;
   final _ListBboxD searchResultGetBbox;
   final _ListFreeD searchResultFree;
+  // page rendering (Phase 3)
+  final _RenderPageD renderPage;
+  final _RenderZoomD renderPageZoom;
+  final _RenderThumbD renderPageThumbnail;
+  final _RenderedDimD renderedImageWidth;
+  final _RenderedDimD renderedImageHeight;
+  final _RenderedDataD renderedImageData;
+  final _RenderedSaveD renderedImageSave;
+  final _RenderedFreeD renderedImageFree;
 }
 
 typedef _OpenD = Pointer<Void> Function(Pointer<Utf8>, Pointer<Int32>);
@@ -543,6 +598,99 @@ class SearchResult {
   final String text;
   final int page;
   final Bbox bbox;
+}
+
+/// A rasterised page image produced by [PdfDocument.renderPage] (and friends).
+///
+/// Owns the native `FfiRenderedImage` handle; [width], [height] and [data] are
+/// read through it on demand, and [save] writes the encoded image to disk via
+/// the native saver. Call [close] when done (or rely on the finalizer). The
+/// encoded image bytes returned by [data] are copied into Dart and the native
+/// buffer is freed via `free_bytes`.
+class RenderedImage implements Finalizable {
+  RenderedImage._(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_RenderedFreeC>>('pdf_rendered_image_free'));
+  Pointer<Void> _handle;
+
+  void _check() {
+    if (_handle == nullptr) throw StateError('RenderedImage is closed');
+  }
+
+  /// Image width in pixels.
+  int get width {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final w = _n.renderedImageWidth(_handle, code);
+      if (code.value != 0)
+        throw PdfOxideError(code.value, 'renderedImageWidth');
+      return w;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Image height in pixels.
+  int get height {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.renderedImageHeight(_handle, code);
+      if (code.value != 0) {
+        throw PdfOxideError(code.value, 'renderedImageHeight');
+      }
+      return h;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Encoded image bytes (e.g. PNG). Copied into Dart; the native buffer is
+  /// freed via `free_bytes`.
+  Uint8List get data {
+    _check();
+    final len = calloc<Int32>();
+    final code = calloc<Int32>();
+    try {
+      final p = _n.renderedImageData(_handle, len, code);
+      if (p == nullptr) throw PdfOxideError(code.value, 'renderedImageData');
+      final out =
+          Uint8List.fromList(p.asTypedList(len.value < 0 ? 0 : len.value));
+      _n.freeBytes(p);
+      return out;
+    } finally {
+      calloc.free(len);
+      calloc.free(code);
+    }
+  }
+
+  /// Write the encoded image to [path] using the native saver.
+  void save(String path) {
+    _check();
+    final c = path.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.renderedImageSave(_handle, c, code) != 0) {
+        throw PdfOxideError(code.value, 'saveRenderedImage');
+      }
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.renderedImageFree(_handle);
+      _handle = nullptr;
+    }
+  }
 }
 
 /// An opened PDF for extraction/inspection. Call [close] when done (or rely on
@@ -1015,6 +1163,50 @@ class PdfDocument implements Finalizable {
       return ok;
     } finally {
       calloc.free(cPw);
+      calloc.free(code);
+    }
+  }
+
+  // ── page rendering (Phase 3) ───────────────────────────────────────────────
+
+  /// Render 0-based [pageIndex] to a [RenderedImage]. [format] is an image
+  /// format (0 = PNG, the default).
+  RenderedImage renderPage(int pageIndex, [int format = 0]) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.renderPage(_handle, pageIndex, format, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'renderPage');
+      return RenderedImage._(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Render 0-based [pageIndex] at the given [zoom] factor. [format] is an
+  /// image format (0 = PNG, the default).
+  RenderedImage renderPageZoom(int pageIndex, double zoom, [int format = 0]) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.renderPageZoom(_handle, pageIndex, zoom, format, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'renderPageZoom');
+      return RenderedImage._(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Render a thumbnail of 0-based [pageIndex] fitting within [size] pixels.
+  /// [format] is an image format (0 = PNG, the default).
+  RenderedImage renderPageThumbnail(int pageIndex, int size, [int format = 0]) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.renderPageThumbnail(_handle, pageIndex, size, format, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'renderPageThumbnail');
+      return RenderedImage._(h);
+    } finally {
       calloc.free(code);
     }
   }

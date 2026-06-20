@@ -89,6 +89,16 @@ defmodule PdfOxide do
     defstruct [:text, :page, :bbox]
   end
 
+  defmodule RenderedImage do
+    @moduledoc """
+    A rendered page raster. `width`/`height` are in pixels and `data` holds the
+    encoded image bytes (PNG by default). `ref` is the live native handle kept so
+    `PdfOxide.save/2` can write the image with the renderer's own encoder; it is
+    freed by the GC.
+    """
+    defstruct [:ref, :width, :height, :data]
+  end
+
   # ── Pdf builder ────────────────────────────────────────────────────────────
   @doc "Build a PDF from Markdown."
   def from_markdown(md), do: wrap_pdf(Native.from_markdown(md))
@@ -97,8 +107,11 @@ defmodule PdfOxide do
   @doc "Build a PDF from plain text."
   def from_text(text), do: wrap_pdf(Native.from_text(text))
 
-  @doc "Write a built PDF to `path`."
+  @doc """
+  Write to `path` — a built `Pdf`, or a `RenderedImage` page raster.
+  """
   def save(%Pdf{ref: ref}, path), do: Native.pdf_save(ref, path)
+  def save(%RenderedImage{ref: ref}, path), do: Native.img_save(ref, path)
   @doc "Serialize a built PDF to a binary."
   def to_bytes(%Pdf{ref: ref}), do: Native.pdf_save_to_bytes(ref)
 
@@ -322,6 +335,29 @@ defmodule PdfOxide do
   defp to_search_result({text, page, x, y, w, h}),
     do: %SearchResult{text: text, page: page, bbox: %Bbox{x: x, y: y, width: w, height: h}}
 
+  # ── page rendering (phase 3) ─────────────────────────────────────────────────
+  @doc """
+  Render a (0-based) `page_index` to a `RenderedImage`. `format` is an image
+  format code (0 = PNG, the default).
+  """
+  def render_page(%Document{ref: ref}, page_index, format \\ 0),
+    do: wrap_image(Native.doc_render_page(ref, page_index, format))
+
+  @doc """
+  Render a (0-based) `page_index` at `zoom` (1.0 = 100%) to a `RenderedImage`.
+  `format` is an image format code (0 = PNG, the default).
+  """
+  def render_page_zoom(%Document{ref: ref}, page_index, zoom, format \\ 0),
+    do: wrap_image(Native.doc_render_page_zoom(ref, page_index, zoom * 1.0, format))
+
+  @doc """
+  Render a (0-based) `page_index` as a thumbnail fitting `size` pixels on the
+  longest side, to a `RenderedImage`. `format` is an image format code
+  (0 = PNG, the default).
+  """
+  def render_page_thumbnail(%Document{ref: ref}, page_index, size, format \\ 0),
+    do: wrap_image(Native.doc_render_page_thumbnail(ref, page_index, size, format))
+
   # ── Page ─────────────────────────────────────────────────────────────────────
   @doc """
   A `Page` view for the (0-based) `index`. The page keeps its document alive, so
@@ -344,4 +380,9 @@ defmodule PdfOxide do
   defp wrap_doc(other), do: other
   defp wrap_pdf({:ok, ref}), do: {:ok, %Pdf{ref: ref}}
   defp wrap_pdf(other), do: other
+
+  defp wrap_image({:ok, {ref, width, height, data}}),
+    do: {:ok, %RenderedImage{ref: ref, width: width, height: height, data: data}}
+
+  defp wrap_image(other), do: other
 end

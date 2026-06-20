@@ -151,6 +151,27 @@ defmodule PdfOxideTest do
       assert is_boolean(result)
     end
 
+    test "page rendering (phase 3)", %{doc: doc} do
+      assert {:ok, img} = PdfOxide.render_page(doc, 0)
+      assert %PdfOxide.RenderedImage{} = img
+      assert is_integer(img.width) and img.width > 0
+      assert is_integer(img.height) and img.height > 0
+      assert is_binary(img.data) and byte_size(img.data) > 0
+
+      path =
+        Path.join(
+          System.tmp_dir!(),
+          "pdfoxide_ex_render_#{System.unique_integer([:positive])}.png"
+        )
+
+      assert :ok = PdfOxide.save(img, path)
+      assert File.exists?(path)
+      File.rm(path)
+
+      assert {:ok, _zoomed} = PdfOxide.render_page_zoom(doc, 0, 2.0)
+      assert {:ok, _thumb} = PdfOxide.render_page_thumbnail(doc, 0, 128)
+    end
+
     test "page model", %{doc: doc} do
       page = PdfOxide.page(doc, 0)
       assert {:ok, text} = PdfOxide.text(page)

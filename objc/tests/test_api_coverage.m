@@ -145,6 +145,38 @@ int main(void) {
             CHECK([[page plainText:&err] length] > 0);         // Page plainText
         }
 
+        // ── Phase-3 page rendering ───────────────────────────────────────────
+        {
+            NSError* re = nil;
+            POXRenderedImage* img = [doc renderPage:0
+                                             format:0
+                                              error:&re]; // renderPage (PNG)
+            CHECK(img != nil && re == nil);
+            if (img != nil) {
+                CHECK(img.width > 0);     // RenderedImage width
+                CHECK(img.height > 0);    // RenderedImage height
+                CHECK(img.data.length > 0); // RenderedImage data
+                NSString* path = [NSTemporaryDirectory()
+                    stringByAppendingPathComponent:@"pdfoxide_objc_render.png"];
+                CHECK([img saveToPath:path error:&re]); // RenderedImage saveToPath
+                CHECK([[NSFileManager defaultManager] fileExistsAtPath:path]);
+                [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+                [img close];
+            }
+            NSError* ze = nil;
+            POXRenderedImage* zoomed = [doc renderPageZoom:0
+                                                      zoom:2.0f
+                                                    format:0
+                                                     error:&ze]; // renderPageZoom
+            CHECK(zoomed != nil && ze == nil);
+            NSError* the = nil;
+            POXRenderedImage* thumb = [doc renderPageThumbnail:0
+                                                          size:64
+                                                        format:0
+                                                         error:&the]; // renderPageThumbnail
+            CHECK(thumb != nil && the == nil);
+        }
+
         // ── close (idempotent) ───────────────────────────────────────────────
         [doc close];
         [doc close]; // idempotent — safe to call twice

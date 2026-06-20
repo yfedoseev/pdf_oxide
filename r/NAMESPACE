@@ -8,3 +8,5 @@ export(pdf_page, pdf_page_text, pdf_page_markdown, pdf_page_html, pdf_page_plain
 export(pdf_extract_chars, pdf_extract_words, pdf_extract_text_lines, pdf_extract_tables)
 export(pdf_embedded_fonts, pdf_embedded_images, pdf_page_annotations, pdf_extract_paths)
 export(pdf_search, pdf_search_all)
+export(pdf_render_page, pdf_render_page_zoom, pdf_render_page_thumbnail)
+export(pdf_rendered_image_save, pdf_rendered_image_close)

@@ -144,6 +144,35 @@ class ApiCoverageTest {
         assertTrue(hits[0].page >= 0)
     }
 
+    // ── Phase-3 page rendering ───────────────────────────────────────────────
+    @Test fun renderPage() =
+        doc.renderPage(0).use { img ->
+            assertTrue(img.width > 0)
+            assertTrue(img.height > 0)
+            assertTrue(img.data.isNotEmpty())
+        }
+
+    @Test fun renderPageZoom() =
+        doc.renderPageZoom(0, 2.0f).use { img ->
+            assertTrue(img.width > 0)
+            assertTrue(img.height > 0)
+            assertTrue(img.data.isNotEmpty())
+        }
+
+    @Test fun renderPageThumbnail() =
+        doc.renderPageThumbnail(0, 128).use { img ->
+            assertTrue(img.width > 0)
+            assertTrue(img.height > 0)
+            assertTrue(img.data.isNotEmpty())
+        }
+
+    @Test fun renderedImageSave() {
+        val f = File.createTempFile("pdfoxide-kt-render", ".png")
+        doc.renderPage(0).use { it.save(f.absolutePath) }
+        assertTrue(f.length() > 0)
+        f.delete()
+    }
+
     // ── Coroutine helpers ────────────────────────────────────────────────────
     @Test fun coroutineExtraction() =
         runTest {

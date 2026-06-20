@@ -158,6 +158,74 @@ struct SearchResult {
     Bbox bbox;
 };
 
+/// A rendered page image. Move-only; owns the native FfiRenderedImage handle and
+/// frees it on destruction. Width/height/data are read eagerly on construction;
+/// save(path) delegates to the still-live native handle.
+class RenderedImage {
+  public:
+    /// Image width in pixels.
+    int width() const noexcept { return width_; }
+    /// Image height in pixels.
+    int height() const noexcept { return height_; }
+    /// Encoded image bytes (e.g. PNG/JPEG, per the requested format).
+    const std::vector<std::uint8_t>& data() const noexcept { return data_; }
+
+    /// Write the encoded image to `path` via the native handle.
+    void save(const std::string& path) const {
+        int32_t code = 0;
+        if (pdf_save_rendered_image(ptr(), path.c_str(), &code) != 0) {
+            throw Error(code, "RenderedImage::save");
+        }
+    }
+
+    /// Free the native handle now (idempotent). RAII also frees at scope exit.
+    void close() { handle_.reset(); }
+
+  private:
+    friend class Document;
+    /// Take ownership of an FfiRenderedImage, eagerly read width/height/data
+    /// (copying the byte buffer + freeing it with free_bytes), keep the handle
+    /// live for save(). Frees the handle on any failure before rethrowing.
+    explicit RenderedImage(FfiRenderedImage* h) : handle_(h) {
+        try {
+            int32_t code = 0;
+            width_ = pdf_get_rendered_image_width(ptr(), &code);
+            if (width_ < 0) {
+                throw Error(code, "RenderedImage::width");
+            }
+            code = 0;
+            height_ = pdf_get_rendered_image_height(ptr(), &code);
+            if (height_ < 0) {
+                throw Error(code, "RenderedImage::height");
+            }
+            code = 0;
+            int32_t data_len = 0;
+            std::uint8_t* p = pdf_get_rendered_image_data(ptr(), &data_len, &code);
+            data_ = detail::take_bytes(
+                p, static_cast<std::size_t>(data_len < 0 ? 0 : data_len), code,
+                "RenderedImage::data");
+        } catch (...) {
+            handle_.reset();
+            throw;
+        }
+    }
+    struct Deleter {
+        void operator()(FfiRenderedImage* h) const noexcept {
+            if (h)
+                pdf_rendered_image_free(h);
+        }
+    };
+    FfiRenderedImage* ptr() const {
+        if (!handle_)
+            throw Error(0, "RenderedImage is closed");
+        return handle_.get();
+    }
+    int width_ = 0;
+    int height_ = 0;
+    std::vector<std::uint8_t> data_;
+    std::unique_ptr<FfiRenderedImage, Deleter> handle_;
+};
+
 /// An opened PDF for extraction/inspection. Move-only; frees on destruction.
 class Document {
   public:
@@ -596,6 +664,40 @@ class Document {
             throw Error(code, "Document::search_all");
         }
         return collect_search_results(list, "Document::search_all");
+    }
+
+    /// Render a page (0-based) to an image. `format` is 0=PNG (default), 1=JPEG.
+    RenderedImage render_page(int page_index, int format = 0) const {
+        int32_t code = 0;
+        FfiRenderedImage* h = pdf_render_page(ptr(), page_index, format, &code);
+        if (h == nullptr) {
+            throw Error(code, "Document::render_page");
+        }
+        return RenderedImage(h);
+    }
+
+    /// Render a page (0-based) at a zoom factor. `format` is 0=PNG (default).
+    RenderedImage render_page_zoom(int page_index, float zoom, int format = 0) const {
+        int32_t code = 0;
+        FfiRenderedImage* h =
+            pdf_render_page_zoom(ptr(), page_index, zoom, format, &code);
+        if (h == nullptr) {
+            throw Error(code, "Document::render_page_zoom");
+        }
+        return RenderedImage(h);
+    }
+
+    /// Render a page (0-based) as a thumbnail fitting within `size` px.
+    /// `format` is 0=PNG (default).
+    RenderedImage render_page_thumbnail(int page_index, int size,
+                                        int format = 0) const {
+        int32_t code = 0;
+        FfiRenderedImage* h =
+            pdf_render_page_thumbnail(ptr(), page_index, size, format, &code);
+        if (h == nullptr) {
+            throw Error(code, "Document::render_page_thumbnail");
+        }
+        return RenderedImage(h);
     }
 
     /// Free the native handle now (idempotent). RAII also frees at scope exit;

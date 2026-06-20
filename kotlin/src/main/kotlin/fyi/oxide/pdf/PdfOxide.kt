@@ -95,6 +95,41 @@ data class Image(
     val data: ByteArray,
 )
 
+/**
+ * A rendered page image. Owns the native FfiRenderedImage handle: [width],
+ * [height] and [data] (the encoded image bytes) are read eagerly at
+ * construction, while [save] uses the live handle. Close when done
+ * (AutoCloseable) to free the native handle; a finalizer is a backstop.
+ */
+class RenderedImage internal constructor(
+    private var handle: Pointer?,
+    val width: Int,
+    val height: Int,
+    val data: ByteArray,
+) : AutoCloseable {
+    private fun ptr(): Pointer = handle ?: error("RenderedImage is closed")
+
+    /** Write the rendered image to [path], encoded per the render format. */
+    fun save(path: String) {
+        val code = IntByReference()
+        if (Native_.lib.pdf_save_rendered_image(ptr(), path, code) != 0) {
+            throw PdfOxideException(code.value, "saveRenderedImage")
+        }
+    }
+
+    override fun close() {
+        handle?.let {
+            Native_.lib.pdf_rendered_image_free(it)
+            handle = null
+        }
+    }
+
+    @Suppress("ProtectedInFinal")
+    protected fun finalize() {
+        close()
+    }
+}
+
 /** A page annotation. */
 data class Annotation(
     val type: String,
@@ -621,6 +656,54 @@ internal interface CLib : Library {
     fun free_string(p: Pointer)
 
     fun free_bytes(p: Pointer)
+
+    // ── Phase-3 page rendering ────────────────────────────────────────────────
+    fun pdf_render_page(
+        doc: Pointer,
+        pageIndex: Int,
+        format: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_render_page_zoom(
+        doc: Pointer,
+        pageIndex: Int,
+        zoom: Float,
+        format: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_render_page_thumbnail(
+        doc: Pointer,
+        pageIndex: Int,
+        size: Int,
+        format: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_get_rendered_image_width(
+        img: Pointer,
+        code: IntByReference,
+    ): Int
+
+    fun pdf_get_rendered_image_height(
+        img: Pointer,
+        code: IntByReference,
+    ): Int
+
+    fun pdf_get_rendered_image_data(
+        img: Pointer,
+        dataLen: IntByReference,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_save_rendered_image(
+        img: Pointer,
+        filePath: String,
+        code: IntByReference,
+    ): Int
+
+    fun pdf_rendered_image_free(handle: Pointer)
 }
 
 internal object Native_ {
@@ -1007,6 +1090,77 @@ class PdfDocument internal constructor(
             Native_.lib.pdf_document_search_all(ptr(), term, caseSensitive, code)
                 ?: throw PdfOxideException(code.value, "searchAll")
         return readSearchResults(list, code, "searchAll")
+    }
+
+    /** Render the 0-based [pageIndex] to an image ([format] 0 = PNG). */
+    fun renderPage(
+        pageIndex: Int,
+        format: Int = 0,
+    ): RenderedImage {
+        val code = IntByReference()
+        val img =
+            Native_.lib.pdf_render_page(ptr(), pageIndex, format, code)
+                ?: throw PdfOxideException(code.value, "renderPage")
+        return readRenderedImage(img, "renderPage")
+    }
+
+    /** Render the 0-based [pageIndex] at [zoom] scale ([format] 0 = PNG). */
+    fun renderPageZoom(
+        pageIndex: Int,
+        zoom: Float,
+        format: Int = 0,
+    ): RenderedImage {
+        val code = IntByReference()
+        val img =
+            Native_.lib.pdf_render_page_zoom(ptr(), pageIndex, zoom, format, code)
+                ?: throw PdfOxideException(code.value, "renderPageZoom")
+        return readRenderedImage(img, "renderPageZoom")
+    }
+
+    /**
+     * Render the 0-based [pageIndex] as a thumbnail fitting within [size] pixels
+     * ([format] 0 = PNG).
+     */
+    fun renderPageThumbnail(
+        pageIndex: Int,
+        size: Int,
+        format: Int = 0,
+    ): RenderedImage {
+        val code = IntByReference()
+        val img =
+            Native_.lib.pdf_render_page_thumbnail(ptr(), pageIndex, size, format, code)
+                ?: throw PdfOxideException(code.value, "renderPageThumbnail")
+        return readRenderedImage(img, "renderPageThumbnail")
+    }
+
+    /**
+     * Read width/height/data from a live FfiRenderedImage handle and wrap it in
+     * a [RenderedImage] (which takes ownership of the handle). On any error the
+     * handle is freed before throwing, so no leak occurs.
+     */
+    @Suppress("ThrowsCount", "TooGenericExceptionCaught")
+    private fun readRenderedImage(
+        img: Pointer,
+        op: String,
+    ): RenderedImage {
+        val code = IntByReference()
+        try {
+            val width = Native_.lib.pdf_get_rendered_image_width(img, code)
+            if (code.value != 0) throw PdfOxideException(code.value, op)
+            val height = Native_.lib.pdf_get_rendered_image_height(img, code)
+            if (code.value != 0) throw PdfOxideException(code.value, op)
+            val len = IntByReference()
+            val p =
+                Native_.lib.pdf_get_rendered_image_data(img, len, code)
+                    ?: throw PdfOxideException(code.value, op)
+            val nBytes = if (len.value < 0) 0 else len.value
+            val data = p.getByteArray(0, nBytes)
+            Native_.lib.free_bytes(p)
+            return RenderedImage(img, width, height, data)
+        } catch (e: Throwable) {
+            Native_.lib.pdf_rendered_image_free(img)
+            throw e
+        }
     }
 
     @Suppress("ThrowsCount")
