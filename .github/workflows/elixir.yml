@@ -63,11 +63,19 @@ jobs:
           otp-version: '27'
           elixir-version: '1.17'
 
-      - name: Deps + compile (builds NIF via elixir_make)
+      - name: Deps + compile (builds NIF via elixir_make, warnings as errors)
         working-directory: elixir
         run: |
           mix deps.get
-          mix compile
+          mix compile --warnings-as-errors
+
+      - name: Format check (mix format)
+        working-directory: elixir
+        run: mix format --check-formatted
+
+      - name: Lint (Credo)
+        working-directory: elixir
+        run: mix credo --strict
 
       - name: Test (api-coverage)
         working-directory: elixir

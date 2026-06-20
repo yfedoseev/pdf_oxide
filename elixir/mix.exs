@@ -18,6 +18,9 @@ defmodule PdfOxide.MixProject do
   def application, do: [extra_applications: [:logger]]
 
   defp deps do
-    [{:elixir_make, "~> 0.8", runtime: false}]
+    [
+      {:elixir_make, "~> 0.8", runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
+    ]
   end
 end
