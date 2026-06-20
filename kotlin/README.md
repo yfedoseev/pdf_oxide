@@ -32,7 +32,7 @@ import fyi.oxide.pdf.Pdf
 import fyi.oxide.pdf.PdfDocument
 
 Pdf.fromMarkdown("# Hello\n\nbody\n").use { pdf ->
-    PdfDocument.openFromBytes(pdf.saveToBytes()).use { doc ->
+    PdfDocument.openFromBytes(pdf.toBytes()).use { doc ->
         println(doc.pageCount())
         println(doc.extractText(0))
         println(doc.toMarkdownAll())

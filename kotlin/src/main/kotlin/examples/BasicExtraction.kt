@@ -9,7 +9,7 @@ fun main() {
     Pdf
         .fromMarkdown("# Hello pdf_oxide\n\nThis is a **Kotlin** binding smoke example.\n")
         .use { pdf ->
-            PdfDocument.openFromBytes(pdf.saveToBytes()).use { doc ->
+            PdfDocument.openFromBytes(pdf.toBytes()).use { doc ->
                 println("pages:   ${doc.pageCount()}")
                 println("version: ${doc.version()}")
                 println("--- text (page 0) ---")

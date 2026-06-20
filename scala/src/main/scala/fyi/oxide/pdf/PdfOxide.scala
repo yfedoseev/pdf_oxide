@@ -134,10 +134,10 @@ final class Pdf private (private var handle: Pointer) extends AutoCloseable:
     if Native_.lib.pdf_save(ptr, path, code) != 0 then
       throw PdfOxideException(code.getValue, "save")
 
-  def saveToBytes(): Array[Byte] =
+  def toBytes(): Array[Byte] =
     val len = IntByReference(); val code = IntByReference()
     val p = Native_.lib.pdf_save_to_bytes(ptr, len, code)
-    if p == null then throw PdfOxideException(code.getValue, "saveToBytes")
+    if p == null then throw PdfOxideException(code.getValue, "toBytes")
     val n = if len.getValue < 0 then 0 else len.getValue
     val out = p.getByteArray(0, n)
     Native_.lib.free_bytes(p)

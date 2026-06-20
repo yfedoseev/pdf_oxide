@@ -27,7 +27,7 @@ import fyi.oxide.pdf.{Pdf, PdfDocument}
 import scala.util.Using
 
 Using.resource(Pdf.fromMarkdown("# Hello\n\nbody\n")): pdf =>
-  Using.resource(PdfDocument.openFromBytes(pdf.saveToBytes())): doc =>
+  Using.resource(PdfDocument.openFromBytes(pdf.toBytes())): doc =>
     println(doc.pageCount())
     println(doc.extractText(0))
     println(doc.toMarkdownAll())

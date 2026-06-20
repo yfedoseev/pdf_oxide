@@ -9,7 +9,7 @@ import scala.util.Using
   Using.resource(
     Pdf.fromMarkdown("# Hello pdf_oxide\n\nThis is a **Scala** binding smoke example.\n")
   ): pdf =>
-    Using.resource(PdfDocument.openFromBytes(pdf.saveToBytes())): doc =>
+    Using.resource(PdfDocument.openFromBytes(pdf.toBytes())): doc =>
       println(s"pages:   ${doc.pageCount()}")
       println(s"version: ${doc.version()}")
       println("--- text (page 0) ---")

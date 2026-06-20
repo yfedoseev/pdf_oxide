@@ -281,12 +281,12 @@ class Pdf internal constructor(
         if (Native_.lib.pdf_save(ptr(), path, code) != 0) throw PdfOxideException(code.value, "save")
     }
 
-    fun saveToBytes(): ByteArray {
+    fun toBytes(): ByteArray {
         val len = IntByReference()
         val code = IntByReference()
         val p =
             Native_.lib.pdf_save_to_bytes(ptr(), len, code)
-                ?: throw PdfOxideException(code.value, "saveToBytes")
+                ?: throw PdfOxideException(code.value, "toBytes")
         val n = if (len.value < 0) 0 else len.value
         val out = p.getByteArray(0, n)
         Native_.lib.free_bytes(p)

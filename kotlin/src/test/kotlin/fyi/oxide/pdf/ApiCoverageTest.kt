@@ -16,7 +16,7 @@ class ApiCoverageTest {
     private fun samplePdf(): ByteArray =
         Pdf
             .fromMarkdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n")
-            .use { it.saveToBytes() }
+            .use { it.toBytes() }
 
     private lateinit var doc: PdfDocument
 
@@ -29,11 +29,11 @@ class ApiCoverageTest {
     }
 
     // ── Pdf builder ──────────────────────────────────────────────────────────
-    @Test fun fromMarkdownAndSaveToBytes() = Pdf.fromMarkdown("# md\n\nbody\n").use { assertTrue(it.saveToBytes().size > 100) }
+    @Test fun fromMarkdownAndSaveToBytes() = Pdf.fromMarkdown("# md\n\nbody\n").use { assertTrue(it.toBytes().size > 100) }
 
-    @Test fun fromHtml() = Pdf.fromHtml("<h1>html</h1><p>body</p>").use { assertTrue(it.saveToBytes().size > 100) }
+    @Test fun fromHtml() = Pdf.fromHtml("<h1>html</h1><p>body</p>").use { assertTrue(it.toBytes().size > 100) }
 
-    @Test fun fromText() = Pdf.fromText("plain text body").use { assertTrue(it.saveToBytes().size > 100) }
+    @Test fun fromText() = Pdf.fromText("plain text body").use { assertTrue(it.toBytes().size > 100) }
 
     @Test fun save() {
         val f = File.createTempFile("pdfoxide-kt", ".pdf")

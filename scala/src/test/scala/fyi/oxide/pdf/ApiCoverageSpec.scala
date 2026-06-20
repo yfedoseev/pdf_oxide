@@ -10,15 +10,15 @@ class ApiCoverageSpec extends AnyFunSuite:
   private def samplePdf(): Array[Byte] =
     Using.resource(
       Pdf.fromMarkdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n")
-    )(_.saveToBytes())
+    )(_.toBytes())
 
   // ── Pdf builder ────────────────────────────────────────────────────────────
-  test("fromMarkdown + saveToBytes"):
-    Using.resource(Pdf.fromMarkdown("# md\n\nbody\n"))(p => assert(p.saveToBytes().length > 100))
+  test("fromMarkdown + toBytes"):
+    Using.resource(Pdf.fromMarkdown("# md\n\nbody\n"))(p => assert(p.toBytes().length > 100))
   test("fromHtml"):
-    Using.resource(Pdf.fromHtml("<h1>h</h1><p>b</p>"))(p => assert(p.saveToBytes().length > 100))
+    Using.resource(Pdf.fromHtml("<h1>h</h1><p>b</p>"))(p => assert(p.toBytes().length > 100))
   test("fromText"):
-    Using.resource(Pdf.fromText("plain text body"))(p => assert(p.saveToBytes().length > 100))
+    Using.resource(Pdf.fromText("plain text body"))(p => assert(p.toBytes().length > 100))
   test("save"):
     val f = File.createTempFile("pdfoxide-scala", ".pdf")
     Using.resource(Pdf.fromMarkdown("# f\n\nx\n"))(_.save(f.getAbsolutePath))
