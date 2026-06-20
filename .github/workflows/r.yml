@@ -66,10 +66,23 @@ jobs:
           r-version: 'release'
 
       - name: Install R deps
-        run: Rscript -e 'install.packages(c("tinytest", "lintr"), repos="https://cloud.r-project.org")'
+        run: Rscript -e 'install.packages(c("tinytest", "lintr", "roxygen2", "rcmdcheck"), repos="https://cloud.r-project.org")'
+
+      - name: Generate man/ docs (roxygen2)
+        run: Rscript -e 'roxygen2::roxygenise("r")'
+
+      # NOTE: Air (Posit's Rust-based R formatter) is the 2026 SOTA R formatter
+      # and a planned follow-up; deferred here pending a SHA-pinned setup action.
 
       - name: Lint (lintr)
         run: Rscript -e 'library(lintr); l <- lint_dir("r/R"); print(l); quit(status = if (length(l) > 0) 1L else 0L)'
+
+      - name: R CMD check (no manual/vignettes)
+        shell: bash
+        run: |
+          export LD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${DYLD_LIBRARY_PATH:-}"
+          Rscript -e 'rcmdcheck::rcmdcheck("r", args=c("--no-manual","--no-vignettes"), error_on="warning")'
 
       - name: R CMD INSTALL
         run: R CMD INSTALL r/

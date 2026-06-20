@@ -3,7 +3,7 @@
 #' Wraps the pdf_oxide C ABI. Handles are external pointers freed by the GC.
 #' Page indices are 0-based to match the underlying engine.
 #'
-#' @useDynLib pdfoxide, .registration = TRUE
+#' @useDynLib pdfoxide, .registration = TRUE, .fixes = "C_"
 #' @keywords internal
 "_PACKAGE"
 

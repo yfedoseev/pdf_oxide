@@ -1,0 +1,6 @@
+^\.lintr$
+^\.Rbuildignore$
+^.*\.Rcheck$
+^.*\.tar\.gz$
+^src/.*\.o$
+^src/.*\.so$
