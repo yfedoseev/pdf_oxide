@@ -397,3 +397,8 @@ ruby/.bundle/
 
 # C++ binding build dir
 /cpp/build/
+
+# Dart binding artifacts
+/dart/.dart_tool/
+/dart/pubspec.lock
+/dart/.packages
