@@ -21,6 +21,18 @@ defmodule PdfOxide do
     defstruct [:ref]
   end
 
+  defmodule DocumentEditor do
+    @moduledoc """
+    A mutable PDF editing handle (NIF resource). Open one with
+    `PdfOxide.open_editor/1` or `PdfOxide.open_editor_from_bytes/1`, mutate it
+    in place (rotate/crop/redact/flatten/merge/…) and serialise with
+    `PdfOxide.editor_save/2` or `PdfOxide.editor_save_to_bytes/1`. The native
+    handle is freed by the GC or eagerly via `PdfOxide.editor_close/1`. Page
+    indices are 0-based.
+    """
+    defstruct [:ref]
+  end
+
   defmodule Page do
     @moduledoc """
     A lightweight view of a single (0-based) page. Holds its `Document` so the
@@ -115,9 +127,10 @@ defmodule PdfOxide do
   @doc "Serialize a built PDF to a binary."
   def to_bytes(%Pdf{ref: ref}), do: Native.pdf_save_to_bytes(ref)
 
-  @doc "Free a document or built PDF's native handle now (idempotent)."
+  @doc "Free a document, built PDF or editor's native handle now (idempotent)."
   def close(%Document{ref: ref}), do: Native.doc_close(ref)
   def close(%Pdf{ref: ref}), do: Native.pdf_close(ref)
+  def close(%DocumentEditor{ref: ref}), do: Native.editor_close(ref)
 
   # ── Document ─────────────────────────────────────────────────────────────────
   @doc "Open a PDF from a path."
@@ -375,11 +388,200 @@ defmodule PdfOxide do
   @doc "Plain text for the page."
   def plain_text(%Page{doc: doc, index: index}), do: to_plain_text(doc, index)
 
+  # ── DocumentEditor ───────────────────────────────────────────────────────────
+  @doc "Open a PDF for editing from a path."
+  def open_editor(path), do: wrap_editor(Native.editor_open(path))
+  @doc "Open a PDF for editing from a binary."
+  def open_editor_from_bytes(bytes), do: wrap_editor(Native.editor_open_bytes(bytes))
+
+  @doc "Number of pages in the editor."
+  def editor_page_count(%DocumentEditor{ref: ref}), do: Native.editor_page_count(ref)
+  @doc "PDF version as `%{major: _, minor: _}`."
+  def editor_version(%DocumentEditor{ref: ref}) do
+    {major, minor} = Native.editor_version(ref)
+    %{major: major, minor: minor}
+  end
+
+  @doc "Whether the editor has unsaved modifications."
+  def editor_modified?(%DocumentEditor{ref: ref}), do: Native.editor_is_modified(ref)
+  @doc "The editor's source path (empty for a bytes-opened editor)."
+  def editor_source_path(%DocumentEditor{ref: ref}), do: Native.editor_source_path(ref)
+
+  @doc "Read `/Info.Producer`."
+  def get_producer(%DocumentEditor{ref: ref}), do: Native.editor_get_producer(ref)
+  @doc "Set `/Info.Producer`."
+  def set_producer(%DocumentEditor{ref: ref}, value), do: Native.editor_set_producer(ref, value)
+  @doc "Read `/Info.CreationDate` as a raw PDF date string."
+  def get_creation_date(%DocumentEditor{ref: ref}), do: Native.editor_get_creation_date(ref)
+  @doc "Set `/Info.CreationDate` (raw PDF date string)."
+  def set_creation_date(%DocumentEditor{ref: ref}, date),
+    do: Native.editor_set_creation_date(ref, date)
+
+  @doc "Delete a (0-based) page."
+  def delete_page(%DocumentEditor{ref: ref}, page_index),
+    do: Native.editor_delete_page(ref, page_index)
+
+  @doc "Move a (0-based) page `from` → `to`."
+  def move_page(%DocumentEditor{ref: ref}, from, to), do: Native.editor_move_page(ref, from, to)
+
+  @doc "Rotate a single (0-based) page by `degrees` (additive)."
+  def rotate_page_by(%DocumentEditor{ref: ref}, page, degrees),
+    do: Native.editor_rotate_page_by(ref, page, degrees)
+
+  @doc "Rotate all pages by `degrees` (relative)."
+  def rotate_all_pages(%DocumentEditor{ref: ref}, degrees),
+    do: Native.editor_rotate_all_pages(ref, degrees)
+
+  @doc "Set the absolute rotation of a (0-based) page."
+  def set_page_rotation(%DocumentEditor{ref: ref}, page, degrees),
+    do: Native.editor_set_page_rotation(ref, page, degrees)
+
+  @doc "Rotation (degrees) of a (0-based) page."
+  def get_page_rotation(%DocumentEditor{ref: ref}, page),
+    do: Native.editor_get_page_rotation(ref, page)
+
+  @doc "Crop `left`/`right`/`top`/`bottom` margins off every page."
+  def crop_margins(%DocumentEditor{ref: ref}, left, right, top, bottom),
+    do: Native.editor_crop_margins(ref, left * 1.0, right * 1.0, top * 1.0, bottom * 1.0)
+
+  @doc "CropBox of a (0-based) page as a `Bbox`."
+  def get_page_crop_box(%DocumentEditor{ref: ref}, page),
+    do: wrap_box(Native.editor_get_crop_box(ref, page))
+
+  @doc "Set the CropBox of a (0-based) page."
+  def set_page_crop_box(%DocumentEditor{ref: ref}, page, x, y, w, h),
+    do: Native.editor_set_crop_box(ref, page, x * 1.0, y * 1.0, w * 1.0, h * 1.0)
+
+  @doc "MediaBox of a (0-based) page as a `Bbox`."
+  def get_page_media_box(%DocumentEditor{ref: ref}, page),
+    do: wrap_box(Native.editor_get_media_box(ref, page))
+
+  @doc "Set the MediaBox of a (0-based) page."
+  def set_page_media_box(%DocumentEditor{ref: ref}, page, x, y, w, h),
+    do: Native.editor_set_media_box(ref, page, x * 1.0, y * 1.0, w * 1.0, h * 1.0)
+
+  @doc "Apply (burn in) redactions on a single (0-based) page."
+  def apply_page_redactions(%DocumentEditor{ref: ref}, page),
+    do: Native.editor_apply_page_redactions(ref, page)
+
+  @doc "Apply all pending redactions across the document."
+  def apply_all_redactions(%DocumentEditor{ref: ref}), do: Native.editor_apply_all_redactions(ref)
+
+  @doc "Whether a (0-based) page is marked for redaction."
+  def page_marked_for_redaction?(%DocumentEditor{ref: ref}, page),
+    do: Native.editor_is_marked_for_redaction(ref, page)
+
+  @doc "Remove the redaction mark from a (0-based) page."
+  def unmark_page_for_redaction(%DocumentEditor{ref: ref}, page),
+    do: Native.editor_unmark_for_redaction(ref, page)
+
+  @doc "Erase a single rectangular region on a (0-based) page."
+  def erase_region(%DocumentEditor{ref: ref}, page, x, y, w, h),
+    do: Native.editor_erase_region(ref, page, x * 1.0, y * 1.0, w * 1.0, h * 1.0)
+
+  @doc """
+  Erase multiple rectangular regions on a (0-based) page. `rects` is a list of
+  `{x, y, w, h}` tuples.
+  """
+  def erase_regions(%DocumentEditor{ref: ref}, page, rects) when is_list(rects) do
+    quads = Enum.map(rects, fn {x, y, w, h} -> {x * 1.0, y * 1.0, w * 1.0, h * 1.0} end)
+    Native.editor_erase_regions(ref, page, quads)
+  end
+
+  @doc "Clear all pending erase-region entries for a (0-based) page."
+  def clear_erase_regions(%DocumentEditor{ref: ref}, page),
+    do: Native.editor_clear_erase_regions(ref, page)
+
+  @doc "Flatten annotations on a (0-based) page."
+  def flatten_annotations(%DocumentEditor{ref: ref}, page),
+    do: Native.editor_flatten_annotations(ref, page)
+
+  @doc "Flatten annotations across the whole document."
+  def flatten_all_annotations(%DocumentEditor{ref: ref}),
+    do: Native.editor_flatten_all_annotations(ref)
+
+  @doc "Whether a (0-based) page is marked for annotation-flatten."
+  def page_marked_for_flatten?(%DocumentEditor{ref: ref}, page),
+    do: Native.editor_is_marked_for_flatten(ref, page)
+
+  @doc "Remove the flatten mark from a (0-based) page."
+  def unmark_page_for_flatten(%DocumentEditor{ref: ref}, page),
+    do: Native.editor_unmark_for_flatten(ref, page)
+
+  @doc "Set a form field value (UTF-8)."
+  def set_form_field_value(%DocumentEditor{ref: ref}, name, value),
+    do: Native.editor_set_form_field_value(ref, name, value)
+
+  @doc "Flatten all forms (bake field values into page content)."
+  def flatten_forms(%DocumentEditor{ref: ref}), do: Native.editor_flatten_forms(ref)
+
+  @doc "Flatten forms on a specific (0-based) page."
+  def flatten_forms_on_page(%DocumentEditor{ref: ref}, page_index),
+    do: Native.editor_flatten_forms_on_page(ref, page_index)
+
+  @doc "Number of warnings from the last form-flatten."
+  def flatten_warnings_count(%DocumentEditor{ref: ref}),
+    do: Native.editor_flatten_warnings_count(ref)
+
+  @doc "The `index`-th flatten warning string."
+  def flatten_warning(%DocumentEditor{ref: ref}, index),
+    do: Native.editor_flatten_warning(ref, index)
+
+  @doc "Merge pages from a source PDF on disk into this document."
+  def merge_from(%DocumentEditor{ref: ref}, source_path),
+    do: Native.editor_merge_from(ref, source_path)
+
+  @doc "Merge pages from an in-memory PDF binary into this document."
+  def merge_from_bytes(%DocumentEditor{ref: ref}, bytes),
+    do: Native.editor_merge_from_bytes(ref, bytes)
+
+  @doc "Convert the document to PDF/A in place (`level` 0..7)."
+  def convert_to_pdf_a(%DocumentEditor{ref: ref}, level),
+    do: Native.editor_convert_to_pdf_a(ref, level)
+
+  @doc "Embed a file attachment `name` with `bytes` into the document."
+  def embed_file(%DocumentEditor{ref: ref}, name, bytes),
+    do: Native.editor_embed_file(ref, name, bytes)
+
+  @doc "Extract a subset of (0-based) `pages` to a new in-memory PDF binary."
+  def extract_pages_to_bytes(%DocumentEditor{ref: ref}, pages) when is_list(pages),
+    do: Native.editor_extract_pages_to_bytes(ref, pages)
+
+  @doc "Save the edited document to `path`."
+  def editor_save(%DocumentEditor{ref: ref}, path), do: Native.editor_save(ref, path)
+  @doc "Serialize the edited document to a binary."
+  def editor_save_to_bytes(%DocumentEditor{ref: ref}), do: Native.editor_save_to_bytes(ref)
+
+  @doc "Serialize the edited document to bytes with compress/GC/linearize options."
+  def editor_save_to_bytes_with_options(
+        %DocumentEditor{ref: ref},
+        compress,
+        garbage_collect,
+        linearize
+      ),
+      do: Native.editor_save_to_bytes_with_options(ref, compress, garbage_collect, linearize)
+
+  @doc "Save the edited document AES-256 encrypted to `path`."
+  def editor_save_encrypted(%DocumentEditor{ref: ref}, path, user_password, owner_password),
+    do: Native.editor_save_encrypted(ref, path, user_password, owner_password)
+
+  @doc "Serialize the edited document AES-256 encrypted to a binary."
+  def editor_save_encrypted_to_bytes(%DocumentEditor{ref: ref}, user_password, owner_password),
+    do: Native.editor_save_encrypted_to_bytes(ref, user_password, owner_password)
+
+  @doc "Free the editor's native handle now (idempotent)."
+  def editor_close(%DocumentEditor{ref: ref}), do: Native.editor_close(ref)
+
   # ── helpers ──────────────────────────────────────────────────────────────────
   defp wrap_doc({:ok, ref}), do: {:ok, %Document{ref: ref}}
   defp wrap_doc(other), do: other
   defp wrap_pdf({:ok, ref}), do: {:ok, %Pdf{ref: ref}}
   defp wrap_pdf(other), do: other
+  defp wrap_editor({:ok, ref}), do: {:ok, %DocumentEditor{ref: ref}}
+  defp wrap_editor(other), do: other
+
+  defp wrap_box({:ok, {x, y, w, h}}), do: {:ok, %Bbox{x: x, y: y, width: w, height: h}}
+  defp wrap_box(other), do: other
 
   defp wrap_image({:ok, {ref, width, height, data}}),
     do: {:ok, %RenderedImage{ref: ref, width: width, height: height, data: data}}

@@ -26,6 +26,22 @@ export RenderedImage,
     renderPageZoom,
     render_page_thumbnail,
     renderPageThumbnail
+export DocumentEditor
+export open_editor, open_editor_from_bytes, is_modified, get_source_path
+export get_producer, set_producer, get_creation_date, set_creation_date
+export save_to_bytes, save_to_bytes_with_options, extract_pages_to_bytes
+export convert_to_pdf_a, save_encrypted_to_bytes, save_encrypted
+export merge_from_bytes, merge_from, embed_file
+export apply_page_redactions, apply_all_redactions
+export rotate_all_pages, rotate_page_by, get_page_rotation, set_page_rotation
+export delete_page, move_page
+export get_page_media_box, set_page_media_box, get_page_crop_box, set_page_crop_box
+export crop_margins, erase_region, erase_regions, clear_erase_regions
+export is_page_marked_for_flatten, unmark_page_for_flatten
+export is_page_marked_for_redaction, unmark_page_for_redaction
+export flatten_annotations, flatten_all_annotations
+export set_form_field_value, flatten_forms, flatten_forms_on_page
+export flatten_warnings_count, flatten_warning
 
 # Native library resolution: PDF_OXIDE_LIB_PATH (full path) -> PDF_OXIDE_LIB_DIR
 # -> common build dirs -> bare name (system loader).
@@ -1164,6 +1180,782 @@ function to_bytes(p::Pdf)
     # Raw byte buffers free via free_bytes, not free_string (which does strlen).
     ccall((:free_bytes, LIB), Cvoid, (Ptr{UInt8},), ptr)
     return out
+end
+
+# ── DocumentEditor ──────────────────────────────────────────────────────────────
+# Mutable editing handle over the C ABI's DocumentEditor. Mirrors the
+# PdfDocument/Pdf pattern: an owned native handle freed on close!/finalization;
+# the same PdfOxideError helpers, _take_string, free_bytes byte-take, double/
+# uint8 out-param helpers, and a closed-handle guard. Methods use snake_case
+# (Julia idiom); page indices are 0-based.
+mutable struct DocumentEditor
+    handle::Ptr{Cvoid}
+    function DocumentEditor(h::Ptr{Cvoid})
+        e = new(h)
+        finalizer(close!, e)
+        return e
+    end
+end
+
+"""Free the native editor handle now (idempotent; also runs at finalization)."""
+function close!(e::DocumentEditor)
+    if e.handle != C_NULL
+        ccall((:document_editor_free, LIB), Cvoid, (Ptr{Cvoid},), e.handle)
+        e.handle = C_NULL
+    end
+    return nothing
+end
+
+_editor(e::DocumentEditor) =
+    (e.handle == C_NULL && error("DocumentEditor is closed"); e.handle)
+
+# Copy a raw byte buffer return (uintptr_t out-len) into a Julia Vector and free
+# it via free_bytes (NOT free_string, which would strlen).
+function _take_bytes_uptr(ptr::Ptr{UInt8}, len::Csize_t, code::Int32, op::String)
+    ptr == C_NULL && throw(PdfOxideError(code, op))
+    n = Int(len)
+    out = copy(unsafe_wrap(Array, ptr, n < 0 ? 0 : n))
+    ccall((:free_bytes, LIB), Cvoid, (Ptr{UInt8},), ptr)
+    return out
+end
+
+"""Open a PDF for editing from a filesystem path."""
+function open_editor(path::AbstractString)
+    code = Ref{Int32}(0)
+    h = ccall((:document_editor_open, LIB), Ptr{Cvoid}, (Cstring, Ref{Int32}), path, code)
+    h == C_NULL && throw(PdfOxideError(code[], "open_editor"))
+    return DocumentEditor(h)
+end
+
+"""Open a PDF for editing from an in-memory byte vector."""
+function open_editor_from_bytes(data::AbstractVector{UInt8})
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:document_editor_open_from_bytes, LIB),
+        Ptr{Cvoid},
+        (Ptr{UInt8}, Csize_t, Ref{Int32}),
+        data,
+        Csize_t(length(data)),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "open_editor_from_bytes"))
+    return DocumentEditor(h)
+end
+
+"""Whether the editor has unsaved modifications (bool)."""
+is_modified(e::DocumentEditor) =
+    ccall((:document_editor_is_modified, LIB), Bool, (Ptr{Cvoid},), _editor(e))
+
+"""Source path the editor was opened from."""
+function get_source_path(e::DocumentEditor)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:document_editor_get_source_path, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _editor(e),
+        code,
+    )
+    return _take_string(ptr, code[], "get_source_path")
+end
+
+"""PDF version as `(major, minor)`."""
+function version(e::DocumentEditor)
+    maj = Ref{UInt8}(0)
+    min = Ref{UInt8}(0)
+    ccall(
+        (:document_editor_get_version, LIB),
+        Cvoid,
+        (Ptr{Cvoid}, Ref{UInt8}, Ref{UInt8}),
+        _editor(e),
+        maj,
+        min,
+    )
+    return PdfVersion(Int(maj[]), Int(min[]))
+end
+
+"""Number of pages."""
+function page_count(e::DocumentEditor)
+    code = Ref{Int32}(0)
+    n = ccall(
+        (:document_editor_get_page_count, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _editor(e),
+        code,
+    )
+    n < 0 && throw(PdfOxideError(code[], "page_count"))
+    return Int(n)
+end
+
+"""Producer from `/Info.Producer`."""
+function get_producer(e::DocumentEditor)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:document_editor_get_producer, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _editor(e),
+        code,
+    )
+    return _take_string(ptr, code[], "get_producer")
+end
+
+"""Set the `/Info.Producer` value."""
+function set_producer(e::DocumentEditor, value::AbstractString)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_set_producer, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Ref{Int32}),
+        _editor(e),
+        value,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "set_producer"))
+    return nothing
+end
+
+"""Creation date from `/Info.CreationDate` (raw PDF date string)."""
+function get_creation_date(e::DocumentEditor)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:document_editor_get_creation_date, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _editor(e),
+        code,
+    )
+    return _take_string(ptr, code[], "get_creation_date")
+end
+
+"""Set the `/Info.CreationDate` value (raw PDF date string)."""
+function set_creation_date(e::DocumentEditor, date_str::AbstractString)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_set_creation_date, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Ref{Int32}),
+        _editor(e),
+        date_str,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "set_creation_date"))
+    return nothing
+end
+
+"""Save the edited document to a filesystem path."""
+function save(e::DocumentEditor, path::AbstractString)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_save, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Ref{Int32}),
+        _editor(e),
+        path,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "save"))
+    return nothing
+end
+
+"""Serialize the edited document to a `Vector{UInt8}`."""
+function save_to_bytes(e::DocumentEditor)
+    len = Ref{Csize_t}(0)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:document_editor_save_to_bytes, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ref{Csize_t}, Ref{Int32}),
+        _editor(e),
+        len,
+        code,
+    )
+    return _take_bytes_uptr(ptr, len[], code[], "save_to_bytes")
+end
+
+"""Serialize with compress / garbage-collect / linearize options."""
+function save_to_bytes_with_options(
+    e::DocumentEditor,
+    compress::Bool,
+    garbage_collect::Bool,
+    linearize::Bool,
+)
+    len = Ref{Csize_t}(0)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:document_editor_save_to_bytes_with_options, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Bool, Bool, Bool, Ref{Csize_t}, Ref{Int32}),
+        _editor(e),
+        compress,
+        garbage_collect,
+        linearize,
+        len,
+        code,
+    )
+    return _take_bytes_uptr(ptr, len[], code[], "save_to_bytes_with_options")
+end
+
+"""Extract a subset of (0-based) `pages` to a new in-memory PDF (`Vector{UInt8}`)."""
+function extract_pages_to_bytes(e::DocumentEditor, pages::AbstractVector{<:Integer})
+    arr = Int32[Int32(p) for p in pages]
+    len = Ref{Csize_t}(0)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:document_editor_extract_pages_to_bytes, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ptr{Int32}, Csize_t, Ref{Csize_t}, Ref{Int32}),
+        _editor(e),
+        arr,
+        Csize_t(length(arr)),
+        len,
+        code,
+    )
+    return _take_bytes_uptr(ptr, len[], code[], "extract_pages_to_bytes")
+end
+
+"""Convert to PDF/A in-place. `level`: 0=A1b 1=A1a 2=A2b 3=A2a 4=A2u 5=A3b 6=A3a 7=A3u."""
+function convert_to_pdf_a(e::DocumentEditor, level::Integer)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_convert_to_pdf_a, LIB),
+        Int32,
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _editor(e),
+        Int32(level),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "convert_to_pdf_a"))
+    return nothing
+end
+
+"""Save with AES-256 encryption to a `Vector{UInt8}`."""
+function save_encrypted_to_bytes(
+    e::DocumentEditor,
+    user_password::AbstractString,
+    owner_password::AbstractString,
+)
+    len = Ref{Csize_t}(0)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:document_editor_save_encrypted_to_bytes, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Cstring, Cstring, Ref{Csize_t}, Ref{Int32}),
+        _editor(e),
+        user_password,
+        owner_password,
+        len,
+        code,
+    )
+    return _take_bytes_uptr(ptr, len[], code[], "save_encrypted_to_bytes")
+end
+
+"""Save with AES-256 encryption to a filesystem path."""
+function save_encrypted(
+    e::DocumentEditor,
+    path::AbstractString,
+    user_password::AbstractString,
+    owner_password::AbstractString,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_save_encrypted, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Cstring, Cstring, Ref{Int32}),
+        _editor(e),
+        path,
+        user_password,
+        owner_password,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "save_encrypted"))
+    return nothing
+end
+
+"""Merge pages from an in-memory PDF byte buffer into this document."""
+function merge_from_bytes(e::DocumentEditor, data::AbstractVector{UInt8})
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_merge_from_bytes, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ptr{UInt8}, Csize_t, Ref{Int32}),
+        _editor(e),
+        data,
+        Csize_t(length(data)),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "merge_from_bytes"))
+    return nothing
+end
+
+"""Merge pages from a PDF on disk into this document."""
+function merge_from(e::DocumentEditor, source_path::AbstractString)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_merge_from, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Ref{Int32}),
+        _editor(e),
+        source_path,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "merge_from"))
+    return nothing
+end
+
+"""Embed a file attachment (`name`, `data` bytes) into the document."""
+function embed_file(e::DocumentEditor, name::AbstractString, data::AbstractVector{UInt8})
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_embed_file, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Csize_t, Ref{Int32}),
+        _editor(e),
+        name,
+        data,
+        Csize_t(length(data)),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "embed_file"))
+    return nothing
+end
+
+"""Apply (burn in) redactions on a single (0-based) page."""
+function apply_page_redactions(e::DocumentEditor, page::Integer)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_apply_page_redactions, LIB),
+        Int32,
+        (Ptr{Cvoid}, Csize_t, Ref{Int32}),
+        _editor(e),
+        Csize_t(page),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "apply_page_redactions"))
+    return nothing
+end
+
+"""Apply all pending redactions across the document."""
+function apply_all_redactions(e::DocumentEditor)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_apply_all_redactions, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _editor(e),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "apply_all_redactions"))
+    return nothing
+end
+
+"""Rotate all pages by `degrees` (relative)."""
+function rotate_all_pages(e::DocumentEditor, degrees::Integer)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_rotate_all_pages, LIB),
+        Int32,
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _editor(e),
+        Int32(degrees),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "rotate_all_pages"))
+    return nothing
+end
+
+"""Rotate a single (0-based) page by `degrees` (additive)."""
+function rotate_page_by(e::DocumentEditor, page::Integer, degrees::Integer)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_rotate_page_by, LIB),
+        Int32,
+        (Ptr{Cvoid}, Csize_t, Int32, Ref{Int32}),
+        _editor(e),
+        Csize_t(page),
+        Int32(degrees),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "rotate_page_by"))
+    return nothing
+end
+
+"""Absolute rotation (degrees) of a (0-based) page."""
+function get_page_rotation(e::DocumentEditor, page::Integer)
+    code = Ref{Int32}(0)
+    v = ccall(
+        (:document_editor_get_page_rotation, LIB),
+        Int32,
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _editor(e),
+        Int32(page),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "get_page_rotation"))
+    return Int(v)
+end
+
+"""Set the absolute rotation (degrees) of a (0-based) page."""
+function set_page_rotation(e::DocumentEditor, page::Integer, degrees::Integer)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_set_page_rotation, LIB),
+        Int32,
+        (Ptr{Cvoid}, Int32, Int32, Ref{Int32}),
+        _editor(e),
+        Int32(page),
+        Int32(degrees),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "set_page_rotation"))
+    return nothing
+end
+
+"""Delete a (0-based) page."""
+function delete_page(e::DocumentEditor, page::Integer)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_delete_page, LIB),
+        Int32,
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _editor(e),
+        Int32(page),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "delete_page"))
+    return nothing
+end
+
+"""Move a page from (0-based) `from` to `to`."""
+function move_page(e::DocumentEditor, from::Integer, to::Integer)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_move_page, LIB),
+        Int32,
+        (Ptr{Cvoid}, Int32, Int32, Ref{Int32}),
+        _editor(e),
+        Int32(from),
+        Int32(to),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "move_page"))
+    return nothing
+end
+
+# MediaBox/CropBox getters return a Bbox via double out-params. Generated with
+# @eval so each ccall references its C function name as a LITERAL symbol.
+for (jl_fn, c_fn) in (
+    (:get_page_media_box, :document_editor_get_page_media_box),
+    (:get_page_crop_box, :document_editor_get_page_crop_box),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(e::DocumentEditor, page::Integer)
+        x = Ref{Float64}(0)
+        y = Ref{Float64}(0)
+        w = Ref{Float64}(0)
+        h = Ref{Float64}(0)
+        code = Ref{Int32}(0)
+        rc = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Int32,
+            (
+                Ptr{Cvoid},
+                Csize_t,
+                Ref{Float64},
+                Ref{Float64},
+                Ref{Float64},
+                Ref{Float64},
+                Ref{Int32},
+            ),
+            _editor(e),
+            Csize_t(page),
+            x,
+            y,
+            w,
+            h,
+            code,
+        )
+        (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], $op))
+        return Bbox(x[], y[], w[], h[])
+    end
+end
+
+# MediaBox/CropBox setters take a Bbox's components. Generated with @eval
+# (LITERAL ccall symbol).
+for (jl_fn, c_fn) in (
+    (:set_page_media_box, :document_editor_set_page_media_box),
+    (:set_page_crop_box, :document_editor_set_page_crop_box),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(
+        e::DocumentEditor,
+        page::Integer,
+        x::Real,
+        y::Real,
+        w::Real,
+        h::Real,
+    )
+        code = Ref{Int32}(0)
+        rc = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Int32,
+            (Ptr{Cvoid}, Csize_t, Float64, Float64, Float64, Float64, Ref{Int32}),
+            _editor(e),
+            Csize_t(page),
+            Float64(x),
+            Float64(y),
+            Float64(w),
+            Float64(h),
+            code,
+        )
+        (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], $op))
+        return nothing
+    end
+end
+
+"""Crop all pages by `left`/`right`/`top`/`bottom` margins (page user-space)."""
+function crop_margins(e::DocumentEditor, left::Real, right::Real, top::Real, bottom::Real)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_crop_margins, LIB),
+        Int32,
+        (Ptr{Cvoid}, Float32, Float32, Float32, Float32, Ref{Int32}),
+        _editor(e),
+        Float32(left),
+        Float32(right),
+        Float32(top),
+        Float32(bottom),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "crop_margins"))
+    return nothing
+end
+
+"""Erase one rectangular region (floats) on a (0-based) page."""
+function erase_region(e::DocumentEditor, page::Integer, x::Real, y::Real, w::Real, h::Real)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_erase_region, LIB),
+        Int32,
+        (Ptr{Cvoid}, Int32, Float32, Float32, Float32, Float32, Ref{Int32}),
+        _editor(e),
+        Int32(page),
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "erase_region"))
+    return nothing
+end
+
+"""
+Erase multiple rectangular regions on a (0-based) page. `rects` is a vector of
+`(x, y, w, h)` tuples, flattened to a contiguous `Float64` quad array.
+"""
+function erase_regions(
+    e::DocumentEditor,
+    page::Integer,
+    rects::AbstractVector{<:NTuple{4,<:Real}},
+)
+    flat = Vector{Float64}(undef, 4 * length(rects))
+    for (i, r) in enumerate(rects)
+        base = 4 * (i - 1)
+        flat[base+1] = Float64(r[1])
+        flat[base+2] = Float64(r[2])
+        flat[base+3] = Float64(r[3])
+        flat[base+4] = Float64(r[4])
+    end
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_erase_regions, LIB),
+        Int32,
+        (Ptr{Cvoid}, Csize_t, Ptr{Float64}, Csize_t, Ref{Int32}),
+        _editor(e),
+        Csize_t(page),
+        flat,
+        Csize_t(length(rects)),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "erase_regions"))
+    return nothing
+end
+
+"""Clear all pending erase-region entries for a (0-based) page."""
+function clear_erase_regions(e::DocumentEditor, page::Integer)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_clear_erase_regions, LIB),
+        Int32,
+        (Ptr{Cvoid}, Csize_t, Ref{Int32}),
+        _editor(e),
+        Csize_t(page),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "clear_erase_regions"))
+    return nothing
+end
+
+"""Whether a (0-based) page is marked for annotation-flatten (bool)."""
+function is_page_marked_for_flatten(e::DocumentEditor, page::Integer)
+    rc = ccall(
+        (:document_editor_is_page_marked_for_flatten, LIB),
+        Int32,
+        (Ptr{Cvoid}, Csize_t),
+        _editor(e),
+        Csize_t(page),
+    )
+    rc < 0 && throw(PdfOxideError(rc, "is_page_marked_for_flatten"))
+    return rc == 1
+end
+
+"""Remove the flatten mark from a (0-based) page."""
+function unmark_page_for_flatten(e::DocumentEditor, page::Integer)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_unmark_page_for_flatten, LIB),
+        Int32,
+        (Ptr{Cvoid}, Csize_t, Ref{Int32}),
+        _editor(e),
+        Csize_t(page),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "unmark_page_for_flatten"))
+    return nothing
+end
+
+"""Whether a (0-based) page is marked for redaction (bool)."""
+function is_page_marked_for_redaction(e::DocumentEditor, page::Integer)
+    rc = ccall(
+        (:document_editor_is_page_marked_for_redaction, LIB),
+        Int32,
+        (Ptr{Cvoid}, Csize_t),
+        _editor(e),
+        Csize_t(page),
+    )
+    rc < 0 && throw(PdfOxideError(rc, "is_page_marked_for_redaction"))
+    return rc == 1
+end
+
+"""Remove the redaction mark from a (0-based) page."""
+function unmark_page_for_redaction(e::DocumentEditor, page::Integer)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_unmark_page_for_redaction, LIB),
+        Int32,
+        (Ptr{Cvoid}, Csize_t, Ref{Int32}),
+        _editor(e),
+        Csize_t(page),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "unmark_page_for_redaction"))
+    return nothing
+end
+
+"""Flatten annotations on a single (0-based) page."""
+function flatten_annotations(e::DocumentEditor, page::Integer)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_flatten_annotations, LIB),
+        Int32,
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _editor(e),
+        Int32(page),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "flatten_annotations"))
+    return nothing
+end
+
+"""Flatten annotations on all pages."""
+function flatten_all_annotations(e::DocumentEditor)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_flatten_all_annotations, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _editor(e),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "flatten_all_annotations"))
+    return nothing
+end
+
+"""Set a form field value (UTF-8) on the document."""
+function set_form_field_value(
+    e::DocumentEditor,
+    name::AbstractString,
+    value::AbstractString,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_set_form_field_value, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Cstring, Ref{Int32}),
+        _editor(e),
+        name,
+        value,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "set_form_field_value"))
+    return nothing
+end
+
+"""Flatten all forms (bake form values into page content)."""
+function flatten_forms(e::DocumentEditor)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_flatten_forms, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _editor(e),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "flatten_forms"))
+    return nothing
+end
+
+"""Flatten forms on a single (0-based) page."""
+function flatten_forms_on_page(e::DocumentEditor, page::Integer)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:document_editor_flatten_forms_on_page, LIB),
+        Int32,
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _editor(e),
+        Int32(page),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "flatten_forms_on_page"))
+    return nothing
+end
+
+"""Number of warnings collected during the last form-flattening save."""
+function flatten_warnings_count(e::DocumentEditor)
+    n = ccall(
+        (:document_editor_flatten_warnings_count, LIB),
+        Int32,
+        (Ptr{Cvoid},),
+        _editor(e),
+    )
+    n < 0 && throw(PdfOxideError(n, "flatten_warnings_count"))
+    return Int(n)
+end
+
+"""The `index`-th (0-based) flatten warning string."""
+function flatten_warning(e::DocumentEditor, index::Integer)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:document_editor_flatten_warning, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _editor(e),
+        Int32(index),
+        code,
+    )
+    return _take_string(ptr, code[], "flatten_warning")
 end
 
 end # module

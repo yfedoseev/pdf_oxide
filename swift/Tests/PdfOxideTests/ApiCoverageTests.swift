@@ -185,6 +185,20 @@ final class ApiCoverageTests: XCTestCase {
         }
     }
 
+    // ── DocumentEditor ───────────────────────────────────────────────────────
+    func testDocumentEditor() throws {
+        let editor = try DocumentEditor.openFromBytes(try samplePdf())
+        XCTAssertGreaterThanOrEqual(try editor.pageCount(), 1)   // pageCount
+        let modified: Bool = try editor.isModified()             // isModified -> Bool
+        _ = modified
+        try editor.rotateAllPages(90)                            // rotateAllPages
+        XCTAssertEqual(try editor.getPageRotation(0), 90)        // getPageRotation
+        try editor.setProducer("x")                              // setProducer
+        _ = try editor.getProducer()                             // getProducer
+        XCTAssertFalse(try editor.saveToBytes().isEmpty)         // saveToBytes
+        editor.close()                                           // close
+    }
+
     // ── Error path ───────────────────────────────────────────────────────────
     func testErrorOnMissingFile() {
         XCTAssertThrowsError(try Document.open("/nonexistent/nope.pdf")) { error in

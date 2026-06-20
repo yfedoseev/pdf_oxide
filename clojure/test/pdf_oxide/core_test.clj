@@ -152,5 +152,18 @@
       (with-open [img (pdf/render-page-thumbnail d 0 64)]
         (is (> (pdf/rendered-image-width img) 0))))))
 
+(deftest document-editor
+  (with-open [e (pdf/open-editor-from-bytes (sample-pdf))]
+    (is (>= (pdf/editor-page-count e) 1))                  ; open-editor-from-bytes + page-count
+    (is (instance? Boolean (pdf/editor-modified? e)))      ; is-modified -> bool
+    (pdf/editor-rotate-all-pages e 90)                     ; rotate-all-pages succeeds (no throw)
+    (is (integer? (pdf/editor-page-rotation e 0)))         ; get-page-rotation -> int
+    (is (= 90 (pdf/editor-page-rotation e 0)))             ; rotation now 90
+    (pdf/set-editor-producer e "x")                         ; set-producer succeeds
+    (is (string? (pdf/editor-producer e)))                 ; get-producer
+    (let [out (pdf/editor-save-to-bytes e)]                ; save-to-bytes -> non-empty
+      (is (bytes? out))
+      (is (pos? (alength out))))))
+
 (deftest error-path
   (is (thrown? clojure.lang.ExceptionInfo (pdf/open "/nonexistent/nope.pdf"))))

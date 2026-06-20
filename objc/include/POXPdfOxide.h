@@ -222,4 +222,120 @@ typedef struct {
 
 @end
 
+/// A PDF opened for in-place editing. Owns the native DocumentEditor handle and
+/// frees it on -close/-dealloc; status-code C functions surface failures as
+/// NSError (POXErrorDomain); is_* queries are exposed as BOOL.
+@interface POXDocumentEditor : NSObject
+
+/// Open a PDF for editing from a filesystem path.
++ (nullable instancetype)openEditor:(NSString*)path error:(NSError**)error;
+/// Open a PDF for editing from in-memory bytes.
++ (nullable instancetype)openFromBytes:(NSData*)data error:(NSError**)error;
+
+/// Number of pages, or -1 on error (sets `error`).
+- (NSInteger)pageCountError:(NSError**)error;
+/// PDF version as a POXVersion {major, minor}.
+- (POXVersion)version;
+
+/// Whether the editor has pending modifications.
+- (BOOL)isModified;
+/// The source path of the editor (nil if none / on error).
+- (nullable NSString*)sourcePathError:(NSError**)error;
+
+/// Document /Info.Producer.
+- (nullable NSString*)producerError:(NSError**)error;
+- (BOOL)setProducer:(NSString*)value error:(NSError**)error;
+/// Document /Info.CreationDate (raw PDF date string).
+- (nullable NSString*)creationDateError:(NSError**)error;
+- (BOOL)setCreationDate:(NSString*)date error:(NSError**)error;
+
+/// Page operations (page indices are 0-based).
+- (BOOL)deletePage:(NSInteger)page error:(NSError**)error;
+- (BOOL)movePageFrom:(NSInteger)from to:(NSInteger)to error:(NSError**)error;
+
+/// Rotation.
+- (BOOL)rotatePage:(NSInteger)page byDegrees:(NSInteger)degrees error:(NSError**)error;
+- (BOOL)rotateAllPages:(NSInteger)degrees error:(NSError**)error;
+- (BOOL)setPageRotation:(NSInteger)page
+                degrees:(NSInteger)degrees
+                  error:(NSError**)error;
+/// Page rotation in degrees, or -1 on error (sets `error`).
+- (NSInteger)pageRotation:(NSInteger)page error:(NSError**)error;
+
+/// Crop all pages by margins (left/right/top/bottom, user-space units).
+- (BOOL)cropMarginsLeft:(float)left
+                  right:(float)right
+                    top:(float)top
+                 bottom:(float)bottom
+                  error:(NSError**)error;
+
+/// Page boxes (returned/accepted as a POXBbox {x, y, width, height}).
+- (POXBbox)pageCropBox:(NSInteger)page error:(NSError**)error;
+- (BOOL)setPageCropBox:(NSInteger)page box:(POXBbox)box error:(NSError**)error;
+- (POXBbox)pageMediaBox:(NSInteger)page error:(NSError**)error;
+- (BOOL)setPageMediaBox:(NSInteger)page box:(POXBbox)box error:(NSError**)error;
+
+/// Redaction.
+- (BOOL)applyAllRedactions:(NSError**)error;
+- (BOOL)applyPageRedactions:(NSInteger)page error:(NSError**)error;
+- (BOOL)isPageMarkedForRedaction:(NSInteger)page;
+- (BOOL)unmarkPageForRedaction:(NSInteger)page error:(NSError**)error;
+
+/// Erase regions.
+- (BOOL)eraseRegion:(NSInteger)page
+                  x:(float)x
+                  y:(float)y
+                  w:(float)w
+                  h:(float)h
+              error:(NSError**)error;
+/// Erase multiple rectangles given as an array of POXBbox values.
+- (BOOL)eraseRegions:(NSInteger)page
+               rects:(NSArray<NSValue*>*)rects
+               error:(NSError**)error;
+- (BOOL)clearEraseRegions:(NSInteger)page error:(NSError**)error;
+
+/// Flattening.
+- (BOOL)flattenForms:(NSError**)error;
+- (BOOL)flattenFormsOnPage:(NSInteger)page error:(NSError**)error;
+- (BOOL)flattenAnnotations:(NSInteger)page error:(NSError**)error;
+- (BOOL)flattenAllAnnotations:(NSError**)error;
+/// Number of warnings from the last form-flattening save, or -1 if no handle.
+- (NSInteger)flattenWarningsCount;
+- (nullable NSString*)flattenWarning:(NSInteger)index error:(NSError**)error;
+- (BOOL)isPageMarkedForFlatten:(NSInteger)page;
+- (BOOL)unmarkPageForFlatten:(NSInteger)page error:(NSError**)error;
+
+/// Forms.
+- (BOOL)setFormField:(NSString*)name value:(NSString*)value error:(NSError**)error;
+
+/// Merge / conversion / embedding.
+- (BOOL)mergeFrom:(NSString*)sourcePath error:(NSError**)error;
+- (BOOL)mergeFromBytes:(NSData*)data error:(NSError**)error;
+/// Convert to PDF/A in place (0=A1b 1=A1a 2=A2b 3=A2a 4=A2u 5=A3b 6=A3a 7=A3u).
+- (BOOL)convertToPdfA:(NSInteger)level error:(NSError**)error;
+- (BOOL)embedFile:(NSString*)name data:(NSData*)data error:(NSError**)error;
+/// Extract a subset of 0-based page indices to a new in-memory PDF.
+- (nullable NSData*)extractPagesToBytes:(NSArray<NSNumber*>*)pages
+                                  error:(NSError**)error;
+
+/// Save.
+- (BOOL)saveToPath:(NSString*)path error:(NSError**)error;
+- (nullable NSData*)saveToBytesWithError:(NSError**)error;
+- (nullable NSData*)saveToBytesCompress:(BOOL)compress
+                         garbageCollect:(BOOL)garbageCollect
+                              linearize:(BOOL)linearize
+                                  error:(NSError**)error;
+- (BOOL)saveEncryptedToPath:(NSString*)path
+               userPassword:(NSString*)userPassword
+              ownerPassword:(NSString*)ownerPassword
+                      error:(NSError**)error;
+- (nullable NSData*)saveEncryptedToBytesWithUserPassword:(NSString*)userPassword
+                                           ownerPassword:(NSString*)ownerPassword
+                                                   error:(NSError**)error;
+
+/// Free the native handle now (idempotent).
+- (void)close;
+
+@end
+
 NS_ASSUME_NONNULL_END

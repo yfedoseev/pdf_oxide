@@ -9,8 +9,8 @@
 ;; API surface mirrors the other language bindings; coverage is asserted by
 ;; pdf-oxide.core-test (one test per public fn).
 (ns pdf-oxide.core
-  (:import [com.sun.jna NativeLibrary Pointer Function]
-           [com.sun.jna.ptr IntByReference ByteByReference FloatByReference]
+  (:import [com.sun.jna NativeLibrary Pointer Function Memory]
+           [com.sun.jna.ptr IntByReference ByteByReference FloatByReference DoubleByReference]
            [java.io Closeable]))
 
 (def ^NativeLibrary ^:private nlib (NativeLibrary/getInstance "pdf_oxide"))
@@ -356,7 +356,7 @@
     (when (nil? ptr)
       (->void "pdf_rendered_image_free" [h])
       (throw (ex-info (str "pdf_oxide: " op " (image data) failed") {:code (.getValue code) :op op})))
-    (RenderedImage. (atom h) (long w) (long ht) data)))
+    (RenderedImage. (atom h) w ht data)))
 
 (defn rendered-image-save
   "Save a RenderedImage to `path` (encoded by its format). Throws on error."
@@ -423,3 +423,269 @@
     (when (nil? ptr) (throw (ex-info "pdf_oxide: to-bytes failed" {:code (.getValue code)})))
     (let [n (max 0 (.getValue len)) out (.getByteArray ptr 0 n)]
       (free-bytes ptr) out)))
+
+;; ── DocumentEditor ──────────────────────────────────────────────────────────────
+;; Mutating editor handle over the document_editor_* C ABI; mirrors the Document /
+;; Pdf handle pattern. Owns a native DocumentEditor* freed on close (Closeable, so
+;; use with `with-open`). Status-returning C fns yield 0 on success — any non-zero
+;; status OR a non-zero error_code is treated as a failure and throws ex-info
+;; {:code …}. is_* queries return int32 exposed as bool (1 = true). Page indices
+;; are 0-based; box getters reuse the {:x :y :width :height} bbox map shape.
+(deftype DocumentEditor [state]   ; state = (atom Pointer-or-nil)
+  Closeable
+  (close [_] (when-let [h @state] (->void "document_editor_free" [h]) (reset! state nil))))
+
+(defn- ed-ptr ^Pointer [^DocumentEditor e]
+  (or @(.-state e) (throw (ex-info "DocumentEditor is closed" {}))))
+
+(defn- ed-check
+  "Throw if a status/error_code pair signals failure (status non-zero OR code non-zero)."
+  [^long status ^IntByReference code op]
+  (when (or (not (zero? status)) (not (zero? (.getValue code))))
+    (throw (ex-info (str "pdf_oxide: " op " failed") {:code (.getValue code) :status status :op op})))
+  status)
+
+(defn- ed-status
+  "Invoke a status-returning document_editor_* fn (trailing error_code out-param) and
+   throw on failure. `args` excludes the trailing error_code."
+  [cname args op]
+  (let [code (IntByReference.)
+        status (->int cname (conj (vec args) code))]
+    (ed-check status code op)))
+
+(defn- ed-string
+  "Invoke an owned-char*-returning document_editor_* fn (trailing error_code) and
+   return the copied string (freed via free_string)."
+  [cname args op]
+  (let [code (IntByReference.)]
+    (take-string (->ptr cname (conj (vec args) code)) (.getValue code) op)))
+
+(defn- ed-bytes
+  "Invoke an owned-uint8*-returning document_editor_* fn whose trailing out-params are
+   (out_len, error_code). Returns the copied byte array (freed via free_bytes)."
+  ^bytes [cname args op]
+  (let [len (IntByReference.) code (IntByReference.)
+        ptr (->ptr cname (conj (vec args) len code))]
+    (when (nil? ptr) (throw (ex-info (str "pdf_oxide: " op " failed") {:code (.getValue code) :op op})))
+    (let [n (max 0 (.getValue len)) out (.getByteArray ptr 0 n)]
+      (free-bytes ptr) out)))
+
+(defn- ed-box
+  "Read a page box via a double x,y,w,h out-param getter → {:x :y :width :height}."
+  [cname ^DocumentEditor e ^long page op]
+  (let [x (DoubleByReference.) y (DoubleByReference.)
+        w (DoubleByReference.) h (DoubleByReference.)
+        code (IntByReference.)
+        status (->int cname [(ed-ptr e) page x y w h code])]
+    (ed-check status code op)
+    {:x (.getValue x) :y (.getValue y) :width (.getValue w) :height (.getValue h)}))
+
+(defn- ed-bool
+  "Invoke an int32 is_* query (1=true, 0=false, -1=error). No error_code out-param."
+  [cname args op]
+  (let [r (->int cname (vec args))]
+    (when (neg? r) (throw (ex-info (str "pdf_oxide: " op " failed") {:status r :op op})))
+    (= r 1)))
+
+;; ── open / lifecycle ────────────────────────────────────────────────────────────
+(defn open-editor
+  "Open a PDF for editing from a path. Returns a Closeable DocumentEditor."
+  [path]
+  (let [code (IntByReference.)
+        h (->ptr "document_editor_open" [path code])]
+    (when (nil? h) (throw (ex-info "pdf_oxide: open-editor failed" {:code (.getValue code) :op "open-editor"})))
+    (DocumentEditor. (atom h))))
+
+(defn open-editor-from-bytes
+  "Open a DocumentEditor from a byte array. Returns a Closeable DocumentEditor."
+  [^bytes data]
+  (let [code (IntByReference.)
+        h (->ptr "document_editor_open_from_bytes" [data (long (alength data)) code])]
+    (when (nil? h) (throw (ex-info "pdf_oxide: open-editor-from-bytes failed" {:code (.getValue code) :op "open-editor-from-bytes"})))
+    (DocumentEditor. (atom h))))
+
+(defn editor-modified? [^DocumentEditor e]
+  (->bool "document_editor_is_modified" [(ed-ptr e)]))
+
+(defn editor-page-count [^DocumentEditor e]
+  (let [code (IntByReference.) n (->int "document_editor_get_page_count" [(ed-ptr e) code])]
+    (when (neg? n) (throw (ex-info "pdf_oxide: editor-page-count failed" {:code (.getValue code) :op "editor-page-count"})))
+    n))
+
+(defn editor-version
+  "PDF version as a map {:major _ :minor _}."
+  [^DocumentEditor e]
+  (let [maj (ByteByReference.) min (ByteByReference.)]
+    (->void "document_editor_get_version" [(ed-ptr e) maj min])
+    {:major (bit-and (.getValue maj) 0xff) :minor (bit-and (.getValue min) 0xff)}))
+
+(defn editor-source-path [^DocumentEditor e]
+  (ed-string "document_editor_get_source_path" [(ed-ptr e)] "editor-source-path"))
+
+;; ── metadata ──────────────────────────────────────────────────────────────────
+(defn editor-producer [^DocumentEditor e]
+  (ed-string "document_editor_get_producer" [(ed-ptr e)] "editor-producer"))
+
+(defn set-editor-producer [^DocumentEditor e value]
+  (ed-status "document_editor_set_producer" [(ed-ptr e) value] "set-editor-producer"))
+
+(defn editor-creation-date [^DocumentEditor e]
+  (ed-string "document_editor_get_creation_date" [(ed-ptr e)] "editor-creation-date"))
+
+(defn set-editor-creation-date [^DocumentEditor e date-str]
+  (ed-status "document_editor_set_creation_date" [(ed-ptr e) date-str] "set-editor-creation-date"))
+
+;; ── page operations ─────────────────────────────────────────────────────────────
+(defn editor-delete-page [^DocumentEditor e page]
+  (ed-status "document_editor_delete_page" [(ed-ptr e) (int page)] "editor-delete-page"))
+
+(defn editor-move-page [^DocumentEditor e from to]
+  (ed-status "document_editor_move_page" [(ed-ptr e) (int from) (int to)] "editor-move-page"))
+
+(defn editor-rotate-page-by [^DocumentEditor e page degrees]
+  (ed-status "document_editor_rotate_page_by" [(ed-ptr e) (long page) (int degrees)] "editor-rotate-page-by"))
+
+(defn editor-rotate-all-pages [^DocumentEditor e degrees]
+  (ed-status "document_editor_rotate_all_pages" [(ed-ptr e) (int degrees)] "editor-rotate-all-pages"))
+
+(defn set-editor-page-rotation [^DocumentEditor e page degrees]
+  (ed-status "document_editor_set_page_rotation" [(ed-ptr e) (int page) (int degrees)] "set-editor-page-rotation"))
+
+(defn editor-page-rotation
+  "Page rotation in degrees (0/90/180/270)."
+  [^DocumentEditor e page]
+  (let [code (IntByReference.)
+        r (->int "document_editor_get_page_rotation" [(ed-ptr e) (int page) code])]
+    (when (neg? r) (throw (ex-info "pdf_oxide: editor-page-rotation failed" {:code (.getValue code) :op "editor-page-rotation"})))
+    r))
+
+(defn editor-crop-margins [^DocumentEditor e left right top bottom]
+  (ed-status "document_editor_crop_margins"
+             [(ed-ptr e) (float left) (float right) (float top) (float bottom)] "editor-crop-margins"))
+
+;; ── boxes ───────────────────────────────────────────────────────────────────────
+(defn editor-page-crop-box
+  "CropBox of a page as {:x :y :width :height} (0,0,0,0 if unset)."
+  [^DocumentEditor e page]
+  (ed-box "document_editor_get_page_crop_box" e page "editor-page-crop-box"))
+
+(defn set-editor-page-crop-box [^DocumentEditor e page x y w h]
+  (ed-status "document_editor_set_page_crop_box"
+             [(ed-ptr e) (long page) (double x) (double y) (double w) (double h)] "set-editor-page-crop-box"))
+
+(defn editor-page-media-box
+  "MediaBox of a page as {:x :y :width :height}."
+  [^DocumentEditor e page]
+  (ed-box "document_editor_get_page_media_box" e page "editor-page-media-box"))
+
+(defn set-editor-page-media-box [^DocumentEditor e page x y w h]
+  (ed-status "document_editor_set_page_media_box"
+             [(ed-ptr e) (long page) (double x) (double y) (double w) (double h)] "set-editor-page-media-box"))
+
+;; ── redaction ─────────────────────────────────────────────────────────────────
+(defn editor-apply-all-redactions [^DocumentEditor e]
+  (ed-status "document_editor_apply_all_redactions" [(ed-ptr e)] "editor-apply-all-redactions"))
+
+(defn editor-apply-page-redactions [^DocumentEditor e page]
+  (ed-status "document_editor_apply_page_redactions" [(ed-ptr e) (long page)] "editor-apply-page-redactions"))
+
+(defn editor-erase-region [^DocumentEditor e page x y w h]
+  (ed-status "document_editor_erase_region"
+             [(ed-ptr e) (int page) (float x) (float y) (float w) (float h)] "editor-erase-region"))
+
+(defn editor-erase-regions
+  "Erase multiple rectangles on `page`. `rects` is a seq of [x y w h] quads (doubles)."
+  [^DocumentEditor e page rects]
+  (let [flat (mapcat (fn [[x y w h]] [(double x) (double y) (double w) (double h)]) rects)
+        n (count rects)
+        mem (when (pos? n)
+              (let [m (Memory. (* 8 (count flat)))]
+                (doseq [[i v] (map-indexed vector flat)] (.setDouble m (* 8 (long i)) (double v)))
+                m))]
+    (ed-status "document_editor_erase_regions" [(ed-ptr e) (long page) mem (long n)] "editor-erase-regions")))
+
+(defn editor-clear-erase-regions [^DocumentEditor e page]
+  (ed-status "document_editor_clear_erase_regions" [(ed-ptr e) (long page)] "editor-clear-erase-regions"))
+
+(defn editor-page-marked-for-redaction? [^DocumentEditor e page]
+  (ed-bool "document_editor_is_page_marked_for_redaction" [(ed-ptr e) (long page)] "editor-page-marked-for-redaction?"))
+
+(defn editor-unmark-page-for-redaction [^DocumentEditor e page]
+  (ed-status "document_editor_unmark_page_for_redaction" [(ed-ptr e) (long page)] "editor-unmark-page-for-redaction"))
+
+;; ── flatten ───────────────────────────────────────────────────────────────────
+(defn editor-flatten-forms [^DocumentEditor e]
+  (ed-status "document_editor_flatten_forms" [(ed-ptr e)] "editor-flatten-forms"))
+
+(defn editor-flatten-forms-on-page [^DocumentEditor e page]
+  (ed-status "document_editor_flatten_forms_on_page" [(ed-ptr e) (int page)] "editor-flatten-forms-on-page"))
+
+(defn editor-flatten-annotations [^DocumentEditor e page]
+  (ed-status "document_editor_flatten_annotations" [(ed-ptr e) (int page)] "editor-flatten-annotations"))
+
+(defn editor-flatten-all-annotations [^DocumentEditor e]
+  (ed-status "document_editor_flatten_all_annotations" [(ed-ptr e)] "editor-flatten-all-annotations"))
+
+(defn editor-flatten-warnings-count
+  "Number of warnings from the last form-flattening save."
+  [^DocumentEditor e]
+  (let [r (->int "document_editor_flatten_warnings_count" [(ed-ptr e)])]
+    (when (neg? r) (throw (ex-info "pdf_oxide: editor-flatten-warnings-count failed" {:status r :op "editor-flatten-warnings-count"})))
+    r))
+
+(defn editor-flatten-warning [^DocumentEditor e index]
+  (ed-string "document_editor_flatten_warning" [(ed-ptr e) (int index)] "editor-flatten-warning"))
+
+(defn editor-page-marked-for-flatten? [^DocumentEditor e page]
+  (ed-bool "document_editor_is_page_marked_for_flatten" [(ed-ptr e) (long page)] "editor-page-marked-for-flatten?"))
+
+(defn editor-unmark-page-for-flatten [^DocumentEditor e page]
+  (ed-status "document_editor_unmark_page_for_flatten" [(ed-ptr e) (long page)] "editor-unmark-page-for-flatten"))
+
+;; ── forms / merge / convert / embed ─────────────────────────────────────────────
+(defn set-editor-form-field-value [^DocumentEditor e name value]
+  (ed-status "document_editor_set_form_field_value" [(ed-ptr e) name value] "set-editor-form-field-value"))
+
+(defn editor-merge-from [^DocumentEditor e source-path]
+  (ed-status "document_editor_merge_from" [(ed-ptr e) source-path] "editor-merge-from"))
+
+(defn editor-merge-from-bytes [^DocumentEditor e ^bytes data]
+  (ed-status "document_editor_merge_from_bytes" [(ed-ptr e) data (long (alength data))] "editor-merge-from-bytes"))
+
+(defn editor-convert-to-pdf-a
+  "Convert the document to PDF/A in-place. `level`: 0=A1b 1=A1a 2=A2b 3=A2a 4=A2u 5=A3b 6=A3a 7=A3u."
+  [^DocumentEditor e level]
+  (ed-status "document_editor_convert_to_pdf_a" [(ed-ptr e) (int level)] "editor-convert-to-pdf-a"))
+
+(defn editor-embed-file [^DocumentEditor e name ^bytes data]
+  (ed-status "document_editor_embed_file" [(ed-ptr e) name data (long (alength data))] "editor-embed-file"))
+
+(defn editor-extract-pages-to-bytes
+  "Extract a subset of 0-based `pages` (a seq of ints) into a new in-memory PDF (bytes)."
+  ^bytes [^DocumentEditor e pages]
+  (let [n (count pages)
+        mem (when (pos? n)
+              (let [m (Memory. (* 4 n))]
+                (doseq [[i v] (map-indexed vector pages)] (.setInt m (* 4 (long i)) (int v)))
+                m))]
+    (ed-bytes "document_editor_extract_pages_to_bytes" [(ed-ptr e) mem (long n)] "editor-extract-pages-to-bytes")))
+
+;; ── save ────────────────────────────────────────────────────────────────────────
+(defn editor-save [^DocumentEditor e path]
+  (ed-status "document_editor_save" [(ed-ptr e) path] "editor-save"))
+
+(defn editor-save-to-bytes ^bytes [^DocumentEditor e]
+  (ed-bytes "document_editor_save_to_bytes" [(ed-ptr e)] "editor-save-to-bytes"))
+
+(defn editor-save-encrypted [^DocumentEditor e path user-password owner-password]
+  (ed-status "document_editor_save_encrypted" [(ed-ptr e) path user-password owner-password] "editor-save-encrypted"))
+
+(defn editor-save-encrypted-to-bytes ^bytes [^DocumentEditor e user-password owner-password]
+  (ed-bytes "document_editor_save_encrypted_to_bytes" [(ed-ptr e) user-password owner-password] "editor-save-encrypted-to-bytes"))
+
+(defn editor-save-to-bytes-with-options
+  "Save with compression / GC / linearize options. Returns the PDF bytes."
+  ^bytes [^DocumentEditor e compress garbage-collect linearize]
+  (ed-bytes "document_editor_save_to_bytes_with_options"
+            [(ed-ptr e) (boolean compress) (boolean garbage-collect) (boolean linearize)]
+            "editor-save-to-bytes-with-options"))

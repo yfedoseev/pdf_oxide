@@ -153,8 +153,8 @@ int main(void) {
                                               error:&re]; // renderPage (PNG)
             CHECK(img != nil && re == nil);
             if (img != nil) {
-                CHECK(img.width > 0);     // RenderedImage width
-                CHECK(img.height > 0);    // RenderedImage height
+                CHECK(img.width > 0);       // RenderedImage width
+                CHECK(img.height > 0);      // RenderedImage height
                 CHECK(img.data.length > 0); // RenderedImage data
                 NSString* path = [NSTemporaryDirectory()
                     stringByAppendingPathComponent:@"pdfoxide_objc_render.png"];
@@ -170,11 +170,35 @@ int main(void) {
                                                      error:&ze]; // renderPageZoom
             CHECK(zoomed != nil && ze == nil);
             NSError* the = nil;
-            POXRenderedImage* thumb = [doc renderPageThumbnail:0
-                                                          size:64
-                                                        format:0
-                                                         error:&the]; // renderPageThumbnail
+            POXRenderedImage* thumb =
+                [doc renderPageThumbnail:0
+                                    size:64
+                                  format:0
+                                   error:&the]; // renderPageThumbnail
             CHECK(thumb != nil && the == nil);
+        }
+
+        // ── DocumentEditor ───────────────────────────────────────────────────
+        {
+            NSError* ee = nil;
+            POXDocumentEditor* ed =
+                [POXDocumentEditor openFromBytes:samplePdf()
+                                           error:&ee]; // openFromBytes
+            CHECK(ed != nil && ee == nil);
+            CHECK([ed pageCountError:&ee] >= 1); // pageCount
+            POXVersion ev = [ed version];        // version
+            CHECK(ev.major >= 1);
+            BOOL mod = [ed isModified]; // isModified (bool)
+            CHECK(mod == YES || mod == NO);
+            CHECK([ed rotateAllPages:90 error:&ee]); // rotateAllPages
+            CHECK([ed pageRotation:0 error:&ee] == 90 ||
+                  [ed pageRotation:0 error:&ee] >= 0);            // getPageRotation
+            CHECK([ed setProducer:@"x" error:&ee]);               // setProducer
+            CHECK([[ed producerError:&ee] isEqualToString:@"x"]); // getProducer
+            NSData* edBytes = [ed saveToBytesWithError:&ee];      // saveToBytes
+            CHECK(edBytes != nil && edBytes.length > 0);
+            [ed close]; // close
+            [ed close]; // idempotent
         }
 
         // ── close (idempotent) ───────────────────────────────────────────────

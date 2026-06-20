@@ -107,5 +107,20 @@ pdf_save(pdf_from_markdown("# f\n\nx\n"), tmp3)
 expect_true(is.function(pdf_open_with_password))
 unlink(tmp3)
 
+# ── DocumentEditor ────────────────────────────────────────────────────────────
+ed <- pdf_editor_open_from_bytes(sample_pdf())          # pdf_editor_open_from_bytes
+expect_true(pdf_editor_page_count(ed) >= 1)             # pdf_editor_page_count
+expect_true(is.logical(pdf_editor_is_modified(ed)))     # pdf_editor_is_modified (bool)
+ev <- pdf_editor_version(ed)                            # pdf_editor_version
+expect_true(ev$major >= 1)
+pdf_editor_rotate_all_pages(ed, 90L)                    # pdf_editor_rotate_all_pages
+expect_true(pdf_editor_get_page_rotation(ed, 0) == 90)  # pdf_editor_get_page_rotation
+pdf_editor_set_producer(ed, "x")                        # pdf_editor_set_producer
+expect_true(is.character(pdf_editor_get_producer(ed)))  # pdf_editor_get_producer
+edb <- pdf_editor_save_to_bytes(ed)                     # pdf_editor_save_to_bytes
+expect_true(length(edb) > 0)
+pdf_editor_close(ed); expect_true(TRUE)                 # pdf_editor_close (idempotent)
+pdf_editor_close(ed)                                    # second close is a no-op
+
 # ── Error path ────────────────────────────────────────────────────────────────
 expect_error(pdf_open("/nonexistent/nope.pdf"))

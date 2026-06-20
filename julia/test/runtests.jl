@@ -167,6 +167,20 @@ end
         @test render_page(pg) isa RenderedImage           # Page.render_page
     end
 
+    # ── DocumentEditor ────────────────────────────────────────────────────────
+    let ed = open_editor_from_bytes(sample_pdf())   # open_editor_from_bytes
+        @test page_count(ed) >= 1                    # pageCount
+        @test version(ed).major >= 1                 # version
+        @test is_modified(ed) isa Bool               # isModified (bool)
+        rotate_all_pages(ed, 90)                      # rotateAllPages
+        @test get_page_rotation(ed, 0) == 90          # getPageRotation
+        set_producer(ed, "x")                         # setProducer
+        @test get_producer(ed) == "x"                 # getProducer
+        @test !isempty(save_to_bytes(ed))             # saveToBytes
+        close!(ed)                                     # close
+    end
+
     # ── Error path ────────────────────────────────────────────────────────────
     @test_throws PdfOxideError open_document("/nonexistent/nope.pdf")
+    @test_throws PdfOxideError open_editor("/nonexistent/nope.pdf")
 end

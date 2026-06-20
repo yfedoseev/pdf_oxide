@@ -274,7 +274,7 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
         int32_t dataLen = 0;
         uint8_t* p = pdf_get_rendered_image_data(handle, &dataLen, &c);
         _data = p ? [NSData dataWithBytes:p
-                                  length:(dataLen < 0 ? 0 : (NSUInteger)dataLen)]
+                                   length:(dataLen < 0 ? 0 : (NSUInteger)dataLen)]
                   : [NSData data];
         if (p)
             free_bytes(p);
@@ -897,6 +897,561 @@ static NSArray<POXSearchResult*>* POXTakeSearchResults(FfiSearchResults* list) {
 }
 - (NSString*)plainText:(NSError**)error {
     return [_document toPlainText:_index error:error];
+}
+
+@end
+
+// Copy a byte buffer return into NSData and free it via free_bytes. A null
+// pointer is treated as a failure (sets `error`).
+static NSData* _Nullable POXTakeBytes(uint8_t* p, NSUInteger len, int32_t code,
+                                      NSString* op, NSError** error) {
+    if (p == NULL) {
+        if (error)
+            *error = POXMakeError(code, op);
+        return nil;
+    }
+    NSData* out = [NSData dataWithBytes:p length:len];
+    free_bytes(p);
+    return out;
+}
+
+@implementation POXDocumentEditor {
+    DocumentEditor* _handle;
+}
+
++ (instancetype)openEditor:(NSString*)path error:(NSError**)error {
+    int32_t code = 0;
+    DocumentEditor* h = document_editor_open(path.UTF8String, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"openEditor");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
++ (instancetype)openFromBytes:(NSData*)data error:(NSError**)error {
+    int32_t code = 0;
+    DocumentEditor* h = document_editor_open_from_bytes(data.bytes, data.length, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"openFromBytes");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
+- (instancetype)initWithHandle:(DocumentEditor*)handle {
+    if ((self = [super init])) {
+        _handle = handle;
+    }
+    return self;
+}
+
+- (void)dealloc {
+    if (_handle)
+        document_editor_free(_handle);
+}
+
+- (void)close {
+    if (_handle) {
+        document_editor_free(_handle);
+        _handle = NULL;
+    }
+}
+
+- (NSInteger)pageCountError:(NSError**)error {
+    int32_t code = 0;
+    int32_t n = document_editor_get_page_count(_handle, &code);
+    if (n < 0) {
+        if (error)
+            *error = POXMakeError(code, @"pageCount");
+        return -1;
+    }
+    return n;
+}
+
+- (POXVersion)version {
+    POXVersion v = {0, 0};
+    document_editor_get_version(_handle, &v.major, &v.minor);
+    return v;
+}
+
+- (BOOL)isModified {
+    return document_editor_is_modified(_handle) ? YES : NO;
+}
+
+- (NSString*)sourcePathError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(document_editor_get_source_path(_handle, &code), code,
+                         @"sourcePath", error);
+}
+
+- (NSString*)producerError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(document_editor_get_producer(_handle, &code), code,
+                         @"producer", error);
+}
+
+- (BOOL)setProducer:(NSString*)value error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_set_producer(_handle, value.UTF8String, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"setProducer");
+        return NO;
+    }
+    return YES;
+}
+
+- (NSString*)creationDateError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(document_editor_get_creation_date(_handle, &code), code,
+                         @"creationDate", error);
+}
+
+- (BOOL)setCreationDate:(NSString*)date error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_set_creation_date(_handle, date.UTF8String, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"setCreationDate");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)deletePage:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_delete_page(_handle, (int32_t)page, &code) != 0 || code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"deletePage");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)movePageFrom:(NSInteger)from to:(NSInteger)to error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_move_page(_handle, (int32_t)from, (int32_t)to, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"movePage");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)rotatePage:(NSInteger)page byDegrees:(NSInteger)degrees error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_rotate_page_by(_handle, (uintptr_t)page, (int32_t)degrees,
+                                       &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"rotatePageBy");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)rotateAllPages:(NSInteger)degrees error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_rotate_all_pages(_handle, (int32_t)degrees, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"rotateAllPages");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)setPageRotation:(NSInteger)page
+                degrees:(NSInteger)degrees
+                  error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_set_page_rotation(_handle, (int32_t)page, (int32_t)degrees,
+                                          &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"setPageRotation");
+        return NO;
+    }
+    return YES;
+}
+
+- (NSInteger)pageRotation:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    int32_t r = document_editor_get_page_rotation(_handle, (int32_t)page, &code);
+    if (r < 0 || code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"getPageRotation");
+        return -1;
+    }
+    return r;
+}
+
+- (BOOL)cropMarginsLeft:(float)left
+                  right:(float)right
+                    top:(float)top
+                 bottom:(float)bottom
+                  error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_crop_margins(_handle, left, right, top, bottom, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"cropMargins");
+        return NO;
+    }
+    return YES;
+}
+
+- (POXBbox)pageCropBox:(NSInteger)page error:(NSError**)error {
+    POXBbox box = {0, 0, 0, 0};
+    int32_t code = 0;
+    double x = 0, y = 0, w = 0, h = 0;
+    if (document_editor_get_page_crop_box(_handle, (uintptr_t)page, &x, &y, &w, &h,
+                                          &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"getPageCropBox");
+        return box;
+    }
+    box.x = (float)x;
+    box.y = (float)y;
+    box.width = (float)w;
+    box.height = (float)h;
+    return box;
+}
+
+- (BOOL)setPageCropBox:(NSInteger)page box:(POXBbox)box error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_set_page_crop_box(_handle, (uintptr_t)page, box.x, box.y,
+                                          box.width, box.height, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"setPageCropBox");
+        return NO;
+    }
+    return YES;
+}
+
+- (POXBbox)pageMediaBox:(NSInteger)page error:(NSError**)error {
+    POXBbox box = {0, 0, 0, 0};
+    int32_t code = 0;
+    double x = 0, y = 0, w = 0, h = 0;
+    if (document_editor_get_page_media_box(_handle, (uintptr_t)page, &x, &y, &w, &h,
+                                           &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"getPageMediaBox");
+        return box;
+    }
+    box.x = (float)x;
+    box.y = (float)y;
+    box.width = (float)w;
+    box.height = (float)h;
+    return box;
+}
+
+- (BOOL)setPageMediaBox:(NSInteger)page box:(POXBbox)box error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_set_page_media_box(_handle, (uintptr_t)page, box.x, box.y,
+                                           box.width, box.height, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"setPageMediaBox");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)applyAllRedactions:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_apply_all_redactions(_handle, &code) != 0 || code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"applyAllRedactions");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)applyPageRedactions:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_apply_page_redactions(_handle, (uintptr_t)page, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"applyPageRedactions");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)isPageMarkedForRedaction:(NSInteger)page {
+    return document_editor_is_page_marked_for_redaction(_handle, (uintptr_t)page) == 1
+               ? YES
+               : NO;
+}
+
+- (BOOL)unmarkPageForRedaction:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_unmark_page_for_redaction(_handle, (uintptr_t)page, &code) !=
+            0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"unmarkPageForRedaction");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)eraseRegion:(NSInteger)page
+                  x:(float)x
+                  y:(float)y
+                  w:(float)w
+                  h:(float)h
+              error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_erase_region(_handle, (int32_t)page, x, y, w, h, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"eraseRegion");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)eraseRegions:(NSInteger)page
+               rects:(NSArray<NSValue*>*)rects
+               error:(NSError**)error {
+    NSUInteger count = rects.count;
+    double* flat = count ? (double*)malloc(sizeof(double) * count * 4) : NULL;
+    for (NSUInteger i = 0; i < count; ++i) {
+        POXBbox b = {0, 0, 0, 0};
+        [rects[i] getValue:&b];
+        flat[i * 4 + 0] = (double)b.x;
+        flat[i * 4 + 1] = (double)b.y;
+        flat[i * 4 + 2] = (double)b.width;
+        flat[i * 4 + 3] = (double)b.height;
+    }
+    int32_t code = 0;
+    int32_t rc = document_editor_erase_regions(_handle, (uintptr_t)page, flat,
+                                               (uintptr_t)count, &code);
+    if (flat)
+        free(flat);
+    if (rc != 0 || code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"eraseRegions");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)clearEraseRegions:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_clear_erase_regions(_handle, (uintptr_t)page, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"clearEraseRegions");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)flattenForms:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_flatten_forms(_handle, &code) != 0 || code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"flattenForms");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)flattenFormsOnPage:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_flatten_forms_on_page(_handle, (int32_t)page, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"flattenFormsOnPage");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)flattenAnnotations:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_flatten_annotations(_handle, (int32_t)page, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"flattenAnnotations");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)flattenAllAnnotations:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_flatten_all_annotations(_handle, &code) != 0 || code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"flattenAllAnnotations");
+        return NO;
+    }
+    return YES;
+}
+
+- (NSInteger)flattenWarningsCount {
+    return document_editor_flatten_warnings_count(_handle);
+}
+
+- (NSString*)flattenWarning:(NSInteger)index error:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(
+        document_editor_flatten_warning(_handle, (int32_t)index, &code), code,
+        @"flattenWarning", error);
+}
+
+- (BOOL)isPageMarkedForFlatten:(NSInteger)page {
+    return document_editor_is_page_marked_for_flatten(_handle, (uintptr_t)page) == 1
+               ? YES
+               : NO;
+}
+
+- (BOOL)unmarkPageForFlatten:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_unmark_page_for_flatten(_handle, (uintptr_t)page, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"unmarkPageForFlatten");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)setFormField:(NSString*)name value:(NSString*)value error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_set_form_field_value(_handle, name.UTF8String, value.UTF8String,
+                                             &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"setFormFieldValue");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)mergeFrom:(NSString*)sourcePath error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_merge_from(_handle, sourcePath.UTF8String, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"mergeFrom");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)mergeFromBytes:(NSData*)data error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_merge_from_bytes(_handle, data.bytes, data.length, &code) !=
+            0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"mergeFromBytes");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)convertToPdfA:(NSInteger)level error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_convert_to_pdf_a(_handle, (int32_t)level, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"convertToPdfA");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)embedFile:(NSString*)name data:(NSData*)data error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_embed_file(_handle, name.UTF8String, data.bytes, data.length,
+                                   &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"embedFile");
+        return NO;
+    }
+    return YES;
+}
+
+- (NSData*)extractPagesToBytes:(NSArray<NSNumber*>*)pages error:(NSError**)error {
+    NSUInteger count = pages.count;
+    int32_t* idx = count ? (int32_t*)malloc(sizeof(int32_t) * count) : NULL;
+    for (NSUInteger i = 0; i < count; ++i)
+        idx[i] = (int32_t)[pages[i] integerValue];
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p = document_editor_extract_pages_to_bytes(_handle, idx, (uintptr_t)count,
+                                                        &len, &code);
+    if (idx)
+        free(idx);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"extractPagesToBytes", error);
+}
+
+- (BOOL)saveToPath:(NSString*)path error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_save(_handle, path.UTF8String, &code) != 0 || code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"save");
+        return NO;
+    }
+    return YES;
+}
+
+- (NSData*)saveToBytesWithError:(NSError**)error {
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p = document_editor_save_to_bytes(_handle, &len, &code);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"saveToBytes", error);
+}
+
+- (NSData*)saveToBytesCompress:(BOOL)compress
+                garbageCollect:(BOOL)garbageCollect
+                     linearize:(BOOL)linearize
+                         error:(NSError**)error {
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p = document_editor_save_to_bytes_with_options(
+        _handle, compress ? true : false, garbageCollect ? true : false,
+        linearize ? true : false, &len, &code);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"saveToBytesWithOptions", error);
+}
+
+- (BOOL)saveEncryptedToPath:(NSString*)path
+               userPassword:(NSString*)userPassword
+              ownerPassword:(NSString*)ownerPassword
+                      error:(NSError**)error {
+    int32_t code = 0;
+    if (document_editor_save_encrypted(_handle, path.UTF8String,
+                                       userPassword.UTF8String,
+                                       ownerPassword.UTF8String, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"saveEncrypted");
+        return NO;
+    }
+    return YES;
+}
+
+- (NSData*)saveEncryptedToBytesWithUserPassword:(NSString*)userPassword
+                                  ownerPassword:(NSString*)ownerPassword
+                                          error:(NSError**)error {
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p = document_editor_save_encrypted_to_bytes(
+        _handle, userPassword.UTF8String, ownerPassword.UTF8String, &len, &code);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"saveEncryptedToBytes", error);
 }
 
 @end

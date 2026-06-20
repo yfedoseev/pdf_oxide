@@ -181,6 +181,20 @@ class ApiCoverageTest {
             assertTrue(doc.toMarkdownAllAsync().isNotEmpty())
         }
 
+    // ── DocumentEditor ───────────────────────────────────────────────────────
+    @Test fun documentEditor() =
+        DocumentEditor.openFromBytes(samplePdf()).use { editor ->
+            assertTrue(editor.pageCount() >= 1)
+            val modified: Boolean = editor.isModified()
+            assertTrue(modified || !modified) // returns a bool without raising
+            editor.rotateAllPages(90)
+            val rotation = editor.getPageRotation(0)
+            assertEquals(90, rotation)
+            editor.setProducer("x")
+            assertEquals("x", editor.getProducer())
+            assertTrue(editor.saveToBytes().isNotEmpty())
+        }
+
     // ── Error path ───────────────────────────────────────────────────────────
     @Test fun errorOnMissingFile() {
         assertFailsWith<PdfOxideException> { PdfDocument.open("/nonexistent/nope.pdf") }

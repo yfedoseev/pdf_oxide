@@ -131,6 +131,109 @@ typedef _RenderedSaveD = int Function(
 typedef _RenderedFreeC = Void Function(Pointer<Void>);
 typedef _RenderedFreeD = void Function(Pointer<Void>);
 
+// document editing. The DocumentEditor handle is an opaque pointer freed via
+// `document_editor_free`. Page indices follow each C signature exactly: some
+// args are uintptr_t (IntPtr), some int32_t (Int32). String returns are owned
+// char* (-> free_string); byte returns are uint8* with a uintptr_t out-len
+// (-> free_bytes). int32 status returns are 0 = success.
+typedef _DeOpenC = Pointer<Void> Function(Pointer<Utf8>, Pointer<Int32>);
+typedef _DeOpenD = Pointer<Void> Function(Pointer<Utf8>, Pointer<Int32>);
+typedef _DeOpenBytesC = Pointer<Void> Function(
+    Pointer<Uint8>, IntPtr, Pointer<Int32>);
+typedef _DeOpenBytesD = Pointer<Void> Function(
+    Pointer<Uint8>, int, Pointer<Int32>);
+typedef _DeFreeC = Void Function(Pointer<Void>);
+typedef _DeFreeD = void Function(Pointer<Void>);
+typedef _DeBoolC = Bool Function(Pointer<Void>);
+typedef _DeBoolD = bool Function(Pointer<Void>);
+typedef _DeStrC = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _DeStrD = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _DeVersionC = Void Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Uint8>);
+typedef _DeVersionD = void Function(
+    Pointer<Void>, Pointer<Uint8>, Pointer<Uint8>);
+typedef _DeI32C = Int32 Function(Pointer<Void>, Pointer<Int32>);
+typedef _DeI32D = int Function(Pointer<Void>, Pointer<Int32>);
+typedef _DeSetStrC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DeSetStrD = int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DeSaveC = Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DeSaveD = int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DeSaveBytesC = Pointer<Uint8> Function(
+    Pointer<Void>, Pointer<IntPtr>, Pointer<Int32>);
+typedef _DeSaveBytesD = Pointer<Uint8> Function(
+    Pointer<Void>, Pointer<IntPtr>, Pointer<Int32>);
+typedef _DeSaveBytesOptsC = Pointer<Uint8> Function(
+    Pointer<Void>, Bool, Bool, Bool, Pointer<IntPtr>, Pointer<Int32>);
+typedef _DeSaveBytesOptsD = Pointer<Uint8> Function(
+    Pointer<Void>, bool, bool, bool, Pointer<IntPtr>, Pointer<Int32>);
+typedef _DeExtractPagesC = Pointer<Uint8> Function(
+    Pointer<Void>, Pointer<Int32>, IntPtr, Pointer<IntPtr>, Pointer<Int32>);
+typedef _DeExtractPagesD = Pointer<Uint8> Function(
+    Pointer<Void>, Pointer<Int32>, int, Pointer<IntPtr>, Pointer<Int32>);
+typedef _DeConvertPdfAC = Int32 Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _DeConvertPdfAD = int Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _DeSaveEncBytesC = Pointer<Uint8> Function(Pointer<Void>, Pointer<Utf8>,
+    Pointer<Utf8>, Pointer<IntPtr>, Pointer<Int32>);
+typedef _DeSaveEncBytesD = Pointer<Uint8> Function(Pointer<Void>, Pointer<Utf8>,
+    Pointer<Utf8>, Pointer<IntPtr>, Pointer<Int32>);
+typedef _DeMergeBytesC = Int32 Function(
+    Pointer<Void>, Pointer<Uint8>, IntPtr, Pointer<Int32>);
+typedef _DeMergeBytesD = int Function(
+    Pointer<Void>, Pointer<Uint8>, int, Pointer<Int32>);
+typedef _DeEmbedFileC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>, IntPtr, Pointer<Int32>);
+typedef _DeEmbedFileD = int Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Uint8>, int, Pointer<Int32>);
+typedef _DeUsizeI32C = Int32 Function(Pointer<Void>, IntPtr, Pointer<Int32>);
+typedef _DeUsizeI32D = int Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _DeI32I32C = Int32 Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _DeI32I32D = int Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _DeI32I32I32C = Int32 Function(
+    Pointer<Void>, Int32, Int32, Pointer<Int32>);
+typedef _DeI32I32I32D = int Function(Pointer<Void>, int, int, Pointer<Int32>);
+typedef _DeRotateByC = Int32 Function(
+    Pointer<Void>, IntPtr, Int32, Pointer<Int32>);
+typedef _DeRotateByD = int Function(Pointer<Void>, int, int, Pointer<Int32>);
+typedef _DeGetBoxC = Int32 Function(Pointer<Void>, IntPtr, Pointer<Double>,
+    Pointer<Double>, Pointer<Double>, Pointer<Double>, Pointer<Int32>);
+typedef _DeGetBoxD = int Function(Pointer<Void>, int, Pointer<Double>,
+    Pointer<Double>, Pointer<Double>, Pointer<Double>, Pointer<Int32>);
+typedef _DeSetBoxC = Int32 Function(
+    Pointer<Void>, IntPtr, Double, Double, Double, Double, Pointer<Int32>);
+typedef _DeSetBoxD = int Function(
+    Pointer<Void>, int, double, double, double, double, Pointer<Int32>);
+typedef _DeEraseRegionsC = Int32 Function(
+    Pointer<Void>, IntPtr, Pointer<Double>, IntPtr, Pointer<Int32>);
+typedef _DeEraseRegionsD = int Function(
+    Pointer<Void>, int, Pointer<Double>, int, Pointer<Int32>);
+typedef _DeEraseRegionC = Int32 Function(
+    Pointer<Void>, Int32, Float, Float, Float, Float, Pointer<Int32>);
+typedef _DeEraseRegionD = int Function(
+    Pointer<Void>, int, double, double, double, double, Pointer<Int32>);
+typedef _DeIsMarkedC = Int32 Function(Pointer<Void>, IntPtr);
+typedef _DeIsMarkedD = int Function(Pointer<Void>, int);
+typedef _DeCropMarginsC = Int32 Function(
+    Pointer<Void>, Float, Float, Float, Float, Pointer<Int32>);
+typedef _DeCropMarginsD = int Function(
+    Pointer<Void>, double, double, double, double, Pointer<Int32>);
+typedef _DeMergeFromC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DeMergeFromD = int Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DeSaveEncC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DeSaveEncD = int Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DeSetFormC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DeSetFormD = int Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DeWarnCountC = Int32 Function(Pointer<Void>);
+typedef _DeWarnCountD = int Function(Pointer<Void>);
+typedef _DeWarnC = Pointer<Utf8> Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _DeWarnD = Pointer<Utf8> Function(Pointer<Void>, int, Pointer<Int32>);
+
 /// Resolved native library + bound functions (loaded once).
 class _Native {
   _Native(this.lib)
@@ -338,7 +441,108 @@ class _Native {
         renderedImageSave = lib.lookupFunction<_RenderedSaveC, _RenderedSaveD>(
             'pdf_save_rendered_image'),
         renderedImageFree = lib.lookupFunction<_RenderedFreeC, _RenderedFreeD>(
-            'pdf_rendered_image_free');
+            'pdf_rendered_image_free'),
+        // document editing
+        deOpen = lib.lookupFunction<_DeOpenC, _DeOpenD>('document_editor_open'),
+        deOpenBytes = lib.lookupFunction<_DeOpenBytesC, _DeOpenBytesD>(
+            'document_editor_open_from_bytes'),
+        deFree = lib.lookupFunction<_DeFreeC, _DeFreeD>('document_editor_free'),
+        deIsModified = lib
+            .lookupFunction<_DeBoolC, _DeBoolD>('document_editor_is_modified'),
+        deGetSourcePath = lib.lookupFunction<_DeStrC, _DeStrD>(
+            'document_editor_get_source_path'),
+        deGetVersion = lib.lookupFunction<_DeVersionC, _DeVersionD>(
+            'document_editor_get_version'),
+        dePageCount = lib
+            .lookupFunction<_DeI32C, _DeI32D>('document_editor_get_page_count'),
+        deGetProducer = lib
+            .lookupFunction<_DeStrC, _DeStrD>('document_editor_get_producer'),
+        deSetProducer = lib.lookupFunction<_DeSetStrC, _DeSetStrD>(
+            'document_editor_set_producer'),
+        deGetCreationDate = lib.lookupFunction<_DeStrC, _DeStrD>(
+            'document_editor_get_creation_date'),
+        deSetCreationDate = lib.lookupFunction<_DeSetStrC, _DeSetStrD>(
+            'document_editor_set_creation_date'),
+        deSave = lib.lookupFunction<_DeSaveC, _DeSaveD>('document_editor_save'),
+        deSaveToBytes = lib.lookupFunction<_DeSaveBytesC, _DeSaveBytesD>(
+            'document_editor_save_to_bytes'),
+        deSaveToBytesWithOptions =
+            lib.lookupFunction<_DeSaveBytesOptsC, _DeSaveBytesOptsD>(
+                'document_editor_save_to_bytes_with_options'),
+        deExtractPagesToBytes =
+            lib.lookupFunction<_DeExtractPagesC, _DeExtractPagesD>(
+                'document_editor_extract_pages_to_bytes'),
+        deConvertToPdfA = lib.lookupFunction<_DeConvertPdfAC, _DeConvertPdfAD>(
+            'document_editor_convert_to_pdf_a'),
+        deSaveEncryptedToBytes =
+            lib.lookupFunction<_DeSaveEncBytesC, _DeSaveEncBytesD>(
+                'document_editor_save_encrypted_to_bytes'),
+        deMergeFromBytes = lib.lookupFunction<_DeMergeBytesC, _DeMergeBytesD>(
+            'document_editor_merge_from_bytes'),
+        deEmbedFile = lib.lookupFunction<_DeEmbedFileC, _DeEmbedFileD>(
+            'document_editor_embed_file'),
+        deApplyPageRedactions = lib.lookupFunction<_DeUsizeI32C, _DeUsizeI32D>(
+            'document_editor_apply_page_redactions'),
+        deApplyAllRedactions = lib.lookupFunction<_DeI32C, _DeI32D>(
+            'document_editor_apply_all_redactions'),
+        deRotateAllPages = lib.lookupFunction<_DeI32I32C, _DeI32I32D>(
+            'document_editor_rotate_all_pages'),
+        deRotatePageBy = lib.lookupFunction<_DeRotateByC, _DeRotateByD>(
+            'document_editor_rotate_page_by'),
+        deGetPageMediaBox = lib.lookupFunction<_DeGetBoxC, _DeGetBoxD>(
+            'document_editor_get_page_media_box'),
+        deSetPageMediaBox = lib.lookupFunction<_DeSetBoxC, _DeSetBoxD>(
+            'document_editor_set_page_media_box'),
+        deGetPageCropBox = lib.lookupFunction<_DeGetBoxC, _DeGetBoxD>(
+            'document_editor_get_page_crop_box'),
+        deSetPageCropBox = lib.lookupFunction<_DeSetBoxC, _DeSetBoxD>(
+            'document_editor_set_page_crop_box'),
+        deEraseRegions = lib.lookupFunction<_DeEraseRegionsC, _DeEraseRegionsD>(
+            'document_editor_erase_regions'),
+        deClearEraseRegions = lib.lookupFunction<_DeUsizeI32C, _DeUsizeI32D>(
+            'document_editor_clear_erase_regions'),
+        deIsPageMarkedForFlatten =
+            lib.lookupFunction<_DeIsMarkedC, _DeIsMarkedD>(
+                'document_editor_is_page_marked_for_flatten'),
+        deUnmarkPageForFlatten = lib.lookupFunction<_DeUsizeI32C, _DeUsizeI32D>(
+            'document_editor_unmark_page_for_flatten'),
+        deIsPageMarkedForRedaction =
+            lib.lookupFunction<_DeIsMarkedC, _DeIsMarkedD>(
+                'document_editor_is_page_marked_for_redaction'),
+        deUnmarkPageForRedaction =
+            lib.lookupFunction<_DeUsizeI32C, _DeUsizeI32D>(
+                'document_editor_unmark_page_for_redaction'),
+        deDeletePage = lib.lookupFunction<_DeI32I32C, _DeI32I32D>(
+            'document_editor_delete_page'),
+        deMovePage = lib.lookupFunction<_DeI32I32I32C, _DeI32I32I32D>(
+            'document_editor_move_page'),
+        deGetPageRotation = lib.lookupFunction<_DeI32I32C, _DeI32I32D>(
+            'document_editor_get_page_rotation'),
+        deSetPageRotation = lib.lookupFunction<_DeI32I32I32C, _DeI32I32I32D>(
+            'document_editor_set_page_rotation'),
+        deEraseRegion = lib.lookupFunction<_DeEraseRegionC, _DeEraseRegionD>(
+            'document_editor_erase_region'),
+        deFlattenAnnotations = lib.lookupFunction<_DeI32I32C, _DeI32I32D>(
+            'document_editor_flatten_annotations'),
+        deFlattenAllAnnotations = lib.lookupFunction<_DeI32C, _DeI32D>(
+            'document_editor_flatten_all_annotations'),
+        deCropMargins = lib.lookupFunction<_DeCropMarginsC, _DeCropMarginsD>(
+            'document_editor_crop_margins'),
+        deMergeFrom = lib.lookupFunction<_DeMergeFromC, _DeMergeFromD>(
+            'document_editor_merge_from'),
+        deSaveEncrypted = lib.lookupFunction<_DeSaveEncC, _DeSaveEncD>(
+            'document_editor_save_encrypted'),
+        deSetFormFieldValue = lib.lookupFunction<_DeSetFormC, _DeSetFormD>(
+            'document_editor_set_form_field_value'),
+        deFlattenForms = lib
+            .lookupFunction<_DeI32C, _DeI32D>('document_editor_flatten_forms'),
+        deFlattenFormsOnPage = lib.lookupFunction<_DeI32I32C, _DeI32I32D>(
+            'document_editor_flatten_forms_on_page'),
+        deFlattenWarningsCount =
+            lib.lookupFunction<_DeWarnCountC, _DeWarnCountD>(
+                'document_editor_flatten_warnings_count'),
+        deFlattenWarning = lib.lookupFunction<_DeWarnC, _DeWarnD>(
+            'document_editor_flatten_warning');
 
   final DynamicLibrary lib;
   final _OpenD open;
@@ -445,6 +649,55 @@ class _Native {
   final _RenderedDataD renderedImageData;
   final _RenderedSaveD renderedImageSave;
   final _RenderedFreeD renderedImageFree;
+  // document editing
+  final _DeOpenD deOpen;
+  final _DeOpenBytesD deOpenBytes;
+  final _DeFreeD deFree;
+  final _DeBoolD deIsModified;
+  final _DeStrD deGetSourcePath;
+  final _DeVersionD deGetVersion;
+  final _DeI32D dePageCount;
+  final _DeStrD deGetProducer;
+  final _DeSetStrD deSetProducer;
+  final _DeStrD deGetCreationDate;
+  final _DeSetStrD deSetCreationDate;
+  final _DeSaveD deSave;
+  final _DeSaveBytesD deSaveToBytes;
+  final _DeSaveBytesOptsD deSaveToBytesWithOptions;
+  final _DeExtractPagesD deExtractPagesToBytes;
+  final _DeConvertPdfAD deConvertToPdfA;
+  final _DeSaveEncBytesD deSaveEncryptedToBytes;
+  final _DeMergeBytesD deMergeFromBytes;
+  final _DeEmbedFileD deEmbedFile;
+  final _DeUsizeI32D deApplyPageRedactions;
+  final _DeI32D deApplyAllRedactions;
+  final _DeI32I32D deRotateAllPages;
+  final _DeRotateByD deRotatePageBy;
+  final _DeGetBoxD deGetPageMediaBox;
+  final _DeSetBoxD deSetPageMediaBox;
+  final _DeGetBoxD deGetPageCropBox;
+  final _DeSetBoxD deSetPageCropBox;
+  final _DeEraseRegionsD deEraseRegions;
+  final _DeUsizeI32D deClearEraseRegions;
+  final _DeIsMarkedD deIsPageMarkedForFlatten;
+  final _DeUsizeI32D deUnmarkPageForFlatten;
+  final _DeIsMarkedD deIsPageMarkedForRedaction;
+  final _DeUsizeI32D deUnmarkPageForRedaction;
+  final _DeI32I32D deDeletePage;
+  final _DeI32I32I32D deMovePage;
+  final _DeI32I32D deGetPageRotation;
+  final _DeI32I32I32D deSetPageRotation;
+  final _DeEraseRegionD deEraseRegion;
+  final _DeI32I32D deFlattenAnnotations;
+  final _DeI32D deFlattenAllAnnotations;
+  final _DeCropMarginsD deCropMargins;
+  final _DeMergeFromD deMergeFrom;
+  final _DeSaveEncD deSaveEncrypted;
+  final _DeSetFormD deSetFormFieldValue;
+  final _DeI32D deFlattenForms;
+  final _DeI32I32D deFlattenFormsOnPage;
+  final _DeWarnCountD deFlattenWarningsCount;
+  final _DeWarnD deFlattenWarning;
 }
 
 typedef _OpenD = Pointer<Void> Function(Pointer<Utf8>, Pointer<Int32>);
@@ -1309,6 +1562,590 @@ class Pdf implements Finalizable {
     if (_handle != nullptr) {
       _finalizer.detach(this);
       _n.pdfFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+/// An opened PDF for editing — wraps the native `DocumentEditor` handle.
+///
+/// Mirrors [PdfDocument]/[Pdf]: opened via the static [open]/[openFromBytes]
+/// factories, owns the native handle (freed on [close], by the finalizer, or
+/// implicitly on dealloc), and shares the same error/string/byte conventions.
+/// Page indices are 0-based. C status codes are 0 = success; any non-zero
+/// status or set `error_code` raises [PdfOxideError]. The `is_*` queries return
+/// `bool` (1 = true). Call [close] when done (or rely on the finalizer).
+class DocumentEditor implements Finalizable {
+  DocumentEditor._(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_DeFreeC>>('document_editor_free'));
+  Pointer<Void> _handle;
+
+  /// Open a PDF for editing from a filesystem path.
+  static DocumentEditor open(String path) {
+    final cPath = path.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.deOpen(cPath, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'openEditor');
+      return DocumentEditor._(h);
+    } finally {
+      calloc.free(cPath);
+      calloc.free(code);
+    }
+  }
+
+  /// Open a PDF for editing from in-memory bytes.
+  static DocumentEditor openFromBytes(Uint8List data) {
+    final buf = calloc<Uint8>(data.length);
+    buf.asTypedList(data.length).setAll(0, data);
+    final code = calloc<Int32>();
+    try {
+      final h = _n.deOpenBytes(buf, data.length, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'openFromBytes');
+      return DocumentEditor._(h);
+    } finally {
+      calloc.free(buf);
+      calloc.free(code);
+    }
+  }
+
+  void _check() {
+    if (_handle == nullptr) throw StateError('DocumentEditor is closed');
+  }
+
+  // ── small helpers (shared shapes) ──────────────────────────────────────────
+
+  /// Read an owned char* + free_string.
+  String _str(_DeStrD fn, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(fn(_handle, code), code.value, op);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Set an owned UTF-8 string-valued field (status return).
+  void _setStr(_DeSetStrD fn, String value, String op) {
+    _check();
+    final c = value.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (fn(_handle, c, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, op);
+      }
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  /// Run a `(handle, error_code) -> int32` status function.
+  void _status0(_DeI32D fn, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (fn(_handle, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, op);
+      }
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Run a `(handle, int32, error_code) -> int32` status function.
+  void _statusI32(_DeI32I32D fn, int a, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (fn(_handle, a, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, op);
+      }
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Run a `(handle, usize, error_code) -> int32` status function.
+  void _statusUsize(_DeUsizeI32D fn, int page, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (fn(_handle, page, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, op);
+      }
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Read a double-quad box out-param (x, y, w, h) into a [Bbox].
+  Bbox _getBox(_DeGetBoxD fn, int page, String op) {
+    _check();
+    final x = calloc<Double>();
+    final y = calloc<Double>();
+    final w = calloc<Double>();
+    final h = calloc<Double>();
+    final code = calloc<Int32>();
+    try {
+      if (fn(_handle, page, x, y, w, h, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, op);
+      }
+      return Bbox(x.value, y.value, w.value, h.value);
+    } finally {
+      calloc.free(x);
+      calloc.free(y);
+      calloc.free(w);
+      calloc.free(h);
+      calloc.free(code);
+    }
+  }
+
+  /// Set a double-quad box (x, y, w, h).
+  void _setBox(_DeSetBoxD fn, int page, Bbox box, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (fn(_handle, page, box.x, box.y, box.width, box.height, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, op);
+      }
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Read an owned uint8* byte buffer with a `uintptr_t` out-len, copy into
+  /// Dart, and free via `free_bytes`.
+  Uint8List _bytesOut(
+      Pointer<Uint8> Function(Pointer<IntPtr>, Pointer<Int32>) call,
+      String op) {
+    final len = calloc<IntPtr>();
+    final code = calloc<Int32>();
+    try {
+      final p = call(len, code);
+      if (p == nullptr) throw PdfOxideError(code.value, op);
+      final out =
+          Uint8List.fromList(p.asTypedList(len.value < 0 ? 0 : len.value));
+      _n.freeBytes(p);
+      return out;
+    } finally {
+      calloc.free(len);
+      calloc.free(code);
+    }
+  }
+
+  // ── document metadata / queries ────────────────────────────────────────────
+
+  int get pageCount {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final n = _n.dePageCount(_handle, code);
+      if (n < 0 || code.value != 0)
+        throw PdfOxideError(code.value, 'pageCount');
+      return n;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  PdfVersion get version {
+    _check();
+    final maj = calloc<Uint8>();
+    final min = calloc<Uint8>();
+    try {
+      _n.deGetVersion(_handle, maj, min);
+      return PdfVersion(maj.value, min.value);
+    } finally {
+      calloc.free(maj);
+      calloc.free(min);
+    }
+  }
+
+  /// `true` if the editor has unsaved modifications.
+  bool isModified() {
+    _check();
+    return _n.deIsModified(_handle);
+  }
+
+  /// Source path the editor was opened from (empty/absent allowed).
+  String getSourcePath() => _str(_n.deGetSourcePath, 'getSourcePath');
+
+  String getProducer() => _str(_n.deGetProducer, 'getProducer');
+  void setProducer(String value) =>
+      _setStr(_n.deSetProducer, value, 'setProducer');
+
+  String getCreationDate() => _str(_n.deGetCreationDate, 'getCreationDate');
+  void setCreationDate(String dateStr) =>
+      _setStr(_n.deSetCreationDate, dateStr, 'setCreationDate');
+
+  // ── page operations ────────────────────────────────────────────────────────
+
+  void deletePage(int pageIndex) =>
+      _statusI32(_n.deDeletePage, pageIndex, 'deletePage');
+
+  void movePage(int from, int to) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.deMovePage(_handle, from, to, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'movePage');
+      }
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Rotate a single page by [degrees] (additive). Page is `uintptr_t`.
+  void rotatePageBy(int page, int degrees) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.deRotatePageBy(_handle, page, degrees, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'rotatePageBy');
+      }
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Rotate all pages by [degrees] (relative).
+  void rotateAllPages(int degrees) =>
+      _statusI32(_n.deRotateAllPages, degrees, 'rotateAllPages');
+
+  /// Set absolute rotation for a page.
+  void setPageRotation(int page, int degrees) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.deSetPageRotation(_handle, page, degrees, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'setPageRotation');
+      }
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Current rotation (degrees) of a page.
+  int getPageRotation(int page) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final r = _n.deGetPageRotation(_handle, page, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'getPageRotation');
+      return r;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Crop the document margins (points) on every page.
+  void cropMargins(double left, double right, double top, double bottom) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.deCropMargins(_handle, left, right, top, bottom, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'cropMargins');
+      }
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  Bbox getPageCropBox(int page) =>
+      _getBox(_n.deGetPageCropBox, page, 'getPageCropBox');
+  void setPageCropBox(int page, Bbox box) =>
+      _setBox(_n.deSetPageCropBox, page, box, 'setPageCropBox');
+  Bbox getPageMediaBox(int page) =>
+      _getBox(_n.deGetPageMediaBox, page, 'getPageMediaBox');
+  void setPageMediaBox(int page, Bbox box) =>
+      _setBox(_n.deSetPageMediaBox, page, box, 'setPageMediaBox');
+
+  // ── redaction / erase ──────────────────────────────────────────────────────
+
+  void applyAllRedactions() =>
+      _status0(_n.deApplyAllRedactions, 'applyAllRedactions');
+  void applyPageRedactions(int page) =>
+      _statusUsize(_n.deApplyPageRedactions, page, 'applyPageRedactions');
+
+  /// Erase a single rectangular region on [page] (float coords). Page int32.
+  void eraseRegion(int page, double x, double y, double w, double h) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.deEraseRegion(_handle, page, x, y, w, h, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'eraseRegion');
+      }
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Erase multiple rectangles on [page]. [rects] is a list of (x, y, w, h)
+  /// quads flattened to a contiguous f64 array.
+  void eraseRegions(int page, List<List<double>> rects) {
+    _check();
+    final buf = calloc<Double>(rects.length * 4);
+    final code = calloc<Int32>();
+    try {
+      for (var i = 0; i < rects.length; i++) {
+        final r = rects[i];
+        buf[i * 4 + 0] = r[0];
+        buf[i * 4 + 1] = r[1];
+        buf[i * 4 + 2] = r[2];
+        buf[i * 4 + 3] = r[3];
+      }
+      if (_n.deEraseRegions(_handle, page, buf, rects.length, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'eraseRegions');
+      }
+    } finally {
+      calloc.free(buf);
+      calloc.free(code);
+    }
+  }
+
+  void clearEraseRegions(int page) =>
+      _statusUsize(_n.deClearEraseRegions, page, 'clearEraseRegions');
+
+  /// `true` if [page] is marked for redaction (1 = true).
+  bool isPageMarkedForRedaction(int page) {
+    _check();
+    final r = _n.deIsPageMarkedForRedaction(_handle, page);
+    if (r < 0) throw PdfOxideError(r, 'isPageMarkedForRedaction');
+    return r == 1;
+  }
+
+  void unmarkPageForRedaction(int page) =>
+      _statusUsize(_n.deUnmarkPageForRedaction, page, 'unmarkPageForRedaction');
+
+  // ── flatten (forms + annotations) ──────────────────────────────────────────
+
+  void flattenForms() => _status0(_n.deFlattenForms, 'flattenForms');
+  void flattenFormsOnPage(int pageIndex) =>
+      _statusI32(_n.deFlattenFormsOnPage, pageIndex, 'flattenFormsOnPage');
+  void flattenAnnotations(int page) =>
+      _statusI32(_n.deFlattenAnnotations, page, 'flattenAnnotations');
+  void flattenAllAnnotations() =>
+      _status0(_n.deFlattenAllAnnotations, 'flattenAllAnnotations');
+
+  /// Number of warnings collected during the last form-flatten save.
+  int flattenWarningsCount() {
+    _check();
+    return _n.deFlattenWarningsCount(_handle);
+  }
+
+  /// The [index]-th flatten warning message.
+  String flattenWarning(int index) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(_n.deFlattenWarning(_handle, index, code), code.value,
+          'flattenWarning');
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// `true` if [page] is marked for annotation-flatten (1 = true).
+  bool isPageMarkedForFlatten(int page) {
+    _check();
+    final r = _n.deIsPageMarkedForFlatten(_handle, page);
+    if (r < 0) throw PdfOxideError(r, 'isPageMarkedForFlatten');
+    return r == 1;
+  }
+
+  void unmarkPageForFlatten(int page) =>
+      _statusUsize(_n.deUnmarkPageForFlatten, page, 'unmarkPageForFlatten');
+
+  // ── forms ──────────────────────────────────────────────────────────────────
+
+  void setFormFieldValue(String name, String value) {
+    _check();
+    final cName = name.toNativeUtf8();
+    final cValue = value.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.deSetFormFieldValue(_handle, cName, cValue, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'setFormFieldValue');
+      }
+    } finally {
+      calloc.free(cName);
+      calloc.free(cValue);
+      calloc.free(code);
+    }
+  }
+
+  // ── merge / convert / embed / extract ──────────────────────────────────────
+
+  /// Merge pages from a PDF on disk into this document.
+  void mergeFrom(String sourcePath) {
+    _check();
+    final c = sourcePath.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.deMergeFrom(_handle, c, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'mergeFrom');
+      }
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  /// Merge pages from an in-memory PDF into this document.
+  void mergeFromBytes(Uint8List data) {
+    _check();
+    final buf = calloc<Uint8>(data.length);
+    buf.asTypedList(data.length).setAll(0, data);
+    final code = calloc<Int32>();
+    try {
+      if (_n.deMergeFromBytes(_handle, buf, data.length, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'mergeFromBytes');
+      }
+    } finally {
+      calloc.free(buf);
+      calloc.free(code);
+    }
+  }
+
+  /// Convert the document to PDF/A in place. [level]: 0=A1b 1=A1a 2=A2b 3=A2a
+  /// 4=A2u 5=A3b 6=A3a 7=A3u.
+  void convertToPdfA(int level) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.deConvertToPdfA(_handle, level, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'convertToPdfA');
+      }
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Embed a file attachment named [name] with the given [data].
+  void embedFile(String name, Uint8List data) {
+    _check();
+    final cName = name.toNativeUtf8();
+    final buf = calloc<Uint8>(data.length);
+    buf.asTypedList(data.length).setAll(0, data);
+    final code = calloc<Int32>();
+    try {
+      if (_n.deEmbedFile(_handle, cName, buf, data.length, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'embedFile');
+      }
+    } finally {
+      calloc.free(cName);
+      calloc.free(buf);
+      calloc.free(code);
+    }
+  }
+
+  /// Extract a subset of 0-based [pages] to a new in-memory PDF.
+  Uint8List extractPagesToBytes(List<int> pages) {
+    _check();
+    final buf = calloc<Int32>(pages.length);
+    for (var i = 0; i < pages.length; i++) {
+      buf[i] = pages[i];
+    }
+    try {
+      return _bytesOut(
+          (len, code) =>
+              _n.deExtractPagesToBytes(_handle, buf, pages.length, len, code),
+          'extractPagesToBytes');
+    } finally {
+      calloc.free(buf);
+    }
+  }
+
+  // ── save ───────────────────────────────────────────────────────────────────
+
+  /// Save the edited document to a filesystem [path].
+  void save(String path) {
+    _check();
+    final c = path.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.deSave(_handle, c, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'save');
+      }
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  /// Save the edited document to an in-memory byte buffer.
+  Uint8List saveToBytes() {
+    _check();
+    return _bytesOut(
+        (len, code) => _n.deSaveToBytes(_handle, len, code), 'saveToBytes');
+  }
+
+  /// Save to bytes with explicit compression / GC / linearize options.
+  Uint8List saveToBytesWithOptions(
+      bool compress, bool garbageCollect, bool linearize) {
+    _check();
+    return _bytesOut(
+        (len, code) => _n.deSaveToBytesWithOptions(
+            _handle, compress, garbageCollect, linearize, len, code),
+        'saveToBytesWithOptions');
+  }
+
+  /// Save with AES-256 encryption to a filesystem [path].
+  void saveEncrypted(String path, String userPassword, String ownerPassword) {
+    _check();
+    final cPath = path.toNativeUtf8();
+    final cUser = userPassword.toNativeUtf8();
+    final cOwner = ownerPassword.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.deSaveEncrypted(_handle, cPath, cUser, cOwner, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'saveEncrypted');
+      }
+    } finally {
+      calloc.free(cPath);
+      calloc.free(cUser);
+      calloc.free(cOwner);
+      calloc.free(code);
+    }
+  }
+
+  /// Save with AES-256 encryption to an in-memory byte buffer.
+  Uint8List saveEncryptedToBytes(String userPassword, String ownerPassword) {
+    _check();
+    final cUser = userPassword.toNativeUtf8();
+    final cOwner = ownerPassword.toNativeUtf8();
+    try {
+      return _bytesOut(
+          (len, code) =>
+              _n.deSaveEncryptedToBytes(_handle, cUser, cOwner, len, code),
+          'saveEncryptedToBytes');
+    } finally {
+      calloc.free(cUser);
+      calloc.free(cOwner);
+    }
+  }
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.deFree(_handle);
       _handle = nullptr;
     }
   }

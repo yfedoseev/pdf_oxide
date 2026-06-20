@@ -649,3 +649,382 @@ public final class Pdf {
         if let h = handle { pdf_free(h); handle = nil }
     }
 }
+
+/// An opened PDF for in-place editing (rotate / crop / redact / flatten / merge / save).
+///
+/// Wraps every `document_editor_*` C function. Status-returning functions throw
+/// `PdfOxideError` on a non-zero status or a set error code; the `is_*` query
+/// functions are surfaced as `Bool` (1 == true).
+public final class DocumentEditor {
+    private var handle: OpaquePointer?
+
+    private init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { if let h = handle { document_editor_free(h) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "DocumentEditor is closed") }
+        return h
+    }
+
+    // Copy a C byte buffer return into [UInt8] and free it via free_bytes.
+    private func takeBytes(_ p: UnsafeMutablePointer<UInt8>?, _ len: Int, _ code: Int32, _ op: String) throws -> [UInt8] {
+        guard let p else { throw PdfOxideError(code: code, op: op) }
+        defer { free_bytes(p) }
+        let n = len < 0 ? 0 : len
+        return Array(UnsafeBufferPointer(start: p, count: n))
+    }
+
+    // ── open / lifecycle ─────────────────────────────────────────────────────
+
+    /// Open a PDF for editing from a filesystem path.
+    public static func openEditor(_ path: String) throws -> DocumentEditor {
+        var code: Int32 = 0
+        guard let h = document_editor_open(path, &code) else {
+            throw PdfOxideError(code: code, op: "openEditor")
+        }
+        return DocumentEditor(h)
+    }
+
+    /// Alias for `openEditor(_:)`.
+    public static func open(_ path: String) throws -> DocumentEditor { try openEditor(path) }
+
+    /// Open a PDF for editing from in-memory bytes.
+    public static func openFromBytes(_ bytes: [UInt8]) throws -> DocumentEditor {
+        var code: Int32 = 0
+        let h = bytes.withUnsafeBufferPointer { buf in
+            document_editor_open_from_bytes(buf.baseAddress, buf.count, &code)
+        }
+        guard let h else { throw PdfOxideError(code: code, op: "openFromBytes") }
+        return DocumentEditor(h)
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { document_editor_free(h); handle = nil }
+    }
+
+    /// Alias for `close()`.
+    public func free() { close() }
+
+    // ── document-level queries ───────────────────────────────────────────────
+
+    public func pageCount() throws -> Int {
+        var code: Int32 = 0
+        let n = document_editor_get_page_count(try ptr(), &code)
+        if n < 0 { throw PdfOxideError(code: code, op: "pageCount") }
+        return Int(n)
+    }
+
+    public func version() throws -> PdfVersion {
+        var major: UInt8 = 0, minor: UInt8 = 0
+        document_editor_get_version(try ptr(), &major, &minor)
+        return PdfVersion(major: Int(major), minor: Int(minor))
+    }
+
+    public func isModified() throws -> Bool { document_editor_is_modified(try ptr()) }
+
+    public func getSourcePath() throws -> String {
+        var code: Int32 = 0
+        return try takeString(document_editor_get_source_path(try ptr(), &code), code, "getSourcePath")
+    }
+
+    public func getProducer() throws -> String {
+        var code: Int32 = 0
+        return try takeString(document_editor_get_producer(try ptr(), &code), code, "getProducer")
+    }
+    public func setProducer(_ value: String) throws {
+        var code: Int32 = 0
+        if document_editor_set_producer(try ptr(), value, &code) != 0 {
+            throw PdfOxideError(code: code, op: "setProducer")
+        }
+    }
+
+    public func getCreationDate() throws -> String {
+        var code: Int32 = 0
+        return try takeString(document_editor_get_creation_date(try ptr(), &code), code, "getCreationDate")
+    }
+    public func setCreationDate(_ date: String) throws {
+        var code: Int32 = 0
+        if document_editor_set_creation_date(try ptr(), date, &code) != 0 {
+            throw PdfOxideError(code: code, op: "setCreationDate")
+        }
+    }
+
+    // ── page operations ──────────────────────────────────────────────────────
+
+    public func deletePage(_ page: Int) throws {
+        var code: Int32 = 0
+        if document_editor_delete_page(try ptr(), Int32(page), &code) != 0 {
+            throw PdfOxideError(code: code, op: "deletePage")
+        }
+    }
+
+    public func movePage(_ from: Int, _ to: Int) throws {
+        var code: Int32 = 0
+        if document_editor_move_page(try ptr(), Int32(from), Int32(to), &code) != 0 {
+            throw PdfOxideError(code: code, op: "movePage")
+        }
+    }
+
+    public func rotatePageBy(_ page: Int, _ degrees: Int) throws {
+        var code: Int32 = 0
+        if document_editor_rotate_page_by(try ptr(), page, Int32(degrees), &code) != 0 {
+            throw PdfOxideError(code: code, op: "rotatePageBy")
+        }
+    }
+
+    public func rotateAllPages(_ degrees: Int) throws {
+        var code: Int32 = 0
+        if document_editor_rotate_all_pages(try ptr(), Int32(degrees), &code) != 0 {
+            throw PdfOxideError(code: code, op: "rotateAllPages")
+        }
+    }
+
+    public func setPageRotation(_ page: Int, _ degrees: Int) throws {
+        var code: Int32 = 0
+        if document_editor_set_page_rotation(try ptr(), Int32(page), Int32(degrees), &code) != 0 {
+            throw PdfOxideError(code: code, op: "setPageRotation")
+        }
+    }
+
+    public func getPageRotation(_ page: Int) throws -> Int {
+        var code: Int32 = 0
+        let r = document_editor_get_page_rotation(try ptr(), Int32(page), &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "getPageRotation") }
+        return Int(r)
+    }
+
+    public func cropMargins(left: Float, right: Float, top: Float, bottom: Float) throws {
+        var code: Int32 = 0
+        if document_editor_crop_margins(try ptr(), left, right, top, bottom, &code) != 0 {
+            throw PdfOxideError(code: code, op: "cropMargins")
+        }
+    }
+
+    // ── page boxes ───────────────────────────────────────────────────────────
+
+    public func getPageCropBox(_ page: Int) throws -> Bbox {
+        var code: Int32 = 0
+        var x = 0.0, y = 0.0, w = 0.0, h = 0.0
+        if document_editor_get_page_crop_box(try ptr(), page, &x, &y, &w, &h, &code) != 0 {
+            throw PdfOxideError(code: code, op: "getPageCropBox")
+        }
+        return Bbox(x: x, y: y, width: w, height: h)
+    }
+    public func setPageCropBox(_ page: Int, x: Double, y: Double, width: Double, height: Double) throws {
+        var code: Int32 = 0
+        if document_editor_set_page_crop_box(try ptr(), page, x, y, width, height, &code) != 0 {
+            throw PdfOxideError(code: code, op: "setPageCropBox")
+        }
+    }
+
+    public func getPageMediaBox(_ page: Int) throws -> Bbox {
+        var code: Int32 = 0
+        var x = 0.0, y = 0.0, w = 0.0, h = 0.0
+        if document_editor_get_page_media_box(try ptr(), page, &x, &y, &w, &h, &code) != 0 {
+            throw PdfOxideError(code: code, op: "getPageMediaBox")
+        }
+        return Bbox(x: x, y: y, width: w, height: h)
+    }
+    public func setPageMediaBox(_ page: Int, x: Double, y: Double, width: Double, height: Double) throws {
+        var code: Int32 = 0
+        if document_editor_set_page_media_box(try ptr(), page, x, y, width, height, &code) != 0 {
+            throw PdfOxideError(code: code, op: "setPageMediaBox")
+        }
+    }
+
+    // ── redaction / erase ────────────────────────────────────────────────────
+
+    public func applyAllRedactions() throws {
+        var code: Int32 = 0
+        if document_editor_apply_all_redactions(try ptr(), &code) != 0 {
+            throw PdfOxideError(code: code, op: "applyAllRedactions")
+        }
+    }
+    public func applyPageRedactions(_ page: Int) throws {
+        var code: Int32 = 0
+        if document_editor_apply_page_redactions(try ptr(), page, &code) != 0 {
+            throw PdfOxideError(code: code, op: "applyPageRedactions")
+        }
+    }
+
+    public func eraseRegion(_ page: Int, x: Float, y: Float, width: Float, height: Float) throws {
+        var code: Int32 = 0
+        if document_editor_erase_region(try ptr(), Int32(page), x, y, width, height, &code) != 0 {
+            throw PdfOxideError(code: code, op: "eraseRegion")
+        }
+    }
+
+    /// Erase multiple regions on a page. Each rectangle is `(x, y, width, height)`.
+    public func eraseRegions(_ page: Int, _ rects: [(Double, Double, Double, Double)]) throws {
+        let h = try ptr()
+        var code: Int32 = 0
+        var flat: [Double] = []
+        flat.reserveCapacity(rects.count * 4)
+        for r in rects { flat.append(r.0); flat.append(r.1); flat.append(r.2); flat.append(r.3) }
+        let status = flat.withUnsafeBufferPointer { buf in
+            document_editor_erase_regions(h, page, buf.baseAddress, rects.count, &code)
+        }
+        if status != 0 { throw PdfOxideError(code: code, op: "eraseRegions") }
+    }
+
+    public func clearEraseRegions(_ page: Int) throws {
+        var code: Int32 = 0
+        if document_editor_clear_erase_regions(try ptr(), page, &code) != 0 {
+            throw PdfOxideError(code: code, op: "clearEraseRegions")
+        }
+    }
+
+    /// 1 == marked, 0 == not. Throws on a -1 error status.
+    public func isPageMarkedForRedaction(_ page: Int) throws -> Bool {
+        let r = document_editor_is_page_marked_for_redaction(try ptr(), page)
+        if r < 0 { throw PdfOxideError(code: r, op: "isPageMarkedForRedaction") }
+        return r == 1
+    }
+    public func unmarkPageForRedaction(_ page: Int) throws {
+        var code: Int32 = 0
+        if document_editor_unmark_page_for_redaction(try ptr(), page, &code) != 0 {
+            throw PdfOxideError(code: code, op: "unmarkPageForRedaction")
+        }
+    }
+
+    // ── flattening (forms + annotations) ─────────────────────────────────────
+
+    public func flattenForms() throws {
+        var code: Int32 = 0
+        if document_editor_flatten_forms(try ptr(), &code) != 0 {
+            throw PdfOxideError(code: code, op: "flattenForms")
+        }
+    }
+    public func flattenFormsOnPage(_ page: Int) throws {
+        var code: Int32 = 0
+        if document_editor_flatten_forms_on_page(try ptr(), Int32(page), &code) != 0 {
+            throw PdfOxideError(code: code, op: "flattenFormsOnPage")
+        }
+    }
+
+    public func flattenAnnotations(_ page: Int) throws {
+        var code: Int32 = 0
+        if document_editor_flatten_annotations(try ptr(), Int32(page), &code) != 0 {
+            throw PdfOxideError(code: code, op: "flattenAnnotations")
+        }
+    }
+    public func flattenAllAnnotations() throws {
+        var code: Int32 = 0
+        if document_editor_flatten_all_annotations(try ptr(), &code) != 0 {
+            throw PdfOxideError(code: code, op: "flattenAllAnnotations")
+        }
+    }
+
+    /// Number of warnings from the last form-flattening save (-1 if handle null).
+    public func flattenWarningsCount() throws -> Int {
+        Int(document_editor_flatten_warnings_count(try ptr()))
+    }
+    public func flattenWarning(_ index: Int) throws -> String {
+        var code: Int32 = 0
+        return try takeString(document_editor_flatten_warning(try ptr(), Int32(index), &code), code, "flattenWarning")
+    }
+
+    /// 1 == marked for flatten, 0 == not. Throws on a -1 error status.
+    public func isPageMarkedForFlatten(_ page: Int) throws -> Bool {
+        let r = document_editor_is_page_marked_for_flatten(try ptr(), page)
+        if r < 0 { throw PdfOxideError(code: r, op: "isPageMarkedForFlatten") }
+        return r == 1
+    }
+    public func unmarkPageForFlatten(_ page: Int) throws {
+        var code: Int32 = 0
+        if document_editor_unmark_page_for_flatten(try ptr(), page, &code) != 0 {
+            throw PdfOxideError(code: code, op: "unmarkPageForFlatten")
+        }
+    }
+
+    // ── forms / merge / embed / convert ──────────────────────────────────────
+
+    public func setFormFieldValue(_ name: String, _ value: String) throws {
+        var code: Int32 = 0
+        if document_editor_set_form_field_value(try ptr(), name, value, &code) != 0 {
+            throw PdfOxideError(code: code, op: "setFormFieldValue")
+        }
+    }
+
+    public func mergeFrom(_ sourcePath: String) throws {
+        var code: Int32 = 0
+        if document_editor_merge_from(try ptr(), sourcePath, &code) != 0 {
+            throw PdfOxideError(code: code, op: "mergeFrom")
+        }
+    }
+    public func mergeFromBytes(_ bytes: [UInt8]) throws {
+        let h = try ptr()
+        var code: Int32 = 0
+        let status = bytes.withUnsafeBufferPointer { buf in
+            document_editor_merge_from_bytes(h, buf.baseAddress, buf.count, &code)
+        }
+        if status != 0 { throw PdfOxideError(code: code, op: "mergeFromBytes") }
+    }
+
+    /// Convert to PDF/A in place. level: 0=A1b 1=A1a 2=A2b 3=A2a 4=A2u 5=A3b 6=A3a 7=A3u.
+    public func convertToPdfA(_ level: Int) throws {
+        var code: Int32 = 0
+        if document_editor_convert_to_pdf_a(try ptr(), Int32(level), &code) != 0 {
+            throw PdfOxideError(code: code, op: "convertToPdfA")
+        }
+    }
+
+    public func embedFile(_ name: String, _ data: [UInt8]) throws {
+        let h = try ptr()
+        var code: Int32 = 0
+        let status = data.withUnsafeBufferPointer { buf in
+            document_editor_embed_file(h, name, buf.baseAddress, buf.count, &code)
+        }
+        if status != 0 { throw PdfOxideError(code: code, op: "embedFile") }
+    }
+
+    /// Extract a subset of (0-based) pages to a new in-memory PDF.
+    public func extractPagesToBytes(_ pages: [Int]) throws -> [UInt8] {
+        let h = try ptr()
+        var code: Int32 = 0
+        var len = 0
+        let idx = pages.map { Int32($0) }
+        let p = idx.withUnsafeBufferPointer { buf in
+            document_editor_extract_pages_to_bytes(h, buf.baseAddress, pages.count, &len, &code)
+        }
+        return try takeBytes(p, len, code, "extractPagesToBytes")
+    }
+
+    // ── save ─────────────────────────────────────────────────────────────────
+
+    public func save(_ path: String) throws {
+        var code: Int32 = 0
+        if document_editor_save(try ptr(), path, &code) != 0 {
+            throw PdfOxideError(code: code, op: "save")
+        }
+    }
+
+    public func saveToBytes() throws -> [UInt8] {
+        var code: Int32 = 0
+        var len = 0
+        let p = document_editor_save_to_bytes(try ptr(), &len, &code)
+        return try takeBytes(p, len, code, "saveToBytes")
+    }
+
+    public func saveToBytesWithOptions(compress: Bool, garbageCollect: Bool, linearize: Bool) throws -> [UInt8] {
+        var code: Int32 = 0
+        var len = 0
+        let p = document_editor_save_to_bytes_with_options(try ptr(), compress, garbageCollect, linearize, &len, &code)
+        return try takeBytes(p, len, code, "saveToBytesWithOptions")
+    }
+
+    public func saveEncrypted(_ path: String, userPassword: String, ownerPassword: String) throws {
+        var code: Int32 = 0
+        if document_editor_save_encrypted(try ptr(), path, userPassword, ownerPassword, &code) != 0 {
+            throw PdfOxideError(code: code, op: "saveEncrypted")
+        }
+    }
+
+    public func saveEncryptedToBytes(userPassword: String, ownerPassword: String) throws -> [UInt8] {
+        var code: Int32 = 0
+        var len = 0
+        let p = document_editor_save_encrypted_to_bytes(try ptr(), userPassword, ownerPassword, &len, &code)
+        return try takeBytes(p, len, code, "saveEncryptedToBytes")
+    }
+}

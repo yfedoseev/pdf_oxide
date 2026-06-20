@@ -246,6 +246,20 @@ int main() {
         CHECK(closedThrew);
     }
 
+    // ── DocumentEditor (in-place editing handle) ─────────────────────────
+    {
+        auto ed = pdf_oxide::DocumentEditor::open_from_bytes(bytes); // open_from_bytes
+        CHECK(ed.page_count() >= 1);                                 // page_count
+        bool modified = ed.is_modified(); // is_modified (bool)
+        (void)modified;
+        ed.rotate_all_pages(90);              // rotate_all_pages
+        CHECK(ed.get_page_rotation(0) == 90); // get_page_rotation
+        ed.set_producer("x");                 // set_producer
+        CHECK(ed.get_producer() == "x");      // get_producer
+        CHECK(!ed.save_to_bytes().empty());   // save_to_bytes
+        ed.close();                           // close
+    }
+
     if (g_failures == 0) {
         std::printf("ok: all C++ api-coverage checks passed\n");
         return 0;

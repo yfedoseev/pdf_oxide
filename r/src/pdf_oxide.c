@@ -725,6 +725,436 @@ SEXP r_pdf_close(SEXP ext) {
     return R_NilValue;
 }
 
+/* ── DocumentEditor ──────────────────────────────────────────────────────────
+ * Mirrors the PdfDocument/Pdf handle pattern: a static open factory wraps the
+ * owned DocumentEditor* in an R external pointer with a finalizer that calls
+ * document_editor_free, the same pdfox_raise error helper, take_string +
+ * free_string for owned char* returns, free_bytes for owned uint8* returns, and
+ * an explicit idempotent close. int32 status codes: 0 = success; a non-zero
+ * status OR a set error_code is raised. is_* queries are exposed as logicals. */
+static void editor_finalizer(SEXP ext) {
+    DocumentEditor *h = (DocumentEditor *)R_ExternalPtrAddr(ext);
+    if (h) {
+        document_editor_free(h);
+        R_ClearExternalPtr(ext);
+    }
+}
+static SEXP wrap_editor(DocumentEditor *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, editor_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+static DocumentEditor *editor_ptr(SEXP ext) {
+    DocumentEditor *h = (DocumentEditor *)R_ExternalPtrAddr(ext);
+    if (!h) Rf_error("pdf_oxide: editor handle is closed");
+    return h;
+}
+
+/* Open / construct */
+SEXP r_editor_open(SEXP path) {
+    int32_t code = 0;
+    DocumentEditor *h = document_editor_open(CHAR(STRING_ELT(path, 0)), &code);
+    if (!h) pdfox_raise(code, "editor_open");
+    return wrap_editor(h);
+}
+SEXP r_editor_open_from_bytes(SEXP raw) {
+    int32_t code = 0;
+    DocumentEditor *h =
+        document_editor_open_from_bytes(RAW(raw), (uintptr_t)XLENGTH(raw), &code);
+    if (!h) pdfox_raise(code, "editor_open_from_bytes");
+    return wrap_editor(h);
+}
+
+/* Inspection */
+SEXP r_editor_is_modified(SEXP ext) {
+    return Rf_ScalarLogical(document_editor_is_modified(editor_ptr(ext)));
+}
+SEXP r_editor_source_path(SEXP ext) {
+    int32_t code = 0;
+    return take_string(document_editor_get_source_path(editor_ptr(ext), &code),
+                       code, "editor_source_path");
+}
+SEXP r_editor_version(SEXP ext) {
+    uint8_t maj = 0, min = 0;
+    document_editor_get_version(editor_ptr(ext), &maj, &min);
+    SEXP out = PROTECT(Rf_allocVector(INTSXP, 2));
+    INTEGER(out)[0] = maj;
+    INTEGER(out)[1] = min;
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_editor_page_count(SEXP ext) {
+    int32_t code = 0;
+    int32_t n = document_editor_get_page_count(editor_ptr(ext), &code);
+    if (n < 0) pdfox_raise(code, "editor_page_count");
+    return Rf_ScalarInteger(n);
+}
+
+/* Metadata */
+SEXP r_editor_get_producer(SEXP ext) {
+    int32_t code = 0;
+    return take_string(document_editor_get_producer(editor_ptr(ext), &code),
+                       code, "editor_get_producer");
+}
+SEXP r_editor_set_producer(SEXP ext, SEXP value) {
+    int32_t code = 0;
+    if (document_editor_set_producer(editor_ptr(ext),
+                                     CHAR(STRING_ELT(value, 0)), &code) != 0)
+        pdfox_raise(code, "editor_set_producer");
+    return R_NilValue;
+}
+SEXP r_editor_get_creation_date(SEXP ext) {
+    int32_t code = 0;
+    return take_string(document_editor_get_creation_date(editor_ptr(ext), &code),
+                       code, "editor_get_creation_date");
+}
+SEXP r_editor_set_creation_date(SEXP ext, SEXP date_str) {
+    int32_t code = 0;
+    if (document_editor_set_creation_date(editor_ptr(ext),
+                                          CHAR(STRING_ELT(date_str, 0)),
+                                          &code) != 0)
+        pdfox_raise(code, "editor_set_creation_date");
+    return R_NilValue;
+}
+
+/* Page operations */
+SEXP r_editor_delete_page(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    if (document_editor_delete_page(editor_ptr(ext), Rf_asInteger(page),
+                                    &code) != 0)
+        pdfox_raise(code, "editor_delete_page");
+    return R_NilValue;
+}
+SEXP r_editor_move_page(SEXP ext, SEXP from, SEXP to) {
+    int32_t code = 0;
+    if (document_editor_move_page(editor_ptr(ext), Rf_asInteger(from),
+                                  Rf_asInteger(to), &code) != 0)
+        pdfox_raise(code, "editor_move_page");
+    return R_NilValue;
+}
+SEXP r_editor_rotate_page_by(SEXP ext, SEXP page, SEXP degrees) {
+    int32_t code = 0;
+    if (document_editor_rotate_page_by(editor_ptr(ext), (uintptr_t)Rf_asInteger(page),
+                                       Rf_asInteger(degrees), &code) != 0)
+        pdfox_raise(code, "editor_rotate_page_by");
+    return R_NilValue;
+}
+SEXP r_editor_rotate_all_pages(SEXP ext, SEXP degrees) {
+    int32_t code = 0;
+    if (document_editor_rotate_all_pages(editor_ptr(ext), Rf_asInteger(degrees),
+                                         &code) != 0)
+        pdfox_raise(code, "editor_rotate_all_pages");
+    return R_NilValue;
+}
+SEXP r_editor_set_page_rotation(SEXP ext, SEXP page, SEXP degrees) {
+    int32_t code = 0;
+    if (document_editor_set_page_rotation(editor_ptr(ext), Rf_asInteger(page),
+                                          Rf_asInteger(degrees), &code) != 0)
+        pdfox_raise(code, "editor_set_page_rotation");
+    return R_NilValue;
+}
+SEXP r_editor_get_page_rotation(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    int32_t deg = document_editor_get_page_rotation(editor_ptr(ext),
+                                                    Rf_asInteger(page), &code);
+    if (code != 0) pdfox_raise(code, "editor_get_page_rotation");
+    return Rf_ScalarInteger(deg);
+}
+SEXP r_editor_crop_margins(SEXP ext, SEXP left, SEXP right, SEXP top, SEXP bottom) {
+    int32_t code = 0;
+    if (document_editor_crop_margins(editor_ptr(ext), (float)Rf_asReal(left),
+                                     (float)Rf_asReal(right), (float)Rf_asReal(top),
+                                     (float)Rf_asReal(bottom), &code) != 0)
+        pdfox_raise(code, "editor_crop_margins");
+    return R_NilValue;
+}
+
+/* Box geometry — get returns a Bbox list(x, y, width, height) of doubles. */
+static SEXP make_bbox_d(double x, double y, double w, double h) {
+    SEXP bb = PROTECT(Rf_allocVector(VECSXP, 4));
+    SEXP nms = PROTECT(Rf_allocVector(STRSXP, 4));
+    SET_VECTOR_ELT(bb, 0, Rf_ScalarReal(x)); SET_STRING_ELT(nms, 0, Rf_mkChar("x"));
+    SET_VECTOR_ELT(bb, 1, Rf_ScalarReal(y)); SET_STRING_ELT(nms, 1, Rf_mkChar("y"));
+    SET_VECTOR_ELT(bb, 2, Rf_ScalarReal(w)); SET_STRING_ELT(nms, 2, Rf_mkChar("width"));
+    SET_VECTOR_ELT(bb, 3, Rf_ScalarReal(h)); SET_STRING_ELT(nms, 3, Rf_mkChar("height"));
+    Rf_setAttrib(bb, R_NamesSymbol, nms);
+    UNPROTECT(2);
+    return bb;
+}
+SEXP r_editor_get_page_crop_box(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    double x = 0, y = 0, w = 0, h = 0;
+    if (document_editor_get_page_crop_box(editor_ptr(ext),
+                                          (uintptr_t)Rf_asInteger(page),
+                                          &x, &y, &w, &h, &code) != 0)
+        pdfox_raise(code, "editor_get_page_crop_box");
+    return make_bbox_d(x, y, w, h);
+}
+SEXP r_editor_set_page_crop_box(SEXP ext, SEXP page, SEXP x, SEXP y, SEXP w, SEXP h) {
+    int32_t code = 0;
+    if (document_editor_set_page_crop_box(editor_ptr(ext),
+                                          (uintptr_t)Rf_asInteger(page),
+                                          Rf_asReal(x), Rf_asReal(y),
+                                          Rf_asReal(w), Rf_asReal(h), &code) != 0)
+        pdfox_raise(code, "editor_set_page_crop_box");
+    return R_NilValue;
+}
+SEXP r_editor_get_page_media_box(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    double x = 0, y = 0, w = 0, h = 0;
+    if (document_editor_get_page_media_box(editor_ptr(ext),
+                                           (uintptr_t)Rf_asInteger(page),
+                                           &x, &y, &w, &h, &code) != 0)
+        pdfox_raise(code, "editor_get_page_media_box");
+    return make_bbox_d(x, y, w, h);
+}
+SEXP r_editor_set_page_media_box(SEXP ext, SEXP page, SEXP x, SEXP y, SEXP w, SEXP h) {
+    int32_t code = 0;
+    if (document_editor_set_page_media_box(editor_ptr(ext),
+                                           (uintptr_t)Rf_asInteger(page),
+                                           Rf_asReal(x), Rf_asReal(y),
+                                           Rf_asReal(w), Rf_asReal(h), &code) != 0)
+        pdfox_raise(code, "editor_set_page_media_box");
+    return R_NilValue;
+}
+
+/* Redaction */
+SEXP r_editor_apply_all_redactions(SEXP ext) {
+    int32_t code = 0;
+    if (document_editor_apply_all_redactions(editor_ptr(ext), &code) != 0)
+        pdfox_raise(code, "editor_apply_all_redactions");
+    return R_NilValue;
+}
+SEXP r_editor_apply_page_redactions(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    if (document_editor_apply_page_redactions(editor_ptr(ext),
+                                              (uintptr_t)Rf_asInteger(page),
+                                              &code) != 0)
+        pdfox_raise(code, "editor_apply_page_redactions");
+    return R_NilValue;
+}
+SEXP r_editor_is_page_marked_for_redaction(SEXP ext, SEXP page) {
+    int32_t r = document_editor_is_page_marked_for_redaction(
+        editor_ptr(ext), (uintptr_t)Rf_asInteger(page));
+    if (r < 0) pdfox_raise(r, "editor_is_page_marked_for_redaction");
+    return Rf_ScalarLogical(r == 1);
+}
+SEXP r_editor_unmark_page_for_redaction(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    if (document_editor_unmark_page_for_redaction(editor_ptr(ext),
+                                                  (uintptr_t)Rf_asInteger(page),
+                                                  &code) != 0)
+        pdfox_raise(code, "editor_unmark_page_for_redaction");
+    return R_NilValue;
+}
+
+/* Erase regions */
+SEXP r_editor_erase_region(SEXP ext, SEXP page, SEXP x, SEXP y, SEXP w, SEXP h) {
+    int32_t code = 0;
+    if (document_editor_erase_region(editor_ptr(ext), Rf_asInteger(page),
+                                     (float)Rf_asReal(x), (float)Rf_asReal(y),
+                                     (float)Rf_asReal(w), (float)Rf_asReal(h),
+                                     &code) != 0)
+        pdfox_raise(code, "editor_erase_region");
+    return R_NilValue;
+}
+/* `rects` is a flat numeric vector of [x, y, w, h] quads (length must be 4*N). */
+SEXP r_editor_erase_regions(SEXP ext, SEXP page, SEXP rects) {
+    int32_t code = 0;
+    R_xlen_t total = XLENGTH(rects);
+    uintptr_t count = (uintptr_t)(total / 4);
+    SEXP r = PROTECT(Rf_coerceVector(rects, REALSXP));
+    int32_t rc = document_editor_erase_regions(editor_ptr(ext),
+                                               (uintptr_t)Rf_asInteger(page),
+                                               REAL(r), count, &code);
+    UNPROTECT(1);
+    if (rc != 0) pdfox_raise(code, "editor_erase_regions");
+    return R_NilValue;
+}
+SEXP r_editor_clear_erase_regions(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    if (document_editor_clear_erase_regions(editor_ptr(ext),
+                                            (uintptr_t)Rf_asInteger(page),
+                                            &code) != 0)
+        pdfox_raise(code, "editor_clear_erase_regions");
+    return R_NilValue;
+}
+
+/* Flatten — forms */
+SEXP r_editor_flatten_forms(SEXP ext) {
+    int32_t code = 0;
+    if (document_editor_flatten_forms(editor_ptr(ext), &code) != 0)
+        pdfox_raise(code, "editor_flatten_forms");
+    return R_NilValue;
+}
+SEXP r_editor_flatten_forms_on_page(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    if (document_editor_flatten_forms_on_page(editor_ptr(ext), Rf_asInteger(page),
+                                              &code) != 0)
+        pdfox_raise(code, "editor_flatten_forms_on_page");
+    return R_NilValue;
+}
+SEXP r_editor_set_form_field_value(SEXP ext, SEXP name, SEXP value) {
+    int32_t code = 0;
+    if (document_editor_set_form_field_value(editor_ptr(ext),
+                                             CHAR(STRING_ELT(name, 0)),
+                                             CHAR(STRING_ELT(value, 0)),
+                                             &code) != 0)
+        pdfox_raise(code, "editor_set_form_field_value");
+    return R_NilValue;
+}
+
+/* Flatten — annotations */
+SEXP r_editor_flatten_annotations(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    if (document_editor_flatten_annotations(editor_ptr(ext), Rf_asInteger(page),
+                                            &code) != 0)
+        pdfox_raise(code, "editor_flatten_annotations");
+    return R_NilValue;
+}
+SEXP r_editor_flatten_all_annotations(SEXP ext) {
+    int32_t code = 0;
+    if (document_editor_flatten_all_annotations(editor_ptr(ext), &code) != 0)
+        pdfox_raise(code, "editor_flatten_all_annotations");
+    return R_NilValue;
+}
+SEXP r_editor_flatten_warnings_count(SEXP ext) {
+    return Rf_ScalarInteger(
+        document_editor_flatten_warnings_count(editor_ptr(ext)));
+}
+SEXP r_editor_flatten_warning(SEXP ext, SEXP index) {
+    int32_t code = 0;
+    return take_string(document_editor_flatten_warning(editor_ptr(ext),
+                                                       Rf_asInteger(index), &code),
+                       code, "editor_flatten_warning");
+}
+SEXP r_editor_is_page_marked_for_flatten(SEXP ext, SEXP page) {
+    int32_t r = document_editor_is_page_marked_for_flatten(
+        editor_ptr(ext), (uintptr_t)Rf_asInteger(page));
+    if (r < 0) pdfox_raise(r, "editor_is_page_marked_for_flatten");
+    return Rf_ScalarLogical(r == 1);
+}
+SEXP r_editor_unmark_page_for_flatten(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    if (document_editor_unmark_page_for_flatten(editor_ptr(ext),
+                                                (uintptr_t)Rf_asInteger(page),
+                                                &code) != 0)
+        pdfox_raise(code, "editor_unmark_page_for_flatten");
+    return R_NilValue;
+}
+
+/* Merge / convert / embed / extract */
+SEXP r_editor_merge_from(SEXP ext, SEXP source_path) {
+    int32_t code = 0;
+    if (document_editor_merge_from(editor_ptr(ext),
+                                   CHAR(STRING_ELT(source_path, 0)), &code) != 0)
+        pdfox_raise(code, "editor_merge_from");
+    return R_NilValue;
+}
+SEXP r_editor_merge_from_bytes(SEXP ext, SEXP raw) {
+    int32_t code = 0;
+    if (document_editor_merge_from_bytes(editor_ptr(ext), RAW(raw),
+                                         (uintptr_t)XLENGTH(raw), &code) != 0)
+        pdfox_raise(code, "editor_merge_from_bytes");
+    return R_NilValue;
+}
+SEXP r_editor_convert_to_pdf_a(SEXP ext, SEXP level) {
+    int32_t code = 0;
+    if (document_editor_convert_to_pdf_a(editor_ptr(ext), Rf_asInteger(level),
+                                         &code) != 0)
+        pdfox_raise(code, "editor_convert_to_pdf_a");
+    return R_NilValue;
+}
+SEXP r_editor_embed_file(SEXP ext, SEXP name, SEXP raw) {
+    int32_t code = 0;
+    if (document_editor_embed_file(editor_ptr(ext), CHAR(STRING_ELT(name, 0)),
+                                   RAW(raw), (uintptr_t)XLENGTH(raw), &code) != 0)
+        pdfox_raise(code, "editor_embed_file");
+    return R_NilValue;
+}
+SEXP r_editor_extract_pages_to_bytes(SEXP ext, SEXP pages) {
+    int32_t code = 0;
+    SEXP p = PROTECT(Rf_coerceVector(pages, INTSXP));
+    uintptr_t out_len = 0;
+    uint8_t *buf = document_editor_extract_pages_to_bytes(
+        editor_ptr(ext), INTEGER(p), (uintptr_t)XLENGTH(p), &out_len, &code);
+    UNPROTECT(1);
+    if (!buf) pdfox_raise(code, "editor_extract_pages_to_bytes");
+    R_xlen_t n = (R_xlen_t)out_len;
+    SEXP out = PROTECT(Rf_allocVector(RAWSXP, n));
+    if (n) memcpy(RAW(out), buf, (size_t)n);
+    free_bytes(buf);
+    UNPROTECT(1);
+    return out;
+}
+
+/* Save */
+SEXP r_editor_save(SEXP ext, SEXP path) {
+    int32_t code = 0;
+    if (document_editor_save(editor_ptr(ext), CHAR(STRING_ELT(path, 0)),
+                             &code) != 0)
+        pdfox_raise(code, "editor_save");
+    return R_NilValue;
+}
+SEXP r_editor_save_to_bytes(SEXP ext) {
+    int32_t code = 0;
+    uintptr_t out_len = 0;
+    uint8_t *buf = document_editor_save_to_bytes(editor_ptr(ext), &out_len, &code);
+    if (!buf) pdfox_raise(code, "editor_save_to_bytes");
+    R_xlen_t n = (R_xlen_t)out_len;
+    SEXP out = PROTECT(Rf_allocVector(RAWSXP, n));
+    if (n) memcpy(RAW(out), buf, (size_t)n);
+    free_bytes(buf);
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_editor_save_to_bytes_with_options(SEXP ext, SEXP compress,
+                                         SEXP garbage_collect, SEXP linearize) {
+    int32_t code = 0;
+    uintptr_t out_len = 0;
+    uint8_t *buf = document_editor_save_to_bytes_with_options(
+        editor_ptr(ext), Rf_asLogical(compress) == TRUE,
+        Rf_asLogical(garbage_collect) == TRUE, Rf_asLogical(linearize) == TRUE,
+        &out_len, &code);
+    if (!buf) pdfox_raise(code, "editor_save_to_bytes_with_options");
+    R_xlen_t n = (R_xlen_t)out_len;
+    SEXP out = PROTECT(Rf_allocVector(RAWSXP, n));
+    if (n) memcpy(RAW(out), buf, (size_t)n);
+    free_bytes(buf);
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_editor_save_encrypted(SEXP ext, SEXP path, SEXP user_pw, SEXP owner_pw) {
+    int32_t code = 0;
+    if (document_editor_save_encrypted(editor_ptr(ext), CHAR(STRING_ELT(path, 0)),
+                                       CHAR(STRING_ELT(user_pw, 0)),
+                                       CHAR(STRING_ELT(owner_pw, 0)), &code) != 0)
+        pdfox_raise(code, "editor_save_encrypted");
+    return R_NilValue;
+}
+SEXP r_editor_save_encrypted_to_bytes(SEXP ext, SEXP user_pw, SEXP owner_pw) {
+    int32_t code = 0;
+    uintptr_t out_len = 0;
+    uint8_t *buf = document_editor_save_encrypted_to_bytes(
+        editor_ptr(ext), CHAR(STRING_ELT(user_pw, 0)),
+        CHAR(STRING_ELT(owner_pw, 0)), &out_len, &code);
+    if (!buf) pdfox_raise(code, "editor_save_encrypted_to_bytes");
+    R_xlen_t n = (R_xlen_t)out_len;
+    SEXP out = PROTECT(Rf_allocVector(RAWSXP, n));
+    if (n) memcpy(RAW(out), buf, (size_t)n);
+    free_bytes(buf);
+    UNPROTECT(1);
+    return out;
+}
+
+/* Explicit, idempotent close. */
+SEXP r_editor_close(SEXP ext) {
+    DocumentEditor *h = (DocumentEditor *)R_ExternalPtrAddr(ext);
+    if (h) { document_editor_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+
 /* ── Native routine registration (R Writing-R-Extensions §5.4) ──────────────
  * Backs `useDynLib(pdfoxide, .registration = TRUE, .fixes = "C_")` so R resolves
  * each .Call via a registered symbol object rather than a runtime string lookup,
@@ -774,6 +1204,54 @@ static const R_CallMethodDef CallEntries[] = {
     CDEF(r_rendered_image_close, 1),
     CDEF(r_doc_close, 1),
     CDEF(r_pdf_close, 1),
+    CDEF(r_editor_open, 1),
+    CDEF(r_editor_open_from_bytes, 1),
+    CDEF(r_editor_is_modified, 1),
+    CDEF(r_editor_source_path, 1),
+    CDEF(r_editor_version, 1),
+    CDEF(r_editor_page_count, 1),
+    CDEF(r_editor_get_producer, 1),
+    CDEF(r_editor_set_producer, 2),
+    CDEF(r_editor_get_creation_date, 1),
+    CDEF(r_editor_set_creation_date, 2),
+    CDEF(r_editor_delete_page, 2),
+    CDEF(r_editor_move_page, 3),
+    CDEF(r_editor_rotate_page_by, 3),
+    CDEF(r_editor_rotate_all_pages, 2),
+    CDEF(r_editor_set_page_rotation, 3),
+    CDEF(r_editor_get_page_rotation, 2),
+    CDEF(r_editor_crop_margins, 5),
+    CDEF(r_editor_get_page_crop_box, 2),
+    CDEF(r_editor_set_page_crop_box, 6),
+    CDEF(r_editor_get_page_media_box, 2),
+    CDEF(r_editor_set_page_media_box, 6),
+    CDEF(r_editor_apply_all_redactions, 1),
+    CDEF(r_editor_apply_page_redactions, 2),
+    CDEF(r_editor_is_page_marked_for_redaction, 2),
+    CDEF(r_editor_unmark_page_for_redaction, 2),
+    CDEF(r_editor_erase_region, 6),
+    CDEF(r_editor_erase_regions, 3),
+    CDEF(r_editor_clear_erase_regions, 2),
+    CDEF(r_editor_flatten_forms, 1),
+    CDEF(r_editor_flatten_forms_on_page, 2),
+    CDEF(r_editor_set_form_field_value, 3),
+    CDEF(r_editor_flatten_annotations, 2),
+    CDEF(r_editor_flatten_all_annotations, 1),
+    CDEF(r_editor_flatten_warnings_count, 1),
+    CDEF(r_editor_flatten_warning, 2),
+    CDEF(r_editor_is_page_marked_for_flatten, 2),
+    CDEF(r_editor_unmark_page_for_flatten, 2),
+    CDEF(r_editor_merge_from, 2),
+    CDEF(r_editor_merge_from_bytes, 2),
+    CDEF(r_editor_convert_to_pdf_a, 2),
+    CDEF(r_editor_embed_file, 3),
+    CDEF(r_editor_extract_pages_to_bytes, 2),
+    CDEF(r_editor_save, 2),
+    CDEF(r_editor_save_to_bytes, 1),
+    CDEF(r_editor_save_to_bytes_with_options, 4),
+    CDEF(r_editor_save_encrypted, 4),
+    CDEF(r_editor_save_encrypted_to_bytes, 3),
+    CDEF(r_editor_close, 1),
     {NULL, NULL, 0}
 };
 

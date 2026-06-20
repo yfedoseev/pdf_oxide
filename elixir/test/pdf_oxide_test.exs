@@ -185,6 +185,31 @@ defmodule PdfOxideTest do
     end
   end
 
+  describe "document editor" do
+    test "open_from_bytes + core editing API" do
+      assert {:ok, ed} = PdfOxide.open_editor_from_bytes(sample_pdf())
+
+      assert {:ok, n} = PdfOxide.editor_page_count(ed)
+      assert n >= 1
+
+      assert is_boolean(PdfOxide.editor_modified?(ed))
+
+      assert :ok = PdfOxide.rotate_all_pages(ed, 90)
+      assert {:ok, deg} = PdfOxide.get_page_rotation(ed, 0)
+      assert is_integer(deg)
+      assert deg == 90
+
+      assert :ok = PdfOxide.set_producer(ed, "x")
+      assert {:ok, producer} = PdfOxide.get_producer(ed)
+      assert is_binary(producer)
+
+      assert {:ok, bytes} = PdfOxide.editor_save_to_bytes(ed)
+      assert byte_size(bytes) > 0
+
+      assert :ok = PdfOxide.editor_close(ed)
+    end
+  end
+
   test "error path: open nonexistent" do
     assert {:error, _code} = PdfOxide.open("/nonexistent/nope.pdf")
   end

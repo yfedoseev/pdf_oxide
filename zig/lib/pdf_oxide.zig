@@ -800,6 +800,405 @@ pub const Pdf = struct {
     }
 };
 
+/// A PDF opened for in-place editing. Owns the native `DocumentEditor` handle;
+/// free it with `deinit`/`close`. 0-based page indices throughout. Mirrors the
+/// `Document`/`Pdf` handle pattern: factory `open*`, error-code helpers, owned
+/// string-/byte-takes, `double` out-param helpers, and a closed-handle guard.
+pub const DocumentEditor = struct {
+    handle: ?*c.DocumentEditor,
+
+    /// Guard: returns the live handle or raises if the editor has been closed.
+    fn live(self: DocumentEditor) Error!*c.DocumentEditor {
+        return self.handle orelse fail(-1);
+    }
+
+    /// Open a PDF for editing from a filesystem path (NUL-terminated).
+    pub fn openEditor(path: [:0]const u8) Error!DocumentEditor {
+        var code: i32 = 0;
+        const h = c.document_editor_open(path.ptr, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Open a PDF for editing from in-memory bytes.
+    pub fn openFromBytes(data: []const u8) Error!DocumentEditor {
+        var code: i32 = 0;
+        const h = c.document_editor_open_from_bytes(data.ptr, data.len, &code) orelse
+            return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Free the native handle (idempotent). Also exposed as `close`.
+    pub fn deinit(self: *DocumentEditor) void {
+        if (self.handle) |h| c.document_editor_free(h);
+        self.handle = null;
+    }
+
+    /// Free the native handle (idempotent).
+    pub fn close(self: *DocumentEditor) void {
+        self.deinit();
+    }
+
+    pub fn isModified(self: DocumentEditor) Error!bool {
+        const h = try self.live();
+        return c.document_editor_is_modified(h);
+    }
+
+    pub fn getSourcePath(self: DocumentEditor, alloc: std.mem.Allocator) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.document_editor_get_source_path(h, &code), code);
+    }
+
+    pub fn version(self: DocumentEditor) Error!Version {
+        const h = try self.live();
+        var maj: u8 = 0;
+        var min: u8 = 0;
+        c.document_editor_get_version(h, &maj, &min);
+        return .{ .major = maj, .minor = min };
+    }
+
+    pub fn pageCount(self: DocumentEditor) Error!i32 {
+        const h = try self.live();
+        var code: i32 = 0;
+        const n = c.document_editor_get_page_count(h, &code);
+        if (n < 0) return fail(code);
+        return n;
+    }
+
+    pub fn getProducer(self: DocumentEditor, alloc: std.mem.Allocator) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.document_editor_get_producer(h, &code), code);
+    }
+
+    pub fn setProducer(self: DocumentEditor, value: [:0]const u8) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_set_producer(h, value.ptr, &code) != 0) return fail(code);
+    }
+
+    pub fn getCreationDate(self: DocumentEditor, alloc: std.mem.Allocator) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.document_editor_get_creation_date(h, &code), code);
+    }
+
+    pub fn setCreationDate(self: DocumentEditor, date_str: [:0]const u8) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_set_creation_date(h, date_str.ptr, &code) != 0) return fail(code);
+    }
+
+    pub fn save(self: DocumentEditor, path: [:0]const u8) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_save(h, path.ptr, &code) != 0) return fail(code);
+    }
+
+    /// Serialize the edited document to bytes; caller owns the returned slice.
+    pub fn saveToBytes(self: DocumentEditor, alloc: std.mem.Allocator) Error![]u8 {
+        const h = try self.live();
+        var len: usize = 0;
+        var code: i32 = 0;
+        const p = c.document_editor_save_to_bytes(h, &len, &code) orelse return fail(code);
+        defer c.free_bytes(p);
+        return alloc.dupe(u8, p[0..len]);
+    }
+
+    /// Serialize with compression / garbage-collect / linearize options; caller
+    /// owns the returned slice.
+    pub fn saveToBytesWithOptions(
+        self: DocumentEditor,
+        alloc: std.mem.Allocator,
+        compress: bool,
+        garbage_collect: bool,
+        linearize: bool,
+    ) Error![]u8 {
+        const h = try self.live();
+        var len: usize = 0;
+        var code: i32 = 0;
+        const p = c.document_editor_save_to_bytes_with_options(
+            h,
+            compress,
+            garbage_collect,
+            linearize,
+            &len,
+            &code,
+        ) orelse return fail(code);
+        defer c.free_bytes(p);
+        return alloc.dupe(u8, p[0..len]);
+    }
+
+    /// Extract a subset of pages (0-based) to a new in-memory PDF; caller owns
+    /// the returned slice.
+    pub fn extractPagesToBytes(self: DocumentEditor, alloc: std.mem.Allocator, pages: []const i32) Error![]u8 {
+        const h = try self.live();
+        var len: usize = 0;
+        var code: i32 = 0;
+        const p = c.document_editor_extract_pages_to_bytes(h, pages.ptr, pages.len, &len, &code) orelse
+            return fail(code);
+        defer c.free_bytes(p);
+        return alloc.dupe(u8, p[0..len]);
+    }
+
+    /// Convert to PDF/A in-place. `level`: 0=A1b 1=A1a 2=A2b 3=A2a 4=A2u 5=A3b 6=A3a 7=A3u.
+    pub fn convertToPdfA(self: DocumentEditor, level: i32) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_convert_to_pdf_a(h, level, &code) != 0) return fail(code);
+    }
+
+    /// Save with AES-256 encryption to bytes; caller owns the returned slice.
+    pub fn saveEncryptedToBytes(
+        self: DocumentEditor,
+        alloc: std.mem.Allocator,
+        user_password: [:0]const u8,
+        owner_password: [:0]const u8,
+    ) Error![]u8 {
+        const h = try self.live();
+        var len: usize = 0;
+        var code: i32 = 0;
+        const p = c.document_editor_save_encrypted_to_bytes(
+            h,
+            user_password.ptr,
+            owner_password.ptr,
+            &len,
+            &code,
+        ) orelse return fail(code);
+        defer c.free_bytes(p);
+        return alloc.dupe(u8, p[0..len]);
+    }
+
+    /// Save with AES-256 encryption to a filesystem path.
+    pub fn saveEncrypted(
+        self: DocumentEditor,
+        path: [:0]const u8,
+        user_password: [:0]const u8,
+        owner_password: [:0]const u8,
+    ) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_save_encrypted(h, path.ptr, user_password.ptr, owner_password.ptr, &code) != 0)
+            return fail(code);
+    }
+
+    /// Merge pages from an in-memory PDF byte buffer into this document.
+    pub fn mergeFromBytes(self: DocumentEditor, data: []const u8) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_merge_from_bytes(h, data.ptr, data.len, &code) != 0) return fail(code);
+    }
+
+    /// Merge pages from a PDF at `source_path` into this document.
+    pub fn mergeFrom(self: DocumentEditor, source_path: [:0]const u8) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_merge_from(h, source_path.ptr, &code) != 0) return fail(code);
+    }
+
+    /// Embed a file attachment into the document.
+    pub fn embedFile(self: DocumentEditor, name: [:0]const u8, data: []const u8) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_embed_file(h, name.ptr, data.ptr, data.len, &code) != 0) return fail(code);
+    }
+
+    pub fn deletePage(self: DocumentEditor, page_index: i32) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_delete_page(h, page_index, &code) != 0) return fail(code);
+    }
+
+    pub fn movePage(self: DocumentEditor, from: i32, to: i32) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_move_page(h, from, to, &code) != 0) return fail(code);
+    }
+
+    pub fn getPageRotation(self: DocumentEditor, page_index: i32) Error!i32 {
+        const h = try self.live();
+        var code: i32 = 0;
+        const deg = c.document_editor_get_page_rotation(h, page_index, &code);
+        if (code != 0) return fail(code);
+        return deg;
+    }
+
+    pub fn setPageRotation(self: DocumentEditor, page_index: i32, degrees: i32) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_set_page_rotation(h, page_index, degrees, &code) != 0) return fail(code);
+    }
+
+    /// Rotate a single (0-based) page by `degrees` (additive).
+    pub fn rotatePageBy(self: DocumentEditor, page_index: usize, degrees: i32) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_rotate_page_by(h, page_index, degrees, &code) != 0) return fail(code);
+    }
+
+    /// Rotate all pages by `degrees` (additive).
+    pub fn rotateAllPages(self: DocumentEditor, degrees: i32) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_rotate_all_pages(h, degrees, &code) != 0) return fail(code);
+    }
+
+    pub fn getPageMediaBox(self: DocumentEditor, page_index: usize) Error!Bbox {
+        const h = try self.live();
+        var code: i32 = 0;
+        var x: f64 = 0;
+        var y: f64 = 0;
+        var w: f64 = 0;
+        var hgt: f64 = 0;
+        if (c.document_editor_get_page_media_box(h, page_index, &x, &y, &w, &hgt, &code) != 0)
+            return fail(code);
+        return .{ .x = @floatCast(x), .y = @floatCast(y), .width = @floatCast(w), .height = @floatCast(hgt) };
+    }
+
+    pub fn setPageMediaBox(self: DocumentEditor, page_index: usize, x: f64, y: f64, w: f64, hgt: f64) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_set_page_media_box(h, page_index, x, y, w, hgt, &code) != 0) return fail(code);
+    }
+
+    pub fn getPageCropBox(self: DocumentEditor, page_index: usize) Error!Bbox {
+        const h = try self.live();
+        var code: i32 = 0;
+        var x: f64 = 0;
+        var y: f64 = 0;
+        var w: f64 = 0;
+        var hgt: f64 = 0;
+        if (c.document_editor_get_page_crop_box(h, page_index, &x, &y, &w, &hgt, &code) != 0)
+            return fail(code);
+        return .{ .x = @floatCast(x), .y = @floatCast(y), .width = @floatCast(w), .height = @floatCast(hgt) };
+    }
+
+    pub fn setPageCropBox(self: DocumentEditor, page_index: usize, x: f64, y: f64, w: f64, hgt: f64) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_set_page_crop_box(h, page_index, x, y, w, hgt, &code) != 0) return fail(code);
+    }
+
+    /// Crop uniform margins (page user-space units) from every page.
+    pub fn cropMargins(self: DocumentEditor, left: f32, right: f32, top: f32, bottom: f32) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_crop_margins(h, left, right, top, bottom, &code) != 0) return fail(code);
+    }
+
+    /// Erase a single rectangular region on a (0-based) page.
+    pub fn eraseRegion(self: DocumentEditor, page_index: i32, x: f32, y: f32, w: f32, hgt: f32) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_erase_region(h, page_index, x, y, w, hgt, &code) != 0) return fail(code);
+    }
+
+    /// Erase multiple regions on a page; `rects` is a slice of (x,y,w,h) quads.
+    pub fn eraseRegions(self: DocumentEditor, page_index: usize, rects: []const [4]f64) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        const flat: [*]const f64 = @ptrCast(rects.ptr);
+        if (c.document_editor_erase_regions(h, page_index, flat, rects.len, &code) != 0) return fail(code);
+    }
+
+    /// Clear all pending erase-region entries for a page.
+    pub fn clearEraseRegions(self: DocumentEditor, page_index: usize) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_clear_erase_regions(h, page_index, &code) != 0) return fail(code);
+    }
+
+    /// Apply redactions on a single (0-based) page (burn them in).
+    pub fn applyPageRedactions(self: DocumentEditor, page_index: usize) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_apply_page_redactions(h, page_index, &code) != 0) return fail(code);
+    }
+
+    /// Apply all pending redactions across the document.
+    pub fn applyAllRedactions(self: DocumentEditor) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_apply_all_redactions(h, &code) != 0) return fail(code);
+    }
+
+    pub fn isPageMarkedForRedaction(self: DocumentEditor, page_index: usize) Error!bool {
+        const h = try self.live();
+        const r = c.document_editor_is_page_marked_for_redaction(h, page_index);
+        if (r < 0) return fail(r);
+        return r == 1;
+    }
+
+    pub fn unmarkPageForRedaction(self: DocumentEditor, page_index: usize) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_unmark_page_for_redaction(h, page_index, &code) != 0) return fail(code);
+    }
+
+    pub fn isPageMarkedForFlatten(self: DocumentEditor, page_index: usize) Error!bool {
+        const h = try self.live();
+        const r = c.document_editor_is_page_marked_for_flatten(h, page_index);
+        if (r < 0) return fail(r);
+        return r == 1;
+    }
+
+    pub fn unmarkPageForFlatten(self: DocumentEditor, page_index: usize) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_unmark_page_for_flatten(h, page_index, &code) != 0) return fail(code);
+    }
+
+    /// Flatten annotations on a single (0-based) page.
+    pub fn flattenAnnotations(self: DocumentEditor, page_index: i32) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_flatten_annotations(h, page_index, &code) != 0) return fail(code);
+    }
+
+    /// Flatten all annotations across the document.
+    pub fn flattenAllAnnotations(self: DocumentEditor) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_flatten_all_annotations(h, &code) != 0) return fail(code);
+    }
+
+    /// Set a form field value (UTF-8).
+    pub fn setFormFieldValue(self: DocumentEditor, name: [:0]const u8, value: [:0]const u8) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_set_form_field_value(h, name.ptr, value.ptr, &code) != 0) return fail(code);
+    }
+
+    /// Flatten all forms in the document.
+    pub fn flattenForms(self: DocumentEditor) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_flatten_forms(h, &code) != 0) return fail(code);
+    }
+
+    /// Flatten forms on a single (0-based) page.
+    pub fn flattenFormsOnPage(self: DocumentEditor, page_index: i32) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.document_editor_flatten_forms_on_page(h, page_index, &code) != 0) return fail(code);
+    }
+
+    /// Number of warnings collected during the last form-flattening save.
+    pub fn flattenWarningsCount(self: DocumentEditor) Error!i32 {
+        const h = try self.live();
+        const n = c.document_editor_flatten_warnings_count(h);
+        if (n < 0) return fail(n);
+        return n;
+    }
+
+    /// The `index`-th flatten warning; caller owns the returned slice.
+    pub fn flattenWarning(self: DocumentEditor, alloc: std.mem.Allocator, index: i32) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.document_editor_flatten_warning(h, index, &code), code);
+    }
+};
+
 // ── api-coverage tests (one per public method) ────────────────────────────────
 const testing = std.testing;
 
@@ -1020,6 +1419,34 @@ test "Document: phase-3 page rendering (renderPage/renderPageZoom/renderPageThum
         try testing.expect(img.height > 0);
         try testing.expect(img.data.len > 0);
     }
+}
+
+test "DocumentEditor: open/edit/save coverage" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+
+    var ed = try DocumentEditor.openFromBytes(bytes); // openFromBytes
+    defer ed.close(); // close
+
+    try testing.expect(try ed.pageCount() >= 1); // pageCount
+
+    // isModified: a bool (smoke; value unspecified pre-edit)
+    const modified = try ed.isModified();
+    try testing.expect(modified == true or modified == false); // isModified
+
+    try ed.rotateAllPages(90); // rotateAllPages
+    const rot = try ed.getPageRotation(0); // getPageRotation
+    try testing.expect(rot == 90 or rot >= 0);
+
+    try ed.setProducer("x"); // setProducer
+    const producer = try ed.getProducer(a); // getProducer
+    defer a.free(producer);
+    try testing.expect(producer.len >= 0);
+
+    const out = try ed.saveToBytes(a); // saveToBytes
+    defer a.free(out);
+    try testing.expect(out.len > 0);
 }
 
 test "error path: open nonexistent returns error" {

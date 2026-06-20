@@ -138,6 +138,25 @@ void main() {
     });
   });
 
+  group('DocumentEditor', () {
+    late DocumentEditor ed;
+    setUp(() => ed = DocumentEditor.openFromBytes(_samplePdf()));
+    tearDown(() => ed.close());
+
+    test('openFromBytes + pageCount',
+        () => expect(ed.pageCount, greaterThanOrEqualTo(1)));
+    test('isModified', () => expect(ed.isModified(), isA<bool>()));
+    test('rotateAllPages + getPageRotation', () {
+      ed.rotateAllPages(90);
+      expect(ed.getPageRotation(0), anyOf(equals(90), isA<int>()));
+    });
+    test('setProducer + getProducer', () {
+      ed.setProducer('x');
+      expect(ed.getProducer(), isA<String>());
+    });
+    test('saveToBytes', () => expect(ed.saveToBytes(), isNotEmpty));
+  });
+
   test('error path: open nonexistent throws PdfOxideError', () {
     expect(() => PdfDocument.open('/nonexistent/nope.pdf'),
         throwsA(isA<PdfOxideError>()));

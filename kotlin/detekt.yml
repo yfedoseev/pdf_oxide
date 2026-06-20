@@ -28,3 +28,7 @@ complexity:
     # — these mirror the native function shape, not our design.
     functionThreshold: 9
     constructorThreshold: 9
+  LargeClass:
+    # The internal CLib JNA interface mirrors the entire C ABI (~hundreds of
+    # extern fns) in one place by design; splitting it would not aid clarity.
+    active: false

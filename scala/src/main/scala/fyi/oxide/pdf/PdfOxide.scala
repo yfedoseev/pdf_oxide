@@ -9,7 +9,13 @@
 package fyi.oxide.pdf
 
 import com.sun.jna.{Library, Native, Pointer}
-import com.sun.jna.ptr.{ByteByReference, FloatByReference, IntByReference}
+import com.sun.jna.ptr.{
+  ByteByReference,
+  DoubleByReference,
+  FloatByReference,
+  IntByReference,
+  LongByReference
+}
 
 /** Thrown on any non-success C-ABI error code. */
 final class PdfOxideException(val code: Int, val op: String)
@@ -326,6 +332,163 @@ private[pdf] trait CLib extends Library:
   ): Pointer
   def pdf_save_rendered_image(img: Pointer, filePath: String, code: IntByReference): Int
   def pdf_rendered_image_free(img: Pointer): Unit
+  // ── DocumentEditor (in-place editing) ────────────────────────────────────────
+  def document_editor_open(path: String, code: IntByReference): Pointer
+  def document_editor_open_from_bytes(data: Array[Byte], len: Long, code: IntByReference): Pointer
+  def document_editor_free(h: Pointer): Unit
+  def document_editor_is_modified(h: Pointer): Boolean
+  def document_editor_get_source_path(h: Pointer, code: IntByReference): Pointer
+  def document_editor_get_version(h: Pointer, major: ByteByReference, minor: ByteByReference): Unit
+  def document_editor_get_page_count(h: Pointer, code: IntByReference): Int
+  def document_editor_get_producer(h: Pointer, code: IntByReference): Pointer
+  def document_editor_set_producer(h: Pointer, value: String, code: IntByReference): Int
+  def document_editor_get_creation_date(h: Pointer, code: IntByReference): Pointer
+  def document_editor_set_creation_date(h: Pointer, dateStr: String, code: IntByReference): Int
+  def document_editor_save(h: Pointer, path: String, code: IntByReference): Int
+  def document_editor_save_to_bytes(
+      h: Pointer,
+      outLen: com.sun.jna.ptr.LongByReference,
+      code: IntByReference
+  ): Pointer
+  def document_editor_save_to_bytes_with_options(
+      h: Pointer,
+      compress: Boolean,
+      garbageCollect: Boolean,
+      linearize: Boolean,
+      outLen: com.sun.jna.ptr.LongByReference,
+      code: IntByReference
+  ): Pointer
+  def document_editor_extract_pages_to_bytes(
+      h: Pointer,
+      pages: Array[Int],
+      count: Long,
+      outLen: com.sun.jna.ptr.LongByReference,
+      code: IntByReference
+  ): Pointer
+  def document_editor_convert_to_pdf_a(h: Pointer, level: Int, code: IntByReference): Int
+  def document_editor_save_encrypted_to_bytes(
+      h: Pointer,
+      userPassword: String,
+      ownerPassword: String,
+      outLen: com.sun.jna.ptr.LongByReference,
+      code: IntByReference
+  ): Pointer
+  def document_editor_merge_from_bytes(
+      h: Pointer,
+      data: Array[Byte],
+      len: Long,
+      code: IntByReference
+  ): Int
+  def document_editor_embed_file(
+      h: Pointer,
+      name: String,
+      data: Array[Byte],
+      len: Long,
+      code: IntByReference
+  ): Int
+  def document_editor_apply_page_redactions(h: Pointer, page: Long, code: IntByReference): Int
+  def document_editor_apply_all_redactions(h: Pointer, code: IntByReference): Int
+  def document_editor_rotate_all_pages(h: Pointer, degrees: Int, code: IntByReference): Int
+  def document_editor_rotate_page_by(
+      h: Pointer,
+      page: Long,
+      degrees: Int,
+      code: IntByReference
+  ): Int
+  def document_editor_get_page_media_box(
+      h: Pointer,
+      page: Long,
+      x: com.sun.jna.ptr.DoubleByReference,
+      y: com.sun.jna.ptr.DoubleByReference,
+      w: com.sun.jna.ptr.DoubleByReference,
+      hh: com.sun.jna.ptr.DoubleByReference,
+      code: IntByReference
+  ): Int
+  def document_editor_set_page_media_box(
+      h: Pointer,
+      page: Long,
+      x: Double,
+      y: Double,
+      w: Double,
+      hh: Double,
+      code: IntByReference
+  ): Int
+  def document_editor_get_page_crop_box(
+      h: Pointer,
+      page: Long,
+      x: com.sun.jna.ptr.DoubleByReference,
+      y: com.sun.jna.ptr.DoubleByReference,
+      w: com.sun.jna.ptr.DoubleByReference,
+      hh: com.sun.jna.ptr.DoubleByReference,
+      code: IntByReference
+  ): Int
+  def document_editor_set_page_crop_box(
+      h: Pointer,
+      page: Long,
+      x: Double,
+      y: Double,
+      w: Double,
+      hh: Double,
+      code: IntByReference
+  ): Int
+  def document_editor_erase_regions(
+      h: Pointer,
+      page: Long,
+      rects: Array[Double],
+      rectsCount: Long,
+      code: IntByReference
+  ): Int
+  def document_editor_clear_erase_regions(h: Pointer, page: Long, code: IntByReference): Int
+  def document_editor_is_page_marked_for_flatten(h: Pointer, page: Long): Int
+  def document_editor_unmark_page_for_flatten(h: Pointer, page: Long, code: IntByReference): Int
+  def document_editor_is_page_marked_for_redaction(h: Pointer, page: Long): Int
+  def document_editor_unmark_page_for_redaction(h: Pointer, page: Long, code: IntByReference): Int
+  def document_editor_delete_page(h: Pointer, pageIndex: Int, code: IntByReference): Int
+  def document_editor_move_page(h: Pointer, from: Int, to: Int, code: IntByReference): Int
+  def document_editor_get_page_rotation(h: Pointer, page: Int, code: IntByReference): Int
+  def document_editor_set_page_rotation(
+      h: Pointer,
+      page: Int,
+      degrees: Int,
+      code: IntByReference
+  ): Int
+  def document_editor_erase_region(
+      h: Pointer,
+      page: Int,
+      x: Float,
+      y: Float,
+      w: Float,
+      hh: Float,
+      code: IntByReference
+  ): Int
+  def document_editor_flatten_annotations(h: Pointer, page: Int, code: IntByReference): Int
+  def document_editor_flatten_all_annotations(h: Pointer, code: IntByReference): Int
+  def document_editor_crop_margins(
+      h: Pointer,
+      left: Float,
+      right: Float,
+      top: Float,
+      bottom: Float,
+      code: IntByReference
+  ): Int
+  def document_editor_merge_from(h: Pointer, sourcePath: String, code: IntByReference): Int
+  def document_editor_save_encrypted(
+      h: Pointer,
+      path: String,
+      userPassword: String,
+      ownerPassword: String,
+      code: IntByReference
+  ): Int
+  def document_editor_set_form_field_value(
+      h: Pointer,
+      name: String,
+      value: String,
+      code: IntByReference
+  ): Int
+  def document_editor_flatten_forms(h: Pointer, code: IntByReference): Int
+  def document_editor_flatten_forms_on_page(h: Pointer, pageIndex: Int, code: IntByReference): Int
+  def document_editor_flatten_warnings_count(h: Pointer): Int
+  def document_editor_flatten_warning(h: Pointer, index: Int, code: IntByReference): Pointer
   def free_string(p: Pointer): Unit
   def free_bytes(p: Pointer): Unit
 
@@ -817,3 +980,377 @@ object Pdf:
   def fromMarkdown(md: String): Pdf = build(Native_.lib.pdf_from_markdown, md, "fromMarkdown")
   def fromHtml(html: String): Pdf = build(Native_.lib.pdf_from_html, html, "fromHtml")
   def fromText(text: String): Pdf = build(Native_.lib.pdf_from_text, text, "fromText")
+
+/** A PDF opened for in-place editing, owning the underlying native handle. AutoCloseable.
+  *
+  * Mirrors the [[PdfDocument]] / [[Pdf]] handle pattern: static `open*` factories, an owned native
+  * handle freed via [[close]] (idempotent), closed-handle guard, the same error helpers, and the
+  * string-take / byte-take / out-param conventions. Page indices are 0-based.
+  *
+  * Status-returning C functions use 0 = success; any non-zero status (or a set error code) raises
+  * [[PdfOxideException]]. The `is*` query functions return a Boolean (1 = true).
+  */
+final class DocumentEditor private (private var handle: Pointer) extends AutoCloseable:
+  private def ptr: Pointer =
+    if handle == null then throw IllegalStateException("DocumentEditor is closed") else handle
+
+  /** Raise on a non-success status / error code. `status` is the int32 the C fn returned. */
+  private def check(status: Int, code: IntByReference, op: String): Unit =
+    if status != 0 || code.getValue != 0 then
+      val c = if code.getValue != 0 then code.getValue else status
+      throw PdfOxideException(c, op)
+
+  private def takeStr(p: Pointer, code: IntByReference, op: String): String =
+    Native_.takeString(p, code.getValue, op)
+
+  private def takeBytes(
+      p: Pointer,
+      len: LongByReference,
+      code: IntByReference,
+      op: String
+  ): Array[Byte] =
+    if p == null then throw PdfOxideException(code.getValue, op)
+    val n = if len.getValue < 0 then 0 else len.getValue.toInt
+    val out = p.getByteArray(0, n)
+    Native_.lib.free_bytes(p)
+    out
+
+  private def readBox(
+      fn: (
+          Pointer,
+          Long,
+          DoubleByReference,
+          DoubleByReference,
+          DoubleByReference,
+          DoubleByReference,
+          IntByReference
+      ) => Int,
+      page: Int,
+      op: String
+  ): Bbox =
+    val x = DoubleByReference(); val y = DoubleByReference()
+    val w = DoubleByReference(); val hh = DoubleByReference()
+    val code = IntByReference()
+    val st = fn(ptr, page.toLong, x, y, w, hh, code)
+    check(st, code, op)
+    Bbox(x.getValue.toFloat, y.getValue.toFloat, w.getValue.toFloat, hh.getValue.toFloat)
+
+  // ── Metadata / inspection ─────────────────────────────────────────────────
+  def pageCount(): Int =
+    val code = IntByReference()
+    val n = Native_.lib.document_editor_get_page_count(ptr, code)
+    if n < 0 || code.getValue != 0 then throw PdfOxideException(code.getValue, "pageCount")
+    n
+
+  def version(): PdfVersion =
+    val maj = ByteByReference(); val min = ByteByReference()
+    Native_.lib.document_editor_get_version(ptr, maj, min)
+    PdfVersion(maj.getValue & 0xff, min.getValue & 0xff)
+
+  def isModified(): Boolean = Native_.lib.document_editor_is_modified(ptr)
+
+  def getSourcePath(): String =
+    val code = IntByReference()
+    takeStr(Native_.lib.document_editor_get_source_path(ptr, code), code, "getSourcePath")
+
+  def getProducer(): String =
+    val code = IntByReference()
+    takeStr(Native_.lib.document_editor_get_producer(ptr, code), code, "getProducer")
+
+  def setProducer(value: String): Unit =
+    val code = IntByReference()
+    check(Native_.lib.document_editor_set_producer(ptr, value, code), code, "setProducer")
+
+  def getCreationDate(): String =
+    val code = IntByReference()
+    takeStr(Native_.lib.document_editor_get_creation_date(ptr, code), code, "getCreationDate")
+
+  def setCreationDate(dateStr: String): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_set_creation_date(ptr, dateStr, code),
+      code,
+      "setCreationDate"
+    )
+
+  // ── Page operations ────────────────────────────────────────────────────────
+  def deletePage(pageIndex: Int): Unit =
+    val code = IntByReference()
+    check(Native_.lib.document_editor_delete_page(ptr, pageIndex, code), code, "deletePage")
+
+  def movePage(from: Int, to: Int): Unit =
+    val code = IntByReference()
+    check(Native_.lib.document_editor_move_page(ptr, from, to, code), code, "movePage")
+
+  def rotatePageBy(page: Int, degrees: Int): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_rotate_page_by(ptr, page.toLong, degrees, code),
+      code,
+      "rotatePageBy"
+    )
+
+  def rotateAllPages(degrees: Int): Unit =
+    val code = IntByReference()
+    check(Native_.lib.document_editor_rotate_all_pages(ptr, degrees, code), code, "rotateAllPages")
+
+  def setPageRotation(page: Int, degrees: Int): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_set_page_rotation(ptr, page, degrees, code),
+      code,
+      "setPageRotation"
+    )
+
+  /** Page rotation in degrees (0-based page). */
+  def getPageRotation(page: Int): Int =
+    val code = IntByReference()
+    val r = Native_.lib.document_editor_get_page_rotation(ptr, page, code)
+    if code.getValue != 0 then throw PdfOxideException(code.getValue, "getPageRotation")
+    r
+
+  def cropMargins(left: Float, right: Float, top: Float, bottom: Float): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_crop_margins(ptr, left, right, top, bottom, code),
+      code,
+      "cropMargins"
+    )
+
+  def getPageCropBox(page: Int): Bbox =
+    readBox(Native_.lib.document_editor_get_page_crop_box, page, "getPageCropBox")
+
+  def setPageCropBox(page: Int, x: Double, y: Double, w: Double, h: Double): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_set_page_crop_box(ptr, page.toLong, x, y, w, h, code),
+      code,
+      "setPageCropBox"
+    )
+
+  def getPageMediaBox(page: Int): Bbox =
+    readBox(Native_.lib.document_editor_get_page_media_box, page, "getPageMediaBox")
+
+  def setPageMediaBox(page: Int, x: Double, y: Double, w: Double, h: Double): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_set_page_media_box(ptr, page.toLong, x, y, w, h, code),
+      code,
+      "setPageMediaBox"
+    )
+
+  // ── Redaction ──────────────────────────────────────────────────────────────
+  def applyAllRedactions(): Unit =
+    val code = IntByReference()
+    check(Native_.lib.document_editor_apply_all_redactions(ptr, code), code, "applyAllRedactions")
+
+  def applyPageRedactions(page: Int): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_apply_page_redactions(ptr, page.toLong, code),
+      code,
+      "applyPageRedactions"
+    )
+
+  def eraseRegion(page: Int, x: Float, y: Float, w: Float, h: Float): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_erase_region(ptr, page, x, y, w, h, code),
+      code,
+      "eraseRegion"
+    )
+
+  /** Erase multiple rectangles on a page; each rect is (x, y, w, h). */
+  def eraseRegions(page: Int, rects: Seq[(Double, Double, Double, Double)]): Unit =
+    val code = IntByReference()
+    val flat = rects.flatMap((x, y, w, h) => Seq(x, y, w, h)).toArray
+    check(
+      Native_.lib.document_editor_erase_regions(ptr, page.toLong, flat, rects.length.toLong, code),
+      code,
+      "eraseRegions"
+    )
+
+  def clearEraseRegions(page: Int): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_clear_erase_regions(ptr, page.toLong, code),
+      code,
+      "clearEraseRegions"
+    )
+
+  def isPageMarkedForRedaction(page: Int): Boolean =
+    val r = Native_.lib.document_editor_is_page_marked_for_redaction(ptr, page.toLong)
+    if r < 0 then throw PdfOxideException(r, "isPageMarkedForRedaction")
+    r == 1
+
+  def unmarkPageForRedaction(page: Int): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_unmark_page_for_redaction(ptr, page.toLong, code),
+      code,
+      "unmarkPageForRedaction"
+    )
+
+  // ── Flatten (annotations / forms) ──────────────────────────────────────────
+  def flattenForms(): Unit =
+    val code = IntByReference()
+    check(Native_.lib.document_editor_flatten_forms(ptr, code), code, "flattenForms")
+
+  def flattenFormsOnPage(pageIndex: Int): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_flatten_forms_on_page(ptr, pageIndex, code),
+      code,
+      "flattenFormsOnPage"
+    )
+
+  def flattenAnnotations(page: Int): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_flatten_annotations(ptr, page, code),
+      code,
+      "flattenAnnotations"
+    )
+
+  def flattenAllAnnotations(): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_flatten_all_annotations(ptr, code),
+      code,
+      "flattenAllAnnotations"
+    )
+
+  /** Number of warnings collected during the last form-flattening save. */
+  def flattenWarningsCount(): Int =
+    val n = Native_.lib.document_editor_flatten_warnings_count(ptr)
+    if n < 0 then throw PdfOxideException(n, "flattenWarningsCount")
+    n
+
+  def flattenWarning(index: Int): String =
+    val code = IntByReference()
+    takeStr(Native_.lib.document_editor_flatten_warning(ptr, index, code), code, "flattenWarning")
+
+  def isPageMarkedForFlatten(page: Int): Boolean =
+    val r = Native_.lib.document_editor_is_page_marked_for_flatten(ptr, page.toLong)
+    if r < 0 then throw PdfOxideException(r, "isPageMarkedForFlatten")
+    r == 1
+
+  def unmarkPageForFlatten(page: Int): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_unmark_page_for_flatten(ptr, page.toLong, code),
+      code,
+      "unmarkPageForFlatten"
+    )
+
+  // ── Forms / merge / convert / embed ────────────────────────────────────────
+  def setFormFieldValue(name: String, value: String): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_set_form_field_value(ptr, name, value, code),
+      code,
+      "setFormFieldValue"
+    )
+
+  def mergeFrom(sourcePath: String): Unit =
+    val code = IntByReference()
+    check(Native_.lib.document_editor_merge_from(ptr, sourcePath, code), code, "mergeFrom")
+
+  def mergeFromBytes(data: Array[Byte]): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_merge_from_bytes(ptr, data, data.length.toLong, code),
+      code,
+      "mergeFromBytes"
+    )
+
+  /** Convert in-place to PDF/A. level: 0=A1b 1=A1a 2=A2b 3=A2a 4=A2u 5=A3b 6=A3a 7=A3u. */
+  def convertToPdfA(level: Int): Unit =
+    val code = IntByReference()
+    check(Native_.lib.document_editor_convert_to_pdf_a(ptr, level, code), code, "convertToPdfA")
+
+  def embedFile(name: String, data: Array[Byte]): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_embed_file(ptr, name, data, data.length.toLong, code),
+      code,
+      "embedFile"
+    )
+
+  /** Extract a subset of (0-based) pages to a new in-memory PDF. */
+  def extractPagesToBytes(pages: Seq[Int]): Array[Byte] =
+    val len = LongByReference(); val code = IntByReference()
+    val p = Native_.lib.document_editor_extract_pages_to_bytes(
+      ptr,
+      pages.toArray,
+      pages.length.toLong,
+      len,
+      code
+    )
+    takeBytes(p, len, code, "extractPagesToBytes")
+
+  // ── Save ───────────────────────────────────────────────────────────────────
+  def save(path: String): Unit =
+    val code = IntByReference()
+    check(Native_.lib.document_editor_save(ptr, path, code), code, "save")
+
+  def saveToBytes(): Array[Byte] =
+    val len = LongByReference(); val code = IntByReference()
+    val p = Native_.lib.document_editor_save_to_bytes(ptr, len, code)
+    takeBytes(p, len, code, "saveToBytes")
+
+  def saveToBytesWithOptions(
+      compress: Boolean,
+      garbageCollect: Boolean,
+      linearize: Boolean
+  ): Array[Byte] =
+    val len = LongByReference(); val code = IntByReference()
+    val p = Native_.lib.document_editor_save_to_bytes_with_options(
+      ptr,
+      compress,
+      garbageCollect,
+      linearize,
+      len,
+      code
+    )
+    takeBytes(p, len, code, "saveToBytesWithOptions")
+
+  def saveEncrypted(path: String, userPassword: String, ownerPassword: String): Unit =
+    val code = IntByReference()
+    check(
+      Native_.lib.document_editor_save_encrypted(ptr, path, userPassword, ownerPassword, code),
+      code,
+      "saveEncrypted"
+    )
+
+  def saveEncryptedToBytes(userPassword: String, ownerPassword: String): Array[Byte] =
+    val len = LongByReference(); val code = IntByReference()
+    val p = Native_.lib.document_editor_save_encrypted_to_bytes(
+      ptr,
+      userPassword,
+      ownerPassword,
+      len,
+      code
+    )
+    takeBytes(p, len, code, "saveEncryptedToBytes")
+
+  def close(): Unit =
+    if handle != null then
+      Native_.lib.document_editor_free(handle)
+      handle = null
+
+object DocumentEditor:
+  def open(path: String): DocumentEditor =
+    val code = IntByReference()
+    val h = Native_.lib.document_editor_open(path, code)
+    if h == null then throw PdfOxideException(code.getValue, "openEditor")
+    DocumentEditor(h)
+
+  /** Alias for [[open]] (path), to mirror the suggested `openEditor` name. */
+  def openEditor(path: String): DocumentEditor = open(path)
+
+  def openFromBytes(data: Array[Byte]): DocumentEditor =
+    val code = IntByReference()
+    val h = Native_.lib.document_editor_open_from_bytes(data, data.length.toLong, code)
+    if h == null then throw PdfOxideException(code.getValue, "openFromBytes")
+    DocumentEditor(h)

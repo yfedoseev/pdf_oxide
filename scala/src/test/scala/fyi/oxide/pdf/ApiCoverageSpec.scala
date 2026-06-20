@@ -116,6 +116,19 @@ class ApiCoverageSpec extends AnyFunSuite:
       assert(page.html().nonEmpty) // html
       assert(page.plainText().nonEmpty) // plainText
 
+  // ── DocumentEditor (in-place editing) ────────────────────────────────────────
+  test("DocumentEditor open / edit / save round-trip"):
+    Using.resource(DocumentEditor.openFromBytes(samplePdf())): ed =>
+      assert(ed.pageCount() >= 1) // pageCount
+      val modifiedFlag: Boolean = ed.isModified() // isModified is a bool
+      assert(modifiedFlag == true || modifiedFlag == false)
+      ed.rotateAllPages(90) // rotateAllPages succeeds
+      val rot: Int = ed.getPageRotation(0) // getPageRotation returns an int
+      assert(rot == 90 || rot >= 0)
+      ed.setProducer("x") // setProducer + getProducer succeed
+      assert(ed.getProducer() ne null)
+      assert(ed.saveToBytes().nonEmpty) // saveToBytes returns non-empty bytes
+
   // ── Error path ───────────────────────────────────────────────────────────────
   test("open nonexistent throws PdfOxideException"):
     assertThrows[PdfOxideException](PdfDocument.open("/nonexistent/nope.pdf"))

@@ -845,6 +845,464 @@ class Pdf {
     std::unique_ptr<::Pdf, Deleter> handle_;
 };
 
+/// A single rectangle to erase, in page user-space coordinates.
+struct EraseRect {
+    double x;
+    double y;
+    double width;
+    double height;
+};
+
+/// An open PDF for in-place editing (rotate/crop/redact/flatten/merge/save).
+/// Move-only; owns the native DocumentEditor handle and frees it on destruction.
+/// int32 status returns are treated as 0 = success; a non-zero status (or a set
+/// error_code) raises Error. The is_* query functions are exposed as bool
+/// (1 = true).
+class DocumentEditor {
+  public:
+    /// Open a PDF for editing from a filesystem path.
+    static DocumentEditor open(const std::string& path) {
+        int32_t code = 0;
+        ::DocumentEditor* h = document_editor_open(path.c_str(), &code);
+        if (h == nullptr) {
+            throw Error(code, "DocumentEditor::open");
+        }
+        return DocumentEditor(h);
+    }
+
+    /// Open a PDF for editing from in-memory bytes.
+    static DocumentEditor open_from_bytes(const std::vector<std::uint8_t>& data) {
+        int32_t code = 0;
+        ::DocumentEditor* h =
+            document_editor_open_from_bytes(data.data(), data.size(), &code);
+        if (h == nullptr) {
+            throw Error(code, "DocumentEditor::open_from_bytes");
+        }
+        return DocumentEditor(h);
+    }
+
+    /// Number of pages.
+    int page_count() const {
+        int32_t code = 0;
+        int32_t n = document_editor_get_page_count(ptr(), &code);
+        if (n < 0) {
+            throw Error(code, "DocumentEditor::page_count");
+        }
+        return n;
+    }
+
+    /// PDF version.
+    Version version() const {
+        Version v{0, 0};
+        document_editor_get_version(ptr(), &v.major, &v.minor);
+        return v;
+    }
+
+    /// True if the editor has pending modifications.
+    bool is_modified() const { return document_editor_is_modified(ptr()); }
+
+    /// The source path the editor was opened from (empty if from bytes).
+    std::string get_source_path() const {
+        int32_t code = 0;
+        return detail::take_string(document_editor_get_source_path(ptr(), &code), code,
+                                   "DocumentEditor::get_source_path");
+    }
+
+    /// Producer (`/Info.Producer`).
+    std::string get_producer() const {
+        int32_t code = 0;
+        return detail::take_string(document_editor_get_producer(ptr(), &code), code,
+                                   "DocumentEditor::get_producer");
+    }
+
+    /// Set the producer (`/Info.Producer`).
+    void set_producer(const std::string& value) {
+        int32_t code = 0;
+        if (document_editor_set_producer(ptr(), value.c_str(), &code) != 0) {
+            throw Error(code, "DocumentEditor::set_producer");
+        }
+    }
+
+    /// Creation date (`/Info.CreationDate`, raw PDF date string).
+    std::string get_creation_date() const {
+        int32_t code = 0;
+        return detail::take_string(document_editor_get_creation_date(ptr(), &code),
+                                   code, "DocumentEditor::get_creation_date");
+    }
+
+    /// Set the creation date (raw PDF date string, e.g. `D:20260421120000Z`).
+    void set_creation_date(const std::string& date_str) {
+        int32_t code = 0;
+        if (document_editor_set_creation_date(ptr(), date_str.c_str(), &code) != 0) {
+            throw Error(code, "DocumentEditor::set_creation_date");
+        }
+    }
+
+    /// Delete the page at `page_index` (0-based).
+    void delete_page(int page_index) {
+        int32_t code = 0;
+        if (document_editor_delete_page(ptr(), page_index, &code) != 0) {
+            throw Error(code, "DocumentEditor::delete_page");
+        }
+    }
+
+    /// Move the page at `from` (0-based) to `to`.
+    void move_page(int from, int to) {
+        int32_t code = 0;
+        if (document_editor_move_page(ptr(), from, to, &code) != 0) {
+            throw Error(code, "DocumentEditor::move_page");
+        }
+    }
+
+    /// Rotate one page by `degrees` (additive, not absolute).
+    void rotate_page_by(int page_index, int degrees) {
+        int32_t code = 0;
+        if (document_editor_rotate_page_by(
+                ptr(), static_cast<std::uintptr_t>(page_index), degrees, &code) != 0) {
+            throw Error(code, "DocumentEditor::rotate_page_by");
+        }
+    }
+
+    /// Rotate all pages by `degrees` (additive).
+    void rotate_all_pages(int degrees) {
+        int32_t code = 0;
+        if (document_editor_rotate_all_pages(ptr(), degrees, &code) != 0) {
+            throw Error(code, "DocumentEditor::rotate_all_pages");
+        }
+    }
+
+    /// Set the absolute rotation (degrees) of one page.
+    void set_page_rotation(int page_index, int degrees) {
+        int32_t code = 0;
+        if (document_editor_set_page_rotation(ptr(), page_index, degrees, &code) != 0) {
+            throw Error(code, "DocumentEditor::set_page_rotation");
+        }
+    }
+
+    /// Get the absolute rotation (degrees) of one page.
+    int get_page_rotation(int page_index) const {
+        int32_t code = 0;
+        int32_t deg = document_editor_get_page_rotation(ptr(), page_index, &code);
+        if (deg < 0 || code != 0) {
+            throw Error(code, "DocumentEditor::get_page_rotation");
+        }
+        return deg;
+    }
+
+    /// Crop margins (in points) off every page.
+    void crop_margins(float left, float right, float top, float bottom) {
+        int32_t code = 0;
+        if (document_editor_crop_margins(ptr(), left, right, top, bottom, &code) != 0) {
+            throw Error(code, "DocumentEditor::crop_margins");
+        }
+    }
+
+    /// Get the CropBox of a page (0,0,0,0 if unset).
+    Bbox get_page_crop_box(int page_index) const {
+        int32_t code = 0;
+        double x = 0, y = 0, w = 0, h = 0;
+        if (document_editor_get_page_crop_box(ptr(),
+                                              static_cast<std::uintptr_t>(page_index),
+                                              &x, &y, &w, &h, &code) != 0) {
+            throw Error(code, "DocumentEditor::get_page_crop_box");
+        }
+        return Bbox{static_cast<float>(x), static_cast<float>(y), static_cast<float>(w),
+                    static_cast<float>(h)};
+    }
+
+    /// Set the CropBox of a page.
+    void set_page_crop_box(int page_index, double x, double y, double w, double h) {
+        int32_t code = 0;
+        if (document_editor_set_page_crop_box(ptr(),
+                                              static_cast<std::uintptr_t>(page_index),
+                                              x, y, w, h, &code) != 0) {
+            throw Error(code, "DocumentEditor::set_page_crop_box");
+        }
+    }
+
+    /// Get the MediaBox of a page.
+    Bbox get_page_media_box(int page_index) const {
+        int32_t code = 0;
+        double x = 0, y = 0, w = 0, h = 0;
+        if (document_editor_get_page_media_box(ptr(),
+                                               static_cast<std::uintptr_t>(page_index),
+                                               &x, &y, &w, &h, &code) != 0) {
+            throw Error(code, "DocumentEditor::get_page_media_box");
+        }
+        return Bbox{static_cast<float>(x), static_cast<float>(y), static_cast<float>(w),
+                    static_cast<float>(h)};
+    }
+
+    /// Set the MediaBox of a page.
+    void set_page_media_box(int page_index, double x, double y, double w, double h) {
+        int32_t code = 0;
+        if (document_editor_set_page_media_box(ptr(),
+                                               static_cast<std::uintptr_t>(page_index),
+                                               x, y, w, h, &code) != 0) {
+            throw Error(code, "DocumentEditor::set_page_media_box");
+        }
+    }
+
+    /// Apply (burn in) redactions on a single page (0-based).
+    void apply_page_redactions(int page_index) {
+        int32_t code = 0;
+        if (document_editor_apply_page_redactions(
+                ptr(), static_cast<std::uintptr_t>(page_index), &code) != 0) {
+            throw Error(code, "DocumentEditor::apply_page_redactions");
+        }
+    }
+
+    /// Apply all pending redactions across the document.
+    void apply_all_redactions() {
+        int32_t code = 0;
+        if (document_editor_apply_all_redactions(ptr(), &code) != 0) {
+            throw Error(code, "DocumentEditor::apply_all_redactions");
+        }
+    }
+
+    /// Erase a single rectangular region on a page (page user-space).
+    void erase_region(int page_index, float x, float y, float w, float h) {
+        int32_t code = 0;
+        if (document_editor_erase_region(ptr(), page_index, x, y, w, h, &code) != 0) {
+            throw Error(code, "DocumentEditor::erase_region");
+        }
+    }
+
+    /// Erase multiple rectangular regions on a page (page user-space).
+    void erase_regions(int page_index, const std::vector<EraseRect>& rects) {
+        int32_t code = 0;
+        std::vector<double> flat;
+        flat.reserve(rects.size() * 4);
+        for (const auto& r : rects) {
+            flat.push_back(r.x);
+            flat.push_back(r.y);
+            flat.push_back(r.width);
+            flat.push_back(r.height);
+        }
+        if (document_editor_erase_regions(ptr(),
+                                          static_cast<std::uintptr_t>(page_index),
+                                          flat.data(), rects.size(), &code) != 0) {
+            throw Error(code, "DocumentEditor::erase_regions");
+        }
+    }
+
+    /// Clear all pending erase-region entries for a page.
+    void clear_erase_regions(int page_index) {
+        int32_t code = 0;
+        if (document_editor_clear_erase_regions(
+                ptr(), static_cast<std::uintptr_t>(page_index), &code) != 0) {
+            throw Error(code, "DocumentEditor::clear_erase_regions");
+        }
+    }
+
+    /// True if the page is marked for redaction.
+    bool is_page_marked_for_redaction(int page_index) const {
+        int32_t r = document_editor_is_page_marked_for_redaction(
+            ptr(), static_cast<std::uintptr_t>(page_index));
+        if (r < 0) {
+            throw Error(r, "DocumentEditor::is_page_marked_for_redaction");
+        }
+        return r == 1;
+    }
+
+    /// Remove the redaction mark from a page.
+    void unmark_page_for_redaction(int page_index) {
+        int32_t code = 0;
+        if (document_editor_unmark_page_for_redaction(
+                ptr(), static_cast<std::uintptr_t>(page_index), &code) != 0) {
+            throw Error(code, "DocumentEditor::unmark_page_for_redaction");
+        }
+    }
+
+    /// Flatten all forms in the document (bake values into page content).
+    void flatten_forms() {
+        int32_t code = 0;
+        if (document_editor_flatten_forms(ptr(), &code) != 0) {
+            throw Error(code, "DocumentEditor::flatten_forms");
+        }
+    }
+
+    /// Flatten forms on a specific page (0-based).
+    void flatten_forms_on_page(int page_index) {
+        int32_t code = 0;
+        if (document_editor_flatten_forms_on_page(ptr(), page_index, &code) != 0) {
+            throw Error(code, "DocumentEditor::flatten_forms_on_page");
+        }
+    }
+
+    /// Flatten annotations on a single page (0-based).
+    void flatten_annotations(int page_index) {
+        int32_t code = 0;
+        if (document_editor_flatten_annotations(ptr(), page_index, &code) != 0) {
+            throw Error(code, "DocumentEditor::flatten_annotations");
+        }
+    }
+
+    /// Flatten all annotations across the document.
+    void flatten_all_annotations() {
+        int32_t code = 0;
+        if (document_editor_flatten_all_annotations(ptr(), &code) != 0) {
+            throw Error(code, "DocumentEditor::flatten_all_annotations");
+        }
+    }
+
+    /// Number of warnings collected during the last form-flattening save.
+    int flatten_warnings_count() const {
+        int32_t n = document_editor_flatten_warnings_count(ptr());
+        return n < 0 ? 0 : n;
+    }
+
+    /// The `index`-th flatten warning message.
+    std::string flatten_warning(int index) const {
+        int32_t code = 0;
+        return detail::take_string(document_editor_flatten_warning(ptr(), index, &code),
+                                   code, "DocumentEditor::flatten_warning");
+    }
+
+    /// True if the page is marked for annotation-flatten.
+    bool is_page_marked_for_flatten(int page_index) const {
+        int32_t r = document_editor_is_page_marked_for_flatten(
+            ptr(), static_cast<std::uintptr_t>(page_index));
+        if (r < 0) {
+            throw Error(r, "DocumentEditor::is_page_marked_for_flatten");
+        }
+        return r == 1;
+    }
+
+    /// Remove the flatten mark from a page.
+    void unmark_page_for_flatten(int page_index) {
+        int32_t code = 0;
+        if (document_editor_unmark_page_for_flatten(
+                ptr(), static_cast<std::uintptr_t>(page_index), &code) != 0) {
+            throw Error(code, "DocumentEditor::unmark_page_for_flatten");
+        }
+    }
+
+    /// Set a form field value (UTF-8) by field name.
+    void set_form_field_value(const std::string& name, const std::string& value) {
+        int32_t code = 0;
+        if (document_editor_set_form_field_value(ptr(), name.c_str(), value.c_str(),
+                                                 &code) != 0) {
+            throw Error(code, "DocumentEditor::set_form_field_value");
+        }
+    }
+
+    /// Merge pages from a source PDF on disk into this document.
+    void merge_from(const std::string& source_path) {
+        int32_t code = 0;
+        if (document_editor_merge_from(ptr(), source_path.c_str(), &code) != 0) {
+            throw Error(code, "DocumentEditor::merge_from");
+        }
+    }
+
+    /// Merge pages from an in-memory PDF into this document.
+    void merge_from_bytes(const std::vector<std::uint8_t>& data) {
+        int32_t code = 0;
+        if (document_editor_merge_from_bytes(ptr(), data.data(), data.size(), &code) !=
+            0) {
+            throw Error(code, "DocumentEditor::merge_from_bytes");
+        }
+    }
+
+    /// Convert the document to PDF/A in-place.
+    /// level: 0=A1b 1=A1a 2=A2b 3=A2a 4=A2u 5=A3b 6=A3a 7=A3u.
+    void convert_to_pdf_a(int level) {
+        int32_t code = 0;
+        if (document_editor_convert_to_pdf_a(ptr(), level, &code) != 0) {
+            throw Error(code, "DocumentEditor::convert_to_pdf_a");
+        }
+    }
+
+    /// Embed a file attachment into the document.
+    void embed_file(const std::string& name, const std::vector<std::uint8_t>& data) {
+        int32_t code = 0;
+        if (document_editor_embed_file(ptr(), name.c_str(), data.data(), data.size(),
+                                       &code) != 0) {
+            throw Error(code, "DocumentEditor::embed_file");
+        }
+    }
+
+    /// Extract a subset of pages (0-based indices) to a new in-memory PDF.
+    std::vector<std::uint8_t>
+    extract_pages_to_bytes(const std::vector<int32_t>& pages) const {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        std::uint8_t* p = document_editor_extract_pages_to_bytes(
+            ptr(), pages.data(), pages.size(), &out_len, &code);
+        return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                                  "DocumentEditor::extract_pages_to_bytes");
+    }
+
+    /// Save the edited document to a path.
+    void save(const std::string& path) const {
+        int32_t code = 0;
+        if (document_editor_save(ptr(), path.c_str(), &code) != 0) {
+            throw Error(code, "DocumentEditor::save");
+        }
+    }
+
+    /// Save the edited document to bytes.
+    std::vector<std::uint8_t> save_to_bytes() const {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        std::uint8_t* p = document_editor_save_to_bytes(ptr(), &out_len, &code);
+        return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                                  "DocumentEditor::save_to_bytes");
+    }
+
+    /// Save to bytes with compression / garbage-collect / linearize options.
+    std::vector<std::uint8_t> save_to_bytes_with_options(bool compress,
+                                                         bool garbage_collect,
+                                                         bool linearize) const {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        std::uint8_t* p = document_editor_save_to_bytes_with_options(
+            ptr(), compress, garbage_collect, linearize, &out_len, &code);
+        return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                                  "DocumentEditor::save_to_bytes_with_options");
+    }
+
+    /// Save the edited document AES-256 encrypted to a path.
+    void save_encrypted(const std::string& path, const std::string& user_password,
+                        const std::string& owner_password) const {
+        int32_t code = 0;
+        if (document_editor_save_encrypted(ptr(), path.c_str(), user_password.c_str(),
+                                           owner_password.c_str(), &code) != 0) {
+            throw Error(code, "DocumentEditor::save_encrypted");
+        }
+    }
+
+    /// Save the edited document AES-256 encrypted to bytes.
+    std::vector<std::uint8_t>
+    save_encrypted_to_bytes(const std::string& user_password,
+                            const std::string& owner_password) const {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        std::uint8_t* p = document_editor_save_encrypted_to_bytes(
+            ptr(), user_password.c_str(), owner_password.c_str(), &out_len, &code);
+        return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                                  "DocumentEditor::save_encrypted_to_bytes");
+    }
+
+    /// Free the native handle now (idempotent). RAII also frees at scope exit.
+    void close() { handle_.reset(); }
+
+  private:
+    struct Deleter {
+        void operator()(::DocumentEditor* h) const noexcept {
+            if (h)
+                document_editor_free(h);
+        }
+    };
+    explicit DocumentEditor(::DocumentEditor* h) : handle_(h) {}
+    ::DocumentEditor* ptr() const {
+        if (!handle_)
+            throw Error(0, "DocumentEditor is closed");
+        return handle_.get();
+    }
+    std::unique_ptr<::DocumentEditor, Deleter> handle_;
+};
+
 } // namespace pdf_oxide
 
 #endif // PDF_OXIDE_HPP
