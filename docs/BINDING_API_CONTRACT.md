@@ -57,3 +57,27 @@ language's convention (camelCase, snake_case, kebab-case, PascalCase types).
 
 Memory string returns free via `free_string`; byte buffers via `free_bytes`
 (never `free_string` on a byte buffer).
+
+## Extended surface (added v0.3.68, all bindings)
+
+Document, additional canonical methods (wrap existing C ABI):
+
+| stem | signature | C ABI |
+|---|---|---|
+| `to_html_all` | `() -> string` | `pdf_document_to_html_all` |
+| `to_plain_text_all` | `() -> string` | `pdf_document_to_plain_text_all` |
+| `authenticate` | `(password) -> bool` | `pdf_document_authenticate` (wrong password = `false`, not an error) |
+| `page` | `(index) -> Page` | 0-based; Page keeps its Document alive |
+
+`Page` (lightweight, holds its Document + index; flat per-page C calls):
+
+| stem | signature |
+|---|---|
+| `text` | `() -> string` (extract_text) |
+| `markdown` | `() -> string` (to_markdown) |
+| `html` | `() -> string` (to_html) |
+| `plain_text` | `() -> string` (to_plain_text) |
+
+Cased per language (e.g. `toHtmlAll`/`to_html_all`/`to-html-all`/`pdf_to_html_all`;
+`plainText`/`plain_text`/`plain-text`; Obj-C `toHtmlAllWithError:`, `authenticate:error:`,
+`pageAtIndex:`).
