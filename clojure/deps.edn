@@ -1,0 +1,14 @@
+;; pdf_oxide — Clojure bindings over the C ABI via JNA (same mechanism as Kotlin).
+{:paths ["src"]
+ :deps {net.java.dev.jna/jna {:mvn/version "5.14.0"}}
+ :aliases
+ {:test
+  {:extra-paths ["test"]
+   :extra-deps {io.github.cognitect-labs/test-runner
+                {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+   ;; JNA finds the freshly built cdylib via jna.library.path.
+   :jvm-opts ["-Djna.library.path=../target/release"]
+   :main-opts ["-m" "cognitect.test-runner"]}
+  :example
+  {:jvm-opts ["-Djna.library.path=../target/release"]
+   :main-opts ["-m" "pdf-oxide.example"]}}}

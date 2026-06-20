@@ -430,3 +430,8 @@ r/*.tar.gz
 /scala/target/
 /scala/project/target/
 /scala/project/project/
+
+# Clojure binding artifacts
+/clojure/.cpcache/
+/clojure/.clj-kondo/
+/clojure/target/
