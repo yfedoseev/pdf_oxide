@@ -419,3 +419,7 @@ r/*.tar.gz
 
 # Julia binding artifacts
 /julia/Manifest.toml
+
+# Zig binding artifacts
+/zig/.zig-cache/
+/zig/zig-out/

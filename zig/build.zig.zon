@@ -1,0 +1,13 @@
+.{
+    .name = .pdf_oxide,
+    .version = "0.3.68",
+    .fingerprint = 0x9a3c1f7e2b4d6058,
+    .minimum_zig_version = "0.14.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "lib",
+        "examples",
+        "README.md",
+    },
+}
