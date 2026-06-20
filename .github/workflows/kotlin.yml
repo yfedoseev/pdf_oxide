@@ -78,6 +78,10 @@ jobs:
         working-directory: kotlin
         run: ktlint "src/**/*.kt"
 
+      - name: detekt (static analysis)
+        working-directory: kotlin
+        run: gradle detekt --no-daemon --console=plain
+
       - name: Test (api-coverage, jna.library.path -> cdylib)
         working-directory: kotlin
         run: gradle test --no-daemon --console=plain -DPDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}"

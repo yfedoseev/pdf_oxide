@@ -6,12 +6,24 @@
 plugins {
     kotlin("jvm") version "2.2.20"
     `java-library`
+    id("io.gitlab.arturbosch.detekt") version "1.23.8"
 }
 
 group = "fyi.oxide"
 version = "0.3.68"
 
 repositories { mavenCentral() }
+
+// Static analysis. detekt 1.23.x runs on its own bundled Kotlin analyzer
+// (independent of the project's Kotlin 2.2.20), so K2 compatibility is a
+// non-issue here. Type-resolution rules are off (no classpath wiring needed);
+// the default rule set covers complexity/style/potential-bugs.
+detekt {
+    source.setFrom("src/main/kotlin", "src/test/kotlin")
+    config.setFrom("detekt.yml")
+    buildUponDefaultConfig = true
+    ignoreFailures = false
+}
 
 dependencies {
     implementation("net.java.dev.jna:jna:5.14.0")

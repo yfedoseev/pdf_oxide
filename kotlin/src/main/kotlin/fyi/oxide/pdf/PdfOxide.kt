@@ -153,7 +153,7 @@ internal object Native_ {
 class PdfDocument internal constructor(
     private var handle: Pointer?,
 ) : AutoCloseable {
-    private fun ptr(): Pointer = handle ?: throw IllegalStateException("PdfDocument is closed")
+    private fun ptr(): Pointer = handle ?: error("PdfDocument is closed")
 
     companion object {
         @JvmStatic
@@ -251,7 +251,7 @@ class PdfDocument internal constructor(
 class Pdf internal constructor(
     private var handle: Pointer?,
 ) : AutoCloseable {
-    private fun ptr(): Pointer = handle ?: throw IllegalStateException("Pdf is closed")
+    private fun ptr(): Pointer = handle ?: error("Pdf is closed")
 
     companion object {
         @JvmStatic
