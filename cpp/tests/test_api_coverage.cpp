@@ -71,7 +71,24 @@ int main() {
     CHECK(!doc.to_markdown(0).empty());                            // to_markdown
     CHECK(doc.to_html(0).find('<') != std::string::npos);          // to_html
     CHECK(!doc.to_markdown_all().empty());                         // to_markdown_all
+    CHECK(doc.to_html_all().find('<') != std::string::npos);       // to_html_all
+    CHECK(!doc.to_plain_text_all().empty());                       // to_plain_text_all
     CHECK(!doc.extract_structured_json(0).empty()); // extract_structured_json
+
+    // authenticate returns a bool (no throw on an unencrypted/sample doc)
+    {
+        bool authed = doc.authenticate(""); // authenticate
+        (void)authed;
+    }
+
+    // ── Page model (page(index) + per-page accessors) ────────────────────
+    {
+        auto p = doc.page(0);                               // page
+        CHECK(p.text().find("Alpha") != std::string::npos); // Page::text
+        CHECK(!p.markdown().empty());                       // Page::markdown
+        CHECK(p.html().find('<') != std::string::npos);     // Page::html
+        CHECK(!p.plain_text().empty());                     // Page::plain_text
+    }
 
     // ── Error path (open a bogus file throws Error) ──────────────────────
     bool threw = false;

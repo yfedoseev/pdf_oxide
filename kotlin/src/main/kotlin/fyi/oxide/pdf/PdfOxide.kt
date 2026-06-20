@@ -94,6 +94,22 @@ internal interface CLib : Library {
         code: IntByReference,
     ): Pointer?
 
+    fun pdf_document_to_html_all(
+        h: Pointer,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_document_to_plain_text_all(
+        h: Pointer,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_document_authenticate(
+        h: Pointer,
+        password: String,
+        code: IntByReference,
+    ): Boolean
+
     fun pdf_document_extract_structured_to_json(
         h: Pointer,
         page: Int,
@@ -230,6 +246,29 @@ class PdfDocument internal constructor(
         return Native_.takeString(Native_.lib.pdf_document_to_markdown_all(ptr(), code), code.value, "toMarkdownAll")
     }
 
+    fun toHtmlAll(): String {
+        val code = IntByReference()
+        return Native_.takeString(Native_.lib.pdf_document_to_html_all(ptr(), code), code.value, "toHtmlAll")
+    }
+
+    fun toPlainTextAll(): String {
+        val code = IntByReference()
+        return Native_.takeString(Native_.lib.pdf_document_to_plain_text_all(ptr(), code), code.value, "toPlainTextAll")
+    }
+
+    /**
+     * Verify [password] against an encrypted document. Returns true on success,
+     * false for a wrong password (this is not an error — mirrors the other bool
+     * accessors, which never throw).
+     */
+    fun authenticate(password: String): Boolean {
+        val code = IntByReference()
+        return Native_.lib.pdf_document_authenticate(ptr(), password, code)
+    }
+
+    /** A handle to a single 0-based page, kept alive by this document. */
+    fun page(index: Int): Page = Page(this, index)
+
     fun extractStructuredJson(page: Int): String {
         val code = IntByReference()
         return Native_.takeString(
@@ -245,6 +284,25 @@ class PdfDocument internal constructor(
             handle = null
         }
     }
+}
+
+/**
+ * A single 0-based page of a [PdfDocument]. Holds a strong reference to its
+ * document, so the document is kept alive for as long as the page is used; all
+ * extraction delegates to the document's per-page methods (which enforce the
+ * closed-handle guard).
+ */
+class Page internal constructor(
+    private val document: PdfDocument,
+    val index: Int,
+) {
+    fun text(): String = document.extractText(index)
+
+    fun markdown(): String = document.toMarkdown(index)
+
+    fun html(): String = document.toHtml(index)
+
+    fun plainText(): String = document.toPlainText(index)
 }
 
 /** A PDF produced by a builder. Close when done (AutoCloseable). */

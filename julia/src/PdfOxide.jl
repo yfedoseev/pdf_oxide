@@ -8,11 +8,12 @@
 # test/runtests.jl (one test per public method).
 module PdfOxide
 
-export PdfDocument, Pdf, PdfOxideError, PdfVersion
+export PdfDocument, PdfPage, Pdf, PdfOxideError, PdfVersion
 export open_document, open_from_bytes, open_with_password
 export page_count, version, is_encrypted, has_structure_tree
 export extract_text,
     to_plain_text, to_markdown, to_html, to_markdown_all, extract_structured_json
+export to_html_all, to_plain_text_all, authenticate, page, text, markdown, html, plain_text
 export from_markdown, from_html, from_text, save, to_bytes, close!
 
 # Native library resolution: PDF_OXIDE_LIB_PATH (full path) -> PDF_OXIDE_LIB_DIR
@@ -186,6 +187,72 @@ function to_markdown_all(d::PdfDocument)
         code,
     )
     return _take_string(ptr, code[], "to_markdown_all")
+end
+
+"""HTML for the whole document."""
+function to_html_all(d::PdfDocument)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_document_to_html_all, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _doc(d),
+        code,
+    )
+    return _take_string(ptr, code[], "to_html_all")
+end
+
+"""Plain text for the whole document."""
+function to_plain_text_all(d::PdfDocument)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_document_to_plain_text_all, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _doc(d),
+        code,
+    )
+    return _take_string(ptr, code[], "to_plain_text_all")
+end
+
+"""
+Authenticate against an encrypted document's password. Returns `true`/`false`
+(a wrong password is not an error). Only a set C-ABI error code throws.
+"""
+function authenticate(d::PdfDocument, password::AbstractString)
+    code = Ref{Int32}(0)
+    ok = ccall(
+        (:pdf_document_authenticate, LIB),
+        Bool,
+        (Ptr{Cvoid}, Cstring, Ref{Int32}),
+        _doc(d),
+        password,
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "authenticate"))
+    return ok
+end
+
+# ── Page ────────────────────────────────────────────────────────────────────────
+# A lightweight view over one (0-based) page. Holds a strong reference to its
+# PdfDocument so the native handle outlives the page.
+struct PdfPage
+    doc::PdfDocument
+    index::Int32
+    PdfPage(doc::PdfDocument, index::Integer) = new(doc, Int32(index))
+end
+
+"""A 0-based page view over the document; `index` is required."""
+page(d::PdfDocument, index::Integer) = PdfPage(d, index)
+
+# Per-page accessors delegate to the document extractors with the stored index.
+for (jl_fn, doc_fn) in (
+    (:text, :extract_text),
+    (:markdown, :to_markdown),
+    (:html, :to_html),
+    (:plain_text, :to_plain_text),
+)
+    @eval $jl_fn(p::PdfPage) = $doc_fn(p.doc, p.index)
 end
 
 # ── Pdf builder ───────────────────────────────────────────────────────────────

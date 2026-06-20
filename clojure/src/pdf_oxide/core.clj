@@ -91,6 +91,36 @@
   (let [code (IntByReference.)]
     (take-string (->ptr "pdf_document_to_markdown_all" [(doc-ptr d) code]) (.getValue code) "to-markdown-all")))
 
+(defn to-html-all [^Document d]
+  (let [code (IntByReference.)]
+    (take-string (->ptr "pdf_document_to_html_all" [(doc-ptr d) code]) (.getValue code) "to-html-all")))
+
+(defn to-plain-text-all [^Document d]
+  (let [code (IntByReference.)]
+    (take-string (->ptr "pdf_document_to_plain_text_all" [(doc-ptr d) code]) (.getValue code) "to-plain-text-all")))
+
+(defn authenticate
+  "Authenticate against a password-protected Document. Returns true on success,
+   false for a wrong password (no error)."
+  [^Document d password]
+  (let [code (IntByReference.)]
+    (->bool "pdf_document_authenticate" [(doc-ptr d) password code])))
+
+;; ── Page ────────────────────────────────────────────────────────────────────
+;; Holds a strong reference to its Document (keeps it alive) plus a 0-based index;
+;; methods delegate to the existing per-page Document fns.
+(deftype Page [^Document doc ^long index])
+
+(defn page
+  "Return a Page view over a 0-based page index of the Document."
+  [^Document d index]
+  (Page. d (long index)))
+
+(defn page-text [^Page pg] (extract-text (.-doc pg) (.-index pg)))
+(defn page-markdown [^Page pg] (to-markdown (.-doc pg) (.-index pg)))
+(defn page-html [^Page pg] (to-html (.-doc pg) (.-index pg)))
+(defn page-plain-text [^Page pg] (to-plain-text (.-doc pg) (.-index pg)))
+
 ;; ── Pdf builder ───────────────────────────────────────────────────────────────
 (deftype Pdf [state]   ; state = (atom Pointer-or-nil)
   Closeable

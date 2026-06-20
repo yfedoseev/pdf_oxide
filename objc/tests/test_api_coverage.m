@@ -64,9 +64,27 @@ int main(void) {
         CHECK([[doc toPlainText:0 error:&err] length] > 0);              // toPlainText
         CHECK([[doc toMarkdown:0 error:&err] length] > 0);               // toMarkdown
         CHECK([[doc toHtml:0 error:&err] containsString:@"<"]);          // toHtml
-        CHECK([[doc toMarkdownAllWithError:&err] length] > 0); // toMarkdownAll
+        CHECK([[doc toMarkdownAllWithError:&err] length] > 0);      // toMarkdownAll
+        CHECK([[doc toHtmlAllWithError:&err] containsString:@"<"]); // toHtmlAll
+        CHECK([[doc toPlainTextAllWithError:&err] length] > 0);     // toPlainTextAll
         CHECK([[doc extractStructuredJson:0
                                     error:&err] length] > 0); // extractStructuredJson
+
+        // ── authenticate (wrong password on unencrypted doc returns a bool) ──
+        {
+            NSError* ae = nil;
+            BOOL authed = [doc authenticate:@"any-password" error:&ae]; // authenticate
+            CHECK(authed == YES || authed == NO);
+        }
+
+        // ── Page model ───────────────────────────────────────────────────────
+        {
+            POXPage* page = [doc pageAtIndex:0];               // pageAtIndex
+            CHECK([[page text:&err] containsString:@"Alpha"]); // Page text
+            CHECK([[page markdown:&err] length] > 0);          // Page markdown
+            CHECK([[page html:&err] length] > 0);              // Page html
+            CHECK([[page plainText:&err] length] > 0);         // Page plainText
+        }
 
         // ── close (idempotent) ───────────────────────────────────────────────
         [doc close];

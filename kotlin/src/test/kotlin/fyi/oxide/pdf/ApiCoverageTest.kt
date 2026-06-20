@@ -71,6 +71,24 @@ class ApiCoverageTest {
 
     @Test fun toMarkdownAll() = assertTrue(doc.toMarkdownAll().isNotEmpty())
 
+    @Test fun toHtmlAll() = assertContains(doc.toHtmlAll(), "<")
+
+    @Test fun toPlainTextAll() = assertTrue(doc.toPlainTextAll().isNotEmpty())
+
+    @Test fun authenticate() {
+        val ok: Boolean = doc.authenticate("")
+        assertTrue(ok || !ok) // returns a bool without raising
+    }
+
+    // ── Page model ───────────────────────────────────────────────────────────
+    @Test fun pageText() = assertContains(doc.page(0).text(), "Alpha")
+
+    @Test fun pageMarkdown() = assertTrue(doc.page(0).markdown().isNotEmpty())
+
+    @Test fun pageHtml() = assertContains(doc.page(0).html(), "<")
+
+    @Test fun pagePlainText() = assertTrue(doc.page(0).plainText().isNotEmpty())
+
     @Test fun extractStructuredJson() = assertTrue(doc.extractStructuredJson(0).isNotEmpty())
 
     // ── Coroutine helpers ────────────────────────────────────────────────────

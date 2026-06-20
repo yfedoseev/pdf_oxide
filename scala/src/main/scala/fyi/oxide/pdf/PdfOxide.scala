@@ -34,6 +34,9 @@ private[pdf] trait CLib extends Library:
   def pdf_document_to_markdown(h: Pointer, page: Int, code: IntByReference): Pointer
   def pdf_document_to_html(h: Pointer, page: Int, code: IntByReference): Pointer
   def pdf_document_to_markdown_all(h: Pointer, code: IntByReference): Pointer
+  def pdf_document_to_html_all(h: Pointer, code: IntByReference): Pointer
+  def pdf_document_to_plain_text_all(h: Pointer, code: IntByReference): Pointer
+  def pdf_document_authenticate(h: Pointer, password: String, code: IntByReference): Boolean
   def pdf_document_extract_structured_to_json(h: Pointer, page: Int, code: IntByReference): Pointer
   def pdf_from_markdown(md: String, code: IntByReference): Pointer
   def pdf_from_html(html: String, code: IntByReference): Pointer
@@ -100,6 +103,36 @@ final class PdfDocument private (private var handle: Pointer) extends AutoClosea
       "toMarkdownAll"
     )
 
+  def toHtmlAll(): String =
+    val code = IntByReference()
+    Native_.takeString(
+      Native_.lib.pdf_document_to_html_all(ptr, code),
+      code.getValue,
+      "toHtmlAll"
+    )
+
+  def toPlainTextAll(): String =
+    val code = IntByReference()
+    Native_.takeString(
+      Native_.lib.pdf_document_to_plain_text_all(ptr, code),
+      code.getValue,
+      "toPlainTextAll"
+    )
+
+  /** Attempt to authenticate against an encrypted document.
+    *
+    * Returns true/false for a correct/incorrect password; a wrong password is not an error. Only a
+    * non-success error code raises PdfOxideException.
+    */
+  def authenticate(password: String): Boolean =
+    val code = IntByReference()
+    val ok = Native_.lib.pdf_document_authenticate(ptr, password, code)
+    if code.getValue != 0 then throw PdfOxideException(code.getValue, "authenticate")
+    ok
+
+  /** A lightweight view of a single (0-based) page; keeps its document alive. */
+  def page(index: Int): PdfPage = PdfPage(this, index)
+
   def close(): Unit =
     if handle != null then
       Native_.lib.pdf_document_free(handle)
@@ -123,6 +156,17 @@ object PdfDocument:
     val h = Native_.lib.pdf_document_open_with_password(path, password, code)
     if h == null then throw PdfOxideException(code.getValue, "openWithPassword")
     PdfDocument(h)
+
+/** A single page of a PdfDocument.
+  *
+  * Holds a strong reference to its document so it cannot outlive it; each method delegates to the
+  * corresponding per-page PdfDocument method.
+  */
+final class PdfPage private[pdf] (private val doc: PdfDocument, val index: Int):
+  def text(): String = doc.extractText(index)
+  def markdown(): String = doc.toMarkdown(index)
+  def html(): String = doc.toHtml(index)
+  def plainText(): String = doc.toPlainText(index)
 
 /** A PDF produced by a builder. AutoCloseable. */
 final class Pdf private (private var handle: Pointer) extends AutoCloseable:

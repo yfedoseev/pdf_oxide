@@ -214,6 +214,40 @@ static ERL_NIF_TERM doc_to_markdown_all(ErlNifEnv *env, int argc, const ERL_NIF_
     return ok_string(env, pdf_document_to_markdown_all(r->h, &code), code);
 }
 
+static ERL_NIF_TERM doc_to_html_all(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    return ok_string(env, pdf_document_to_html_all(r->h, &code), code);
+}
+
+static ERL_NIF_TERM doc_to_plain_text_all(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    return ok_string(env, pdf_document_to_plain_text_all(r->h, &code), code);
+}
+
+/* authenticate returns a plain bool: false is a legitimate "wrong password"
+ * outcome, not a failure, so always return {:ok, bool}. */
+static ERL_NIF_TERM doc_authenticate(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    char *pw = term_to_cstr(env, a[1]);
+    if (!pw) return enif_make_badarg(env);
+    int32_t code = 0;
+    bool ok = pdf_document_authenticate(r->h, pw, &code);
+    enif_free(pw);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"),
+                            enif_make_atom(env, ok ? "true" : "false"));
+}
+
 /* Explicit, idempotent close: free the native handle now and null it so the GC
  * destructor is a no-op and later use raises (badarg). */
 static ERL_NIF_TERM doc_close(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
@@ -250,6 +284,9 @@ static ErlNifFunc funcs[] = {
     {"doc_to_markdown", 2, doc_to_markdown, DIRTY},
     {"doc_to_html", 2, doc_to_html, DIRTY},
     {"doc_to_markdown_all", 1, doc_to_markdown_all, DIRTY},
+    {"doc_to_html_all", 1, doc_to_html_all, DIRTY},
+    {"doc_to_plain_text_all", 1, doc_to_plain_text_all, DIRTY},
+    {"doc_authenticate", 2, doc_authenticate, DIRTY},
     {"doc_extract_structured_json", 2, doc_struct_json, DIRTY},
     {"doc_close", 1, doc_close, 0},
     {"pdf_close", 1, pdf_close_nif, 0},

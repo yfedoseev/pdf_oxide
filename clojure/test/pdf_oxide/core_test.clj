@@ -40,6 +40,14 @@
     (is (seq (pdf/to-markdown d 0)))                ; to-markdown
     (is (re-find #"<" (pdf/to-html d 0)))           ; to-html
     (is (seq (pdf/to-markdown-all d)))              ; to-markdown-all
+    (is (re-find #"<" (pdf/to-html-all d)))         ; to-html-all
+    (is (seq (pdf/to-plain-text-all d)))            ; to-plain-text-all
+    (is (instance? Boolean (pdf/authenticate d "")) ); authenticate (returns a bool, no error)
+    (let [pg (pdf/page d 0)]                         ; page (0-based)
+      (is (re-find #"Alpha" (pdf/page-text pg)))     ; page-text
+      (is (seq (pdf/page-markdown pg)))              ; page-markdown
+      (is (seq (pdf/page-html pg)))                  ; page-html
+      (is (seq (pdf/page-plain-text pg))))           ; page-plain-text
     (is (seq (pdf/extract-structured-json d 0)))))  ; extract-structured-json
 
 (deftest error-path

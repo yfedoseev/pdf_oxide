@@ -80,8 +80,30 @@ defmodule PdfOxideTest do
       assert html =~ "<"
       assert {:ok, mdall} = PdfOxide.to_markdown_all(doc)
       assert byte_size(mdall) > 0
+      assert {:ok, htmlall} = PdfOxide.to_html_all(doc)
+      assert byte_size(htmlall) > 0
+      assert htmlall =~ "<"
+      assert {:ok, ptall} = PdfOxide.to_plain_text_all(doc)
+      assert byte_size(ptall) > 0
       assert {:ok, json} = PdfOxide.extract_structured_json(doc, 0)
       assert byte_size(json) > 0
+    end
+
+    test "authenticate returns a bool", %{doc: doc} do
+      assert {:ok, result} = PdfOxide.authenticate(doc, "")
+      assert is_boolean(result)
+    end
+
+    test "page model", %{doc: doc} do
+      page = PdfOxide.page(doc, 0)
+      assert {:ok, text} = PdfOxide.text(page)
+      assert text =~ "Alpha"
+      assert {:ok, md} = PdfOxide.markdown(page)
+      assert byte_size(md) > 0
+      assert {:ok, html} = PdfOxide.html(page)
+      assert byte_size(html) > 0
+      assert {:ok, pt} = PdfOxide.plain_text(page)
+      assert byte_size(pt) > 0
     end
   end
 

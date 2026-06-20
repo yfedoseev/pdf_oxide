@@ -104,15 +104,53 @@ public final class Document {
         var code: Int32 = 0
         return try takeString(pdf_document_to_markdown_all(try ptr(), &code), code, "toMarkdownAll")
     }
+    public func toHtmlAll() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_document_to_html_all(try ptr(), &code), code, "toHtmlAll")
+    }
+    public func toPlainTextAll() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_document_to_plain_text_all(try ptr(), &code), code, "toPlainTextAll")
+    }
+
+    /// Authenticate against an encrypted document. Returns true on success;
+    /// returns false for a wrong password without throwing.
+    public func authenticate(_ password: String) throws -> Bool {
+        var code: Int32 = 0
+        return pdf_document_authenticate(try ptr(), password, &code)
+    }
     public func extractStructuredJson(_ page: Int) throws -> String {
         var code: Int32 = 0
         return try takeString(pdf_document_extract_structured_to_json(try ptr(), Int32(page), &code), code, "extractStructuredJson")
+    }
+
+    /// A lightweight view of a single (0-based) page. Holds a strong reference to
+    /// its Document so the native handle outlives the Page.
+    public func page(_ index: Int) -> Page {
+        Page(document: self, index: index)
     }
 
     /// Free the native handle now (idempotent).
     public func close() {
         if let h = handle { pdf_document_free(h); handle = nil }
     }
+}
+
+/// A single page of a Document. Keeps the owning Document alive via a strong
+/// reference; each accessor delegates to the corresponding per-page Document method.
+public final class Page {
+    private let document: Document
+    public let index: Int
+
+    fileprivate init(document: Document, index: Int) {
+        self.document = document
+        self.index = index
+    }
+
+    public func text() throws -> String { try document.extractText(index) }
+    public func markdown() throws -> String { try document.toMarkdown(index) }
+    public func html() throws -> String { try document.toHtml(index) }
+    public func plainText() throws -> String { try document.toPlainText(index) }
 }
 
 /// A PDF produced by a builder.

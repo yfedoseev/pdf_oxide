@@ -42,6 +42,8 @@ typedef _TextC = Pointer<Utf8> Function(Pointer<Void>, Int32, Pointer<Int32>);
 typedef _TextD = Pointer<Utf8> Function(Pointer<Void>, int, Pointer<Int32>);
 typedef _TextAllC = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
 typedef _TextAllD = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _AuthC = Bool Function(Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _AuthD = bool Function(Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
 typedef _FromStrC = Pointer<Void> Function(Pointer<Utf8>, Pointer<Int32>);
 typedef _SaveC = Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
 typedef _SaveD = int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
@@ -79,6 +81,12 @@ class _Native {
         toHtml = lib.lookupFunction<_TextC, _TextD>('pdf_document_to_html'),
         toMdAll = lib.lookupFunction<_TextAllC, _TextAllD>(
             'pdf_document_to_markdown_all'),
+        toHtmlAll = lib
+            .lookupFunction<_TextAllC, _TextAllD>('pdf_document_to_html_all'),
+        toPlainAll = lib.lookupFunction<_TextAllC, _TextAllD>(
+            'pdf_document_to_plain_text_all'),
+        authenticate =
+            lib.lookupFunction<_AuthC, _AuthD>('pdf_document_authenticate'),
         structJson = lib.lookupFunction<_TextC, _TextD>(
             'pdf_document_extract_structured_to_json'),
         fromMarkdown =
@@ -103,7 +111,8 @@ class _Native {
   final _BoolD isEncrypted;
   final _BoolD hasTree;
   final _TextD extractText, toPlain, toMd, toHtml, structJson;
-  final _TextAllD toMdAll;
+  final _TextAllD toMdAll, toHtmlAll, toPlainAll;
+  final _AuthD authenticate;
   final _OpenD fromMarkdown, fromHtml, fromText;
   final _FreeD pdfFree;
   final _SaveD save;
@@ -283,6 +292,48 @@ class PdfDocument implements Finalizable {
     }
   }
 
+  String toHtmlAll() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(_n.toHtmlAll(_handle, code), code.value, 'toHtmlAll');
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  String toPlainTextAll() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(
+          _n.toPlainAll(_handle, code), code.value, 'toPlainTextAll');
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Authenticate against an encrypted PDF. Returns `true` on success and
+  /// `false` for a wrong password (without throwing); throws [PdfOxideError]
+  /// only on an actual error.
+  bool authenticate(String password) {
+    _check();
+    final cPw = password.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      final ok = _n.authenticate(_handle, cPw, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'authenticate');
+      return ok;
+    } finally {
+      calloc.free(cPw);
+      calloc.free(code);
+    }
+  }
+
+  /// A lightweight view of a single 0-based page. The returned [Page] keeps a
+  /// reference to this document and must not be used after [close].
+  Page page(int index) => Page._(this, index);
+
   /// Free the native handle now (idempotent).
   void close() {
     if (_handle != nullptr) {
@@ -291,6 +342,23 @@ class PdfDocument implements Finalizable {
       _handle = nullptr;
     }
   }
+}
+
+/// A lightweight, 0-based view of a single page of a [PdfDocument]. Holds a
+/// strong reference to its document (so the document is not collected while the
+/// page is alive); extraction delegates to the document's per-page methods.
+class Page {
+  Page._(this._doc, this.index);
+
+  final PdfDocument _doc;
+
+  /// 0-based page index.
+  final int index;
+
+  String text() => _doc.extractText(index);
+  String markdown() => _doc.toMarkdown(index);
+  String html() => _doc.toHtml(index);
+  String plainText() => _doc.toPlainText(index);
 }
 
 /// A PDF produced by a builder. Call [close] when done.

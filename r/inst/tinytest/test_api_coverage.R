@@ -33,7 +33,17 @@ expect_true(nchar(pdf_to_plain_text(doc, 0)) > 0)      # pdf_to_plain_text
 expect_true(nchar(pdf_to_markdown(doc, 0)) > 0)        # pdf_to_markdown
 expect_true(grepl("<", pdf_to_html(doc, 0)))           # pdf_to_html
 expect_true(nchar(pdf_to_markdown_all(doc)) > 0)       # pdf_to_markdown_all
+expect_true(grepl("<", pdf_to_html_all(doc)))          # pdf_to_html_all
+expect_true(nchar(pdf_to_plain_text_all(doc)) > 0)     # pdf_to_plain_text_all
+expect_true(is.logical(pdf_authenticate(doc, "")))     # pdf_authenticate (bool, no error)
 expect_true(nchar(pdf_extract_structured_json(doc, 0)) > 0) # pdf_extract_structured_json
+
+# ── Page model ────────────────────────────────────────────────────────────────
+pg <- pdf_page(doc, 0)                                 # pdf_page (0-based)
+expect_true(grepl("Alpha", pdf_page_text(pg)))         # pdf_page_text
+expect_true(nchar(pdf_page_markdown(pg)) > 0)          # pdf_page_markdown
+expect_true(grepl("<", pdf_page_html(pg)))             # pdf_page_html
+expect_true(nchar(pdf_page_plain_text(pg)) > 0)        # pdf_page_plain_text
 
 
 # ── close + open_with_password ────────────────────────────────────────────────

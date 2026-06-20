@@ -17,6 +17,8 @@ typedef struct {
     uint8_t minor;
 } POXVersion;
 
+@class POXPage;
+
 /// An opened PDF for extraction/inspection.
 @interface POXDocument : NSObject
 
@@ -41,10 +43,32 @@ typedef struct {
 - (nullable NSString*)toMarkdown:(NSInteger)page error:(NSError**)error;
 - (nullable NSString*)toHtml:(NSInteger)page error:(NSError**)error;
 - (nullable NSString*)toMarkdownAllWithError:(NSError**)error;
+- (nullable NSString*)toHtmlAllWithError:(NSError**)error;
+- (nullable NSString*)toPlainTextAllWithError:(NSError**)error;
 - (nullable NSString*)extractStructuredJson:(NSInteger)page error:(NSError**)error;
+
+/// Authenticate a password-protected PDF; returns YES on success, NO for a
+/// wrong password (no error). Sets `error` only on a genuine failure.
+- (BOOL)authenticate:(NSString*)password error:(NSError**)error;
+
+/// A page handle bound to this document (0-based). The page keeps the document
+/// alive for as long as it lives.
+- (POXPage*)pageAtIndex:(NSInteger)index;
 
 /// Free the native handle now (idempotent).
 - (void)close;
+
+@end
+
+/// A page bound to its POXDocument (0-based). Holds a strong reference to the
+/// document so it cannot outlive it; each method delegates to the corresponding
+/// per-page POXDocument method with the stored index.
+@interface POXPage : NSObject
+
+- (nullable NSString*)text:(NSError**)error;
+- (nullable NSString*)markdown:(NSError**)error;
+- (nullable NSString*)html:(NSError**)error;
+- (nullable NSString*)plainText:(NSError**)error;
 
 @end
 

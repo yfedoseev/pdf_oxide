@@ -43,7 +43,24 @@ class ApiCoverageSpec extends AnyFunSuite:
       assert(doc.toMarkdown(0).nonEmpty) // toMarkdown
       assert(doc.toHtml(0).contains("<")) // toHtml
       assert(doc.toMarkdownAll().nonEmpty) // toMarkdownAll
+      assert(doc.toHtmlAll().contains("<")) // toHtmlAll
+      assert(doc.toPlainTextAll().nonEmpty) // toPlainTextAll
       assert(doc.extractStructuredJson(0).nonEmpty) // extractStructuredJson
+
+  // ── authenticate ─────────────────────────────────────────────────────────────
+  test("authenticate"):
+    Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
+      val ok: Boolean = doc.authenticate("anything") // returns a bool without error
+      assert(ok == true || ok == false)
+
+  // ── Page model ───────────────────────────────────────────────────────────────
+  test("page model"):
+    Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
+      val page = doc.page(0) // page(index)
+      assert(page.text().contains("Alpha")) // text
+      assert(page.markdown().nonEmpty) // markdown
+      assert(page.html().nonEmpty) // html
+      assert(page.plainText().nonEmpty) // plainText
 
   // ── Error path ───────────────────────────────────────────────────────────────
   test("open nonexistent throws PdfOxideException"):

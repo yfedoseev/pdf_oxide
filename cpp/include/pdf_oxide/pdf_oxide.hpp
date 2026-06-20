@@ -161,6 +161,37 @@ class Document {
                                    "Document::to_markdown_all");
     }
 
+    /// HTML for the whole document.
+    std::string to_html_all() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_document_to_html_all(ptr(), &code), code,
+                                   "Document::to_html_all");
+    }
+
+    /// Plain text for the whole document.
+    std::string to_plain_text_all() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_document_to_plain_text_all(ptr(), &code), code,
+                                   "Document::to_plain_text_all");
+    }
+
+    /// Authenticate against an encrypted document with `password`.
+    /// Returns true on success, false for a wrong password (no error). Throws
+    /// Error only when the C ABI signals a real failure via the error code.
+    bool authenticate(const std::string& password) const {
+        int32_t code = 0;
+        bool ok = pdf_document_authenticate(ptr(), password.c_str(), &code);
+        if (!ok && code != 0) {
+            throw Error(code, "Document::authenticate");
+        }
+        return ok;
+    }
+
+    /// A lightweight, 0-based page view bound to this Document. The returned
+    /// Page must not outlive the Document it was obtained from.
+    class Page;
+    Page page(int index) const;
+
     /// Structured content as a JSON string.
     std::string extract_structured_json(int page_index) const {
         int32_t code = 0;
@@ -188,6 +219,34 @@ class Document {
     }
     std::unique_ptr<PdfDocument, Deleter> handle_;
 };
+
+/// A 0-based page view bound to a Document. Holds a non-owning reference to the
+/// Document, which MUST outlive the Page. Each accessor delegates to the
+/// corresponding per-page Document method with the stored index.
+class Document::Page {
+  public:
+    /// Reading-order text for this page.
+    std::string text() const { return doc_->extract_text(index_); }
+    /// Markdown for this page.
+    std::string markdown() const { return doc_->to_markdown(index_); }
+    /// HTML for this page.
+    std::string html() const { return doc_->to_html(index_); }
+    /// Plain text for this page.
+    std::string plain_text() const { return doc_->to_plain_text(index_); }
+
+    /// 0-based page index.
+    int index() const noexcept { return index_; }
+
+  private:
+    friend class Document;
+    Page(const Document* doc, int index) : doc_(doc), index_(index) {}
+    const Document* doc_;
+    int index_;
+};
+
+inline Document::Page Document::page(int index) const {
+    return Document::Page(this, index);
+}
 
 /// A PDF produced by a builder (from markdown/html/text). Move-only.
 class Pdf {

@@ -189,6 +189,26 @@ SEXP r_doc_to_markdown_all(SEXP ext) {
     return take_string(pdf_document_to_markdown_all(doc_ptr(ext), &code), code,
                        "to_markdown_all");
 }
+SEXP r_doc_to_html_all(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_document_to_html_all(doc_ptr(ext), &code), code,
+                       "to_html_all");
+}
+SEXP r_doc_to_plain_text_all(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_document_to_plain_text_all(doc_ptr(ext), &code), code,
+                       "to_plain_text_all");
+}
+/* authenticate returns false for a wrong password WITHOUT an error; the bool is
+ * the result. We only raise if the C-ABI signals a real failure via error_code,
+ * matching how the other bindings treat this method. */
+SEXP r_doc_authenticate(SEXP ext, SEXP pw) {
+    int32_t code = 0;
+    bool ok = pdf_document_authenticate(doc_ptr(ext), CHAR(STRING_ELT(pw, 0)),
+                                        &code);
+    if (!ok && code != 0) pdfox_raise(code, "authenticate");
+    return Rf_ScalarLogical(ok);
+}
 SEXP r_doc_extract_structured_json(SEXP ext, SEXP page) {
     int32_t code = 0;
     return take_string(pdf_document_extract_structured_to_json(
@@ -234,6 +254,9 @@ static const R_CallMethodDef CallEntries[] = {
     CDEF(r_doc_to_markdown, 2),
     CDEF(r_doc_to_html, 2),
     CDEF(r_doc_to_markdown_all, 1),
+    CDEF(r_doc_to_html_all, 1),
+    CDEF(r_doc_to_plain_text_all, 1),
+    CDEF(r_doc_authenticate, 2),
     CDEF(r_doc_extract_structured_json, 2),
     CDEF(r_doc_close, 1),
     CDEF(r_pdf_close, 1),

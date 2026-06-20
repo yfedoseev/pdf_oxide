@@ -124,6 +124,65 @@ pdf_extract_structured_json <- function(doc, page) {
 #' @export
 pdf_to_markdown_all <- function(doc) .Call(C_r_doc_to_markdown_all, doc)
 
+#' HTML for the whole document.
+#' @param doc A `pdfoxide_document`.
+#' @export
+pdf_to_html_all <- function(doc) .Call(C_r_doc_to_html_all, doc)
+
+#' Plain text for the whole document.
+#' @param doc A `pdfoxide_document`.
+#' @export
+pdf_to_plain_text_all <- function(doc) .Call(C_r_doc_to_plain_text_all, doc)
+
+#' Authenticate an encrypted document with a password.
+#'
+#' Returns `TRUE` if the password unlocks the document and `FALSE` for a wrong
+#' password; raises only on a real C-ABI failure.
+#' @param doc A `pdfoxide_document`. @param password The document password.
+#' @return A logical scalar.
+#' @export
+pdf_authenticate <- function(doc, password) {
+  .Call(C_r_doc_authenticate, doc, password)
+}
+
+# ── Page ────────────────────────────────────────────────────────────────────
+
+#' A single (0-based) page of a document.
+#'
+#' Holds a reference to its parent `pdfoxide_document` so the document is kept
+#' alive for as long as the page is reachable; the page must not outlive it.
+#' @param doc A `pdfoxide_document`. @param index 0-based page index (required).
+#' @return A `pdfoxide_page`.
+#' @export
+pdf_page <- function(doc, index) {
+  if (!inherits(doc, "pdfoxide_document"))
+    stop("pdf_page: expected a pdfoxide_document")
+  structure(list(doc = doc, index = as.integer(index)),
+            class = "pdfoxide_page")
+}
+
+#' Extract reading-order text for a page.
+#' @param page A `pdfoxide_page`.
+#' @export
+pdf_page_text <- function(page) {
+  .Call(C_r_doc_extract_text, page$doc, page$index)
+}
+#' @rdname pdf_page_text
+#' @export
+pdf_page_markdown <- function(page) {
+  .Call(C_r_doc_to_markdown, page$doc, page$index)
+}
+#' @rdname pdf_page_text
+#' @export
+pdf_page_html <- function(page) {
+  .Call(C_r_doc_to_html, page$doc, page$index)
+}
+#' @rdname pdf_page_text
+#' @export
+pdf_page_plain_text <- function(page) {
+  .Call(C_r_doc_to_plain_text, page$doc, page$index)
+}
+
 #' Close a document or built PDF, freeing the native handle now (idempotent).
 #' @param x A `pdfoxide_document` or `pdfoxide_pdf` handle.
 #' @export

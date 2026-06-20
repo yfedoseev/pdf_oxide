@@ -45,6 +45,17 @@ end
     @test occursin("<", to_html(doc, 0))          # to_html
     @test !isempty(to_markdown_all(doc))          # to_markdown_all
     @test !isempty(extract_structured_json(doc, 0)) # extract_structured_json
+    @test occursin("<", to_html_all(doc))         # to_html_all
+    @test !isempty(to_plain_text_all(doc))        # to_plain_text_all
+    @test authenticate(doc, "") isa Bool          # authenticate (bool, no throw)
+
+    # ── Page model ────────────────────────────────────────────────────────────
+    let pg = page(doc, 0)                          # page
+        @test occursin("Alpha", text(pg))         # Page.text
+        @test !isempty(markdown(pg))              # Page.markdown
+        @test occursin("<", html(pg))            # Page.html
+        @test !isempty(plain_text(pg))           # Page.plain_text
+    end
 
     # ── Error path ────────────────────────────────────────────────────────────
     @test_throws PdfOxideError open_document("/nonexistent/nope.pdf")

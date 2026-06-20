@@ -64,8 +64,15 @@ void main() {
     test('toMarkdown', () => expect(doc.toMarkdown(0), isNotEmpty));
     test('toHtml', () => expect(doc.toHtml(0), contains('<')));
     test('toMarkdownAll', () => expect(doc.toMarkdownAll(), isNotEmpty));
+    test('toHtmlAll', () => expect(doc.toHtmlAll(), contains('<')));
+    test('toPlainTextAll', () => expect(doc.toPlainTextAll(), isNotEmpty));
+    test('authenticate', () => expect(doc.authenticate('any'), isA<bool>()));
     test('extractStructuredJson',
         () => expect(doc.extractStructuredJson(0), isNotEmpty));
+    test('page.text', () => expect(doc.page(0).text(), contains('Alpha')));
+    test('page.markdown', () => expect(doc.page(0).markdown(), isNotEmpty));
+    test('page.html', () => expect(doc.page(0).html(), contains('<')));
+    test('page.plainText', () => expect(doc.page(0).plainText(), isNotEmpty));
   });
 
   test('error path: open nonexistent throws PdfOxideError', () {

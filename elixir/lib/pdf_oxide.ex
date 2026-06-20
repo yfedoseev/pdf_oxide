@@ -21,6 +21,14 @@ defmodule PdfOxide do
     defstruct [:ref]
   end
 
+  defmodule Page do
+    @moduledoc """
+    A lightweight view of a single (0-based) page. Holds its `Document` so the
+    underlying native handle stays alive as long as the page is referenced.
+    """
+    defstruct [:doc, :index]
+  end
+
   defmodule Error do
     defexception [:code, :op]
     @impl true
@@ -78,9 +86,37 @@ defmodule PdfOxide do
   def to_html(%Document{ref: ref}, page), do: Native.doc_to_html(ref, page)
   @doc "Markdown for the whole document."
   def to_markdown_all(%Document{ref: ref}), do: Native.doc_to_markdown_all(ref)
+  @doc "HTML for the whole document."
+  def to_html_all(%Document{ref: ref}), do: Native.doc_to_html_all(ref)
+  @doc "Plain text for the whole document."
+  def to_plain_text_all(%Document{ref: ref}), do: Native.doc_to_plain_text_all(ref)
+
+  @doc """
+  Authenticate an encrypted document with `password`. Returns `{:ok, true}` on
+  success and `{:ok, false}` for a wrong password (not an error).
+  """
+  def authenticate(%Document{ref: ref}, password), do: Native.doc_authenticate(ref, password)
+
   @doc "Structured content for a page as a JSON string."
   def extract_structured_json(%Document{ref: ref}, page),
     do: Native.doc_extract_structured_json(ref, page)
+
+  # ── Page ─────────────────────────────────────────────────────────────────────
+  @doc """
+  A `Page` view for the (0-based) `index`. The page keeps its document alive, so
+  it must not outlive a `close/1` on the document.
+  """
+  def page(%Document{} = doc, index) when is_integer(index),
+    do: %Page{doc: doc, index: index}
+
+  @doc "Reading-order text for the page."
+  def text(%Page{doc: doc, index: index}), do: extract_text(doc, index)
+  @doc "Markdown for the page."
+  def markdown(%Page{doc: doc, index: index}), do: to_markdown(doc, index)
+  @doc "HTML for the page."
+  def html(%Page{doc: doc, index: index}), do: to_html(doc, index)
+  @doc "Plain text for the page."
+  def plain_text(%Page{doc: doc, index: index}), do: to_plain_text(doc, index)
 
   # ── helpers ──────────────────────────────────────────────────────────────────
   defp wrap_doc({:ok, ref}), do: {:ok, %Document{ref: ref}}

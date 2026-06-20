@@ -28,6 +28,11 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
     return out;
 }
 
+// Private initializer used by -[POXDocument pageAtIndex:].
+@interface POXPage ()
+- (instancetype)initWithDocument:(POXDocument*)document index:(NSInteger)index;
+@end
+
 @implementation POXDocument {
     PdfDocument* _handle;
 }
@@ -129,6 +134,28 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
     return POXTakeString(pdf_document_to_markdown_all(_handle, &code), code,
                          @"toMarkdownAll", error);
 }
+- (NSString*)toHtmlAllWithError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_document_to_html_all(_handle, &code), code, @"toHtmlAll",
+                         error);
+}
+- (NSString*)toPlainTextAllWithError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_document_to_plain_text_all(_handle, &code), code,
+                         @"toPlainTextAll", error);
+}
+- (BOOL)authenticate:(NSString*)password error:(NSError**)error {
+    int32_t code = 0;
+    bool ok = pdf_document_authenticate(_handle, password.UTF8String, &code);
+    if (!ok && code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"authenticate");
+    }
+    return ok ? YES : NO;
+}
+- (POXPage*)pageAtIndex:(NSInteger)index {
+    return [[POXPage alloc] initWithDocument:self index:index];
+}
 - (NSString*)extractStructuredJson:(NSInteger)page error:(NSError**)error {
     int32_t code = 0;
     return POXTakeString(
@@ -220,6 +247,34 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
         pdf_free(_handle);
         _handle = NULL;
     }
+}
+
+@end
+
+@implementation POXPage {
+    POXDocument* _document; // strong ref keeps the document alive
+    NSInteger _index;
+}
+
+- (instancetype)initWithDocument:(POXDocument*)document index:(NSInteger)index {
+    if ((self = [super init])) {
+        _document = document;
+        _index = index;
+    }
+    return self;
+}
+
+- (NSString*)text:(NSError**)error {
+    return [_document extractText:_index error:error];
+}
+- (NSString*)markdown:(NSError**)error {
+    return [_document toMarkdown:_index error:error];
+}
+- (NSString*)html:(NSError**)error {
+    return [_document toHtml:_index error:error];
+}
+- (NSString*)plainText:(NSError**)error {
+    return [_document toPlainText:_index error:error];
 }
 
 @end

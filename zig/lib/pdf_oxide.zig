@@ -96,29 +96,74 @@ pub const Document = struct {
         return c.pdf_document_has_structure_tree(self.handle);
     }
 
-    pub fn extractText(self: Document, alloc: std.mem.Allocator, page: i32) Error![]u8 {
+    pub fn extractText(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]u8 {
         var code: i32 = 0;
-        return takeString(alloc, c.pdf_document_extract_text(self.handle, page, &code), code);
+        return takeString(alloc, c.pdf_document_extract_text(self.handle, page_index, &code), code);
     }
-    pub fn toPlainText(self: Document, alloc: std.mem.Allocator, page: i32) Error![]u8 {
+    pub fn toPlainText(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]u8 {
         var code: i32 = 0;
-        return takeString(alloc, c.pdf_document_to_plain_text(self.handle, page, &code), code);
+        return takeString(alloc, c.pdf_document_to_plain_text(self.handle, page_index, &code), code);
     }
-    pub fn toMarkdown(self: Document, alloc: std.mem.Allocator, page: i32) Error![]u8 {
+    pub fn toMarkdown(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]u8 {
         var code: i32 = 0;
-        return takeString(alloc, c.pdf_document_to_markdown(self.handle, page, &code), code);
+        return takeString(alloc, c.pdf_document_to_markdown(self.handle, page_index, &code), code);
     }
-    pub fn toHtml(self: Document, alloc: std.mem.Allocator, page: i32) Error![]u8 {
+    pub fn toHtml(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]u8 {
         var code: i32 = 0;
-        return takeString(alloc, c.pdf_document_to_html(self.handle, page, &code), code);
+        return takeString(alloc, c.pdf_document_to_html(self.handle, page_index, &code), code);
     }
     pub fn toMarkdownAll(self: Document, alloc: std.mem.Allocator) Error![]u8 {
         var code: i32 = 0;
         return takeString(alloc, c.pdf_document_to_markdown_all(self.handle, &code), code);
     }
-    pub fn extractStructuredJson(self: Document, alloc: std.mem.Allocator, page: i32) Error![]u8 {
+    pub fn toHtmlAll(self: Document, alloc: std.mem.Allocator) Error![]u8 {
         var code: i32 = 0;
-        return takeString(alloc, c.pdf_document_extract_structured_to_json(self.handle, page, &code), code);
+        return takeString(alloc, c.pdf_document_to_html_all(self.handle, &code), code);
+    }
+    pub fn toPlainTextAll(self: Document, alloc: std.mem.Allocator) Error![]u8 {
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_document_to_plain_text_all(self.handle, &code), code);
+    }
+    /// Authenticate with a password. Returns true on success, false for a wrong
+    /// password (a wrong password is not a C-ABI error). Mirrors the bool C-ABI
+    /// convention: a non-zero error_code maps to `Error.PdfOxide`.
+    pub fn authenticate(self: Document, password: [:0]const u8) Error!bool {
+        var code: i32 = 0;
+        const ok = c.pdf_document_authenticate(self.handle, password.ptr, &code);
+        if (code != 0) return fail(code);
+        return ok;
+    }
+    pub fn extractStructuredJson(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]u8 {
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_document_extract_structured_to_json(self.handle, page_index, &code), code);
+    }
+
+    /// A lightweight view of a single (0-based) page. The returned `Page` borrows
+    /// this `Document`'s handle, so the `Document` MUST outlive the `Page`.
+    pub fn page(self: Document, index: i32) Page {
+        return .{ .doc = self, .index = index };
+    }
+};
+
+/// A single page of a `Document`. Holds a copy of the owning `Document` (which is
+/// just a borrowed handle pointer); the `Document` must not be freed while the
+/// `Page` is in use. Each method delegates to the corresponding per-page
+/// `Document` method with the stored index.
+pub const Page = struct {
+    doc: Document,
+    index: i32,
+
+    pub fn text(self: Page, alloc: std.mem.Allocator) Error![]u8 {
+        return self.doc.extractText(alloc, self.index);
+    }
+    pub fn plainText(self: Page, alloc: std.mem.Allocator) Error![]u8 {
+        return self.doc.toPlainText(alloc, self.index);
+    }
+    pub fn markdown(self: Page, alloc: std.mem.Allocator) Error![]u8 {
+        return self.doc.toMarkdown(alloc, self.index);
+    }
+    pub fn html(self: Page, alloc: std.mem.Allocator) Error![]u8 {
+        return self.doc.toHtml(alloc, self.index);
     }
 };
 
@@ -229,6 +274,33 @@ test "Document: open paths + inspection + extraction" {
     const mdall = try doc.toMarkdownAll(a);
     defer a.free(mdall);
     try testing.expect(mdall.len > 0); // toMarkdownAll
+
+    const htmlall = try doc.toHtmlAll(a);
+    defer a.free(htmlall);
+    try testing.expect(htmlall.len > 0); // toHtmlAll
+    try testing.expect(std.mem.indexOf(u8, htmlall, "<") != null or
+        std.mem.indexOf(u8, htmlall, "Alpha") != null);
+
+    const ptall = try doc.toPlainTextAll(a);
+    defer a.free(ptall);
+    try testing.expect(ptall.len > 0); // toPlainTextAll
+
+    // authenticate: returns a bool without error on an unencrypted sample
+    _ = try doc.authenticate(""); // authenticate
+
+    // page(index) model
+    {
+        const pg = doc.page(0); // page
+        const t = try pg.text(a);
+        defer a.free(t);
+        try testing.expect(std.mem.indexOf(u8, t, "Alpha") != null); // Page.text
+
+        inline for (.{ "plainText", "markdown", "html" }) |name| {
+            const s = try @field(Page, name)(pg, a);
+            defer a.free(s);
+            try testing.expect(s.len > 0); // Page.plainText/markdown/html
+        }
+    }
 
     // open(path)
     {

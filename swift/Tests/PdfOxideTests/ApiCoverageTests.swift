@@ -49,7 +49,20 @@ final class ApiCoverageTests: XCTestCase {
         XCTAssertFalse(try doc.toMarkdown(0).isEmpty)          // toMarkdown
         XCTAssertTrue(try doc.toHtml(0).contains("<"))         // toHtml
         XCTAssertFalse(try doc.toMarkdownAll().isEmpty)        // toMarkdownAll
+        XCTAssertTrue(try doc.toHtmlAll().contains("<"))       // toHtmlAll
+        XCTAssertFalse(try doc.toPlainTextAll().isEmpty)       // toPlainTextAll
         XCTAssertFalse(try doc.extractStructuredJson(0).isEmpty) // extractStructuredJson
+        _ = try doc.authenticate("")                          // authenticate (returns a Bool; unencrypted)
+    }
+
+    // ── Page model ───────────────────────────────────────────────────────────
+    func testPage() throws {
+        let doc = try Document.openFromBytes(try samplePdf())
+        let page = doc.page(0)
+        XCTAssertTrue(try page.text().contains("Alpha")) // text
+        XCTAssertFalse(try page.markdown().isEmpty)      // markdown
+        XCTAssertTrue(try page.html().contains("<"))     // html
+        XCTAssertFalse(try page.plainText().isEmpty)     // plainText
     }
 
     // ── close() is idempotent; use-after-close throws ───────────────────────
