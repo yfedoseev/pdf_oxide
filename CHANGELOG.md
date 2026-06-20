@@ -2,7 +2,7 @@
 
 All notable changes to PDFOxide are documented here.
 
-## [0.3.67] - 2026-06-19
+## [0.3.67] - 2026-06-20
 
 > Reading-order quality release for untagged scientific papers — manuscript-line-number rails lifted out of the body, dense two-column bodies kept apart at a measured gutter, comma-bearing statistic subscripts rejoined, repeated journal pagination footers suppressed, whole-page placed-PDF article bodies recovered, and single-column pages protected from false column detection.
 
