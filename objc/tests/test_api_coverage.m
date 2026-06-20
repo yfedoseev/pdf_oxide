@@ -70,6 +70,27 @@ int main(void) {
         CHECK([[doc extractStructuredJson:0
                                     error:&err] length] > 0); // extractStructuredJson
 
+        // ── Phase-1 element extraction ───────────────────────────────────────
+        {
+            NSArray<POXWord*>* words = [doc extractWords:0 error:&err]; // extractWords
+            CHECK(words != nil && words.count > 0);
+            if (words.count > 0) {
+                POXWord* w0 = words[0];
+                CHECK(w0.text.length > 0);
+                CHECK(w0.bbox.width >= 0 && w0.bbox.height >= 0);
+                CHECK(w0.bold == YES || w0.bold == NO);
+            }
+            NSArray<POXChar*>* chars = [doc extractChars:0 error:&err]; // extractChars
+            CHECK(chars != nil && chars.count > 0);
+            NSArray<POXTextLine*>* lines =
+                [doc extractTextLines:0 error:&err]; // extractTextLines
+            CHECK(lines != nil && lines.count > 0);
+            NSError* te = nil;
+            NSArray<POXTable*>* tables =
+                [doc extractTables:0 error:&te]; // extractTables (may be empty)
+            CHECK(tables != nil && te == nil);
+        }
+
         // ── authenticate (wrong password on unencrypted doc returns a bool) ──
         {
             NSError* ae = nil;

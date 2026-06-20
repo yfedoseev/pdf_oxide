@@ -33,6 +33,106 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
 - (instancetype)initWithDocument:(POXDocument*)document index:(NSInteger)index;
 @end
 
+// ── Phase-1 element model types ──────────────────────────────────────────────
+
+@interface POXChar ()
+- (instancetype)initWithCharacter:(uint32_t)character
+                             bbox:(POXBbox)bbox
+                         fontName:(NSString*)fontName
+                         fontSize:(float)fontSize;
+@end
+
+@interface POXWord ()
+- (instancetype)initWithText:(NSString*)text
+                        bbox:(POXBbox)bbox
+                    fontName:(NSString*)fontName
+                    fontSize:(float)fontSize
+                        bold:(BOOL)bold;
+@end
+
+@interface POXTextLine ()
+- (instancetype)initWithText:(NSString*)text
+                        bbox:(POXBbox)bbox
+                   wordCount:(NSInteger)wordCount;
+@end
+
+@interface POXTable ()
+- (instancetype)initWithRowCount:(NSInteger)rowCount
+                        colCount:(NSInteger)colCount
+                       hasHeader:(BOOL)hasHeader
+                           cells:(NSArray<NSArray<NSString*>*>*)cells;
+@end
+
+@implementation POXChar
+- (instancetype)initWithCharacter:(uint32_t)character
+                             bbox:(POXBbox)bbox
+                         fontName:(NSString*)fontName
+                         fontSize:(float)fontSize {
+    if ((self = [super init])) {
+        _character = character;
+        _bbox = bbox;
+        _fontName = [fontName copy];
+        _fontSize = fontSize;
+    }
+    return self;
+}
+@end
+
+@implementation POXWord
+- (instancetype)initWithText:(NSString*)text
+                        bbox:(POXBbox)bbox
+                    fontName:(NSString*)fontName
+                    fontSize:(float)fontSize
+                        bold:(BOOL)bold {
+    if ((self = [super init])) {
+        _text = [text copy];
+        _bbox = bbox;
+        _fontName = [fontName copy];
+        _fontSize = fontSize;
+        _bold = bold;
+    }
+    return self;
+}
+@end
+
+@implementation POXTextLine
+- (instancetype)initWithText:(NSString*)text
+                        bbox:(POXBbox)bbox
+                   wordCount:(NSInteger)wordCount {
+    if ((self = [super init])) {
+        _text = [text copy];
+        _bbox = bbox;
+        _wordCount = wordCount;
+    }
+    return self;
+}
+@end
+
+@implementation POXTable {
+    NSArray<NSArray<NSString*>*>* _cells;
+}
+- (instancetype)initWithRowCount:(NSInteger)rowCount
+                        colCount:(NSInteger)colCount
+                       hasHeader:(BOOL)hasHeader
+                           cells:(NSArray<NSArray<NSString*>*>*)cells {
+    if ((self = [super init])) {
+        _rowCount = rowCount;
+        _colCount = colCount;
+        _hasHeader = hasHeader;
+        _cells = [cells copy];
+    }
+    return self;
+}
+- (NSString*)cellTextAtRow:(NSInteger)row col:(NSInteger)col {
+    if (row < 0 || row >= (NSInteger)_cells.count)
+        return nil;
+    NSArray<NSString*>* r = _cells[row];
+    if (col < 0 || col >= (NSInteger)r.count)
+        return nil;
+    return r[col];
+}
+@end
+
 @implementation POXDocument {
     PdfDocument* _handle;
 }
@@ -161,6 +261,129 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
     return POXTakeString(
         pdf_document_extract_structured_to_json(_handle, (int32_t)page, &code), code,
         @"extractStructuredJson", error);
+}
+
+- (NSArray<POXChar*>*)extractChars:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    FfiCharList* list = pdf_document_extract_chars(_handle, (int32_t)page, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"extractChars");
+        return nil;
+    }
+    int32_t n = pdf_oxide_char_count(list);
+    NSMutableArray<POXChar*>* out = [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        uint32_t ch = pdf_oxide_char_get_char(list, i, &c);
+        float x = 0, y = 0, w = 0, h = 0;
+        pdf_oxide_char_get_bbox(list, i, &x, &y, &w, &h, &c);
+        NSString* fontName = POXTakeString(pdf_oxide_char_get_font_name(list, i, &c), c,
+                                           @"charFontName", NULL);
+        float fontSize = pdf_oxide_char_get_font_size(list, i, &c);
+        POXBbox bbox = {x, y, w, h};
+        [out addObject:[[POXChar alloc]
+                           initWithCharacter:ch
+                                        bbox:bbox
+                                    fontName:(fontName ?: @"")fontSize:fontSize]];
+    }
+    pdf_oxide_char_list_free(list);
+    return out;
+}
+
+- (NSArray<POXWord*>*)extractWords:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    FfiWordList* list = pdf_document_extract_words(_handle, (int32_t)page, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"extractWords");
+        return nil;
+    }
+    int32_t n = pdf_oxide_word_count(list);
+    NSMutableArray<POXWord*>* out = [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        NSString* text =
+            POXTakeString(pdf_oxide_word_get_text(list, i, &c), c, @"wordText", NULL);
+        float x = 0, y = 0, w = 0, h = 0;
+        pdf_oxide_word_get_bbox(list, i, &x, &y, &w, &h, &c);
+        NSString* fontName = POXTakeString(pdf_oxide_word_get_font_name(list, i, &c), c,
+                                           @"wordFontName", NULL);
+        float fontSize = pdf_oxide_word_get_font_size(list, i, &c);
+        bool bold = pdf_oxide_word_is_bold(list, i, &c);
+        POXBbox bbox = {x, y, w, h};
+        [out addObject:[[POXWord alloc] initWithText:(text ?: @"")
+                                                bbox:bbox
+                                            fontName:(fontName ?: @"")fontSize:fontSize
+                                                bold:(bold ? YES : NO)]];
+    }
+    pdf_oxide_word_list_free(list);
+    return out;
+}
+
+- (NSArray<POXTextLine*>*)extractTextLines:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    FfiTextLineList* list =
+        pdf_document_extract_text_lines(_handle, (int32_t)page, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"extractTextLines");
+        return nil;
+    }
+    int32_t n = pdf_oxide_line_count(list);
+    NSMutableArray<POXTextLine*>* out =
+        [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        NSString* text =
+            POXTakeString(pdf_oxide_line_get_text(list, i, &c), c, @"lineText", NULL);
+        float x = 0, y = 0, w = 0, h = 0;
+        pdf_oxide_line_get_bbox(list, i, &x, &y, &w, &h, &c);
+        int32_t wordCount = pdf_oxide_line_get_word_count(list, i, &c);
+        POXBbox bbox = {x, y, w, h};
+        [out addObject:[[POXTextLine alloc] initWithText:(text ?: @"")
+                                                    bbox:bbox
+                                               wordCount:wordCount]];
+    }
+    pdf_oxide_line_list_free(list);
+    return out;
+}
+
+- (NSArray<POXTable*>*)extractTables:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    FfiTableList* list = pdf_document_extract_tables(_handle, (int32_t)page, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"extractTables");
+        return nil;
+    }
+    int32_t n = pdf_oxide_table_count(list);
+    NSMutableArray<POXTable*>* out = [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        int32_t rowCount = pdf_oxide_table_get_row_count(list, i, &c);
+        int32_t colCount = pdf_oxide_table_get_col_count(list, i, &c);
+        bool hasHeader = pdf_oxide_table_has_header(list, i, &c);
+        NSMutableArray<NSArray<NSString*>*>* cells =
+            [NSMutableArray arrayWithCapacity:(rowCount < 0 ? 0 : rowCount)];
+        for (int32_t r = 0; r < rowCount; ++r) {
+            NSMutableArray<NSString*>* row =
+                [NSMutableArray arrayWithCapacity:(colCount < 0 ? 0 : colCount)];
+            for (int32_t col = 0; col < colCount; ++col) {
+                NSString* cell =
+                    POXTakeString(pdf_oxide_table_get_cell_text(list, i, r, col, &c), c,
+                                  @"tableCell", NULL);
+                [row addObject:(cell ?: @"")];
+            }
+            [cells addObject:row];
+        }
+        [out addObject:[[POXTable alloc]
+                           initWithRowCount:rowCount
+                                   colCount:colCount
+                                  hasHeader:(hasHeader ? YES : NO)cells:cells]];
+    }
+    pdf_oxide_table_list_free(list);
+    return out;
 }
 
 - (void)close {

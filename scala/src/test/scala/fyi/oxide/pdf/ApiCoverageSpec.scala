@@ -47,6 +47,19 @@ class ApiCoverageSpec extends AnyFunSuite:
       assert(doc.toPlainTextAll().nonEmpty) // toPlainTextAll
       assert(doc.extractStructuredJson(0).nonEmpty) // extractStructuredJson
 
+  // ── Phase-1 element extraction ───────────────────────────────────────────────
+  test("extractWords / extractChars / extractTextLines / extractTables"):
+    Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
+      val words = doc.extractWords(0) // extractWords
+      assert(words.nonEmpty)
+      assert(words.head.text.nonEmpty) // word[0].text non-empty
+      val b = words.head.bbox // word[0] has a bbox
+      assert(b.width >= 0 && b.height >= 0)
+      assert(doc.extractChars(0).nonEmpty) // extractChars
+      assert(doc.extractTextLines(0).nonEmpty) // extractTextLines
+      val tables = doc.extractTables(0) // extractTables (may be empty)
+      assert(tables ne null)
+
   // ── authenticate ─────────────────────────────────────────────────────────────
   test("authenticate"):
     Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>

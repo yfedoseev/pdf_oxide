@@ -75,6 +75,48 @@ int main() {
     CHECK(!doc.to_plain_text_all().empty());                       // to_plain_text_all
     CHECK(!doc.extract_structured_json(0).empty()); // extract_structured_json
 
+    // ── Phase-1 element extraction ───────────────────────────────────────
+    {
+        auto words = doc.extract_words(0); // extract_words
+        CHECK(!words.empty());
+        if (!words.empty()) {
+            CHECK(!words[0].text.empty());
+            // a real word has a non-degenerate bbox
+            CHECK(words[0].bbox.width > 0.0f);
+            CHECK(words[0].bbox.height > 0.0f);
+            (void)words[0].font_name;
+            (void)words[0].font_size;
+            (void)words[0].bold;
+        }
+
+        auto chars = doc.extract_chars(0); // extract_chars
+        CHECK(!chars.empty());
+        if (!chars.empty()) {
+            CHECK(chars[0].character != 0);
+            (void)chars[0].bbox;
+            (void)chars[0].font_name;
+            (void)chars[0].font_size;
+        }
+
+        auto lines = doc.extract_text_lines(0); // extract_text_lines
+        CHECK(!lines.empty());
+        if (!lines.empty()) {
+            CHECK(!lines[0].text.empty());
+            CHECK(lines[0].word_count >= 1);
+            (void)lines[0].bbox;
+        }
+
+        // tables may be empty on this doc; just assert the call succeeds.
+        auto tables = doc.extract_tables(0); // extract_tables
+        CHECK(tables.size() >= 0);
+        for (const auto& t : tables) {
+            if (t.row_count > 0 && t.col_count > 0) {
+                (void)t.cell(0, 0);
+            }
+            (void)t.has_header;
+        }
+    }
+
     // authenticate returns a bool (no throw on an unencrypted/sample doc)
     {
         bool authed = doc.authenticate(""); // authenticate

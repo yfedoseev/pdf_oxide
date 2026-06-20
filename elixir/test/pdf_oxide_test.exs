@@ -89,6 +89,32 @@ defmodule PdfOxideTest do
       assert byte_size(json) > 0
     end
 
+    test "element extraction (phase 1)", %{doc: doc} do
+      assert {:ok, words} = PdfOxide.extract_words(doc, 0)
+      assert is_list(words)
+      assert length(words) > 0
+      w = hd(words)
+      assert is_binary(w.text) and byte_size(w.text) > 0
+      assert %PdfOxide.Bbox{} = w.bbox
+      assert is_number(w.bbox.x) and is_number(w.bbox.width)
+      assert is_boolean(w.bold)
+
+      assert {:ok, chars} = PdfOxide.extract_chars(doc, 0)
+      assert is_list(chars)
+      assert length(chars) > 0
+      assert is_integer(hd(chars).character)
+      assert %PdfOxide.Bbox{} = hd(chars).bbox
+
+      assert {:ok, lines} = PdfOxide.extract_text_lines(doc, 0)
+      assert is_list(lines)
+      assert length(lines) > 0
+      assert is_binary(hd(lines).text)
+      assert is_integer(hd(lines).word_count)
+
+      assert {:ok, tables} = PdfOxide.extract_tables(doc, 0)
+      assert is_list(tables)
+    end
+
     test "authenticate returns a bool", %{doc: doc} do
       assert {:ok, result} = PdfOxide.authenticate(doc, "")
       assert is_boolean(result)

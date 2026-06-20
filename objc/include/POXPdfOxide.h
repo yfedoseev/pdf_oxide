@@ -17,7 +17,49 @@ typedef struct {
     uint8_t minor;
 } POXVersion;
 
+/// A bounding box in PDF user-space units (origin/size).
+typedef struct {
+    float x;
+    float y;
+    float width;
+    float height;
+} POXBbox;
+
 @class POXPage;
+
+/// A single extracted character (Phase-1 element extraction).
+@interface POXChar : NSObject
+/// The Unicode codepoint of the character.
+@property(nonatomic, readonly) uint32_t character;
+@property(nonatomic, readonly) POXBbox bbox;
+@property(nonatomic, readonly, copy) NSString* fontName;
+@property(nonatomic, readonly) float fontSize;
+@end
+
+/// A single extracted word (Phase-1 element extraction).
+@interface POXWord : NSObject
+@property(nonatomic, readonly, copy) NSString* text;
+@property(nonatomic, readonly) POXBbox bbox;
+@property(nonatomic, readonly, copy) NSString* fontName;
+@property(nonatomic, readonly) float fontSize;
+@property(nonatomic, readonly) BOOL bold;
+@end
+
+/// A single extracted text line (Phase-1 element extraction).
+@interface POXTextLine : NSObject
+@property(nonatomic, readonly, copy) NSString* text;
+@property(nonatomic, readonly) POXBbox bbox;
+@property(nonatomic, readonly) NSInteger wordCount;
+@end
+
+/// A single extracted table (Phase-1 element extraction).
+@interface POXTable : NSObject
+@property(nonatomic, readonly) NSInteger rowCount;
+@property(nonatomic, readonly) NSInteger colCount;
+@property(nonatomic, readonly) BOOL hasHeader;
+/// Cell text at (row, col); nil if out of range or unavailable.
+- (nullable NSString*)cellTextAtRow:(NSInteger)row col:(NSInteger)col;
+@end
 
 /// An opened PDF for extraction/inspection.
 @interface POXDocument : NSObject
@@ -46,6 +88,13 @@ typedef struct {
 - (nullable NSString*)toHtmlAllWithError:(NSError**)error;
 - (nullable NSString*)toPlainTextAllWithError:(NSError**)error;
 - (nullable NSString*)extractStructuredJson:(NSInteger)page error:(NSError**)error;
+
+/// Phase-1 element extraction (page index is 0-based).
+- (nullable NSArray<POXChar*>*)extractChars:(NSInteger)page error:(NSError**)error;
+- (nullable NSArray<POXWord*>*)extractWords:(NSInteger)page error:(NSError**)error;
+- (nullable NSArray<POXTextLine*>*)extractTextLines:(NSInteger)page
+                                              error:(NSError**)error;
+- (nullable NSArray<POXTable*>*)extractTables:(NSInteger)page error:(NSError**)error;
 
 /// Authenticate a password-protected PDF; returns YES on success, NO for a
 /// wrong password (no error). Sets `error` only on a genuine failure.

@@ -73,6 +73,17 @@ void main() {
     test('page.markdown', () => expect(doc.page(0).markdown(), isNotEmpty));
     test('page.html', () => expect(doc.page(0).html(), contains('<')));
     test('page.plainText', () => expect(doc.page(0).plainText(), isNotEmpty));
+
+    test('extractWords', () {
+      final words = doc.extractWords(0);
+      expect(words, isNotEmpty);
+      expect(words[0].text, isNotEmpty);
+      expect(words[0].bbox, isA<Bbox>());
+    });
+    test('extractChars', () => expect(doc.extractChars(0), isNotEmpty));
+    test('extractTextLines', () => expect(doc.extractTextLines(0), isNotEmpty));
+    test('extractTables',
+        () => expect(doc.extractTables(0), isA<List<Table>>()));
   });
 
   test('error path: open nonexistent throws PdfOxideError', () {

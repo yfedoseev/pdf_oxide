@@ -61,6 +61,21 @@ static ERL_NIF_TERM ok_string(ErlNifEnv *env, char *s, int32_t code) {
     return enif_make_tuple2(env, enif_make_atom(env, "ok"), bin);
 }
 
+/* Take an owned C string into an Elixir binary term, freeing it via
+ * free_string. A NULL string (e.g. an empty cell) becomes an empty binary. */
+static ERL_NIF_TERM take_string(ErlNifEnv *env, char *s) {
+    ERL_NIF_TERM bin;
+    if (!s) {
+        enif_make_new_binary(env, 0, &bin);
+        return bin;
+    }
+    size_t n = strlen(s);
+    unsigned char *buf = enif_make_new_binary(env, n, &bin);
+    memcpy(buf, s, n);
+    free_string(s);
+    return bin;
+}
+
 /* ── builder ──────────────────────────────────────────────────────────────── */
 #define BUILD_NIF(name, cfn)                                                    \
     static ERL_NIF_TERM name(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {\
@@ -248,6 +263,135 @@ static ERL_NIF_TERM doc_authenticate(ErlNifEnv *env, int argc, const ERL_NIF_TER
                             enif_make_atom(env, ok ? "true" : "false"));
 }
 
+/* ── element extraction (phase 1) ───────────────────────────────────────────
+ * Each extractor returns a NULL list on error; the list owns its elements and
+ * is freed once via pdf_oxide_X_list_free after every element has been read.
+ * Owned char* fields are copied into binaries and freed via free_string. All
+ * are dirty CPU-bound (extraction parses page content). */
+
+/* Read the doc resource + page index from args[0]/args[1]. */
+#define GET_DOC_PAGE                                                            \
+    DocRes *r;                                                                  \
+    int page;                                                                   \
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||                  \
+        !enif_get_int(env, a[1], &page))                                        \
+        return enif_make_badarg(env);                                           \
+    if (!r->h) return enif_make_badarg(env);
+
+static ERL_NIF_TERM doc_extract_chars(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    GET_DOC_PAGE
+    int32_t code = 0;
+    FfiCharList *list = pdf_document_extract_chars(r->h, page, &code);
+    if (!list) return err_tuple(env, code);
+    int32_t n = pdf_oxide_char_count(list);
+    if (n < 0) n = 0;
+    ERL_NIF_TERM items = enif_make_list(env, 0);
+    for (int32_t i = n - 1; i >= 0; i--) {
+        int32_t c = 0;
+        uint32_t cp = pdf_oxide_char_get_char(list, i, &c);
+        float x = 0, y = 0, w = 0, h = 0;
+        pdf_oxide_char_get_bbox(list, i, &x, &y, &w, &h, &c);
+        ERL_NIF_TERM font = take_string(env, pdf_oxide_char_get_font_name(list, i, &c));
+        float size = pdf_oxide_char_get_font_size(list, i, &c);
+        ERL_NIF_TERM item = enif_make_tuple7(env, enif_make_uint(env, cp),
+                                             enif_make_double(env, x), enif_make_double(env, y),
+                                             enif_make_double(env, w), enif_make_double(env, h),
+                                             font, enif_make_double(env, size));
+        items = enif_make_list_cell(env, item, items);
+    }
+    pdf_oxide_char_list_free(list);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), items);
+}
+
+static ERL_NIF_TERM doc_extract_words(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    GET_DOC_PAGE
+    int32_t code = 0;
+    FfiWordList *list = pdf_document_extract_words(r->h, page, &code);
+    if (!list) return err_tuple(env, code);
+    int32_t n = pdf_oxide_word_count(list);
+    if (n < 0) n = 0;
+    ERL_NIF_TERM items = enif_make_list(env, 0);
+    for (int32_t i = n - 1; i >= 0; i--) {
+        int32_t c = 0;
+        ERL_NIF_TERM text = take_string(env, pdf_oxide_word_get_text(list, i, &c));
+        float x = 0, y = 0, w = 0, h = 0;
+        pdf_oxide_word_get_bbox(list, i, &x, &y, &w, &h, &c);
+        ERL_NIF_TERM font = take_string(env, pdf_oxide_word_get_font_name(list, i, &c));
+        float size = pdf_oxide_word_get_font_size(list, i, &c);
+        bool bold = pdf_oxide_word_is_bold(list, i, &c);
+        ERL_NIF_TERM item = enif_make_tuple(env, 8, text,
+                                            enif_make_double(env, x), enif_make_double(env, y),
+                                            enif_make_double(env, w), enif_make_double(env, h),
+                                            font, enif_make_double(env, size),
+                                            enif_make_atom(env, bold ? "true" : "false"));
+        items = enif_make_list_cell(env, item, items);
+    }
+    pdf_oxide_word_list_free(list);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), items);
+}
+
+static ERL_NIF_TERM doc_extract_text_lines(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    GET_DOC_PAGE
+    int32_t code = 0;
+    FfiTextLineList *list = pdf_document_extract_text_lines(r->h, page, &code);
+    if (!list) return err_tuple(env, code);
+    int32_t n = pdf_oxide_line_count(list);
+    if (n < 0) n = 0;
+    ERL_NIF_TERM items = enif_make_list(env, 0);
+    for (int32_t i = n - 1; i >= 0; i--) {
+        int32_t c = 0;
+        ERL_NIF_TERM text = take_string(env, pdf_oxide_line_get_text(list, i, &c));
+        float x = 0, y = 0, w = 0, h = 0;
+        pdf_oxide_line_get_bbox(list, i, &x, &y, &w, &h, &c);
+        int32_t wc = pdf_oxide_line_get_word_count(list, i, &c);
+        ERL_NIF_TERM item = enif_make_tuple6(env, text,
+                                             enif_make_double(env, x), enif_make_double(env, y),
+                                             enif_make_double(env, w), enif_make_double(env, h),
+                                             enif_make_int(env, wc));
+        items = enif_make_list_cell(env, item, items);
+    }
+    pdf_oxide_line_list_free(list);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), items);
+}
+
+static ERL_NIF_TERM doc_extract_tables(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    GET_DOC_PAGE
+    int32_t code = 0;
+    FfiTableList *list = pdf_document_extract_tables(r->h, page, &code);
+    if (!list) return err_tuple(env, code);
+    int32_t n = pdf_oxide_table_count(list);
+    if (n < 0) n = 0;
+    ERL_NIF_TERM tables = enif_make_list(env, 0);
+    for (int32_t i = n - 1; i >= 0; i--) {
+        int32_t c = 0;
+        int32_t rows = pdf_oxide_table_get_row_count(list, i, &c);
+        int32_t cols = pdf_oxide_table_get_col_count(list, i, &c);
+        bool header = pdf_oxide_table_has_header(list, i, &c);
+        int32_t rr = rows < 0 ? 0 : rows;
+        int32_t cc = cols < 0 ? 0 : cols;
+        ERL_NIF_TERM grid = enif_make_list(env, 0);
+        for (int32_t row = rr - 1; row >= 0; row--) {
+            ERL_NIF_TERM line = enif_make_list(env, 0);
+            for (int32_t col = cc - 1; col >= 0; col--) {
+                ERL_NIF_TERM cell = take_string(env, pdf_oxide_table_get_cell_text(list, i, row, col, &c));
+                line = enif_make_list_cell(env, cell, line);
+            }
+            grid = enif_make_list_cell(env, line, grid);
+        }
+        ERL_NIF_TERM item = enif_make_tuple4(env, enif_make_int(env, rr),
+                                             enif_make_int(env, cc),
+                                             enif_make_atom(env, header ? "true" : "false"),
+                                             grid);
+        tables = enif_make_list_cell(env, item, tables);
+    }
+    pdf_oxide_table_list_free(list);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), tables);
+}
+
 /* Explicit, idempotent close: free the native handle now and null it so the GC
  * destructor is a no-op and later use raises (badarg). */
 static ERL_NIF_TERM doc_close(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
@@ -288,6 +432,10 @@ static ErlNifFunc funcs[] = {
     {"doc_to_plain_text_all", 1, doc_to_plain_text_all, DIRTY},
     {"doc_authenticate", 2, doc_authenticate, DIRTY},
     {"doc_extract_structured_json", 2, doc_struct_json, DIRTY},
+    {"doc_extract_chars", 2, doc_extract_chars, DIRTY},
+    {"doc_extract_words", 2, doc_extract_words, DIRTY},
+    {"doc_extract_text_lines", 2, doc_extract_text_lines, DIRTY},
+    {"doc_extract_tables", 2, doc_extract_tables, DIRTY},
     {"doc_close", 1, doc_close, 0},
     {"pdf_close", 1, pdf_close_nif, 0},
 };

@@ -145,6 +145,49 @@ pdf_authenticate <- function(doc, password) {
   .Call(C_r_doc_authenticate, doc, password)
 }
 
+# ── Phase-1 element extraction ────────────────────────────────────────────────
+
+#' Extract positioned characters for one (0-based) page.
+#'
+#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @return A list of `Char` records, each `list(character=, bbox=, font_name=,
+#'   font_size=)` where `bbox` is `list(x=, y=, width=, height=)` and
+#'   `character` is the Unicode codepoint as an integer.
+#' @export
+pdf_extract_chars <- function(doc, page) {
+  .Call(C_r_doc_extract_chars, doc, as.integer(page))
+}
+
+#' Extract positioned words for one (0-based) page.
+#'
+#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @return A list of `Word` records, each `list(text=, bbox=, font_name=,
+#'   font_size=, bold=)`.
+#' @export
+pdf_extract_words <- function(doc, page) {
+  .Call(C_r_doc_extract_words, doc, as.integer(page))
+}
+
+#' Extract reading-order text lines for one (0-based) page.
+#'
+#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @return A list of `TextLine` records, each `list(text=, bbox=, word_count=)`.
+#' @export
+pdf_extract_text_lines <- function(doc, page) {
+  .Call(C_r_doc_extract_text_lines, doc, as.integer(page))
+}
+
+#' Extract detected tables for one (0-based) page.
+#'
+#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @return A list of `Table` records, each `list(row_count=, col_count=,
+#'   has_header=, cells=)` where `cells` is a `row_count` x `col_count` character
+#'   matrix; index a cell with `tbl$cells[row, col]` (1-based).
+#' @export
+pdf_extract_tables <- function(doc, page) {
+  .Call(C_r_doc_extract_tables, doc, as.integer(page))
+}
+
 # ── Page ────────────────────────────────────────────────────────────────────
 
 #' A single (0-based) page of a document.

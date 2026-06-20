@@ -23,6 +23,60 @@ public struct PdfVersion: CustomStringConvertible {
     public var description: String { "\(major).\(minor)" }
 }
 
+/// An axis-aligned bounding box in PDF user-space units.
+public struct Bbox {
+    public let x: Double
+    public let y: Double
+    public let width: Double
+    public let height: Double
+}
+
+/// A single extracted character.
+public struct Char {
+    /// The Unicode scalar value (codepoint) of the character.
+    public let character: UInt32
+    public let bbox: Bbox
+    public let fontName: String
+    public let fontSize: Double
+}
+
+/// A single extracted word.
+public struct Word {
+    public let text: String
+    public let bbox: Bbox
+    public let fontName: String
+    public let fontSize: Double
+    public let bold: Bool
+}
+
+/// A single extracted line of text.
+public struct TextLine {
+    public let text: String
+    public let bbox: Bbox
+    public let wordCount: Int
+}
+
+/// A single extracted table. Cells are read on demand via `cell(_:_:)`.
+public struct Table {
+    public let rowCount: Int
+    public let colCount: Int
+    public let hasHeader: Bool
+    private let cells: [[String]]
+
+    fileprivate init(rowCount: Int, colCount: Int, hasHeader: Bool, cells: [[String]]) {
+        self.rowCount = rowCount
+        self.colCount = colCount
+        self.hasHeader = hasHeader
+        self.cells = cells
+    }
+
+    /// The text of the cell at (row, col); empty string if out of bounds.
+    public func cell(_ row: Int, _ col: Int) -> String {
+        guard row >= 0, row < cells.count, col >= 0, col < cells[row].count else { return "" }
+        return cells[row][col]
+    }
+}
+
 // Copy a C string return into a Swift String and free it via free_string.
 private func takeString(_ ptr: UnsafeMutablePointer<CChar>?, _ code: Int32, _ op: String) throws -> String {
     guard let ptr else { throw PdfOxideError(code: code, op: op) }
@@ -122,6 +176,123 @@ public final class Document {
     public func extractStructuredJson(_ page: Int) throws -> String {
         var code: Int32 = 0
         return try takeString(pdf_document_extract_structured_to_json(try ptr(), Int32(page), &code), code, "extractStructuredJson")
+    }
+
+    // ── Phase-1 element extraction ───────────────────────────────────────────
+
+    /// Extract individual characters from a (0-based) page.
+    public func extractChars(_ pageIndex: Int) throws -> [Char] {
+        var code: Int32 = 0
+        guard let list = pdf_document_extract_chars(try ptr(), Int32(pageIndex), &code) else {
+            throw PdfOxideError(code: code, op: "extractChars")
+        }
+        defer { pdf_oxide_char_list_free(list) }
+        let n = Int(pdf_oxide_char_count(list))
+        var result: [Char] = []
+        result.reserveCapacity(n)
+        for i in 0..<n {
+            let idx = Int32(i)
+            let character = pdf_oxide_char_get_char(list, idx, &code)
+            let fontName = try takeString(pdf_oxide_char_get_font_name(list, idx, &code), code, "extractChars.fontName")
+            let fontSize = pdf_oxide_char_get_font_size(list, idx, &code)
+            var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
+            pdf_oxide_char_get_bbox(list, idx, &x, &y, &w, &h, &code)
+            result.append(Char(
+                character: character,
+                bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
+                fontName: fontName,
+                fontSize: Double(fontSize)
+            ))
+        }
+        return result
+    }
+
+    /// Extract words from a (0-based) page.
+    public func extractWords(_ pageIndex: Int) throws -> [Word] {
+        var code: Int32 = 0
+        guard let list = pdf_document_extract_words(try ptr(), Int32(pageIndex), &code) else {
+            throw PdfOxideError(code: code, op: "extractWords")
+        }
+        defer { pdf_oxide_word_list_free(list) }
+        let n = Int(pdf_oxide_word_count(list))
+        var result: [Word] = []
+        result.reserveCapacity(n)
+        for i in 0..<n {
+            let idx = Int32(i)
+            let text = try takeString(pdf_oxide_word_get_text(list, idx, &code), code, "extractWords.text")
+            let fontName = try takeString(pdf_oxide_word_get_font_name(list, idx, &code), code, "extractWords.fontName")
+            let fontSize = pdf_oxide_word_get_font_size(list, idx, &code)
+            let bold = pdf_oxide_word_is_bold(list, idx, &code)
+            var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
+            pdf_oxide_word_get_bbox(list, idx, &x, &y, &w, &h, &code)
+            result.append(Word(
+                text: text,
+                bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
+                fontName: fontName,
+                fontSize: Double(fontSize),
+                bold: bold
+            ))
+        }
+        return result
+    }
+
+    /// Extract text lines from a (0-based) page.
+    public func extractTextLines(_ pageIndex: Int) throws -> [TextLine] {
+        var code: Int32 = 0
+        guard let list = pdf_document_extract_text_lines(try ptr(), Int32(pageIndex), &code) else {
+            throw PdfOxideError(code: code, op: "extractTextLines")
+        }
+        defer { pdf_oxide_line_list_free(list) }
+        let n = Int(pdf_oxide_line_count(list))
+        var result: [TextLine] = []
+        result.reserveCapacity(n)
+        for i in 0..<n {
+            let idx = Int32(i)
+            let text = try takeString(pdf_oxide_line_get_text(list, idx, &code), code, "extractTextLines.text")
+            let wordCount = Int(pdf_oxide_line_get_word_count(list, idx, &code))
+            var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
+            pdf_oxide_line_get_bbox(list, idx, &x, &y, &w, &h, &code)
+            result.append(TextLine(
+                text: text,
+                bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
+                wordCount: wordCount
+            ))
+        }
+        return result
+    }
+
+    /// Extract tables from a (0-based) page.
+    public func extractTables(_ pageIndex: Int) throws -> [Table] {
+        var code: Int32 = 0
+        guard let list = pdf_document_extract_tables(try ptr(), Int32(pageIndex), &code) else {
+            throw PdfOxideError(code: code, op: "extractTables")
+        }
+        defer { pdf_oxide_table_list_free(list) }
+        let n = Int(pdf_oxide_table_count(list))
+        var result: [Table] = []
+        result.reserveCapacity(n)
+        for i in 0..<n {
+            let idx = Int32(i)
+            let rowCount = Int(pdf_oxide_table_get_row_count(list, idx, &code))
+            let colCount = Int(pdf_oxide_table_get_col_count(list, idx, &code))
+            let hasHeader = pdf_oxide_table_has_header(list, idx, &code)
+            var cells: [[String]] = []
+            cells.reserveCapacity(rowCount)
+            for r in 0..<max(0, rowCount) {
+                var row: [String] = []
+                row.reserveCapacity(colCount)
+                for c in 0..<max(0, colCount) {
+                    let cell = try takeString(
+                        pdf_oxide_table_get_cell_text(list, idx, Int32(r), Int32(c), &code),
+                        code, "extractTables.cell"
+                    )
+                    row.append(cell)
+                }
+                cells.append(row)
+            }
+            result.append(Table(rowCount: rowCount, colCount: colCount, hasHeader: hasHeader, cells: cells))
+        }
+        return result
     }
 
     /// A lightweight view of a single (0-based) page. Holds a strong reference to

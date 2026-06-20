@@ -68,6 +68,51 @@ struct Version {
     std::uint8_t minor;
 };
 
+/// An axis-aligned bounding box in page coordinates.
+struct Bbox {
+    float x;
+    float y;
+    float width;
+    float height;
+};
+
+/// A single extracted glyph/character.
+struct Char {
+    std::uint32_t character; // Unicode codepoint
+    Bbox bbox;
+    std::string font_name;
+    float font_size;
+};
+
+/// A single extracted word.
+struct Word {
+    std::string text;
+    Bbox bbox;
+    std::string font_name;
+    float font_size;
+    bool bold;
+};
+
+/// A single extracted text line.
+struct TextLine {
+    std::string text;
+    Bbox bbox;
+    int word_count;
+};
+
+/// A single extracted table. `cell(row, col)` returns the cell text.
+struct Table {
+    int row_count;
+    int col_count;
+    bool has_header;
+    std::vector<std::string> cells; // row-major, row_count * col_count
+
+    /// Text of the cell at (row, col).
+    const std::string& cell(int row, int col) const {
+        return cells.at(static_cast<std::size_t>(row) * col_count + col);
+    }
+};
+
 /// An opened PDF for extraction/inspection. Move-only; frees on destruction.
 class Document {
   public:
@@ -198,6 +243,144 @@ class Document {
         return detail::take_string(
             pdf_document_extract_structured_to_json(ptr(), page_index, &code), code,
             "Document::extract_structured_json");
+    }
+
+    /// Extract individual characters for one page (0-based).
+    std::vector<Char> extract_chars(int page_index) const {
+        int32_t code = 0;
+        FfiCharList* list = pdf_document_extract_chars(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::extract_chars");
+        }
+        std::vector<Char> out;
+        int32_t n = pdf_oxide_char_count(list);
+        out.reserve(n < 0 ? 0 : static_cast<std::size_t>(n));
+        try {
+            for (int32_t i = 0; i < n; ++i) {
+                Char c;
+                code = 0;
+                c.character = pdf_oxide_char_get_char(list, i, &code);
+                Bbox b{0, 0, 0, 0};
+                pdf_oxide_char_get_bbox(list, i, &b.x, &b.y, &b.width, &b.height,
+                                        &code);
+                c.bbox = b;
+                c.font_name =
+                    detail::take_string(pdf_oxide_char_get_font_name(list, i, &code),
+                                        code, "Document::extract_chars");
+                c.font_size = pdf_oxide_char_get_font_size(list, i, &code);
+                out.push_back(std::move(c));
+            }
+        } catch (...) {
+            pdf_oxide_char_list_free(list);
+            throw;
+        }
+        pdf_oxide_char_list_free(list);
+        return out;
+    }
+
+    /// Extract words for one page (0-based).
+    std::vector<Word> extract_words(int page_index) const {
+        int32_t code = 0;
+        FfiWordList* list = pdf_document_extract_words(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::extract_words");
+        }
+        std::vector<Word> out;
+        int32_t n = pdf_oxide_word_count(list);
+        out.reserve(n < 0 ? 0 : static_cast<std::size_t>(n));
+        try {
+            for (int32_t i = 0; i < n; ++i) {
+                Word w;
+                code = 0;
+                w.text = detail::take_string(pdf_oxide_word_get_text(list, i, &code),
+                                             code, "Document::extract_words");
+                Bbox b{0, 0, 0, 0};
+                pdf_oxide_word_get_bbox(list, i, &b.x, &b.y, &b.width, &b.height,
+                                        &code);
+                w.bbox = b;
+                w.font_name =
+                    detail::take_string(pdf_oxide_word_get_font_name(list, i, &code),
+                                        code, "Document::extract_words");
+                w.font_size = pdf_oxide_word_get_font_size(list, i, &code);
+                w.bold = pdf_oxide_word_is_bold(list, i, &code);
+                out.push_back(std::move(w));
+            }
+        } catch (...) {
+            pdf_oxide_word_list_free(list);
+            throw;
+        }
+        pdf_oxide_word_list_free(list);
+        return out;
+    }
+
+    /// Extract text lines for one page (0-based).
+    std::vector<TextLine> extract_text_lines(int page_index) const {
+        int32_t code = 0;
+        FfiTextLineList* list =
+            pdf_document_extract_text_lines(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::extract_text_lines");
+        }
+        std::vector<TextLine> out;
+        int32_t n = pdf_oxide_line_count(list);
+        out.reserve(n < 0 ? 0 : static_cast<std::size_t>(n));
+        try {
+            for (int32_t i = 0; i < n; ++i) {
+                TextLine l;
+                code = 0;
+                l.text = detail::take_string(pdf_oxide_line_get_text(list, i, &code),
+                                             code, "Document::extract_text_lines");
+                Bbox b{0, 0, 0, 0};
+                pdf_oxide_line_get_bbox(list, i, &b.x, &b.y, &b.width, &b.height,
+                                        &code);
+                l.bbox = b;
+                l.word_count = pdf_oxide_line_get_word_count(list, i, &code);
+                out.push_back(std::move(l));
+            }
+        } catch (...) {
+            pdf_oxide_line_list_free(list);
+            throw;
+        }
+        pdf_oxide_line_list_free(list);
+        return out;
+    }
+
+    /// Extract tables for one page (0-based).
+    std::vector<Table> extract_tables(int page_index) const {
+        int32_t code = 0;
+        FfiTableList* list = pdf_document_extract_tables(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::extract_tables");
+        }
+        std::vector<Table> out;
+        int32_t n = pdf_oxide_table_count(list);
+        out.reserve(n < 0 ? 0 : static_cast<std::size_t>(n));
+        try {
+            for (int32_t i = 0; i < n; ++i) {
+                Table t;
+                code = 0;
+                t.row_count = pdf_oxide_table_get_row_count(list, i, &code);
+                t.col_count = pdf_oxide_table_get_col_count(list, i, &code);
+                t.has_header = pdf_oxide_table_has_header(list, i, &code);
+                int32_t rows = t.row_count < 0 ? 0 : t.row_count;
+                int32_t cols = t.col_count < 0 ? 0 : t.col_count;
+                t.cells.reserve(static_cast<std::size_t>(rows) * cols);
+                for (int32_t r = 0; r < rows; ++r) {
+                    for (int32_t c = 0; c < cols; ++c) {
+                        code = 0;
+                        t.cells.push_back(detail::take_string(
+                            pdf_oxide_table_get_cell_text(list, i, r, c, &code), code,
+                            "Document::extract_tables"));
+                    }
+                }
+                out.push_back(std::move(t));
+            }
+        } catch (...) {
+            pdf_oxide_table_list_free(list);
+            throw;
+        }
+        pdf_oxide_table_list_free(list);
+        return out;
     }
 
     /// Free the native handle now (idempotent). RAII also frees at scope exit;

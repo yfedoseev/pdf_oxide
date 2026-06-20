@@ -10,7 +10,7 @@
 ;; pdf-oxide.core-test (one test per public fn).
 (ns pdf-oxide.core
   (:import [com.sun.jna NativeLibrary Pointer Function]
-           [com.sun.jna.ptr IntByReference ByteByReference]
+           [com.sun.jna.ptr IntByReference ByteByReference FloatByReference]
            [java.io Closeable]))
 
 (def ^NativeLibrary ^:private nlib (NativeLibrary/getInstance "pdf_oxide"))
@@ -21,6 +21,7 @@
 (defn- ->ptr  ^Pointer [name args] (.invoke (f name) Pointer (object-array args)))
 (defn- ->int  ^long    [name args] (.invokeInt (f name) (object-array args)))
 (defn- ->bool ^Boolean [name args] (.invoke (f name) Boolean (object-array args)))
+(defn- ->float ^double [name args] (.invokeFloat (f name) (object-array args)))
 (defn- ->void [name args] (.invokeVoid (f name) (object-array args)))
 (defn- free-string [^Pointer p] (.invokeVoid (f "free_string") (object-array [p])))
 (defn- free-bytes [^Pointer p] (.invokeVoid (f "free_bytes") (object-array [p])))
@@ -105,6 +106,95 @@
   [^Document d password]
   (let [code (IntByReference.)]
     (->bool "pdf_document_authenticate" [(doc-ptr d) password code])))
+
+;; ── Phase-1 element extraction ──────────────────────────────────────────────────
+;; Each extractor calls the C-ABI list entry point (NULL → throw), reads every
+;; element into Clojure maps, then frees the list once. Bbox is a {:x :y :width
+;; :height} map; owned C strings are copied + freed via take-string.
+(defn- get-bbox
+  "Read a list element's bbox via the C out-param accessor → {:x :y :width :height}."
+  [cname ^Pointer lst ^long index]
+  (let [x (FloatByReference.) y (FloatByReference.)
+        w (FloatByReference.) h (FloatByReference.)
+        code (IntByReference.)]
+    (->void cname [lst (int index) x y w h code])
+    {:x (.getValue x) :y (.getValue y) :width (.getValue w) :height (.getValue h)}))
+
+(defn extract-chars
+  "Extract individual characters from a 0-based page.
+   Returns a vector of {:character :bbox :font-name :font-size}."
+  [^Document d page]
+  (let [code (IntByReference.)
+        lst (->ptr "pdf_document_extract_chars" [(doc-ptr d) (int page) code])]
+    (when (nil? lst) (throw (ex-info "pdf_oxide: extract-chars failed" {:code (.getValue code) :op "extract-chars"})))
+    (try
+      (let [n (->int "pdf_oxide_char_count" [lst])]
+        (mapv (fn [i]
+                (let [c (IntByReference.) fs (IntByReference.)]
+                  {:character (bit-and (->int "pdf_oxide_char_get_char" [lst (int i) c]) 0xffffffff)
+                   :bbox (get-bbox "pdf_oxide_char_get_bbox" lst i)
+                   :font-name (take-string (->ptr "pdf_oxide_char_get_font_name" [lst (int i) c]) (.getValue c) "extract-chars")
+                   :font-size (->float "pdf_oxide_char_get_font_size" [lst (int i) fs])}))
+              (range n)))
+      (finally (->void "pdf_oxide_char_list_free" [lst])))))
+
+(defn extract-words
+  "Extract words from a 0-based page.
+   Returns a vector of {:text :bbox :font-name :font-size :bold}."
+  [^Document d page]
+  (let [code (IntByReference.)
+        lst (->ptr "pdf_document_extract_words" [(doc-ptr d) (int page) code])]
+    (when (nil? lst) (throw (ex-info "pdf_oxide: extract-words failed" {:code (.getValue code) :op "extract-words"})))
+    (try
+      (let [n (->int "pdf_oxide_word_count" [lst])]
+        (mapv (fn [i]
+                (let [c (IntByReference.) fs (IntByReference.) bc (IntByReference.)]
+                  {:text (take-string (->ptr "pdf_oxide_word_get_text" [lst (int i) c]) (.getValue c) "extract-words")
+                   :bbox (get-bbox "pdf_oxide_word_get_bbox" lst i)
+                   :font-name (take-string (->ptr "pdf_oxide_word_get_font_name" [lst (int i) c]) (.getValue c) "extract-words")
+                   :font-size (->float "pdf_oxide_word_get_font_size" [lst (int i) fs])
+                   :bold (->bool "pdf_oxide_word_is_bold" [lst (int i) bc])}))
+              (range n)))
+      (finally (->void "pdf_oxide_word_list_free" [lst])))))
+
+(defn extract-text-lines
+  "Extract text lines from a 0-based page.
+   Returns a vector of {:text :bbox :word-count}."
+  [^Document d page]
+  (let [code (IntByReference.)
+        lst (->ptr "pdf_document_extract_text_lines" [(doc-ptr d) (int page) code])]
+    (when (nil? lst) (throw (ex-info "pdf_oxide: extract-text-lines failed" {:code (.getValue code) :op "extract-text-lines"})))
+    (try
+      (let [n (->int "pdf_oxide_line_count" [lst])]
+        (mapv (fn [i]
+                (let [c (IntByReference.) wc (IntByReference.)]
+                  {:text (take-string (->ptr "pdf_oxide_line_get_text" [lst (int i) c]) (.getValue c) "extract-text-lines")
+                   :bbox (get-bbox "pdf_oxide_line_get_bbox" lst i)
+                   :word-count (->int "pdf_oxide_line_get_word_count" [lst (int i) wc])}))
+              (range n)))
+      (finally (->void "pdf_oxide_line_list_free" [lst])))))
+
+(defn extract-tables
+  "Extract tables from a 0-based page. Returns a vector of
+   {:row-count :col-count :has-header :cell}, where :cell is a fn (cell row col)
+   returning the cell text string."
+  [^Document d page]
+  (let [code (IntByReference.)
+        lst (->ptr "pdf_document_extract_tables" [(doc-ptr d) (int page) code])]
+    (when (nil? lst) (throw (ex-info "pdf_oxide: extract-tables failed" {:code (.getValue code) :op "extract-tables"})))
+    (try
+      (let [n (->int "pdf_oxide_table_count" [lst])]
+        (mapv (fn [i]
+                (let [rc (IntByReference.) cc (IntByReference.) hc (IntByReference.)]
+                  {:row-count (->int "pdf_oxide_table_get_row_count" [lst (int i) rc])
+                   :col-count (->int "pdf_oxide_table_get_col_count" [lst (int i) cc])
+                   :has-header (->bool "pdf_oxide_table_has_header" [lst (int i) hc])
+                   :cell (fn [row col]
+                           (let [tc (IntByReference.)]
+                             (take-string (->ptr "pdf_oxide_table_get_cell_text" [lst (int i) (int row) (int col) tc])
+                                          (.getValue tc) "extract-tables")))}))
+              (range n)))
+      (finally (->void "pdf_oxide_table_list_free" [lst])))))
 
 ;; ── Page ────────────────────────────────────────────────────────────────────
 ;; Holds a strong reference to its Document (keeps it alive) plus a 0-based index;

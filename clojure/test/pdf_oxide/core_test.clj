@@ -50,5 +50,33 @@
       (is (seq (pdf/page-plain-text pg))))           ; page-plain-text
     (is (seq (pdf/extract-structured-json d 0)))))  ; extract-structured-json
 
+(deftest phase1-element-extraction
+  (with-open [d (pdf/open-from-bytes (sample-pdf))]
+    (testing "extract-words (0-based)"
+      (let [words (pdf/extract-words d 0)]
+        (is (seq words))                                  ; non-empty
+        (is (seq (:text (first words))))                  ; word[0].text non-empty
+        (is (map? (:bbox (first words))))                 ; word[0] has a bbox
+        (is (number? (:x (:bbox (first words)))))
+        (is (instance? Boolean (:bold (first words))))))
+    (testing "extract-chars (0-based)"
+      (let [chars (pdf/extract-chars d 0)]
+        (is (seq chars))                                  ; non-empty
+        (is (integer? (:character (first chars))))        ; codepoint as int
+        (is (map? (:bbox (first chars))))))
+    (testing "extract-text-lines (0-based)"
+      (let [lines (pdf/extract-text-lines d 0)]
+        (is (seq lines))                                  ; non-empty
+        (is (seq (:text (first lines))))
+        (is (integer? (:word-count (first lines))))))
+    (testing "extract-tables (0-based) returns a list without error"
+      (let [tables (pdf/extract-tables d 0)]
+        (is (sequential? tables))                         ; may be empty
+        (doseq [t tables]
+          (is (integer? (:row-count t)))
+          (is (integer? (:col-count t)))
+          (is (instance? Boolean (:has-header t)))
+          (is (fn? (:cell t))))))))
+
 (deftest error-path
   (is (thrown? clojure.lang.ExceptionInfo (pdf/open "/nonexistent/nope.pdf"))))

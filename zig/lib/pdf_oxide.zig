@@ -35,6 +35,57 @@ fn fail(code: i32) Error {
 /// PDF version (e.g. 1.7).
 pub const Version = struct { major: u8, minor: u8 };
 
+/// An axis-aligned bounding box in page coordinates.
+pub const Bbox = struct { x: f32, y: f32, width: f32, height: f32 };
+
+/// A single extracted glyph. `fontName` is allocator-owned (free it).
+pub const Char = struct {
+    character: u32,
+    bbox: Bbox,
+    fontName: []u8,
+    fontSize: f32,
+};
+
+/// A single extracted word. `text`/`fontName` are allocator-owned (free them).
+pub const Word = struct {
+    text: []u8,
+    bbox: Bbox,
+    fontName: []u8,
+    fontSize: f32,
+    bold: bool,
+};
+
+/// A single extracted text line. `text` is allocator-owned (free it).
+pub const TextLine = struct {
+    text: []u8,
+    bbox: Bbox,
+    wordCount: i32,
+};
+
+/// A single extracted table. `cells` is a row-major grid of allocator-owned
+/// strings (free each cell, then the slice).
+pub const Table = struct {
+    rowCount: i32,
+    colCount: i32,
+    hasHeader: bool,
+    cells: [][]u8,
+
+    /// Cell text at (row, col), 0-based. Out of range yields an empty string.
+    pub fn cell(self: Table, row: i32, col: i32) []const u8 {
+        if (row < 0 or col < 0 or row >= self.rowCount or col >= self.colCount) return "";
+        const r: usize = @intCast(row);
+        const cl: usize = @intCast(col);
+        const cols: usize = @intCast(self.colCount);
+        return self.cells[r * cols + cl];
+    }
+
+    /// Free every cell string and the backing slice.
+    pub fn deinit(self: *Table, alloc: std.mem.Allocator) void {
+        for (self.cells) |cl| alloc.free(cl);
+        alloc.free(self.cells);
+    }
+};
+
 /// Copy a C string return into an allocator-owned slice and free the C buffer.
 fn takeString(alloc: std.mem.Allocator, ptr: ?[*:0]u8, code: i32) Error![]u8 {
     const p = ptr orelse return fail(code);
@@ -136,6 +187,180 @@ pub const Document = struct {
     pub fn extractStructuredJson(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]u8 {
         var code: i32 = 0;
         return takeString(alloc, c.pdf_document_extract_structured_to_json(self.handle, page_index, &code), code);
+    }
+
+    /// Glyph-level extraction for a (0-based) page. Caller owns the returned slice
+    /// and each element's `fontName`; free with `freeChars`.
+    pub fn extractChars(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]Char {
+        var code: i32 = 0;
+        const list = c.pdf_document_extract_chars(self.handle, page_index, &code) orelse return fail(code);
+        defer c.pdf_oxide_char_list_free(list);
+        const n = c.pdf_oxide_char_count(list);
+        if (n < 0) return fail(code);
+        const count: usize = @intCast(n);
+        const out = try alloc.alloc(Char, count);
+        errdefer alloc.free(out);
+        var i: usize = 0;
+        errdefer for (out[0..i]) |ch| alloc.free(ch.fontName);
+        while (i < count) : (i += 1) {
+            const idx: i32 = @intCast(i);
+            const character = c.pdf_oxide_char_get_char(list, idx, &code);
+            var x: f32 = 0;
+            var y: f32 = 0;
+            var w: f32 = 0;
+            var h: f32 = 0;
+            c.pdf_oxide_char_get_bbox(list, idx, &x, &y, &w, &h, &code);
+            const font_name = try takeString(alloc, c.pdf_oxide_char_get_font_name(list, idx, &code), code);
+            const font_size = c.pdf_oxide_char_get_font_size(list, idx, &code);
+            out[i] = .{
+                .character = character,
+                .bbox = .{ .x = x, .y = y, .width = w, .height = h },
+                .fontName = font_name,
+                .fontSize = font_size,
+            };
+        }
+        return out;
+    }
+
+    /// Free a slice returned by `extractChars`.
+    pub fn freeChars(alloc: std.mem.Allocator, chars: []Char) void {
+        for (chars) |ch| alloc.free(ch.fontName);
+        alloc.free(chars);
+    }
+
+    /// Word-level extraction for a (0-based) page. Caller owns the returned slice
+    /// and each element's `text`/`fontName`; free with `freeWords`.
+    pub fn extractWords(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]Word {
+        var code: i32 = 0;
+        const list = c.pdf_document_extract_words(self.handle, page_index, &code) orelse return fail(code);
+        defer c.pdf_oxide_word_list_free(list);
+        const n = c.pdf_oxide_word_count(list);
+        if (n < 0) return fail(code);
+        const count: usize = @intCast(n);
+        const out = try alloc.alloc(Word, count);
+        errdefer alloc.free(out);
+        var i: usize = 0;
+        errdefer for (out[0..i]) |wd| {
+            alloc.free(wd.text);
+            alloc.free(wd.fontName);
+        };
+        while (i < count) : (i += 1) {
+            const idx: i32 = @intCast(i);
+            const word_text = try takeString(alloc, c.pdf_oxide_word_get_text(list, idx, &code), code);
+            errdefer alloc.free(word_text);
+            var x: f32 = 0;
+            var y: f32 = 0;
+            var w: f32 = 0;
+            var h: f32 = 0;
+            c.pdf_oxide_word_get_bbox(list, idx, &x, &y, &w, &h, &code);
+            const font_name = try takeString(alloc, c.pdf_oxide_word_get_font_name(list, idx, &code), code);
+            const font_size = c.pdf_oxide_word_get_font_size(list, idx, &code);
+            const bold = c.pdf_oxide_word_is_bold(list, idx, &code);
+            out[i] = .{
+                .text = word_text,
+                .bbox = .{ .x = x, .y = y, .width = w, .height = h },
+                .fontName = font_name,
+                .fontSize = font_size,
+                .bold = bold,
+            };
+        }
+        return out;
+    }
+
+    /// Free a slice returned by `extractWords`.
+    pub fn freeWords(alloc: std.mem.Allocator, words: []Word) void {
+        for (words) |wd| {
+            alloc.free(wd.text);
+            alloc.free(wd.fontName);
+        }
+        alloc.free(words);
+    }
+
+    /// Line-level extraction for a (0-based) page. Caller owns the returned slice
+    /// and each element's `text`; free with `freeTextLines`.
+    pub fn extractTextLines(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]TextLine {
+        var code: i32 = 0;
+        const list = c.pdf_document_extract_text_lines(self.handle, page_index, &code) orelse return fail(code);
+        defer c.pdf_oxide_line_list_free(list);
+        const n = c.pdf_oxide_line_count(list);
+        if (n < 0) return fail(code);
+        const count: usize = @intCast(n);
+        const out = try alloc.alloc(TextLine, count);
+        errdefer alloc.free(out);
+        var i: usize = 0;
+        errdefer for (out[0..i]) |ln| alloc.free(ln.text);
+        while (i < count) : (i += 1) {
+            const idx: i32 = @intCast(i);
+            const line_text = try takeString(alloc, c.pdf_oxide_line_get_text(list, idx, &code), code);
+            errdefer alloc.free(line_text);
+            var x: f32 = 0;
+            var y: f32 = 0;
+            var w: f32 = 0;
+            var h: f32 = 0;
+            c.pdf_oxide_line_get_bbox(list, idx, &x, &y, &w, &h, &code);
+            const word_count = c.pdf_oxide_line_get_word_count(list, idx, &code);
+            out[i] = .{
+                .text = line_text,
+                .bbox = .{ .x = x, .y = y, .width = w, .height = h },
+                .wordCount = word_count,
+            };
+        }
+        return out;
+    }
+
+    /// Free a slice returned by `extractTextLines`.
+    pub fn freeTextLines(alloc: std.mem.Allocator, lines: []TextLine) void {
+        for (lines) |ln| alloc.free(ln.text);
+        alloc.free(lines);
+    }
+
+    /// Table extraction for a (0-based) page. Caller owns the returned slice and
+    /// each table's cells; free with `freeTables`.
+    pub fn extractTables(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]Table {
+        var code: i32 = 0;
+        const list = c.pdf_document_extract_tables(self.handle, page_index, &code) orelse return fail(code);
+        defer c.pdf_oxide_table_list_free(list);
+        const n = c.pdf_oxide_table_count(list);
+        if (n < 0) return fail(code);
+        const count: usize = @intCast(n);
+        const out = try alloc.alloc(Table, count);
+        errdefer alloc.free(out);
+        var i: usize = 0;
+        errdefer for (out[0..i]) |*tbl| tbl.deinit(alloc);
+        while (i < count) : (i += 1) {
+            const idx: i32 = @intCast(i);
+            const rows = c.pdf_oxide_table_get_row_count(list, idx, &code);
+            if (rows < 0) return fail(code);
+            const cols = c.pdf_oxide_table_get_col_count(list, idx, &code);
+            if (cols < 0) return fail(code);
+            const has_header = c.pdf_oxide_table_has_header(list, idx, &code);
+            const cell_total: usize = @as(usize, @intCast(rows)) * @as(usize, @intCast(cols));
+            const cells = try alloc.alloc([]u8, cell_total);
+            errdefer alloc.free(cells);
+            var j: usize = 0;
+            errdefer for (cells[0..j]) |cl| alloc.free(cl);
+            var r: i32 = 0;
+            while (r < rows) : (r += 1) {
+                var cc: i32 = 0;
+                while (cc < cols) : (cc += 1) {
+                    cells[j] = try takeString(alloc, c.pdf_oxide_table_get_cell_text(list, idx, r, cc, &code), code);
+                    j += 1;
+                }
+            }
+            out[i] = .{
+                .rowCount = rows,
+                .colCount = cols,
+                .hasHeader = has_header,
+                .cells = cells,
+            };
+        }
+        return out;
+    }
+
+    /// Free a slice returned by `extractTables`.
+    pub fn freeTables(alloc: std.mem.Allocator, tables: []Table) void {
+        for (tables) |*tbl| tbl.deinit(alloc);
+        alloc.free(tables);
     }
 
     /// A lightweight view of a single (0-based) page. The returned `Page` borrows
@@ -311,6 +536,40 @@ test "Document: open paths + inspection + extraction" {
         defer d2.deinit();
         try testing.expect(try d2.pageCount() >= 1);
         try std.fs.cwd().deleteFile("/tmp/pdfoxide_zig_open.pdf");
+    }
+}
+
+test "Document: element extraction (chars/words/lines/tables)" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+
+    var doc = try Document.openFromBytes(bytes);
+    defer doc.deinit();
+
+    // extractWords: non-empty, word[0].text non-empty, has a bbox
+    const words = try doc.extractWords(a, 0);
+    defer Document.freeWords(a, words);
+    try testing.expect(words.len > 0);
+    try testing.expect(words[0].text.len > 0);
+    try testing.expect(words[0].bbox.width >= 0);
+
+    // extractChars: non-empty
+    const chars = try doc.extractChars(a, 0);
+    defer Document.freeChars(a, chars);
+    try testing.expect(chars.len > 0);
+
+    // extractTextLines: non-empty
+    const lines = try doc.extractTextLines(a, 0);
+    defer Document.freeTextLines(a, lines);
+    try testing.expect(lines.len > 0);
+
+    // extractTables: returns a list (may be empty) without error
+    const tables = try doc.extractTables(a, 0);
+    defer Document.freeTables(a, tables);
+    if (tables.len > 0) {
+        const t = tables[0];
+        _ = t.cell(0, 0); // cell accessor (smoke)
     }
 }
 

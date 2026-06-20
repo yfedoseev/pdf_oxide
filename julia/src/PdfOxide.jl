@@ -15,6 +15,8 @@ export extract_text,
     to_plain_text, to_markdown, to_html, to_markdown_all, extract_structured_json
 export to_html_all, to_plain_text_all, authenticate, page, text, markdown, html, plain_text
 export from_markdown, from_html, from_text, save, to_bytes, close!
+export Bbox, Char, Word, TextLine, Table
+export extract_chars, extract_words, extract_text_lines, extract_tables, cell
 
 # Native library resolution: PDF_OXIDE_LIB_PATH (full path) -> PDF_OXIDE_LIB_DIR
 # -> common build dirs -> bare name (system loader).
@@ -233,6 +235,311 @@ function authenticate(d::PdfDocument, password::AbstractString)
     return ok
 end
 
+# ── Element extraction ────────────────────────────────────────────────────────
+# Value type for an axis-aligned bounding box (PDF user-space units).
+struct Bbox
+    x::Float64
+    y::Float64
+    width::Float64
+    height::Float64
+end
+
+"""A single extracted glyph: its `character` (codepoint), `bbox`, `font_name`, `font_size`."""
+struct Char
+    character::UInt32
+    bbox::Bbox
+    font_name::String
+    font_size::Float64
+end
+
+"""An extracted word with `text`, `bbox`, `font_name`, `font_size`, `bold`."""
+struct Word
+    text::String
+    bbox::Bbox
+    font_name::String
+    font_size::Float64
+    bold::Bool
+end
+
+"""An extracted text line with `text`, `bbox`, `word_count`."""
+struct TextLine
+    text::String
+    bbox::Bbox
+    word_count::Int
+end
+
+"""An extracted table with `row_count`, `col_count`, `has_header`, and `cells`."""
+struct Table
+    row_count::Int
+    col_count::Int
+    has_header::Bool
+    cells::Matrix{String}
+end
+
+"""Cell text at (0-based) `row`, `col`."""
+cell(t::Table, row::Integer, col::Integer) = t.cells[Int(row)+1, Int(col)+1]
+
+# Read a list bbox out-param into a Bbox value.
+# bbox readers — one per C function, generated with @eval so each ccall uses a
+# LITERAL symbol (ccall forbids a variable function name).
+for (jl_fn, c_fn) in (
+    (:_bbox_char, :pdf_oxide_char_get_bbox),
+    (:_bbox_word, :pdf_oxide_word_get_bbox),
+    (:_bbox_line, :pdf_oxide_line_get_bbox),
+)
+    @eval function $jl_fn(list::Ptr{Cvoid}, index::Integer, op::String)
+        x = Ref{Float32}(0);
+        y = Ref{Float32}(0)
+        w = Ref{Float32}(0);
+        h = Ref{Float32}(0)
+        code = Ref{Int32}(0)
+        ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Cvoid,
+            (
+                Ptr{Cvoid},
+                Int32,
+                Ref{Float32},
+                Ref{Float32},
+                Ref{Float32},
+                Ref{Float32},
+                Ref{Int32},
+            ),
+            list,
+            Int32(index),
+            x,
+            y,
+            w,
+            h,
+            code,
+        )
+        code[] != 0 && throw(PdfOxideError(code[], op))
+        return Bbox(Float64(x[]), Float64(y[]), Float64(w[]), Float64(h[]))
+    end
+end
+
+# Element-list openers — one per entry point (NULL on error -> throw).
+for (jl_fn, c_fn) in (
+    (:_open_chars, :pdf_document_extract_chars),
+    (:_open_words, :pdf_document_extract_words),
+    (:_open_lines, :pdf_document_extract_text_lines),
+    (:_open_tables, :pdf_document_extract_tables),
+)
+    @eval function $jl_fn(d::PdfDocument, page::Integer, op::String)
+        code = Ref{Int32}(0)
+        list = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Ptr{Cvoid},
+            (Ptr{Cvoid}, Int32, Ref{Int32}),
+            _doc(d),
+            Int32(page),
+            code,
+        )
+        list == C_NULL && throw(PdfOxideError(code[], op))
+        return list
+    end
+end
+
+"""Extract glyphs from a (0-based) page as a `Vector{Char}`."""
+function extract_chars(d::PdfDocument, page::Integer)
+    list = _open_chars(d, page, "extract_chars")
+    try
+        n = ccall((:pdf_oxide_char_count, LIB), Int32, (Ptr{Cvoid},), list)
+        out = Vector{Char}(undef, n < 0 ? 0 : Int(n))
+        for i = 0:(Int(n)-1)
+            code = Ref{Int32}(0)
+            cp = ccall(
+                (:pdf_oxide_char_get_char, LIB),
+                UInt32,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                code,
+            )
+            code[] != 0 && throw(PdfOxideError(code[], "extract_chars"))
+            bb = _bbox_char(list, i, "extract_chars")
+            fcode = Ref{Int32}(0)
+            fptr = ccall(
+                (:pdf_oxide_char_get_font_name, LIB),
+                Ptr{UInt8},
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                fcode,
+            )
+            font = _take_string(fptr, fcode[], "extract_chars")
+            scode = Ref{Int32}(0)
+            fs = ccall(
+                (:pdf_oxide_char_get_font_size, LIB),
+                Float32,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                scode,
+            )
+            scode[] != 0 && throw(PdfOxideError(scode[], "extract_chars"))
+            out[i+1] = Char(cp, bb, font, Float64(fs))
+        end
+        return out
+    finally
+        ccall((:pdf_oxide_char_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+"""Extract words from a (0-based) page as a `Vector{Word}`."""
+function extract_words(d::PdfDocument, page::Integer)
+    list = _open_words(d, page, "extract_words")
+    try
+        n = ccall((:pdf_oxide_word_count, LIB), Int32, (Ptr{Cvoid},), list)
+        out = Vector{Word}(undef, n < 0 ? 0 : Int(n))
+        for i = 0:(Int(n)-1)
+            tcode = Ref{Int32}(0)
+            tptr = ccall(
+                (:pdf_oxide_word_get_text, LIB),
+                Ptr{UInt8},
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                tcode,
+            )
+            txt = _take_string(tptr, tcode[], "extract_words")
+            bb = _bbox_word(list, i, "extract_words")
+            fcode = Ref{Int32}(0)
+            fptr = ccall(
+                (:pdf_oxide_word_get_font_name, LIB),
+                Ptr{UInt8},
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                fcode,
+            )
+            font = _take_string(fptr, fcode[], "extract_words")
+            scode = Ref{Int32}(0)
+            fs = ccall(
+                (:pdf_oxide_word_get_font_size, LIB),
+                Float32,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                scode,
+            )
+            scode[] != 0 && throw(PdfOxideError(scode[], "extract_words"))
+            bcode = Ref{Int32}(0)
+            bold = ccall(
+                (:pdf_oxide_word_is_bold, LIB),
+                Bool,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                bcode,
+            )
+            bcode[] != 0 && throw(PdfOxideError(bcode[], "extract_words"))
+            out[i+1] = Word(txt, bb, font, Float64(fs), bold)
+        end
+        return out
+    finally
+        ccall((:pdf_oxide_word_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+"""Extract text lines from a (0-based) page as a `Vector{TextLine}`."""
+function extract_text_lines(d::PdfDocument, page::Integer)
+    list = _open_lines(d, page, "extract_text_lines")
+    try
+        n = ccall((:pdf_oxide_line_count, LIB), Int32, (Ptr{Cvoid},), list)
+        out = Vector{TextLine}(undef, n < 0 ? 0 : Int(n))
+        for i = 0:(Int(n)-1)
+            tcode = Ref{Int32}(0)
+            tptr = ccall(
+                (:pdf_oxide_line_get_text, LIB),
+                Ptr{UInt8},
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                tcode,
+            )
+            txt = _take_string(tptr, tcode[], "extract_text_lines")
+            bb = _bbox_line(list, i, "extract_text_lines")
+            wcode = Ref{Int32}(0)
+            wc = ccall(
+                (:pdf_oxide_line_get_word_count, LIB),
+                Int32,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                wcode,
+            )
+            wcode[] != 0 && throw(PdfOxideError(wcode[], "extract_text_lines"))
+            out[i+1] = TextLine(txt, bb, Int(wc))
+        end
+        return out
+    finally
+        ccall((:pdf_oxide_line_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+"""Extract tables from a (0-based) page as a `Vector{Table}`."""
+function extract_tables(d::PdfDocument, page::Integer)
+    list = _open_tables(d, page, "extract_tables")
+    try
+        n = ccall((:pdf_oxide_table_count, LIB), Int32, (Ptr{Cvoid},), list)
+        out = Vector{Table}(undef, n < 0 ? 0 : Int(n))
+        for i = 0:(Int(n)-1)
+            rcode = Ref{Int32}(0)
+            rows = ccall(
+                (:pdf_oxide_table_get_row_count, LIB),
+                Int32,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                rcode,
+            )
+            rcode[] != 0 && throw(PdfOxideError(rcode[], "extract_tables"))
+            ccode = Ref{Int32}(0)
+            cols = ccall(
+                (:pdf_oxide_table_get_col_count, LIB),
+                Int32,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                ccode,
+            )
+            ccode[] != 0 && throw(PdfOxideError(ccode[], "extract_tables"))
+            hcode = Ref{Int32}(0)
+            hdr = ccall(
+                (:pdf_oxide_table_has_header, LIB),
+                Bool,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                hcode,
+            )
+            hcode[] != 0 && throw(PdfOxideError(hcode[], "extract_tables"))
+            nr = rows < 0 ? 0 : Int(rows)
+            nc = cols < 0 ? 0 : Int(cols)
+            cells = Matrix{String}(undef, nr, nc)
+            for r = 0:(nr-1), c = 0:(nc-1)
+                xcode = Ref{Int32}(0)
+                cptr = ccall(
+                    (:pdf_oxide_table_get_cell_text, LIB),
+                    Ptr{UInt8},
+                    (Ptr{Cvoid}, Int32, Int32, Int32, Ref{Int32}),
+                    list,
+                    Int32(i),
+                    Int32(r),
+                    Int32(c),
+                    xcode,
+                )
+                cells[r+1, c+1] = _take_string(cptr, xcode[], "extract_tables")
+            end
+            out[i+1] = Table(nr, nc, hdr, cells)
+        end
+        return out
+    finally
+        ccall((:pdf_oxide_table_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
 # ── Page ────────────────────────────────────────────────────────────────────────
 # A lightweight view over one (0-based) page. Holds a strong reference to its
 # PdfDocument so the native handle outlives the page.
@@ -251,6 +558,10 @@ for (jl_fn, doc_fn) in (
     (:markdown, :to_markdown),
     (:html, :to_html),
     (:plain_text, :to_plain_text),
+    (:extract_chars, :extract_chars),
+    (:extract_words, :extract_words),
+    (:extract_text_lines, :extract_text_lines),
+    (:extract_tables, :extract_tables),
 )
     @eval $jl_fn(p::PdfPage) = $doc_fn(p.doc, p.index)
 end

@@ -216,6 +216,183 @@ SEXP r_doc_extract_structured_json(SEXP ext, SEXP page) {
                        code, "extract_structured_json");
 }
 
+/* ── Phase-1 element extraction ──────────────────────────────────────────────
+ * Each returns a list of records (one named list per element) so callers get a
+ * data.frame-able structure. The C-ABI LIST handle is freed once with the
+ * matching *_list_free after every element has been read; owned char* fields are
+ * copied into R strings and freed individually via free_string. */
+
+/* Build a 4-element numeric Bbox list `list(x=, y=, width=, height=)`. */
+static SEXP make_bbox(float x, float y, float w, float h) {
+    SEXP bb = PROTECT(Rf_allocVector(VECSXP, 4));
+    SEXP nms = PROTECT(Rf_allocVector(STRSXP, 4));
+    SET_VECTOR_ELT(bb, 0, Rf_ScalarReal(x)); SET_STRING_ELT(nms, 0, Rf_mkChar("x"));
+    SET_VECTOR_ELT(bb, 1, Rf_ScalarReal(y)); SET_STRING_ELT(nms, 1, Rf_mkChar("y"));
+    SET_VECTOR_ELT(bb, 2, Rf_ScalarReal(w)); SET_STRING_ELT(nms, 2, Rf_mkChar("width"));
+    SET_VECTOR_ELT(bb, 3, Rf_ScalarReal(h)); SET_STRING_ELT(nms, 3, Rf_mkChar("height"));
+    Rf_setAttrib(bb, R_NamesSymbol, nms);
+    UNPROTECT(2);
+    return bb;
+}
+
+SEXP r_doc_extract_chars(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    FfiCharList *list =
+        pdf_document_extract_chars(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "extract_chars");
+    int32_t n = pdf_oxide_char_count(list);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    for (int32_t i = 0; i < n; i++) {
+        code = 0;
+        uint32_t cp = pdf_oxide_char_get_char(list, i, &code);
+        if (code != 0) { pdf_oxide_char_list_free(list); pdfox_raise(code, "extract_chars"); }
+        float x = 0, y = 0, w = 0, h = 0;
+        code = 0;
+        pdf_oxide_char_get_bbox(list, i, &x, &y, &w, &h, &code);
+        if (code != 0) { pdf_oxide_char_list_free(list); pdfox_raise(code, "extract_chars"); }
+        code = 0;
+        char *fn = pdf_oxide_char_get_font_name(list, i, &code);
+        if (!fn) { pdf_oxide_char_list_free(list); pdfox_raise(code, "extract_chars"); }
+        code = 0;
+        float fs = pdf_oxide_char_get_font_size(list, i, &code);
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 4));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 4));
+        SET_VECTOR_ELT(rec, 0, Rf_ScalarInteger((int)cp));      SET_STRING_ELT(nms, 0, Rf_mkChar("character"));
+        SET_VECTOR_ELT(rec, 1, make_bbox(x, y, w, h));          SET_STRING_ELT(nms, 1, Rf_mkChar("bbox"));
+        SEXP fnstr = PROTECT(Rf_mkChar(fn)); free_string(fn);
+        SET_VECTOR_ELT(rec, 2, Rf_ScalarString(fnstr));         SET_STRING_ELT(nms, 2, Rf_mkChar("font_name"));
+        SET_VECTOR_ELT(rec, 3, Rf_ScalarReal(fs));              SET_STRING_ELT(nms, 3, Rf_mkChar("font_size"));
+        Rf_setAttrib(rec, R_NamesSymbol, nms);
+        SET_VECTOR_ELT(out, i, rec);
+        UNPROTECT(3);
+    }
+    pdf_oxide_char_list_free(list);
+    UNPROTECT(1);
+    return out;
+}
+
+SEXP r_doc_extract_words(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    FfiWordList *list =
+        pdf_document_extract_words(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "extract_words");
+    int32_t n = pdf_oxide_word_count(list);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    for (int32_t i = 0; i < n; i++) {
+        code = 0;
+        char *txt = pdf_oxide_word_get_text(list, i, &code);
+        if (!txt) { pdf_oxide_word_list_free(list); pdfox_raise(code, "extract_words"); }
+        float x = 0, y = 0, w = 0, h = 0;
+        code = 0;
+        pdf_oxide_word_get_bbox(list, i, &x, &y, &w, &h, &code);
+        if (code != 0) { free_string(txt); pdf_oxide_word_list_free(list); pdfox_raise(code, "extract_words"); }
+        code = 0;
+        char *fn = pdf_oxide_word_get_font_name(list, i, &code);
+        if (!fn) { free_string(txt); pdf_oxide_word_list_free(list); pdfox_raise(code, "extract_words"); }
+        code = 0;
+        float fs = pdf_oxide_word_get_font_size(list, i, &code);
+        code = 0;
+        bool bold = pdf_oxide_word_is_bold(list, i, &code);
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 5));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 5));
+        SEXP txtstr = PROTECT(Rf_mkChar(txt)); free_string(txt);
+        SET_VECTOR_ELT(rec, 0, Rf_ScalarString(txtstr));        SET_STRING_ELT(nms, 0, Rf_mkChar("text"));
+        SET_VECTOR_ELT(rec, 1, make_bbox(x, y, w, h));          SET_STRING_ELT(nms, 1, Rf_mkChar("bbox"));
+        SEXP fnstr = PROTECT(Rf_mkChar(fn)); free_string(fn);
+        SET_VECTOR_ELT(rec, 2, Rf_ScalarString(fnstr));         SET_STRING_ELT(nms, 2, Rf_mkChar("font_name"));
+        SET_VECTOR_ELT(rec, 3, Rf_ScalarReal(fs));              SET_STRING_ELT(nms, 3, Rf_mkChar("font_size"));
+        SET_VECTOR_ELT(rec, 4, Rf_ScalarLogical(bold));         SET_STRING_ELT(nms, 4, Rf_mkChar("bold"));
+        Rf_setAttrib(rec, R_NamesSymbol, nms);
+        SET_VECTOR_ELT(out, i, rec);
+        UNPROTECT(4);
+    }
+    pdf_oxide_word_list_free(list);
+    UNPROTECT(1);
+    return out;
+}
+
+SEXP r_doc_extract_text_lines(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    FfiTextLineList *list =
+        pdf_document_extract_text_lines(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "extract_text_lines");
+    int32_t n = pdf_oxide_line_count(list);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    for (int32_t i = 0; i < n; i++) {
+        code = 0;
+        char *txt = pdf_oxide_line_get_text(list, i, &code);
+        if (!txt) { pdf_oxide_line_list_free(list); pdfox_raise(code, "extract_text_lines"); }
+        float x = 0, y = 0, w = 0, h = 0;
+        code = 0;
+        pdf_oxide_line_get_bbox(list, i, &x, &y, &w, &h, &code);
+        if (code != 0) { free_string(txt); pdf_oxide_line_list_free(list); pdfox_raise(code, "extract_text_lines"); }
+        code = 0;
+        int32_t wc = pdf_oxide_line_get_word_count(list, i, &code);
+        if (code != 0) { free_string(txt); pdf_oxide_line_list_free(list); pdfox_raise(code, "extract_text_lines"); }
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 3));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 3));
+        SEXP txtstr = PROTECT(Rf_mkChar(txt)); free_string(txt);
+        SET_VECTOR_ELT(rec, 0, Rf_ScalarString(txtstr));        SET_STRING_ELT(nms, 0, Rf_mkChar("text"));
+        SET_VECTOR_ELT(rec, 1, make_bbox(x, y, w, h));          SET_STRING_ELT(nms, 1, Rf_mkChar("bbox"));
+        SET_VECTOR_ELT(rec, 2, Rf_ScalarInteger(wc));           SET_STRING_ELT(nms, 2, Rf_mkChar("word_count"));
+        Rf_setAttrib(rec, R_NamesSymbol, nms);
+        SET_VECTOR_ELT(out, i, rec);
+        UNPROTECT(3);
+    }
+    pdf_oxide_line_list_free(list);
+    UNPROTECT(1);
+    return out;
+}
+
+SEXP r_doc_extract_tables(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    FfiTableList *list =
+        pdf_document_extract_tables(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "extract_tables");
+    int32_t n = pdf_oxide_table_count(list);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    for (int32_t i = 0; i < n; i++) {
+        code = 0;
+        int32_t rows = pdf_oxide_table_get_row_count(list, i, &code);
+        if (code != 0) { pdf_oxide_table_list_free(list); pdfox_raise(code, "extract_tables"); }
+        code = 0;
+        int32_t cols = pdf_oxide_table_get_col_count(list, i, &code);
+        if (code != 0) { pdf_oxide_table_list_free(list); pdfox_raise(code, "extract_tables"); }
+        code = 0;
+        bool hdr = pdf_oxide_table_has_header(list, i, &code);
+        if (code != 0) { pdf_oxide_table_list_free(list); pdfox_raise(code, "extract_tables"); }
+        if (rows < 0) rows = 0;
+        if (cols < 0) cols = 0;
+        /* cells: a rows×cols character matrix (column-major as R expects). */
+        SEXP cells = PROTECT(Rf_allocMatrix(STRSXP, rows, cols));
+        for (int32_t r = 0; r < rows; r++) {
+            for (int32_t c = 0; c < cols; c++) {
+                code = 0;
+                char *cell = pdf_oxide_table_get_cell_text(list, i, r, c, &code);
+                if (!cell) { pdf_oxide_table_list_free(list); pdfox_raise(code, "extract_tables"); }
+                SET_STRING_ELT(cells, r + c * rows, Rf_mkChar(cell));
+                free_string(cell);
+            }
+        }
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 4));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 4));
+        SET_VECTOR_ELT(rec, 0, Rf_ScalarInteger(rows));         SET_STRING_ELT(nms, 0, Rf_mkChar("row_count"));
+        SET_VECTOR_ELT(rec, 1, Rf_ScalarInteger(cols));         SET_STRING_ELT(nms, 1, Rf_mkChar("col_count"));
+        SET_VECTOR_ELT(rec, 2, Rf_ScalarLogical(hdr));          SET_STRING_ELT(nms, 2, Rf_mkChar("has_header"));
+        SET_VECTOR_ELT(rec, 3, cells);                          SET_STRING_ELT(nms, 3, Rf_mkChar("cells"));
+        Rf_setAttrib(rec, R_NamesSymbol, nms);
+        SET_VECTOR_ELT(out, i, rec);
+        UNPROTECT(3);
+    }
+    pdf_oxide_table_list_free(list);
+    UNPROTECT(1);
+    return out;
+}
+
 /* Explicit, idempotent close: free the native handle now and clear the external
  * pointer so the GC finalizer is a no-op and later use raises "handle is closed". */
 SEXP r_doc_close(SEXP ext) {
@@ -258,6 +435,10 @@ static const R_CallMethodDef CallEntries[] = {
     CDEF(r_doc_to_plain_text_all, 1),
     CDEF(r_doc_authenticate, 2),
     CDEF(r_doc_extract_structured_json, 2),
+    CDEF(r_doc_extract_chars, 2),
+    CDEF(r_doc_extract_words, 2),
+    CDEF(r_doc_extract_text_lines, 2),
+    CDEF(r_doc_extract_tables, 2),
     CDEF(r_doc_close, 1),
     CDEF(r_pdf_close, 1),
     {NULL, NULL, 0}

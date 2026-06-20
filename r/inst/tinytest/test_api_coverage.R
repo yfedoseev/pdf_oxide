@@ -46,6 +46,23 @@ expect_true(grepl("<", pdf_page_html(pg)))             # pdf_page_html
 expect_true(nchar(pdf_page_plain_text(pg)) > 0)        # pdf_page_plain_text
 
 
+# ── Phase-1 element extraction ────────────────────────────────────────────────
+words <- pdf_extract_words(doc, 0)                      # pdf_extract_words
+expect_true(length(words) > 0)
+expect_true(nchar(words[[1]]$text) > 0)
+bb <- words[[1]]$bbox
+expect_true(all(c("x", "y", "width", "height") %in% names(bb)))
+expect_true(is.numeric(bb$width))
+chars <- pdf_extract_chars(doc, 0)                      # pdf_extract_chars
+expect_true(length(chars) > 0)
+expect_true(is.integer(chars[[1]]$character) && chars[[1]]$character > 0)
+lines <- pdf_extract_text_lines(doc, 0)                 # pdf_extract_text_lines
+expect_true(length(lines) > 0)
+expect_true(nchar(lines[[1]]$text) > 0)
+expect_true(lines[[1]]$word_count >= 1)
+tbls <- pdf_extract_tables(doc, 0)                      # pdf_extract_tables (may be empty)
+expect_true(is.list(tbls))
+
 # ── close + open_with_password ────────────────────────────────────────────────
 pdf_close(doc); expect_true(TRUE)              # pdf_close (idempotent)
 pdf_close(doc)                                 # second close is a no-op

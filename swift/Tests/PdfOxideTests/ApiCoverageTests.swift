@@ -55,6 +55,41 @@ final class ApiCoverageTests: XCTestCase {
         _ = try doc.authenticate("")                          // authenticate (returns a Bool; unencrypted)
     }
 
+    // ── Phase-1 element extraction ───────────────────────────────────────────
+    func testElementExtraction() throws {
+        let doc = try Document.openFromBytes(try samplePdf())
+
+        let words = try doc.extractWords(0)            // extractWords
+        XCTAssertFalse(words.isEmpty)
+        XCTAssertFalse(words[0].text.isEmpty)
+        XCTAssertGreaterThan(words[0].bbox.width, 0)
+        _ = words[0].fontName
+        _ = words[0].fontSize
+        _ = words[0].bold
+
+        let chars = try doc.extractChars(0)            // extractChars
+        XCTAssertFalse(chars.isEmpty)
+        XCTAssertGreaterThan(chars[0].character, 0)
+        _ = chars[0].bbox
+        _ = chars[0].fontName
+        _ = chars[0].fontSize
+
+        let lines = try doc.extractTextLines(0)        // extractTextLines
+        XCTAssertFalse(lines.isEmpty)
+        XCTAssertFalse(lines[0].text.isEmpty)
+        _ = lines[0].bbox
+        _ = lines[0].wordCount
+
+        let tables = try doc.extractTables(0)          // extractTables (may be empty)
+        for table in tables {
+            if table.rowCount > 0 && table.colCount > 0 {
+                _ = table.cell(0, 0)
+            }
+            _ = table.hasHeader
+        }
+        XCTAssertGreaterThanOrEqual(tables.count, 0)
+    }
+
     // ── Page model ───────────────────────────────────────────────────────────
     func testPage() throws {
         let doc = try Document.openFromBytes(try samplePdf())

@@ -36,6 +36,34 @@ defmodule PdfOxide do
       do: "pdf_oxide: #{op} failed (error code #{code})"
   end
 
+  defmodule Bbox do
+    @moduledoc "An axis-aligned bounding box (PDF user-space units)."
+    defstruct [:x, :y, :width, :height]
+  end
+
+  defmodule Char do
+    @moduledoc "A single extracted character. `character` is a Unicode codepoint (integer)."
+    defstruct [:character, :bbox, :font_name, :font_size]
+  end
+
+  defmodule Word do
+    @moduledoc "An extracted word with its layout/style metadata."
+    defstruct [:text, :bbox, :font_name, :font_size, :bold]
+  end
+
+  defmodule TextLine do
+    @moduledoc "An extracted line of text."
+    defstruct [:text, :bbox, :word_count]
+  end
+
+  defmodule Table do
+    @moduledoc """
+    An extracted table. Read a cell's text with `cell/3` (0-based `row`/`col`).
+    `cells` holds the cell text as a row-major list of lists.
+    """
+    defstruct [:row_count, :col_count, :has_header, :cells]
+  end
+
   # ── Pdf builder ────────────────────────────────────────────────────────────
   @doc "Build a PDF from Markdown."
   def from_markdown(md), do: wrap_pdf(Native.from_markdown(md))
@@ -100,6 +128,79 @@ defmodule PdfOxide do
   @doc "Structured content for a page as a JSON string."
   def extract_structured_json(%Document{ref: ref}, page),
     do: Native.doc_extract_structured_json(ref, page)
+
+  @doc """
+  Extract the individual characters of a (0-based) page as a list of `Char`.
+  """
+  def extract_chars(%Document{ref: ref}, page) do
+    with {:ok, list} <- Native.doc_extract_chars(ref, page) do
+      {:ok,
+       Enum.map(list, fn {cp, x, y, w, h, font, size} ->
+         %Char{
+           character: cp,
+           bbox: %Bbox{x: x, y: y, width: w, height: h},
+           font_name: font,
+           font_size: size
+         }
+       end)}
+    end
+  end
+
+  @doc """
+  Extract the words of a (0-based) page as a list of `Word`.
+  """
+  def extract_words(%Document{ref: ref}, page) do
+    with {:ok, list} <- Native.doc_extract_words(ref, page) do
+      {:ok,
+       Enum.map(list, fn {text, x, y, w, h, font, size, bold} ->
+         %Word{
+           text: text,
+           bbox: %Bbox{x: x, y: y, width: w, height: h},
+           font_name: font,
+           font_size: size,
+           bold: bold
+         }
+       end)}
+    end
+  end
+
+  @doc """
+  Extract the text lines of a (0-based) page as a list of `TextLine`.
+  """
+  def extract_text_lines(%Document{ref: ref}, page) do
+    with {:ok, list} <- Native.doc_extract_text_lines(ref, page) do
+      {:ok,
+       Enum.map(list, fn {text, x, y, w, h, word_count} ->
+         %TextLine{
+           text: text,
+           bbox: %Bbox{x: x, y: y, width: w, height: h},
+           word_count: word_count
+         }
+       end)}
+    end
+  end
+
+  @doc """
+  Extract the tables of a (0-based) page as a list of `Table`. Use `cell/3` to
+  read a table's (0-based) cell text.
+  """
+  def extract_tables(%Document{ref: ref}, page) do
+    with {:ok, list} <- Native.doc_extract_tables(ref, page) do
+      {:ok,
+       Enum.map(list, fn {row_count, col_count, has_header, cells} ->
+         %Table{
+           row_count: row_count,
+           col_count: col_count,
+           has_header: has_header,
+           cells: cells
+         }
+       end)}
+    end
+  end
+
+  @doc "Text of a table's (0-based) `row`/`col` cell."
+  def cell(%Table{cells: cells}, row, col),
+    do: cells |> Enum.at(row, []) |> Enum.at(col)
 
   # ── Page ─────────────────────────────────────────────────────────────────────
   @doc """

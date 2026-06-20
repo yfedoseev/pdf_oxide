@@ -49,6 +49,38 @@ end
     @test !isempty(to_plain_text_all(doc))        # to_plain_text_all
     @test authenticate(doc, "") isa Bool          # authenticate (bool, no throw)
 
+    # ── Element extraction ────────────────────────────────────────────────────
+    let words = extract_words(doc, 0)             # extract_words
+        @test !isempty(words)
+        @test !isempty(words[1].text)
+        @test words[1].bbox isa Bbox
+        @test words[1].bbox.width >= 0
+        @test words[1].font_size >= 0
+        @test words[1].bold isa Bool
+    end
+    let chars = extract_chars(doc, 0)             # extract_chars
+        @test !isempty(chars)
+        @test chars[1].character isa UInt32
+        @test chars[1].bbox isa Bbox
+    end
+    let lines = extract_text_lines(doc, 0)        # extract_text_lines
+        @test !isempty(lines)
+        @test !isempty(lines[1].text)
+        @test lines[1].word_count >= 0
+        @test lines[1].bbox isa Bbox
+    end
+    let tables = extract_tables(doc, 0)           # extract_tables
+        @test tables isa Vector{Table}            # may be empty — just returns w/o error
+        for t in tables
+            @test t.row_count >= 0
+            @test t.col_count >= 0
+            @test t.has_header isa Bool
+            if t.row_count > 0 && t.col_count > 0
+                @test cell(t, 0, 0) isa String
+            end
+        end
+    end
+
     # ── Page model ────────────────────────────────────────────────────────────
     let pg = page(doc, 0)                          # page
         @test occursin("Alpha", text(pg))         # Page.text

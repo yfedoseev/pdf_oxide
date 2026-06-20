@@ -18,8 +18,13 @@ style:
 complexity:
   TooManyFunctions:
     # An FFI binding surfaces one function per C entry point; the JNA interface
-    # mirrors all C symbols. Raise the thresholds accordingly.
-    thresholdInFiles: 40
-    thresholdInClasses: 20
-    thresholdInInterfaces: 30
-    thresholdInObjects: 20
+    # mirrors all ~hundreds of C symbols. Raise the thresholds accordingly.
+    thresholdInFiles: 400
+    thresholdInClasses: 200
+    thresholdInInterfaces: 400
+    thresholdInObjects: 50
+  LongParameterList:
+    # The bbox/out-param C-ABI signatures take (list,index,x,y,w,h,code) etc.
+    # — these mirror the native function shape, not our design.
+    functionThreshold: 9
+    constructorThreshold: 9

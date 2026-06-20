@@ -13,6 +13,7 @@ import com.sun.jna.Library
 import com.sun.jna.Native
 import com.sun.jna.Pointer
 import com.sun.jna.ptr.ByteByReference
+import com.sun.jna.ptr.FloatByReference
 import com.sun.jna.ptr.IntByReference
 
 /** Thrown on any non-success C-ABI error code. */
@@ -27,6 +28,52 @@ data class PdfVersion(
     val minor: Int,
 ) {
     override fun toString() = "$major.$minor"
+}
+
+/** An axis-aligned bounding box in PDF user-space units. */
+data class Bbox(
+    val x: Float,
+    val y: Float,
+    val width: Float,
+    val height: Float,
+)
+
+/** A single extracted glyph. [character] is the Unicode codepoint. */
+data class Char(
+    val character: Int,
+    val bbox: Bbox,
+    val fontName: String,
+    val fontSize: Float,
+)
+
+/** A single extracted word. */
+data class Word(
+    val text: String,
+    val bbox: Bbox,
+    val fontName: String,
+    val fontSize: Float,
+    val bold: Boolean,
+)
+
+/** A single extracted line of text. */
+data class TextLine(
+    val text: String,
+    val bbox: Bbox,
+    val wordCount: Int,
+)
+
+/** A single extracted table; cells are addressed by [cell]. */
+data class Table(
+    val rowCount: Int,
+    val colCount: Int,
+    val hasHeader: Boolean,
+    private val cells: List<List<String>>,
+) {
+    /** The text of the cell at 0-based [row], [col]. */
+    fun cell(
+        row: Int,
+        col: Int,
+    ): String = cells[row][col]
 }
 
 /** Raw JNA binding to the pdf_oxide C ABI (internal). */
@@ -116,6 +163,160 @@ internal interface CLib : Library {
         code: IntByReference,
     ): Pointer?
 
+    // ── Phase-1 element extraction: chars ─────────────────────────────────────
+    fun pdf_document_extract_chars(
+        h: Pointer,
+        page: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_char_count(list: Pointer): Int
+
+    fun pdf_oxide_char_get_char(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Int
+
+    fun pdf_oxide_char_get_bbox(
+        list: Pointer,
+        index: Int,
+        x: FloatByReference,
+        y: FloatByReference,
+        w: FloatByReference,
+        h: FloatByReference,
+        code: IntByReference,
+    )
+
+    fun pdf_oxide_char_get_font_name(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_char_get_font_size(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Float
+
+    fun pdf_oxide_char_list_free(list: Pointer)
+
+    // ── Phase-1 element extraction: words ─────────────────────────────────────
+    fun pdf_document_extract_words(
+        h: Pointer,
+        page: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_word_count(list: Pointer): Int
+
+    fun pdf_oxide_word_get_text(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_word_get_bbox(
+        list: Pointer,
+        index: Int,
+        x: FloatByReference,
+        y: FloatByReference,
+        w: FloatByReference,
+        h: FloatByReference,
+        code: IntByReference,
+    )
+
+    fun pdf_oxide_word_get_font_name(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_word_get_font_size(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Float
+
+    fun pdf_oxide_word_is_bold(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Boolean
+
+    fun pdf_oxide_word_list_free(list: Pointer)
+
+    // ── Phase-1 element extraction: text lines ────────────────────────────────
+    fun pdf_document_extract_text_lines(
+        h: Pointer,
+        page: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_line_count(list: Pointer): Int
+
+    fun pdf_oxide_line_get_text(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_line_get_bbox(
+        list: Pointer,
+        index: Int,
+        x: FloatByReference,
+        y: FloatByReference,
+        w: FloatByReference,
+        h: FloatByReference,
+        code: IntByReference,
+    )
+
+    fun pdf_oxide_line_get_word_count(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Int
+
+    fun pdf_oxide_line_list_free(list: Pointer)
+
+    // ── Phase-1 element extraction: tables ────────────────────────────────────
+    fun pdf_document_extract_tables(
+        h: Pointer,
+        page: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_table_count(list: Pointer): Int
+
+    fun pdf_oxide_table_get_row_count(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Int
+
+    fun pdf_oxide_table_get_col_count(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Int
+
+    fun pdf_oxide_table_get_cell_text(
+        list: Pointer,
+        tableIndex: Int,
+        row: Int,
+        col: Int,
+        code: IntByReference,
+    ): Pointer?
+
+    fun pdf_oxide_table_has_header(
+        list: Pointer,
+        index: Int,
+        code: IntByReference,
+    ): Boolean
+
+    fun pdf_oxide_table_list_free(list: Pointer)
+
     fun pdf_from_markdown(
         md: String,
         code: IntByReference,
@@ -162,6 +363,16 @@ internal object Native_ {
         val s = p.getString(0)
         lib.free_string(p)
         return s
+    }
+
+    /** Read a string out-param via [code], throwing on error. */
+    fun readString(
+        p: Pointer?,
+        code: IntByReference,
+        op: String,
+    ): String {
+        if (code.value != 0) throw PdfOxideException(code.value, op)
+        return takeString(p, code.value, op)
     }
 }
 
@@ -276,6 +487,126 @@ class PdfDocument internal constructor(
             code.value,
             "extractStructuredJson",
         )
+    }
+
+    /** Extract individual glyphs from the 0-based [pageIndex]. */
+    @Suppress("ThrowsCount")
+    fun extractChars(pageIndex: Int): List<Char> {
+        val code = IntByReference()
+        val list =
+            Native_.lib.pdf_document_extract_chars(ptr(), pageIndex, code)
+                ?: throw PdfOxideException(code.value, "extractChars")
+        try {
+            val n = Native_.lib.pdf_oxide_char_count(list)
+            val out = ArrayList<Char>(if (n < 0) 0 else n)
+            for (i in 0 until n) {
+                val ch = Native_.lib.pdf_oxide_char_get_char(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "extractChars")
+                val bbox = readBbox(code, "extractChars") { x, y, w, h, c -> Native_.lib.pdf_oxide_char_get_bbox(list, i, x, y, w, h, c) }
+                val fontName = Native_.readString(Native_.lib.pdf_oxide_char_get_font_name(list, i, code), code, "extractChars")
+                val fontSize = Native_.lib.pdf_oxide_char_get_font_size(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "extractChars")
+                out.add(Char(ch, bbox, fontName, fontSize))
+            }
+            return out
+        } finally {
+            Native_.lib.pdf_oxide_char_list_free(list)
+        }
+    }
+
+    /** Extract words from the 0-based [pageIndex]. */
+    @Suppress("ThrowsCount")
+    fun extractWords(pageIndex: Int): List<Word> {
+        val code = IntByReference()
+        val list =
+            Native_.lib.pdf_document_extract_words(ptr(), pageIndex, code)
+                ?: throw PdfOxideException(code.value, "extractWords")
+        try {
+            val n = Native_.lib.pdf_oxide_word_count(list)
+            val out = ArrayList<Word>(if (n < 0) 0 else n)
+            for (i in 0 until n) {
+                val text = Native_.readString(Native_.lib.pdf_oxide_word_get_text(list, i, code), code, "extractWords")
+                val bbox = readBbox(code, "extractWords") { x, y, w, h, c -> Native_.lib.pdf_oxide_word_get_bbox(list, i, x, y, w, h, c) }
+                val fontName = Native_.readString(Native_.lib.pdf_oxide_word_get_font_name(list, i, code), code, "extractWords")
+                val fontSize = Native_.lib.pdf_oxide_word_get_font_size(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "extractWords")
+                val bold = Native_.lib.pdf_oxide_word_is_bold(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "extractWords")
+                out.add(Word(text, bbox, fontName, fontSize, bold))
+            }
+            return out
+        } finally {
+            Native_.lib.pdf_oxide_word_list_free(list)
+        }
+    }
+
+    /** Extract text lines from the 0-based [pageIndex]. */
+    @Suppress("ThrowsCount")
+    fun extractTextLines(pageIndex: Int): List<TextLine> {
+        val code = IntByReference()
+        val list =
+            Native_.lib.pdf_document_extract_text_lines(ptr(), pageIndex, code)
+                ?: throw PdfOxideException(code.value, "extractTextLines")
+        try {
+            val n = Native_.lib.pdf_oxide_line_count(list)
+            val out = ArrayList<TextLine>(if (n < 0) 0 else n)
+            for (i in 0 until n) {
+                val text = Native_.readString(Native_.lib.pdf_oxide_line_get_text(list, i, code), code, "extractTextLines")
+                val bbox =
+                    readBbox(code, "extractTextLines") { x, y, w, h, c -> Native_.lib.pdf_oxide_line_get_bbox(list, i, x, y, w, h, c) }
+                val wordCount = Native_.lib.pdf_oxide_line_get_word_count(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "extractTextLines")
+                out.add(TextLine(text, bbox, wordCount))
+            }
+            return out
+        } finally {
+            Native_.lib.pdf_oxide_line_list_free(list)
+        }
+    }
+
+    /** Extract tables from the 0-based [pageIndex]. */
+    @Suppress("ThrowsCount")
+    fun extractTables(pageIndex: Int): List<Table> {
+        val code = IntByReference()
+        val list =
+            Native_.lib.pdf_document_extract_tables(ptr(), pageIndex, code)
+                ?: throw PdfOxideException(code.value, "extractTables")
+        try {
+            val n = Native_.lib.pdf_oxide_table_count(list)
+            val out = ArrayList<Table>(if (n < 0) 0 else n)
+            for (i in 0 until n) {
+                val rows = Native_.lib.pdf_oxide_table_get_row_count(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "extractTables")
+                val cols = Native_.lib.pdf_oxide_table_get_col_count(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "extractTables")
+                val hasHeader = Native_.lib.pdf_oxide_table_has_header(list, i, code)
+                if (code.value != 0) throw PdfOxideException(code.value, "extractTables")
+                val cells =
+                    (0 until rows).map { r ->
+                        (0 until cols).map { c ->
+                            Native_.readString(Native_.lib.pdf_oxide_table_get_cell_text(list, i, r, c, code), code, "extractTables")
+                        }
+                    }
+                out.add(Table(rows, cols, hasHeader, cells))
+            }
+            return out
+        } finally {
+            Native_.lib.pdf_oxide_table_list_free(list)
+        }
+    }
+
+    private inline fun readBbox(
+        code: IntByReference,
+        op: String,
+        getter: (FloatByReference, FloatByReference, FloatByReference, FloatByReference, IntByReference) -> Unit,
+    ): Bbox {
+        val x = FloatByReference()
+        val y = FloatByReference()
+        val w = FloatByReference()
+        val h = FloatByReference()
+        getter(x, y, w, h, code)
+        if (code.value != 0) throw PdfOxideException(code.value, op)
+        return Bbox(x.value, y.value, w.value, h.value)
     }
 
     override fun close() {

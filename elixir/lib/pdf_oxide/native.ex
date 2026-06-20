@@ -34,6 +34,10 @@ defmodule PdfOxide.Native do
   def doc_to_plain_text_all(_doc), do: nif_error()
   def doc_authenticate(_doc, _pw), do: nif_error()
   def doc_extract_structured_json(_doc, _page), do: nif_error()
+  def doc_extract_chars(_doc, _page), do: nif_error()
+  def doc_extract_words(_doc, _page), do: nif_error()
+  def doc_extract_text_lines(_doc, _page), do: nif_error()
+  def doc_extract_tables(_doc, _page), do: nif_error()
   def doc_close(_doc), do: nif_error()
   def pdf_close(_pdf), do: nif_error()
 end

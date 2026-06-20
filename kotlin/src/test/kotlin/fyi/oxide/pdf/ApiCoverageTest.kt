@@ -91,6 +91,24 @@ class ApiCoverageTest {
 
     @Test fun extractStructuredJson() = assertTrue(doc.extractStructuredJson(0).isNotEmpty())
 
+    // ── Phase-1 element extraction ───────────────────────────────────────────
+    @Test fun extractWords() {
+        val words = doc.extractWords(0)
+        assertTrue(words.isNotEmpty())
+        val w = words[0]
+        assertTrue(w.text.isNotEmpty())
+        assertTrue(w.bbox.width >= 0f && w.bbox.height >= 0f)
+    }
+
+    @Test fun extractChars() = assertTrue(doc.extractChars(0).isNotEmpty())
+
+    @Test fun extractTextLines() = assertTrue(doc.extractTextLines(0).isNotEmpty())
+
+    @Test fun extractTables() {
+        val tables = doc.extractTables(0) // may be empty; must not throw
+        assertTrue(tables.size >= 0)
+    }
+
     // ── Coroutine helpers ────────────────────────────────────────────────────
     @Test fun coroutineExtraction() =
         runTest {
