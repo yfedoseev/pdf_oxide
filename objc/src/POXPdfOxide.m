@@ -202,7 +202,7 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
         return nil;
     }
     NSData* out = [NSData dataWithBytes:p length:(len < 0 ? 0 : (NSUInteger)len)];
-    free_string((char*)p);
+    free_bytes(p);
     return out;
 }
 

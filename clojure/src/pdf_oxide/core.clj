@@ -23,6 +23,7 @@
 (defn- ->bool ^Boolean [name args] (.invoke (f name) Boolean (object-array args)))
 (defn- ->void [name args] (.invokeVoid (f name) (object-array args)))
 (defn- free-string [^Pointer p] (.invokeVoid (f "free_string") (object-array [p])))
+(defn- free-bytes [^Pointer p] (.invokeVoid (f "free_bytes") (object-array [p])))
 
 (defn- take-string [^Pointer p ^long code op]
   (when (nil? p) (throw (ex-info (str "pdf_oxide: " op " failed") {:code code :op op})))
@@ -111,4 +112,4 @@
         ptr (->ptr "pdf_save_to_bytes" [(pdf-ptr p) len code])]
     (when (nil? ptr) (throw (ex-info "pdf_oxide: save-to-bytes failed" {:code (.getValue code)})))
     (let [n (max 0 (.getValue len)) out (.getByteArray ptr 0 n)]
-      (free-string ptr) out)))
+      (free-bytes ptr) out)))

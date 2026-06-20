@@ -130,6 +130,8 @@ internal interface CLib : Library {
     ): Pointer?
 
     fun free_string(p: Pointer)
+
+    fun free_bytes(p: Pointer)
 }
 
 internal object Native_ {
@@ -287,7 +289,7 @@ class Pdf internal constructor(
                 ?: throw PdfOxideException(code.value, "saveToBytes")
         val n = if (len.value < 0) 0 else len.value
         val out = p.getByteArray(0, n)
-        Native_.lib.free_string(p)
+        Native_.lib.free_bytes(p)
         return out
     }
 

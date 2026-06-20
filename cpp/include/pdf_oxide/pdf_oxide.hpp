@@ -54,8 +54,9 @@ inline std::vector<std::uint8_t> take_bytes(std::uint8_t* p, std::size_t len,
         throw Error(code, op);
     }
     std::vector<std::uint8_t> out(p, p + len);
-    // Byte buffers from the core are freed via free_string (same allocator).
-    free_string(reinterpret_cast<char*>(p));
+    // Raw byte buffers MUST be freed with free_bytes, not free_string
+    // (free_string does strlen on a non-NUL-terminated buffer → overflow).
+    free_bytes(p);
     return out;
 }
 

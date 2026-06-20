@@ -91,7 +91,7 @@ SEXP r_pdf_save_to_bytes(SEXP ext) {
     R_xlen_t n = len < 0 ? 0 : (R_xlen_t)len;
     SEXP out = PROTECT(Rf_allocVector(RAWSXP, n));
     if (n) memcpy(RAW(out), p, (size_t)n);
-    free_string((char *)p);
+    free_bytes(p);
     UNPROTECT(1);
     return out;
 }

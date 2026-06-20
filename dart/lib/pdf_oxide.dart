@@ -51,6 +51,8 @@ typedef _SaveBytesD = Pointer<Uint8> Function(
     Pointer<Void>, Pointer<Int32>, Pointer<Int32>);
 typedef _FreeStringC = Void Function(Pointer<Utf8>);
 typedef _FreeStringD = void Function(Pointer<Utf8>);
+typedef _FreeBytesC = Void Function(Pointer<Uint8>);
+typedef _FreeBytesD = void Function(Pointer<Uint8>);
 
 /// Resolved native library + bound functions (loaded once).
 class _Native {
@@ -88,7 +90,9 @@ class _Native {
         saveBytes =
             lib.lookupFunction<_SaveBytesC, _SaveBytesD>('pdf_save_to_bytes'),
         freeString =
-            lib.lookupFunction<_FreeStringC, _FreeStringD>('free_string');
+            lib.lookupFunction<_FreeStringC, _FreeStringD>('free_string'),
+        freeBytes =
+            lib.lookupFunction<_FreeBytesC, _FreeBytesD>('free_bytes');
 
   final DynamicLibrary lib;
   final _OpenD open;
@@ -106,6 +110,7 @@ class _Native {
   final _SaveD save;
   final _SaveBytesD saveBytes;
   final _FreeStringD freeString;
+  final _FreeBytesD freeBytes;
 }
 
 typedef _OpenD = Pointer<Void> Function(Pointer<Utf8>, Pointer<Int32>);
@@ -344,7 +349,7 @@ class Pdf implements Finalizable {
       if (p == nullptr) throw PdfOxideError(code.value, 'saveToBytes');
       final out =
           Uint8List.fromList(p.asTypedList(len.value < 0 ? 0 : len.value));
-      _n.freeString(p.cast<Utf8>());
+      _n.freeBytes(p);
       return out;
     } finally {
       calloc.free(len);

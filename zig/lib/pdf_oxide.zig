@@ -139,7 +139,7 @@ pub const Pdf = struct {
         var len: i32 = 0;
         var code: i32 = 0;
         const p = c.pdf_save_to_bytes(self.handle, &len, &code) orelse return Error.PdfOxide;
-        defer c.free_string(@ptrCast(p));
+        defer c.free_bytes(p);
         const n: usize = if (len < 0) 0 else @intCast(len);
         return alloc.dupe(u8, p[0..n]);
     }

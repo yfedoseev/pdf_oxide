@@ -246,7 +246,8 @@ function save_to_bytes(p::Pdf)
     ptr == C_NULL && throw(PdfOxideError(code[], "save_to_bytes"))
     n = len[] < 0 ? 0 : Int(len[])
     out = copy(unsafe_wrap(Array, ptr, n))
-    ccall((:free_string, LIB), Cvoid, (Ptr{UInt8},), ptr)
+    # Raw byte buffers free via free_bytes, not free_string (which does strlen).
+    ccall((:free_bytes, LIB), Cvoid, (Ptr{UInt8},), ptr)
     return out
 end
 

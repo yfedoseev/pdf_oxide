@@ -104,7 +104,7 @@ static ERL_NIF_TERM pdf_save_bytes_nif(ErlNifEnv *env, int argc, const ERL_NIF_T
     ERL_NIF_TERM bin;
     unsigned char *buf = enif_make_new_binary(env, n, &bin);
     memcpy(buf, p, n);
-    free_string((char *)p);
+    free_bytes(p);
     return enif_make_tuple2(env, enif_make_atom(env, "ok"), bin);
 }
 

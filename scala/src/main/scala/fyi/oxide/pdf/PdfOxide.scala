@@ -42,6 +42,7 @@ private[pdf] trait CLib extends Library:
   def pdf_save(h: Pointer, path: String, code: IntByReference): Int
   def pdf_save_to_bytes(h: Pointer, len: IntByReference, code: IntByReference): Pointer
   def free_string(p: Pointer): Unit
+  def free_bytes(p: Pointer): Unit
 
 private[pdf] object Native_ {
   val lib: CLib = Native.load("pdf_oxide", classOf[CLib])
@@ -139,7 +140,7 @@ final class Pdf private (private var handle: Pointer) extends AutoCloseable:
     if p == null then throw PdfOxideException(code.getValue, "saveToBytes")
     val n = if len.getValue < 0 then 0 else len.getValue
     val out = p.getByteArray(0, n)
-    Native_.lib.free_string(p)
+    Native_.lib.free_bytes(p)
     out
 
   def close(): Unit =
