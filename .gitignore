@@ -394,3 +394,6 @@ ruby/Gemfile.lock
 ruby/coverage/
 ruby/*.gem
 ruby/.bundle/
+
+# C++ binding build dir
+/cpp/build/

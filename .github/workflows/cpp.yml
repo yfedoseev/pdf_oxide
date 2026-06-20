@@ -1,0 +1,87 @@
+name: C++ Bindings CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'cpp/**'
+      - 'src/**'
+      - 'include/pdf_oxide_c/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/cpp.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'cpp/**'
+      - 'src/**'
+      - 'include/pdf_oxide_c/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/cpp.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  PDF_OXIDE_LIB_DIR: ${{ github.workspace }}/target/release
+
+jobs:
+  test:
+    name: C++ on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: false
+          rustflags: ''
+
+      - name: Cache Cargo build
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-release-
+
+      - name: Build cdylib (release, shipped binding feature set)
+        run: cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
+
+      - name: clang-format check
+        shell: bash
+        run: |
+          if command -v clang-format >/dev/null 2>&1; then
+            find cpp/include cpp/examples cpp/tests -name '*.hpp' -o -name '*.cpp' \
+              | xargs clang-format --dry-run --Werror --style=file:cpp/.clang-format || \
+              { echo "::warning::clang-format differences (non-blocking until .clang-format is tuned)"; }
+          else
+            echo "clang-format not available; skipping"
+          fi
+
+      - name: Configure (CMake)
+        run: cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release -DPDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}"
+
+      - name: Build (examples + tests)
+        run: cmake --build cpp/build --config Release -j
+
+      - name: Run tests (ctest — includes api-coverage)
+        run: ctest --test-dir cpp/build --output-on-failure
+
+      - name: Run example (01_basic_extraction, with assertion)
+        shell: bash
+        run: |
+          set -uo pipefail
+          export LD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${DYLD_LIBRARY_PATH:-}"
+          OUT="$(cpp/build/example_01_basic_extraction)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "Hello pdf_oxide" || { echo "::error::example output missing expected text"; exit 1; }
