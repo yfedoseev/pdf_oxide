@@ -5,7 +5,7 @@ interop, no shim. Handles are structs with `deinit`; returned C strings/buffers
 are copied into a caller-provided allocator and the C buffer freed via
 `free_string`; non-success C-ABI error codes map to `error.PdfOxide`.
 
-> Pinned to **Zig 0.14.0** (pre-1.0 — the build/C-import API drifts between
+> Pinned to **Zig 0.15.1** (pre-1.0 — the build/C-import API drifts between
 > releases). CI uses the same version.
 
 ## Build & test
@@ -51,5 +51,5 @@ zig/
 
 ## Verification (CI — same set as every binding)
 
-`.github/workflows/zig.yml` on Linux + macOS: build cdylib → pinned Zig 0.14.0 →
+`.github/workflows/zig.yml` on Linux + macOS: build cdylib → pinned Zig 0.15.1 →
 `zig build test` (api-coverage) → `zig build example` with an output assertion.

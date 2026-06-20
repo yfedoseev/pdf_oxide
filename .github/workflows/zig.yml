@@ -63,7 +63,7 @@ jobs:
       - name: Set up Zig (pinned — pre-1.0 API drift)
         uses: mlugg/setup-zig@8d6198c65fb0feaa111df26e6b467fea8345e46f # v2
         with:
-          version: 0.14.0
+          version: 0.15.1
 
       - name: Format check (zig fmt)
         working-directory: zig

@@ -4,9 +4,7 @@ const std = @import("std");
 const pdf_oxide = @import("pdf_oxide");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const a = gpa.allocator();
+    const a = std.heap.page_allocator;
 
     var pdf = try pdf_oxide.Pdf.fromMarkdown(
         "# Hello pdf_oxide\n\nThis is a **Zig** binding smoke example.\n",
@@ -19,7 +17,11 @@ pub fn main() !void {
     var doc = try pdf_oxide.Document.openFromBytes(bytes);
     defer doc.deinit();
 
-    const stdout = std.io.getStdOut().writer();
+    // Zig 0.15 "Writergate": stdout via a buffered File.Writer interface.
+    var buf: [4096]u8 = undefined;
+    var fw = std.fs.File.stdout().writer(&buf);
+    const stdout = &fw.interface;
+
     try stdout.print("pages:   {d}\n", .{try doc.pageCount()});
     const v = doc.version();
     try stdout.print("version: {d}.{d}\n", .{ v.major, v.minor });
@@ -31,4 +33,5 @@ pub fn main() !void {
     const md = try doc.toMarkdownAll(a);
     defer a.free(md);
     try stdout.print("--- markdown (all) ---\n{s}\n", .{md});
+    try stdout.flush();
 }
