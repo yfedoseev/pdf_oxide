@@ -43,14 +43,16 @@ private[pdf] trait CLib extends Library:
   def pdf_save_to_bytes(h: Pointer, len: IntByReference, code: IntByReference): Pointer
   def free_string(p: Pointer): Unit
 
-private[pdf] object Native_:
+private[pdf] object Native_ {
   val lib: CLib = Native.load("pdf_oxide", classOf[CLib])
 
-  def takeString(p: Pointer, code: Int, op: String): String =
-    if p == null then throw PdfOxideException(code, op)
+  def takeString(p: Pointer, code: Int, op: String): String = {
+    if (p == null) throw PdfOxideException(code, op)
     val s = p.getString(0)
     lib.free_string(p)
     s
+  }
+}
 
 /** An opened PDF for extraction/inspection. AutoCloseable. */
 final class PdfDocument private (private var handle: Pointer) extends AutoCloseable:
@@ -71,20 +73,31 @@ final class PdfDocument private (private var handle: Pointer) extends AutoClosea
   def isEncrypted(): Boolean = Native_.lib.pdf_document_is_encrypted(ptr)
   def hasStructureTree(): Boolean = Native_.lib.pdf_document_has_structure_tree(ptr)
 
-  private def strPage(fn: (Pointer, Int, IntByReference) => Pointer, page: Int, op: String): String =
+  private def strPage(
+      fn: (Pointer, Int, IntByReference) => Pointer,
+      page: Int,
+      op: String
+  ): String =
     val code = IntByReference()
     Native_.takeString(fn(ptr, page, code), code.getValue, op)
 
-  def extractText(page: Int): String = strPage(Native_.lib.pdf_document_extract_text, page, "extractText")
-  def toPlainText(page: Int): String = strPage(Native_.lib.pdf_document_to_plain_text, page, "toPlainText")
-  def toMarkdown(page: Int): String = strPage(Native_.lib.pdf_document_to_markdown, page, "toMarkdown")
+  def extractText(page: Int): String =
+    strPage(Native_.lib.pdf_document_extract_text, page, "extractText")
+  def toPlainText(page: Int): String =
+    strPage(Native_.lib.pdf_document_to_plain_text, page, "toPlainText")
+  def toMarkdown(page: Int): String =
+    strPage(Native_.lib.pdf_document_to_markdown, page, "toMarkdown")
   def toHtml(page: Int): String = strPage(Native_.lib.pdf_document_to_html, page, "toHtml")
   def extractStructuredJson(page: Int): String =
     strPage(Native_.lib.pdf_document_extract_structured_to_json, page, "extractStructuredJson")
 
   def toMarkdownAll(): String =
     val code = IntByReference()
-    Native_.takeString(Native_.lib.pdf_document_to_markdown_all(ptr, code), code.getValue, "toMarkdownAll")
+    Native_.takeString(
+      Native_.lib.pdf_document_to_markdown_all(ptr, code),
+      code.getValue,
+      "toMarkdownAll"
+    )
 
   def close(): Unit =
     if handle != null then
@@ -117,7 +130,8 @@ final class Pdf private (private var handle: Pointer) extends AutoCloseable:
 
   def save(path: String): Unit =
     val code = IntByReference()
-    if Native_.lib.pdf_save(ptr, path, code) != 0 then throw PdfOxideException(code.getValue, "save")
+    if Native_.lib.pdf_save(ptr, path, code) != 0 then
+      throw PdfOxideException(code.getValue, "save")
 
   def saveToBytes(): Array[Byte] =
     val len = IntByReference(); val code = IntByReference()

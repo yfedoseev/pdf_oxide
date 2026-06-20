@@ -8,7 +8,9 @@ import scala.util.Using
 
 class ApiCoverageSpec extends AnyFunSuite:
   private def samplePdf(): Array[Byte] =
-    Using.resource(Pdf.fromMarkdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n"))(_.saveToBytes())
+    Using.resource(
+      Pdf.fromMarkdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n")
+    )(_.saveToBytes())
 
   // ── Pdf builder ────────────────────────────────────────────────────────────
   test("fromMarkdown + saveToBytes"):
@@ -33,15 +35,15 @@ class ApiCoverageSpec extends AnyFunSuite:
   // ── Document inspection + extraction ─────────────────────────────────────────
   test("inspection + extraction"):
     Using.resource(PdfDocument.openFromBytes(samplePdf())): doc =>
-      assert(doc.version().major >= 1)                 // version
-      assert(!doc.isEncrypted())                        // isEncrypted
-      doc.hasStructureTree()                            // hasStructureTree (smoke)
-      assert(doc.extractText(0).contains("Alpha"))      // extractText
-      assert(doc.toPlainText(0).nonEmpty)               // toPlainText
-      assert(doc.toMarkdown(0).nonEmpty)                // toMarkdown
-      assert(doc.toHtml(0).contains("<"))               // toHtml
-      assert(doc.toMarkdownAll().nonEmpty)              // toMarkdownAll
-      assert(doc.extractStructuredJson(0).nonEmpty)     // extractStructuredJson
+      assert(doc.version().major >= 1) // version
+      assert(!doc.isEncrypted()) // isEncrypted
+      doc.hasStructureTree() // hasStructureTree (smoke)
+      assert(doc.extractText(0).contains("Alpha")) // extractText
+      assert(doc.toPlainText(0).nonEmpty) // toPlainText
+      assert(doc.toMarkdown(0).nonEmpty) // toMarkdown
+      assert(doc.toHtml(0).contains("<")) // toHtml
+      assert(doc.toMarkdownAll().nonEmpty) // toMarkdownAll
+      assert(doc.extractStructuredJson(0).nonEmpty) // extractStructuredJson
 
   // ── Error path ───────────────────────────────────────────────────────────────
   test("open nonexistent throws PdfOxideException"):

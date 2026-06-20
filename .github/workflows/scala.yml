@@ -65,9 +65,9 @@ jobs:
       - name: Set up sbt
         uses: sbt/setup-sbt@234370af1319038bf8dc432f8a7e4b83078a1781 # v1
 
-      - name: Test (api-coverage, jna.library.path -> cdylib)
+      - name: Format check (scalafmt) + Test (api-coverage)
         working-directory: scala
-        run: sbt -DPDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}" test
+        run: sbt -DPDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}" "scalafmtCheckAll; test"
 
       - name: Run example (BasicExtraction, with assertion)
         working-directory: scala
