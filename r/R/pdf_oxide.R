@@ -809,48 +809,56 @@ pdf_builder_close <- function(builder) {
 #' @param builder A `pdfoxide_builder`. @param value The metadata string.
 #' @export
 pdf_builder_set_title <- function(builder, value) {
-  .Call(C_r_builder_set_title, builder, value); invisible(builder)
+  .Call(C_r_builder_set_title, builder, value)
+  invisible(builder)
 }
 #' @rdname pdf_builder_set_title
 #' @export
 pdf_builder_set_author <- function(builder, value) {
-  .Call(C_r_builder_set_author, builder, value); invisible(builder)
+  .Call(C_r_builder_set_author, builder, value)
+  invisible(builder)
 }
 #' @rdname pdf_builder_set_title
 #' @export
 pdf_builder_set_subject <- function(builder, value) {
-  .Call(C_r_builder_set_subject, builder, value); invisible(builder)
+  .Call(C_r_builder_set_subject, builder, value)
+  invisible(builder)
 }
 #' @rdname pdf_builder_set_title
 #' @export
 pdf_builder_set_keywords <- function(builder, value) {
-  .Call(C_r_builder_set_keywords, builder, value); invisible(builder)
+  .Call(C_r_builder_set_keywords, builder, value)
+  invisible(builder)
 }
 #' @rdname pdf_builder_set_title
 #' @export
 pdf_builder_set_creator <- function(builder, value) {
-  .Call(C_r_builder_set_creator, builder, value); invisible(builder)
+  .Call(C_r_builder_set_creator, builder, value)
+  invisible(builder)
 }
 
 #' Run JavaScript when the document is opened (`/OpenAction`).
 #' @param builder A `pdfoxide_builder`. @param script JavaScript source.
 #' @export
 pdf_builder_on_open <- function(builder, script) {
-  .Call(C_r_builder_on_open, builder, script); invisible(builder)
+  .Call(C_r_builder_on_open, builder, script)
+  invisible(builder)
 }
 
 #' Set the document's natural language tag (e.g. "en-US"), emitted as `/Lang`.
 #' @param builder A `pdfoxide_builder`. @param lang BCP-47 language tag.
 #' @export
 pdf_builder_language <- function(builder, lang) {
-  .Call(C_r_builder_language, builder, lang); invisible(builder)
+  .Call(C_r_builder_language, builder, lang)
+  invisible(builder)
 }
 
 #' Enable PDF/UA-1 tagged-PDF mode.
 #' @param builder A `pdfoxide_builder`.
 #' @export
 pdf_builder_tagged_pdf_ua1 <- function(builder) {
-  .Call(C_r_builder_tagged_pdf_ua1, builder); invisible(builder)
+  .Call(C_r_builder_tagged_pdf_ua1, builder)
+  invisible(builder)
 }
 
 #' Add a role-map entry: custom structure type to standard PDF structure type.
@@ -858,7 +866,8 @@ pdf_builder_tagged_pdf_ua1 <- function(builder) {
 #' @param standard Standard PDF structure type.
 #' @export
 pdf_builder_role_map <- function(builder, custom, standard) {
-  .Call(C_r_builder_role_map, builder, custom, standard); invisible(builder)
+  .Call(C_r_builder_role_map, builder, custom, standard)
+  invisible(builder)
 }
 
 #' Register a TTF / OTF font for embedding under `name`.
@@ -941,21 +950,24 @@ pdf_builder_to_bytes_encrypted <- function(builder, user_password,
 #' @param page A `pdfoxide_page_builder`. @param name Font name. @param size pt.
 #' @export
 pdf_page_font <- function(page, name, size) {
-  .Call(C_r_page_font, page, name, as.double(size)); invisible(page)
+  .Call(C_r_page_font, page, name, as.double(size))
+  invisible(page)
 }
 
 #' Move the cursor to absolute coordinates (PDF points, from lower-left).
 #' @param page A `pdfoxide_page_builder`. @param x,y Coordinates in points.
 #' @export
 pdf_page_at <- function(page, x, y) {
-  .Call(C_r_page_at, page, as.double(x), as.double(y)); invisible(page)
+  .Call(C_r_page_at, page, as.double(x), as.double(y))
+  invisible(page)
 }
 
 #' Emit a line of text at the cursor, then advance one line-height.
 #' @param page A `pdfoxide_page_builder`. @param text The text.
 #' @export
 pdf_page_builder_text <- function(page, text) {
-  .Call(C_r_page_text, page, text); invisible(page)
+  .Call(C_r_page_text, page, text)
+  invisible(page)
 }
 
 #' Emit a heading with the given level (1-6) and text.
@@ -963,28 +975,32 @@ pdf_page_builder_text <- function(page, text) {
 #' @param text Heading text.
 #' @export
 pdf_page_heading <- function(page, level, text) {
-  .Call(C_r_page_heading, page, as.integer(level), text); invisible(page)
+  .Call(C_r_page_heading, page, as.integer(level), text)
+  invisible(page)
 }
 
 #' Emit a paragraph with automatic line wrapping.
 #' @param page A `pdfoxide_page_builder`. @param text The paragraph text.
 #' @export
 pdf_page_paragraph <- function(page, text) {
-  .Call(C_r_page_paragraph, page, text); invisible(page)
+  .Call(C_r_page_paragraph, page, text)
+  invisible(page)
 }
 
 #' Advance the cursor down by `points`.
 #' @param page A `pdfoxide_page_builder`. @param points Vertical advance in pts.
 #' @export
 pdf_page_space <- function(page, points) {
-  .Call(C_r_page_space, page, as.double(points)); invisible(page)
+  .Call(C_r_page_space, page, as.double(points))
+  invisible(page)
 }
 
 #' Draw a horizontal rule across the page.
 #' @param page A `pdfoxide_page_builder`.
 #' @export
 pdf_page_horizontal_rule <- function(page) {
-  .Call(C_r_page_horizontal_rule, page); invisible(page)
+  .Call(C_r_page_horizontal_rule, page)
+  invisible(page)
 }
 
 #' Attach a link to the previously-emitted text element.
@@ -994,56 +1010,66 @@ pdf_page_horizontal_rule <- function(page) {
 #'   page index. @param destination Named destination. @param script JavaScript.
 #' @export
 pdf_page_link_url <- function(page, url) {
-  .Call(C_r_page_link_url, page, url); invisible(page)
+  .Call(C_r_page_link_url, page, url)
+  invisible(page)
 }
 #' @rdname pdf_page_link_url
 #' @export
 pdf_page_link_page <- function(page, index) {
-  .Call(C_r_page_link_page, page, as.integer(index)); invisible(page)
+  .Call(C_r_page_link_page, page, as.integer(index))
+  invisible(page)
 }
 #' @rdname pdf_page_link_url
 #' @export
 pdf_page_link_named <- function(page, destination) {
-  .Call(C_r_page_link_named, page, destination); invisible(page)
+  .Call(C_r_page_link_named, page, destination)
+  invisible(page)
 }
 #' @rdname pdf_page_link_url
 #' @export
 pdf_page_link_javascript <- function(page, script) {
-  .Call(C_r_page_link_javascript, page, script); invisible(page)
+  .Call(C_r_page_link_javascript, page, script)
+  invisible(page)
 }
 
 #' Run JavaScript on page open / close (`/AA /O`, `/AA /C`).
 #' @param page A `pdfoxide_page_builder`. @param script JavaScript source.
 #' @export
 pdf_page_on_open <- function(page, script) {
-  .Call(C_r_page_on_open, page, script); invisible(page)
+  .Call(C_r_page_on_open, page, script)
+  invisible(page)
 }
 #' @rdname pdf_page_on_open
 #' @export
 pdf_page_on_close <- function(page, script) {
-  .Call(C_r_page_on_close, page, script); invisible(page)
+  .Call(C_r_page_on_close, page, script)
+  invisible(page)
 }
 
 #' Set a JS action on the most-recently-added form field.
 #' @param page A `pdfoxide_page_builder`. @param script JavaScript source.
 #' @export
 pdf_page_field_keystroke <- function(page, script) {
-  .Call(C_r_page_field_keystroke, page, script); invisible(page)
+  .Call(C_r_page_field_keystroke, page, script)
+  invisible(page)
 }
 #' @rdname pdf_page_field_keystroke
 #' @export
 pdf_page_field_format <- function(page, script) {
-  .Call(C_r_page_field_format, page, script); invisible(page)
+  .Call(C_r_page_field_format, page, script)
+  invisible(page)
 }
 #' @rdname pdf_page_field_keystroke
 #' @export
 pdf_page_field_validate <- function(page, script) {
-  .Call(C_r_page_field_validate, page, script); invisible(page)
+  .Call(C_r_page_field_validate, page, script)
+  invisible(page)
 }
 #' @rdname pdf_page_field_keystroke
 #' @export
 pdf_page_field_calculate <- function(page, script) {
-  .Call(C_r_page_field_calculate, page, script); invisible(page)
+  .Call(C_r_page_field_calculate, page, script)
+  invisible(page)
 }
 
 #' Decorate the previous text with an RGB colour (channels 0.0-1.0).
@@ -1076,7 +1102,8 @@ pdf_page_squiggly <- function(page, r, g, b) {
 #' @param page A `pdfoxide_page_builder`. @param text Note text.
 #' @export
 pdf_page_sticky_note <- function(page, text) {
-  .Call(C_r_page_sticky_note, page, text); invisible(page)
+  .Call(C_r_page_sticky_note, page, text)
+  invisible(page)
 }
 
 #' Place a free-standing sticky note at an absolute page position.
@@ -1092,26 +1119,30 @@ pdf_page_sticky_note_at <- function(page, x, y, text) {
 #' @param page A `pdfoxide_page_builder`. @param text Watermark text.
 #' @export
 pdf_page_watermark <- function(page, text) {
-  .Call(C_r_page_watermark, page, text); invisible(page)
+  .Call(C_r_page_watermark, page, text)
+  invisible(page)
 }
 
 #' Apply a standard diagonal watermark ("CONFIDENTIAL" / "DRAFT").
 #' @param page A `pdfoxide_page_builder`.
 #' @export
 pdf_page_watermark_confidential <- function(page) {
-  .Call(C_r_page_watermark_confidential, page); invisible(page)
+  .Call(C_r_page_watermark_confidential, page)
+  invisible(page)
 }
 #' @rdname pdf_page_watermark_confidential
 #' @export
 pdf_page_watermark_draft <- function(page) {
-  .Call(C_r_page_watermark_draft, page); invisible(page)
+  .Call(C_r_page_watermark_draft, page)
+  invisible(page)
 }
 
 #' Attach a standard stamp annotation at the current cursor position.
 #' @param page A `pdfoxide_page_builder`. @param type_name Stamp name.
 #' @export
 pdf_page_stamp <- function(page, type_name) {
-  .Call(C_r_page_stamp, page, type_name); invisible(page)
+  .Call(C_r_page_stamp, page, type_name)
+  invisible(page)
 }
 
 #' Place a free-flowing text annotation inside a rectangle.
@@ -1120,7 +1151,8 @@ pdf_page_stamp <- function(page, type_name) {
 #' @export
 pdf_page_freetext <- function(page, x, y, w, h, text) {
   .Call(C_r_page_freetext, page, as.double(x), as.double(y), as.double(w),
-        as.double(h), text); invisible(page)
+        as.double(h), text)
+  invisible(page)
 }
 
 #' Add a footnote reference mark inline and record its body for page-end placement.
@@ -1128,7 +1160,8 @@ pdf_page_freetext <- function(page, x, y, w, h, text) {
 #' @param note_text Footnote body text.
 #' @export
 pdf_page_footnote <- function(page, ref_mark, note_text) {
-  .Call(C_r_page_footnote, page, ref_mark, note_text); invisible(page)
+  .Call(C_r_page_footnote, page, ref_mark, note_text)
+  invisible(page)
 }
 
 #' Lay out text across `column_count` balanced columns at the cursor.
@@ -1146,17 +1179,20 @@ pdf_page_columns <- function(page, column_count, gap_pt, text) {
 #' @param page A `pdfoxide_page_builder`. @param text The text.
 #' @export
 pdf_page_inline <- function(page, text) {
-  .Call(C_r_page_inline, page, text); invisible(page)
+  .Call(C_r_page_inline, page, text)
+  invisible(page)
 }
 #' @rdname pdf_page_inline
 #' @export
 pdf_page_inline_bold <- function(page, text) {
-  .Call(C_r_page_inline_bold, page, text); invisible(page)
+  .Call(C_r_page_inline_bold, page, text)
+  invisible(page)
 }
 #' @rdname pdf_page_inline
 #' @export
 pdf_page_inline_italic <- function(page, text) {
-  .Call(C_r_page_inline_italic, page, text); invisible(page)
+  .Call(C_r_page_inline_italic, page, text)
+  invisible(page)
 }
 
 #' Emit an inline coloured run (RGB 0.0-1.0).
@@ -1165,14 +1201,16 @@ pdf_page_inline_italic <- function(page, text) {
 #' @export
 pdf_page_inline_color <- function(page, r, g, b, text) {
   .Call(C_r_page_inline_color, page, as.double(r), as.double(g), as.double(b),
-        text); invisible(page)
+        text)
+  invisible(page)
 }
 
 #' Advance the cursor by one line-height and reset to the left margin.
 #' @param page A `pdfoxide_page_builder`.
 #' @export
 pdf_page_newline <- function(page) {
-  .Call(C_r_page_newline, page); invisible(page)
+  .Call(C_r_page_newline, page)
+  invisible(page)
 }
 
 #' Add a single-line text form field.
@@ -1182,7 +1220,8 @@ pdf_page_newline <- function(page) {
 #' @export
 pdf_page_text_field <- function(page, name, x, y, w, h, default_value = NULL) {
   .Call(C_r_page_text_field, page, name, as.double(x), as.double(y),
-        as.double(w), as.double(h), default_value); invisible(page)
+        as.double(w), as.double(h), default_value)
+  invisible(page)
 }
 
 #' Add a checkbox form field.
@@ -1191,7 +1230,8 @@ pdf_page_text_field <- function(page, name, x, y, w, h, default_value = NULL) {
 #' @export
 pdf_page_checkbox <- function(page, name, x, y, w, h, checked = FALSE) {
   .Call(C_r_page_checkbox, page, name, as.double(x), as.double(y), as.double(w),
-        as.double(h), isTRUE(checked)); invisible(page)
+        as.double(h), isTRUE(checked))
+  invisible(page)
 }
 
 #' Add a dropdown combo-box form field.
@@ -1202,7 +1242,8 @@ pdf_page_checkbox <- function(page, name, x, y, w, h, checked = FALSE) {
 #' @export
 pdf_page_combo_box <- function(page, name, x, y, w, h, options, selected = NULL) {
   .Call(C_r_page_combo_box, page, name, as.double(x), as.double(y), as.double(w),
-        as.double(h), as.character(options), selected); invisible(page)
+        as.double(h), as.character(options), selected)
+  invisible(page)
 }
 
 #' Add a radio-button group.
@@ -1216,7 +1257,8 @@ pdf_page_combo_box <- function(page, name, x, y, w, h, options, selected = NULL)
 pdf_page_radio_group <- function(page, name, values, xs, ys, ws, hs,
                                  selected = NULL) {
   .Call(C_r_page_radio_group, page, name, as.character(values), as.double(xs),
-        as.double(ys), as.double(ws), as.double(hs), selected); invisible(page)
+        as.double(ys), as.double(ws), as.double(hs), selected)
+  invisible(page)
 }
 
 #' Add a clickable push button with a visible caption.
@@ -1225,7 +1267,8 @@ pdf_page_radio_group <- function(page, name, values, xs, ys, ws, hs,
 #' @export
 pdf_page_push_button <- function(page, name, x, y, w, h, caption) {
   .Call(C_r_page_push_button, page, name, as.double(x), as.double(y),
-        as.double(w), as.double(h), caption); invisible(page)
+        as.double(w), as.double(h), caption)
+  invisible(page)
 }
 
 #' Add an unsigned signature placeholder field.
@@ -1234,7 +1277,8 @@ pdf_page_push_button <- function(page, name, x, y, w, h, caption) {
 #' @export
 pdf_page_signature_field <- function(page, name, x, y, w, h) {
   .Call(C_r_page_signature_field, page, name, as.double(x), as.double(y),
-        as.double(w), as.double(h)); invisible(page)
+        as.double(w), as.double(h))
+  invisible(page)
 }
 
 #' Place a 1-D barcode image on the page.
@@ -1246,7 +1290,8 @@ pdf_page_signature_field <- function(page, name, x, y, w, h) {
 #' @export
 pdf_page_barcode_1d <- function(page, barcode_type, data, x, y, w, h) {
   .Call(C_r_page_barcode_1d, page, as.integer(barcode_type), data, as.double(x),
-        as.double(y), as.double(w), as.double(h)); invisible(page)
+        as.double(y), as.double(w), as.double(h))
+  invisible(page)
 }
 
 #' Place a QR-code image on the page (square: `size` x `size` points).
@@ -1255,7 +1300,8 @@ pdf_page_barcode_1d <- function(page, barcode_type, data, x, y, w, h) {
 #' @export
 pdf_page_barcode_qr <- function(page, data, x, y, size) {
   .Call(C_r_page_barcode_qr, page, data, as.double(x), as.double(y),
-        as.double(size)); invisible(page)
+        as.double(size))
+  invisible(page)
 }
 
 #' Embed an image on the page.
@@ -1268,19 +1314,22 @@ pdf_page_barcode_qr <- function(page, data, x, y, size) {
 #' @export
 pdf_page_image <- function(page, bytes, x, y, w, h) {
   .Call(C_r_page_image, page, bytes, as.double(x), as.double(y), as.double(w),
-        as.double(h)); invisible(page)
+        as.double(h))
+  invisible(page)
 }
 #' @rdname pdf_page_image
 #' @export
 pdf_page_image_with_alt <- function(page, bytes, x, y, w, h, alt_text) {
   .Call(C_r_page_image_with_alt, page, bytes, as.double(x), as.double(y),
-        as.double(w), as.double(h), alt_text); invisible(page)
+        as.double(w), as.double(h), alt_text)
+  invisible(page)
 }
 #' @rdname pdf_page_image
 #' @export
 pdf_page_image_artifact <- function(page, bytes, x, y, w, h) {
   .Call(C_r_page_image_artifact, page, bytes, as.double(x), as.double(y),
-        as.double(w), as.double(h)); invisible(page)
+        as.double(w), as.double(h))
+  invisible(page)
 }
 
 #' Draw a stroked rectangle outline (1pt black).
@@ -1288,7 +1337,8 @@ pdf_page_image_artifact <- function(page, bytes, x, y, w, h) {
 #' @export
 pdf_page_rect <- function(page, x, y, w, h) {
   .Call(C_r_page_rect, page, as.double(x), as.double(y), as.double(w),
-        as.double(h)); invisible(page)
+        as.double(h))
+  invisible(page)
 }
 
 #' Draw a filled rectangle in RGB colour (channels 0-1).
@@ -1297,7 +1347,8 @@ pdf_page_rect <- function(page, x, y, w, h) {
 #' @export
 pdf_page_filled_rect <- function(page, x, y, w, h, r, g, b) {
   .Call(C_r_page_filled_rect, page, as.double(x), as.double(y), as.double(w),
-        as.double(h), as.double(r), as.double(g), as.double(b)); invisible(page)
+        as.double(h), as.double(r), as.double(g), as.double(b))
+  invisible(page)
 }
 
 #' Draw a line with a 1pt black stroke.
@@ -1305,7 +1356,8 @@ pdf_page_filled_rect <- function(page, x, y, w, h, r, g, b) {
 #' @export
 pdf_page_line <- function(page, x1, y1, x2, y2) {
   .Call(C_r_page_line, page, as.double(x1), as.double(y1), as.double(x2),
-        as.double(y2)); invisible(page)
+        as.double(y2))
+  invisible(page)
 }
 
 #' Draw a stroked rectangle with explicit width and RGB colour.
@@ -1315,7 +1367,8 @@ pdf_page_line <- function(page, x1, y1, x2, y2) {
 pdf_page_stroke_rect <- function(page, x, y, w, h, width, r, g, b) {
   .Call(C_r_page_stroke_rect, page, as.double(x), as.double(y), as.double(w),
         as.double(h), as.double(width), as.double(r), as.double(g),
-        as.double(b)); invisible(page)
+        as.double(b))
+  invisible(page)
 }
 
 #' Draw a stroked line with explicit width and RGB colour.
@@ -1325,7 +1378,8 @@ pdf_page_stroke_rect <- function(page, x, y, w, h, width, r, g, b) {
 pdf_page_stroke_line <- function(page, x1, y1, x2, y2, width, r, g, b) {
   .Call(C_r_page_stroke_line, page, as.double(x1), as.double(y1), as.double(x2),
         as.double(y2), as.double(width), as.double(r), as.double(g),
-        as.double(b)); invisible(page)
+        as.double(b))
+  invisible(page)
 }
 
 #' Draw a dashed stroked rectangle.
@@ -1340,7 +1394,8 @@ pdf_page_stroke_rect_dashed <- function(page, x, y, w, h, width, r, g, b,
                                         dash = numeric(0), phase = 0) {
   .Call(C_r_page_stroke_rect_dashed, page, as.double(x), as.double(y),
         as.double(w), as.double(h), as.double(width), as.double(r), as.double(g),
-        as.double(b), as.double(dash), as.double(phase)); invisible(page)
+        as.double(b), as.double(dash), as.double(phase))
+  invisible(page)
 }
 
 #' Draw a dashed stroked line.
@@ -1364,14 +1419,16 @@ pdf_page_stroke_line_dashed <- function(page, x1, y1, x2, y2, width, r, g, b,
 #' @export
 pdf_page_text_in_rect <- function(page, x, y, w, h, text, align = 0L) {
   .Call(C_r_page_text_in_rect, page, as.double(x), as.double(y), as.double(w),
-        as.double(h), text, as.integer(align)); invisible(page)
+        as.double(h), text, as.integer(align))
+  invisible(page)
 }
 
 #' Start a new page of the same size; subsequent ops land on the new page.
 #' @param page A `pdfoxide_page_builder`.
 #' @export
 pdf_page_new_page_same_size <- function(page) {
-  .Call(C_r_page_new_page_same_size, page); invisible(page)
+  .Call(C_r_page_new_page_same_size, page)
+  invisible(page)
 }
 
 #' Emit a table.
@@ -1415,7 +1472,8 @@ pdf_page_streaming_table_begin <- function(page, headers, widths, aligns,
                                            n_columns = length(headers)) {
   .Call(C_r_page_streaming_table_begin, page, as.integer(n_columns),
         as.character(headers), as.double(widths), as.integer(aligns),
-        isTRUE(repeat_header)); invisible(page)
+        isTRUE(repeat_header))
+  invisible(page)
 }
 
 #' Open a streaming table with a column-width mode and optional rowspan.
@@ -1438,7 +1496,8 @@ pdf_page_streaming_table_begin_v2 <- function(page, headers, widths, aligns,
         as.character(headers), as.double(widths), as.integer(aligns),
         isTRUE(repeat_header), as.integer(mode), as.integer(sample_rows),
         as.double(min_col_width_pt), as.double(max_col_width_pt),
-        as.integer(max_rowspan)); invisible(page)
+        as.integer(max_rowspan))
+  invisible(page)
 }
 
 #' Set the batch size for the currently-open streaming table (0 defaults to 256).
@@ -1467,7 +1526,8 @@ pdf_page_streaming_table_batch_count <- function(page) {
 #' @param page A `pdfoxide_page_builder`.
 #' @export
 pdf_page_streaming_table_flush <- function(page) {
-  .Call(C_r_page_streaming_table_flush, page); invisible(page)
+  .Call(C_r_page_streaming_table_flush, page)
+  invisible(page)
 }
 
 #' Push one row into the currently-open streaming table.
@@ -1490,14 +1550,16 @@ pdf_page_streaming_table_push_row <- function(page, cells) {
 pdf_page_streaming_table_push_row_v2 <- function(page, cells, rowspans = NULL) {
   if (!is.null(rowspans)) rowspans <- as.integer(rowspans)
   .Call(C_r_page_streaming_table_push_row_v2, page, as.character(cells),
-        rowspans); invisible(page)
+        rowspans)
+  invisible(page)
 }
 
 #' Close the currently-open streaming table.
 #' @param page A `pdfoxide_page_builder`.
 #' @export
 pdf_page_streaming_table_finish <- function(page) {
-  .Call(C_r_page_streaming_table_finish, page); invisible(page)
+  .Call(C_r_page_streaming_table_finish, page)
+  invisible(page)
 }
 
 #' Commit the page's buffered operations to its parent builder.

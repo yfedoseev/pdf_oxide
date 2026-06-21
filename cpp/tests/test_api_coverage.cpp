@@ -984,8 +984,10 @@ int main() {
         CHECK(prevOps == prevOps); // invokable: returns an int (value not asserted)
         pdf_oxide::set_max_ops_per_stream(prevOps); // restore
 
-        int prevGlyphs = pdf_oxide::set_preserve_unmapped_glyphs(1); // preserve_unmapped
-        CHECK(prevGlyphs == prevGlyphs); // invokable: returns an int (value not asserted)
+        int prevGlyphs =
+            pdf_oxide::set_preserve_unmapped_glyphs(1); // preserve_unmapped
+        CHECK(prevGlyphs ==
+              prevGlyphs); // invokable: returns an int (value not asserted)
         (void)pdf_oxide::set_preserve_unmapped_glyphs(prevGlyphs); // restore
     }
 

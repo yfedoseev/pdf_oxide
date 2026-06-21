@@ -717,11 +717,11 @@ int main(void) {
             CHECK(rt != nil ? (rt.length >= 0) : (re != nil));
             re = nil;
             NSArray<POXWord*>* rw = [doc extractWordsInRect:0
-                                                         x:0
-                                                         y:0
-                                                     width:1000
-                                                    height:1000
-                                                     error:&re]; // extractWordsInRect
+                                                          x:0
+                                                          y:0
+                                                      width:1000
+                                                     height:1000
+                                                      error:&re]; // extractWordsInRect
             CHECK(rw != nil ? (rw.count >= 0) : (re != nil));
             re = nil;
             NSArray<POXTextLine*>* rl =
@@ -797,7 +797,7 @@ int main(void) {
         {
             NSError* fe = nil;
             NSArray<POXFormField*>* ff = [doc formFieldsWithError:&fe]; // formFields
-            CHECK(ff != nil ? (ff.count >= 0) : (fe != nil)); // empty list ok
+            CHECK(ff != nil ? (ff.count >= 0) : (fe != nil));           // empty list ok
             for (POXFormField* f in ff) {
                 CHECK(f.name != nil && f.type != nil && f.value != nil);
                 CHECK(f.readonly == YES || f.readonly == NO);
@@ -805,15 +805,15 @@ int main(void) {
             }
             fe = nil;
             NSData* fd = [doc exportFormDataToBytes:0
-                                             error:&fe]; // exportFormDataToBytes
+                                              error:&fe]; // exportFormDataToBytes
             CHECK(fd != nil ? (fd.length >= 0) : (fe != nil));
             fe = nil;
             BOOL imp = [doc importFormDataFromPath:@"/nonexistent/data.fdf"
-                                            error:&fe]; // importFormData
+                                             error:&fe]; // importFormData
             CHECK(imp == NO ? (fe != nil) : YES);
             fe = nil;
             BOOL impf = [doc importFormFromFile:@"/nonexistent/data.fdf"
-                                         error:&fe]; // importFormFromFile
+                                          error:&fe]; // importFormFromFile
             CHECK(impf == NO ? (fe != nil) : YES);
         }
 
@@ -865,21 +865,21 @@ int main(void) {
         // ── Final phase: annotation extras (via constructed PDF — list ok) ───
         {
             NSError* ae = nil;
-            NSArray<POXAnnotation*>* anns =
-                [doc pageAnnotations:0 error:&ae]; // (may be empty)
+            NSArray<POXAnnotation*>* anns = [doc pageAnnotations:0
+                                                           error:&ae]; // (may be empty)
             CHECK(anns != nil || ae != nil);
             for (POXAnnotation* a in anns) {
-                CHECK(a.color >= 0);             // get_color
-                CHECK(a.creationDate >= 0);      // get_creation_date
-                CHECK(a.modificationDate >= 0);  // get_modification_date
-                CHECK(a.hidden == YES || a.hidden == NO);   // is_hidden
+                CHECK(a.color >= 0);                      // get_color
+                CHECK(a.creationDate >= 0);               // get_creation_date
+                CHECK(a.modificationDate >= 0);           // get_modification_date
+                CHECK(a.hidden == YES || a.hidden == NO); // is_hidden
                 CHECK(a.markedDeleted == YES ||
-                      a.markedDeleted == NO);               // is_marked_deleted
+                      a.markedDeleted == NO);                   // is_marked_deleted
                 CHECK(a.printable == YES || a.printable == NO); // is_printable
                 CHECK(a.readOnly == YES || a.readOnly == NO);   // is_read_only
-                (void)a.linkUri;     // link uri
-                (void)a.iconName;    // text icon name
-                CHECK(a.quadPoints != nil); // highlight quad points
+                (void)a.linkUri;                                // link uri
+                (void)a.iconName;                               // text icon name
+                CHECK(a.quadPoints != nil);                     // highlight quad points
             }
         }
 
@@ -896,8 +896,7 @@ int main(void) {
             int32_t sc = [doc signatureCountWithError:&sigErr]; // signatureCount
             CHECK(sc >= 0 || sigErr != nil);
             sigErr = nil;
-            POXSignatureInfo* si = [doc signatureAtIndex:0
-                                                   error:&sigErr]; // signature
+            POXSignatureInfo* si = [doc signatureAtIndex:0 error:&sigErr]; // signature
             CHECK(si != nil ? YES : (sigErr != nil));
             if (si)
                 [si close];
@@ -949,7 +948,7 @@ int main(void) {
                 dataUsingEncoding:NSUTF8StringEncoding];
             NSError* oe = nil;
             POXDocument* d = [POXDocument openFromDocxBytes:junk
-                                                     error:&oe]; // openFromDocxBytes
+                                                      error:&oe]; // openFromDocxBytes
             CHECK(d == nil ? (oe != nil) : ([d pageCountError:&oe] >= 0));
             if (d)
                 [d close];
@@ -1008,8 +1007,8 @@ int main(void) {
             ce = nil;
             NSString* pol = [POXCrypto policyWithError:&ce]; // policy
             CHECK(pol != nil ? (pol.length >= 0) : (ce != nil));
-            CHECK([POXCrypto fipsAvailable] >= -1);    // fipsAvailable
-            CHECK([POXCrypto useFips] >= -1);          // useFips
+            CHECK([POXCrypto fipsAvailable] >= -1);        // fipsAvailable
+            CHECK([POXCrypto useFips] >= -1);              // useFips
             CHECK([POXCrypto setPolicy:@"default"] >= -1); // setPolicy
 
             ce = nil;
@@ -1017,21 +1016,20 @@ int main(void) {
             CHECK(man != nil ? (man.length >= 0) : (ce != nil));
             CHECK([POXModels prefetchAvailable] >= -1); // prefetchAvailable
             ce = nil;
-            NSString* pf = [POXModels prefetchModels:@"en"
-                                               error:&ce]; // prefetchModels
+            NSString* pf = [POXModels prefetchModels:@"en" error:&ce]; // prefetchModels
             CHECK(pf != nil ? (pf.length >= 0) : (ce != nil));
 
             // setMaxOpsPerStream returns the PRIOR value and has no error
             // channel; only assert the call is invokable (yields an int), not a
             // specific round-tripped value.
             int64_t prev = [POXConfig setMaxOpsPerStream:1000000]; // setMaxOpsPerStream
-            CHECK(prev == prev); // invokable: returns an int64_t
+            CHECK(prev == prev);                 // invokable: returns an int64_t
             [POXConfig setMaxOpsPerStream:prev]; // restore
             // setPreserveUnmappedGlyphs likewise returns the prior value with no
             // error channel; just confirm it is invokable.
             int32_t pg =
                 [POXConfig setPreserveUnmappedGlyphs:0]; // setPreserveUnmappedGlyphs
-            CHECK(pg == pg); // invokable: returns an int32_t
+            CHECK(pg == pg);                          // invokable: returns an int32_t
             [POXConfig setPreserveUnmappedGlyphs:pg]; // restore
 
             ce = nil;

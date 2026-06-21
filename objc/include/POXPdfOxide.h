@@ -322,29 +322,29 @@ typedef struct {
                                  height:(float)height
                                   error:(NSError**)error;
 - (nullable NSArray<POXWord*>*)extractWordsInRect:(NSInteger)page
-                                               x:(float)x
-                                               y:(float)y
-                                           width:(float)width
-                                          height:(float)height
-                                           error:(NSError**)error;
+                                                x:(float)x
+                                                y:(float)y
+                                            width:(float)width
+                                           height:(float)height
+                                            error:(NSError**)error;
 - (nullable NSArray<POXTextLine*>*)extractLinesInRect:(NSInteger)page
-                                                   x:(float)x
-                                                   y:(float)y
-                                               width:(float)width
-                                              height:(float)height
-                                               error:(NSError**)error;
+                                                    x:(float)x
+                                                    y:(float)y
+                                                width:(float)width
+                                               height:(float)height
+                                                error:(NSError**)error;
 - (nullable NSArray<POXTable*>*)extractTablesInRect:(NSInteger)page
-                                                 x:(float)x
-                                                 y:(float)y
-                                             width:(float)width
-                                            height:(float)height
-                                             error:(NSError**)error;
+                                                  x:(float)x
+                                                  y:(float)y
+                                              width:(float)width
+                                             height:(float)height
+                                              error:(NSError**)error;
 - (nullable NSArray<POXImage*>*)extractImagesInRect:(NSInteger)page
-                                                 x:(float)x
-                                                 y:(float)y
-                                             width:(float)width
-                                            height:(float)height
-                                             error:(NSError**)error;
+                                                  x:(float)x
+                                                  y:(float)y
+                                              width:(float)width
+                                             height:(float)height
+                                              error:(NSError**)error;
 
 // ── Auto extraction / classification ─────────────────────────────────────────
 - (nullable NSString*)extractTextAuto:(NSInteger)page error:(NSError**)error;
@@ -377,16 +377,16 @@ typedef struct {
 - (BOOL)hasXfa;
 - (NSInteger)pageCountAliasError:(NSError**)error;
 - (nullable NSString*)planSplitByBookmarks:(nullable NSString*)optionsJson
-                                      error:(NSError**)error;
+                                     error:(NSError**)error;
 
 // ── PDF/A conversion ─────────────────────────────────────────────────────────
 - (BOOL)convertToPdfA:(int32_t)level error:(NSError**)error;
 
 // ── Signatures (document-level) ──────────────────────────────────────────────
 - (BOOL)sign:(POXCertificate*)certificate
-       reason:(nullable NSString*)reason
-     location:(nullable NSString*)location
-        error:(NSError**)error;
+      reason:(nullable NSString*)reason
+    location:(nullable NSString*)location
+       error:(NSError**)error;
 - (int32_t)signatureCountWithError:(NSError**)error;
 - (nullable POXSignatureInfo*)signatureAtIndex:(int32_t)index error:(NSError**)error;
 - (int32_t)verifyAllSignaturesWithError:(NSError**)error;
