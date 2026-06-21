@@ -16,8 +16,7 @@ import fyi.oxide.pdf.auto.AutoResult
 import fyi.oxide.pdf.compliance.ValidationViolation
 import fyi.oxide.pdf.form.FormField
 import fyi.oxide.pdf.image.ExtractedImage
-import fyi.oxide.pdf.metadata.DocumentInfo
-import fyi.oxide.pdf.search.{SearchMatch, SearchOptions}
+import fyi.oxide.pdf.search.SearchMatch
 import fyi.oxide.pdf.table.Table
 import fyi.oxide.pdf.text.{TextChar, TextLine, TextWord}
 
@@ -64,17 +63,7 @@ extension (r: AutoResult)
 extension (v: ValidationViolation)
   def pageIndexOption: Option[Int] = v.pageIndex.toOption.map(_.intValue)
 
-/** SearchOptions: result cap as `Option[Int]`. */
-extension (o: SearchOptions)
-  def maxResultsOption: Option[Int] = o.maxResults.toOption.map(_.intValue)
-
-/** DocumentInfo: every metadata field as `Option[String]`. */
-extension (i: DocumentInfo)
-  def titleOption: Option[String] = i.title.toOption
-  def authorOption: Option[String] = i.author.toOption
-  def subjectOption: Option[String] = i.subject.toOption
-  def keywordsOption: Option[String] = i.keywords.toOption
-  def creatorOption: Option[String] = i.creator.toOption
-  def producerOption: Option[String] = i.producer.toOption
-  def creationDateOption: Option[String] = i.creationDate.toOption
-  def modificationDateOption: Option[String] = i.modificationDate.toOption
+// NB: the Java binding also defines DocumentInfo / XmpMetadata / SearchOptions
+// value types, but no API method currently produces or consumes them, so this
+// facade adds no sugar for them (it would be dead, untestable code). Add the
+// extensions here if/when the Java surface starts returning them.

@@ -18,8 +18,6 @@ import fyi.oxide.pdf.auto.AutoResult
 import fyi.oxide.pdf.compliance.ValidationViolation
 import fyi.oxide.pdf.form.FormField
 import fyi.oxide.pdf.geometry.BBox
-import fyi.oxide.pdf.metadata.DocumentInfo
-import fyi.oxide.pdf.search.SearchOptions
 import java.util.Optional
 
 /** Kotlin-idiomatic view of a Java [Optional]: empty -> `null`. */
@@ -62,33 +60,7 @@ fun AutoResult.htmlOrNull(): String? = html().orElse(null)
 /** Page index the violation applies to, or `null` for document-level rules. */
 fun ValidationViolation.pageIndexOrNull(): Int? = pageIndex().orElse(null)
 
-// ── SearchOptions (Optional -> nullable) ────────────────────────────────────
-
-/** Result cap, or `null` when unbounded. */
-fun SearchOptions.maxResultsOrNull(): Int? = maxResults().orElse(null)
-
-// ── DocumentInfo (Optional -> nullable, all metadata fields) ────────────────
-
-/** Title, or `null`. */
-fun DocumentInfo.titleOrNull(): String? = title().orElse(null)
-
-/** Author, or `null`. */
-fun DocumentInfo.authorOrNull(): String? = author().orElse(null)
-
-/** Subject, or `null`. */
-fun DocumentInfo.subjectOrNull(): String? = subject().orElse(null)
-
-/** Keywords, or `null`. */
-fun DocumentInfo.keywordsOrNull(): String? = keywords().orElse(null)
-
-/** Creator, or `null`. */
-fun DocumentInfo.creatorOrNull(): String? = creator().orElse(null)
-
-/** Producer, or `null`. */
-fun DocumentInfo.producerOrNull(): String? = producer().orElse(null)
-
-/** Creation date, or `null`. */
-fun DocumentInfo.creationDateOrNull(): String? = creationDate().orElse(null)
-
-/** Modification date, or `null`. */
-fun DocumentInfo.modificationDateOrNull(): String? = modificationDate().orElse(null)
+// NB: the Java binding also defines DocumentInfo / XmpMetadata / SearchOptions
+// value types, but no API method currently produces or consumes them, so this
+// facade deliberately adds no sugar for them (it would be dead, untestable code).
+// If the Java surface starts returning them, add the extensions here then.
