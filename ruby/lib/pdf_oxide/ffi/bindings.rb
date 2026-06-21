@@ -1693,6 +1693,39 @@ module PdfOxide
                       %i[pointer size_t pointer], :int32
       attach_function :document_editor_apply_all_redactions,
                       %i[pointer pointer], :int32
+
+      # ============================================================
+      # PHASE 4 EXTEND: global tuning toggles + layer-filtered render.
+      # Real ABI signatures from include/pdf_oxide_c/pdf_oxide.h.
+      # ============================================================
+
+      # int64_t pdf_oxide_set_max_ops_per_stream(int64_t limit)
+      # Process-global content-stream operator cap. `limit < 0` restores
+      # the default (1,000,000); returns the previous cap (or -1 if the
+      # default was active). No error channel.
+      attach_function :pdf_oxide_set_max_ops_per_stream, [:int64], :int64
+
+      # int32_t pdf_oxide_set_preserve_unmapped_glyphs(int32_t preserve)
+      # Toggle the global U+FFFD preservation flag. `1` = preserve,
+      # `0` = filter. Returns the previous value (`0` or `1`). No error
+      # channel.
+      attach_function :pdf_oxide_set_preserve_unmapped_glyphs, [:int32], :int32
+
+      # FfiRenderedImage *pdf_render_page_with_options_ex(
+      #   PdfDocument *doc, int32_t page_index, int32_t dpi, int32_t format,
+      #   float bg_r, float bg_g, float bg_b, float bg_a,
+      #   int32_t transparent_background, int32_t render_annotations,
+      #   int32_t jpeg_quality,
+      #   const char *const *excluded_layers, uintptr_t excluded_layers_count,
+      #   int32_t *error_code)
+      # Like pdf_render_page_with_options but with OCG layer filtering.
+      attach_function :pdf_render_page_with_options_ex,
+                      %i[pointer int32 int32 int32
+                         float float float float
+                         int32 int32 int32
+                         pointer size_t
+                         pointer],
+                      :pointer
     end
   end
 end

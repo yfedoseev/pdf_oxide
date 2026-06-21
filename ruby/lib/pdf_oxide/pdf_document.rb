@@ -258,7 +258,51 @@ module PdfOxide
       # path is the byte-buffer accessor introduced for v0.3.5x.
       bytes = read_rendered_image_bytes(img_ptr)
       Bindings.pdf_rendered_image_free(img_ptr) if Bindings.respond_to?(:pdf_rendered_image_free)
-      bytes.force_encoding(Encoding::BINARY)
+      bytes.b # binary-encoded copy (never mutates; read_* may return a frozen empty string)
+    end
+
+    # Render a single page with the full RenderOptions surface plus
+    # Optional-Content-Group (OCG) layer filtering.
+    #
+    # @param page_index [Integer]
+    # @param dpi [Integer] resolution (default 150).
+    # @param format [Integer] 0 = PNG, 1 = JPEG.
+    # @param background [Array(Float,Float,Float,Float)] RGBA, each 0.0..1.0.
+    # @param transparent [Boolean] drop the background fill entirely.
+    # @param render_annotations [Boolean] paint annotation appearances.
+    # @param jpeg_quality [Integer] 1..100 (only used when format == 1).
+    # @param excluded_layers [Array<String>] OCG `/Name`s to suppress.
+    # @return [String] encoded image bytes (BINARY).
+    def render_with_layers(page_index, dpi: 150, format: 0,
+                           background: [1.0, 1.0, 1.0, 1.0], transparent: false,
+                           render_annotations: true, jpeg_quality: 90,
+                           excluded_layers: [])
+      validate_page_index(page_index)
+      bg_r, bg_g, bg_b, bg_a = background
+      names = Array(excluded_layers).map(&:to_s)
+
+      # Build a NULL-terminated-string array (char *const *).
+      names_ptr = ::FFI::Pointer::NULL
+      str_ptrs = []
+      unless names.empty?
+        str_ptrs = names.map { |n| ::FFI::MemoryPointer.from_string(n) }
+        names_ptr = ::FFI::MemoryPointer.new(:pointer, str_ptrs.length)
+        names_ptr.write_array_of_pointer(str_ptrs)
+      end
+
+      err = ::FFI::MemoryPointer.new(:int32)
+      img_ptr = Bindings.pdf_render_page_with_options_ex(
+        handle, page_index, dpi, format,
+        bg_r.to_f, bg_g.to_f, bg_b.to_f, bg_a.to_f,
+        transparent ? 1 : 0, render_annotations ? 1 : 0, jpeg_quality,
+        names_ptr, names.length, err
+      )
+      raise_for_code(err.read_int32, 'render_with_layers')
+      raise InternalError, 'render_with_layers returned null' if img_ptr.nil? || img_ptr.null?
+
+      bytes = read_rendered_image_bytes(img_ptr)
+      Bindings.pdf_rendered_image_free(img_ptr) if Bindings.respond_to?(:pdf_rendered_image_free)
+      bytes.b # binary-encoded copy (never mutates; read_* may return a frozen empty string)
     end
 
     # @return [PdfPage] a lightweight view of the page at `index`.
@@ -324,14 +368,17 @@ module PdfOxide
     def open_native(source)
       err = ::FFI::MemoryPointer.new(:int32)
       handle, path =
-        if source.is_a?(String) && File.exist?(source)
-          [Bindings.pdf_document_open(File.absolute_path(source), err), File.absolute_path(source)]
-        elsif source.is_a?(String) && source.start_with?('%PDF')
+        # NB: detect in-memory bytes (%PDF…) BEFORE the path branch — binary PDF
+        # bytes contain null bytes, and File.exist? raises ArgumentError
+        # ("path name contains null byte") on those, so the bytes check must run first.
+        if source.is_a?(String) && source.start_with?('%PDF')
           # in-memory PDF bytes
           buf = source.dup.force_encoding(Encoding::BINARY)
           mem = ::FFI::MemoryPointer.new(:uint8, buf.bytesize)
           mem.write_bytes(buf, 0, buf.bytesize)
           [Bindings.pdf_document_open_from_bytes(mem, buf.bytesize, err), '<in-memory>']
+        elsif source.is_a?(String) && File.exist?(source)
+          [Bindings.pdf_document_open(File.absolute_path(source), err), File.absolute_path(source)]
         else
           raise FileNotFoundError, "file not found: #{source}"
         end

@@ -52,6 +52,8 @@ typedef struct Pdf Pdf;
 
 typedef struct PdfDocument PdfDocument;
 
+typedef struct VerticalMetrics VerticalMetrics;
+
 typedef struct {
     const void *certificate_handle;
     const uint8_t *const *certs;
@@ -76,6 +78,10 @@ typedef uint32_t BoxId;
 void pdf_oxide_set_log_level(int32_t level);
 
 int32_t pdf_oxide_get_log_level(void);
+
+int64_t pdf_oxide_set_max_ops_per_stream(int64_t limit);
+
+int32_t pdf_oxide_set_preserve_unmapped_glyphs(int32_t preserve);
 
 char *pdf_oxide_crypto_active_provider(void);
 
@@ -107,9 +113,11 @@ bool pdf_document_has_structure_tree(PdfDocument *handle);
 
 char *pdf_document_extract_text(PdfDocument *handle, int32_t page_index, int32_t *error_code);
 
-char *pdf_document_to_markdown(PdfDocument *handle, int32_t page_index, int32_t *error_code);
+char *pdf_document_extract_structured_to_json(PdfDocument *handle,
+                                              int32_t page_index,
+                                              int32_t *error_code);
 
-char *pdf_document_extract_structured_to_json(PdfDocument *handle, int32_t page_index, int32_t *error_code);
+char *pdf_document_to_markdown(PdfDocument *handle, int32_t page_index, int32_t *error_code);
 
 char *pdf_document_to_html(PdfDocument *handle, int32_t page_index, int32_t *error_code);
 
@@ -682,6 +690,21 @@ FfiRenderedImage *pdf_render_page_with_options(PdfDocument *doc,
                                                int32_t render_annotations,
                                                int32_t jpeg_quality,
                                                int32_t *error_code);
+
+FfiRenderedImage *pdf_render_page_with_options_ex(PdfDocument *doc,
+                                                  int32_t page_index,
+                                                  int32_t dpi,
+                                                  int32_t format,
+                                                  float bg_r,
+                                                  float bg_g,
+                                                  float bg_b,
+                                                  float bg_a,
+                                                  int32_t transparent_background,
+                                                  int32_t render_annotations,
+                                                  int32_t jpeg_quality,
+                                                  const char *const *excluded_layers,
+                                                  uintptr_t excluded_layers_count,
+                                                  int32_t *error_code);
 
 FfiRenderedImage *pdf_render_page_region(PdfDocument *doc,
                                          int32_t page_index,

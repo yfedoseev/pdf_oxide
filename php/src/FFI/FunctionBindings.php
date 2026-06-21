@@ -2232,4 +2232,114 @@ class FunctionBindings
         ErrorHandler::check($errorCode->cdata, 'pdf_page_builder_watermark_draft');
         return (int) $result;
     }
+
+    /**
+     * Set the global content-stream operator cap.
+     *
+     * `limit < 0` restores the default (1,000,000); any non-negative value
+     * (including 0) is used as the explicit cap. There is no error channel —
+     * the call returns the previous cap (or -1 if the default was active).
+     *
+     * @param int $limit New per-stream operator cap (negative = restore default)
+     * @return int The previous cap (-1 if the default was active)
+     */
+    public function pdfOxideSetMaxOpsPerStream(int $limit): int
+    {
+        return (int) $this->ffi->pdf_oxide_set_max_ops_per_stream($limit);
+    }
+
+    /**
+     * Toggle the global U+FFFD preservation flag for the high-level
+     * extract_text / extract_words / extract_spans accessors.
+     *
+     * `1` = preserve FFFD chars; `0` = filter (v0.3.54 default). There is no
+     * error channel — the call returns the previous value as `0` or `1`.
+     *
+     * @param int $preserve 1 to preserve unmapped glyphs, 0 to filter them
+     * @return int The previous flag value (0 or 1)
+     */
+    public function pdfOxideSetPreserveUnmappedGlyphs(int $preserve): int
+    {
+        return (int) $this->ffi->pdf_oxide_set_preserve_unmapped_glyphs($preserve);
+    }
+
+    /**
+     * Render a page with the full RenderOptions surface plus OCG layer
+     * filtering.
+     *
+     * `$excludedLayers` is a list of Optional Content Group `/Name`s to
+     * suppress; pass an empty array to disable filtering (matching
+     * {@see pdfRenderPage} behaviour).
+     *
+     * @param CData       $handle               The document handle
+     * @param int         $pageIndex            Zero-based page index
+     * @param int         $dpi                  Render resolution
+     * @param int         $format               0=PNG, 1=JPEG
+     * @param float       $bgR                  Background red   (0.0..=1.0)
+     * @param float       $bgG                  Background green (0.0..=1.0)
+     * @param float       $bgB                  Background blue  (0.0..=1.0)
+     * @param float       $bgA                  Background alpha (0.0..=1.0)
+     * @param int         $transparentBackground 1 to drop the fill entirely
+     * @param int         $renderAnnotations    1 to render annotations
+     * @param int         $jpegQuality          JPEG quality (when format=1)
+     * @param list<string> $excludedLayers      OCG `/Name`s to suppress
+     * @return CData Image handle
+     */
+    public function pdfRenderPageWithOptionsEx(
+        CData $handle,
+        int $pageIndex,
+        int $dpi,
+        int $format,
+        float $bgR,
+        float $bgG,
+        float $bgB,
+        float $bgA,
+        int $transparentBackground,
+        int $renderAnnotations,
+        int $jpegQuality,
+        array $excludedLayers = []
+    ): CData {
+        $errorCode = $this->ffi->new('int32_t');
+
+        $count = count($excludedLayers);
+        $layersPtr = null;
+        $cStrings = [];
+        if ($count > 0) {
+            // Build a `const char *const *` — an array of NUL-terminated
+            // C strings. Retain the per-string CData in $cStrings so they
+            // outlive the native call.
+            $arr = $this->ffi->new("char*[{$count}]");
+            $i = 0;
+            foreach ($excludedLayers as $name) {
+                $cStr = StringMarshaller::toCString((string) $name);
+                $cStrings[] = $cStr;
+                $arr[$i] = $this->ffi->cast('char*', FFI::addr($cStr));
+                $i++;
+            }
+            $layersPtr = $this->ffi->cast('char**', FFI::addr($arr));
+        }
+
+        try {
+            $imageHandle = $this->ffi->pdf_render_page_with_options_ex(
+                $handle,
+                $pageIndex,
+                $dpi,
+                $format,
+                $bgR,
+                $bgG,
+                $bgB,
+                $bgA,
+                $transparentBackground,
+                $renderAnnotations,
+                $jpegQuality,
+                $layersPtr,
+                $count,
+                FFI::addr($errorCode)
+            );
+            ErrorHandler::check((int) $errorCode->cdata, 'pdf_render_page_with_options_ex');
+            return $imageHandle;
+        } finally {
+            unset($cStrings);
+        }
+    }
 }

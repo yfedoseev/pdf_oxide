@@ -56,5 +56,27 @@ module PdfOxide
     def version
       VERSION
     end
+
+    # Set the process-global content-stream operator cap.
+    #
+    # A negative `limit` restores the default (1,000,000); any
+    # non-negative value (including 0) becomes the explicit cap.
+    #
+    # @param limit [Integer]
+    # @return [Integer] the previous cap (or -1 if the default was active).
+    def set_max_ops_per_stream(limit)
+      Bindings.pdf_oxide_set_max_ops_per_stream(Integer(limit))
+    end
+
+    # Toggle the process-global U+FFFD (unmapped-glyph) preservation flag
+    # used by the high-level text extraction accessors.
+    #
+    # @param preserve [Boolean, Integer] truthy / non-zero = preserve,
+    #   falsey / 0 = filter (the v0.3.54 default).
+    # @return [Integer] the previous value (`0` or `1`).
+    def set_preserve_unmapped_glyphs(preserve)
+      flag = (preserve == false || preserve.nil? || preserve == 0) ? 0 : 1
+      Bindings.pdf_oxide_set_preserve_unmapped_glyphs(flag)
+    end
   end
 end

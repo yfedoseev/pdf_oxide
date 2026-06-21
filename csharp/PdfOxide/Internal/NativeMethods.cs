@@ -7860,5 +7860,124 @@ namespace PdfOxide.Internal
             nuint count, out int errorCode);
 
         #endregion
+
+        #region C-ABI snake_case coverage (additive raw bindings)
+
+        // These bindings target the canonical snake_case C-ABI symbols exported
+        // by the cdylib (the PascalCase methods above bind PascalCase aliases).
+        // They are additive raw declarations so every documented C symbol has a
+        // direct P/Invoke; the high-level lifetime/SafeHandle logic is unchanged.
+
+        [LibraryImport(LibName, EntryPoint = "pdf_document_open", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr pdf_document_open(string path, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_document_free")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial void pdf_document_free(IntPtr handle);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_document_get_page_count")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int pdf_document_get_page_count(IntPtr handle, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_document_extract_text")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr pdf_document_extract_text(IntPtr handle, int pageIndex, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_document_to_markdown")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr pdf_document_to_markdown(IntPtr handle, int pageIndex, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_document_to_html")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr pdf_document_to_html(IntPtr handle, int pageIndex, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_document_to_plain_text")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr pdf_document_to_plain_text(IntPtr handle, int pageIndex, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_document_get_source_bytes")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr pdf_document_get_source_bytes(IntPtr document, out nuint outLen, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "document_editor_open", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr document_editor_open(string path, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "document_editor_free")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial void document_editor_free(IntPtr handle);
+
+        [LibraryImport(LibName, EntryPoint = "document_editor_save", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int document_editor_save(IntPtr handle, string path, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_from_markdown", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr pdf_from_markdown(string markdown, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_from_html", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr pdf_from_html(string html, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_from_text", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr pdf_from_text(string text, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_save", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int pdf_save(IntPtr handle, string path, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_free")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial void pdf_free(IntPtr handle);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_oxide_set_max_ops_per_stream")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial long pdf_oxide_set_max_ops_per_stream(long limit);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_oxide_set_preserve_unmapped_glyphs")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int pdf_oxide_set_preserve_unmapped_glyphs(int preserve);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_page_builder_streaming_table_begin")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static unsafe partial int pdf_page_builder_streaming_table_begin(
+            IntPtr handle,
+            nuint nColumns,
+            byte** headers,
+            float* widths,
+            int* aligns,
+            int repeatHeader,
+            out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_render_page_with_options_ex", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static unsafe partial IntPtr pdf_render_page_with_options_ex(
+            IntPtr doc,
+            int pageIndex,
+            int dpi,
+            int format,
+            float bgR,
+            float bgG,
+            float bgB,
+            float bgA,
+            int transparentBackground,
+            int renderAnnotations,
+            int jpegQuality,
+            byte** excludedLayers,
+            nuint excludedLayersCount,
+            out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_sign_bytes_pades_opts")]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static unsafe partial byte* pdf_sign_bytes_pades_opts(
+            byte* pdfData,
+            nuint pdfLen,
+            void* options,
+            out nuint outLen,
+            out int errorCode);
+
+        #endregion
     }
 }

@@ -473,6 +473,42 @@ extern uint8_t* pdf_document_to_xlsx(void* handle, size_t* out_len, int* error_c
 extern void* pdf_document_open_from_docx_bytes(const uint8_t* data, size_t len, int* error_code);
 extern void* pdf_document_open_from_pptx_bytes(const uint8_t* data, size_t len, int* error_code);
 extern void* pdf_document_open_from_xlsx_bytes(const uint8_t* data, size_t len, int* error_code);
+
+// PDF/A conversion + source-byte readback (v0.3.68 coverage)
+extern bool pdf_convert_to_pdf_a(void* document, int32_t level, int* error_code);
+extern uint8_t* pdf_document_get_source_bytes(void* document, size_t* out_len, int* error_code);
+
+// Search result accessors (v0.3.68 coverage)
+extern int32_t pdf_oxide_search_result_count(const void* results);
+extern char* pdf_oxide_search_result_get_text(const void* results, int32_t index, int* error_code);
+extern int32_t pdf_oxide_search_result_get_page(const void* results, int32_t index, int* error_code);
+extern void pdf_oxide_search_result_get_bbox(const void* results, int32_t index, float* x, float* y, float* width, float* height, int* error_code);
+
+// Global tunables (v0.3.68 coverage)
+extern int64_t pdf_oxide_set_max_ops_per_stream(int64_t limit);
+extern int32_t pdf_oxide_set_preserve_unmapped_glyphs(int32_t preserve);
+
+// Extended render with excluded-layer list (v0.3.68 coverage)
+extern void* pdf_render_page_with_options_ex(void* document_handle, int32_t page_index, int32_t dpi, int32_t format, float bg_r, float bg_g, float bg_b, float bg_a, int32_t transparent_background, int32_t render_annotations, int32_t jpeg_quality, const char* const* excluded_layers, size_t excluded_layers_count, int* error_code);
+
+// PAdES signing via #[repr(C)] options struct (v0.3.68 coverage)
+typedef struct {
+	const void* certificate_handle;
+	const uint8_t* const* certs;
+	const size_t* cert_lens;
+	size_t n_certs;
+	const uint8_t* const* crls;
+	const size_t* crl_lens;
+	size_t n_crls;
+	const uint8_t* const* ocsps;
+	const size_t* ocsp_lens;
+	size_t n_ocsps;
+	const char* tsa_url;
+	const char* reason;
+	const char* location;
+	int32_t level;
+} PadesSignOptionsC;
+extern uint8_t* pdf_sign_bytes_pades_opts(const uint8_t* pdf_data, size_t pdf_len, const PadesSignOptionsC* options, size_t* out_len, int* error_code);
 */
 import "C"
 
@@ -885,6 +921,47 @@ func (doc *PdfDocument) ToXlsxBytes() ([]byte, error) {
 	}
 	if ptr == nil {
 		return nil, fmt.Errorf("pdf_oxide: failed to convert to XLSX: %w", ErrInternal)
+	}
+	result := C.GoBytes(unsafe.Pointer(ptr), C.int(outLen))
+	C.free_bytes(unsafe.Pointer(ptr))
+	return result, nil
+}
+
+// ConvertToPdfA converts the open document to PDF/A in place. level selects
+// the conformance level (the integer code accepted by the Rust core; e.g.
+// PDF/A-2B). Returns true on success. Requires the cgo build with the
+// conversion feature; otherwise an FFI error is returned.
+func (doc *PdfDocument) ConvertToPdfA(level int) (bool, error) {
+	if err := doc.acquireRead(); err != nil {
+		return false, err
+	}
+	defer doc.mu.Unlock()
+
+	var errorCode C.int
+	ok := C.pdf_convert_to_pdf_a(doc.handle, C.int32_t(level), &errorCode)
+	if errorCode != 0 {
+		return false, ffiError(errorCode)
+	}
+	return bool(ok), nil
+}
+
+// SourceBytes returns a copy of the document's current source bytes, after
+// any in-place conversion (such as ConvertToPdfA). The returned slice is
+// owned by Go.
+func (doc *PdfDocument) SourceBytes() ([]byte, error) {
+	if err := doc.acquireRead(); err != nil {
+		return nil, err
+	}
+	defer doc.mu.Unlock()
+
+	var outLen C.size_t
+	var errorCode C.int
+	ptr := C.pdf_document_get_source_bytes(doc.handle, &outLen, &errorCode)
+	if errorCode != 0 {
+		return nil, ffiError(errorCode)
+	}
+	if ptr == nil {
+		return nil, fmt.Errorf("pdf_oxide: failed to read source bytes: %w", ErrInternal)
 	}
 	result := C.GoBytes(unsafe.Pointer(ptr), C.int(outLen))
 	C.free_bytes(unsafe.Pointer(ptr))
@@ -1547,6 +1624,72 @@ func decodeSearchResults(handle unsafe.Pointer) ([]SearchResult, error) {
 		return nil, fmt.Errorf("pdf_oxide: failed to decode search results: %w", err)
 	}
 	return results, nil
+}
+
+// decodeSearchResultsViaAccessors reads a search-results handle field-by-field
+// through the per-result accessor FFI (count/text/page/bbox) instead of the
+// bulk JSON path. Equivalent output; primarily exercises the scalar accessors.
+func decodeSearchResultsViaAccessors(handle unsafe.Pointer) ([]SearchResult, error) {
+	count := int(C.pdf_oxide_search_result_count(handle))
+	if count <= 0 {
+		return []SearchResult{}, nil
+	}
+	out := make([]SearchResult, 0, count)
+	for i := 0; i < count; i++ {
+		var errorCode C.int
+		cText := C.pdf_oxide_search_result_get_text(handle, C.int32_t(i), &errorCode)
+		if errorCode != 0 {
+			return nil, ffiError(errorCode)
+		}
+		text := ""
+		if cText != nil {
+			text = C.GoString(cText)
+			C.free_string(cText)
+		}
+		page := int(C.pdf_oxide_search_result_get_page(handle, C.int32_t(i), &errorCode))
+		if errorCode != 0 {
+			return nil, ffiError(errorCode)
+		}
+		var x, y, w, h C.float
+		C.pdf_oxide_search_result_get_bbox(handle, C.int32_t(i), &x, &y, &w, &h, &errorCode)
+		if errorCode != 0 {
+			return nil, ffiError(errorCode)
+		}
+		out = append(out, SearchResult{
+			Text:   text,
+			Page:   page,
+			X:      float32(x),
+			Y:      float32(y),
+			Width:  float32(w),
+			Height: float32(h),
+		})
+	}
+	return out, nil
+}
+
+// SearchAllVerbose searches the whole document and returns matches decoded via
+// the scalar per-result accessors (count/text/page/bbox) rather than the bulk
+// JSON path. Output matches SearchAll.
+func (doc *PdfDocument) SearchAllVerbose(searchTerm string, caseSensitive bool) ([]SearchResult, error) {
+	if err := doc.acquireRead(); err != nil {
+		return nil, err
+	}
+	defer doc.mu.Unlock()
+
+	cSearchTerm := C.CString(searchTerm)
+	defer C.free(unsafe.Pointer(cSearchTerm))
+
+	var errorCode C.int
+	handle := C.pdf_document_search_all(doc.handle, cSearchTerm, C.bool(caseSensitive), &errorCode)
+	if errorCode != 0 {
+		return nil, ffiError(errorCode)
+	}
+	if handle == nil {
+		return nil, ErrInternal
+	}
+	defer C.pdf_oxide_search_result_free(handle)
+
+	return decodeSearchResultsViaAccessors(handle)
 }
 
 // Fonts returns all fonts used or embedded in the given page. Marshaling is
@@ -3513,6 +3656,79 @@ func (doc *PdfDocument) RenderPageWithOptions(pageIndex int, opts RenderOptions)
 	return &RenderedImage{handle: handle, Width: w, Height: h}, nil
 }
 
+// RenderPageWithOptionsEx renders a page like RenderPageWithOptions but also
+// suppresses the named optional-content (layer) groups in excludedLayers.
+// Pass a nil/empty slice to render every layer (equivalent to
+// RenderPageWithOptions).
+func (doc *PdfDocument) RenderPageWithOptionsEx(pageIndex int, opts RenderOptions, excludedLayers []string) (*RenderedImage, error) {
+	if err := doc.acquireRead(); err != nil {
+		return nil, err
+	}
+	defer doc.mu.Unlock()
+
+	dpi := opts.Dpi
+	if dpi == 0 {
+		dpi = 150
+	}
+	jpegQuality := opts.JpegQuality
+	if jpegQuality == 0 {
+		jpegQuality = 85
+	}
+	bg := opts.Background
+	if bg == [4]float32{0, 0, 0, 0} && !opts.TransparentBackground {
+		bg = [4]float32{1, 1, 1, 1}
+	}
+	renderAnnots := int32(1)
+	if opts.renderAnnotationsSet && !opts.RenderAnnotations {
+		renderAnnots = 0
+	}
+	transparent := int32(0)
+	if opts.TransparentBackground {
+		transparent = 1
+	}
+
+	// Marshal excludedLayers into a C string array (NULL when empty).
+	var layersPtr **C.char
+	var layersCount C.size_t
+	if len(excludedLayers) > 0 {
+		cstrs := make([]*C.char, len(excludedLayers))
+		for i, s := range excludedLayers {
+			cstrs[i] = C.CString(s)
+		}
+		defer func() {
+			for _, p := range cstrs {
+				C.free(unsafe.Pointer(p))
+			}
+		}()
+		layersPtr = (**C.char)(unsafe.Pointer(&cstrs[0]))
+		layersCount = C.size_t(len(excludedLayers))
+	}
+
+	var errorCode C.int
+	handle := C.pdf_render_page_with_options_ex(
+		doc.handle,
+		C.int32_t(pageIndex),
+		C.int32_t(dpi),
+		C.int32_t(opts.Format),
+		C.float(bg[0]), C.float(bg[1]), C.float(bg[2]), C.float(bg[3]),
+		C.int32_t(transparent),
+		C.int32_t(renderAnnots),
+		C.int32_t(jpegQuality),
+		layersPtr,
+		layersCount,
+		&errorCode,
+	)
+	if errorCode != 0 {
+		return nil, ffiError(errorCode)
+	}
+	if handle == nil {
+		return nil, ErrInternal
+	}
+	w := int(C.pdf_get_rendered_image_width(handle, &errorCode))
+	h := int(C.pdf_get_rendered_image_height(handle, &errorCode))
+	return &RenderedImage{handle: handle, Width: w, Height: h}, nil
+}
+
 // RenderPage renders a page to an image. format: 0=PNG, 1=JPEG
 func (doc *PdfDocument) RenderPage(pageIndex int, format int) (*RenderedImage, error) {
 	if err := doc.acquireRead(); err != nil {
@@ -3973,6 +4189,84 @@ func SignPdfBytesPAdES(pdfData []byte, cert *Certificate, opts PAdESOptions) ([]
 		certsP, certsL, nCerts,
 		crlsP, crlsL, nCRLs,
 		ocspsP, ocspsL, nOCSPs,
+		&outLen,
+		&errorCode,
+	)
+	if errorCode != 0 {
+		return nil, ffiError(errorCode)
+	}
+	if out == nil {
+		return nil, ErrInternal
+	}
+	result := C.GoBytes(unsafe.Pointer(out), C.int(outLen))
+	C.free_bytes(unsafe.Pointer(out))
+	return result, nil
+}
+
+// SignPdfBytesPAdESOpts is identical to SignPdfBytesPAdES but routes the call
+// through the #[repr(C)] PadesSignOptionsC struct variant of the FFI, which
+// keeps the call surface small (5 args). Behaviour and output match
+// SignPdfBytesPAdES.
+func SignPdfBytesPAdESOpts(pdfData []byte, cert *Certificate, opts PAdESOptions) ([]byte, error) {
+	if cert == nil || cert.handle == nil {
+		return nil, ErrInternal
+	}
+	if len(pdfData) == 0 {
+		return nil, ErrEmptyContent
+	}
+	var tsaPtr, reasonPtr, locationPtr *C.char
+	if opts.TSAURL != "" {
+		cs := C.CString(opts.TSAURL)
+		defer C.free(unsafe.Pointer(cs))
+		tsaPtr = cs
+	}
+	if opts.Reason != "" {
+		cs := C.CString(opts.Reason)
+		defer C.free(unsafe.Pointer(cs))
+		reasonPtr = cs
+	}
+	if opts.Location != "" {
+		cs := C.CString(opts.Location)
+		defer C.free(unsafe.Pointer(cs))
+		locationPtr = cs
+	}
+
+	var certsP, crlsP, ocspsP **C.uint8_t
+	var certsL, crlsL, ocspsL *C.size_t
+	var nCerts, nCRLs, nOCSPs C.size_t
+	if r := opts.Revocation; r != nil {
+		var fc, fr, fo func()
+		certsP, certsL, nCerts, fc = cBlobArray(r.Certs)
+		crlsP, crlsL, nCRLs, fr = cBlobArray(r.CRLs)
+		ocspsP, ocspsL, nOCSPs, fo = cBlobArray(r.OCSPs)
+		defer fc()
+		defer fr()
+		defer fo()
+	}
+
+	copts := C.PadesSignOptionsC{
+		certificate_handle: cert.handle,
+		certs:              certsP,
+		cert_lens:          certsL,
+		n_certs:            nCerts,
+		crls:               crlsP,
+		crl_lens:           crlsL,
+		n_crls:             nCRLs,
+		ocsps:              ocspsP,
+		ocsp_lens:          ocspsL,
+		n_ocsps:            nOCSPs,
+		tsa_url:            tsaPtr,
+		reason:             reasonPtr,
+		location:           locationPtr,
+		level:              C.int32_t(opts.Level),
+	}
+
+	var outLen C.size_t
+	var errorCode C.int
+	out := C.pdf_sign_bytes_pades_opts(
+		(*C.uint8_t)(unsafe.Pointer(&pdfData[0])),
+		C.size_t(len(pdfData)),
+		&copts,
 		&outLen,
 		&errorCode,
 	)
@@ -4640,6 +4934,20 @@ func SetLogLevel(level LogLevel) {
 // GetLogLevel returns the current log level of the pdf_oxide library.
 func GetLogLevel() LogLevel {
 	return LogLevel(C.pdf_oxide_get_log_level())
+}
+
+// SetMaxOpsPerStream sets the global cap on the number of content-stream
+// operators processed per page (a guard against pathological streams) and
+// returns the previous limit. There is no error channel.
+func SetMaxOpsPerStream(limit int64) int64 {
+	return int64(C.pdf_oxide_set_max_ops_per_stream(C.int64_t(limit)))
+}
+
+// SetPreserveUnmappedGlyphs toggles whether glyphs with no Unicode mapping
+// are preserved in extracted text. Pass a non-zero value to enable; returns
+// the previous setting. There is no error channel.
+func SetPreserveUnmappedGlyphs(preserve int) int {
+	return int(C.pdf_oxide_set_preserve_unmapped_glyphs(C.int32_t(preserve)))
 }
 
 // ================================================================
