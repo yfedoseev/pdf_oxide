@@ -209,6 +209,44 @@ defmodule PdfOxide do
     defstruct [:struct, :images, :tables, :forms, :annotations, :pages]
   end
 
+  defmodule Barcode do
+    @moduledoc """
+    A generated/decoded barcode or QR code (native handle). Read its payload,
+    format and confidence, render it to PNG/SVG, or stamp it onto an editor page
+    with `PdfOxide.add_barcode_to_page/7`. Free with `PdfOxide.barcode_close/1`
+    (also GC-freed).
+    """
+    defstruct [:ref]
+  end
+
+  defmodule OcrEngine do
+    @moduledoc """
+    An OCR engine (native handle) built from detection/recognition model and
+    dictionary file paths via `PdfOxide.ocr_engine/3`. Free with
+    `PdfOxide.ocr_engine_close/1` (also GC-freed).
+    """
+    defstruct [:ref]
+  end
+
+  defmodule Renderer do
+    @moduledoc """
+    A reusable page renderer (native handle) with fixed dpi/format/quality/
+    anti-aliasing, created with `PdfOxide.renderer/4`. Free with
+    `PdfOxide.renderer_close/1` (also GC-freed).
+    """
+    defstruct [:ref]
+  end
+
+  defmodule ElementList do
+    @moduledoc """
+    An opaque list of page elements (native handle) from
+    `PdfOxide.page_elements/2`. Read its length with `PdfOxide.element_count/1`
+    (the per-element accessors land in a later phase). Free with
+    `PdfOxide.element_list_close/1` (also GC-freed).
+    """
+    defstruct [:ref]
+  end
+
   # ── Pdf builder ────────────────────────────────────────────────────────────
   @doc "Build a PDF from Markdown."
   def from_markdown(md), do: wrap_pdf(Native.from_markdown(md))
@@ -1377,6 +1415,305 @@ defmodule PdfOxide do
   def get_log_level, do: Native.oxide_get_log_level()
 
   # ── helpers ──────────────────────────────────────────────────────────────────
+  # ── phase 7: barcodes / QR ───────────────────────────────────────────────────
+  @doc """
+  Generate a QR code from `data`. `error_correction` (0=L 1=M 2=Q 3=H) and
+  `size_px` tune the symbol. Returns `{:ok, %Barcode{}}`.
+  """
+  def generate_qr_code(data, error_correction \\ 1, size_px \\ 256),
+    do: wrap_barcode(Native.barcode_generate_qr(data, error_correction, size_px))
+
+  @doc """
+  Generate a 1-D/2-D barcode from `data`. `format` is a barcode-format code;
+  `size_px` is the rendered size. Returns `{:ok, %Barcode{}}`.
+  """
+  def generate_barcode(data, format \\ 0, size_px \\ 256),
+    do: wrap_barcode(Native.barcode_generate(data, format, size_px))
+
+  @doc "The barcode's encoded data string."
+  def barcode_data(%Barcode{ref: ref}), do: Native.barcode_get_data(ref)
+  @doc "The barcode's format code."
+  def barcode_format(%Barcode{ref: ref}), do: Native.barcode_get_format(ref)
+  @doc "The barcode's decode confidence (0.0–1.0)."
+  def barcode_confidence(%Barcode{ref: ref}), do: Native.barcode_get_confidence(ref)
+
+  @doc "Render the barcode to PNG bytes at `size_px`."
+  def barcode_png(%Barcode{ref: ref}, size_px \\ 256),
+    do: Native.barcode_get_image_png(ref, size_px)
+
+  @doc "Render the barcode to an SVG string at `size_px`."
+  def barcode_svg(%Barcode{ref: ref}, size_px \\ 256), do: Native.barcode_get_svg(ref, size_px)
+
+  @doc "Place a `Barcode` on a (0-based) editor `page` at `(x, y, width, height)`."
+  def add_barcode_to_page(
+        %DocumentEditor{ref: ref},
+        page,
+        %Barcode{ref: bref},
+        x,
+        y,
+        width,
+        height
+      ),
+      do:
+        Native.editor_add_barcode_to_page(
+          ref,
+          page,
+          bref,
+          x * 1.0,
+          y * 1.0,
+          width * 1.0,
+          height * 1.0
+        )
+
+  @doc "Free a `Barcode`'s native handle now (idempotent)."
+  def barcode_close(%Barcode{ref: ref}), do: Native.barcode_close(ref)
+
+  # ── phase 7: OCR ─────────────────────────────────────────────────────────────
+  @doc """
+  Create an `OcrEngine` from detection/recognition model and dictionary file
+  paths. Returns `{:ok, %OcrEngine{}}` or an error (e.g. missing models / the
+  `ocr` feature disabled).
+  """
+  def ocr_engine(det_model_path, rec_model_path, dict_path),
+    do: wrap_ocr(Native.ocr_engine_create(det_model_path, rec_model_path, dict_path))
+
+  @doc "Free an `OcrEngine`'s native handle now (idempotent)."
+  def ocr_engine_close(%OcrEngine{ref: ref}), do: Native.ocr_engine_close(ref)
+
+  @doc "Whether a (0-based) page needs OCR (i.e. is scanned/hybrid)."
+  def ocr_page_needs_ocr(%Document{ref: ref}, page), do: Native.ocr_page_needs_ocr(ref, page)
+
+  @doc """
+  Extract text from a (0-based) page using OCR. `engine` may be `nil` (native
+  extraction only) or an `OcrEngine`.
+  """
+  def ocr_extract_text(doc, page, engine \\ nil)
+
+  def ocr_extract_text(%Document{ref: ref}, page, nil),
+    do: Native.ocr_extract_text(ref, page, nil)
+
+  def ocr_extract_text(%Document{ref: ref}, page, %OcrEngine{ref: eref}),
+    do: Native.ocr_extract_text(ref, page, eref)
+
+  # ── phase 7: render variants ─────────────────────────────────────────────────
+  @doc """
+  Render a (0-based) `page` with the full render-options surface. `bg_*` are
+  0.0–1.0 background channels; `transparent_background`, `render_annotations`
+  are non-zero flags; `format` is an image-format code; `dpi`/`jpeg_quality`
+  are integers. Returns `{:ok, %RenderedImage{}}`.
+  """
+  def render_page_with_options(
+        %Document{ref: ref},
+        page,
+        opts \\ []
+      ) do
+    dpi = Keyword.get(opts, :dpi, 150)
+    format = Keyword.get(opts, :format, 0)
+    {br, bg, bb, ba} = Keyword.get(opts, :background, {1.0, 1.0, 1.0, 1.0})
+    transparent = if Keyword.get(opts, :transparent_background, false), do: 1, else: 0
+    annots = if Keyword.get(opts, :render_annotations, true), do: 1, else: 0
+    jpeg_quality = Keyword.get(opts, :jpeg_quality, 85)
+
+    wrap_image(
+      Native.doc_render_page_with_options(
+        ref,
+        page,
+        dpi,
+        format,
+        br * 1.0,
+        bg * 1.0,
+        bb * 1.0,
+        ba * 1.0,
+        transparent,
+        annots,
+        jpeg_quality
+      )
+    )
+  end
+
+  @doc """
+  Like `render_page_with_options/3` plus `excluded_layers` — a list of OCG
+  `/Name` strings to suppress.
+  """
+  def render_page_with_options_ex(
+        %Document{ref: ref},
+        page,
+        excluded_layers,
+        opts \\ []
+      )
+      when is_list(excluded_layers) do
+    dpi = Keyword.get(opts, :dpi, 150)
+    format = Keyword.get(opts, :format, 0)
+    {br, bg, bb, ba} = Keyword.get(opts, :background, {1.0, 1.0, 1.0, 1.0})
+    transparent = if Keyword.get(opts, :transparent_background, false), do: 1, else: 0
+    annots = if Keyword.get(opts, :render_annotations, true), do: 1, else: 0
+    jpeg_quality = Keyword.get(opts, :jpeg_quality, 85)
+
+    wrap_image(
+      Native.doc_render_page_with_options_ex(
+        ref,
+        page,
+        dpi,
+        format,
+        br * 1.0,
+        bg * 1.0,
+        bb * 1.0,
+        ba * 1.0,
+        transparent,
+        annots,
+        jpeg_quality,
+        excluded_layers
+      )
+    )
+  end
+
+  @doc """
+  Render a rectangular region of a (0-based) `page`. `crop_*` are PDF user-space
+  points (origin bottom-left); `format` is an image-format code.
+  """
+  def render_page_region(
+        %Document{ref: ref},
+        page,
+        crop_x,
+        crop_y,
+        crop_width,
+        crop_height,
+        format \\ 0
+      ),
+      do:
+        wrap_image(
+          Native.doc_render_page_region(
+            ref,
+            page,
+            crop_x * 1.0,
+            crop_y * 1.0,
+            crop_width * 1.0,
+            crop_height * 1.0,
+            format
+          )
+        )
+
+  @doc "Render a (0-based) `page` to fit inside `w`×`h` pixels, preserving aspect ratio."
+  def render_page_fit(%Document{ref: ref}, page, w, h, format \\ 0),
+    do: wrap_image(Native.doc_render_page_fit(ref, page, w, h, format))
+
+  @doc """
+  Render a (0-based) `page` to a raw premultiplied RGBA8888 buffer at `dpi`,
+  returned as a `RenderedImage` (its `data` holds the raw pixels).
+  """
+  def render_page_raw(%Document{ref: ref}, page, dpi \\ 150),
+    do: wrap_image(Native.doc_render_page_raw(ref, page, dpi))
+
+  @doc """
+  Create a reusable `Renderer` with fixed `dpi`/`format`/`quality` and
+  `anti_alias`. Returns `{:ok, %Renderer{}}`.
+  """
+  def renderer(dpi \\ 150, format \\ 0, quality \\ 85, anti_alias \\ true),
+    do: wrap_renderer(Native.renderer_create(dpi, format, quality, anti_alias))
+
+  @doc "Free a `Renderer`'s native handle now (idempotent)."
+  def renderer_close(%Renderer{ref: ref}), do: Native.renderer_close(ref)
+
+  @doc "Estimate the render time (ms) for a (0-based) `page`."
+  def estimate_render_time(%Document{ref: ref}, page),
+    do: Native.doc_estimate_render_time(ref, page)
+
+  # ── phase 7: redaction (on an editor) ────────────────────────────────────────
+  @doc """
+  Queue a redaction rectangle on a (0-based) editor `page`. Corners
+  `(x1, y1)`–`(x2, y2)` and fill colour `(r, g, b)` are in PDF user-space /
+  DeviceRGB (channels 0.0–1.0).
+  """
+  def redaction_add(%DocumentEditor{ref: ref}, page, x1, y1, x2, y2, r, g, b),
+    do:
+      Native.redaction_add(
+        ref,
+        page,
+        x1 * 1.0,
+        y1 * 1.0,
+        x2 * 1.0,
+        y2 * 1.0,
+        r * 1.0,
+        g * 1.0,
+        b * 1.0
+      )
+
+  @doc "Number of queued redaction regions for a (0-based) `page`."
+  def redaction_count(%DocumentEditor{ref: ref}, page), do: Native.redaction_count(ref, page)
+
+  @doc """
+  Destructively apply all queued redactions. `scrub_metadata` also runs the
+  document-scrub pass; `(r, g, b)` is the overlay colour (channels 0.0–1.0).
+  Returns `{:ok, glyphs_removed}`.
+  """
+  def redaction_apply(
+        %DocumentEditor{ref: ref},
+        scrub_metadata \\ false,
+        r \\ 0.0,
+        g \\ 0.0,
+        b \\ 0.0
+      ),
+      do: Native.redaction_apply(ref, scrub_metadata, r * 1.0, g * 1.0, b * 1.0)
+
+  @doc "Sanitise the document (strip Info/XMP/JS/embedded files) without geometric redaction."
+  def redaction_scrub_metadata(%DocumentEditor{ref: ref}),
+    do: Native.redaction_scrub_metadata(ref)
+
+  # ── phase 7: constructors ────────────────────────────────────────────────────
+  @doc "Build a `Pdf` from an image file at `path`."
+  def from_image(path), do: wrap_pdf(Native.pdf_from_image(path))
+  @doc "Build a `Pdf` from raw image bytes."
+  def from_image_bytes(bytes), do: wrap_pdf(Native.pdf_from_image_bytes(bytes))
+
+  @doc """
+  Build a `Pdf` from `html` + `css` with a single embedded font (`font_bytes`
+  may be an empty binary for none).
+  """
+  def from_html_css(html, css, font_bytes \\ <<>>),
+    do: wrap_pdf(Native.pdf_from_html_css(html, css, font_bytes))
+
+  @doc """
+  Build a `Pdf` from `html` + `css` with a multi-font cascade. `fonts` is a list
+  of `{family, font_bytes}` tuples.
+  """
+  def from_html_css_with_fonts(html, css, fonts) when is_list(fonts) do
+    families = Enum.map(fonts, fn {family, _} -> family end)
+    font_bytes = Enum.map(fonts, fn {_, bytes} -> bytes end)
+    wrap_pdf(Native.pdf_from_html_css_with_fonts(html, css, families, font_bytes))
+  end
+
+  @doc "Merge the PDFs at `paths` (list of file paths) into one PDF binary."
+  def merge(paths) when is_list(paths), do: Native.pdf_merge(paths)
+
+  # ── phase 7: page getters (on a Document) ────────────────────────────────────
+  @doc "Width (PDF points) of a (0-based) `page`."
+  def page_width(%Document{ref: ref}, page), do: Native.page_get_width(ref, page)
+  @doc "Height (PDF points) of a (0-based) `page`."
+  def page_height(%Document{ref: ref}, page), do: Native.page_get_height(ref, page)
+  @doc "Rotation (degrees) of a (0-based) `page`."
+  def page_rotation(%Document{ref: ref}, page), do: Native.page_get_rotation(ref, page)
+
+  @doc """
+  Get the elements of a (0-based) `page` as an opaque `ElementList`. Read its
+  length with `element_count/1`.
+  """
+  def page_elements(%Document{ref: ref}, page),
+    do: wrap_element_list(Native.page_get_elements(ref, page))
+
+  @doc "Number of elements in an `ElementList`."
+  def element_count(%ElementList{ref: ref}), do: Native.elements_count(ref)
+
+  @doc "Free an `ElementList`'s native handle now (idempotent)."
+  def element_list_close(%ElementList{ref: ref}), do: Native.elements_close(ref)
+
+  # ── phase 7: timestamp ───────────────────────────────────────────────────────
+  @doc """
+  Add an RFC 3161 timestamp to the signature at `sig_index` of `pdf_data`,
+  fetched from `tsa_url`. Returns `{:ok, timestamped_pdf_bytes}`.
+  """
+  def add_timestamp(pdf_data, sig_index, tsa_url),
+    do: Native.add_timestamp(pdf_data, sig_index, tsa_url)
+
   defp wrap_doc({:ok, ref}), do: {:ok, %Document{ref: ref}}
   defp wrap_doc(other), do: other
   defp wrap_pdf({:ok, ref}), do: {:ok, %Pdf{ref: ref}}
@@ -1411,6 +1748,15 @@ defmodule PdfOxide do
   defp wrap_pdf_ua(other), do: other
   defp wrap_pdf_x({:ok, ref}), do: {:ok, %PdfXResult{ref: ref}}
   defp wrap_pdf_x(other), do: other
+
+  defp wrap_barcode({:ok, ref}), do: {:ok, %Barcode{ref: ref}}
+  defp wrap_barcode(other), do: other
+  defp wrap_ocr({:ok, ref}), do: {:ok, %OcrEngine{ref: ref}}
+  defp wrap_ocr(other), do: other
+  defp wrap_renderer({:ok, ref}), do: {:ok, %Renderer{ref: ref}}
+  defp wrap_renderer(other), do: other
+  defp wrap_element_list({:ok, ref}), do: {:ok, %ElementList{ref: ref}}
+  defp wrap_element_list(other), do: other
 
   # Collect `count`/`get(index)` validation strings into a plain list. `count`
   # returns a bare int; each `get` returns {:ok, binary} | {:error, code}.

@@ -158,6 +158,13 @@ struct SearchResult {
     Bbox bbox;
 };
 
+/// A single laid-out page element (PHASE-7 page getters).
+struct Element {
+    std::string type;
+    std::string text;
+    Bbox rect;
+};
+
 /// A rendered page image. Move-only; owns the native FfiRenderedImage handle and
 /// frees it on destruction. Width/height/data are read eagerly on construction;
 /// save(path) delegates to the still-live native handle.
@@ -711,6 +718,183 @@ class Document {
         return RenderedImage(h);
     }
 
+    // ── PHASE-7 render variants (all return a RenderedImage) ────────────────
+
+    /// Render a page (0-based) with the full RenderOptions surface. `dpi` is the
+    /// rasterization DPI, `format` 0=PNG 1=JPEG. Background channels are 0..1;
+    /// set `transparent_background` true to drop the fill. `render_annotations`
+    /// bakes annotations; `jpeg_quality` 0..100 applies to JPEG output.
+    RenderedImage render_page_with_options(int page_index, int dpi, int format,
+                                           float bg_r, float bg_g, float bg_b,
+                                           float bg_a, bool transparent_background,
+                                           bool render_annotations,
+                                           int jpeg_quality) const {
+        int32_t code = 0;
+        FfiRenderedImage* h = pdf_render_page_with_options(
+            ptr(), page_index, dpi, format, bg_r, bg_g, bg_b, bg_a,
+            transparent_background ? 1 : 0, render_annotations ? 1 : 0, jpeg_quality,
+            &code);
+        if (h == nullptr) {
+            throw Error(code, "Document::render_page_with_options");
+        }
+        return RenderedImage(h);
+    }
+
+    /// As render_page_with_options, plus OCG layer filtering: each name in
+    /// `excluded_layers` is the `/Name` of an Optional Content Group to suppress.
+    RenderedImage render_page_with_options_ex(
+        int page_index, int dpi, int format, float bg_r, float bg_g, float bg_b,
+        float bg_a, bool transparent_background, bool render_annotations,
+        int jpeg_quality, const std::vector<std::string>& excluded_layers) const {
+        std::vector<const char*> layers;
+        layers.reserve(excluded_layers.size());
+        for (const auto& s : excluded_layers) {
+            layers.push_back(s.c_str());
+        }
+        int32_t code = 0;
+        FfiRenderedImage* h = pdf_render_page_with_options_ex(
+            ptr(), page_index, dpi, format, bg_r, bg_g, bg_b, bg_a,
+            transparent_background ? 1 : 0, render_annotations ? 1 : 0, jpeg_quality,
+            layers.empty() ? nullptr : layers.data(), layers.size(), &code);
+        if (h == nullptr) {
+            throw Error(code, "Document::render_page_with_options_ex");
+        }
+        return RenderedImage(h);
+    }
+
+    /// Render a rectangular region of a page (crop_* in PDF user-space points,
+    /// origin bottom-left). `format` 0=PNG 1=JPEG.
+    RenderedImage render_page_region(int page_index, float crop_x, float crop_y,
+                                     float crop_width, float crop_height,
+                                     int format = 0) const {
+        int32_t code = 0;
+        FfiRenderedImage* h = pdf_render_page_region(
+            ptr(), page_index, crop_x, crop_y, crop_width, crop_height, format, &code);
+        if (h == nullptr) {
+            throw Error(code, "Document::render_page_region");
+        }
+        return RenderedImage(h);
+    }
+
+    /// Render a page to fit inside `w`×`h` pixels, preserving aspect ratio.
+    RenderedImage render_page_fit(int page_index, int w, int h, int format = 0) const {
+        int32_t code = 0;
+        FfiRenderedImage* img =
+            pdf_render_page_fit(ptr(), page_index, w, h, format, &code);
+        if (img == nullptr) {
+            throw Error(code, "Document::render_page_fit");
+        }
+        return RenderedImage(img);
+    }
+
+    /// Render a page to a raw premultiplied RGBA8888 pixel buffer. The output
+    /// width/height are written into `out_width`/`out_height`; the pixel bytes
+    /// are available via the returned RenderedImage's data().
+    RenderedImage render_page_raw(int page_index, int dpi, int& out_width,
+                                  int& out_height) const {
+        int32_t code = 0;
+        int32_t w = 0, h = 0;
+        FfiRenderedImage* img =
+            pdf_render_page_raw(ptr(), page_index, dpi, &w, &h, &code);
+        if (img == nullptr) {
+            throw Error(code, "Document::render_page_raw");
+        }
+        out_width = w;
+        out_height = h;
+        return RenderedImage(img);
+    }
+
+    /// Estimate the time (ms) to render a page. Returns the raw estimate.
+    int estimate_render_time(int page_index) const {
+        int32_t code = 0;
+        int32_t t = pdf_estimate_render_time(ptr(), page_index, &code);
+        if (t < 0 || code != 0) {
+            throw Error(code, "Document::estimate_render_time");
+        }
+        return t;
+    }
+
+    // ── PHASE-7 page getters (0-based page) ─────────────────────────────────
+
+    /// Page width in points.
+    float page_get_width(int page_index) const {
+        int32_t code = 0;
+        float w = pdf_page_get_width(ptr(), page_index, &code);
+        if (code != 0) {
+            throw Error(code, "Document::page_get_width");
+        }
+        return w;
+    }
+
+    /// Page height in points.
+    float page_get_height(int page_index) const {
+        int32_t code = 0;
+        float h = pdf_page_get_height(ptr(), page_index, &code);
+        if (code != 0) {
+            throw Error(code, "Document::page_get_height");
+        }
+        return h;
+    }
+
+    /// Page rotation in degrees.
+    int page_get_rotation(int page_index) const {
+        int32_t code = 0;
+        int32_t r = pdf_page_get_rotation(ptr(), page_index, &code);
+        if (r < 0 || code != 0) {
+            throw Error(code, "Document::page_get_rotation");
+        }
+        return r;
+    }
+
+    /// Laid-out elements for one page (0-based).
+    std::vector<Element> page_get_elements(int page_index) const {
+        int32_t code = 0;
+        FfiElementList* list = pdf_page_get_elements(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::page_get_elements");
+        }
+        std::vector<Element> out;
+        int32_t n = pdf_oxide_element_count(list);
+        out.reserve(n < 0 ? 0 : static_cast<std::size_t>(n));
+        try {
+            for (int32_t i = 0; i < n; ++i) {
+                Element e;
+                code = 0;
+                e.type = detail::take_string(pdf_oxide_element_get_type(list, i, &code),
+                                             code, "Document::page_get_elements");
+                code = 0;
+                e.text = detail::take_string(pdf_oxide_element_get_text(list, i, &code),
+                                             code, "Document::page_get_elements");
+                Bbox b{0, 0, 0, 0};
+                pdf_oxide_element_get_rect(list, i, &b.x, &b.y, &b.width, &b.height,
+                                           &code);
+                e.rect = b;
+                out.push_back(std::move(e));
+            }
+        } catch (...) {
+            pdf_oxide_elements_free(list);
+            throw;
+        }
+        pdf_oxide_elements_free(list);
+        return out;
+    }
+
+    // ── PHASE-7 OCR (engine declared after Document) ────────────────────────
+
+    /// True if the page is scanned/hybrid and benefits from OCR.
+    bool ocr_page_needs_ocr(int page_index) const {
+        int32_t code = 0;
+        bool needs = pdf_ocr_page_needs_ocr(ptr(), page_index, &code);
+        if (!needs && code != 0) {
+            throw Error(code, "Document::ocr_page_needs_ocr");
+        }
+        return needs;
+    }
+
+    /// Extract text for a page via OCR. `engine` may be nullptr (native text
+    /// extraction only). Declared inline after OcrEngine to borrow its handle.
+    std::string ocr_extract_text(int page_index, const class OcrEngine* engine) const;
+
     /// Free the native handle now (idempotent). RAII also frees at scope exit;
     /// this is the explicit close for API symmetry with the other bindings.
     void close() { handle_.reset(); }
@@ -816,6 +1000,74 @@ class Pdf {
         ::Pdf* h = pdf_from_text(text.c_str(), &code);
         if (h == nullptr) {
             throw Error(code, "Pdf::from_text");
+        }
+        return Pdf(h);
+    }
+
+    // ── PHASE-7 constructors ─────────────────────────────────────────────
+
+    /// Build a single-page PDF wrapping the image at `path`.
+    static Pdf from_image(const std::string& path) {
+        int32_t code = 0;
+        ::Pdf* h = pdf_from_image(path.c_str(), &code);
+        if (h == nullptr) {
+            throw Error(code, "Pdf::from_image");
+        }
+        return Pdf(h);
+    }
+
+    /// Build a single-page PDF wrapping in-memory image `data`.
+    static Pdf from_image_bytes(const std::vector<std::uint8_t>& data) {
+        int32_t code = 0;
+        ::Pdf* h =
+            pdf_from_image_bytes(data.data(), static_cast<int32_t>(data.size()), &code);
+        if (h == nullptr) {
+            throw Error(code, "Pdf::from_image_bytes");
+        }
+        return Pdf(h);
+    }
+
+    /// Build a PDF from HTML + CSS with one optional embedded font (empty
+    /// `font_bytes` for none).
+    static Pdf from_html_css(const std::string& html, const std::string& css,
+                             const std::vector<std::uint8_t>& font_bytes = {}) {
+        int32_t code = 0;
+        ::Pdf* h = pdf_from_html_css(
+            html.c_str(), css.c_str(), font_bytes.empty() ? nullptr : font_bytes.data(),
+            static_cast<std::uintptr_t>(font_bytes.size()), &code);
+        if (h == nullptr) {
+            throw Error(code, "Pdf::from_html_css");
+        }
+        return Pdf(h);
+    }
+
+    /// Build a PDF from HTML + CSS with a multi-font cascade. `families` and
+    /// `fonts` are parallel arrays of the same length.
+    static Pdf
+    from_html_css_with_fonts(const std::string& html, const std::string& css,
+                             const std::vector<std::string>& families,
+                             const std::vector<std::vector<std::uint8_t>>& fonts) {
+        std::vector<const char*> fam_ptrs;
+        std::vector<const std::uint8_t*> font_ptrs;
+        std::vector<std::uintptr_t> font_lens;
+        fam_ptrs.reserve(families.size());
+        font_ptrs.reserve(fonts.size());
+        font_lens.reserve(fonts.size());
+        for (const auto& f : families) {
+            fam_ptrs.push_back(f.c_str());
+        }
+        for (const auto& b : fonts) {
+            font_ptrs.push_back(b.data());
+            font_lens.push_back(static_cast<std::uintptr_t>(b.size()));
+        }
+        int32_t code = 0;
+        ::Pdf* h = pdf_from_html_css_with_fonts(
+            html.c_str(), css.c_str(), fam_ptrs.empty() ? nullptr : fam_ptrs.data(),
+            font_ptrs.empty() ? nullptr : font_ptrs.data(),
+            font_lens.empty() ? nullptr : font_lens.data(),
+            static_cast<std::uintptr_t>(fam_ptrs.size()), &code);
+        if (h == nullptr) {
+            throw Error(code, "Pdf::from_html_css_with_fonts");
         }
         return Pdf(h);
     }
@@ -1294,6 +1546,59 @@ class DocumentEditor {
         return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
                                   "DocumentEditor::save_encrypted_to_bytes");
     }
+
+    // ── PHASE-7 redaction (geometric, ISO 32000-1 §12.5.6.23) ───────────────
+
+    /// Queue a redaction region on `page` (0-based). Coordinates and the overlay
+    /// fill colour (r,g,b in 0..1) are page user-space / DeviceRGB.
+    void redaction_add(int page, double x1, double y1, double x2, double y2, double r,
+                       double g, double b) {
+        int32_t code = 0;
+        if (pdf_redaction_add(ptr(), static_cast<std::uintptr_t>(page), x1, y1, x2, y2,
+                              r, g, b, &code) != 0) {
+            throw Error(code, "DocumentEditor::redaction_add");
+        }
+    }
+
+    /// Number of queued redaction regions for `page` (0-based).
+    int redaction_count(int page) const {
+        int32_t code = 0;
+        int32_t n =
+            pdf_redaction_count(ptr(), static_cast<std::uintptr_t>(page), &code);
+        if (n < 0) {
+            throw Error(code, "DocumentEditor::redaction_count");
+        }
+        return n;
+    }
+
+    /// Destructively apply all queued redactions. `scrub_metadata` also runs the
+    /// document-scrub pass; (r,g,b) is the overlay fill colour (0..1). Returns
+    /// the number of glyphs physically removed.
+    int redaction_apply(bool scrub_metadata, double r, double g, double b) {
+        int32_t code = 0;
+        int32_t removed = pdf_redaction_apply(ptr(), scrub_metadata, r, g, b, &code);
+        if (removed < 0) {
+            throw Error(code, "DocumentEditor::redaction_apply");
+        }
+        return removed;
+    }
+
+    /// Sanitize the document without geometric redaction (strip /Info, XMP,
+    /// document JavaScript, embedded files). Returns the number of constructs
+    /// removed.
+    int redaction_scrub_metadata() {
+        int32_t code = 0;
+        int32_t removed = pdf_redaction_scrub_metadata(ptr(), &code);
+        if (removed < 0) {
+            throw Error(code, "DocumentEditor::redaction_scrub_metadata");
+        }
+        return removed;
+    }
+
+    /// Stamp a generated barcode/QR onto `page` (0-based) at (x,y,width,height)
+    /// in page user-space points. Declared inline after Barcode is defined.
+    void add_barcode_to_page(int page_index, const class Barcode& barcode, float x,
+                             float y, float width, float height);
 
     /// Free the native handle now (idempotent). RAII also frees at scope exit.
     void close() { handle_.reset(); }
@@ -2789,6 +3094,240 @@ inline std::vector<std::uint8_t> sign_bytes_pades_opts(
         &out_len, &code);
     return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
                               "sign_bytes_pades_opts");
+}
+
+// ── PHASE-7 barcodes / OCR / standalone renderer / merge / timestamp ─────────
+//
+// Same established pattern: owned opaque handles wrapped move-only and freed via
+// their pdf_*_free on close()/dtor; string returns copied + freed with
+// free_string (detail::take_string); owned byte buffers copied + freed with
+// free_bytes (detail::take_bytes); a closed-handle guard on every ptr(). The C
+// ABI keys failure off a NULL handle / NULL char* / negative-or-sentinel int
+// return with *error_code set, exactly like earlier phases.
+
+/// A generated 1-D barcode or 2-D QR code (opaque FfiBarcodeImage handle).
+/// Move-only; frees via pdf_barcode_free on close()/dtor.
+class Barcode {
+  public:
+    /// Generate a QR code from `data`. `error_correction` selects the EC level
+    /// (0=L 1=M 2=Q 3=H); `size_px` is the requested raster size in pixels.
+    static Barcode generate_qr_code(const std::string& data, int error_correction = 1,
+                                    int size_px = 256) {
+        int32_t code = 0;
+        FfiBarcodeImage* h =
+            pdf_generate_qr_code(data.c_str(), error_correction, size_px, &code);
+        if (h == nullptr) {
+            throw Error(code, "Barcode::generate_qr_code");
+        }
+        return Barcode(h);
+    }
+
+    /// Generate a barcode from `data`. `format` selects the symbology; `size_px`
+    /// is the requested raster size in pixels.
+    static Barcode generate_barcode(const std::string& data, int format,
+                                    int size_px = 256) {
+        int32_t code = 0;
+        FfiBarcodeImage* h = pdf_generate_barcode(data.c_str(), format, size_px, &code);
+        if (h == nullptr) {
+            throw Error(code, "Barcode::generate_barcode");
+        }
+        return Barcode(h);
+    }
+
+    /// The encoded data string carried by the barcode.
+    std::string get_data() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_barcode_get_data(ptr(), &code), code,
+                                   "Barcode::get_data");
+    }
+
+    /// The barcode format/symbology code.
+    int get_format() const {
+        int32_t code = 0;
+        int32_t f = pdf_barcode_get_format(ptr(), &code);
+        if (f < 0 || code != 0) {
+            throw Error(code, "Barcode::get_format");
+        }
+        return f;
+    }
+
+    /// Decode confidence (0..1; meaningful only for decoded barcodes).
+    float get_confidence() const {
+        int32_t code = 0;
+        float c = pdf_barcode_get_confidence(ptr(), &code);
+        if (code != 0) {
+            throw Error(code, "Barcode::get_confidence");
+        }
+        return c;
+    }
+
+    /// Render the barcode to PNG bytes at `size_px`.
+    std::vector<std::uint8_t> get_image_png(int size_px = 256) const {
+        int32_t code = 0;
+        int32_t out_len = 0;
+        std::uint8_t* p = pdf_barcode_get_image_png(ptr(), size_px, &out_len, &code);
+        return detail::take_bytes(p,
+                                  static_cast<std::size_t>(out_len < 0 ? 0 : out_len),
+                                  code, "Barcode::get_image_png");
+    }
+
+    /// Render the barcode to an SVG string at `size_px`.
+    std::string get_svg(int size_px = 256) const {
+        int32_t code = 0;
+        return detail::take_string(pdf_barcode_get_svg(ptr(), size_px, &code), code,
+                                   "Barcode::get_svg");
+    }
+
+    /// Free the native handle now (idempotent). RAII also frees at scope exit.
+    void close() { handle_.reset(); }
+
+  private:
+    friend class DocumentEditor;
+    struct Deleter {
+        void operator()(FfiBarcodeImage* h) const noexcept {
+            if (h)
+                pdf_barcode_free(h);
+        }
+    };
+    explicit Barcode(FfiBarcodeImage* h) : handle_(h) {}
+    FfiBarcodeImage* ptr() const {
+        if (!handle_)
+            throw Error(0, "Barcode is closed");
+        return handle_.get();
+    }
+    /// Borrow the raw native handle (non-owning) for add_barcode_to_page.
+    const FfiBarcodeImage* raw() const { return ptr(); }
+    std::unique_ptr<FfiBarcodeImage, Deleter> handle_;
+};
+
+/// An OCR engine loaded from detection/recognition models + a dictionary
+/// (opaque handle). Move-only; frees via pdf_ocr_engine_free on close()/dtor.
+class OcrEngine {
+  public:
+    /// Create an OCR engine from model/dictionary file paths.
+    static OcrEngine create(const std::string& det_model_path,
+                            const std::string& rec_model_path,
+                            const std::string& dict_path) {
+        int32_t code = 0;
+        void* h = pdf_ocr_engine_create(det_model_path.c_str(), rec_model_path.c_str(),
+                                        dict_path.c_str(), &code);
+        if (h == nullptr) {
+            throw Error(code, "OcrEngine::create");
+        }
+        return OcrEngine(h);
+    }
+
+    /// Free the native handle now (idempotent). RAII also frees at scope exit.
+    void close() { handle_.reset(); }
+
+    /// Borrow the raw native handle (non-owning) for Document::ocr_extract_text.
+    const void* handle_get() const { return ptr(); }
+
+  private:
+    struct Deleter {
+        void operator()(void* h) const noexcept {
+            if (h)
+                pdf_ocr_engine_free(h);
+        }
+    };
+    explicit OcrEngine(void* h) : handle_(h) {}
+    void* ptr() const {
+        if (!handle_)
+            throw Error(0, "OcrEngine is closed");
+        return handle_.get();
+    }
+    std::unique_ptr<void, Deleter> handle_;
+};
+
+/// A standalone reusable renderer configuration (opaque handle). Move-only;
+/// frees via pdf_renderer_free on close()/dtor.
+class Renderer {
+  public:
+    /// Create a renderer with a `dpi`, output `format` (0=PNG 1=JPEG), JPEG
+    /// `quality` (0..100), and anti-aliasing toggle.
+    static Renderer create(int dpi, int format, int quality, bool anti_alias) {
+        int32_t code = 0;
+        void* h = pdf_create_renderer(dpi, format, quality, anti_alias, &code);
+        if (h == nullptr) {
+            throw Error(code, "Renderer::create");
+        }
+        return Renderer(h);
+    }
+
+    /// Free the native handle now (idempotent). RAII also frees at scope exit.
+    void close() { handle_.reset(); }
+
+  private:
+    struct Deleter {
+        void operator()(void* h) const noexcept {
+            if (h)
+                pdf_renderer_free(h);
+        }
+    };
+    explicit Renderer(void* h) : handle_(h) {}
+    void* ptr() const {
+        if (!handle_)
+            throw Error(0, "Renderer is closed");
+        return handle_.get();
+    }
+    std::unique_ptr<void, Deleter> handle_;
+};
+
+// ── PHASE-7 out-of-line definitions (need the classes above) ─────────────────
+
+inline std::string Document::ocr_extract_text(int page_index,
+                                              const OcrEngine* engine) const {
+    int32_t code = 0;
+    const void* eng = engine != nullptr ? engine->handle_get() : nullptr;
+    return detail::take_string(pdf_ocr_extract_text(ptr(), page_index, eng, &code),
+                               code, "Document::ocr_extract_text");
+}
+
+inline void DocumentEditor::add_barcode_to_page(int page_index, const Barcode& barcode,
+                                                float x, float y, float width,
+                                                float height) {
+    int32_t code = 0;
+    if (pdf_add_barcode_to_page(ptr(), page_index, barcode.raw(), x, y, width, height,
+                                &code) != 0) {
+        throw Error(code, "DocumentEditor::add_barcode_to_page");
+    }
+}
+
+// ── PHASE-7 top-level free functions ─────────────────────────────────────────
+
+/// Merge multiple PDFs (by filesystem path, in order) into one, returning the
+/// merged PDF bytes.
+inline std::vector<std::uint8_t> merge(const std::vector<std::string>& paths) {
+    std::vector<const char*> path_ptrs;
+    path_ptrs.reserve(paths.size());
+    for (const auto& p : paths) {
+        path_ptrs.push_back(p.c_str());
+    }
+    int32_t code = 0;
+    int32_t data_len = 0;
+    std::uint8_t* p =
+        pdf_merge(path_ptrs.empty() ? nullptr : path_ptrs.data(),
+                  static_cast<int32_t>(path_ptrs.size()), &data_len, &code);
+    return detail::take_bytes(p, static_cast<std::size_t>(data_len < 0 ? 0 : data_len),
+                              code, "merge");
+}
+
+/// Add a document timestamp (RFC 3161) over the signature at `sig_index` using
+/// the TSA at `tsa_url`, returning the timestamped PDF bytes.
+inline std::vector<std::uint8_t>
+add_timestamp(const std::vector<std::uint8_t>& pdf_data, int sig_index,
+              const std::string& tsa_url) {
+    std::uint8_t* out_data = nullptr;
+    std::uintptr_t out_len = 0;
+    int32_t code = 0;
+    bool ok =
+        pdf_add_timestamp(pdf_data.data(), static_cast<std::uintptr_t>(pdf_data.size()),
+                          sig_index, tsa_url.c_str(), &out_data, &out_len, &code);
+    if (!ok) {
+        throw Error(code, "add_timestamp");
+    }
+    return detail::take_bytes(out_data, static_cast<std::size_t>(out_len), code,
+                              "add_timestamp");
 }
 
 } // namespace pdf_oxide

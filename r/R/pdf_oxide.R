@@ -2058,3 +2058,373 @@ pdf_x_results_close <- function(results) {
     stop("pdf_x_results_close: expected a pdfoxide_pdf_x_results")
   invisible(.Call(C_r_pdf_x_results_close, results))
 }
+
+# ── PHASE-7: barcodes / QR ────────────────────────────────────────────────────
+# A `pdfoxide_barcode` is an external pointer to a native FfiBarcodeImage freed by
+# the GC finalizer (or now via pdf_barcode_close). `error_correction`: 0=L 1=M
+# 2=Q 3=H. `format`: 0=Code128 1=Code39 2=EAN13 ... (see pdf_page_barcode_1d).
+
+#' Generate a QR code.
+#' @param data The data to encode. @param error_correction 0=L 1=M 2=Q 3=H.
+#' @param size_px Side length in pixels.
+#' @return A `pdfoxide_barcode` handle.
+#' @export
+pdf_generate_qr_code <- function(data, error_correction = 1L, size_px = 256L) {
+  structure(.Call(C_r_generate_qr_code, data, as.integer(error_correction),
+                  as.integer(size_px)), class = "pdfoxide_barcode")
+}
+
+#' Generate a 1-D / 2-D barcode of the given symbology.
+#' @param data The data to encode. @param format Symbology code.
+#' @param size_px Target size in pixels.
+#' @return A `pdfoxide_barcode` handle.
+#' @export
+pdf_generate_barcode <- function(data, format = 0L, size_px = 256L) {
+  structure(.Call(C_r_generate_barcode, data, as.integer(format),
+                  as.integer(size_px)), class = "pdfoxide_barcode")
+}
+
+#' Decoded barcode data string.
+#' @param barcode A `pdfoxide_barcode`.
+#' @export
+pdf_barcode_get_data <- function(barcode) .Call(C_r_barcode_get_data, barcode)
+
+#' Barcode symbology format code.
+#' @param barcode A `pdfoxide_barcode`.
+#' @export
+pdf_barcode_get_format <- function(barcode) .Call(C_r_barcode_get_format, barcode)
+
+#' Barcode decode confidence (0.0-1.0).
+#' @param barcode A `pdfoxide_barcode`.
+#' @export
+pdf_barcode_get_confidence <- function(barcode) {
+  .Call(C_r_barcode_get_confidence, barcode)
+}
+
+#' Render the barcode to PNG bytes.
+#' @param barcode A `pdfoxide_barcode`. @param size_px Render size in pixels.
+#' @return A `raw` vector of PNG bytes.
+#' @export
+pdf_barcode_get_image_png <- function(barcode, size_px = 256L) {
+  .Call(C_r_barcode_get_image_png, barcode, as.integer(size_px))
+}
+
+#' Render the barcode to an SVG string.
+#' @param barcode A `pdfoxide_barcode`. @param size_px Render size in pixels.
+#' @export
+pdf_barcode_get_svg <- function(barcode, size_px = 256L) {
+  .Call(C_r_barcode_get_svg, barcode, as.integer(size_px))
+}
+
+#' Free a barcode handle now (idempotent).
+#' @param barcode A `pdfoxide_barcode`.
+#' @export
+pdf_barcode_close <- function(barcode) {
+  if (!inherits(barcode, "pdfoxide_barcode"))
+    stop("pdf_barcode_close: expected a pdfoxide_barcode")
+  invisible(.Call(C_r_barcode_close, barcode))
+}
+
+#' Place a generated barcode onto an editor page at the given rectangle.
+#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param barcode A `pdfoxide_barcode`. @param x,y,width,height Rectangle (pts).
+#' @export
+pdf_editor_add_barcode_to_page <- function(editor, page, barcode, x, y, width,
+                                           height) {
+  if (!inherits(barcode, "pdfoxide_barcode"))
+    stop("pdf_editor_add_barcode_to_page: expected a pdfoxide_barcode")
+  invisible(.Call(C_r_editor_add_barcode_to_page, editor, as.integer(page),
+                  barcode, as.double(x), as.double(y), as.double(width),
+                  as.double(height)))
+}
+
+# ── PHASE-7: OCR ──────────────────────────────────────────────────────────────
+# A `pdfoxide_ocr_engine` is an external pointer to a native OCR engine freed by
+# the GC finalizer (or now via pdf_ocr_engine_close).
+
+#' Create an OCR engine from detection / recognition / dictionary model files.
+#' @param det_model_path,rec_model_path,dict_path Paths to the model files.
+#' @return A `pdfoxide_ocr_engine` handle.
+#' @export
+pdf_ocr_engine_create <- function(det_model_path, rec_model_path, dict_path) {
+  structure(.Call(C_r_ocr_engine_create, det_model_path, rec_model_path,
+                  dict_path), class = "pdfoxide_ocr_engine")
+}
+
+#' Free an OCR engine handle now (idempotent).
+#' @param engine A `pdfoxide_ocr_engine`.
+#' @export
+pdf_ocr_engine_close <- function(engine) {
+  if (!inherits(engine, "pdfoxide_ocr_engine"))
+    stop("pdf_ocr_engine_close: expected a pdfoxide_ocr_engine")
+  invisible(.Call(C_r_ocr_engine_close, engine))
+}
+
+#' Whether a (0-based) page needs OCR (i.e. is scanned / hybrid).
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @return A logical scalar.
+#' @export
+pdf_ocr_page_needs_ocr <- function(doc, page) {
+  .Call(C_r_ocr_page_needs_ocr, doc, as.integer(page))
+}
+
+#' Extract text from a (0-based) page using OCR.
+#'
+#' `engine` may be `NULL` to use native text extraction only.
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param engine A `pdfoxide_ocr_engine` or `NULL`.
+#' @export
+pdf_ocr_extract_text <- function(doc, page, engine = NULL) {
+  .Call(C_r_ocr_extract_text, doc, as.integer(page), engine)
+}
+
+# ── PHASE-7: render variants ──────────────────────────────────────────────────
+# All return a `pdfoxide_rendered_image` built via new_rendered_image().
+
+#' Render a (0-based) page with the full RenderOptions surface.
+#'
+#' `format`: 0=PNG 1=JPEG. Background channels are 0.0-1.0; set
+#' `transparent_background = TRUE` to drop the fill.
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param dpi Resolution. @param format Image format.
+#' @param bg_r,bg_g,bg_b,bg_a Background RGBA (0-1).
+#' @param transparent_background Drop the background fill?
+#' @param render_annotations Render annotations?
+#' @param jpeg_quality JPEG quality (1-100), used only for JPEG.
+#' @return A `pdfoxide_rendered_image`.
+#' @export
+pdf_render_page_with_options <- function(doc, page, dpi = 150L, format = 0L,
+                                         bg_r = 1, bg_g = 1, bg_b = 1, bg_a = 1,
+                                         transparent_background = FALSE,
+                                         render_annotations = TRUE,
+                                         jpeg_quality = 85L) {
+  img <- .Call(C_r_render_page_with_options, doc, as.integer(page),
+               as.integer(dpi), as.integer(format), as.double(bg_r),
+               as.double(bg_g), as.double(bg_b), as.double(bg_a),
+               as.integer(isTRUE(transparent_background)),
+               as.integer(isTRUE(render_annotations)), as.integer(jpeg_quality))
+  new_rendered_image(img)
+}
+
+#' Render a (0-based) page with RenderOptions plus OCG layer filtering.
+#'
+#' `excluded_layers` is a character vector of OCG `/Name`s to suppress.
+#' @inheritParams pdf_render_page_with_options
+#' @param excluded_layers Character vector of OCG names to exclude, or `NULL`.
+#' @return A `pdfoxide_rendered_image`.
+#' @export
+pdf_render_page_with_options_ex <- function(doc, page, dpi = 150L, format = 0L,
+                                            bg_r = 1, bg_g = 1, bg_b = 1,
+                                            bg_a = 1,
+                                            transparent_background = FALSE,
+                                            render_annotations = TRUE,
+                                            jpeg_quality = 85L,
+                                            excluded_layers = NULL) {
+  layers <- if (is.null(excluded_layers)) NULL else as.character(excluded_layers)
+  img <- .Call(C_r_render_page_with_options_ex, doc, as.integer(page),
+               as.integer(dpi), as.integer(format), as.double(bg_r),
+               as.double(bg_g), as.double(bg_b), as.double(bg_a),
+               as.integer(isTRUE(transparent_background)),
+               as.integer(isTRUE(render_annotations)), as.integer(jpeg_quality),
+               layers)
+  new_rendered_image(img)
+}
+
+#' Render a rectangular region of a (0-based) page (crop in user-space points).
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param crop_x,crop_y,crop_width,crop_height Region in user-space points.
+#' @param format Image format (0=PNG 1=JPEG).
+#' @return A `pdfoxide_rendered_image`.
+#' @export
+pdf_render_page_region <- function(doc, page, crop_x, crop_y, crop_width,
+                                   crop_height, format = 0L) {
+  img <- .Call(C_r_render_page_region, doc, as.integer(page), as.double(crop_x),
+               as.double(crop_y), as.double(crop_width), as.double(crop_height),
+               as.integer(format))
+  new_rendered_image(img)
+}
+
+#' Render a (0-based) page to fit inside `w` x `h` pixels (aspect-preserving).
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param w,h Bounding box in pixels. @param format Image format.
+#' @return A `pdfoxide_rendered_image`.
+#' @export
+pdf_render_page_fit <- function(doc, page, w, h, format = 0L) {
+  img <- .Call(C_r_render_page_fit, doc, as.integer(page), as.integer(w),
+               as.integer(h), as.integer(format))
+  new_rendered_image(img)
+}
+
+#' Render a (0-based) page to a raw premultiplied RGBA8888 pixel buffer.
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param dpi Resolution.
+#' @return A `pdfoxide_rendered_image` (its `data` is the raw RGBA buffer).
+#' @export
+pdf_render_page_raw <- function(doc, page, dpi = 150L) {
+  img <- .Call(C_r_render_page_raw, doc, as.integer(page), as.integer(dpi))
+  new_rendered_image(img)
+}
+
+# ── PHASE-7: renderer + estimate ──────────────────────────────────────────────
+# A `pdfoxide_renderer` is an external pointer to a native renderer freed by the
+# GC finalizer (or now via pdf_renderer_close).
+
+#' Create a reusable renderer.
+#' @param dpi Resolution. @param format Image format (0=PNG 1=JPEG).
+#' @param quality JPEG quality (1-100). @param anti_alias Enable anti-aliasing?
+#' @return A `pdfoxide_renderer` handle.
+#' @export
+pdf_create_renderer <- function(dpi = 150L, format = 0L, quality = 85L,
+                                anti_alias = TRUE) {
+  structure(.Call(C_r_create_renderer, as.integer(dpi), as.integer(format),
+                  as.integer(quality), isTRUE(anti_alias)),
+            class = "pdfoxide_renderer")
+}
+
+#' Free a renderer handle now (idempotent).
+#' @param renderer A `pdfoxide_renderer`.
+#' @export
+pdf_renderer_close <- function(renderer) {
+  if (!inherits(renderer, "pdfoxide_renderer"))
+    stop("pdf_renderer_close: expected a pdfoxide_renderer")
+  invisible(.Call(C_r_renderer_close, renderer))
+}
+
+#' Estimate the render time (ms) for a (0-based) page.
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @export
+pdf_estimate_render_time <- function(doc, page) {
+  .Call(C_r_estimate_render_time, doc, as.integer(page))
+}
+
+# ── PHASE-7: redaction (methods on pdfoxide_editor) ───────────────────────────
+
+#' Queue a redaction rectangle on a (0-based) page (corners + overlay RGB).
+#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param x1,y1,x2,y2 Rectangle corners in user-space points.
+#' @param r,g,b Overlay fill colour (0-1).
+#' @export
+pdf_redaction_add <- function(editor, page, x1, y1, x2, y2, r = 0, g = 0, b = 0) {
+  invisible(.Call(C_r_redaction_add, editor, as.integer(page), as.double(x1),
+                  as.double(y1), as.double(x2), as.double(y2), as.double(r),
+                  as.double(g), as.double(b)))
+}
+
+#' Number of queued redaction regions for a (0-based) page.
+#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @export
+pdf_redaction_count <- function(editor, page) {
+  .Call(C_r_redaction_count, editor, as.integer(page))
+}
+
+#' Destructively apply all queued redactions; returns glyphs removed.
+#' @param editor A `pdfoxide_editor`. @param scrub_metadata Also scrub metadata?
+#' @param r,g,b Overlay fill colour (0-1).
+#' @return The number of glyphs physically removed.
+#' @export
+pdf_redaction_apply <- function(editor, scrub_metadata = FALSE, r = 0, g = 0,
+                                b = 0) {
+  .Call(C_r_redaction_apply, editor, isTRUE(scrub_metadata), as.double(r),
+        as.double(g), as.double(b))
+}
+
+#' Strip document metadata / JavaScript / embedded files; returns count removed.
+#' @param editor A `pdfoxide_editor`.
+#' @export
+pdf_redaction_scrub_metadata <- function(editor) {
+  .Call(C_r_redaction_scrub_metadata, editor)
+}
+
+# ── PHASE-7: constructors ─────────────────────────────────────────────────────
+
+#' Build a single-page PDF from an image file.
+#' @param path Path to an image file.
+#' @return A `pdfoxide_pdf` handle.
+#' @export
+pdf_from_image <- function(path) {
+  structure(.Call(C_r_pdf_from_image, path), class = "pdfoxide_pdf")
+}
+
+#' Build a single-page PDF from in-memory image bytes.
+#' @param bytes A `raw` vector of image bytes.
+#' @return A `pdfoxide_pdf` handle.
+#' @export
+pdf_from_image_bytes <- function(bytes) {
+  structure(.Call(C_r_pdf_from_image_bytes, bytes), class = "pdfoxide_pdf")
+}
+
+#' Build a PDF from HTML + CSS, optionally with one embedded font.
+#' @param html HTML source. @param css CSS source.
+#' @param font_bytes Optional `raw` vector of TTF / OTF bytes, or `NULL`.
+#' @return A `pdfoxide_pdf` handle.
+#' @export
+pdf_from_html_css <- function(html, css, font_bytes = NULL) {
+  fb <- if (is.null(font_bytes)) NULL else as.raw(font_bytes)
+  structure(.Call(C_r_pdf_from_html_css, html, css, fb), class = "pdfoxide_pdf")
+}
+
+#' Build a PDF from HTML + CSS with a multi-font cascade.
+#'
+#' `families` is a character vector of family names; `font_bytes` is a parallel
+#' list of `raw` vectors of font bytes (same length).
+#' @param html HTML source. @param css CSS source.
+#' @param families Character vector of font-family names.
+#' @param font_bytes List of `raw` vectors of font bytes (parallel to `families`).
+#' @return A `pdfoxide_pdf` handle.
+#' @export
+pdf_from_html_css_with_fonts <- function(html, css, families, font_bytes) {
+  structure(.Call(C_r_pdf_from_html_css_with_fonts, html, css,
+                  as.character(families), font_bytes), class = "pdfoxide_pdf")
+}
+
+#' Merge multiple PDF files (by path) into a single PDF.
+#' @param paths Character vector of input PDF paths.
+#' @return A `raw` vector of the merged PDF bytes.
+#' @export
+pdf_merge <- function(paths) {
+  .Call(C_r_pdf_merge, as.character(paths))
+}
+
+# ── PHASE-7: page getters ─────────────────────────────────────────────────────
+
+#' Page width in user-space points for a (0-based) page.
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @export
+pdf_page_get_width <- function(doc, page) {
+  .Call(C_r_page_get_width, doc, as.integer(page))
+}
+
+#' Page height in user-space points for a (0-based) page.
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @export
+pdf_page_get_height <- function(doc, page) {
+  .Call(C_r_page_get_height, doc, as.integer(page))
+}
+
+#' Page rotation in degrees for a (0-based) page.
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @export
+pdf_page_get_rotation <- function(doc, page) {
+  .Call(C_r_page_get_rotation, doc, as.integer(page))
+}
+
+#' Extract layout elements for a (0-based) page.
+#'
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @return A list of `Element` records, each `list(type=, text=, rect=)` where
+#'   `rect` is `list(x=, y=, width=, height=)`.
+#' @export
+pdf_page_get_elements <- function(doc, page) {
+  .Call(C_r_page_get_elements, doc, as.integer(page))
+}
+
+# ── PHASE-7: timestamp ────────────────────────────────────────────────────────
+
+#' Add an RFC-3161 timestamp to an existing signature in a PDF.
+#' @param pdf_data A `raw` vector of the PDF bytes.
+#' @param sig_index 0-based signature index. @param tsa_url The TSA URL.
+#' @return A `raw` vector of the timestamped PDF bytes.
+#' @export
+pdf_add_timestamp <- function(pdf_data, sig_index, tsa_url) {
+  .Call(C_r_add_timestamp, as.raw(pdf_data), as.integer(sig_index), tsa_url)
+}

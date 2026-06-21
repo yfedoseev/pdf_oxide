@@ -88,6 +88,20 @@ export validatePdfA, validatePdfUa, validatePdfX
 export is_compliant, is_accessible, errors, warnings, ua_stats
 export pdf_a_error_count, pdf_a_warning_count, pdf_ua_error_count
 export pdf_ua_warning_count, pdf_x_error_count
+# Phase-7: barcodes/QR, OCR, render variants, redaction, image/HTML-CSS/merge
+# constructors, page getters, and timestamp.
+export Barcode, generate_qr_code, generate_barcode
+export barcode_get_data, barcode_get_format, barcode_get_confidence
+export barcode_get_image_png, barcode_get_svg, add_barcode_to_page
+export OcrEngine, ocr_engine_create, page_needs_ocr, ocr_extract_text
+export render_page_with_options, render_page_with_options_ex
+export render_page_region, render_page_fit, render_page_raw
+export Renderer, create_renderer, estimate_render_time
+export redaction_add, redaction_count, redaction_apply, redaction_scrub_metadata
+export from_image, from_image_bytes, from_html_css, from_html_css_with_fonts, merge_pdfs
+export page_get_width, page_get_height, page_get_rotation
+export ElementList, page_get_elements, element_count
+export add_timestamp
 
 # Native library resolution: PDF_OXIDE_LIB_PATH (full path) -> PDF_OXIDE_LIB_DIR
 # -> common build dirs -> bare name (system loader).
@@ -4465,5 +4479,843 @@ validatePdfA(doc::PdfDocument, level::Integer) = validate_pdf_a(doc, level)
 validatePdfUa(doc::PdfDocument, level::Integer) = validate_pdf_ua(doc, level)
 """Validate `doc` against PDF/X `level` (alias of [`validate_pdf_x`])."""
 validatePdfX(doc::PdfDocument, level::Integer) = validate_pdf_x(doc, level)
+
+# ── Phase-7: barcodes / OCR / render variants / redaction / constructors /
+#    page getters / timestamp ───────────────────────────────────────────────────
+# Same patterns as earlier phases: opaque native handles wrapped in mutable
+# structs with finalizers and a closed-handle guard; C strings copied out and
+# freed via free_string (_take_string); raw byte buffers copied and freed via
+# free_bytes; non-success C-ABI error codes throw PdfOxideError. RenderedImage and
+# DocumentEditor types from earlier phases are reused. Page indices are 0-based.
+
+# ── Barcodes / QR ───────────────────────────────────────────────────────────────
+# A generated or decoded barcode/QR image. Owns the native FfiBarcodeImage handle
+# (freed via pdf_barcode_free on close!/finalization); accessors copy out of it.
+mutable struct Barcode
+    handle::Ptr{Cvoid}
+    function Barcode(h::Ptr{Cvoid})
+        b = new(h)
+        finalizer(close!, b)
+        return b
+    end
+end
+
+"""Free the native barcode handle now (idempotent; also runs at finalization)."""
+function close!(b::Barcode)
+    if b.handle != C_NULL
+        ccall((:pdf_barcode_free, LIB), Cvoid, (Ptr{Cvoid},), b.handle)
+        b.handle = C_NULL
+    end
+    return nothing
+end
+
+_barcode(b::Barcode) = (b.handle == C_NULL && error("Barcode is closed"); b.handle)
+
+"""Generate a QR code from `data`. `error_correction`/`size_px` are passthrough ints."""
+function generate_qr_code(
+    data::AbstractString,
+    error_correction::Integer = 0,
+    size_px::Integer = 256,
+)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_generate_qr_code, LIB),
+        Ptr{Cvoid},
+        (Cstring, Int32, Int32, Ref{Int32}),
+        data,
+        Int32(error_correction),
+        Int32(size_px),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "generate_qr_code"))
+    return Barcode(h)
+end
+
+"""Generate a 1D/2D barcode from `data`. `format`/`size_px` are passthrough ints."""
+function generate_barcode(data::AbstractString, format::Integer = 0, size_px::Integer = 256)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_generate_barcode, LIB),
+        Ptr{Cvoid},
+        (Cstring, Int32, Int32, Ref{Int32}),
+        data,
+        Int32(format),
+        Int32(size_px),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "generate_barcode"))
+    return Barcode(h)
+end
+
+"""The barcode's decoded/encoded payload string."""
+function barcode_get_data(b::Barcode)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_barcode_get_data, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _barcode(b),
+        code,
+    )
+    return _take_string(ptr, code[], "barcode_get_data")
+end
+
+"""The barcode's format as an int code."""
+function barcode_get_format(b::Barcode)
+    code = Ref{Int32}(0)
+    v = ccall(
+        (:pdf_barcode_get_format, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _barcode(b),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "barcode_get_format"))
+    return Int(v)
+end
+
+"""The barcode's decode confidence (0.0–1.0)."""
+function barcode_get_confidence(b::Barcode)
+    code = Ref{Int32}(0)
+    v = ccall(
+        (:pdf_barcode_get_confidence, LIB),
+        Float32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _barcode(b),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "barcode_get_confidence"))
+    return Float64(v)
+end
+
+"""Render the barcode to a PNG `Vector{UInt8}`. `size_px` is advisory (passthrough)."""
+function barcode_get_image_png(b::Barcode, size_px::Integer = 256)
+    len = Ref{Int32}(0)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_barcode_get_image_png, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Int32, Ref{Int32}, Ref{Int32}),
+        _barcode(b),
+        Int32(size_px),
+        len,
+        code,
+    )
+    ptr == C_NULL && throw(PdfOxideError(code[], "barcode_get_image_png"))
+    n = len[] < 0 ? 0 : Int(len[])
+    out = copy(unsafe_wrap(Array, ptr, n))
+    # Raw byte buffer frees via free_bytes, not free_string.
+    ccall((:free_bytes, LIB), Cvoid, (Ptr{UInt8},), ptr)
+    return out
+end
+
+"""Render the barcode to an SVG string. `size_px` is advisory (passthrough)."""
+function barcode_get_svg(b::Barcode, size_px::Integer = 256)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_barcode_get_svg, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _barcode(b),
+        Int32(size_px),
+        code,
+    )
+    return _take_string(ptr, code[], "barcode_get_svg")
+end
+
+"""Stamp a barcode onto a (0-based) page of an editor at rect `(x, y, width, height)`."""
+function add_barcode_to_page(
+    e::DocumentEditor,
+    page::Integer,
+    b::Barcode,
+    x::Real,
+    y::Real,
+    width::Real,
+    height::Real,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_add_barcode_to_page, LIB),
+        Int32,
+        (Ptr{Cvoid}, Int32, Ptr{Cvoid}, Float32, Float32, Float32, Float32, Ref{Int32}),
+        _editor(e),
+        Int32(page),
+        _barcode(b),
+        Float32(x),
+        Float32(y),
+        Float32(width),
+        Float32(height),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "add_barcode_to_page"))
+    return nothing
+end
+
+# ── OCR ─────────────────────────────────────────────────────────────────────────
+# An OCR engine over the native void* handle (freed via pdf_ocr_engine_free).
+mutable struct OcrEngine
+    handle::Ptr{Cvoid}
+    function OcrEngine(h::Ptr{Cvoid})
+        o = new(h)
+        finalizer(close!, o)
+        return o
+    end
+end
+
+"""Free the native OCR engine handle now (idempotent; also runs at finalization)."""
+function close!(o::OcrEngine)
+    if o.handle != C_NULL
+        ccall((:pdf_ocr_engine_free, LIB), Cvoid, (Ptr{Cvoid},), o.handle)
+        o.handle = C_NULL
+    end
+    return nothing
+end
+
+_ocr(o::OcrEngine) = (o.handle == C_NULL && error("OcrEngine is closed"); o.handle)
+
+"""Create an OCR engine from detection/recognition model + dictionary file paths."""
+function ocr_engine_create(
+    det_model_path::AbstractString,
+    rec_model_path::AbstractString,
+    dict_path::AbstractString,
+)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_ocr_engine_create, LIB),
+        Ptr{Cvoid},
+        (Cstring, Cstring, Cstring, Ref{Int32}),
+        det_model_path,
+        rec_model_path,
+        dict_path,
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "ocr_engine_create"))
+    return OcrEngine(h)
+end
+
+"""Whether a (0-based) page needs OCR (i.e. is scanned/hybrid)."""
+function page_needs_ocr(d::PdfDocument, page::Integer)
+    code = Ref{Int32}(0)
+    ok = ccall(
+        (:pdf_ocr_page_needs_ocr, LIB),
+        Bool,
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _doc(d),
+        Int32(page),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "page_needs_ocr"))
+    return ok
+end
+
+"""
+Extract text from a (0-based) page using OCR. `engine` may be `nothing` to fall
+back to native text extraction only.
+"""
+function ocr_extract_text(
+    d::PdfDocument,
+    page::Integer,
+    engine::Union{Nothing,OcrEngine} = nothing,
+)
+    code = Ref{Int32}(0)
+    eh = engine === nothing ? C_NULL : _ocr(engine)
+    ptr = ccall(
+        (:pdf_ocr_extract_text, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Int32, Ptr{Cvoid}, Ref{Int32}),
+        _doc(d),
+        Int32(page),
+        eh,
+        code,
+    )
+    return _take_string(ptr, code[], "ocr_extract_text")
+end
+
+# ── Render variants (reuse the RenderedImage wrapper) ───────────────────────────
+"""
+Render a (0-based) page with the full RenderOptions surface. Background channels
+are 0.0–1.0; `transparent_background`/`render_annotations` are 0/1 flags.
+"""
+function render_page_with_options(
+    d::PdfDocument,
+    page::Integer,
+    dpi::Integer,
+    format::Integer,
+    bg_r::Real,
+    bg_g::Real,
+    bg_b::Real,
+    bg_a::Real,
+    transparent_background::Integer,
+    render_annotations::Integer,
+    jpeg_quality::Integer,
+)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_render_page_with_options, LIB),
+        Ptr{Cvoid},
+        (
+            Ptr{Cvoid},
+            Int32,
+            Int32,
+            Int32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Int32,
+            Int32,
+            Int32,
+            Ref{Int32},
+        ),
+        _doc(d),
+        Int32(page),
+        Int32(dpi),
+        Int32(format),
+        Float32(bg_r),
+        Float32(bg_g),
+        Float32(bg_b),
+        Float32(bg_a),
+        Int32(transparent_background),
+        Int32(render_annotations),
+        Int32(jpeg_quality),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "render_page_with_options"))
+    return RenderedImage(h)
+end
+
+"""
+Render a (0-based) page with the full RenderOptions surface plus OCG layer
+filtering. `excluded_layers` is a vector of OCG `/Name` strings to suppress.
+"""
+function render_page_with_options_ex(
+    d::PdfDocument,
+    page::Integer,
+    dpi::Integer,
+    format::Integer,
+    bg_r::Real,
+    bg_g::Real,
+    bg_b::Real,
+    bg_a::Real,
+    transparent_background::Integer,
+    render_annotations::Integer,
+    jpeg_quality::Integer,
+    excluded_layers::AbstractVector{<:AbstractString} = String[],
+)
+    # Marshal the Julia String list to a C array of NUL-terminated pointers.
+    cstrs = [Base.cconvert(Cstring, s) for s in excluded_layers]
+    ptrs = [Base.unsafe_convert(Cstring, c) for c in cstrs]
+    GC.@preserve excluded_layers cstrs ptrs begin
+        arg = isempty(ptrs) ? Ptr{Cstring}(C_NULL) : Base.unsafe_convert(Ptr{Cstring}, ptrs)
+        code = Ref{Int32}(0)
+        h = ccall(
+            (:pdf_render_page_with_options_ex, LIB),
+            Ptr{Cvoid},
+            (
+                Ptr{Cvoid},
+                Int32,
+                Int32,
+                Int32,
+                Float32,
+                Float32,
+                Float32,
+                Float32,
+                Int32,
+                Int32,
+                Int32,
+                Ptr{Cstring},
+                Csize_t,
+                Ref{Int32},
+            ),
+            _doc(d),
+            Int32(page),
+            Int32(dpi),
+            Int32(format),
+            Float32(bg_r),
+            Float32(bg_g),
+            Float32(bg_b),
+            Float32(bg_a),
+            Int32(transparent_background),
+            Int32(render_annotations),
+            Int32(jpeg_quality),
+            arg,
+            Csize_t(length(ptrs)),
+            code,
+        )
+        h == C_NULL && throw(PdfOxideError(code[], "render_page_with_options_ex"))
+        return RenderedImage(h)
+    end
+end
+
+"""Render a rectangular region of a (0-based) page (crop in PDF user-space points)."""
+function render_page_region(
+    d::PdfDocument,
+    page::Integer,
+    crop_x::Real,
+    crop_y::Real,
+    crop_width::Real,
+    crop_height::Real,
+    format::Integer = 0,
+)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_render_page_region, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Int32, Float32, Float32, Float32, Float32, Int32, Ref{Int32}),
+        _doc(d),
+        Int32(page),
+        Float32(crop_x),
+        Float32(crop_y),
+        Float32(crop_width),
+        Float32(crop_height),
+        Int32(format),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "render_page_region"))
+    return RenderedImage(h)
+end
+
+"""Render a (0-based) page to fit inside `w`×`h` pixels, preserving aspect ratio."""
+function render_page_fit(
+    d::PdfDocument,
+    page::Integer,
+    w::Integer,
+    h::Integer,
+    format::Integer = 0,
+)
+    code = Ref{Int32}(0)
+    handle = ccall(
+        (:pdf_render_page_fit, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Int32, Int32, Int32, Int32, Ref{Int32}),
+        _doc(d),
+        Int32(page),
+        Int32(w),
+        Int32(h),
+        Int32(format),
+        code,
+    )
+    handle == C_NULL && throw(PdfOxideError(code[], "render_page_fit"))
+    return RenderedImage(handle)
+end
+
+"""
+Render a (0-based) page to a raw premultiplied RGBA8888 buffer at `dpi`. Returns
+`(RenderedImage, width, height)` where the pixel bytes are in `img.data`.
+"""
+function render_page_raw(d::PdfDocument, page::Integer, dpi::Integer)
+    ow = Ref{Int32}(0)
+    oh = Ref{Int32}(0)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_render_page_raw, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Int32, Int32, Ref{Int32}, Ref{Int32}, Ref{Int32}),
+        _doc(d),
+        Int32(page),
+        Int32(dpi),
+        ow,
+        oh,
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "render_page_raw"))
+    return (RenderedImage(h), Int(ow[]), Int(oh[]))
+end
+
+# ── Renderer (reusable config handle) ───────────────────────────────────────────
+# A reusable renderer config over the native void* handle (freed via
+# pdf_renderer_free).
+mutable struct Renderer
+    handle::Ptr{Cvoid}
+    function Renderer(h::Ptr{Cvoid})
+        r = new(h)
+        finalizer(close!, r)
+        return r
+    end
+end
+
+"""Free the native renderer handle now (idempotent; also runs at finalization)."""
+function close!(r::Renderer)
+    if r.handle != C_NULL
+        ccall((:pdf_renderer_free, LIB), Cvoid, (Ptr{Cvoid},), r.handle)
+        r.handle = C_NULL
+    end
+    return nothing
+end
+
+"""Create a reusable renderer with `dpi`, `format`, `quality`, and anti-aliasing."""
+function create_renderer(
+    dpi::Integer = 150,
+    format::Integer = 0,
+    quality::Integer = 90,
+    anti_alias::Bool = true,
+)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_create_renderer, LIB),
+        Ptr{Cvoid},
+        (Int32, Int32, Int32, Bool, Ref{Int32}),
+        Int32(dpi),
+        Int32(format),
+        Int32(quality),
+        anti_alias,
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "create_renderer"))
+    return Renderer(h)
+end
+
+"""Estimate render time (ms) for a (0-based) page of `doc`."""
+function estimate_render_time(d::PdfDocument, page::Integer)
+    code = Ref{Int32}(0)
+    v = ccall(
+        (:pdf_estimate_render_time, LIB),
+        Int32,
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _doc(d),
+        Int32(page),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "estimate_render_time"))
+    return Int(v)
+end
+
+# ── Redaction (methods on DocumentEditor) ───────────────────────────────────────
+"""
+Queue a redaction box on a (0-based) `page`: corners `(x1, y1)`–`(x2, y2)` with
+overlay colour `(r, g, b)` (DeviceRGB, 0.0–1.0). Coordinates are user-space.
+"""
+function redaction_add(
+    e::DocumentEditor,
+    page::Integer,
+    x1::Real,
+    y1::Real,
+    x2::Real,
+    y2::Real,
+    r::Real,
+    g::Real,
+    b::Real,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_redaction_add, LIB),
+        Int32,
+        (
+            Ptr{Cvoid},
+            Csize_t,
+            Float64,
+            Float64,
+            Float64,
+            Float64,
+            Float64,
+            Float64,
+            Float64,
+            Ref{Int32},
+        ),
+        _editor(e),
+        Csize_t(page),
+        Float64(x1),
+        Float64(y1),
+        Float64(x2),
+        Float64(y2),
+        Float64(r),
+        Float64(g),
+        Float64(b),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "redaction_add"))
+    return nothing
+end
+
+"""Number of queued redaction regions for a (0-based) `page`."""
+function redaction_count(e::DocumentEditor, page::Integer)
+    code = Ref{Int32}(0)
+    n = ccall(
+        (:pdf_redaction_count, LIB),
+        Int32,
+        (Ptr{Cvoid}, Csize_t, Ref{Int32}),
+        _editor(e),
+        Csize_t(page),
+        code,
+    )
+    n < 0 && throw(PdfOxideError(code[], "redaction_count"))
+    return Int(n)
+end
+
+"""
+Destructively apply all queued redactions with overlay colour `(r, g, b)`.
+`scrub_metadata` reserved for the document-scrub pass. Returns the number of
+glyphs physically removed.
+"""
+function redaction_apply(e::DocumentEditor, scrub_metadata::Bool, r::Real, g::Real, b::Real)
+    code = Ref{Int32}(0)
+    n = ccall(
+        (:pdf_redaction_apply, LIB),
+        Int32,
+        (Ptr{Cvoid}, Bool, Float64, Float64, Float64, Ref{Int32}),
+        _editor(e),
+        scrub_metadata,
+        Float64(r),
+        Float64(g),
+        Float64(b),
+        code,
+    )
+    n < 0 && throw(PdfOxideError(code[], "redaction_apply"))
+    return Int(n)
+end
+
+"""Sanitize the document (strip Info/XMP/JavaScript/EmbeddedFiles); returns count removed."""
+function redaction_scrub_metadata(e::DocumentEditor)
+    code = Ref{Int32}(0)
+    n = ccall(
+        (:pdf_redaction_scrub_metadata, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _editor(e),
+        code,
+    )
+    n < 0 && throw(PdfOxideError(code[], "redaction_scrub_metadata"))
+    return Int(n)
+end
+
+# ── Constructors (return a Pdf builder handle) ──────────────────────────────────
+"""Build a `Pdf` from an image file at `path`."""
+function from_image(path::AbstractString)
+    code = Ref{Int32}(0)
+    h = ccall((:pdf_from_image, LIB), Ptr{Cvoid}, (Cstring, Ref{Int32}), path, code)
+    h == C_NULL && throw(PdfOxideError(code[], "from_image"))
+    return Pdf(h)
+end
+
+"""Build a `Pdf` from in-memory image bytes."""
+function from_image_bytes(data::AbstractVector{UInt8})
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_from_image_bytes, LIB),
+        Ptr{Cvoid},
+        (Ptr{UInt8}, Int32, Ref{Int32}),
+        data,
+        Int32(length(data)),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "from_image_bytes"))
+    return Pdf(h)
+end
+
+"""
+Build a `Pdf` from HTML + CSS with a single optional embedded font. Pass
+`font_bytes = nothing` (or empty) for no font.
+"""
+function from_html_css(
+    html::AbstractString,
+    css::AbstractString,
+    font_bytes::Union{Nothing,AbstractVector{UInt8}} = nothing,
+)
+    fb = font_bytes === nothing ? UInt8[] : collect(font_bytes)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_from_html_css, LIB),
+        Ptr{Cvoid},
+        (Cstring, Cstring, Ptr{UInt8}, Csize_t, Ref{Int32}),
+        html,
+        css,
+        isempty(fb) ? C_NULL : pointer(fb),
+        Csize_t(length(fb)),
+        code,
+    )
+    GC.@preserve fb begin
+        h == C_NULL && throw(PdfOxideError(code[], "from_html_css"))
+    end
+    return Pdf(h)
+end
+
+"""
+Build a `Pdf` from HTML + CSS with a multi-font cascade. `families` and `fonts`
+are parallel: `families[i]` names the family carried by `fonts[i]` (its bytes).
+"""
+function from_html_css_with_fonts(
+    html::AbstractString,
+    css::AbstractString,
+    families::AbstractVector{<:AbstractString},
+    fonts::AbstractVector{<:AbstractVector{UInt8}},
+)
+    length(families) == length(fonts) ||
+        throw(ArgumentError("families and fonts must be parallel (same length)"))
+    n = length(families)
+    # Marshal the family-name C-string array + parallel byte-pointer / length arrays.
+    fam_c = [Base.cconvert(Cstring, s) for s in families]
+    fam_p = [Base.unsafe_convert(Cstring, c) for c in fam_c]
+    byte_vecs = [collect(f) for f in fonts]
+    byte_p = Ptr{UInt8}[isempty(v) ? Ptr{UInt8}(C_NULL) : pointer(v) for v in byte_vecs]
+    lens = Csize_t[Csize_t(length(v)) for v in byte_vecs]
+    GC.@preserve families fam_c fam_p byte_vecs byte_p lens begin
+        fam_arg = n == 0 ? Ptr{Cstring}(C_NULL) : Base.unsafe_convert(Ptr{Cstring}, fam_p)
+        bp_arg = n == 0 ? Ptr{Ptr{UInt8}}(C_NULL) : pointer(byte_p)
+        ln_arg = n == 0 ? Ptr{Csize_t}(C_NULL) : pointer(lens)
+        code = Ref{Int32}(0)
+        h = ccall(
+            (:pdf_from_html_css_with_fonts, LIB),
+            Ptr{Cvoid},
+            (
+                Cstring,
+                Cstring,
+                Ptr{Cstring},
+                Ptr{Ptr{UInt8}},
+                Ptr{Csize_t},
+                Csize_t,
+                Ref{Int32},
+            ),
+            html,
+            css,
+            fam_arg,
+            bp_arg,
+            ln_arg,
+            Csize_t(n),
+            code,
+        )
+        h == C_NULL && throw(PdfOxideError(code[], "from_html_css_with_fonts"))
+        return Pdf(h)
+    end
+end
+
+"""Merge the PDFs at `paths` (in order) into a single PDF `Vector{UInt8}`."""
+function merge_pdfs(paths::AbstractVector{<:AbstractString})
+    # Marshal the Julia String list to a C array of NUL-terminated pointers.
+    path_c = [Base.cconvert(Cstring, s) for s in paths]
+    path_p = [Base.unsafe_convert(Cstring, c) for c in path_c]
+    GC.@preserve paths path_c path_p begin
+        arg =
+            isempty(path_p) ? Ptr{Cstring}(C_NULL) :
+            Base.unsafe_convert(Ptr{Cstring}, path_p)
+        len = Ref{Int32}(0)
+        code = Ref{Int32}(0)
+        ptr = ccall(
+            (:pdf_merge, LIB),
+            Ptr{UInt8},
+            (Ptr{Cstring}, Int32, Ref{Int32}, Ref{Int32}),
+            arg,
+            Int32(length(path_p)),
+            len,
+            code,
+        )
+        ptr == C_NULL && throw(PdfOxideError(code[], "merge_pdfs"))
+        m = len[] < 0 ? 0 : Int(len[])
+        out = copy(unsafe_wrap(Array, ptr, m))
+        # Raw byte buffer frees via free_bytes, not free_string.
+        ccall((:free_bytes, LIB), Cvoid, (Ptr{UInt8},), ptr)
+        return out
+    end
+end
+
+# ── Page getters (on Document, 0-based page) ────────────────────────────────────
+# Float32-returning page getters — one per C function, generated with @eval so
+# each ccall references its C function name as a LITERAL symbol.
+for (jl_fn, c_fn) in
+    ((:page_get_width, :pdf_page_get_width), (:page_get_height, :pdf_page_get_height))
+    op = String(jl_fn)
+    @eval function $jl_fn(d::PdfDocument, page::Integer)
+        code = Ref{Int32}(0)
+        v = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Float32,
+            (Ptr{Cvoid}, Int32, Ref{Int32}),
+            _doc(d),
+            Int32(page),
+            code,
+        )
+        code[] != 0 && throw(PdfOxideError(code[], $op))
+        return Float64(v)
+    end
+end
+
+"""Absolute rotation (degrees) of a (0-based) page."""
+function page_get_rotation(d::PdfDocument, page::Integer)
+    code = Ref{Int32}(0)
+    v = ccall(
+        (:pdf_page_get_rotation, LIB),
+        Int32,
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _doc(d),
+        Int32(page),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "page_get_rotation"))
+    return Int(v)
+end
+
+# An opaque page-element list. Owns the native FfiElementList handle (freed via
+# pdf_oxide_elements_free on close!/finalization). Per-element accessors are
+# wrapped: element_count + per-index type/text/rect.
+mutable struct ElementList
+    handle::Ptr{Cvoid}
+    function ElementList(h::Ptr{Cvoid})
+        l = new(h)
+        finalizer(close!, l)
+        return l
+    end
+end
+
+"""Free the native element-list handle now (idempotent; also runs at finalization)."""
+function close!(l::ElementList)
+    if l.handle != C_NULL
+        ccall((:pdf_oxide_elements_free, LIB), Cvoid, (Ptr{Cvoid},), l.handle)
+        l.handle = C_NULL
+    end
+    return nothing
+end
+
+_elements(l::ElementList) = (l.handle == C_NULL && error("ElementList is closed"); l.handle)
+
+"""Page elements (layout regions) of a (0-based) page as an `ElementList` handle."""
+function page_get_elements(d::PdfDocument, page::Integer)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_page_get_elements, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _doc(d),
+        Int32(page),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "page_get_elements"))
+    return ElementList(h)
+end
+
+"""Number of elements in an `ElementList`."""
+function element_count(l::ElementList)
+    n = ccall((:pdf_oxide_element_count, LIB), Int32, (Ptr{Cvoid},), _elements(l))
+    n < 0 && throw(PdfOxideError(n, "element_count"))
+    return Int(n)
+end
+
+# ── Timestamp (top-level fn returning bytes via out-params) ──────────────────────
+"""
+Add an RFC 3161 timestamp to `pdf_data` for the signature at `sig_index`, using
+the TSA at `tsa_url`. Returns the timestamped PDF `Vector{UInt8}`.
+"""
+function add_timestamp(
+    pdf_data::AbstractVector{UInt8},
+    sig_index::Integer,
+    tsa_url::AbstractString,
+)
+    out_ptr = Ref{Ptr{UInt8}}(C_NULL)
+    out_len = Ref{Csize_t}(0)
+    code = Ref{Int32}(0)
+    ok = ccall(
+        (:pdf_add_timestamp, LIB),
+        Bool,
+        (Ptr{UInt8}, Csize_t, Int32, Cstring, Ref{Ptr{UInt8}}, Ref{Csize_t}, Ref{Int32}),
+        pdf_data,
+        Csize_t(length(pdf_data)),
+        Int32(sig_index),
+        tsa_url,
+        out_ptr,
+        out_len,
+        code,
+    )
+    (!ok || code[] != 0 || out_ptr[] == C_NULL) &&
+        throw(PdfOxideError(code[], "add_timestamp"))
+    return _take_bytes_uptr(out_ptr[], out_len[], code[], "add_timestamp")
+end
 
 end # module

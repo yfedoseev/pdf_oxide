@@ -60,6 +60,15 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
 - (instancetype)initWithHandle:(FfiPdfXResults*)handle;
 @end
 
+// Phase-7 private handle-taking initializers / handle accessors.
+@interface POXBarcode ()
+- (instancetype)initWithHandle:(FfiBarcodeImage*)handle;
+- (const FfiBarcodeImage*)POX_handle;
+@end
+@interface POXElementList ()
+- (instancetype)initWithHandle:(FfiElementList*)handle;
+@end
+
 // ── Phase-1 element model types ──────────────────────────────────────────────
 
 @interface POXChar ()
@@ -845,6 +854,178 @@ static NSArray<POXSearchResult*>* POXTakeSearchResults(FfiSearchResults* list) {
     return [[POXPdfXResults alloc] initWithHandle:r];
 }
 
+// ── Phase-7: render variants / page getters / OCR ────────────────────────────
+
+- (POXRenderedImage*)renderPageWithOptions:(NSInteger)pageIndex
+                                       dpi:(int32_t)dpi
+                                    format:(int32_t)format
+                                       bgR:(float)bgR
+                                       bgG:(float)bgG
+                                       bgB:(float)bgB
+                                       bgA:(float)bgA
+                     transparentBackground:(int32_t)transparentBackground
+                         renderAnnotations:(int32_t)renderAnnotations
+                               jpegQuality:(int32_t)jpegQuality
+                                     error:(NSError**)error {
+    int32_t code = 0;
+    FfiRenderedImage* img = pdf_render_page_with_options(
+        _handle, (int32_t)pageIndex, dpi, format, bgR, bgG, bgB, bgA,
+        transparentBackground, renderAnnotations, jpegQuality, &code);
+    if (!img) {
+        if (error)
+            *error = POXMakeError(code, @"renderPageWithOptions");
+        return nil;
+    }
+    return [[POXRenderedImage alloc] initWithHandle:img];
+}
+
+- (POXRenderedImage*)renderPageWithOptionsEx:(NSInteger)pageIndex
+                                         dpi:(int32_t)dpi
+                                      format:(int32_t)format
+                                         bgR:(float)bgR
+                                         bgG:(float)bgG
+                                         bgB:(float)bgB
+                                         bgA:(float)bgA
+                       transparentBackground:(int32_t)transparentBackground
+                           renderAnnotations:(int32_t)renderAnnotations
+                                 jpegQuality:(int32_t)jpegQuality
+                              excludedLayers:(NSArray<NSString*>*)excludedLayers
+                                       error:(NSError**)error {
+    NSUInteger count = excludedLayers.count;
+    const char** layers = count ? (const char**)malloc(sizeof(char*) * count) : NULL;
+    for (NSUInteger i = 0; i < count; ++i)
+        layers[i] = excludedLayers[i].UTF8String;
+    int32_t code = 0;
+    FfiRenderedImage* img = pdf_render_page_with_options_ex(
+        _handle, (int32_t)pageIndex, dpi, format, bgR, bgG, bgB, bgA,
+        transparentBackground, renderAnnotations, jpegQuality, layers, (uintptr_t)count,
+        &code);
+    if (layers)
+        free(layers);
+    if (!img) {
+        if (error)
+            *error = POXMakeError(code, @"renderPageWithOptionsEx");
+        return nil;
+    }
+    return [[POXRenderedImage alloc] initWithHandle:img];
+}
+
+- (POXRenderedImage*)renderPageRegion:(NSInteger)pageIndex
+                                cropX:(float)cropX
+                                cropY:(float)cropY
+                            cropWidth:(float)cropWidth
+                           cropHeight:(float)cropHeight
+                               format:(int32_t)format
+                                error:(NSError**)error {
+    int32_t code = 0;
+    FfiRenderedImage* img =
+        pdf_render_page_region(_handle, (int32_t)pageIndex, cropX, cropY, cropWidth,
+                               cropHeight, format, &code);
+    if (!img) {
+        if (error)
+            *error = POXMakeError(code, @"renderPageRegion");
+        return nil;
+    }
+    return [[POXRenderedImage alloc] initWithHandle:img];
+}
+
+- (POXRenderedImage*)renderPageFit:(NSInteger)pageIndex
+                                 w:(int32_t)w
+                                 h:(int32_t)h
+                            format:(int32_t)format
+                             error:(NSError**)error {
+    int32_t code = 0;
+    FfiRenderedImage* img =
+        pdf_render_page_fit(_handle, (int32_t)pageIndex, w, h, format, &code);
+    if (!img) {
+        if (error)
+            *error = POXMakeError(code, @"renderPageFit");
+        return nil;
+    }
+    return [[POXRenderedImage alloc] initWithHandle:img];
+}
+
+- (POXRenderedImage*)renderPageRaw:(NSInteger)pageIndex
+                               dpi:(int32_t)dpi
+                          outWidth:(int32_t*)outWidth
+                         outHeight:(int32_t*)outHeight
+                             error:(NSError**)error {
+    int32_t code = 0;
+    int32_t w = 0, h = 0;
+    FfiRenderedImage* img =
+        pdf_render_page_raw(_handle, (int32_t)pageIndex, dpi, &w, &h, &code);
+    if (!img) {
+        if (error)
+            *error = POXMakeError(code, @"renderPageRaw");
+        return nil;
+    }
+    if (outWidth)
+        *outWidth = w;
+    if (outHeight)
+        *outHeight = h;
+    return [[POXRenderedImage alloc] initWithHandle:img];
+}
+
+- (int32_t)estimateRenderTime:(NSInteger)pageIndex error:(NSError**)error {
+    int32_t code = 0;
+    int32_t t = pdf_estimate_render_time(_handle, (int32_t)pageIndex, &code);
+    if (t < 0 && error)
+        *error = POXMakeError(code, @"estimateRenderTime");
+    return t;
+}
+
+- (float)pageWidth:(NSInteger)pageIndex error:(NSError**)error {
+    int32_t code = 0;
+    float v = pdf_page_get_width(_handle, (int32_t)pageIndex, &code);
+    if (code != 0 && error)
+        *error = POXMakeError(code, @"pageWidth");
+    return v;
+}
+
+- (float)pageHeight:(NSInteger)pageIndex error:(NSError**)error {
+    int32_t code = 0;
+    float v = pdf_page_get_height(_handle, (int32_t)pageIndex, &code);
+    if (code != 0 && error)
+        *error = POXMakeError(code, @"pageHeight");
+    return v;
+}
+
+- (int32_t)pageRotation:(NSInteger)pageIndex error:(NSError**)error {
+    int32_t code = 0;
+    int32_t r = pdf_page_get_rotation(_handle, (int32_t)pageIndex, &code);
+    if (r < 0 && error)
+        *error = POXMakeError(code, @"pageRotation");
+    return r;
+}
+
+- (POXElementList*)pageElements:(NSInteger)pageIndex error:(NSError**)error {
+    int32_t code = 0;
+    FfiElementList* list = pdf_page_get_elements(_handle, (int32_t)pageIndex, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"pageElements");
+        return nil;
+    }
+    return [[POXElementList alloc] initWithHandle:list];
+}
+
+- (BOOL)pageNeedsOcr:(NSInteger)pageIndex error:(NSError**)error {
+    int32_t code = 0;
+    bool needs = pdf_ocr_page_needs_ocr(_handle, (int32_t)pageIndex, &code);
+    if (code != 0 && error)
+        *error = POXMakeError(code, @"pageNeedsOcr");
+    return needs ? YES : NO;
+}
+
+- (NSString*)ocrExtractText:(NSInteger)pageIndex
+                     engine:(POXOcrEngine*)engine
+                      error:(NSError**)error {
+    int32_t code = 0;
+    const void* eng = engine ? [engine POX_engineHandle] : NULL;
+    return POXTakeString(pdf_ocr_extract_text(_handle, (int32_t)pageIndex, eng, &code),
+                         code, @"ocrExtractText", error);
+}
+
 - (void)close {
     if (_handle) {
         pdf_document_free(_handle);
@@ -884,6 +1065,79 @@ static NSArray<POXSearchResult*>* POXTakeSearchResults(FfiSearchResults* list) {
     if (!h) {
         if (error)
             *error = POXMakeError(code, @"fromText");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
+// ── Phase-7: image / HTML+CSS constructors ───────────────────────────────────
+
++ (instancetype)fromImage:(NSString*)path error:(NSError**)error {
+    int32_t code = 0;
+    Pdf* h = pdf_from_image(path.UTF8String, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"fromImage");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
++ (instancetype)fromImageBytes:(NSData*)data error:(NSError**)error {
+    int32_t code = 0;
+    Pdf* h = pdf_from_image_bytes(data.bytes, (int32_t)data.length, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"fromImageBytes");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
++ (instancetype)fromHtml:(NSString*)html
+                     css:(NSString*)css
+               fontBytes:(NSData*)fontBytes
+                   error:(NSError**)error {
+    int32_t code = 0;
+    Pdf* h = pdf_from_html_css(html.UTF8String, css.UTF8String,
+                               fontBytes ? fontBytes.bytes : NULL,
+                               fontBytes ? (uintptr_t)fontBytes.length : 0, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"fromHtmlCss");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
++ (instancetype)fromHtml:(NSString*)html
+                     css:(NSString*)css
+                families:(NSArray<NSString*>*)families
+                   fonts:(NSArray<NSData*>*)fonts
+                   error:(NSError**)error {
+    NSUInteger count = families.count;
+    const char** fams = count ? (const char**)malloc(sizeof(char*) * count) : NULL;
+    const uint8_t** ptrs =
+        count ? (const uint8_t**)malloc(sizeof(uint8_t*) * count) : NULL;
+    uintptr_t* lens = count ? (uintptr_t*)malloc(sizeof(uintptr_t) * count) : NULL;
+    for (NSUInteger i = 0; i < count; ++i) {
+        fams[i] = families[i].UTF8String;
+        NSData* f = i < fonts.count ? fonts[i] : [NSData data];
+        ptrs[i] = (const uint8_t*)f.bytes;
+        lens[i] = (uintptr_t)f.length;
+    }
+    int32_t code = 0;
+    Pdf* h = pdf_from_html_css_with_fonts(html.UTF8String, css.UTF8String, fams, ptrs,
+                                          lens, (uintptr_t)count, &code);
+    if (fams)
+        free(fams);
+    if (ptrs)
+        free(ptrs);
+    if (lens)
+        free(lens);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"fromHtmlCssWithFonts");
         return nil;
     }
     return [[self alloc] initWithHandle:h];
@@ -1512,6 +1766,75 @@ static NSData* _Nullable POXTakeBytes(uint8_t* p, NSUInteger len, int32_t code,
     uint8_t* p = document_editor_save_encrypted_to_bytes(
         _handle, userPassword.UTF8String, ownerPassword.UTF8String, &len, &code);
     return POXTakeBytes(p, (NSUInteger)len, code, @"saveEncryptedToBytes", error);
+}
+
+// ── Phase-7: geometric redaction + barcode placement ─────────────────────────
+
+- (BOOL)redactionAddPage:(NSInteger)page
+                      x1:(double)x1
+                      y1:(double)y1
+                      x2:(double)x2
+                      y2:(double)y2
+                       r:(double)r
+                       g:(double)g
+                       b:(double)b
+                   error:(NSError**)error {
+    int32_t code = 0;
+    if (pdf_redaction_add(_handle, (uintptr_t)page, x1, y1, x2, y2, r, g, b, &code) !=
+            0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"redactionAdd");
+        return NO;
+    }
+    return YES;
+}
+
+- (int32_t)redactionCount:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    int32_t n = pdf_redaction_count(_handle, (uintptr_t)page, &code);
+    if (n < 0 && error)
+        *error = POXMakeError(code, @"redactionCount");
+    return n;
+}
+
+- (int32_t)redactionApplyScrubMetadata:(BOOL)scrubMetadata
+                                     r:(double)r
+                                     g:(double)g
+                                     b:(double)b
+                                 error:(NSError**)error {
+    int32_t code = 0;
+    int32_t n =
+        pdf_redaction_apply(_handle, scrubMetadata ? true : false, r, g, b, &code);
+    if (n < 0 && error)
+        *error = POXMakeError(code, @"redactionApply");
+    return n;
+}
+
+- (int32_t)redactionScrubMetadataWithError:(NSError**)error {
+    int32_t code = 0;
+    int32_t n = pdf_redaction_scrub_metadata(_handle, &code);
+    if (n < 0 && error)
+        *error = POXMakeError(code, @"redactionScrubMetadata");
+    return n;
+}
+
+- (BOOL)addBarcode:(POXBarcode*)barcode
+              page:(NSInteger)page
+                 x:(float)x
+                 y:(float)y
+             width:(float)width
+            height:(float)height
+             error:(NSError**)error {
+    int32_t code = 0;
+    if (pdf_add_barcode_to_page(_handle, (int32_t)page, [barcode POX_handle], x, y,
+                                width, height, &code) != 0 ||
+        code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"addBarcodeToPage");
+        return NO;
+    }
+    return YES;
 }
 
 @end
@@ -3364,6 +3687,233 @@ static void POXBuildByteArrays(NSArray<NSData*>* blobs, const uint8_t*** ptrs,
 }
 + (int32_t)logLevel {
     return pdf_oxide_get_log_level();
+}
+
+@end
+
+// ── Phase-7: barcodes / OCR / element list / merge + timestamp ───────────────
+
+@implementation POXBarcode {
+    FfiBarcodeImage* _handle;
+}
+
++ (instancetype)generateQrCode:(NSString*)data
+               errorCorrection:(int32_t)errorCorrection
+                        sizePx:(int32_t)sizePx
+                         error:(NSError**)error {
+    int32_t code = 0;
+    FfiBarcodeImage* h =
+        pdf_generate_qr_code(data.UTF8String, errorCorrection, sizePx, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"generateQrCode");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
++ (instancetype)generateBarcode:(NSString*)data
+                         format:(int32_t)format
+                         sizePx:(int32_t)sizePx
+                          error:(NSError**)error {
+    int32_t code = 0;
+    FfiBarcodeImage* h = pdf_generate_barcode(data.UTF8String, format, sizePx, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"generateBarcode");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
+- (instancetype)initWithHandle:(FfiBarcodeImage*)handle {
+    if ((self = [super init])) {
+        _handle = handle;
+    }
+    return self;
+}
+
+- (const FfiBarcodeImage*)POX_handle {
+    return _handle;
+}
+
+- (NSString*)dataError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_barcode_get_data(_handle, &code), code, @"barcodeData",
+                         error);
+}
+
+- (int32_t)formatError:(NSError**)error {
+    int32_t code = 0;
+    int32_t f = pdf_barcode_get_format(_handle, &code);
+    if (f < 0 && error)
+        *error = POXMakeError(code, @"barcodeFormat");
+    return f;
+}
+
+- (float)confidenceError:(NSError**)error {
+    int32_t code = 0;
+    float c = pdf_barcode_get_confidence(_handle, &code);
+    if (code != 0 && error)
+        *error = POXMakeError(code, @"barcodeConfidence");
+    return c;
+}
+
+- (NSData*)imagePngWithSizePx:(int32_t)sizePx error:(NSError**)error {
+    int32_t outLen = 0, code = 0;
+    uint8_t* p = pdf_barcode_get_image_png(_handle, sizePx, &outLen, &code);
+    return POXTakeBytes(p, (outLen < 0 ? 0 : (NSUInteger)outLen), code,
+                        @"barcodeImagePng", error);
+}
+
+- (NSString*)svgWithSizePx:(int32_t)sizePx error:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_barcode_get_svg(_handle, sizePx, &code), code,
+                         @"barcodeSvg", error);
+}
+
+- (void)close {
+    if (_handle) {
+        pdf_barcode_free(_handle);
+        _handle = NULL;
+    }
+}
+- (void)dealloc {
+    if (_handle)
+        pdf_barcode_free(_handle);
+}
+
+@end
+
+@implementation POXOcrEngine {
+    void* _handle;
+}
+
++ (instancetype)createWithDetModelPath:(NSString*)detModelPath
+                          recModelPath:(NSString*)recModelPath
+                              dictPath:(NSString*)dictPath
+                                 error:(NSError**)error {
+    int32_t code = 0;
+    void* h = pdf_ocr_engine_create(detModelPath.UTF8String, recModelPath.UTF8String,
+                                    dictPath.UTF8String, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"ocrEngineCreate");
+        return nil;
+    }
+    POXOcrEngine* e = [[self alloc] init];
+    if (e)
+        e->_handle = h;
+    return e;
+}
+
+- (void*)POX_engineHandle {
+    return _handle;
+}
+
+- (void)close {
+    if (_handle) {
+        pdf_ocr_engine_free(_handle);
+        _handle = NULL;
+    }
+}
+- (void)dealloc {
+    if (_handle)
+        pdf_ocr_engine_free(_handle);
+}
+
+@end
+
+@implementation POXElementList {
+    FfiElementList* _handle;
+}
+
+- (instancetype)initWithHandle:(FfiElementList*)handle {
+    if ((self = [super init])) {
+        _handle = handle;
+    }
+    return self;
+}
+
+- (int32_t)count {
+    if (!_handle)
+        return 0;
+    return pdf_oxide_element_count(_handle);
+}
+
+- (NSString*)typeAtIndex:(int32_t)index error:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_oxide_element_get_type(_handle, index, &code), code,
+                         @"elementType", error);
+}
+
+- (NSString*)textAtIndex:(int32_t)index error:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_oxide_element_get_text(_handle, index, &code), code,
+                         @"elementText", error);
+}
+
+- (POXBbox)rectAtIndex:(int32_t)index error:(NSError**)error {
+    int32_t code = 0;
+    float x = 0, y = 0, w = 0, h = 0;
+    pdf_oxide_element_get_rect(_handle, index, &x, &y, &w, &h, &code);
+    if (code != 0 && error)
+        *error = POXMakeError(code, @"elementRect");
+    POXBbox box = {x, y, w, h};
+    return box;
+}
+
+- (NSString*)toJsonWithError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_oxide_elements_to_json(_handle, &code), code,
+                         @"elementsToJson", error);
+}
+
+- (void)close {
+    if (_handle) {
+        pdf_oxide_elements_free(_handle);
+        _handle = NULL;
+    }
+}
+- (void)dealloc {
+    if (_handle)
+        pdf_oxide_elements_free(_handle);
+}
+
+@end
+
+@implementation POXTools
+
++ (NSData*)merge:(NSArray<NSString*>*)paths error:(NSError**)error {
+    NSUInteger count = paths.count;
+    const char** cpaths = count ? (const char**)malloc(sizeof(char*) * count) : NULL;
+    for (NSUInteger i = 0; i < count; ++i)
+        cpaths[i] = paths[i].UTF8String;
+    int32_t dataLen = 0, code = 0;
+    uint8_t* p = pdf_merge(cpaths, (int32_t)count, &dataLen, &code);
+    if (cpaths)
+        free(cpaths);
+    return POXTakeBytes(p, (dataLen < 0 ? 0 : (NSUInteger)dataLen), code, @"merge",
+                        error);
+}
+
++ (NSData*)addTimestamp:(NSData*)pdfData
+               sigIndex:(int32_t)sigIndex
+                 tsaUrl:(NSString*)tsaUrl
+                  error:(NSError**)error {
+    uint8_t* out = NULL;
+    uintptr_t outLen = 0;
+    int32_t code = 0;
+    bool ok = pdf_add_timestamp(pdfData.bytes, (uintptr_t)pdfData.length, sigIndex,
+                                tsaUrl.UTF8String, &out, &outLen, &code);
+    if (!ok || out == NULL) {
+        if (out)
+            free_bytes(out);
+        if (error)
+            *error = POXMakeError(code, @"addTimestamp");
+        return nil;
+    }
+    return POXTakeBytes(out, (NSUInteger)outLen, code, @"addTimestamp", error);
 }
 
 @end

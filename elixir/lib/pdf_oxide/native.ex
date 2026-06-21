@@ -310,4 +310,81 @@ defmodule PdfOxide.Native do
 
   def oxide_set_log_level(_level), do: nif_error()
   def oxide_get_log_level, do: nif_error()
+
+  # phase 7 — barcodes / QR / OCR / render variants / redaction / constructors /
+  # page getters / timestamp
+  def barcode_generate_qr(_data, _error_correction, _size_px), do: nif_error()
+  def barcode_generate(_data, _format, _size_px), do: nif_error()
+  def barcode_get_data(_barcode), do: nif_error()
+  def barcode_get_format(_barcode), do: nif_error()
+  def barcode_get_confidence(_barcode), do: nif_error()
+  def barcode_get_image_png(_barcode, _size_px), do: nif_error()
+  def barcode_get_svg(_barcode, _size_px), do: nif_error()
+  def barcode_close(_barcode), do: nif_error()
+  def editor_add_barcode_to_page(_ed, _page, _barcode, _x, _y, _w, _h), do: nif_error()
+
+  def ocr_engine_create(_det_model_path, _rec_model_path, _dict_path), do: nif_error()
+  def ocr_engine_close(_engine), do: nif_error()
+  def ocr_page_needs_ocr(_doc, _page), do: nif_error()
+  def ocr_extract_text(_doc, _page, _engine), do: nif_error()
+
+  def doc_render_page_with_options(
+        _doc,
+        _page,
+        _dpi,
+        _format,
+        _bg_r,
+        _bg_g,
+        _bg_b,
+        _bg_a,
+        _transparent,
+        _render_annotations,
+        _jpeg_quality
+      ),
+      do: nif_error()
+
+  def doc_render_page_with_options_ex(
+        _doc,
+        _page,
+        _dpi,
+        _format,
+        _bg_r,
+        _bg_g,
+        _bg_b,
+        _bg_a,
+        _transparent,
+        _render_annotations,
+        _jpeg_quality,
+        _excluded_layers
+      ),
+      do: nif_error()
+
+  def doc_render_page_region(_doc, _page, _crop_x, _crop_y, _crop_w, _crop_h, _format),
+    do: nif_error()
+
+  def doc_render_page_fit(_doc, _page, _w, _h, _format), do: nif_error()
+  def doc_render_page_raw(_doc, _page, _dpi), do: nif_error()
+  def renderer_create(_dpi, _format, _quality, _anti_alias), do: nif_error()
+  def renderer_close(_renderer), do: nif_error()
+  def doc_estimate_render_time(_doc, _page), do: nif_error()
+
+  def redaction_add(_ed, _page, _x1, _y1, _x2, _y2, _r, _g, _b), do: nif_error()
+  def redaction_count(_ed, _page), do: nif_error()
+  def redaction_apply(_ed, _scrub_metadata, _r, _g, _b), do: nif_error()
+  def redaction_scrub_metadata(_ed), do: nif_error()
+
+  def pdf_from_image(_path), do: nif_error()
+  def pdf_from_image_bytes(_data), do: nif_error()
+  def pdf_from_html_css(_html, _css, _font_bytes), do: nif_error()
+  def pdf_from_html_css_with_fonts(_html, _css, _families, _font_bytes), do: nif_error()
+  def pdf_merge(_paths), do: nif_error()
+
+  def page_get_width(_doc, _page), do: nif_error()
+  def page_get_height(_doc, _page), do: nif_error()
+  def page_get_rotation(_doc, _page), do: nif_error()
+  def page_get_elements(_doc, _page), do: nif_error()
+  def elements_count(_elements), do: nif_error()
+  def elements_close(_elements), do: nif_error()
+
+  def add_timestamp(_pdf_data, _sig_index, _tsa_url), do: nif_error()
 end

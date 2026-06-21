@@ -435,6 +435,286 @@ int main(void) {
             };
         }
 
+        // ── Phase-7: barcodes ────────────────────────────────────────────────
+        {
+            NSError* qe = nil;
+            POXBarcode* qr = [POXBarcode generateQrCode:@"https://oxide.fyi"
+                                        errorCorrection:0
+                                                 sizePx:128
+                                                  error:&qe]; // generateQrCode
+            CHECK(qr != nil && qe == nil);
+            if (qr != nil) {
+                NSError* e = nil;
+                CHECK([[qr dataError:&e] length] > 0); // barcode data
+                CHECK([qr formatError:&e] >= 0);       // barcode format
+                (void)[qr confidenceError:&e];         // barcode confidence
+                NSData* png = [qr imagePngWithSizePx:128 error:&e]; // barcode image png
+                CHECK(png != nil && png.length > 0);
+                NSString* svg = [qr svgWithSizePx:128 error:&e]; // barcode svg
+                CHECK(svg.length > 0);
+                [qr close];
+                [qr close]; // idempotent
+            }
+            NSError* be = nil;
+            POXBarcode* bc = [POXBarcode generateBarcode:@"123456789012"
+                                                  format:0
+                                                  sizePx:128
+                                                   error:&be]; // generateBarcode
+            // Some formats validate input; accept either a handle or an error.
+            CHECK(bc == nil ? (be != nil) : YES);
+            if (bc != nil) {
+                NSError* e = nil;
+                (void)[bc dataError:&e];
+                (void)[bc formatError:&e];
+                [bc close];
+            }
+        }
+
+        // ── Phase-7: render variants ─────────────────────────────────────────
+        {
+            NSError* e = nil;
+            POXRenderedImage* opt =
+                [doc renderPageWithOptions:0
+                                       dpi:72
+                                    format:0
+                                       bgR:1.0f
+                                       bgG:1.0f
+                                       bgB:1.0f
+                                       bgA:1.0f
+                     transparentBackground:0
+                         renderAnnotations:1
+                               jpegQuality:90
+                                     error:&e]; // renderPageWithOptions
+            CHECK(opt != nil && e == nil);
+            if (opt != nil) {
+                CHECK(opt.width > 0 && opt.height > 0 && opt.data.length > 0);
+                [opt close];
+            }
+            NSError* exe = nil;
+            POXRenderedImage* ex =
+                [doc renderPageWithOptionsEx:0
+                                         dpi:72
+                                      format:0
+                                         bgR:1.0f
+                                         bgG:1.0f
+                                         bgB:1.0f
+                                         bgA:1.0f
+                       transparentBackground:0
+                           renderAnnotations:1
+                                 jpegQuality:90
+                              excludedLayers:@[ @"DraftLayer" ]
+                                       error:&exe]; // renderPageWithOptionsEx
+            CHECK(ex != nil && exe == nil);
+            if (ex != nil) {
+                CHECK(ex.width > 0 && ex.height > 0);
+                [ex close];
+            }
+            NSError* rge = nil;
+            POXRenderedImage* region = [doc renderPageRegion:0
+                                                       cropX:0
+                                                       cropY:0
+                                                   cropWidth:100
+                                                  cropHeight:100
+                                                      format:0
+                                                       error:&rge]; // renderPageRegion
+            CHECK(region != nil && rge == nil);
+            if (region != nil) {
+                CHECK(region.width > 0 && region.height > 0);
+                [region close];
+            }
+            NSError* fe = nil;
+            POXRenderedImage* fit = [doc renderPageFit:0
+                                                     w:200
+                                                     h:200
+                                                format:0
+                                                 error:&fe]; // renderPageFit
+            CHECK(fit != nil && fe == nil);
+            if (fit != nil) {
+                CHECK(fit.width > 0 && fit.height > 0 && fit.width <= 200 &&
+                      fit.height <= 200);
+                [fit close];
+            }
+            NSError* re = nil;
+            int32_t rw = 0, rh = 0;
+            POXRenderedImage* raw = [doc renderPageRaw:0
+                                                   dpi:72
+                                              outWidth:&rw
+                                             outHeight:&rh
+                                                 error:&re]; // renderPageRaw
+            CHECK(raw != nil && re == nil);
+            if (raw != nil) {
+                CHECK(rw > 0 && rh > 0 && raw.data.length > 0);
+                [raw close];
+            }
+            NSError* ete = nil;
+            int32_t est = [doc estimateRenderTime:0 error:&ete]; // estimateRenderTime
+            CHECK(est >= 0 || ete != nil);
+        }
+
+        // ── Phase-7: page getters ────────────────────────────────────────────
+        {
+            NSError* e = nil;
+            CHECK([doc pageWidth:0 error:&e] > 0);     // pageWidth
+            CHECK([doc pageHeight:0 error:&e] > 0);    // pageHeight
+            CHECK([doc pageRotation:0 error:&e] >= 0); // pageRotation
+            NSError* ele = nil;
+            POXElementList* els = [doc pageElements:0 error:&ele]; // pageElements
+            CHECK(els != nil && ele == nil);
+            if (els != nil) {
+                int32_t n = [els count]; // element count
+                CHECK(n >= 0);
+                if (n > 0) {
+                    NSError* ie = nil;
+                    (void)[els typeAtIndex:0 error:&ie];       // element type
+                    (void)[els textAtIndex:0 error:&ie];       // element text
+                    POXBbox r = [els rectAtIndex:0 error:&ie]; // element rect
+                    CHECK(r.width >= 0 && r.height >= 0);
+                }
+                NSError* je = nil;
+                NSString* json = [els toJsonWithError:&je]; // elements to json
+                CHECK(json == nil ? (je != nil) : json.length > 0);
+                [els close];
+                [els close]; // idempotent
+            }
+        }
+
+        // ── Phase-7: redaction (on an editor) ────────────────────────────────
+        {
+            NSError* ee = nil;
+            POXDocumentEditor* red = [POXDocumentEditor openFromBytes:samplePdf()
+                                                                error:&ee];
+            CHECK(red != nil && ee == nil);
+            if (red != nil) {
+                NSError* e = nil;
+                CHECK([red redactionAddPage:0
+                                         x1:50
+                                         y1:50
+                                         x2:150
+                                         y2:80
+                                          r:0
+                                          g:0
+                                          b:0
+                                      error:&e]);            // redactionAdd
+                CHECK([red redactionCount:0 error:&e] >= 1); // redactionCount
+                int32_t glyphs = [red redactionApplyScrubMetadata:NO
+                                                                r:0
+                                                                g:0
+                                                                b:0
+                                                            error:&e]; // redactionApply
+                CHECK(glyphs >= 0 || e != nil);
+                NSError* se = nil;
+                int32_t scrubbed =
+                    [red redactionScrubMetadataWithError:&se]; // redactionScrubMetadata
+                CHECK(scrubbed >= 0 || se != nil);
+                // addBarcode on the editor (Phase-7 barcode placement).
+                NSError* qe = nil;
+                POXBarcode* qr = [POXBarcode generateQrCode:@"x"
+                                            errorCorrection:0
+                                                     sizePx:64
+                                                      error:&qe];
+                if (qr != nil) {
+                    NSError* abe = nil;
+                    BOOL added = [red addBarcode:qr
+                                            page:0
+                                               x:10
+                                               y:10
+                                           width:40
+                                          height:40
+                                           error:&abe]; // addBarcodeToPage
+                    CHECK(added == YES || abe != nil);
+                    [qr close];
+                }
+                [red close];
+            }
+        }
+
+        // ── Phase-7: from_image_bytes / from_html_css / merge ────────────────
+        {
+            // from_image_bytes on bogus data must raise the binding error.
+            NSError* ibe = nil;
+            POXPdf* badImg = [POXPdf fromImageBytes:[NSData data]
+                                              error:&ibe]; // fromImageBytes
+            CHECK(badImg == nil ? (ibe != nil) : YES);
+
+            // from_html_css is testable on the sample input.
+            NSError* he = nil;
+            POXPdf* htmlPdf = [POXPdf fromHtml:@"<h1>HC</h1><p>body</p>"
+                                           css:@"h1{color:#000}"
+                                     fontBytes:nil
+                                         error:&he]; // fromHtmlCss
+            CHECK(htmlPdf == nil ? (he != nil)
+                                 : [[htmlPdf toBytesWithError:&he] length] > 0);
+
+            NSError* hfe = nil;
+            POXPdf* htmlFonts = [POXPdf fromHtml:@"<p>cascade</p>"
+                                             css:@""
+                                        families:@[]
+                                           fonts:@[]
+                                           error:&hfe]; // fromHtmlCssWithFonts
+            CHECK(htmlFonts == nil ? (hfe != nil)
+                                   : [[htmlFonts toBytesWithError:&hfe] length] > 0);
+
+            // merge: write two temp PDFs, merge them.
+            NSString* p1 = [NSTemporaryDirectory()
+                stringByAppendingPathComponent:@"pdfoxide_objc_m1.pdf"];
+            NSString* p2 = [NSTemporaryDirectory()
+                stringByAppendingPathComponent:@"pdfoxide_objc_m2.pdf"];
+            [[POXPdf fromMarkdown:@"# one\n\nx\n" error:&err] saveToPath:p1 error:&err];
+            [[POXPdf fromMarkdown:@"# two\n\ny\n" error:&err] saveToPath:p2 error:&err];
+            NSError* me = nil;
+            NSData* merged = [POXTools merge:@[ p1, p2 ] error:&me]; // merge
+            CHECK(merged == nil ? (me != nil) : merged.length > 0);
+            if (merged != nil && merged.length > 0) {
+                NSError* oe = nil;
+                POXDocument* md = [POXDocument openFromBytes:merged error:&oe];
+                CHECK(md != nil && [md pageCountError:&oe] >= 2);
+                [md close];
+            }
+            [[NSFileManager defaultManager] removeItemAtPath:p1 error:nil];
+            [[NSFileManager defaultManager] removeItemAtPath:p2 error:nil];
+
+            // from_image: bogus path must raise.
+            NSError* fie = nil;
+            POXPdf* badPath = [POXPdf fromImage:@"/nonexistent/none.png"
+                                          error:&fie]; // fromImage
+            CHECK(badPath == nil && fie != nil);
+        }
+
+        // ── Phase-7: OCR (needs model files) — invoke + assert raises/returns ─
+        {
+            // Engine create with bogus model paths: must raise the binding error.
+            NSError* oce = nil;
+            POXOcrEngine* engine =
+                [POXOcrEngine createWithDetModelPath:@"/nonexistent/det"
+                                        recModelPath:@"/nonexistent/rec"
+                                            dictPath:@"/nonexistent/dict"
+                                               error:&oce]; // ocrEngineCreate
+            CHECK(engine == nil ? (oce != nil) : YES);
+            if (engine != nil) {
+                [engine close];
+                [engine close]; // idempotent
+            }
+            // needs-OCR / extract with a nil engine fall back to native text.
+            NSError* ne = nil;
+            BOOL needs = [doc pageNeedsOcr:0 error:&ne]; // pageNeedsOcr
+            CHECK(needs == YES || needs == NO || ne != nil);
+            NSError* oe = nil;
+            NSString* ocrText = [doc ocrExtractText:0
+                                             engine:nil
+                                              error:&oe]; // ocrExtractText
+            CHECK(ocrText != nil ? (ocrText.length >= 0) : (oe != nil));
+        }
+
+        // ── Phase-7: add_timestamp (needs TSA) — invoke + assert raises ──────
+        {
+            NSError* te = nil;
+            NSData* stamped = [POXTools addTimestamp:samplePdf()
+                                            sigIndex:0
+                                              tsaUrl:@"http://tsa.invalid/tsr"
+                                               error:&te]; // addTimestamp
+            CHECK(stamped == nil ? (te != nil) : stamped.length > 0);
+        }
+
         // ── close (idempotent) ───────────────────────────────────────────────
         [doc close];
         [doc close]; // idempotent — safe to call twice

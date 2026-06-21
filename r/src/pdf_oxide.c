@@ -2532,6 +2532,385 @@ SEXP r_pdf_x_results_close(SEXP ext) {
     return R_NilValue;
 }
 
+/* ── PHASE-7 barcodes / OCR / render variants / redaction / constructors /
+ * page getters / elements / timestamp ────────────────────────────────────────
+ * Reuses the established handle pattern: FfiBarcodeImage is wrapped in its own
+ * external pointer with a GC finalizer (pdf_barcode_free) + an explicit
+ * idempotent close; FfiElementList is wrapped similarly (pdf_oxide_elements_free)
+ * with full per-element accessors exposed as an R list. OCR engine / renderer are
+ * opaque void* handles. Redaction is exposed as methods on the existing
+ * DocumentEditor wrapper. RenderedImage returns reuse wrap_rendered_image. char*
+ * returns use take_string + free_string; owned uint8* buffers use take_bytes
+ * (free_bytes); errors raise the same classed pdfoxide_error via pdfox_raise. */
+
+/* ── Barcode (FfiBarcodeImage opaque handle) ── */
+static void barcode_finalizer(SEXP ext) {
+    FfiBarcodeImage *h = (FfiBarcodeImage *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_barcode_free(h); R_ClearExternalPtr(ext); }
+}
+static SEXP wrap_barcode(FfiBarcodeImage *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, barcode_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+static FfiBarcodeImage *barcode_ptr(SEXP ext) {
+    FfiBarcodeImage *h = (FfiBarcodeImage *)R_ExternalPtrAddr(ext);
+    if (!h) Rf_error("pdf_oxide: barcode handle is closed");
+    return h;
+}
+
+SEXP r_generate_qr_code(SEXP data, SEXP error_correction, SEXP size_px) {
+    int32_t code = 0;
+    FfiBarcodeImage *h = pdf_generate_qr_code(CHAR(STRING_ELT(data, 0)),
+                                              Rf_asInteger(error_correction),
+                                              Rf_asInteger(size_px), &code);
+    if (!h) pdfox_raise(code, "generate_qr_code");
+    return wrap_barcode(h);
+}
+SEXP r_generate_barcode(SEXP data, SEXP format, SEXP size_px) {
+    int32_t code = 0;
+    FfiBarcodeImage *h = pdf_generate_barcode(CHAR(STRING_ELT(data, 0)),
+                                              Rf_asInteger(format),
+                                              Rf_asInteger(size_px), &code);
+    if (!h) pdfox_raise(code, "generate_barcode");
+    return wrap_barcode(h);
+}
+SEXP r_barcode_get_data(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_barcode_get_data(barcode_ptr(ext), &code), code,
+                       "barcode_get_data");
+}
+SEXP r_barcode_get_format(SEXP ext) {
+    int32_t code = 0;
+    int32_t f = pdf_barcode_get_format(barcode_ptr(ext), &code);
+    if (code != 0) pdfox_raise(code, "barcode_get_format");
+    return Rf_ScalarInteger(f);
+}
+SEXP r_barcode_get_confidence(SEXP ext) {
+    int32_t code = 0;
+    float c = pdf_barcode_get_confidence(barcode_ptr(ext), &code);
+    if (code != 0) pdfox_raise(code, "barcode_get_confidence");
+    return Rf_ScalarReal((double)c);
+}
+SEXP r_barcode_get_image_png(SEXP ext, SEXP size_px) {
+    int32_t code = 0, len = 0;
+    uint8_t *p = pdf_barcode_get_image_png(barcode_ptr(ext), Rf_asInteger(size_px),
+                                           &len, &code);
+    if (!p) pdfox_raise(code, "barcode_get_image_png");
+    R_xlen_t n = len < 0 ? 0 : (R_xlen_t)len;
+    SEXP out = PROTECT(Rf_allocVector(RAWSXP, n));
+    if (n) memcpy(RAW(out), p, (size_t)n);
+    free_bytes(p);
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_barcode_get_svg(SEXP ext, SEXP size_px) {
+    int32_t code = 0;
+    return take_string(pdf_barcode_get_svg(barcode_ptr(ext), Rf_asInteger(size_px),
+                                           &code), code, "barcode_get_svg");
+}
+SEXP r_barcode_close(SEXP ext) {
+    FfiBarcodeImage *h = (FfiBarcodeImage *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_barcode_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+SEXP r_editor_add_barcode_to_page(SEXP ext, SEXP page, SEXP bc, SEXP x, SEXP y,
+                                  SEXP w, SEXP h) {
+    int32_t code = 0;
+    if (pdf_add_barcode_to_page(editor_ptr(ext), Rf_asInteger(page),
+                                barcode_ptr(bc), (float)Rf_asReal(x),
+                                (float)Rf_asReal(y), (float)Rf_asReal(w),
+                                (float)Rf_asReal(h), &code) != 0)
+        pdfox_raise(code, "add_barcode_to_page");
+    return R_NilValue;
+}
+
+/* ── OCR engine (opaque void*) ── */
+static void ocr_engine_finalizer(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (h) { pdf_ocr_engine_free(h); R_ClearExternalPtr(ext); }
+}
+static SEXP wrap_ocr_engine(void *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, ocr_engine_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+static void *ocr_engine_ptr(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (!h) Rf_error("pdf_oxide: OCR engine handle is closed");
+    return h;
+}
+SEXP r_ocr_engine_create(SEXP det_path, SEXP rec_path, SEXP dict_path) {
+    int32_t code = 0;
+    void *h = pdf_ocr_engine_create(CHAR(STRING_ELT(det_path, 0)),
+                                    CHAR(STRING_ELT(rec_path, 0)),
+                                    CHAR(STRING_ELT(dict_path, 0)), &code);
+    if (!h) pdfox_raise(code, "ocr_engine_create");
+    return wrap_ocr_engine(h);
+}
+SEXP r_ocr_engine_close(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (h) { pdf_ocr_engine_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+SEXP r_ocr_page_needs_ocr(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    bool r = pdf_ocr_page_needs_ocr(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (code != 0) pdfox_raise(code, "ocr_page_needs_ocr");
+    return Rf_ScalarLogical(r);
+}
+/* engine may be NULL (native-only extraction). */
+SEXP r_ocr_extract_text(SEXP ext, SEXP page, SEXP engine) {
+    int32_t code = 0;
+    const void *eng = (engine == R_NilValue) ? NULL : ocr_engine_ptr(engine);
+    return take_string(pdf_ocr_extract_text(doc_ptr(ext), Rf_asInteger(page), eng,
+                                            &code), code, "ocr_extract_text");
+}
+
+/* ── Render variants (all reuse wrap_rendered_image) ── */
+SEXP r_render_page_with_options(SEXP ext, SEXP page, SEXP dpi, SEXP format,
+                                SEXP bg_r, SEXP bg_g, SEXP bg_b, SEXP bg_a,
+                                SEXP transparent_bg, SEXP render_annots,
+                                SEXP jpeg_quality) {
+    int32_t code = 0;
+    FfiRenderedImage *img = pdf_render_page_with_options(
+        doc_ptr(ext), Rf_asInteger(page), Rf_asInteger(dpi), Rf_asInteger(format),
+        (float)Rf_asReal(bg_r), (float)Rf_asReal(bg_g), (float)Rf_asReal(bg_b),
+        (float)Rf_asReal(bg_a), Rf_asInteger(transparent_bg),
+        Rf_asInteger(render_annots), Rf_asInteger(jpeg_quality), &code);
+    if (!img) pdfox_raise(code, "render_page_with_options");
+    return wrap_rendered_image(img);
+}
+SEXP r_render_page_with_options_ex(SEXP ext, SEXP page, SEXP dpi, SEXP format,
+                                   SEXP bg_r, SEXP bg_g, SEXP bg_b, SEXP bg_a,
+                                   SEXP transparent_bg, SEXP render_annots,
+                                   SEXP jpeg_quality, SEXP excluded_layers) {
+    int32_t code = 0;
+    uintptr_t n = 0;
+    const char **layers = strvec_to_c(excluded_layers, &n);
+    FfiRenderedImage *img = pdf_render_page_with_options_ex(
+        doc_ptr(ext), Rf_asInteger(page), Rf_asInteger(dpi), Rf_asInteger(format),
+        (float)Rf_asReal(bg_r), (float)Rf_asReal(bg_g), (float)Rf_asReal(bg_b),
+        (float)Rf_asReal(bg_a), Rf_asInteger(transparent_bg),
+        Rf_asInteger(render_annots), Rf_asInteger(jpeg_quality),
+        (const char *const *)layers, n, &code);
+    if (!img) pdfox_raise(code, "render_page_with_options_ex");
+    return wrap_rendered_image(img);
+}
+SEXP r_render_page_region(SEXP ext, SEXP page, SEXP crop_x, SEXP crop_y,
+                          SEXP crop_w, SEXP crop_h, SEXP format) {
+    int32_t code = 0;
+    FfiRenderedImage *img = pdf_render_page_region(
+        doc_ptr(ext), Rf_asInteger(page), (float)Rf_asReal(crop_x),
+        (float)Rf_asReal(crop_y), (float)Rf_asReal(crop_w),
+        (float)Rf_asReal(crop_h), Rf_asInteger(format), &code);
+    if (!img) pdfox_raise(code, "render_page_region");
+    return wrap_rendered_image(img);
+}
+SEXP r_render_page_fit(SEXP ext, SEXP page, SEXP w, SEXP h, SEXP format) {
+    int32_t code = 0;
+    FfiRenderedImage *img = pdf_render_page_fit(
+        doc_ptr(ext), Rf_asInteger(page), Rf_asInteger(w), Rf_asInteger(h),
+        Rf_asInteger(format), &code);
+    if (!img) pdfox_raise(code, "render_page_fit");
+    return wrap_rendered_image(img);
+}
+/* raw render also surfaces the (out_width, out_height) it sets. */
+SEXP r_render_page_raw(SEXP ext, SEXP page, SEXP dpi) {
+    int32_t code = 0, ow = 0, oh = 0;
+    FfiRenderedImage *img = pdf_render_page_raw(
+        doc_ptr(ext), Rf_asInteger(page), Rf_asInteger(dpi), &ow, &oh, &code);
+    if (!img) pdfox_raise(code, "render_page_raw");
+    return wrap_rendered_image(img);
+}
+
+/* ── Renderer (opaque void*) + estimate ── */
+static void renderer_finalizer(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (h) { pdf_renderer_free(h); R_ClearExternalPtr(ext); }
+}
+static SEXP wrap_renderer(void *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, renderer_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+SEXP r_create_renderer(SEXP dpi, SEXP format, SEXP quality, SEXP anti_alias) {
+    int32_t code = 0;
+    void *h = pdf_create_renderer(Rf_asInteger(dpi), Rf_asInteger(format),
+                                  Rf_asInteger(quality),
+                                  Rf_asLogical(anti_alias) == TRUE, &code);
+    if (!h) pdfox_raise(code, "create_renderer");
+    return wrap_renderer(h);
+}
+SEXP r_renderer_close(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (h) { pdf_renderer_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+SEXP r_estimate_render_time(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    int32_t t = pdf_estimate_render_time(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (code != 0) pdfox_raise(code, "estimate_render_time");
+    return Rf_ScalarInteger(t);
+}
+
+/* ── Redaction (methods on the existing DocumentEditor wrapper) ── */
+SEXP r_redaction_add(SEXP ext, SEXP page, SEXP x1, SEXP y1, SEXP x2, SEXP y2,
+                     SEXP r, SEXP g, SEXP b) {
+    int32_t code = 0;
+    if (pdf_redaction_add(editor_ptr(ext), (uintptr_t)Rf_asInteger(page),
+                          Rf_asReal(x1), Rf_asReal(y1), Rf_asReal(x2),
+                          Rf_asReal(y2), Rf_asReal(r), Rf_asReal(g), Rf_asReal(b),
+                          &code) != 0)
+        pdfox_raise(code, "redaction_add");
+    return R_NilValue;
+}
+SEXP r_redaction_count(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    int32_t n = pdf_redaction_count(editor_ptr(ext), (uintptr_t)Rf_asInteger(page),
+                                    &code);
+    if (n < 0) pdfox_raise(code, "redaction_count");
+    return Rf_ScalarInteger(n);
+}
+SEXP r_redaction_apply(SEXP ext, SEXP scrub_metadata, SEXP r, SEXP g, SEXP b) {
+    int32_t code = 0;
+    int32_t n = pdf_redaction_apply(editor_ptr(ext),
+                                    Rf_asLogical(scrub_metadata) == TRUE,
+                                    Rf_asReal(r), Rf_asReal(g), Rf_asReal(b),
+                                    &code);
+    if (n < 0) pdfox_raise(code, "redaction_apply");
+    return Rf_ScalarInteger(n);
+}
+SEXP r_redaction_scrub_metadata(SEXP ext) {
+    int32_t code = 0;
+    int32_t n = pdf_redaction_scrub_metadata(editor_ptr(ext), &code);
+    if (n < 0) pdfox_raise(code, "redaction_scrub_metadata");
+    return Rf_ScalarInteger(n);
+}
+
+/* ── Constructors (return Pdf*, reuse wrap_pdf) ── */
+SEXP r_pdf_from_image(SEXP path) {
+    int32_t code = 0;
+    Pdf *h = pdf_from_image(CHAR(STRING_ELT(path, 0)), &code);
+    if (!h) pdfox_raise(code, "from_image");
+    return wrap_pdf(h);
+}
+SEXP r_pdf_from_image_bytes(SEXP raw) {
+    int32_t code = 0;
+    Pdf *h = pdf_from_image_bytes(RAW(raw), (int32_t)XLENGTH(raw), &code);
+    if (!h) pdfox_raise(code, "from_image_bytes");
+    return wrap_pdf(h);
+}
+SEXP r_pdf_from_html_css(SEXP html, SEXP css, SEXP font_bytes) {
+    int32_t code = 0;
+    const uint8_t *fb = (font_bytes == R_NilValue) ? NULL : RAW(font_bytes);
+    uintptr_t fl = (font_bytes == R_NilValue) ? 0 : (uintptr_t)XLENGTH(font_bytes);
+    Pdf *h = pdf_from_html_css(CHAR(STRING_ELT(html, 0)),
+                               CHAR(STRING_ELT(css, 0)), fb, fl, &code);
+    if (!h) pdfox_raise(code, "from_html_css");
+    return wrap_pdf(h);
+}
+SEXP r_pdf_from_html_css_with_fonts(SEXP html, SEXP css, SEXP families,
+                                    SEXP font_bytes) {
+    int32_t code = 0;
+    uintptr_t n_fam = 0;
+    const char **fams = strvec_to_c(families, &n_fam);
+    const uintptr_t *font_lens;
+    uintptr_t n_fonts = 0;
+    const uint8_t *const *fonts = rawlist_to_c(font_bytes, &font_lens, &n_fonts);
+    uintptr_t count = (n_fam < n_fonts) ? n_fam : n_fonts;
+    Pdf *h = pdf_from_html_css_with_fonts(
+        CHAR(STRING_ELT(html, 0)), CHAR(STRING_ELT(css, 0)),
+        (const char *const *)fams, fonts, font_lens, count, &code);
+    if (!h) pdfox_raise(code, "from_html_css_with_fonts");
+    return wrap_pdf(h);
+}
+SEXP r_pdf_merge(SEXP paths) {
+    int32_t code = 0, data_len = 0;
+    uintptr_t n = 0;
+    const char **arr = strvec_to_c(paths, &n);
+    uint8_t *p = pdf_merge((const char *const *)arr, (int32_t)n, &data_len, &code);
+    if (!p) pdfox_raise(code, "merge");
+    R_xlen_t dn = data_len < 0 ? 0 : (R_xlen_t)data_len;
+    SEXP out = PROTECT(Rf_allocVector(RAWSXP, dn));
+    if (dn) memcpy(RAW(out), p, (size_t)dn);
+    free_bytes(p);
+    UNPROTECT(1);
+    return out;
+}
+
+/* ── Page getters (on Document, 0-based page) ── */
+SEXP r_page_get_width(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    float w = pdf_page_get_width(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (code != 0) pdfox_raise(code, "page_get_width");
+    return Rf_ScalarReal((double)w);
+}
+SEXP r_page_get_height(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    float h = pdf_page_get_height(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (code != 0) pdfox_raise(code, "page_get_height");
+    return Rf_ScalarReal((double)h);
+}
+SEXP r_page_get_rotation(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    int32_t r = pdf_page_get_rotation(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (code != 0) pdfox_raise(code, "page_get_rotation");
+    return Rf_ScalarInteger(r);
+}
+
+/* ── ElementList (FfiElementList opaque handle, full per-element accessors) ── */
+SEXP r_page_get_elements(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    FfiElementList *list =
+        pdf_page_get_elements(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "page_get_elements");
+    int32_t n = pdf_oxide_element_count(list);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    for (int32_t i = 0; i < n; i++) {
+        code = 0;
+        char *type = pdf_oxide_element_get_type(list, i, &code);
+        if (!type) { pdf_oxide_elements_free(list); pdfox_raise(code, "page_get_elements"); }
+        code = 0;
+        char *txt = pdf_oxide_element_get_text(list, i, &code);
+        if (!txt) { free_string(type); pdf_oxide_elements_free(list); pdfox_raise(code, "page_get_elements"); }
+        float x = 0, y = 0, w = 0, h = 0;
+        code = 0;
+        pdf_oxide_element_get_rect(list, i, &x, &y, &w, &h, &code);
+        if (code != 0) { free_string(type); free_string(txt); pdf_oxide_elements_free(list); pdfox_raise(code, "page_get_elements"); }
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 3));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 3));
+        SEXP tstr = PROTECT(Rf_mkChar(type)); free_string(type);
+        SET_VECTOR_ELT(rec, 0, Rf_ScalarString(tstr));          SET_STRING_ELT(nms, 0, Rf_mkChar("type"));
+        SEXP txstr = PROTECT(Rf_mkChar(txt)); free_string(txt);
+        SET_VECTOR_ELT(rec, 1, Rf_ScalarString(txstr));         SET_STRING_ELT(nms, 1, Rf_mkChar("text"));
+        SET_VECTOR_ELT(rec, 2, make_bbox(x, y, w, h));          SET_STRING_ELT(nms, 2, Rf_mkChar("rect"));
+        Rf_setAttrib(rec, R_NamesSymbol, nms);
+        SET_VECTOR_ELT(out, i, rec);
+        UNPROTECT(4);
+    }
+    pdf_oxide_elements_free(list);
+    UNPROTECT(1);
+    return out;
+}
+
+/* ── Timestamp (top-level fn returning bytes via out-params) ── */
+SEXP r_add_timestamp(SEXP pdf_data, SEXP sig_index, SEXP tsa_url) {
+    int32_t code = 0;
+    uint8_t *out_data = NULL;
+    uintptr_t out_len = 0;
+    const char *url = (tsa_url == R_NilValue) ? NULL : CHAR(STRING_ELT(tsa_url, 0));
+    bool ok = pdf_add_timestamp(RAW(pdf_data), (uintptr_t)XLENGTH(pdf_data),
+                                Rf_asInteger(sig_index), url, &out_data, &out_len,
+                                &code);
+    if (!ok || !out_data) pdfox_raise(code, "add_timestamp");
+    return take_bytes(out_data, out_len, code, "add_timestamp");
+}
+
 /* ── Native routine registration (R Writing-R-Extensions §5.4) ──────────────
  * Backs `useDynLib(pdfoxide, .registration = TRUE, .fixes = "C_")` so R resolves
  * each .Call via a registered symbol object rather than a runtime string lookup,
@@ -2789,6 +3168,43 @@ static const R_CallMethodDef CallEntries[] = {
     CDEF(r_pdf_x_error_count, 1),
     CDEF(r_pdf_x_get_error, 2),
     CDEF(r_pdf_x_results_close, 1),
+    /* PHASE-7 barcodes / OCR / render variants / redaction / constructors /
+     * page getters / elements / timestamp */
+    CDEF(r_generate_qr_code, 3),
+    CDEF(r_generate_barcode, 3),
+    CDEF(r_barcode_get_data, 1),
+    CDEF(r_barcode_get_format, 1),
+    CDEF(r_barcode_get_confidence, 1),
+    CDEF(r_barcode_get_image_png, 2),
+    CDEF(r_barcode_get_svg, 2),
+    CDEF(r_barcode_close, 1),
+    CDEF(r_editor_add_barcode_to_page, 7),
+    CDEF(r_ocr_engine_create, 3),
+    CDEF(r_ocr_engine_close, 1),
+    CDEF(r_ocr_page_needs_ocr, 2),
+    CDEF(r_ocr_extract_text, 3),
+    CDEF(r_render_page_with_options, 11),
+    CDEF(r_render_page_with_options_ex, 12),
+    CDEF(r_render_page_region, 7),
+    CDEF(r_render_page_fit, 5),
+    CDEF(r_render_page_raw, 3),
+    CDEF(r_create_renderer, 4),
+    CDEF(r_renderer_close, 1),
+    CDEF(r_estimate_render_time, 2),
+    CDEF(r_redaction_add, 9),
+    CDEF(r_redaction_count, 2),
+    CDEF(r_redaction_apply, 5),
+    CDEF(r_redaction_scrub_metadata, 1),
+    CDEF(r_pdf_from_image, 1),
+    CDEF(r_pdf_from_image_bytes, 1),
+    CDEF(r_pdf_from_html_css, 3),
+    CDEF(r_pdf_from_html_css_with_fonts, 4),
+    CDEF(r_pdf_merge, 1),
+    CDEF(r_page_get_width, 2),
+    CDEF(r_page_get_height, 2),
+    CDEF(r_page_get_rotation, 2),
+    CDEF(r_page_get_elements, 2),
+    CDEF(r_add_timestamp, 3),
     {NULL, NULL, 0}
 };
 

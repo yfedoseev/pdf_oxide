@@ -16,6 +16,9 @@ extern NSString* const POXErrorDomain;
 @class POXPdfAResults;
 @class POXUaResults;
 @class POXPdfXResults;
+@class POXBarcode;
+@class POXOcrEngine;
+@class POXElementList;
 
 /// PDF version with named major/minor fields.
 typedef struct {
@@ -203,6 +206,74 @@ typedef struct {
 - (nullable POXUaResults*)validatePdfUa:(int32_t)level error:(NSError**)error;
 - (nullable POXPdfXResults*)validatePdfX:(int32_t)level error:(NSError**)error;
 
+// ── Phase-7: render variants / page getters / OCR ────────────────────────────
+
+/// Render a page with the full RenderOptions surface (background RGBA channels
+/// 0.0–1.0; `transparentBackground`/`renderAnnotations` are 0/1 flags; format
+/// 0=PNG 1=JPEG). Returns nil on a genuine failure (sets `error`).
+- (nullable POXRenderedImage*)renderPageWithOptions:(NSInteger)pageIndex
+                                                dpi:(int32_t)dpi
+                                             format:(int32_t)format
+                                                bgR:(float)bgR
+                                                bgG:(float)bgG
+                                                bgB:(float)bgB
+                                                bgA:(float)bgA
+                              transparentBackground:(int32_t)transparentBackground
+                                  renderAnnotations:(int32_t)renderAnnotations
+                                        jpegQuality:(int32_t)jpegQuality
+                                              error:(NSError**)error;
+/// Like -renderPageWithOptions: but also suppresses the named OCG layers.
+- (nullable POXRenderedImage*)renderPageWithOptionsEx:(NSInteger)pageIndex
+                                                  dpi:(int32_t)dpi
+                                               format:(int32_t)format
+                                                  bgR:(float)bgR
+                                                  bgG:(float)bgG
+                                                  bgB:(float)bgB
+                                                  bgA:(float)bgA
+                                transparentBackground:(int32_t)transparentBackground
+                                    renderAnnotations:(int32_t)renderAnnotations
+                                          jpegQuality:(int32_t)jpegQuality
+                                       excludedLayers:
+                                           (NSArray<NSString*>*)excludedLayers
+                                                error:(NSError**)error;
+/// Render a rectangular region (user-space points, origin bottom-left).
+- (nullable POXRenderedImage*)renderPageRegion:(NSInteger)pageIndex
+                                         cropX:(float)cropX
+                                         cropY:(float)cropY
+                                     cropWidth:(float)cropWidth
+                                    cropHeight:(float)cropHeight
+                                        format:(int32_t)format
+                                         error:(NSError**)error;
+/// Render a page to fit inside w×h pixels, preserving aspect ratio.
+- (nullable POXRenderedImage*)renderPageFit:(NSInteger)pageIndex
+                                          w:(int32_t)w
+                                          h:(int32_t)h
+                                     format:(int32_t)format
+                                      error:(NSError**)error;
+/// Render a page to a raw RGBA8888 buffer; on success `outWidth`/`outHeight`
+/// receive the pixel dimensions.
+- (nullable POXRenderedImage*)renderPageRaw:(NSInteger)pageIndex
+                                        dpi:(int32_t)dpi
+                                   outWidth:(int32_t*)outWidth
+                                  outHeight:(int32_t*)outHeight
+                                      error:(NSError**)error;
+/// Estimate the render time (engine units) for a page, or -1 on error.
+- (int32_t)estimateRenderTime:(NSInteger)pageIndex error:(NSError**)error;
+
+/// Page geometry getters (0-based page index).
+- (float)pageWidth:(NSInteger)pageIndex error:(NSError**)error;
+- (float)pageHeight:(NSInteger)pageIndex error:(NSError**)error;
+/// Page rotation in degrees, or -1 on error.
+- (int32_t)pageRotation:(NSInteger)pageIndex error:(NSError**)error;
+/// Layout-element list for a page (opaque handle owning the native list).
+- (nullable POXElementList*)pageElements:(NSInteger)pageIndex error:(NSError**)error;
+
+/// OCR-augmented text extraction. `engine` may be nil for native-only text.
+- (BOOL)pageNeedsOcr:(NSInteger)pageIndex error:(NSError**)error;
+- (nullable NSString*)ocrExtractText:(NSInteger)pageIndex
+                              engine:(nullable POXOcrEngine*)engine
+                               error:(NSError**)error;
+
 /// Free the native handle now (idempotent).
 - (void)close;
 
@@ -226,6 +297,26 @@ typedef struct {
 + (nullable instancetype)fromMarkdown:(NSString*)markdown error:(NSError**)error;
 + (nullable instancetype)fromHtml:(NSString*)html error:(NSError**)error;
 + (nullable instancetype)fromText:(NSString*)text error:(NSError**)error;
+
+// ── Phase-7: image / HTML+CSS constructors ───────────────────────────────────
+
+/// Build a single-page PDF wrapping an image file.
++ (nullable instancetype)fromImage:(NSString*)path error:(NSError**)error;
+/// Build a single-page PDF wrapping in-memory image bytes.
++ (nullable instancetype)fromImageBytes:(NSData*)data error:(NSError**)error;
+/// Build a PDF from HTML + CSS with a single optional embedded font (pass nil
+/// `fontBytes` for none).
++ (nullable instancetype)fromHtml:(NSString*)html
+                              css:(NSString*)css
+                        fontBytes:(nullable NSData*)fontBytes
+                            error:(NSError**)error;
+/// Build a PDF from HTML + CSS with a multi-font cascade. `families` and
+/// `fonts` are parallel arrays (families[i] names the family for fonts[i]).
++ (nullable instancetype)fromHtml:(NSString*)html
+                              css:(NSString*)css
+                         families:(NSArray<NSString*>*)families
+                            fonts:(NSArray<NSData*>*)fonts
+                            error:(NSError**)error;
 
 - (BOOL)saveToPath:(NSString*)path error:(NSError**)error;
 - (nullable NSData*)toBytesWithError:(NSError**)error;
@@ -345,6 +436,113 @@ typedef struct {
 - (nullable NSData*)saveEncryptedToBytesWithUserPassword:(NSString*)userPassword
                                            ownerPassword:(NSString*)ownerPassword
                                                    error:(NSError**)error;
+
+// ── Phase-7: geometric redaction + barcode placement ─────────────────────────
+
+/// Queue a redaction rectangle (corner points x1,y1–x2,y2) filled with the
+/// DeviceRGB colour r,g,b (0.0–1.0); page index is 0-based.
+- (BOOL)redactionAddPage:(NSInteger)page
+                      x1:(double)x1
+                      y1:(double)y1
+                      x2:(double)x2
+                      y2:(double)y2
+                       r:(double)r
+                       g:(double)g
+                       b:(double)b
+                   error:(NSError**)error;
+/// Number of queued redactions for `page`, or -1 on error.
+- (int32_t)redactionCount:(NSInteger)page error:(NSError**)error;
+/// Destructively apply all queued redactions; returns the number of glyphs
+/// removed, or -1 on error.
+- (int32_t)redactionApplyScrubMetadata:(BOOL)scrubMetadata
+                                     r:(double)r
+                                     g:(double)g
+                                     b:(double)b
+                                 error:(NSError**)error;
+/// Standalone metadata/JS/embedded-file scrub; returns the number of top-level
+/// constructs removed, or -1 on error.
+- (int32_t)redactionScrubMetadataWithError:(NSError**)error;
+
+/// Place a generated barcode on a page (0-based) at x,y with width×height.
+- (BOOL)addBarcode:(POXBarcode*)barcode
+              page:(NSInteger)page
+                 x:(float)x
+                 y:(float)y
+             width:(float)width
+            height:(float)height
+             error:(NSError**)error;
+
+/// Free the native handle now (idempotent).
+- (void)close;
+
+@end
+
+/// A generated barcode / QR code (Phase-7). Owns the native FfiBarcodeImage
+/// handle and frees it on -close/-dealloc.
+@interface POXBarcode : NSObject
+
+/// Generate a QR code from `data` with the given error-correction level and
+/// pixel size.
++ (nullable instancetype)generateQrCode:(NSString*)data
+                        errorCorrection:(int32_t)errorCorrection
+                                 sizePx:(int32_t)sizePx
+                                  error:(NSError**)error;
+/// Generate a 1D/2D barcode of `format` from `data` at the given pixel size.
++ (nullable instancetype)generateBarcode:(NSString*)data
+                                  format:(int32_t)format
+                                  sizePx:(int32_t)sizePx
+                                   error:(NSError**)error;
+
+/// The payload data carried by the barcode.
+- (nullable NSString*)dataError:(NSError**)error;
+/// The barcode format code, or -1 on error.
+- (int32_t)formatError:(NSError**)error;
+/// The decode confidence (0.0–1.0).
+- (float)confidenceError:(NSError**)error;
+/// Encode the barcode as a PNG (the `sizePx` hint is advisory).
+- (nullable NSData*)imagePngWithSizePx:(int32_t)sizePx error:(NSError**)error;
+/// Encode the barcode as an SVG string (the `sizePx` hint is advisory).
+- (nullable NSString*)svgWithSizePx:(int32_t)sizePx error:(NSError**)error;
+
+/// Free the native handle now (idempotent).
+- (void)close;
+
+@end
+
+/// An OCR engine backed by detection/recognition/dictionary model files
+/// (Phase-7). Owns the native engine handle and frees it on -close/-dealloc.
+@interface POXOcrEngine : NSObject
+
+/// Create an OCR engine from model + dictionary file paths.
++ (nullable instancetype)createWithDetModelPath:(NSString*)detModelPath
+                                   recModelPath:(NSString*)recModelPath
+                                       dictPath:(NSString*)dictPath
+                                          error:(NSError**)error;
+
+/// The raw native engine pointer (nil after close), for use by
+/// -[POXDocument ocrExtractText:engine:error:].
+- (nullable void*)POX_engineHandle;
+
+/// Free the native handle now (idempotent).
+- (void)close;
+
+@end
+
+/// A layout-element list for a page (Phase-7). Owns the native FfiElementList
+/// handle and frees it on -close/-dealloc. Per-element accessors are exposed via
+/// the index-based getters below.
+@interface POXElementList : NSObject
+
+/// Number of elements in the list.
+- (int32_t)count;
+/// The element type string at `index` (nil on error).
+- (nullable NSString*)typeAtIndex:(int32_t)index error:(NSError**)error;
+/// The element text at `index` (nil on error).
+- (nullable NSString*)textAtIndex:(int32_t)index error:(NSError**)error;
+/// The element bounding box at `index`.
+- (POXBbox)rectAtIndex:(int32_t)index error:(NSError**)error;
+/// Serialize the whole list to JSON (nil on error).
+- (nullable NSString*)toJsonWithError:(NSError**)error;
 
 /// Free the native handle now (idempotent).
 - (void)close;
@@ -895,6 +1093,24 @@ typedef struct {
 + (void)setLogLevel:(int32_t)level;
 /// Get the current global log level (0-5).
 + (int32_t)logLevel;
+
+@end
+
+// ── Phase-7: top-level merge + timestamp helpers ─────────────────────────────
+
+/// Top-level Phase-7 utility entry points that are not bound to a handle.
+@interface POXTools : NSObject
+
+/// Merge the PDFs at `paths` (in order) into a single in-memory PDF.
++ (nullable NSData*)merge:(NSArray<NSString*>*)paths error:(NSError**)error;
+
+/// Append an RFC 3161 document timestamp to the signature at `sigIndex` in the
+/// given PDF bytes, fetching the token from `tsaUrl`. On success returns the
+/// timestamped PDF bytes; nil (with `error`) on failure.
++ (nullable NSData*)addTimestamp:(NSData*)pdfData
+                        sigIndex:(int32_t)sigIndex
+                          tsaUrl:(NSString*)tsaUrl
+                           error:(NSError**)error;
 
 @end
 

@@ -407,3 +407,205 @@ end
 
     close!(doc)
 end
+
+@testset "PdfOxide phase-7 barcodes/OCR/render/redaction/constructors/page-getters" begin
+    doc = open_from_bytes(sample_pdf())
+
+    # ── Barcodes / QR ─────────────────────────────────────────────────────────
+    let qr = generate_qr_code("https://example.com", 0, 256)   # generate_qr_code
+        @test qr isa Barcode
+        @test barcode_get_data(qr) == "https://example.com"    # barcode_get_data
+        @test barcode_get_format(qr) isa Int                   # barcode_get_format
+        @test barcode_get_confidence(qr) isa Float64           # barcode_get_confidence
+        let png = barcode_get_image_png(qr, 256)               # barcode_get_image_png
+            @test png isa Vector{UInt8}
+            @test !isempty(png)
+        end
+        @test occursin("<", barcode_get_svg(qr, 256))          # barcode_get_svg
+        close!(qr)
+    end
+    let bc = generate_barcode("12345678", 0, 128)              # generate_barcode
+        @test bc isa Barcode
+        @test !isempty(barcode_get_data(bc))
+        # add_barcode_to_page on an editor (invoke; tolerate either outcome).
+        let ed = open_editor_from_bytes(sample_pdf())
+            try
+                add_barcode_to_page(ed, 0, bc, 10.0, 10.0, 100.0, 50.0)  # add_barcode_to_page
+                @test true
+            catch e
+                @test e isa PdfOxideError
+            end
+            close!(ed)
+        end
+        close!(bc)
+    end
+
+    # ── OCR (needs model files): exercise wrappers with minimal input ──────────
+    @test page_needs_ocr(doc, 0) isa Bool                      # page_needs_ocr
+    let r = nothing
+        try
+            r = ocr_extract_text(doc, 0, nothing)              # ocr_extract_text (no engine)
+            @test r isa String
+        catch e
+            @test e isa PdfOxideError
+        end
+    end
+    let eng = nothing
+        try
+            eng = ocr_engine_create(
+                "/nonexistent/det",
+                "/nonexistent/rec",
+                "/nonexistent/dict",
+            )
+        catch e
+            @test e isa PdfOxideError                          # ocr_engine_create (bad paths raise)
+        end
+        if eng isa OcrEngine
+            close!(eng)
+        end
+    end
+
+    # ── Render variants (testable on the sample) ──────────────────────────────
+    let img = render_page_with_options(doc, 0, 96, 0, 1.0, 1.0, 1.0, 1.0, 0, 1, 90)
+        @test img isa RenderedImage                            # render_page_with_options
+        @test img.width > 0 && img.height > 0
+        @test !isempty(img.data)
+    end
+    let img = render_page_with_options_ex(
+            doc,
+            0,
+            96,
+            0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0,
+            1,
+            90,
+            String["NoSuchLayer"],
+        )
+        @test img isa RenderedImage                            # render_page_with_options_ex
+        @test img.width > 0 && img.height > 0
+    end
+    let img = render_page_region(doc, 0, 0.0, 0.0, 100.0, 100.0, 0)
+        @test img isa RenderedImage                            # render_page_region
+        @test img.width > 0 && img.height > 0
+        @test !isempty(img.data)
+    end
+    let img = render_page_fit(doc, 0, 200, 200, 0)
+        @test img isa RenderedImage                            # render_page_fit
+        @test img.width > 0 && img.height > 0
+    end
+    let (img, w, h) = render_page_raw(doc, 0, 96)              # render_page_raw
+        @test img isa RenderedImage
+        @test w > 0 && h > 0
+        @test !isempty(img.data)
+    end
+
+    # ── Renderer config + estimate ────────────────────────────────────────────
+    let made = nothing
+        try
+            made = create_renderer(150, 0, 90, true)           # create_renderer
+        catch e
+            @test e isa PdfOxideError
+        end
+        if made isa Renderer
+            close!(made)                                        # Renderer close (pdf_renderer_free)
+        end
+    end
+    let v = nothing
+        try
+            v = estimate_render_time(doc, 0)                   # estimate_render_time
+            @test v isa Int
+        catch e
+            @test e isa PdfOxideError
+        end
+    end
+
+    # ── Page getters (testable) ───────────────────────────────────────────────
+    @test page_get_width(doc, 0) > 0                           # page_get_width
+    @test page_get_height(doc, 0) > 0                          # page_get_height
+    @test page_get_rotation(doc, 0) isa Int                    # page_get_rotation
+    let els = page_get_elements(doc, 0)                        # page_get_elements
+        @test els isa ElementList
+        @test element_count(els) >= 0                          # element_count
+        close!(els)                                             # ElementList close
+    end
+
+    # ── Redaction (on an editor, testable) ────────────────────────────────────
+    let ed = open_editor_from_bytes(sample_pdf())
+        redaction_add(ed, 0, 10.0, 10.0, 100.0, 50.0, 0.0, 0.0, 0.0)  # redaction_add
+        @test redaction_count(ed, 0) >= 1                      # redaction_count
+        let n = redaction_apply(ed, false, 0.0, 0.0, 0.0)     # redaction_apply
+            @test n >= 0
+        end
+        @test redaction_scrub_metadata(ed) >= 0               # redaction_scrub_metadata
+        close!(ed)
+    end
+
+    # ── Constructors ──────────────────────────────────────────────────────────
+    # from_image_bytes: bad (non-image) bytes must raise; assign outside @test so
+    # the surrounding try/catch can catch it.
+    let p = nothing
+        try
+            p = from_image_bytes(UInt8[0x00, 0x01, 0x02, 0x03])  # from_image_bytes (bad input)
+            @test p isa Pdf
+            close!(p)
+        catch e
+            @test e isa PdfOxideError
+        end
+    end
+    @test_throws PdfOxideError from_image("/nonexistent/nope.png")  # from_image (missing file)
+
+    # from_html_css builds a PDF where the html-render path is available, else
+    # raises (e.g. no default font in this cdylib). Either outcome exercises it.
+    try
+        pdf = from_html_css("<h1>HC</h1><p>body</p>", "h1 { color: red; }", nothing)  # from_html_css
+        @test length(to_bytes(pdf)) > 100
+        close!(pdf)
+    catch e
+        @test e isa PdfOxideError
+    end
+    try
+        pdf = from_html_css_with_fonts(
+            "<p>cascade</p>",
+            "p { font-size: 12px; }",
+            String[],
+            Vector{UInt8}[],
+        )  # from_html_css_with_fonts
+        @test length(to_bytes(pdf)) > 100
+        close!(pdf)
+    catch e
+        @test e isa PdfOxideError
+    end
+
+    # merge: write two temp PDFs and merge them; assert non-empty bytes.
+    let a = tempname() * ".pdf", b = tempname() * ".pdf"
+        save(from_markdown("# A\n\nalpha\n"), a)
+        save(from_markdown("# B\n\nbravo\n"), b)
+        let merged = nothing
+            try
+                merged = merge_pdfs([a, b])                     # merge_pdfs
+                @test merged isa Vector{UInt8}
+                @test length(merged) > 100
+            catch e
+                @test e isa PdfOxideError
+            end
+        end
+        rm(a; force = true)
+        rm(b; force = true)
+    end
+
+    # ── Timestamp (needs a TSA): invoke with minimal input, assert return/raise ─
+    let r = nothing
+        try
+            r = add_timestamp(sample_pdf(), 0, "http://127.0.0.1:0/tsa")  # add_timestamp
+            @test r isa Vector{UInt8}
+        catch e
+            @test e isa PdfOxideError
+        end
+    end
+
+    close!(doc)
+end

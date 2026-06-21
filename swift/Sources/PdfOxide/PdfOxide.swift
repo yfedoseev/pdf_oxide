@@ -573,6 +573,136 @@ public final class Document {
         return try RenderedImage(img, "renderPageThumbnail")
     }
 
+    // ── Phase-7 render variants ──────────────────────────────────────────────
+
+    /// Render with the full RenderOptions surface. Background channels are 0.0..1.0;
+    /// set `transparentBackground` to true to drop the fill. `format`: 0=PNG 1=JPEG.
+    public func renderPageWithOptions(
+        _ pageIndex: Int, dpi: Int32 = 150, format: Int32 = 0,
+        bgR: Float = 1, bgG: Float = 1, bgB: Float = 1, bgA: Float = 1,
+        transparentBackground: Bool = false, renderAnnotations: Bool = true, jpegQuality: Int32 = 90
+    ) throws -> RenderedImage {
+        var code: Int32 = 0
+        guard let img = pdf_render_page_with_options(
+            try ptr(), Int32(pageIndex), dpi, format, bgR, bgG, bgB, bgA,
+            transparentBackground ? 1 : 0, renderAnnotations ? 1 : 0, jpegQuality, &code
+        ) else {
+            throw PdfOxideError(code: code, op: "renderPageWithOptions")
+        }
+        return try RenderedImage(img, "renderPageWithOptions")
+    }
+
+    /// Render with full RenderOptions plus a list of OCG `/Name`s to suppress.
+    public func renderPageWithOptionsEx(
+        _ pageIndex: Int, dpi: Int32 = 150, format: Int32 = 0,
+        bgR: Float = 1, bgG: Float = 1, bgB: Float = 1, bgA: Float = 1,
+        transparentBackground: Bool = false, renderAnnotations: Bool = true, jpegQuality: Int32 = 90,
+        excludedLayers: [String] = []
+    ) throws -> RenderedImage {
+        let h = try ptr()
+        var code: Int32 = 0
+        let img = withCStringArray(excludedLayers) { layersPtr in
+            pdf_render_page_with_options_ex(
+                h, Int32(pageIndex), dpi, format, bgR, bgG, bgB, bgA,
+                transparentBackground ? 1 : 0, renderAnnotations ? 1 : 0, jpegQuality,
+                excludedLayers.isEmpty ? nil : layersPtr, excludedLayers.count, &code
+            )
+        }
+        guard let img else { throw PdfOxideError(code: code, op: "renderPageWithOptionsEx") }
+        return try RenderedImage(img, "renderPageWithOptionsEx")
+    }
+
+    /// Render a rectangular region (PDF user-space points, origin bottom-left).
+    public func renderPageRegion(
+        _ pageIndex: Int, cropX: Float, cropY: Float, cropWidth: Float, cropHeight: Float, format: Int32 = 0
+    ) throws -> RenderedImage {
+        var code: Int32 = 0
+        guard let img = pdf_render_page_region(
+            try ptr(), Int32(pageIndex), cropX, cropY, cropWidth, cropHeight, format, &code
+        ) else {
+            throw PdfOxideError(code: code, op: "renderPageRegion")
+        }
+        return try RenderedImage(img, "renderPageRegion")
+    }
+
+    /// Render the page to fit inside `width`×`height` pixels, preserving aspect ratio.
+    public func renderPageFit(_ pageIndex: Int, width: Int32, height: Int32, format: Int32 = 0) throws -> RenderedImage {
+        var code: Int32 = 0
+        guard let img = pdf_render_page_fit(try ptr(), Int32(pageIndex), width, height, format, &code) else {
+            throw PdfOxideError(code: code, op: "renderPageFit")
+        }
+        return try RenderedImage(img, "renderPageFit")
+    }
+
+    /// Render to a raw premultiplied RGBA8888 buffer; also returns the pixel dimensions.
+    public func renderPageRaw(_ pageIndex: Int, dpi: Int32 = 150) throws -> (image: RenderedImage, width: Int, height: Int) {
+        var code: Int32 = 0
+        var outW: Int32 = 0, outH: Int32 = 0
+        guard let img = pdf_render_page_raw(try ptr(), Int32(pageIndex), dpi, &outW, &outH, &code) else {
+            throw PdfOxideError(code: code, op: "renderPageRaw")
+        }
+        return (try RenderedImage(img, "renderPageRaw"), Int(outW), Int(outH))
+    }
+
+    /// Estimate the render time (implementation-defined units) for a page.
+    public func estimateRenderTime(_ pageIndex: Int) throws -> Int32 {
+        var code: Int32 = 0
+        let r = pdf_estimate_render_time(UnsafeRawPointer(try ptr()), Int32(pageIndex), &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "estimateRenderTime") }
+        return r
+    }
+
+    // ── Phase-7 page getters (0-based) ───────────────────────────────────────
+
+    public func pageWidth(_ pageIndex: Int) throws -> Float {
+        var code: Int32 = 0
+        let w = pdf_page_get_width(try ptr(), Int32(pageIndex), &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "pageWidth") }
+        return w
+    }
+    public func pageHeight(_ pageIndex: Int) throws -> Float {
+        var code: Int32 = 0
+        let h = pdf_page_get_height(try ptr(), Int32(pageIndex), &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "pageHeight") }
+        return h
+    }
+    public func pageRotation(_ pageIndex: Int) throws -> Int {
+        var code: Int32 = 0
+        let r = pdf_page_get_rotation(try ptr(), Int32(pageIndex), &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "pageRotation") }
+        return Int(r)
+    }
+
+    /// Extract the page's elements as an `ElementList` (freed on `close()`/`deinit`).
+    public func pageElements(_ pageIndex: Int) throws -> ElementList {
+        var code: Int32 = 0
+        guard let h = pdf_page_get_elements(try ptr(), Int32(pageIndex), &code) else {
+            throw PdfOxideError(code: code, op: "pageElements")
+        }
+        return ElementList(h)
+    }
+
+    // ── Phase-7 OCR ──────────────────────────────────────────────────────────
+
+    /// Whether a (0-based) page needs OCR (i.e. is scanned/hybrid).
+    public func ocrPageNeedsOcr(_ pageIndex: Int) throws -> Bool {
+        var code: Int32 = 0
+        let needs = pdf_ocr_page_needs_ocr(try ptr(), Int32(pageIndex), &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "ocrPageNeedsOcr") }
+        return needs
+    }
+
+    /// Extract text from a page via OCR. `engine` may be nil for native-only extraction.
+    public func ocrExtractText(_ pageIndex: Int, engine: OcrEngine? = nil) throws -> String {
+        let h = try ptr()
+        var code: Int32 = 0
+        let enginePtr = engine.flatMap { $0.handle }
+        return try takeString(
+            pdf_ocr_extract_text(h, Int32(pageIndex), enginePtr.map { UnsafeRawPointer($0) }, &code),
+            code, "ocrExtractText"
+        )
+    }
+
     /// A lightweight view of a single (0-based) page. Holds a strong reference to
     /// its Document so the native handle outlives the Page.
     public func page(_ index: Int) -> Page {
@@ -668,6 +798,48 @@ public final class Pdf {
     public static func fromText(_ text: String) throws -> Pdf {
         var code: Int32 = 0
         guard let h = pdf_from_text(text, &code) else { throw PdfOxideError(code: code, op: "fromText") }
+        return Pdf(h)
+    }
+
+    // ── Phase-7 image / HTML+CSS constructors ────────────────────────────────
+
+    /// Build a single-page PDF wrapping the image at `path`.
+    public static func fromImage(_ path: String) throws -> Pdf {
+        var code: Int32 = 0
+        guard let h = pdf_from_image(path, &code) else { throw PdfOxideError(code: code, op: "fromImage") }
+        return Pdf(h)
+    }
+
+    /// Build a single-page PDF wrapping the in-memory image `bytes`.
+    public static func fromImageBytes(_ bytes: [UInt8]) throws -> Pdf {
+        var code: Int32 = 0
+        let h = bytes.withUnsafeBufferPointer { buf in
+            pdf_from_image_bytes(buf.baseAddress, Int32(buf.count), &code)
+        }
+        guard let h else { throw PdfOxideError(code: code, op: "fromImageBytes") }
+        return Pdf(h)
+    }
+
+    /// Build a PDF from HTML + CSS with a single optional embedded font.
+    public static func fromHtmlCss(html: String, css: String, fontBytes: [UInt8] = []) throws -> Pdf {
+        var code: Int32 = 0
+        let h = fontBytes.withUnsafeBufferPointer { buf in
+            pdf_from_html_css(html, css, fontBytes.isEmpty ? nil : buf.baseAddress, buf.count, &code)
+        }
+        guard let h else { throw PdfOxideError(code: code, op: "fromHtmlCss") }
+        return Pdf(h)
+    }
+
+    /// Build a PDF from HTML + CSS with a multi-font cascade. `families` and
+    /// `fonts` are parallel arrays.
+    public static func fromHtmlCssWithFonts(html: String, css: String, families: [String], fonts: [[UInt8]]) throws -> Pdf {
+        var code: Int32 = 0
+        let h = withCStringArray(families) { famPtr -> OpaquePointer? in
+            withByteArrayArray(fonts) { fontPtrs, fontLens in
+                pdf_from_html_css_with_fonts(html, css, famPtr, fontPtrs, fontLens, UInt(families.count), &code)
+            }
+        }
+        guard let h else { throw PdfOxideError(code: code, op: "fromHtmlCssWithFonts") }
         return Pdf(h)
     }
 
@@ -926,6 +1098,60 @@ public final class DocumentEditor {
         var code: Int32 = 0
         if document_editor_unmark_page_for_redaction(try ptr(), page, &code) != 0 {
             throw PdfOxideError(code: code, op: "unmarkPageForRedaction")
+        }
+    }
+
+    // ── Phase-7 redaction (geometric add / apply / scrub) ────────────────────
+
+    /// Queue a redaction rectangle (`x1,y1`–`x2,y2`) with an overlay colour
+    /// (`r,g,b`, DeviceRGB 0..1) on a (0-based) page.
+    public func redactionAdd(_ page: Int, x1: Double, y1: Double, x2: Double, y2: Double, r: Double, g: Double, b: Double) throws {
+        var code: Int32 = 0
+        if pdf_redaction_add(try ptr(), UInt(page), x1, y1, x2, y2, r, g, b, &code) != 0 {
+            throw PdfOxideError(code: code, op: "redactionAdd")
+        }
+    }
+
+    /// Number of queued redaction regions for a (0-based) page.
+    public func redactionCount(_ page: Int) throws -> Int {
+        var code: Int32 = 0
+        let n = pdf_redaction_count(try ptr(), UInt(page), &code)
+        if n < 0 { throw PdfOxideError(code: code, op: "redactionCount") }
+        return Int(n)
+    }
+
+    /// Destructively apply all queued redactions. Returns the number of glyphs
+    /// physically removed. `r,g,b` is the overlay colour (DeviceRGB 0..1).
+    @discardableResult
+    public func redactionApply(scrubMetadata: Bool, r: Double, g: Double, b: Double) throws -> Int {
+        var code: Int32 = 0
+        let n = pdf_redaction_apply(try ptr(), scrubMetadata, r, g, b, &code)
+        if n < 0 { throw PdfOxideError(code: code, op: "redactionApply") }
+        return Int(n)
+    }
+
+    /// Strip document metadata / JavaScript / embedded files without geometric
+    /// redaction. Returns the number of top-level constructs removed.
+    @discardableResult
+    public func redactionScrubMetadata() throws -> Int {
+        var code: Int32 = 0
+        let n = pdf_redaction_scrub_metadata(try ptr(), &code)
+        if n < 0 { throw PdfOxideError(code: code, op: "redactionScrubMetadata") }
+        return Int(n)
+    }
+
+    // ── Phase-7 barcode placement ────────────────────────────────────────────
+
+    /// Draw `barcode` onto a (0-based) page at `(x, y)` sized `width`×`height`
+    /// (PDF user-space points).
+    public func addBarcodeToPage(_ page: Int, _ barcode: BarcodeImage, x: Float, y: Float, width: Float, height: Float) throws {
+        let h = try ptr()
+        guard let bc = barcode.handle else {
+            throw PdfOxideError(code: 0, op: "addBarcodeToPage: barcode is closed")
+        }
+        var code: Int32 = 0
+        if pdf_add_barcode_to_page(h, Int32(page), bc, x, y, width, height, &code) != 0 {
+            throw PdfOxideError(code: code, op: "addBarcodeToPage")
         }
     }
 
@@ -2263,6 +2489,223 @@ public func setLogLevel(_ level: Int32) {
 /// Get the current global library log level (0-5).
 public func getLogLevel() -> Int32 {
     pdf_oxide_get_log_level()
+}
+
+// ── Phase-7 top-level: merge + timestamp ─────────────────────────────────────
+
+/// Merge the PDFs at `paths` (in order) into a single in-memory PDF.
+public func merge(_ paths: [String]) throws -> [UInt8] {
+    var dataLen: Int32 = 0, code: Int32 = 0
+    let p = withCStringArray(paths) { pathsPtr in
+        pdf_merge(pathsPtr, Int32(paths.count), &dataLen, &code)
+    }
+    guard let p else { throw PdfOxideError(code: code, op: "merge") }
+    defer { free_bytes(p) }
+    let n = dataLen < 0 ? 0 : Int(dataLen)
+    return Array(UnsafeBufferPointer(start: p, count: n))
+}
+
+/// Add an RFC 3161 timestamp to the signature at `sigIndex` in `pdfData`,
+/// fetched from `tsaUrl`. Returns the re-saved PDF bytes.
+public func addTimestamp(_ pdfData: [UInt8], sigIndex: Int32, tsaUrl: String) throws -> [UInt8] {
+    var outData: UnsafeMutablePointer<UInt8>? = nil
+    var outLen: UInt = 0
+    var code: Int32 = 0
+    let ok = pdfData.withUnsafeBufferPointer { buf in
+        pdf_add_timestamp(buf.baseAddress, UInt(buf.count), sigIndex, tsaUrl, &outData, &outLen, &code)
+    }
+    if !ok { throw PdfOxideError(code: code, op: "addTimestamp") }
+    return try takeBytes(outData, Int(outLen), code, "addTimestamp")
+}
+
+// ── Phase-7: barcodes / OCR / render variants / redaction / constructors /
+//            page getters / element lists / timestamp ────────────────────────
+
+/// A single extracted page element (text run / image / path) read from an
+/// `ElementList`. `text` is empty for non-text elements.
+public struct Element {
+    public let type: String
+    public let text: String
+    public let rect: Bbox
+}
+
+/// An opaque list of page elements (`FfiElementList`), freed in `deinit`/`close()`.
+/// Wraps `pdf_page_get_elements` and the `pdf_oxide_element_*` accessor family.
+public final class ElementList {
+    private var handle: OpaquePointer?
+
+    fileprivate init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { if let h = handle { pdf_oxide_elements_free(h) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "ElementList is closed") }
+        return h
+    }
+
+    /// Number of elements in the list.
+    public func count() throws -> Int { Int(pdf_oxide_element_count(try ptr())) }
+
+    /// The element at `index`.
+    public func element(_ index: Int) throws -> Element {
+        let h = try ptr()
+        var code: Int32 = 0
+        let idx = Int32(index)
+        let type = try takeString(pdf_oxide_element_get_type(h, idx, &code), code, "ElementList.type")
+        let text = try takeString(pdf_oxide_element_get_text(h, idx, &code), code, "ElementList.text")
+        var x: Float = 0, y: Float = 0, w: Float = 0, hgt: Float = 0
+        pdf_oxide_element_get_rect(h, idx, &x, &y, &w, &hgt, &code)
+        return Element(
+            type: type, text: text,
+            rect: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(hgt))
+        )
+    }
+
+    /// Materialise every element into an array.
+    public func all() throws -> [Element] {
+        let n = try count()
+        var out: [Element] = []
+        out.reserveCapacity(max(0, n))
+        for i in 0..<max(0, n) { out.append(try element(i)) }
+        return out
+    }
+
+    /// Serialise the whole list to JSON.
+    public func toJson() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_oxide_elements_to_json(try ptr(), &code), code, "ElementList.toJson")
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_oxide_elements_free(h); handle = nil }
+    }
+}
+
+/// A generated/decoded barcode or QR-code image (opaque `FfiBarcodeImage`,
+/// freed in `deinit`/`close()`). Wraps the `pdf_barcode_*` / `pdf_generate_*`
+/// C functions. Add it to an editor page via `DocumentEditor.addBarcodeToPage`.
+public final class BarcodeImage {
+    fileprivate var handle: OpaquePointer?
+
+    fileprivate init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { if let h = handle { pdf_barcode_free(h) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "BarcodeImage is closed") }
+        return h
+    }
+
+    /// Generate a QR code. `errorCorrection`: 0=L 1=M 2=Q 3=H. `sizePx` is the
+    /// requested module-grid pixel size.
+    public static func generateQrCode(_ data: String, errorCorrection: Int32 = 1, sizePx: Int32 = 256) throws -> BarcodeImage {
+        var code: Int32 = 0
+        guard let h = pdf_generate_qr_code(data, errorCorrection, sizePx, &code) else {
+            throw PdfOxideError(code: code, op: "BarcodeImage.generateQrCode")
+        }
+        return BarcodeImage(h)
+    }
+
+    /// Generate a 1-D / 2-D barcode of the given `format` code.
+    public static func generateBarcode(_ data: String, format: Int32, sizePx: Int32 = 256) throws -> BarcodeImage {
+        var code: Int32 = 0
+        guard let h = pdf_generate_barcode(data, format, sizePx, &code) else {
+            throw PdfOxideError(code: code, op: "BarcodeImage.generateBarcode")
+        }
+        return BarcodeImage(h)
+    }
+
+    /// The barcode's decoded payload string.
+    public func data() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_barcode_get_data(try ptr(), &code), code, "BarcodeImage.data")
+    }
+
+    /// The barcode format code.
+    public func format() throws -> Int32 {
+        var code: Int32 = 0
+        return pdf_barcode_get_format(try ptr(), &code)
+    }
+
+    /// The decode confidence (1.0 for generated barcodes).
+    public func confidence() throws -> Float {
+        var code: Int32 = 0
+        return pdf_barcode_get_confidence(try ptr(), &code)
+    }
+
+    /// Render the barcode to PNG bytes at `sizePx` pixels.
+    public func imagePng(sizePx: Int32 = 256) throws -> [UInt8] {
+        let h = try ptr()
+        var outLen: Int32 = 0, code: Int32 = 0
+        guard let p = pdf_barcode_get_image_png(h, sizePx, &outLen, &code) else {
+            throw PdfOxideError(code: code, op: "BarcodeImage.imagePng")
+        }
+        defer { free_bytes(p) }
+        let n = outLen < 0 ? 0 : Int(outLen)
+        return Array(UnsafeBufferPointer(start: p, count: n))
+    }
+
+    /// Render the barcode to an SVG string at `sizePx` pixels.
+    public func svg(sizePx: Int32 = 256) throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_barcode_get_svg(try ptr(), sizePx, &code), code, "BarcodeImage.svg")
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_barcode_free(h); handle = nil }
+    }
+}
+
+/// An OCR engine (opaque `void*` `Box<OcrEngine>`, freed in `deinit`/`close()`).
+/// Wraps `pdf_ocr_engine_create` / `pdf_ocr_engine_free`. Pass to
+/// `Document.ocrExtractText` to run recognition over a page's images.
+public final class OcrEngine {
+    fileprivate var handle: UnsafeMutableRawPointer?
+
+    fileprivate init(_ handle: UnsafeMutableRawPointer) { self.handle = handle }
+    deinit { if let h = handle { pdf_ocr_engine_free(h) } }
+
+    fileprivate func rawPtr() throws -> UnsafeMutableRawPointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "OcrEngine is closed") }
+        return h
+    }
+
+    /// Create an OCR engine from detection / recognition model + dictionary paths.
+    public static func create(detModelPath: String, recModelPath: String, dictPath: String) throws -> OcrEngine {
+        var code: Int32 = 0
+        guard let h = pdf_ocr_engine_create(detModelPath, recModelPath, dictPath, &code) else {
+            throw PdfOxideError(code: code, op: "OcrEngine.create")
+        }
+        return OcrEngine(h)
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_ocr_engine_free(h); handle = nil }
+    }
+}
+
+/// A standalone renderer config handle (opaque `void*`, freed in `deinit`/`close()`).
+/// Wraps `pdf_create_renderer` / `pdf_renderer_free`.
+public final class Renderer {
+    private var handle: UnsafeMutableRawPointer?
+
+    private init(_ handle: UnsafeMutableRawPointer) { self.handle = handle }
+    deinit { if let h = handle { pdf_renderer_free(h) } }
+
+    /// Create a renderer. `format`: 0=PNG 1=JPEG.
+    public static func create(dpi: Int32 = 150, format: Int32 = 0, quality: Int32 = 90, antiAlias: Bool = true) throws -> Renderer {
+        var code: Int32 = 0
+        guard let h = pdf_create_renderer(dpi, format, quality, antiAlias, &code) else {
+            throw PdfOxideError(code: code, op: "Renderer.create")
+        }
+        return Renderer(h)
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_renderer_free(h); handle = nil }
+    }
 }
 
 // Marshal `[[UInt8]]` into a C `const uint8_t* const*` + parallel `const uintptr_t*`

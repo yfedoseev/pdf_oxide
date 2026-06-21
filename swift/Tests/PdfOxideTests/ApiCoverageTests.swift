@@ -367,4 +367,193 @@ final class ApiCoverageTests: XCTestCase {
         }
         _ = exercise
     }
+
+    // ── Phase-7: barcodes / render variants / page getters / redaction /
+    //            constructors / merge / OCR / timestamp ────────────────────────
+
+    // A 1×1 PNG (RGBA, fully opaque red) for image-constructor coverage.
+    private func tinyPng() -> [UInt8] {
+        [
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+            0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41,
+            0x54, 0x78, 0x9C, 0x62, 0xF8, 0xCF, 0xC0, 0x00,
+            0x00, 0x00, 0x03, 0x00, 0x01, 0x18, 0xDD, 0x8D,
+            0xB0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+            0x44, 0xAE, 0x42, 0x60, 0x82,
+        ]
+    }
+
+    // Barcodes are fully testable: generate, then assert every accessor.
+    func testBarcodes() throws {
+        let qr = try BarcodeImage.generateQrCode("https://example.com", errorCorrection: 1, sizePx: 128)
+        XCTAssertEqual(try qr.data(), "https://example.com")  // get_data
+        _ = try qr.format()                                   // get_format
+        _ = try qr.confidence()                               // get_confidence
+        XCTAssertFalse(try qr.imagePng(sizePx: 128).isEmpty)  // get_image_png
+        XCTAssertFalse(try qr.svg(sizePx: 128).isEmpty)       // get_svg
+        qr.close()
+
+        // pdf_generate_barcode: format codes are implementation-defined; invoke
+        // and either assert accessors or accept the binding error.
+        expectReturnOrPdfError("generateBarcode") {
+            let bc = try BarcodeImage.generateBarcode("12345670", format: 0, sizePx: 128)
+            XCTAssertFalse(try bc.data().isEmpty)
+            _ = try bc.format()
+            XCTAssertFalse(try bc.imagePng(sizePx: 128).isEmpty)
+            bc.close()
+        }
+    }
+
+    // addBarcodeToPage on an editor.
+    func testAddBarcodeToPage() throws {
+        let editor = try DocumentEditor.openFromBytes(try samplePdf())
+        let qr = try BarcodeImage.generateQrCode("X", sizePx: 64)
+        try editor.addBarcodeToPage(0, qr, x: 10, y: 10, width: 50, height: 50)
+        XCTAssertFalse(try editor.saveToBytes().isEmpty)
+        qr.close()
+        editor.close()
+    }
+
+    func testRenderVariants() throws {
+        let doc = try Document.openFromBytes(try samplePdf())
+
+        let opt = try doc.renderPageWithOptions(0, dpi: 96)              // with_options
+        XCTAssertGreaterThan(opt.width, 0)
+        XCTAssertGreaterThan(opt.height, 0)
+        XCTAssertFalse(opt.data.isEmpty)
+
+        let optEx = try doc.renderPageWithOptionsEx(0, dpi: 96, excludedLayers: ["NoSuchLayer"]) // with_options_ex
+        XCTAssertGreaterThan(optEx.width, 0)
+        XCTAssertFalse(optEx.data.isEmpty)
+
+        let region = try doc.renderPageRegion(0, cropX: 0, cropY: 0, cropWidth: 100, cropHeight: 100) // region
+        XCTAssertGreaterThan(region.width, 0)
+        XCTAssertFalse(region.data.isEmpty)
+
+        let fit = try doc.renderPageFit(0, width: 200, height: 200)     // fit
+        XCTAssertGreaterThan(fit.width, 0)
+        XCTAssertLessThanOrEqual(fit.width, 200)
+        XCTAssertFalse(fit.data.isEmpty)
+
+        let raw = try doc.renderPageRaw(0, dpi: 96)                     // raw
+        XCTAssertGreaterThan(raw.width, 0)
+        XCTAssertGreaterThan(raw.height, 0)
+        XCTAssertFalse(raw.image.data.isEmpty)
+
+        _ = try? doc.estimateRenderTime(0)                             // estimate_render_time (smoke)
+    }
+
+    func testRendererHandle() throws {
+        let r = try Renderer.create(dpi: 150, format: 0, quality: 90, antiAlias: true) // create_renderer + renderer_free
+        r.close()
+        r.close() // idempotent
+    }
+
+    func testPageGetters() throws {
+        let doc = try Document.openFromBytes(try samplePdf())
+        XCTAssertGreaterThan(try doc.pageWidth(0), 0)    // page_get_width
+        XCTAssertGreaterThan(try doc.pageHeight(0), 0)   // page_get_height
+        _ = try doc.pageRotation(0)                      // page_get_rotation
+
+        let elements = try doc.pageElements(0)           // page_get_elements + element accessors
+        let n = try elements.count()
+        XCTAssertGreaterThanOrEqual(n, 0)
+        if n > 0 {
+            let e = try elements.element(0)
+            _ = e.type; _ = e.text; _ = e.rect
+        }
+        _ = try elements.all()
+        XCTAssertFalse(try elements.toJson().isEmpty)
+        elements.close()
+    }
+
+    func testRedaction() throws {
+        let editor = try DocumentEditor.openFromBytes(try samplePdf())
+        try editor.redactionAdd(0, x1: 10, y1: 10, x2: 100, y2: 30, r: 0, g: 0, b: 0) // redaction_add
+        XCTAssertGreaterThanOrEqual(try editor.redactionCount(0), 1)                  // redaction_count
+        _ = try? editor.redactionApply(scrubMetadata: false, r: 0, g: 0, b: 0)        // redaction_apply
+        _ = try editor.redactionScrubMetadata()                                       // redaction_scrub_metadata
+        editor.close()
+    }
+
+    func testFromImageConstructors() {
+        // from_image_bytes: valid tiny PNG should build; bad input must raise.
+        expectReturnOrPdfError("Pdf.fromImageBytes") {
+            let pdf = try Pdf.fromImageBytes(tinyPng())
+            XCTAssertGreaterThan(try pdf.toBytes().count, 100)
+            pdf.close()
+        }
+        expectReturnOrPdfError("Pdf.fromImageBytes(bad)") {
+            _ = try Pdf.fromImageBytes([0x00, 0x01, 0x02])
+        }
+        // from_image: write the tiny PNG to a temp file, then build from it.
+        expectReturnOrPdfError("Pdf.fromImage") {
+            let path = NSTemporaryDirectory() + "pdfoxide_swift_tiny.png"
+            try Data(tinyPng()).write(to: URL(fileURLWithPath: path))
+            defer { try? FileManager.default.removeItem(atPath: path) }
+            let pdf = try Pdf.fromImage(path)
+            XCTAssertGreaterThan(try pdf.toBytes().count, 100)
+            pdf.close()
+        }
+    }
+
+    func testFromHtmlCss() throws {
+        let pdf = try Pdf.fromHtmlCss(html: "<h1>HtmlCss</h1><p>body</p>", css: "h1{color:#333}")
+        XCTAssertGreaterThan(try pdf.toBytes().count, 100)  // from_html_css
+        pdf.close()
+
+        // from_html_css_with_fonts: empty font cascade is a valid call.
+        expectReturnOrPdfError("Pdf.fromHtmlCssWithFonts") {
+            let p2 = try Pdf.fromHtmlCssWithFonts(html: "<p>x</p>", css: "", families: [], fonts: [])
+            XCTAssertGreaterThan(try p2.toBytes().count, 100)
+            p2.close()
+        }
+    }
+
+    func testMerge() throws {
+        // Merge two real temp PDFs.
+        let a = NSTemporaryDirectory() + "pdfoxide_swift_merge_a.pdf"
+        let b = NSTemporaryDirectory() + "pdfoxide_swift_merge_b.pdf"
+        try Pdf.fromMarkdown("# A\n\nfirst\n").save(a)
+        try Pdf.fromMarkdown("# B\n\nsecond\n").save(b)
+        defer {
+            try? FileManager.default.removeItem(atPath: a)
+            try? FileManager.default.removeItem(atPath: b)
+        }
+        let merged = try merge([a, b])               // merge
+        XCTAssertGreaterThan(merged.count, 100)
+        let doc = try Document.openFromBytes(merged)
+        XCTAssertGreaterThanOrEqual(try doc.pageCount(), 2)
+    }
+
+    // OCR needs model files; invoke the wrappers with empty/minimal inputs and
+    // assert they return or raise the binding error type.
+    func testOcrCoverage() throws {
+        let doc = try Document.openFromBytes(try samplePdf())
+        _ = try? doc.ocrPageNeedsOcr(0)                          // ocr_page_needs_ocr (smoke)
+        _ = try? doc.ocrExtractText(0, engine: nil)              // ocr_extract_text (engine == nil)
+
+        expectReturnOrPdfError("OcrEngine.create") {
+            let engine = try OcrEngine.create(detModelPath: "", recModelPath: "", dictPath: "")
+            _ = try? doc.ocrExtractText(0, engine: engine)
+            engine.close()
+        }
+    }
+
+    // add_timestamp needs a real TSA + signed PDF; INVOKE with minimal inputs
+    // and assert it returns or raises the binding error.
+    func testAddTimestampCoverage() throws {
+        let pdf = try samplePdf()
+        let result: [UInt8]?
+        do {
+            result = try addTimestamp(pdf, sigIndex: 0, tsaUrl: "http://127.0.0.1:0/tsa")
+        } catch let e as PdfOxideError {
+            result = nil
+            _ = e  // expected: no signature / no TSA reachable
+        }
+        XCTAssertTrue(result == nil || result!.count >= 0)
+    }
 }

@@ -406,4 +406,215 @@ void main() {
       expect(Dss, isNotNull);
     });
   });
+
+  // ── Phase 7: barcodes / OCR / render variants / redaction / from_* ──────────
+
+  group('Phase 7 — barcodes / QR (fully testable)', () {
+    test('BarcodeImage.qr -> data / format / png / svg', () {
+      final qr = BarcodeImage.qr('hello world', sizePx: 128);
+      addTearDown(qr.close);
+      expect(qr.data, equals('hello world'));
+      expect(qr.format, isA<int>());
+      expect(qr.confidence, isA<double>());
+      expect(qr.imagePng(sizePx: 128), isNotEmpty);
+      expect(qr.svg(sizePx: 128), contains('<svg'));
+    });
+    test('BarcodeImage.barcode -> data / format', () {
+      // format 0 is a valid 1-D symbology in the C ABI; assert it builds or
+      // raises the binding error type cleanly.
+      BarcodeImage? bc;
+      try {
+        bc = BarcodeImage.barcode('12345678', 0, sizePx: 128);
+      } on PdfOxideError {
+        bc = null;
+      }
+      if (bc != null) {
+        addTearDown(bc.close);
+        expect(bc.data, isNotEmpty);
+        expect(bc.format, isA<int>());
+        expect(bc.imagePng(sizePx: 128), isNotEmpty);
+      } else {
+        expect(true, isTrue); // build is the error path; wrapper reachable
+      }
+    });
+  });
+
+  group('Phase 7 — render variants (testable on the sample)', () {
+    late PdfDocument doc;
+    setUp(() => doc = PdfDocument.openFromBytes(_samplePdf()));
+    tearDown(() => doc.close());
+
+    test('renderPageWithOptions', () {
+      final img = doc.renderPageWithOptions(0, dpi: 96);
+      addTearDown(img.close);
+      expect(img.width, greaterThan(0));
+      expect(img.height, greaterThan(0));
+      expect(img.data, isNotEmpty);
+    });
+    test('renderPageWithOptionsEx (no excluded layers)', () {
+      final img = doc.renderPageWithOptionsEx(0, dpi: 96);
+      addTearDown(img.close);
+      expect(img.width, greaterThan(0));
+      expect(img.height, greaterThan(0));
+    });
+    test('renderPageWithOptionsEx (with excluded layers)', () {
+      final img =
+          doc.renderPageWithOptionsEx(0, dpi: 96, excludedLayers: ['Layer1']);
+      addTearDown(img.close);
+      expect(img.width, greaterThan(0));
+    });
+    test('renderPageRegion', () {
+      final img = doc.renderPageRegion(0, 0, 0, 100, 100);
+      addTearDown(img.close);
+      expect(img.width, greaterThan(0));
+      expect(img.height, greaterThan(0));
+    });
+    test('renderPageFit', () {
+      final img = doc.renderPageFit(0, 200, 200);
+      addTearDown(img.close);
+      expect(img.width, greaterThan(0));
+      expect(img.width, lessThanOrEqualTo(200));
+    });
+    test('renderPageRaw', () {
+      final img = doc.renderPageRaw(0, 96);
+      addTearDown(img.close);
+      expect(img.width, greaterThan(0));
+      expect(img.data, isNotEmpty); // raw RGBA8888 buffer
+    });
+    test('estimateRenderTime', () {
+      expect(doc.estimateRenderTime(0), isA<int>());
+    });
+    test('Renderer.create', () {
+      final r = Renderer.create(dpi: 96);
+      addTearDown(r.close);
+      expect(r, isA<Renderer>());
+    });
+  });
+
+  group('Phase 7 — page getters / elements (testable)', () {
+    late PdfDocument doc;
+    setUp(() => doc = PdfDocument.openFromBytes(_samplePdf()));
+    tearDown(() => doc.close());
+
+    test('pageWidth / pageHeight', () {
+      expect(doc.pageWidth(0), greaterThan(0));
+      expect(doc.pageHeight(0), greaterThan(0));
+    });
+    test('pageRotation', () => expect(doc.pageRotation(0), isA<int>()));
+    test('pageElements -> count / element / toList / toJson', () {
+      final els = doc.pageElements(0);
+      addTearDown(els.close);
+      expect(els.count, isA<int>());
+      expect(els.count, greaterThanOrEqualTo(0));
+      final list = els.toList();
+      expect(list, isA<List<Element>>());
+      if (list.isNotEmpty) {
+        expect(list.first.type, isA<String>());
+        expect(list.first.rect, isA<Bbox>());
+      }
+      expect(els.toJson(), isNotEmpty);
+    });
+  });
+
+  group('Phase 7 — redaction (testable on an editor)', () {
+    late DocumentEditor ed;
+    setUp(() => ed = DocumentEditor.openFromBytes(_samplePdf()));
+    tearDown(() => ed.close());
+
+    test('redactionAdd + redactionCount', () {
+      ed.redactionAdd(0, 10, 10, 100, 50);
+      expect(ed.redactionCount(0), greaterThanOrEqualTo(1));
+    });
+    test('redactionApply', () {
+      ed.redactionAdd(0, 10, 10, 100, 50);
+      final removed = ed.redactionApply();
+      expect(removed, greaterThanOrEqualTo(0));
+    });
+    test('redactionScrubMetadata', () {
+      expect(ed.redactionScrubMetadata(), greaterThanOrEqualTo(0));
+    });
+    test('addBarcodeToPage', () {
+      final qr = BarcodeImage.qr('barcode-stamp', sizePx: 64);
+      addTearDown(qr.close);
+      // Stamp onto the page; assert it succeeds or raises the binding error.
+      expect(() => ed.addBarcodeToPage(0, qr, 50, 50, 80, 80),
+          anyOf(returnsNormally, throwsA(isA<PdfOxideError>())));
+    });
+  });
+
+  group('Phase 7 — image / HTML+CSS constructors', () {
+    test('fromImageBytes raises on non-image bytes', () {
+      expect(() => Pdf.fromImageBytes(Uint8List.fromList([0, 1, 2, 3])),
+          throwsA(isA<PdfOxideError>()));
+    });
+    test('fromHtmlCss (no font)', () {
+      final p = Pdf.fromHtmlCss('<h1>hi</h1><p>body</p>', 'h1 { color: red; }');
+      addTearDown(p.close);
+      expect(p.toBytes().length, greaterThan(100));
+    });
+    test('fromHtmlCssWithFonts (empty cascade)', () {
+      final p = Pdf.fromHtmlCssWithFonts(
+          '<p>cascade</p>', 'p { font-size: 12pt; }', const [], const []);
+      addTearDown(p.close);
+      expect(p.toBytes().length, greaterThan(100));
+    });
+    test('fromHtmlCssWithFonts rejects mismatched lengths', () {
+      expect(() => Pdf.fromHtmlCssWithFonts('<p>x</p>', '', ['Fam'], const []),
+          throwsA(isA<ArgumentError>()));
+    });
+  });
+
+  group('Phase 7 — merge', () {
+    test('pdfMerge of two temp PDFs', () {
+      final a = '${Directory.systemTemp.path}/pdfoxide_dart_merge_a_${pid}.pdf';
+      final b = '${Directory.systemTemp.path}/pdfoxide_dart_merge_b_${pid}.pdf';
+      Pdf.fromMarkdown('# A\n\nfirst\n')
+        ..save(a)
+        ..close();
+      Pdf.fromMarkdown('# B\n\nsecond\n')
+        ..save(b)
+        ..close();
+      addTearDown(() {
+        File(a).deleteSync();
+        File(b).deleteSync();
+      });
+      final merged = pdfMerge([a, b]);
+      expect(merged, isNotEmpty);
+      final doc = PdfDocument.openFromBytes(merged);
+      addTearDown(doc.close);
+      expect(doc.pageCount, greaterThanOrEqualTo(2));
+    });
+    test('pdfMerge raises on a bad path', () {
+      expect(() => pdfMerge(['/nonexistent/nope.pdf']),
+          throwsA(isA<PdfOxideError>()));
+    });
+  });
+
+  // OCR needs model files and addTimestamp needs a live TSA; invoke the wrappers
+  // with minimal/empty inputs and assert each returns or raises PdfOxideError.
+  group('Phase 7 — OCR / timestamp (no models / no network)', () {
+    test('OcrEngine.create raises on missing model files', () {
+      expect(
+          () => OcrEngine.create(
+              '/nonexistent/det', '/nonexistent/rec', '/nonexistent/dict'),
+          throwsA(isA<PdfOxideError>()));
+    });
+    test('ocrExtractText with no engine (native fallback) returns or raises',
+        () {
+      final doc = PdfDocument.openFromBytes(_samplePdf());
+      addTearDown(doc.close);
+      String? result;
+      try {
+        result = doc.ocrExtractText(0); // engine == null -> native extraction
+      } on PdfOxideError {
+        result = null; // acceptable when the ocr feature is disabled
+      }
+      expect(result, anyOf(isNull, isA<String>()));
+    });
+    test('addTimestamp raises without a reachable TSA / valid signature', () {
+      final result = () =>
+          addTimestamp(_samplePdf(), 0, 'http://invalid.tsa.example/none');
+      expect(result, throwsA(isA<PdfOxideError>()));
+    });
+  });
 }

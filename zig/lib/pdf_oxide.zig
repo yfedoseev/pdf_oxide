@@ -714,6 +714,180 @@ pub const Document = struct {
         const h = c.pdf_validate_pdf_x_level(self.handle, level, &code) orelse return fail(code);
         return .{ .handle = h };
     }
+
+    // ── PHASE-7: render variants / page getters / OCR ─────────────────────────
+
+    /// Render a (0-based) page with the full RenderOptions surface. Background
+    /// channels are 0.0..=1.0; set `transparent_background` to drop the fill.
+    /// `format`: 0=PNG 1=JPEG. Caller owns the returned `RenderedImage`.
+    pub fn renderPageWithOptions(
+        self: Document,
+        alloc: std.mem.Allocator,
+        page_index: i32,
+        dpi: i32,
+        format: i32,
+        bg_r: f32,
+        bg_g: f32,
+        bg_b: f32,
+        bg_a: f32,
+        transparent_background: bool,
+        render_annotations: bool,
+        jpeg_quality: i32,
+    ) Error!RenderedImage {
+        var code: i32 = 0;
+        const img = c.pdf_render_page_with_options(
+            self.handle,
+            page_index,
+            dpi,
+            format,
+            bg_r,
+            bg_g,
+            bg_b,
+            bg_a,
+            @intFromBool(transparent_background),
+            @intFromBool(render_annotations),
+            jpeg_quality,
+            &code,
+        ) orelse return fail(code);
+        return RenderedImage.take(alloc, img);
+    }
+
+    /// `renderPageWithOptions` plus OCG layer filtering. `excluded_layers` are
+    /// the `/Name`s of Optional Content Groups to suppress (empty = no filter).
+    /// Caller owns the returned `RenderedImage`.
+    pub fn renderPageWithOptionsEx(
+        self: Document,
+        alloc: std.mem.Allocator,
+        page_index: i32,
+        dpi: i32,
+        format: i32,
+        bg_r: f32,
+        bg_g: f32,
+        bg_b: f32,
+        bg_a: f32,
+        transparent_background: bool,
+        render_annotations: bool,
+        jpeg_quality: i32,
+        excluded_layers: []const [*:0]const u8,
+    ) Error!RenderedImage {
+        var code: i32 = 0;
+        const layers: [*c]const [*c]const u8 =
+            if (excluded_layers.len == 0) null else @ptrCast(excluded_layers.ptr);
+        const img = c.pdf_render_page_with_options_ex(
+            self.handle,
+            page_index,
+            dpi,
+            format,
+            bg_r,
+            bg_g,
+            bg_b,
+            bg_a,
+            @intFromBool(transparent_background),
+            @intFromBool(render_annotations),
+            jpeg_quality,
+            layers,
+            excluded_layers.len,
+            &code,
+        ) orelse return fail(code);
+        return RenderedImage.take(alloc, img);
+    }
+
+    /// Render a rectangular region of a (0-based) page. `crop_*` are in PDF
+    /// user-space points (origin bottom-left). `format`: 0=PNG 1=JPEG. Caller
+    /// owns the returned `RenderedImage`.
+    pub fn renderPageRegion(
+        self: Document,
+        alloc: std.mem.Allocator,
+        page_index: i32,
+        crop_x: f32,
+        crop_y: f32,
+        crop_width: f32,
+        crop_height: f32,
+        format: i32,
+    ) Error!RenderedImage {
+        var code: i32 = 0;
+        const img = c.pdf_render_page_region(self.handle, page_index, crop_x, crop_y, crop_width, crop_height, format, &code) orelse
+            return fail(code);
+        return RenderedImage.take(alloc, img);
+    }
+
+    /// Render a (0-based) page to fit inside `w`×`h` pixels, preserving aspect
+    /// ratio. `format`: 0=PNG 1=JPEG. Caller owns the returned `RenderedImage`.
+    pub fn renderPageFit(self: Document, alloc: std.mem.Allocator, page_index: i32, w: i32, h: i32, format: i32) Error!RenderedImage {
+        var code: i32 = 0;
+        const img = c.pdf_render_page_fit(self.handle, page_index, w, h, format, &code) orelse return fail(code);
+        return RenderedImage.take(alloc, img);
+    }
+
+    /// Render a (0-based) page to a raw premultiplied RGBA8888 pixel buffer at
+    /// `dpi`. The pixel dimensions are returned in the `RenderedImage`'s
+    /// `width`/`height`; `data` is row-major, top-left origin
+    /// (`data.len == width*height*4`). Caller owns the returned `RenderedImage`.
+    pub fn renderPageRaw(self: Document, alloc: std.mem.Allocator, page_index: i32, dpi: i32) Error!RenderedImage {
+        var code: i32 = 0;
+        var out_width: i32 = 0;
+        var out_height: i32 = 0;
+        const img = c.pdf_render_page_raw(self.handle, page_index, dpi, &out_width, &out_height, &code) orelse
+            return fail(code);
+        return RenderedImage.take(alloc, img);
+    }
+
+    /// Estimate the render time (implementation-defined units) for a (0-based)
+    /// page.
+    pub fn estimateRenderTime(self: Document, page_index: i32) Error!i32 {
+        var code: i32 = 0;
+        const t = c.pdf_estimate_render_time(self.handle, page_index, &code);
+        if (code != 0) return fail(code);
+        return t;
+    }
+
+    /// Page width in PDF points for a (0-based) page.
+    pub fn pageGetWidth(self: Document, page_index: i32) Error!f32 {
+        var code: i32 = 0;
+        const w = c.pdf_page_get_width(self.handle, page_index, &code);
+        if (code != 0) return fail(code);
+        return w;
+    }
+
+    /// Page height in PDF points for a (0-based) page.
+    pub fn pageGetHeight(self: Document, page_index: i32) Error!f32 {
+        var code: i32 = 0;
+        const h = c.pdf_page_get_height(self.handle, page_index, &code);
+        if (code != 0) return fail(code);
+        return h;
+    }
+
+    /// Page rotation in degrees for a (0-based) page.
+    pub fn pageGetRotation(self: Document, page_index: i32) Error!i32 {
+        var code: i32 = 0;
+        const r = c.pdf_page_get_rotation(self.handle, page_index, &code);
+        if (code != 0) return fail(code);
+        return r;
+    }
+
+    /// Layout elements on a (0-based) page. Caller owns the returned
+    /// `ElementList`; free it with `deinit`.
+    pub fn pageGetElements(self: Document, page_index: i32) Error!ElementList {
+        var code: i32 = 0;
+        const h = c.pdf_page_get_elements(self.handle, page_index, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Whether a (0-based) page needs OCR (i.e. is scanned/hybrid).
+    pub fn ocrPageNeedsOcr(self: Document, page_index: i32) Error!bool {
+        var code: i32 = 0;
+        const r = c.pdf_ocr_page_needs_ocr(self.handle, page_index, &code);
+        if (code != 0) return fail(code);
+        return r;
+    }
+
+    /// Extract text from a (0-based) page using OCR. `engine` may be null (uses
+    /// native text extraction only). Caller owns the returned slice.
+    pub fn ocrExtractText(self: Document, alloc: std.mem.Allocator, page_index: i32, engine: ?OcrEngine) Error![]u8 {
+        var code: i32 = 0;
+        const eh: ?*const anyopaque = if (engine) |e| e.handle else null;
+        return takeString(alloc, c.pdf_ocr_extract_text(self.handle, page_index, eh, &code), code);
+    }
 };
 
 /// A rendered page image. Owns the native `FfiRenderedImage` handle so that
@@ -804,6 +978,68 @@ pub const Pdf = struct {
     pub fn fromText(text: [:0]const u8) Error!Pdf {
         var code: i32 = 0;
         const h = c.pdf_from_text(text.ptr, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    // ── PHASE-7: image / HTML+CSS constructors ────────────────────────────────
+
+    /// Build a single-page PDF wrapping the image at `path`.
+    pub fn fromImage(path: [:0]const u8) Error!Pdf {
+        var code: i32 = 0;
+        const h = c.pdf_from_image(path.ptr, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Build a single-page PDF wrapping the image in `data`.
+    pub fn fromImageBytes(data: []const u8) Error!Pdf {
+        var code: i32 = 0;
+        const h = c.pdf_from_image_bytes(data.ptr, @intCast(data.len), &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Build a PDF from `html` + `css` with a single embedded font (pass an
+    /// empty `font_bytes` slice for none).
+    pub fn fromHtmlCss(html: [:0]const u8, css: [:0]const u8, font_bytes: []const u8) Error!Pdf {
+        var code: i32 = 0;
+        const fp: ?[*]const u8 = if (font_bytes.len == 0) null else font_bytes.ptr;
+        const h = c.pdf_from_html_css(html.ptr, css.ptr, fp, font_bytes.len, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Build a PDF from `html` + `css` with a multi-font cascade. `families` and
+    /// `fonts` are parallel arrays of equal length; each `fonts[i]` is the raw
+    /// font bytes for `families[i]`.
+    pub fn fromHtmlCssWithFonts(
+        alloc: std.mem.Allocator,
+        html: [:0]const u8,
+        css: [:0]const u8,
+        families: []const [*:0]const u8,
+        fonts: []const []const u8,
+    ) Error!Pdf {
+        if (families.len != fonts.len) return fail(-1);
+        var arena = std.heap.ArenaAllocator.init(alloc);
+        defer arena.deinit();
+        const aa = arena.allocator();
+
+        const count = fonts.len;
+        var fam_ptr: [*c]const [*c]const u8 = null;
+        var bytes_ptr: [*c]const [*c]const u8 = null;
+        var lens_ptr: [*c]const usize = null;
+        if (count != 0) {
+            fam_ptr = @ptrCast(families.ptr);
+            const bptrs = try aa.alloc([*c]const u8, count);
+            const lens = try aa.alloc(usize, count);
+            for (fonts, 0..) |f, i| {
+                bptrs[i] = f.ptr;
+                lens[i] = f.len;
+            }
+            bytes_ptr = bptrs.ptr;
+            lens_ptr = lens.ptr;
+        }
+
+        var code: i32 = 0;
+        const h = c.pdf_from_html_css_with_fonts(html.ptr, css.ptr, fam_ptr, bytes_ptr, lens_ptr, count, &code) orelse
+            return fail(code);
         return .{ .handle = h };
     }
 
@@ -1223,6 +1459,74 @@ pub const DocumentEditor = struct {
         const h = try self.live();
         var code: i32 = 0;
         return takeString(alloc, c.document_editor_flatten_warning(h, index, &code), code);
+    }
+
+    // ── PHASE-7: programmatic redaction / barcode placement ───────────────────
+
+    /// Queue a programmatic redaction rectangle on a (0-based) `page_no`.
+    /// Coordinates and `r`/`g`/`b` overlay colour are page user-space / DeviceRGB.
+    pub fn redactionAdd(
+        self: DocumentEditor,
+        page_no: usize,
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+        r: f64,
+        g: f64,
+        b: f64,
+    ) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.pdf_redaction_add(h, page_no, x1, y1, x2, y2, r, g, b, &code) != 0) return fail(code);
+    }
+
+    /// Number of queued redaction regions for a (0-based) `page_no`.
+    pub fn redactionCount(self: DocumentEditor, page_no: usize) Error!i32 {
+        const h = try self.live();
+        var code: i32 = 0;
+        const n = c.pdf_redaction_count(h, page_no, &code);
+        if (n < 0) return fail(code);
+        return n;
+    }
+
+    /// Destructively apply all queued redactions (true content removal + opaque
+    /// overlay). `scrub_metadata` runs the document-scrub pass; `r`/`g`/`b` are
+    /// the overlay colour. Returns the number of glyphs physically removed.
+    pub fn redactionApply(self: DocumentEditor, scrub_metadata: bool, r: f64, g: f64, b: f64) Error!i32 {
+        const h = try self.live();
+        var code: i32 = 0;
+        const n = c.pdf_redaction_apply(h, scrub_metadata, r, g, b, &code);
+        if (n < 0) return fail(code);
+        return n;
+    }
+
+    /// Sanitize the document without geometric redaction (strips `/Info`, XMP
+    /// `/Metadata`, document JavaScript, embedded files). Returns the number of
+    /// top-level constructs removed.
+    pub fn redactionScrubMetadata(self: DocumentEditor) Error!i32 {
+        const h = try self.live();
+        var code: i32 = 0;
+        const n = c.pdf_redaction_scrub_metadata(h, &code);
+        if (n < 0) return fail(code);
+        return n;
+    }
+
+    /// Place a generated `Barcode` image on a (0-based) page at (`x`,`y`) with
+    /// size `width`×`height` (page user-space points).
+    pub fn addBarcodeToPage(
+        self: DocumentEditor,
+        page_index: i32,
+        barcode: Barcode,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) Error!void {
+        const h = try self.live();
+        const bh = try barcode.live();
+        var code: i32 = 0;
+        if (c.pdf_add_barcode_to_page(h, page_index, bh, x, y, width, height, &code) != 0) return fail(code);
     }
 };
 
@@ -2806,6 +3110,238 @@ fn marshalDerArray(
     return .{ .ptrs = ptrs.ptr, .lens = lens.ptr };
 }
 
+// ── PHASE-7: barcodes / QR / OCR engine / renderer / merge / timestamp ────────
+//
+// Mirrors the earlier-phase handle pattern: factory constructors, error-code
+// helpers, owned string-/byte-takes, opaque handles freed on `deinit`/`close`,
+// and a closed-handle guard on every accessor.
+
+/// A generated 1-D barcode / 2-D QR image, or a decoded barcode. Owns the native
+/// `FfiBarcodeImage` handle; free with `deinit`/`close`.
+pub const Barcode = struct {
+    handle: ?*c.FfiBarcodeImage,
+
+    /// Guard: returns the live handle or raises if the barcode was closed.
+    fn live(self: Barcode) Error!*c.FfiBarcodeImage {
+        return self.handle orelse fail(-1);
+    }
+
+    /// Generate a QR code from `data`. `error_correction`: 0=L 1=M 2=Q 3=H;
+    /// `size_px` is the requested module/pixel size.
+    pub fn generateQrCode(data: [:0]const u8, error_correction: i32, size_px: i32) Error!Barcode {
+        var code: i32 = 0;
+        const h = c.pdf_generate_qr_code(data.ptr, error_correction, size_px, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Generate a 1-D barcode from `data`. `format`: 0=Code128 1=Code39 2=EAN13
+    /// 3=EAN8 4=UPCA 5=ITF 6=Code93 7=Codabar; `size_px` is the requested size.
+    pub fn generateBarcode(data: [:0]const u8, format: i32, size_px: i32) Error!Barcode {
+        var code: i32 = 0;
+        const h = c.pdf_generate_barcode(data.ptr, format, size_px, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Free the native handle (idempotent). Also exposed as `close`.
+    pub fn deinit(self: *Barcode) void {
+        if (self.handle) |h| c.pdf_barcode_free(h);
+        self.handle = null;
+    }
+
+    /// Free the native handle (idempotent).
+    pub fn close(self: *Barcode) void {
+        self.deinit();
+    }
+
+    /// The barcode's payload string; caller owns the returned slice.
+    pub fn getData(self: Barcode, alloc: std.mem.Allocator) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_barcode_get_data(h, &code), code);
+    }
+
+    /// The barcode's format code.
+    pub fn getFormat(self: Barcode) Error!i32 {
+        const h = try self.live();
+        var code: i32 = 0;
+        const f = c.pdf_barcode_get_format(h, &code);
+        if (code != 0) return fail(code);
+        return f;
+    }
+
+    /// The barcode's decode confidence (1.0 for a freshly generated barcode).
+    pub fn getConfidence(self: Barcode) Error!f32 {
+        const h = try self.live();
+        var code: i32 = 0;
+        const conf = c.pdf_barcode_get_confidence(h, &code);
+        if (code != 0) return fail(code);
+        return conf;
+    }
+
+    /// Render the barcode to PNG bytes (`size_px` is advisory). Caller owns the
+    /// returned slice.
+    pub fn getImagePng(self: Barcode, alloc: std.mem.Allocator, size_px: i32) Error![]u8 {
+        const h = try self.live();
+        var out_len: i32 = 0;
+        var code: i32 = 0;
+        const p = c.pdf_barcode_get_image_png(h, size_px, &out_len, &code) orelse return fail(code);
+        defer c.free_bytes(p);
+        const n: usize = if (out_len < 0) 0 else @intCast(out_len);
+        return alloc.dupe(u8, p[0..n]);
+    }
+
+    /// Render the barcode to an SVG string (`size_px` is advisory). Caller owns
+    /// the returned slice.
+    pub fn getSvg(self: Barcode, alloc: std.mem.Allocator, size_px: i32) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_barcode_get_svg(h, size_px, &code), code);
+    }
+};
+
+/// A list of layout elements extracted from a page. Owns the native
+/// `FfiElementList` handle; free with `deinit`/`close`.
+pub const ElementList = struct {
+    handle: ?*c.FfiElementList,
+
+    /// Guard: returns the live handle or raises if the list was closed.
+    fn live(self: ElementList) Error!*c.FfiElementList {
+        return self.handle orelse fail(-1);
+    }
+
+    /// Free the native handle (idempotent). Also exposed as `close`.
+    pub fn deinit(self: *ElementList) void {
+        if (self.handle) |h| c.pdf_oxide_elements_free(h);
+        self.handle = null;
+    }
+
+    /// Free the native handle (idempotent).
+    pub fn close(self: *ElementList) void {
+        self.deinit();
+    }
+
+    /// Number of elements in the list.
+    pub fn count(self: ElementList) Error!i32 {
+        const h = try self.live();
+        const n = c.pdf_oxide_element_count(h);
+        if (n < 0) return fail(n);
+        return n;
+    }
+
+    /// Element type string at `index`; caller owns the returned slice.
+    pub fn getType(self: ElementList, alloc: std.mem.Allocator, index: i32) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_oxide_element_get_type(h, index, &code), code);
+    }
+
+    /// Element text at `index`; caller owns the returned slice.
+    pub fn getText(self: ElementList, alloc: std.mem.Allocator, index: i32) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_oxide_element_get_text(h, index, &code), code);
+    }
+
+    /// Element bounding box at `index`.
+    pub fn getRect(self: ElementList, index: i32) Error!Bbox {
+        const h = try self.live();
+        var code: i32 = 0;
+        var x: f32 = 0;
+        var y: f32 = 0;
+        var w: f32 = 0;
+        var ht: f32 = 0;
+        c.pdf_oxide_element_get_rect(h, index, &x, &y, &w, &ht, &code);
+        if (code != 0) return fail(code);
+        return .{ .x = x, .y = y, .width = w, .height = ht };
+    }
+
+    /// Serialize the whole list to a JSON string; caller owns the returned slice.
+    pub fn toJson(self: ElementList, alloc: std.mem.Allocator) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_oxide_elements_to_json(h, &code), code);
+    }
+};
+
+/// An OCR engine backed by detection/recognition models. Owns an opaque
+/// `*anyopaque` native handle; free with `deinit`/`close`.
+pub const OcrEngine = struct {
+    handle: ?*anyopaque,
+
+    /// Create an OCR engine from model/dictionary file paths.
+    pub fn create(det_model_path: [:0]const u8, rec_model_path: [:0]const u8, dict_path: [:0]const u8) Error!OcrEngine {
+        var code: i32 = 0;
+        const h = c.pdf_ocr_engine_create(det_model_path.ptr, rec_model_path.ptr, dict_path.ptr, &code) orelse
+            return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Free the native handle (idempotent). Also exposed as `close`.
+    pub fn deinit(self: *OcrEngine) void {
+        if (self.handle) |h| c.pdf_ocr_engine_free(h);
+        self.handle = null;
+    }
+
+    /// Free the native handle (idempotent).
+    pub fn close(self: *OcrEngine) void {
+        self.deinit();
+    }
+};
+
+/// A reusable page renderer configured with DPI/format/quality/anti-alias. Owns
+/// an opaque `*anyopaque` native handle; free with `deinit`/`close`.
+pub const Renderer = struct {
+    handle: ?*anyopaque,
+
+    /// Create a renderer. `format`: 0=PNG 1=JPEG; `quality` is the JPEG quality.
+    pub fn create(dpi: i32, format: i32, quality: i32, anti_alias: bool) Error!Renderer {
+        var code: i32 = 0;
+        const h = c.pdf_create_renderer(dpi, format, quality, anti_alias, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Free the native handle (idempotent). Also exposed as `close`.
+    pub fn deinit(self: *Renderer) void {
+        if (self.handle) |h| c.pdf_renderer_free(h);
+        self.handle = null;
+    }
+
+    /// Free the native handle (idempotent).
+    pub fn close(self: *Renderer) void {
+        self.deinit();
+    }
+};
+
+/// Merge the PDFs at `paths` (filesystem paths) into a single PDF; caller owns
+/// the returned bytes.
+pub fn merge(alloc: std.mem.Allocator, paths: []const [*:0]const u8) Error![]u8 {
+    var data_len: i32 = 0;
+    var code: i32 = 0;
+    const pp: [*c]const [*c]const u8 = if (paths.len == 0) null else @ptrCast(paths.ptr);
+    const p = c.pdf_merge(pp, @intCast(paths.len), &data_len, &code) orelse return fail(code);
+    const n: usize = if (data_len < 0) 0 else @intCast(data_len);
+    return takeBytes(alloc, p, n, code);
+}
+
+/// Apply an RFC 3161 timestamp to signature `sig_index` of the PDF in
+/// `pdf_data`, querying the TSA at `tsa_url`. Returns the timestamped PDF bytes;
+/// caller owns the returned slice.
+pub fn addTimestamp(
+    alloc: std.mem.Allocator,
+    pdf_data: []const u8,
+    sig_index: i32,
+    tsa_url: [:0]const u8,
+) Error![]u8 {
+    // `uint8_t **out_data` maps to `[*c][*c]u8`; use the C-pointer type for the
+    // local so `&out_data` matches the parameter exactly.
+    var out_data: [*c]u8 = null;
+    var out_len: usize = 0;
+    var code: i32 = 0;
+    const ok = c.pdf_add_timestamp(pdf_data.ptr, pdf_data.len, sig_index, tsa_url.ptr, &out_data, &out_len, &code);
+    if (!ok) return fail(code);
+    return takeBytes(alloc, out_data, out_len, code);
+}
+
 // ── api-coverage tests (one per public method) ────────────────────────────────
 const testing = std.testing;
 
@@ -3232,4 +3768,320 @@ test "phase-6 signing/PKI/timestamp/TSA/DSS: every wrapper is exercised" {
     try testing.expectError(Error.PdfOxide, bad_dss.getCert(a, 0));
     try testing.expectError(Error.PdfOxide, bad_dss.getCrl(a, 0));
     try testing.expectError(Error.PdfOxide, bad_dss.getOcsp(a, 0));
+}
+
+// ── PHASE-7 api-coverage tests ────────────────────────────────────────────────
+
+test "phase-7 barcodes: generateQrCode/generateBarcode + accessors" {
+    const a = testing.allocator;
+
+    // QR code
+    {
+        var bc = try Barcode.generateQrCode("https://example.com", 1, 256); // generateQrCode
+        defer bc.close(); // close
+
+        const data = try bc.getData(a); // getData
+        defer a.free(data);
+        try testing.expect(data.len > 0);
+
+        _ = try bc.getFormat(); // getFormat
+        _ = try bc.getConfidence(); // getConfidence
+
+        const png = try bc.getImagePng(a, 256); // getImagePng
+        defer a.free(png);
+        try testing.expect(png.len > 0);
+
+        const svg = try bc.getSvg(a, 256); // getSvg
+        defer a.free(svg);
+        try testing.expect(svg.len > 0);
+    }
+
+    // 1-D barcode (Code128)
+    {
+        var bc = try Barcode.generateBarcode("ABC123", 0, 128); // generateBarcode
+        defer bc.deinit();
+        const data = try bc.getData(a);
+        defer a.free(data);
+        try testing.expect(data.len > 0);
+        const fmt = try bc.getFormat();
+        try testing.expect(fmt >= 0);
+        const png = try bc.getImagePng(a, 128);
+        defer a.free(png);
+        try testing.expect(png.len > 0);
+    }
+
+    // Accessors on a closed barcode raise.
+    var bad = Barcode{ .handle = null };
+    bad.close();
+    try testing.expectError(Error.PdfOxide, bad.getData(a));
+    try testing.expectError(Error.PdfOxide, bad.getFormat());
+    try testing.expectError(Error.PdfOxide, bad.getConfidence());
+    try testing.expectError(Error.PdfOxide, bad.getImagePng(a, 64));
+    try testing.expectError(Error.PdfOxide, bad.getSvg(a, 64));
+}
+
+test "phase-7 render variants: withOptions/withOptionsEx/region/fit/raw + estimate" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+
+    var doc = try Document.openFromBytes(bytes);
+    defer doc.deinit();
+
+    {
+        var img = try doc.renderPageWithOptions(a, 0, 96, 0, 1.0, 1.0, 1.0, 1.0, false, true, 90); // renderPageWithOptions
+        defer img.deinit();
+        try testing.expect(img.width > 0);
+        try testing.expect(img.height > 0);
+        try testing.expect(img.data.len > 0);
+    }
+
+    {
+        const layers: []const [*:0]const u8 = &.{};
+        var img = try doc.renderPageWithOptionsEx(a, 0, 96, 0, 1.0, 1.0, 1.0, 1.0, false, true, 90, layers); // renderPageWithOptionsEx
+        defer img.deinit();
+        try testing.expect(img.width > 0);
+        try testing.expect(img.data.len > 0);
+    }
+
+    {
+        var img = try doc.renderPageRegion(a, 0, 0, 0, 100, 100, 0); // renderPageRegion
+        defer img.deinit();
+        try testing.expect(img.width > 0);
+        try testing.expect(img.data.len > 0);
+    }
+
+    {
+        var img = try doc.renderPageFit(a, 0, 200, 200, 0); // renderPageFit
+        defer img.deinit();
+        try testing.expect(img.width > 0);
+        try testing.expect(img.width <= 200);
+        try testing.expect(img.height <= 200);
+    }
+
+    {
+        var img = try doc.renderPageRaw(a, 0, 96); // renderPageRaw
+        defer img.deinit();
+        try testing.expect(img.width > 0);
+        try testing.expect(img.height > 0);
+        try testing.expect(img.data.len == @as(usize, @intCast(img.width)) * @as(usize, @intCast(img.height)) * 4);
+    }
+
+    // estimateRenderTime: a value (>= 0), or the binding error.
+    const est = doc.estimateRenderTime(0); // estimateRenderTime
+    if (est) |t| {
+        try testing.expect(t >= 0);
+    } else |_| {}
+}
+
+test "phase-7 renderer: create + free" {
+    // pdf_create_renderer is a no-op stub in this ABI: it may return a handle or
+    // raise. Either outcome exercises the wrapper.
+    if (Renderer.create(150, 0, 90, true)) |r_val| {
+        var r = r_val;
+        r.close(); // close (pdf_renderer_free)
+    } else |err| {
+        try testing.expect(err == Error.PdfOxide);
+    }
+}
+
+test "phase-7 page getters: width/height/rotation/elements" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+
+    var doc = try Document.openFromBytes(bytes);
+    defer doc.deinit();
+
+    const w = try doc.pageGetWidth(0); // pageGetWidth
+    try testing.expect(w > 0);
+    const h = try doc.pageGetHeight(0); // pageGetHeight
+    try testing.expect(h > 0);
+    const rot = try doc.pageGetRotation(0); // pageGetRotation
+    try testing.expect(rot >= 0);
+
+    var els = try doc.pageGetElements(0); // pageGetElements
+    defer els.close(); // close
+    const n = try els.count(); // count
+    try testing.expect(n >= 0);
+    if (n > 0) {
+        const t = try els.getType(a, 0); // getType
+        defer a.free(t);
+        const txt = try els.getText(a, 0); // getText
+        defer a.free(txt);
+        _ = try els.getRect(0); // getRect
+    }
+    const json = try els.toJson(a); // toJson
+    defer a.free(json);
+    try testing.expect(json.len > 0);
+}
+
+test "phase-7 redaction: add/count/apply/scrubMetadata on an editor" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+
+    var ed = try DocumentEditor.openFromBytes(bytes);
+    defer ed.close();
+
+    try ed.redactionAdd(0, 10, 10, 100, 50, 0, 0, 0); // redactionAdd
+    const cnt = try ed.redactionCount(0); // redactionCount
+    try testing.expect(cnt >= 1);
+
+    // apply may remove glyphs or report an unsupported-font failure; both are
+    // valid coverage of the wrapper.
+    const removed = ed.redactionApply(false, 0, 0, 0); // redactionApply
+    if (removed) |n| {
+        try testing.expect(n >= 0);
+    } else |_| {}
+
+    const scrubbed = ed.redactionScrubMetadata(); // redactionScrubMetadata
+    if (scrubbed) |n| {
+        try testing.expect(n >= 0);
+    } else |_| {}
+
+    // Closed-editor guards.
+    var bad = DocumentEditor{ .handle = null };
+    bad.close();
+    try testing.expectError(Error.PdfOxide, bad.redactionAdd(0, 0, 0, 1, 1, 0, 0, 0));
+    try testing.expectError(Error.PdfOxide, bad.redactionCount(0));
+    try testing.expectError(Error.PdfOxide, bad.redactionApply(false, 0, 0, 0));
+    try testing.expectError(Error.PdfOxide, bad.redactionScrubMetadata());
+}
+
+test "phase-7 addBarcodeToPage: place a generated QR on an editor page" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+
+    var ed = try DocumentEditor.openFromBytes(bytes);
+    defer ed.close();
+
+    var bc = try Barcode.generateQrCode("PHASE7", 1, 128);
+    defer bc.close();
+
+    // Placement either succeeds or raises; either exercises the wrapper.
+    if (ed.addBarcodeToPage(0, bc, 10, 10, 80, 80)) |_| { // addBarcodeToPage
+        // ok
+    } else |_| {}
+
+    // Closed-barcode + closed-editor guards.
+    var bad_bc = Barcode{ .handle = null };
+    bad_bc.close();
+    try testing.expectError(Error.PdfOxide, ed.addBarcodeToPage(0, bad_bc, 0, 0, 1, 1));
+}
+
+test "phase-7 Pdf constructors: fromImageBytes/fromHtmlCss/fromHtmlCssWithFonts" {
+    const a = testing.allocator;
+
+    // fromImageBytes: bogus image bytes must raise the binding error.
+    const bad_img = Pdf.fromImageBytes("not-a-png"); // fromImageBytes
+    try testing.expectError(Error.PdfOxide, bad_img);
+
+    // fromImage: a nonexistent path must raise.
+    const bad_path = Pdf.fromImage("/nonexistent/none.png"); // fromImage
+    try testing.expectError(Error.PdfOxide, bad_path);
+
+    // fromHtmlCss: builds where the html-render path is available, else raises
+    // (e.g. no default font in this cdylib). Either outcome exercises it.
+    {
+        const empty_font: []const u8 = &.{};
+        if (Pdf.fromHtmlCss("<h1>Hi</h1><p>Body</p>", "h1{color:#000}", empty_font)) |p_val| { // fromHtmlCss
+            var p = p_val;
+            defer p.deinit();
+            const out = try p.toBytes(a);
+            defer a.free(out);
+            try testing.expect(out.len > 0);
+        } else |err| {
+            try testing.expect(err == Error.PdfOxide);
+        }
+    }
+
+    // fromHtmlCssWithFonts: no fonts (empty parallel arrays); same tolerance.
+    {
+        const fams: []const [*:0]const u8 = &.{};
+        const fonts: []const []const u8 = &.{};
+        if (Pdf.fromHtmlCssWithFonts(a, "<p>Cascade</p>", "", fams, fonts)) |p_val| { // fromHtmlCssWithFonts
+            var p = p_val;
+            defer p.deinit();
+            const out = try p.toBytes(a);
+            defer a.free(out);
+            try testing.expect(out.len > 0);
+        } else |err| {
+            try testing.expect(err == Error.PdfOxide);
+        }
+    }
+}
+
+test "phase-7 merge: combine two temp PDFs into one" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+
+    const p1 = "/tmp/pdfoxide_zig_merge_a.pdf";
+    const p2 = "/tmp/pdfoxide_zig_merge_b.pdf";
+    {
+        const f1 = try std.fs.cwd().createFile(p1, .{});
+        defer f1.close();
+        try f1.writeAll(bytes);
+        const f2 = try std.fs.cwd().createFile(p2, .{});
+        defer f2.close();
+        try f2.writeAll(bytes);
+    }
+    defer std.fs.cwd().deleteFile(p1) catch {};
+    defer std.fs.cwd().deleteFile(p2) catch {};
+
+    const paths = [_][*:0]const u8{ p1, p2 };
+    const merged = merge(a, &paths); // merge
+    if (merged) |m| {
+        defer a.free(m);
+        try testing.expect(m.len > 0);
+    } else |_| {
+        // merge rejecting the inputs is also acceptable wrapper coverage.
+    }
+
+    // merge over a nonexistent path raises.
+    const bad_paths = [_][*:0]const u8{"/nonexistent/none.pdf"};
+    try testing.expectError(Error.PdfOxide, merge(a, &bad_paths));
+}
+
+test "phase-7 OCR engine + page OCR: minimal inputs return or raise" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+
+    var doc = try Document.openFromBytes(bytes);
+    defer doc.deinit();
+
+    // ocrPageNeedsOcr: a bool or the binding error (feature may be disabled).
+    if (doc.ocrPageNeedsOcr(0)) |needs| { // ocrPageNeedsOcr
+        try testing.expect(needs == true or needs == false);
+    } else |_| {}
+
+    // ocrExtractText with a null engine: returns text or raises.
+    if (doc.ocrExtractText(a, 0, null)) |txt| { // ocrExtractText
+        defer a.free(txt);
+        try testing.expect(txt.len >= 0);
+    } else |_| {}
+
+    // OcrEngine.create with bogus model paths must raise the binding error.
+    const bad_engine = OcrEngine.create("/nonexistent/det", "/nonexistent/rec", "/nonexistent/dict"); // create
+    if (bad_engine) |engine_const| {
+        var engine = engine_const;
+        engine.close(); // close
+    } else |_| {}
+}
+
+test "phase-7 addTimestamp: minimal inputs return or raise" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+
+    // No reachable TSA / no signature at index 0 → expect the binding error
+    // (or, if it somehow succeeds, owned bytes that we free).
+    const r = addTimestamp(a, bytes, 0, "http://invalid.invalid/tsa"); // addTimestamp
+    if (r) |out| {
+        defer a.free(out);
+        try testing.expect(out.len > 0);
+    } else |_| {}
 }

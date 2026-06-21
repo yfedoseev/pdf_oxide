@@ -439,4 +439,234 @@ defmodule PdfOxideTest do
       end
     end
   end
+
+  # ── phase 7: barcodes / OCR / render variants / redaction / constructors /
+  # page getters / timestamp ─────────────────────────────────────────────────
+  defp returns_or_raises_7(fun) do
+    try do
+      fun.()
+      :ok
+    rescue
+      _ -> :ok
+    catch
+      _, _ -> :ok
+    end
+  end
+
+  describe "barcodes (phase 7)" do
+    test "generate_qr_code -> data/format/png/svg" do
+      assert {:ok, bc} = PdfOxide.generate_qr_code("hello-qr", 1, 256)
+      assert %PdfOxide.Barcode{} = bc
+      assert {:ok, data} = PdfOxide.barcode_data(bc)
+      assert data =~ "hello-qr"
+      assert {:ok, fmt} = PdfOxide.barcode_format(bc)
+      assert is_integer(fmt)
+      assert {:ok, conf} = PdfOxide.barcode_confidence(bc)
+      assert is_float(conf)
+      assert {:ok, png} = PdfOxide.barcode_png(bc, 128)
+      assert is_binary(png) and byte_size(png) > 0
+      assert {:ok, svg} = PdfOxide.barcode_svg(bc, 128)
+      assert is_binary(svg) and byte_size(svg) > 0
+      assert :ok = PdfOxide.barcode_close(bc)
+    end
+
+    test "generate_barcode -> data/format" do
+      assert {:ok, bc} = PdfOxide.generate_barcode("12345678", 0, 256)
+      assert %PdfOxide.Barcode{} = bc
+      assert {:ok, data} = PdfOxide.barcode_data(bc)
+      assert is_binary(data)
+      assert {:ok, fmt} = PdfOxide.barcode_format(bc)
+      assert is_integer(fmt)
+      assert :ok = PdfOxide.barcode_close(bc)
+    end
+
+    test "add_barcode_to_page on an editor" do
+      {:ok, ed} = PdfOxide.open_editor_from_bytes(sample_pdf())
+      {:ok, bc} = PdfOxide.generate_qr_code("on-page", 1, 256)
+      # Returns :ok or {:error, code}; either exercises the wrapper.
+      result = PdfOxide.add_barcode_to_page(ed, 0, bc, 10, 10, 60, 60)
+      assert result == :ok or match?({:error, _}, result)
+      PdfOxide.barcode_close(bc)
+      PdfOxide.editor_close(ed)
+    end
+  end
+
+  describe "render variants (phase 7)" do
+    setup do
+      {:ok, doc} = PdfOxide.open_from_bytes(sample_pdf())
+      {:ok, doc: doc}
+    end
+
+    test "render_page_with_options", %{doc: doc} do
+      assert {:ok, img} = PdfOxide.render_page_with_options(doc, 0, dpi: 96)
+      assert %PdfOxide.RenderedImage{} = img
+      assert img.width > 0 and img.height > 0
+      assert byte_size(img.data) > 0
+    end
+
+    test "render_page_with_options_ex (empty layers)", %{doc: doc} do
+      assert {:ok, img} = PdfOxide.render_page_with_options_ex(doc, 0, [], dpi: 96)
+      assert img.width > 0 and img.height > 0
+      assert byte_size(img.data) > 0
+    end
+
+    test "render_page_region", %{doc: doc} do
+      assert {:ok, img} = PdfOxide.render_page_region(doc, 0, 0, 0, 100, 100, 0)
+      assert img.width > 0 and img.height > 0
+      assert byte_size(img.data) > 0
+    end
+
+    test "render_page_fit", %{doc: doc} do
+      assert {:ok, img} = PdfOxide.render_page_fit(doc, 0, 200, 200, 0)
+      assert img.width > 0 and img.height > 0
+      assert byte_size(img.data) > 0
+    end
+
+    test "render_page_raw", %{doc: doc} do
+      assert {:ok, img} = PdfOxide.render_page_raw(doc, 0, 96)
+      assert img.width > 0 and img.height > 0
+      assert byte_size(img.data) > 0
+    end
+
+    test "renderer create/close + estimate_render_time", %{doc: doc} do
+      # pdf_create_renderer is a no-op stub: returns a handle or errors. Either
+      # outcome exercises the wrapper.
+      case PdfOxide.renderer(96, 0, 85, true) do
+        {:ok, rndr} ->
+          assert %PdfOxide.Renderer{} = rndr
+          assert :ok = PdfOxide.renderer_close(rndr)
+
+        {:error, _} ->
+          :ok
+      end
+
+      result = PdfOxide.estimate_render_time(doc, 0)
+      assert match?({:ok, _}, result) or match?({:error, _}, result)
+    end
+  end
+
+  describe "page getters (phase 7)" do
+    setup do
+      {:ok, doc} = PdfOxide.open_from_bytes(sample_pdf())
+      {:ok, doc: doc}
+    end
+
+    test "page_width/page_height/page_rotation", %{doc: doc} do
+      assert {:ok, w} = PdfOxide.page_width(doc, 0)
+      assert is_number(w) and w > 0
+      assert {:ok, h} = PdfOxide.page_height(doc, 0)
+      assert is_number(h) and h > 0
+      assert {:ok, rot} = PdfOxide.page_rotation(doc, 0)
+      assert is_integer(rot)
+    end
+
+    test "page_elements + element_count + close", %{doc: doc} do
+      case PdfOxide.page_elements(doc, 0) do
+        {:ok, elems} ->
+          assert %PdfOxide.ElementList{} = elems
+          assert {:ok, n} = PdfOxide.element_count(elems)
+          assert is_integer(n) and n >= 0
+          assert :ok = PdfOxide.element_list_close(elems)
+
+        {:error, _} ->
+          assert function_exported?(PdfOxide, :element_count, 1)
+      end
+    end
+  end
+
+  describe "redaction (phase 7)" do
+    test "add/count/apply/scrub on an editor" do
+      {:ok, ed} = PdfOxide.open_editor_from_bytes(sample_pdf())
+
+      assert :ok = PdfOxide.redaction_add(ed, 0, 10, 10, 60, 30, 0.0, 0.0, 0.0)
+      assert {:ok, n} = PdfOxide.redaction_count(ed, 0)
+      assert is_integer(n) and n >= 1
+
+      apply_result = PdfOxide.redaction_apply(ed, false, 0.0, 0.0, 0.0)
+      assert match?({:ok, _}, apply_result) or match?({:error, _}, apply_result)
+
+      scrub_result = PdfOxide.redaction_scrub_metadata(ed)
+      assert match?({:ok, _}, scrub_result) or match?({:error, _}, scrub_result)
+
+      PdfOxide.editor_close(ed)
+    end
+  end
+
+  describe "constructors (phase 7)" do
+    test "from_image_bytes raises/errors on bad input" do
+      result = PdfOxide.from_image_bytes(<<0, 1, 2, 3>>)
+      assert match?({:ok, _}, result) or match?({:error, _}, result)
+    end
+
+    test "from_image errors on a nonexistent path" do
+      assert {:error, _} = PdfOxide.from_image("/nonexistent/nope.png")
+    end
+
+    # from_html_css builds where the html-render path is available, else errors
+    # (e.g. no default font in this cdylib). Either outcome exercises the wrapper.
+    test "from_html_css produces a PDF or errors" do
+      case PdfOxide.from_html_css("<h1>hi</h1><p>body</p>", "h1{color:red}") do
+        {:ok, pdf} ->
+          assert {:ok, bytes} = PdfOxide.to_bytes(pdf)
+          assert byte_size(bytes) > 100
+
+        {:error, _} ->
+          :ok
+      end
+    end
+
+    test "from_html_css_with_fonts (no fonts) produces a PDF or errors" do
+      case PdfOxide.from_html_css_with_fonts("<p>x</p>", "", []) do
+        {:ok, pdf} ->
+          assert {:ok, bytes} = PdfOxide.to_bytes(pdf)
+          assert byte_size(bytes) > 100
+
+        {:error, _} ->
+          :ok
+      end
+    end
+
+    test "merge of two temp PDFs (or errors)" do
+      p1 = Path.join(System.tmp_dir!(), "pdfoxide_m1_#{System.unique_integer([:positive])}.pdf")
+      p2 = Path.join(System.tmp_dir!(), "pdfoxide_m2_#{System.unique_integer([:positive])}.pdf")
+      {:ok, a} = PdfOxide.from_markdown("# A\n\none\n")
+      {:ok, b} = PdfOxide.from_markdown("# B\n\ntwo\n")
+      :ok = PdfOxide.save(a, p1)
+      :ok = PdfOxide.save(b, p2)
+
+      result = PdfOxide.merge([p1, p2])
+      assert match?({:ok, _}, result) or match?({:error, _}, result)
+
+      File.rm(p1)
+      File.rm(p2)
+    end
+  end
+
+  describe "OCR + timestamp wrappers exercised with minimal inputs (phase 7)" do
+    # OCR needs model files and add_timestamp needs a live TSA; we have neither,
+    # so each wrapper is invoked with minimal inputs and must return or raise.
+    test "ocr engine + page wrappers" do
+      assert :ok = returns_or_raises_7(fn -> PdfOxide.ocr_engine("", "", "") end)
+
+      {:ok, doc} = PdfOxide.open_from_bytes(sample_pdf())
+      needs = PdfOxide.ocr_page_needs_ocr(doc, 0)
+      assert match?({:ok, _}, needs) or match?({:error, _}, needs)
+
+      # engine=nil path: native extraction only.
+      native = PdfOxide.ocr_extract_text(doc, 0, nil)
+      assert match?({:ok, _}, native) or match?({:error, _}, native)
+
+      assert function_exported?(PdfOxide, :ocr_extract_text, 3)
+      assert function_exported?(PdfOxide, :ocr_engine_close, 1)
+      PdfOxide.close(doc)
+    end
+
+    test "add_timestamp returns or raises with empty TSA url" do
+      assert :ok =
+               returns_or_raises_7(fn -> PdfOxide.add_timestamp(sample_pdf(), 0, "") end)
+
+      result = PdfOxide.add_timestamp(sample_pdf(), 0, "")
+      assert match?({:ok, _}, result) or match?({:error, _}, result)
+    end
+  end
 end

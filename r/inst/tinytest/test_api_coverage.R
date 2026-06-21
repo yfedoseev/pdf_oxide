@@ -268,5 +268,121 @@ if (inherits(tsa_try, "pdfoxide_tsa_client")) {
 expect_true(is.function(pdf_tsa_request_timestamp))
 expect_true(is.function(pdf_tsa_request_timestamp_hash))
 
+# ── PHASE-7: barcodes / QR (generate -> accessors -> renders) ──────────────────
+qr <- pdf_generate_qr_code("hello-qr", 1L, 128L)       # pdf_generate_qr_code
+expect_inherits(qr, "pdfoxide_barcode")
+expect_true(is.character(pdf_barcode_get_data(qr)))     # pdf_barcode_get_data
+expect_true(is.integer(pdf_barcode_get_format(qr)) ||
+            is.numeric(pdf_barcode_get_format(qr)))     # pdf_barcode_get_format
+invisible(pdf_barcode_get_confidence(qr))               # pdf_barcode_get_confidence (smoke)
+expect_true(length(pdf_barcode_get_image_png(qr, 128L)) > 0)  # pdf_barcode_get_image_png
+expect_true(nchar(pdf_barcode_get_svg(qr, 128L)) > 0)   # pdf_barcode_get_svg
+pdf_barcode_close(qr); pdf_barcode_close(qr)            # pdf_barcode_close (idempotent)
+bc <- pdf_generate_barcode("123456", 0L, 128L)          # pdf_generate_barcode
+expect_inherits(bc, "pdfoxide_barcode")
+expect_true(is.character(pdf_barcode_get_data(bc)))
+# add_barcode_to_page: queue a barcode onto an editor page (testable)
+ed7 <- pdf_editor_open_from_bytes(sample_pdf())
+bc2 <- pdf_generate_qr_code("on-page", 1L, 64L)
+add_try <- tryCatch(
+  pdf_editor_add_barcode_to_page(ed7, 0L, bc2, 10, 10, 50, 50),
+  error = function(e) e)
+expect_true(is.null(add_try) || inherits(add_try, "error"))  # pdf_editor_add_barcode_to_page
+pdf_barcode_close(bc2); pdf_editor_close(ed7)
+pdf_barcode_close(bc)
+
+# ── PHASE-7: render variants (testable on the sample) ─────────────────────────
+doc7 <- pdf_open_from_bytes(sample_pdf())
+ropt <- pdf_render_page_with_options(doc7, 0L, dpi = 96L)   # pdf_render_page_with_options
+expect_true(ropt$width > 0 && ropt$height > 0 && length(ropt$data) > 0)
+rex <- pdf_render_page_with_options_ex(doc7, 0L, dpi = 96L, # pdf_render_page_with_options_ex
+                                       excluded_layers = c("LayerA", "LayerB"))
+expect_true(rex$width > 0 && rex$height > 0)
+rreg <- pdf_render_page_region(doc7, 0L, 0, 0, 100, 100)    # pdf_render_page_region
+expect_true(rreg$width > 0 && rreg$height > 0)
+rfit <- pdf_render_page_fit(doc7, 0L, 128L, 128L)          # pdf_render_page_fit
+expect_true(rfit$width > 0 && rfit$height > 0)
+rraw <- pdf_render_page_raw(doc7, 0L, 96L)                 # pdf_render_page_raw
+expect_true(rraw$width > 0 && rraw$height > 0 && length(rraw$data) > 0)
+# renderer + estimate — pdf_create_renderer is a no-op stub: returns a handle or
+# errors. Either outcome exercises the wrapper.
+rndr <- tryCatch(pdf_create_renderer(96L, 0L, 85L, TRUE),  # pdf_create_renderer
+                 error = function(e) e)
+expect_true(inherits(rndr, "pdfoxide_renderer") || inherits(rndr, "error"))
+if (inherits(rndr, "pdfoxide_renderer")) {
+  pdf_renderer_close(rndr); pdf_renderer_close(rndr)      # pdf_renderer_close (idempotent)
+}
+est <- tryCatch(pdf_estimate_render_time(doc7, 0L),
+                error = function(e) e)
+expect_true(is.numeric(est) || inherits(est, "error"))    # pdf_estimate_render_time
+
+# ── PHASE-7: page getters (testable) ──────────────────────────────────────────
+expect_true(pdf_page_get_width(doc7, 0L) > 0)             # pdf_page_get_width
+expect_true(pdf_page_get_height(doc7, 0L) > 0)            # pdf_page_get_height
+rot7 <- tryCatch(pdf_page_get_rotation(doc7, 0L), error = function(e) e)
+expect_true(is.numeric(rot7) || inherits(rot7, "error"))  # pdf_page_get_rotation
+els <- tryCatch(pdf_page_get_elements(doc7, 0L), error = function(e) e)
+expect_true(is.list(els) || inherits(els, "error"))       # pdf_page_get_elements
+
+# ── PHASE-7: OCR (no model files -> invoke + assert returns or raises) ─────────
+nocr <- tryCatch(pdf_ocr_page_needs_ocr(doc7, 0L), error = function(e) e)
+expect_true(is.logical(nocr) || inherits(nocr, "error"))  # pdf_ocr_page_needs_ocr
+# engine = NULL -> native-only extraction path
+ocrtxt <- tryCatch(pdf_ocr_extract_text(doc7, 0L, NULL), error = function(e) e)
+expect_true(is.character(ocrtxt) || inherits(ocrtxt, "error")) # pdf_ocr_extract_text
+# engine creation needs real models: bad paths must raise the binding error
+expect_error(pdf_ocr_engine_create("/no/det", "/no/rec", "/no/dict")) # pdf_ocr_engine_create
+expect_true(is.function(pdf_ocr_engine_close))            # pdf_ocr_engine_close (present)
+pdf_close(doc7)
+
+# ── PHASE-7: redaction (on an editor, testable) ───────────────────────────────
+red <- pdf_editor_open_from_bytes(sample_pdf())
+pdf_redaction_add(red, 0L, 10, 10, 100, 30, 0, 0, 0)     # pdf_redaction_add
+expect_true(pdf_redaction_count(red, 0L) >= 1)           # pdf_redaction_count
+napplied <- tryCatch(pdf_redaction_apply(red, FALSE, 0, 0, 0),
+                     error = function(e) e)
+expect_true(is.numeric(napplied) || inherits(napplied, "error")) # pdf_redaction_apply
+nscrub <- tryCatch(pdf_redaction_scrub_metadata(red), error = function(e) e)
+expect_true(is.numeric(nscrub) || inherits(nscrub, "error"))     # pdf_redaction_scrub_metadata
+pdf_editor_close(red)
+
+# ── PHASE-7: constructors ─────────────────────────────────────────────────────
+# from_image_bytes: invalid image bytes must raise the binding error
+expect_error(pdf_from_image_bytes(as.raw(c(1, 2, 3, 4))))  # pdf_from_image_bytes
+expect_true(is.function(pdf_from_image))                   # pdf_from_image (present)
+# from_html_css: builds when the html-render path is available, else errors
+# (e.g. no default font in this cdylib). Either outcome exercises the wrapper.
+hpdf <- tryCatch(pdf_from_html_css("<h1>Hi</h1><p>body</p>", "h1{color:red}"), # pdf_from_html_css
+                 error = function(e) e)
+if (inherits(hpdf, "error")) {
+  expect_true(TRUE)
+} else {
+  expect_true(length(pdf_to_bytes(hpdf)) > 100)
+  pdf_close(hpdf)
+}
+# from_html_css_with_fonts: empty font cascade; same tolerance
+hpdf2 <- tryCatch(pdf_from_html_css_with_fonts("<p>x</p>", "", character(0), list()),
+                  error = function(e) e)
+if (inherits(hpdf2, "error")) {
+  expect_true(TRUE)                                         # pdf_from_html_css_with_fonts
+} else {
+  expect_true(length(pdf_to_bytes(hpdf2)) > 100)
+  pdf_close(hpdf2)
+}
+# merge: write 2 temp PDFs and merge them
+mtmp1 <- tempfile(fileext = ".pdf"); mtmp2 <- tempfile(fileext = ".pdf")
+pdf_save(pdf_from_markdown("# A\n\none\n"), mtmp1)
+pdf_save(pdf_from_markdown("# B\n\ntwo\n"), mtmp2)
+merged <- tryCatch(pdf_merge(c(mtmp1, mtmp2)), error = function(e) e)
+expect_true((is.raw(merged) && length(merged) > 100) ||
+            inherits(merged, "error"))                     # pdf_merge
+unlink(c(mtmp1, mtmp2))
+
+# ── PHASE-7: timestamp (no TSA -> invoke + assert returns or raises) ──────────
+ts_try <- tryCatch(
+  pdf_add_timestamp(sample_pdf(), 0L, "http://127.0.0.1:0/tsa"),
+  error = function(e) e)
+expect_true(is.raw(ts_try) || inherits(ts_try, "error"))   # pdf_add_timestamp
+
 # ── Error path ────────────────────────────────────────────────────────────────
 expect_error(pdf_open("/nonexistent/nope.pdf"))

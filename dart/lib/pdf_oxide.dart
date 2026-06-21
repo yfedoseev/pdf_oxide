@@ -1082,7 +1082,93 @@ class _Native {
         setLogLevel =
             lib.lookupFunction<_SetLogC, _SetLogD>('pdf_oxide_set_log_level'),
         getLogLevel =
-            lib.lookupFunction<_GetLogC, _GetLogD>('pdf_oxide_get_log_level');
+            lib.lookupFunction<_GetLogC, _GetLogD>('pdf_oxide_get_log_level'),
+        // ── Phase 7: barcodes / OCR / render variants / redaction / from_* ──
+        generateQrCode =
+            lib.lookupFunction<_GenQrC, _GenQrD>('pdf_generate_qr_code'),
+        generateBarcode = lib
+            .lookupFunction<_GenBarcodeC, _GenBarcodeD>('pdf_generate_barcode'),
+        barcodeGetData =
+            lib.lookupFunction<_BcStrC, _BcStrD>('pdf_barcode_get_data'),
+        barcodeGetFormat =
+            lib.lookupFunction<_BcI32C, _BcI32D>('pdf_barcode_get_format'),
+        barcodeGetConfidence =
+            lib.lookupFunction<_BcF32C, _BcF32D>('pdf_barcode_get_confidence'),
+        barcodeGetImagePng =
+            lib.lookupFunction<_BcPngC, _BcPngD>('pdf_barcode_get_image_png'),
+        barcodeGetSvg =
+            lib.lookupFunction<_BcSvgC, _BcSvgD>('pdf_barcode_get_svg'),
+        barcodeFree =
+            lib.lookupFunction<_PtrFreeC, _PtrFreeD>('pdf_barcode_free'),
+        addBarcodeToPage = lib.lookupFunction<_AddBarcodeC, _AddBarcodeD>(
+            'pdf_add_barcode_to_page'),
+        ocrEngineCreate = lib
+            .lookupFunction<_OcrCreateC, _OcrCreateD>('pdf_ocr_engine_create'),
+        ocrEngineFree =
+            lib.lookupFunction<_PtrFreeC, _PtrFreeD>('pdf_ocr_engine_free'),
+        ocrPageNeedsOcr = lib
+            .lookupFunction<_OcrNeedsC, _OcrNeedsD>('pdf_ocr_page_needs_ocr'),
+        ocrExtractText = lib
+            .lookupFunction<_OcrExtractC, _OcrExtractD>('pdf_ocr_extract_text'),
+        renderPageWithOptions = lib.lookupFunction<_RenderOptsC, _RenderOptsD>(
+            'pdf_render_page_with_options'),
+        renderPageWithOptionsEx =
+            lib.lookupFunction<_RenderOptsExC, _RenderOptsExD>(
+                'pdf_render_page_with_options_ex'),
+        renderPageRegion = lib.lookupFunction<_RenderRegionC, _RenderRegionD>(
+            'pdf_render_page_region'),
+        renderPageFit =
+            lib.lookupFunction<_RenderFitC, _RenderFitD>('pdf_render_page_fit'),
+        renderPageRaw =
+            lib.lookupFunction<_RenderRawC, _RenderRawD>('pdf_render_page_raw'),
+        createRenderer = lib.lookupFunction<_CreateRendererC, _CreateRendererD>(
+            'pdf_create_renderer'),
+        rendererFree =
+            lib.lookupFunction<_PtrFreeC, _PtrFreeD>('pdf_renderer_free'),
+        estimateRenderTime =
+            lib.lookupFunction<_EstimateRenderC, _EstimateRenderD>(
+                'pdf_estimate_render_time'),
+        redactionAdd = lib.lookupFunction<_RedactionAddC, _RedactionAddD>(
+            'pdf_redaction_add'),
+        redactionCount = lib.lookupFunction<_RedactionCountC, _RedactionCountD>(
+            'pdf_redaction_count'),
+        redactionApply = lib.lookupFunction<_RedactionApplyC, _RedactionApplyD>(
+            'pdf_redaction_apply'),
+        redactionScrubMetadata =
+            lib.lookupFunction<_RedactionScrubC, _RedactionScrubD>(
+                'pdf_redaction_scrub_metadata'),
+        fromImage =
+            lib.lookupFunction<_FromImageC, _FromImageD>('pdf_from_image'),
+        fromImageBytes = lib.lookupFunction<_FromImageBytesC, _FromImageBytesD>(
+            'pdf_from_image_bytes'),
+        fromHtmlCss = lib
+            .lookupFunction<_FromHtmlCssC, _FromHtmlCssD>('pdf_from_html_css'),
+        fromHtmlCssWithFonts =
+            lib.lookupFunction<_FromHtmlCssFontsC, _FromHtmlCssFontsD>(
+                'pdf_from_html_css_with_fonts'),
+        merge = lib.lookupFunction<_MergeC, _MergeD>('pdf_merge'),
+        pageGetWidth =
+            lib.lookupFunction<_PageF32C, _PageF32D>('pdf_page_get_width'),
+        pageGetHeight =
+            lib.lookupFunction<_PageF32C, _PageF32D>('pdf_page_get_height'),
+        pageGetRotation =
+            lib.lookupFunction<_PageI32C, _PageI32D>('pdf_page_get_rotation'),
+        pageGetElements = lib.lookupFunction<_PageElementsC, _PageElementsD>(
+            'pdf_page_get_elements'),
+        elementCount = lib.lookupFunction<_ElemCountC, _ElemCountD>(
+            'pdf_oxide_element_count'),
+        elementGetType = lib
+            .lookupFunction<_ListStrC, _ListStrD>('pdf_oxide_element_get_type'),
+        elementGetText = lib
+            .lookupFunction<_ListStrC, _ListStrD>('pdf_oxide_element_get_text'),
+        elementGetRect = lib.lookupFunction<_ElemRectC, _ElemRectD>(
+            'pdf_oxide_element_get_rect'),
+        elementsFree = lib
+            .lookupFunction<_ListFreeC, _ListFreeD>('pdf_oxide_elements_free'),
+        elementsToJson = lib.lookupFunction<_ElemJsonC, _ElemJsonD>(
+            'pdf_oxide_elements_to_json'),
+        addTimestamp = lib.lookupFunction<_AddTimestampC, _AddTimestampD>(
+            'pdf_add_timestamp');
 
   final DynamicLibrary lib;
   final _OpenD open;
@@ -1362,6 +1448,48 @@ class _Native {
   final _ValFreeD pdfAResultsFree, pdfUaResultsFree, pdfXResultsFree;
   final _SetLogD setLogLevel;
   final _GetLogD getLogLevel;
+  // Phase 7: barcodes / OCR / render variants / redaction / from_* / page getters
+  final _GenQrD generateQrCode;
+  final _GenBarcodeD generateBarcode;
+  final _BcStrD barcodeGetData;
+  final _BcI32D barcodeGetFormat;
+  final _BcF32D barcodeGetConfidence;
+  final _BcPngD barcodeGetImagePng;
+  final _BcSvgD barcodeGetSvg;
+  final _PtrFreeD barcodeFree;
+  final _AddBarcodeD addBarcodeToPage;
+  final _OcrCreateD ocrEngineCreate;
+  final _PtrFreeD ocrEngineFree;
+  final _OcrNeedsD ocrPageNeedsOcr;
+  final _OcrExtractD ocrExtractText;
+  final _RenderOptsD renderPageWithOptions;
+  final _RenderOptsExD renderPageWithOptionsEx;
+  final _RenderRegionD renderPageRegion;
+  final _RenderFitD renderPageFit;
+  final _RenderRawD renderPageRaw;
+  final _CreateRendererD createRenderer;
+  final _PtrFreeD rendererFree;
+  final _EstimateRenderD estimateRenderTime;
+  final _RedactionAddD redactionAdd;
+  final _RedactionCountD redactionCount;
+  final _RedactionApplyD redactionApply;
+  final _RedactionScrubD redactionScrubMetadata;
+  final _FromImageD fromImage;
+  final _FromImageBytesD fromImageBytes;
+  final _FromHtmlCssD fromHtmlCss;
+  final _FromHtmlCssFontsD fromHtmlCssWithFonts;
+  final _MergeD merge;
+  final _PageF32D pageGetWidth;
+  final _PageF32D pageGetHeight;
+  final _PageI32D pageGetRotation;
+  final _PageElementsD pageGetElements;
+  final _ElemCountD elementCount;
+  final _ListStrD elementGetType;
+  final _ListStrD elementGetText;
+  final _ElemRectD elementGetRect;
+  final _ListFreeD elementsFree;
+  final _ElemJsonD elementsToJson;
+  final _AddTimestampD addTimestamp;
 }
 
 typedef _OpenD = Pointer<Void> Function(Pointer<Utf8>, Pointer<Int32>);
@@ -1369,6 +1497,177 @@ typedef _OpenBytesD = Pointer<Void> Function(
     Pointer<Uint8>, int, Pointer<Int32>);
 typedef _OpenPwD = Pointer<Void> Function(
     Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+
+// ── Phase 7: barcodes / QR / OCR / render variants / redaction / from_* ──────
+// Conventions match earlier phases: opaque handles are `Pointer<Void>` freed via
+// their `*_free` symbol (on close()/finalizer + closed-handle guards); owned
+// `char*` go through `_takeString` (+ `free_string`); owned `uint8*` buffers are
+// copied then released with `free_bytes`. Render variants return the same
+// `FfiRenderedImage` handle wrapped by [RenderedImage]. int32 status returns are
+// 0 = success. String / parallel-array params are marshalled C-side (copied).
+
+// barcodes / QR
+typedef _GenQrC = Pointer<Void> Function(
+    Pointer<Utf8>, Int32, Int32, Pointer<Int32>);
+typedef _GenQrD = Pointer<Void> Function(
+    Pointer<Utf8>, int, int, Pointer<Int32>);
+typedef _GenBarcodeC = Pointer<Void> Function(
+    Pointer<Utf8>, Int32, Int32, Pointer<Int32>);
+typedef _GenBarcodeD = Pointer<Void> Function(
+    Pointer<Utf8>, int, int, Pointer<Int32>);
+typedef _BcStrC = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _BcStrD = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _BcI32C = Int32 Function(Pointer<Void>, Pointer<Int32>);
+typedef _BcI32D = int Function(Pointer<Void>, Pointer<Int32>);
+typedef _BcF32C = Float Function(Pointer<Void>, Pointer<Int32>);
+typedef _BcF32D = double Function(Pointer<Void>, Pointer<Int32>);
+typedef _BcPngC = Pointer<Uint8> Function(
+    Pointer<Void>, Int32, Pointer<Int32>, Pointer<Int32>);
+typedef _BcPngD = Pointer<Uint8> Function(
+    Pointer<Void>, int, Pointer<Int32>, Pointer<Int32>);
+typedef _BcSvgC = Pointer<Utf8> Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _BcSvgD = Pointer<Utf8> Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _AddBarcodeC = Int32 Function(Pointer<Void>, Int32, Pointer<Void>,
+    Float, Float, Float, Float, Pointer<Int32>);
+typedef _AddBarcodeD = int Function(Pointer<Void>, int, Pointer<Void>, double,
+    double, double, double, Pointer<Int32>);
+
+// OCR
+typedef _OcrCreateC = Pointer<Void> Function(
+    Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _OcrCreateD = Pointer<Void> Function(
+    Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _OcrNeedsC = Bool Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _OcrNeedsD = bool Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _OcrExtractC = Pointer<Utf8> Function(
+    Pointer<Void>, Int32, Pointer<Void>, Pointer<Int32>);
+typedef _OcrExtractD = Pointer<Utf8> Function(
+    Pointer<Void>, int, Pointer<Void>, Pointer<Int32>);
+
+// render variants (all return FfiRenderedImage*)
+typedef _RenderOptsC = Pointer<Void> Function(Pointer<Void>, Int32, Int32,
+    Int32, Float, Float, Float, Float, Int32, Int32, Int32, Pointer<Int32>);
+typedef _RenderOptsD = Pointer<Void> Function(Pointer<Void>, int, int, int,
+    double, double, double, double, int, int, int, Pointer<Int32>);
+typedef _RenderOptsExC = Pointer<Void> Function(
+    Pointer<Void>,
+    Int32,
+    Int32,
+    Int32,
+    Float,
+    Float,
+    Float,
+    Float,
+    Int32,
+    Int32,
+    Int32,
+    Pointer<Pointer<Utf8>>,
+    IntPtr,
+    Pointer<Int32>);
+typedef _RenderOptsExD = Pointer<Void> Function(
+    Pointer<Void>,
+    int,
+    int,
+    int,
+    double,
+    double,
+    double,
+    double,
+    int,
+    int,
+    int,
+    Pointer<Pointer<Utf8>>,
+    int,
+    Pointer<Int32>);
+typedef _RenderRegionC = Pointer<Void> Function(
+    Pointer<Void>, Int32, Float, Float, Float, Float, Int32, Pointer<Int32>);
+typedef _RenderRegionD = Pointer<Void> Function(
+    Pointer<Void>, int, double, double, double, double, int, Pointer<Int32>);
+typedef _RenderFitC = Pointer<Void> Function(
+    Pointer<Void>, Int32, Int32, Int32, Int32, Pointer<Int32>);
+typedef _RenderFitD = Pointer<Void> Function(
+    Pointer<Void>, int, int, int, int, Pointer<Int32>);
+typedef _RenderRawC = Pointer<Void> Function(Pointer<Void>, Int32, Int32,
+    Pointer<Int32>, Pointer<Int32>, Pointer<Int32>);
+typedef _RenderRawD = Pointer<Void> Function(
+    Pointer<Void>, int, int, Pointer<Int32>, Pointer<Int32>, Pointer<Int32>);
+typedef _CreateRendererC = Pointer<Void> Function(
+    Int32, Int32, Int32, Bool, Pointer<Int32>);
+typedef _CreateRendererD = Pointer<Void> Function(
+    int, int, int, bool, Pointer<Int32>);
+typedef _EstimateRenderC = Int32 Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _EstimateRenderD = int Function(Pointer<Void>, int, Pointer<Int32>);
+
+// redaction (on DocumentEditor)
+typedef _RedactionAddC = Int32 Function(Pointer<Void>, IntPtr, Double, Double,
+    Double, Double, Double, Double, Double, Pointer<Int32>);
+typedef _RedactionAddD = int Function(Pointer<Void>, int, double, double,
+    double, double, double, double, double, Pointer<Int32>);
+typedef _RedactionCountC = Int32 Function(
+    Pointer<Void>, IntPtr, Pointer<Int32>);
+typedef _RedactionCountD = int Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _RedactionApplyC = Int32 Function(
+    Pointer<Void>, Bool, Double, Double, Double, Pointer<Int32>);
+typedef _RedactionApplyD = int Function(
+    Pointer<Void>, bool, double, double, double, Pointer<Int32>);
+typedef _RedactionScrubC = Int32 Function(Pointer<Void>, Pointer<Int32>);
+typedef _RedactionScrubD = int Function(Pointer<Void>, Pointer<Int32>);
+
+// constructors (return Pdf*)
+typedef _FromImageC = Pointer<Void> Function(Pointer<Utf8>, Pointer<Int32>);
+typedef _FromImageD = Pointer<Void> Function(Pointer<Utf8>, Pointer<Int32>);
+typedef _FromImageBytesC = Pointer<Void> Function(
+    Pointer<Uint8>, Int32, Pointer<Int32>);
+typedef _FromImageBytesD = Pointer<Void> Function(
+    Pointer<Uint8>, int, Pointer<Int32>);
+typedef _FromHtmlCssC = Pointer<Void> Function(
+    Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint8>, IntPtr, Pointer<Int32>);
+typedef _FromHtmlCssD = Pointer<Void> Function(
+    Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint8>, int, Pointer<Int32>);
+typedef _FromHtmlCssFontsC = Pointer<Void> Function(
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Pointer<Utf8>>,
+    Pointer<Pointer<Uint8>>,
+    Pointer<IntPtr>,
+    IntPtr,
+    Pointer<Int32>);
+typedef _FromHtmlCssFontsD = Pointer<Void> Function(
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Pointer<Utf8>>,
+    Pointer<Pointer<Uint8>>,
+    Pointer<IntPtr>,
+    int,
+    Pointer<Int32>);
+typedef _MergeC = Pointer<Uint8> Function(
+    Pointer<Pointer<Utf8>>, Int32, Pointer<Int32>, Pointer<Int32>);
+typedef _MergeD = Pointer<Uint8> Function(
+    Pointer<Pointer<Utf8>>, int, Pointer<Int32>, Pointer<Int32>);
+
+// page getters + element list (on PdfDocument)
+typedef _PageF32C = Float Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _PageF32D = double Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _PageI32C = Int32 Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _PageI32D = int Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _PageElementsC = Pointer<Void> Function(
+    Pointer<Void>, Int32, Pointer<Int32>);
+typedef _PageElementsD = Pointer<Void> Function(
+    Pointer<Void>, int, Pointer<Int32>);
+typedef _ElemCountC = Int32 Function(Pointer<Void>);
+typedef _ElemCountD = int Function(Pointer<Void>);
+typedef _ElemRectC = Void Function(Pointer<Void>, Int32, Pointer<Float>,
+    Pointer<Float>, Pointer<Float>, Pointer<Float>, Pointer<Int32>);
+typedef _ElemRectD = void Function(Pointer<Void>, int, Pointer<Float>,
+    Pointer<Float>, Pointer<Float>, Pointer<Float>, Pointer<Int32>);
+typedef _ElemJsonC = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _ElemJsonD = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+
+// timestamp (top-level)
+typedef _AddTimestampC = Bool Function(Pointer<Uint8>, IntPtr, Int32,
+    Pointer<Utf8>, Pointer<Pointer<Uint8>>, Pointer<IntPtr>, Pointer<Int32>);
+typedef _AddTimestampD = bool Function(Pointer<Uint8>, int, int, Pointer<Utf8>,
+    Pointer<Pointer<Uint8>>, Pointer<IntPtr>, Pointer<Int32>);
 
 // ── Phase 6: digital signatures / PKI / timestamps / TSA / PDF-A,X,UA ─────────
 // Conventions match earlier phases: opaque handles are `Pointer<Void>` freed via
@@ -2334,6 +2633,257 @@ class PdfDocument implements Finalizable {
     }
   }
 
+  // ── Phase 7: render variants ───────────────────────────────────────────────
+
+  /// Render 0-based [pageIndex] with the full RenderOptions surface.
+  ///
+  /// [background] channels are 0.0..1.0; set [transparentBackground] to drop the
+  /// fill. [format] 0=PNG 1=JPEG; [dpi] resolution; [jpegQuality] 1..100.
+  RenderedImage renderPageWithOptions(
+    int pageIndex, {
+    int dpi = 150,
+    int format = 0,
+    double backgroundR = 1.0,
+    double backgroundG = 1.0,
+    double backgroundB = 1.0,
+    double backgroundA = 1.0,
+    bool transparentBackground = false,
+    bool renderAnnotations = true,
+    int jpegQuality = 90,
+  }) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.renderPageWithOptions(
+        _handle,
+        pageIndex,
+        dpi,
+        format,
+        backgroundR,
+        backgroundG,
+        backgroundB,
+        backgroundA,
+        transparentBackground ? 1 : 0,
+        renderAnnotations ? 1 : 0,
+        jpegQuality,
+        code,
+      );
+      if (h == nullptr) {
+        throw PdfOxideError(code.value, 'renderPageWithOptions');
+      }
+      return RenderedImage._(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Like [renderPageWithOptions] plus suppression of the named OCG layers in
+  /// [excludedLayers]. Pass an empty list to disable filtering.
+  RenderedImage renderPageWithOptionsEx(
+    int pageIndex, {
+    int dpi = 150,
+    int format = 0,
+    double backgroundR = 1.0,
+    double backgroundG = 1.0,
+    double backgroundB = 1.0,
+    double backgroundA = 1.0,
+    bool transparentBackground = false,
+    bool renderAnnotations = true,
+    int jpegQuality = 90,
+    List<String> excludedLayers = const [],
+  }) {
+    _check();
+    final code = calloc<Int32>();
+    final n = excludedLayers.length;
+    final arr = n == 0 ? nullptr : calloc<Pointer<Utf8>>(n);
+    for (var i = 0; i < n; i++) {
+      arr[i] = excludedLayers[i].toNativeUtf8();
+    }
+    try {
+      final h = _n.renderPageWithOptionsEx(
+        _handle,
+        pageIndex,
+        dpi,
+        format,
+        backgroundR,
+        backgroundG,
+        backgroundB,
+        backgroundA,
+        transparentBackground ? 1 : 0,
+        renderAnnotations ? 1 : 0,
+        jpegQuality,
+        arr,
+        n,
+        code,
+      );
+      if (h == nullptr) {
+        throw PdfOxideError(code.value, 'renderPageWithOptionsEx');
+      }
+      return RenderedImage._(h);
+    } finally {
+      for (var i = 0; i < n; i++) {
+        calloc.free(arr[i]);
+      }
+      if (arr != nullptr) calloc.free(arr);
+      calloc.free(code);
+    }
+  }
+
+  /// Render a rectangular region of 0-based [pageIndex]. Crop coordinates are in
+  /// PDF user-space points (origin bottom-left). [format] 0=PNG 1=JPEG.
+  RenderedImage renderPageRegion(
+    int pageIndex,
+    double cropX,
+    double cropY,
+    double cropWidth,
+    double cropHeight, [
+    int format = 0,
+  ]) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.renderPageRegion(_handle, pageIndex, cropX, cropY, cropWidth,
+          cropHeight, format, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'renderPageRegion');
+      return RenderedImage._(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Render 0-based [pageIndex] to fit inside [width]×[height] pixels,
+  /// preserving aspect ratio. [format] 0=PNG 1=JPEG.
+  RenderedImage renderPageFit(int pageIndex, int width, int height,
+      [int format = 0]) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h =
+          _n.renderPageFit(_handle, pageIndex, width, height, format, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'renderPageFit');
+      return RenderedImage._(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Render 0-based [pageIndex] to a raw premultiplied RGBA8888 [RenderedImage]
+  /// at [dpi]. The pixel buffer is row-major, top-left origin; read the raw
+  /// bytes via [RenderedImage.data].
+  RenderedImage renderPageRaw(int pageIndex, [int dpi = 150]) {
+    _check();
+    final w = calloc<Int32>();
+    final h = calloc<Int32>();
+    final code = calloc<Int32>();
+    try {
+      final img = _n.renderPageRaw(_handle, pageIndex, dpi, w, h, code);
+      if (img == nullptr) throw PdfOxideError(code.value, 'renderPageRaw');
+      return RenderedImage._(img);
+    } finally {
+      calloc.free(w);
+      calloc.free(h);
+      calloc.free(code);
+    }
+  }
+
+  /// Estimate the render time (in milliseconds) for 0-based [pageIndex].
+  int estimateRenderTime(int pageIndex) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final ms = _n.estimateRenderTime(_handle, pageIndex, code);
+      if (code.value != 0)
+        throw PdfOxideError(code.value, 'estimateRenderTime');
+      return ms;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  // ── Phase 7: page getters ──────────────────────────────────────────────────
+
+  /// Width of 0-based [pageIndex] in PDF user-space points.
+  double pageWidth(int pageIndex) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final v = _n.pageGetWidth(_handle, pageIndex, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'pageWidth');
+      return v;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Height of 0-based [pageIndex] in PDF user-space points.
+  double pageHeight(int pageIndex) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final v = _n.pageGetHeight(_handle, pageIndex, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'pageHeight');
+      return v;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Rotation (degrees) of 0-based [pageIndex].
+  int pageRotation(int pageIndex) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final v = _n.pageGetRotation(_handle, pageIndex, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'pageRotation');
+      return v;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Extract the layout elements of 0-based [pageIndex] as an [ElementList].
+  /// Call [ElementList.close] when done (or rely on the finalizer).
+  ElementList pageElements(int pageIndex) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.pageGetElements(_handle, pageIndex, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'pageElements');
+      return ElementList._(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  // ── Phase 7: OCR ───────────────────────────────────────────────────────────
+
+  /// Whether 0-based [pageIndex] needs OCR (i.e. is scanned/hybrid).
+  bool pageNeedsOcr(int pageIndex) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final v = _n.ocrPageNeedsOcr(_handle, pageIndex, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'pageNeedsOcr');
+      return v;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Extract text from 0-based [pageIndex] using OCR. [engine] may be null (then
+  /// native text extraction only is used).
+  String ocrExtractText(int pageIndex, [OcrEngine? engine]) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final enginePtr = engine?._handlePtr ?? nullptr;
+      return _takeString(_n.ocrExtractText(_handle, pageIndex, enginePtr, code),
+          code.value, 'ocrExtractText');
+    } finally {
+      calloc.free(code);
+    }
+  }
+
   /// A lightweight view of a single 0-based page. The returned [Page] keeps a
   /// reference to this document and must not be used after [close].
   Page page(int index) => Page._(this, index);
@@ -2433,6 +2983,86 @@ class Pdf implements Finalizable {
       _from(_n.fromMarkdown, md, 'fromMarkdown');
   static Pdf fromHtml(String html) => _from(_n.fromHtml, html, 'fromHtml');
   static Pdf fromText(String text) => _from(_n.fromText, text, 'fromText');
+
+  // ── Phase 7: image / HTML+CSS constructors ─────────────────────────────────
+
+  /// Build a single-page PDF wrapping the image file at [path].
+  static Pdf fromImage(String path) => _from(_n.fromImage, path, 'fromImage');
+
+  /// Build a single-page PDF wrapping the in-memory image [data].
+  static Pdf fromImageBytes(Uint8List data) {
+    final buf = calloc<Uint8>(data.isEmpty ? 1 : data.length);
+    if (data.isNotEmpty) buf.asTypedList(data.length).setAll(0, data);
+    final code = calloc<Int32>();
+    try {
+      final h = _n.fromImageBytes(buf, data.length, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'fromImageBytes');
+      return Pdf._(h);
+    } finally {
+      calloc.free(buf);
+      calloc.free(code);
+    }
+  }
+
+  /// Build a PDF from [html] + [css] with an optional single embedded
+  /// [fontBytes] (TTF/OTF).
+  static Pdf fromHtmlCss(String html, String css, [Uint8List? fontBytes]) {
+    final cHtml = html.toNativeUtf8();
+    final cCss = css.toNativeUtf8();
+    final font = fontBytes ?? Uint8List(0);
+    final buf = calloc<Uint8>(font.isEmpty ? 1 : font.length);
+    if (font.isNotEmpty) buf.asTypedList(font.length).setAll(0, font);
+    final code = calloc<Int32>();
+    try {
+      final h = _n.fromHtmlCss(cHtml, cCss, buf, font.length, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'fromHtmlCss');
+      return Pdf._(h);
+    } finally {
+      calloc.free(cHtml);
+      calloc.free(cCss);
+      calloc.free(buf);
+      calloc.free(code);
+    }
+  }
+
+  /// Build a PDF from [html] + [css] with a multi-font cascade. [families] and
+  /// [fonts] are parallel lists of the same length (family name -> font bytes).
+  static Pdf fromHtmlCssWithFonts(
+    String html,
+    String css,
+    List<String> families,
+    List<Uint8List> fonts,
+  ) {
+    if (families.length != fonts.length) {
+      throw ArgumentError('families and fonts must have equal length');
+    }
+    final n = families.length;
+    final cHtml = html.toNativeUtf8();
+    final cCss = css.toNativeUtf8();
+    final famArr = n == 0 ? nullptr : calloc<Pointer<Utf8>>(n);
+    for (var i = 0; i < n; i++) {
+      famArr[i] = families[i].toNativeUtf8();
+    }
+    final fontArr = _ByteArrayArray(fonts);
+    final code = calloc<Int32>();
+    try {
+      final h = _n.fromHtmlCssWithFonts(
+          cHtml, cCss, famArr, fontArr.ptrs, fontArr.lens, n, code);
+      if (h == nullptr) {
+        throw PdfOxideError(code.value, 'fromHtmlCssWithFonts');
+      }
+      return Pdf._(h);
+    } finally {
+      calloc.free(cHtml);
+      calloc.free(cCss);
+      for (var i = 0; i < n; i++) {
+        calloc.free(famArr[i]);
+      }
+      if (famArr != nullptr) calloc.free(famArr);
+      fontArr.free();
+      calloc.free(code);
+    }
+  }
 
   void _check() {
     if (_handle == nullptr) throw StateError('Pdf is closed');
@@ -3049,6 +3679,109 @@ class DocumentEditor implements Finalizable {
     } finally {
       calloc.free(cUser);
       calloc.free(cOwner);
+    }
+  }
+
+  // ── Phase 7: redaction ─────────────────────────────────────────────────────
+
+  /// Queue a redaction rectangle on 0-based [page]. Coordinates and the overlay
+  /// fill colour ([r]/[g]/[b], 0.0..1.0) are in page user-space / DeviceRGB.
+  void redactionAdd(
+    int page,
+    double x1,
+    double y1,
+    double x2,
+    double y2, {
+    double r = 0.0,
+    double g = 0.0,
+    double b = 0.0,
+  }) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.redactionAdd(_handle, page, x1, y1, x2, y2, r, g, b, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'redactionAdd');
+      }
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Number of queued redaction regions for 0-based [page].
+  int redactionCount(int page) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final n = _n.redactionCount(_handle, page, code);
+      if (n < 0) throw PdfOxideError(code.value, 'redactionCount');
+      return n;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Destructively apply all queued redactions, painting an overlay in
+  /// [r]/[g]/[b] (0.0..1.0). Returns the number of glyphs physically removed.
+  int redactionApply({
+    bool scrubMetadata = false,
+    double r = 0.0,
+    double g = 0.0,
+    double b = 0.0,
+  }) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final n = _n.redactionApply(_handle, scrubMetadata, r, g, b, code);
+      if (n < 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'redactionApply');
+      }
+      return n;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Strip document metadata / JavaScript / embedded files without geometric
+  /// redaction. Returns the number of top-level constructs removed.
+  int redactionScrubMetadata() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final n = _n.redactionScrubMetadata(_handle, code);
+      if (n < 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'redactionScrubMetadata');
+      }
+      return n;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  // ── Phase 7: barcodes ──────────────────────────────────────────────────────
+
+  /// Stamp [barcode] onto 0-based [pageIndex] at ([x], [y]) sized
+  /// [width]×[height] (PDF user-space points).
+  void addBarcodeToPage(
+    int pageIndex,
+    BarcodeImage barcode,
+    double x,
+    double y,
+    double width,
+    double height,
+  ) {
+    _check();
+    barcode._check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.addBarcodeToPage(_handle, pageIndex, barcode._handle, x, y, width,
+                  height, code) !=
+              0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'addBarcodeToPage');
+      }
+    } finally {
+      calloc.free(code);
     }
   }
 
@@ -5100,3 +5833,382 @@ void setLogLevel(int level) => _n.setLogLevel(level);
 
 /// Get the current global library log level (0-5).
 int getLogLevel() => _n.getLogLevel();
+
+// ════════════════════════════════════════════════════════════════════════════
+// Phase 7 — barcodes / QR / OCR / render-variants / redaction / from_* / page
+// getters / element-lists / timestamp.
+//
+// Style matches earlier phases: every opaque native handle is wrapped in a
+// `Finalizable` class freed via its `*_free` symbol on `close()` (idempotent) and
+// a `NativeFinalizer`; calls after close throw `StateError`. Owned `char*` go
+// through `_takeString` (+ `free_string`); owned `uint8*` buffers are copied then
+// released with `free_bytes`. Render variants reuse [RenderedImage]; barcode
+// stamping and redaction are methods on [DocumentEditor]; image / HTML+CSS
+// constructors are static factories on [Pdf].
+// ════════════════════════════════════════════════════════════════════════════
+
+/// A generated 1-D barcode or QR code. Created via [BarcodeImage.qr] /
+/// [BarcodeImage.barcode]; freed via [close] (or the finalizer). Stamp onto a
+/// page with [DocumentEditor.addBarcodeToPage].
+class BarcodeImage implements Finalizable {
+  BarcodeImage._(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_PtrFreeC>>('pdf_barcode_free'));
+  Pointer<Void> _handle;
+
+  void _check() {
+    if (_handle == nullptr) throw StateError('BarcodeImage is closed');
+  }
+
+  /// Generate a QR code encoding [data]. [errorCorrection] is the EC level code;
+  /// [sizePx] the target pixel size.
+  static BarcodeImage qr(String data,
+      {int errorCorrection = 0, int sizePx = 256}) {
+    final c = data.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.generateQrCode(c, errorCorrection, sizePx, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'generateQrCode');
+      return BarcodeImage._(h);
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  /// Generate a 1-D barcode encoding [data] in the given [format] code.
+  /// [sizePx] is the target pixel size.
+  static BarcodeImage barcode(String data, int format, {int sizePx = 256}) {
+    final c = data.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.generateBarcode(c, format, sizePx, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'generateBarcode');
+      return BarcodeImage._(h);
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  /// The encoded payload string.
+  String get data {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(
+          _n.barcodeGetData(_handle, code), code.value, 'barcodeGetData');
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The barcode format code.
+  int get format {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final v = _n.barcodeGetFormat(_handle, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'barcodeGetFormat');
+      return v;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The detection confidence (0.0..1.0) for decoded barcodes.
+  double get confidence {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final v = _n.barcodeGetConfidence(_handle, code);
+      if (code.value != 0) {
+        throw PdfOxideError(code.value, 'barcodeGetConfidence');
+      }
+      return v;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Encode the barcode as PNG bytes at [sizePx] pixels.
+  Uint8List imagePng({int sizePx = 256}) {
+    _check();
+    final len = calloc<Int32>();
+    final code = calloc<Int32>();
+    try {
+      final p = _n.barcodeGetImagePng(_handle, sizePx, len, code);
+      return _takeBytes(p, len.value, code.value, 'barcodeGetImagePng');
+    } finally {
+      calloc.free(len);
+      calloc.free(code);
+    }
+  }
+
+  /// Render the barcode as an SVG document string at [sizePx] pixels.
+  String svg({int sizePx = 256}) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(
+          _n.barcodeGetSvg(_handle, sizePx, code), code.value, 'barcodeGetSvg');
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.barcodeFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+/// An OCR engine backed by detection/recognition model files. Created via
+/// [OcrEngine.create]; freed via [close] (or the finalizer). Pass to
+/// [PdfDocument.ocrExtractText].
+class OcrEngine implements Finalizable {
+  OcrEngine._(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_PtrFreeC>>('pdf_ocr_engine_free'));
+  Pointer<Void> _handle;
+
+  Pointer<Void> get _handlePtr {
+    if (_handle == nullptr) throw StateError('OcrEngine is closed');
+    return _handle;
+  }
+
+  /// Create an OCR engine from the detection model, recognition model and
+  /// dictionary file paths. Throws [PdfOxideError] if the models cannot load.
+  static OcrEngine create(
+      String detModelPath, String recModelPath, String dictPath) {
+    final cDet = detModelPath.toNativeUtf8();
+    final cRec = recModelPath.toNativeUtf8();
+    final cDict = dictPath.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.ocrEngineCreate(cDet, cRec, cDict, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'ocrEngineCreate');
+      return OcrEngine._(h);
+    } finally {
+      calloc.free(cDet);
+      calloc.free(cRec);
+      calloc.free(cDict);
+      calloc.free(code);
+    }
+  }
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.ocrEngineFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+/// A single layout element read from an [ElementList].
+class Element {
+  const Element(this.type, this.text, this.rect);
+
+  /// The element type label (e.g. `Text`, `Image`, `Table`).
+  final String type;
+
+  /// The element's text content (may be empty).
+  final String text;
+
+  /// The element's bounding box in page user-space points.
+  final Bbox rect;
+
+  @override
+  String toString() => 'Element($type, $rect)';
+}
+
+/// The layout elements of a page, produced by [PdfDocument.pageElements].
+///
+/// Owns the native `FfiElementList` handle (freed on [close] or by the
+/// finalizer). Read [count] elements via [operator []] / [toList], or dump the
+/// whole list to JSON via [toJson].
+class ElementList implements Finalizable {
+  ElementList._(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_ListFreeC>>('pdf_oxide_elements_free'));
+  Pointer<Void> _handle;
+
+  void _check() {
+    if (_handle == nullptr) throw StateError('ElementList is closed');
+  }
+
+  /// Number of elements in the list.
+  int get count {
+    _check();
+    return _n.elementCount(_handle);
+  }
+
+  String _str(_ListStrD fn, int index, String op) {
+    final code = calloc<Int32>();
+    try {
+      final p = fn(_handle, index, code);
+      if (p == nullptr) {
+        // Empty/absent strings are returned as null with code 0.
+        if (code.value != 0) throw PdfOxideError(code.value, op);
+        return '';
+      }
+      final s = p.toDartString();
+      _n.freeString(p);
+      return s;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Read the element at [index].
+  Element operator [](int index) {
+    _check();
+    final type = _str(_n.elementGetType, index, 'elementGetType');
+    final text = _str(_n.elementGetText, index, 'elementGetText');
+    final x = calloc<Float>();
+    final y = calloc<Float>();
+    final w = calloc<Float>();
+    final h = calloc<Float>();
+    final code = calloc<Int32>();
+    try {
+      _n.elementGetRect(_handle, index, x, y, w, h, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'elementGetRect');
+      return Element(type, text, Bbox(x.value, y.value, w.value, h.value));
+    } finally {
+      calloc.free(x);
+      calloc.free(y);
+      calloc.free(w);
+      calloc.free(h);
+      calloc.free(code);
+    }
+  }
+
+  /// All elements as a list.
+  List<Element> toList() => [for (var i = 0; i < count; i++) this[i]];
+
+  /// Serialise the whole list to a JSON string.
+  String toJson() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(
+          _n.elementsToJson(_handle, code), code.value, 'elementsToJson');
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.elementsFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+/// A reusable page renderer configured with fixed DPI/format/quality. Created
+/// via [Renderer.create]; freed via [close] (or the finalizer).
+class Renderer implements Finalizable {
+  Renderer._(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_PtrFreeC>>('pdf_renderer_free'));
+  Pointer<Void> _handle;
+
+  /// Create a renderer with the given [dpi], [format] (0=PNG 1=JPEG),
+  /// [quality] (1..100) and [antiAlias] flag.
+  static Renderer create(
+      {int dpi = 150,
+      int format = 0,
+      int quality = 90,
+      bool antiAlias = true}) {
+    final code = calloc<Int32>();
+    try {
+      final h = _n.createRenderer(dpi, format, quality, antiAlias, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'createRenderer');
+      return Renderer._(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.rendererFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+// ── top-level Phase 7 entry points ───────────────────────────────────────────
+
+/// Merge the PDFs at [paths] (in order) into a single PDF; returns its bytes.
+Uint8List pdfMerge(List<String> paths) {
+  final n = paths.length;
+  final arr = n == 0 ? nullptr : calloc<Pointer<Utf8>>(n);
+  for (var i = 0; i < n; i++) {
+    arr[i] = paths[i].toNativeUtf8();
+  }
+  final len = calloc<Int32>();
+  final code = calloc<Int32>();
+  try {
+    final p = _n.merge(arr, n, len, code);
+    return _takeBytes(p, len.value, code.value, 'pdfMerge');
+  } finally {
+    for (var i = 0; i < n; i++) {
+      calloc.free(arr[i]);
+    }
+    if (arr != nullptr) calloc.free(arr);
+    calloc.free(len);
+    calloc.free(code);
+  }
+}
+
+/// Apply an RFC 3161 timestamp to the signature at [sigIndex] of the PDF [pdf]
+/// bytes, contacting the TSA at [tsaUrl]; returns the timestamped PDF bytes.
+Uint8List addTimestamp(Uint8List pdf, int sigIndex, String tsaUrl) {
+  final buf = calloc<Uint8>(pdf.isEmpty ? 1 : pdf.length);
+  if (pdf.isNotEmpty) buf.asTypedList(pdf.length).setAll(0, pdf);
+  final cUrl = tsaUrl.toNativeUtf8();
+  final outData = calloc<Pointer<Uint8>>();
+  final outLen = calloc<IntPtr>();
+  final code = calloc<Int32>();
+  try {
+    final ok =
+        _n.addTimestamp(buf, pdf.length, sigIndex, cUrl, outData, outLen, code);
+    if (!ok || outData.value == nullptr) {
+      throw PdfOxideError(code.value, 'addTimestamp');
+    }
+    final out = Uint8List.fromList(
+        outData.value.asTypedList(outLen.value < 0 ? 0 : outLen.value));
+    _n.freeBytes(outData.value);
+    return out;
+  } finally {
+    calloc.free(buf);
+    calloc.free(cUrl);
+    calloc.free(outData);
+    calloc.free(outLen);
+    calloc.free(code);
+  }
+}
