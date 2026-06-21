@@ -743,3 +743,1318 @@ pdf_editor_close <- function(editor) {
     stop("pdf_editor_close: expected a pdfoxide_editor")
   invisible(.Call(C_r_editor_close, editor))
 }
+
+# ── PDF creation builder API ──────────────────────────────────────────────────
+# Three owned native handle types, each an external pointer freed by the GC
+# finalizer (or now via the explicit `*_close` helpers), mirroring the
+# pdfoxide_document/pdfoxide_pdf/pdfoxide_editor pattern. Page indices and link
+# targets are 0-based. PageBuilder ops are fluent (each returns the page invisibly
+# so they chain via the pipe). `pdf_builder_*` = DocumentBuilder, `pdf_page_*` =
+# PageBuilder, `pdf_embedded_font_*` = EmbeddedFont.
+
+# ── EmbeddedFont ──
+
+#' Load a TTF / OTF font from a file path for embedding.
+#' @param path Path to a TTF / OTF font file.
+#' @return A `pdfoxide_embedded_font` handle.
+#' @export
+pdf_embedded_font_from_file <- function(path) {
+  structure(.Call(C_r_embedded_font_from_file, path),
+            class = "pdfoxide_embedded_font")
+}
+
+#' Load a font for embedding from a raw vector of TTF / OTF bytes.
+#' @param bytes A `raw` vector of font bytes.
+#' @param name Optional PostScript name; `NULL` uses the name from the font face.
+#' @return A `pdfoxide_embedded_font` handle.
+#' @export
+pdf_embedded_font_from_bytes <- function(bytes, name = NULL) {
+  structure(.Call(C_r_embedded_font_from_bytes, bytes, name),
+            class = "pdfoxide_embedded_font")
+}
+
+#' Free an embedded-font handle now (idempotent).
+#'
+#' After a successful [pdf_builder_register_embedded_font()] the builder owns the
+#' font and this becomes a no-op.
+#' @param font A `pdfoxide_embedded_font`.
+#' @export
+pdf_embedded_font_close <- function(font) {
+  if (!inherits(font, "pdfoxide_embedded_font"))
+    stop("pdf_embedded_font_close: expected a pdfoxide_embedded_font")
+  invisible(.Call(C_r_embedded_font_close, font))
+}
+
+# ── DocumentBuilder ──
+
+#' Create a new PDF document builder.
+#' @return A `pdfoxide_builder` handle.
+#' @export
+pdf_builder_create <- function() {
+  structure(.Call(C_r_builder_create), class = "pdfoxide_builder")
+}
+
+#' Close a document builder, freeing the native handle now (idempotent).
+#' @param builder A `pdfoxide_builder`.
+#' @export
+pdf_builder_close <- function(builder) {
+  if (!inherits(builder, "pdfoxide_builder"))
+    stop("pdf_builder_close: expected a pdfoxide_builder")
+  invisible(.Call(C_r_builder_close, builder))
+}
+
+#' Set document metadata on the builder.
+#'
+#' Each returns the `builder` invisibly so calls chain.
+#' @param builder A `pdfoxide_builder`. @param value The metadata string.
+#' @export
+pdf_builder_set_title <- function(builder, value) {
+  .Call(C_r_builder_set_title, builder, value); invisible(builder)
+}
+#' @rdname pdf_builder_set_title
+#' @export
+pdf_builder_set_author <- function(builder, value) {
+  .Call(C_r_builder_set_author, builder, value); invisible(builder)
+}
+#' @rdname pdf_builder_set_title
+#' @export
+pdf_builder_set_subject <- function(builder, value) {
+  .Call(C_r_builder_set_subject, builder, value); invisible(builder)
+}
+#' @rdname pdf_builder_set_title
+#' @export
+pdf_builder_set_keywords <- function(builder, value) {
+  .Call(C_r_builder_set_keywords, builder, value); invisible(builder)
+}
+#' @rdname pdf_builder_set_title
+#' @export
+pdf_builder_set_creator <- function(builder, value) {
+  .Call(C_r_builder_set_creator, builder, value); invisible(builder)
+}
+
+#' Run JavaScript when the document is opened (`/OpenAction`).
+#' @param builder A `pdfoxide_builder`. @param script JavaScript source.
+#' @export
+pdf_builder_on_open <- function(builder, script) {
+  .Call(C_r_builder_on_open, builder, script); invisible(builder)
+}
+
+#' Set the document's natural language tag (e.g. "en-US"), emitted as `/Lang`.
+#' @param builder A `pdfoxide_builder`. @param lang BCP-47 language tag.
+#' @export
+pdf_builder_language <- function(builder, lang) {
+  .Call(C_r_builder_language, builder, lang); invisible(builder)
+}
+
+#' Enable PDF/UA-1 tagged-PDF mode.
+#' @param builder A `pdfoxide_builder`.
+#' @export
+pdf_builder_tagged_pdf_ua1 <- function(builder) {
+  .Call(C_r_builder_tagged_pdf_ua1, builder); invisible(builder)
+}
+
+#' Add a role-map entry: custom structure type to standard PDF structure type.
+#' @param builder A `pdfoxide_builder`. @param custom Custom structure type.
+#' @param standard Standard PDF structure type.
+#' @export
+pdf_builder_role_map <- function(builder, custom, standard) {
+  .Call(C_r_builder_role_map, builder, custom, standard); invisible(builder)
+}
+
+#' Register a TTF / OTF font for embedding under `name`.
+#'
+#' On success the builder takes ownership of `font`; do not use or close it after.
+#' @param builder A `pdfoxide_builder`. @param name Font name to register under.
+#' @param font A `pdfoxide_embedded_font`.
+#' @export
+pdf_builder_register_embedded_font <- function(builder, name, font) {
+  if (!inherits(font, "pdfoxide_embedded_font"))
+    stop("pdf_builder_register_embedded_font: expected a pdfoxide_embedded_font")
+  .Call(C_r_builder_register_embedded_font, builder, name, font)
+  invisible(builder)
+}
+
+#' Start a page on the builder.
+#'
+#' `pdf_builder_page` takes custom dimensions in PDF points (72 pt = 1 inch);
+#' `pdf_builder_a4_page` and `pdf_builder_letter_page` use standard sizes. Only
+#' one page may be open at a time; call [pdf_page_done()] to commit it.
+#' @param builder A `pdfoxide_builder`. @param width,height Page size in points.
+#' @return A `pdfoxide_page_builder` handle.
+#' @export
+pdf_builder_page <- function(builder, width, height) {
+  structure(.Call(C_r_builder_page, builder, as.double(width), as.double(height)),
+            class = "pdfoxide_page_builder")
+}
+#' @rdname pdf_builder_page
+#' @export
+pdf_builder_a4_page <- function(builder) {
+  structure(.Call(C_r_builder_a4_page, builder),
+            class = "pdfoxide_page_builder")
+}
+#' @rdname pdf_builder_page
+#' @export
+pdf_builder_letter_page <- function(builder) {
+  structure(.Call(C_r_builder_letter_page, builder),
+            class = "pdfoxide_page_builder")
+}
+
+#' Build the document to a raw vector of PDF bytes.
+#' @param builder A `pdfoxide_builder`.
+#' @return A `raw` vector.
+#' @export
+pdf_builder_build <- function(builder) {
+  .Call(C_r_builder_build, builder)
+}
+
+#' Build and save the document to a path.
+#' @param builder A `pdfoxide_builder`. @param path Output path.
+#' @export
+pdf_builder_save <- function(builder, path) {
+  invisible(.Call(C_r_builder_save, builder, path))
+}
+
+#' Build and save the document with AES-256 encryption to a path.
+#' @param builder A `pdfoxide_builder`. @param path Output path.
+#' @param user_password,owner_password Encryption passwords.
+#' @export
+pdf_builder_save_encrypted <- function(builder, path, user_password,
+                                       owner_password) {
+  invisible(.Call(C_r_builder_save_encrypted, builder, path, user_password,
+                  owner_password))
+}
+
+#' Build the document with AES-256 encryption to a raw vector.
+#' @param builder A `pdfoxide_builder`.
+#' @param user_password,owner_password Encryption passwords.
+#' @return A `raw` vector.
+#' @export
+pdf_builder_to_bytes_encrypted <- function(builder, user_password,
+                                           owner_password) {
+  .Call(C_r_builder_to_bytes_encrypted, builder, user_password, owner_password)
+}
+
+# ── PageBuilder ──
+# All ops return the page invisibly so they chain via the pipe.
+
+#' Set the font + size for subsequent text on this page.
+#' @param page A `pdfoxide_page_builder`. @param name Font name. @param size pt.
+#' @export
+pdf_page_font <- function(page, name, size) {
+  .Call(C_r_page_font, page, name, as.double(size)); invisible(page)
+}
+
+#' Move the cursor to absolute coordinates (PDF points, from lower-left).
+#' @param page A `pdfoxide_page_builder`. @param x,y Coordinates in points.
+#' @export
+pdf_page_at <- function(page, x, y) {
+  .Call(C_r_page_at, page, as.double(x), as.double(y)); invisible(page)
+}
+
+#' Emit a line of text at the cursor, then advance one line-height.
+#' @param page A `pdfoxide_page_builder`. @param text The text.
+#' @export
+pdf_page_builder_text <- function(page, text) {
+  .Call(C_r_page_text, page, text); invisible(page)
+}
+
+#' Emit a heading with the given level (1-6) and text.
+#' @param page A `pdfoxide_page_builder`. @param level Heading level 1-6.
+#' @param text Heading text.
+#' @export
+pdf_page_heading <- function(page, level, text) {
+  .Call(C_r_page_heading, page, as.integer(level), text); invisible(page)
+}
+
+#' Emit a paragraph with automatic line wrapping.
+#' @param page A `pdfoxide_page_builder`. @param text The paragraph text.
+#' @export
+pdf_page_paragraph <- function(page, text) {
+  .Call(C_r_page_paragraph, page, text); invisible(page)
+}
+
+#' Advance the cursor down by `points`.
+#' @param page A `pdfoxide_page_builder`. @param points Vertical advance in pts.
+#' @export
+pdf_page_space <- function(page, points) {
+  .Call(C_r_page_space, page, as.double(points)); invisible(page)
+}
+
+#' Draw a horizontal rule across the page.
+#' @param page A `pdfoxide_page_builder`.
+#' @export
+pdf_page_horizontal_rule <- function(page) {
+  .Call(C_r_page_horizontal_rule, page); invisible(page)
+}
+
+#' Attach a link to the previously-emitted text element.
+#'
+#' `pdf_page_link_page` targets a 0-based internal page index.
+#' @param page A `pdfoxide_page_builder`. @param url URL. @param index 0-based
+#'   page index. @param destination Named destination. @param script JavaScript.
+#' @export
+pdf_page_link_url <- function(page, url) {
+  .Call(C_r_page_link_url, page, url); invisible(page)
+}
+#' @rdname pdf_page_link_url
+#' @export
+pdf_page_link_page <- function(page, index) {
+  .Call(C_r_page_link_page, page, as.integer(index)); invisible(page)
+}
+#' @rdname pdf_page_link_url
+#' @export
+pdf_page_link_named <- function(page, destination) {
+  .Call(C_r_page_link_named, page, destination); invisible(page)
+}
+#' @rdname pdf_page_link_url
+#' @export
+pdf_page_link_javascript <- function(page, script) {
+  .Call(C_r_page_link_javascript, page, script); invisible(page)
+}
+
+#' Run JavaScript on page open / close (`/AA /O`, `/AA /C`).
+#' @param page A `pdfoxide_page_builder`. @param script JavaScript source.
+#' @export
+pdf_page_on_open <- function(page, script) {
+  .Call(C_r_page_on_open, page, script); invisible(page)
+}
+#' @rdname pdf_page_on_open
+#' @export
+pdf_page_on_close <- function(page, script) {
+  .Call(C_r_page_on_close, page, script); invisible(page)
+}
+
+#' Set a JS action on the most-recently-added form field.
+#' @param page A `pdfoxide_page_builder`. @param script JavaScript source.
+#' @export
+pdf_page_field_keystroke <- function(page, script) {
+  .Call(C_r_page_field_keystroke, page, script); invisible(page)
+}
+#' @rdname pdf_page_field_keystroke
+#' @export
+pdf_page_field_format <- function(page, script) {
+  .Call(C_r_page_field_format, page, script); invisible(page)
+}
+#' @rdname pdf_page_field_keystroke
+#' @export
+pdf_page_field_validate <- function(page, script) {
+  .Call(C_r_page_field_validate, page, script); invisible(page)
+}
+#' @rdname pdf_page_field_keystroke
+#' @export
+pdf_page_field_calculate <- function(page, script) {
+  .Call(C_r_page_field_calculate, page, script); invisible(page)
+}
+
+#' Decorate the previous text with an RGB colour (channels 0.0-1.0).
+#' @param page A `pdfoxide_page_builder`. @param r,g,b Colour channels (0-1).
+#' @export
+pdf_page_highlight <- function(page, r, g, b) {
+  .Call(C_r_page_highlight, page, as.double(r), as.double(g), as.double(b))
+  invisible(page)
+}
+#' @rdname pdf_page_highlight
+#' @export
+pdf_page_underline <- function(page, r, g, b) {
+  .Call(C_r_page_underline, page, as.double(r), as.double(g), as.double(b))
+  invisible(page)
+}
+#' @rdname pdf_page_highlight
+#' @export
+pdf_page_strikeout <- function(page, r, g, b) {
+  .Call(C_r_page_strikeout, page, as.double(r), as.double(g), as.double(b))
+  invisible(page)
+}
+#' @rdname pdf_page_highlight
+#' @export
+pdf_page_squiggly <- function(page, r, g, b) {
+  .Call(C_r_page_squiggly, page, as.double(r), as.double(g), as.double(b))
+  invisible(page)
+}
+
+#' Attach a sticky-note annotation to the previous text.
+#' @param page A `pdfoxide_page_builder`. @param text Note text.
+#' @export
+pdf_page_sticky_note <- function(page, text) {
+  .Call(C_r_page_sticky_note, page, text); invisible(page)
+}
+
+#' Place a free-standing sticky note at an absolute page position.
+#' @param page A `pdfoxide_page_builder`. @param x,y Position in points.
+#' @param text Note text.
+#' @export
+pdf_page_sticky_note_at <- function(page, x, y, text) {
+  .Call(C_r_page_sticky_note_at, page, as.double(x), as.double(y), text)
+  invisible(page)
+}
+
+#' Apply a text watermark to the page.
+#' @param page A `pdfoxide_page_builder`. @param text Watermark text.
+#' @export
+pdf_page_watermark <- function(page, text) {
+  .Call(C_r_page_watermark, page, text); invisible(page)
+}
+
+#' Apply a standard diagonal watermark ("CONFIDENTIAL" / "DRAFT").
+#' @param page A `pdfoxide_page_builder`.
+#' @export
+pdf_page_watermark_confidential <- function(page) {
+  .Call(C_r_page_watermark_confidential, page); invisible(page)
+}
+#' @rdname pdf_page_watermark_confidential
+#' @export
+pdf_page_watermark_draft <- function(page) {
+  .Call(C_r_page_watermark_draft, page); invisible(page)
+}
+
+#' Attach a standard stamp annotation at the current cursor position.
+#' @param page A `pdfoxide_page_builder`. @param type_name Stamp name.
+#' @export
+pdf_page_stamp <- function(page, type_name) {
+  .Call(C_r_page_stamp, page, type_name); invisible(page)
+}
+
+#' Place a free-flowing text annotation inside a rectangle.
+#' @param page A `pdfoxide_page_builder`. @param x,y,w,h Rectangle in points.
+#' @param text The annotation text.
+#' @export
+pdf_page_freetext <- function(page, x, y, w, h, text) {
+  .Call(C_r_page_freetext, page, as.double(x), as.double(y), as.double(w),
+        as.double(h), text); invisible(page)
+}
+
+#' Add a footnote reference mark inline and record its body for page-end placement.
+#' @param page A `pdfoxide_page_builder`. @param ref_mark Superscript label.
+#' @param note_text Footnote body text.
+#' @export
+pdf_page_footnote <- function(page, ref_mark, note_text) {
+  .Call(C_r_page_footnote, page, ref_mark, note_text); invisible(page)
+}
+
+#' Lay out text across `column_count` balanced columns at the cursor.
+#' @param page A `pdfoxide_page_builder`. @param column_count Number of columns.
+#' @param gap_pt Inter-column gap in points. @param text Text to flow.
+#' @export
+pdf_page_columns <- function(page, column_count, gap_pt, text) {
+  .Call(C_r_page_columns, page, as.integer(column_count), as.double(gap_pt), text)
+  invisible(page)
+}
+
+#' Emit an inline run (advances the cursor horizontally, not vertically).
+#'
+#' Call [pdf_page_newline()] to advance to the next line.
+#' @param page A `pdfoxide_page_builder`. @param text The text.
+#' @export
+pdf_page_inline <- function(page, text) {
+  .Call(C_r_page_inline, page, text); invisible(page)
+}
+#' @rdname pdf_page_inline
+#' @export
+pdf_page_inline_bold <- function(page, text) {
+  .Call(C_r_page_inline_bold, page, text); invisible(page)
+}
+#' @rdname pdf_page_inline
+#' @export
+pdf_page_inline_italic <- function(page, text) {
+  .Call(C_r_page_inline_italic, page, text); invisible(page)
+}
+
+#' Emit an inline coloured run (RGB 0.0-1.0).
+#' @param page A `pdfoxide_page_builder`. @param r,g,b Colour channels (0-1).
+#' @param text The text.
+#' @export
+pdf_page_inline_color <- function(page, r, g, b, text) {
+  .Call(C_r_page_inline_color, page, as.double(r), as.double(g), as.double(b),
+        text); invisible(page)
+}
+
+#' Advance the cursor by one line-height and reset to the left margin.
+#' @param page A `pdfoxide_page_builder`.
+#' @export
+pdf_page_newline <- function(page) {
+  .Call(C_r_page_newline, page); invisible(page)
+}
+
+#' Add a single-line text form field.
+#' @param page A `pdfoxide_page_builder`. @param name Field name.
+#' @param x,y,w,h Field rectangle in points.
+#' @param default_value Initial value, or `NULL` for blank.
+#' @export
+pdf_page_text_field <- function(page, name, x, y, w, h, default_value = NULL) {
+  .Call(C_r_page_text_field, page, name, as.double(x), as.double(y),
+        as.double(w), as.double(h), default_value); invisible(page)
+}
+
+#' Add a checkbox form field.
+#' @param page A `pdfoxide_page_builder`. @param name Field name.
+#' @param x,y,w,h Field rectangle in points. @param checked Initially ticked?
+#' @export
+pdf_page_checkbox <- function(page, name, x, y, w, h, checked = FALSE) {
+  .Call(C_r_page_checkbox, page, name, as.double(x), as.double(y), as.double(w),
+        as.double(h), isTRUE(checked)); invisible(page)
+}
+
+#' Add a dropdown combo-box form field.
+#' @param page A `pdfoxide_page_builder`. @param name Field name.
+#' @param x,y,w,h Field rectangle in points.
+#' @param options Character vector of options.
+#' @param selected Initially-selected option, or `NULL`.
+#' @export
+pdf_page_combo_box <- function(page, name, x, y, w, h, options, selected = NULL) {
+  .Call(C_r_page_combo_box, page, name, as.double(x), as.double(y), as.double(w),
+        as.double(h), as.character(options), selected); invisible(page)
+}
+
+#' Add a radio-button group.
+#'
+#' `values`, `xs`, `ys`, `ws`, `hs` are parallel vectors of equal length.
+#' @param page A `pdfoxide_page_builder`. @param name Field name.
+#' @param values Character vector of export values.
+#' @param xs,ys,ws,hs Numeric vectors of per-button rectangles.
+#' @param selected Initially-selected export value, or `NULL`.
+#' @export
+pdf_page_radio_group <- function(page, name, values, xs, ys, ws, hs,
+                                 selected = NULL) {
+  .Call(C_r_page_radio_group, page, name, as.character(values), as.double(xs),
+        as.double(ys), as.double(ws), as.double(hs), selected); invisible(page)
+}
+
+#' Add a clickable push button with a visible caption.
+#' @param page A `pdfoxide_page_builder`. @param name Field name.
+#' @param x,y,w,h Field rectangle in points. @param caption Button caption.
+#' @export
+pdf_page_push_button <- function(page, name, x, y, w, h, caption) {
+  .Call(C_r_page_push_button, page, name, as.double(x), as.double(y),
+        as.double(w), as.double(h), caption); invisible(page)
+}
+
+#' Add an unsigned signature placeholder field.
+#' @param page A `pdfoxide_page_builder`. @param name Field name.
+#' @param x,y,w,h Field rectangle in points.
+#' @export
+pdf_page_signature_field <- function(page, name, x, y, w, h) {
+  .Call(C_r_page_signature_field, page, name, as.double(x), as.double(y),
+        as.double(w), as.double(h)); invisible(page)
+}
+
+#' Place a 1-D barcode image on the page.
+#'
+#' `barcode_type`: 0=Code128 1=Code39 2=EAN13 3=EAN8 4=UPCA 5=ITF 6=Code93
+#' 7=Codabar.
+#' @param page A `pdfoxide_page_builder`. @param barcode_type Symbology code.
+#' @param data Barcode data. @param x,y,w,h Rectangle in points.
+#' @export
+pdf_page_barcode_1d <- function(page, barcode_type, data, x, y, w, h) {
+  .Call(C_r_page_barcode_1d, page, as.integer(barcode_type), data, as.double(x),
+        as.double(y), as.double(w), as.double(h)); invisible(page)
+}
+
+#' Place a QR-code image on the page (square: `size` x `size` points).
+#' @param page A `pdfoxide_page_builder`. @param data QR data.
+#' @param x,y Position in points. @param size Side length in points.
+#' @export
+pdf_page_barcode_qr <- function(page, data, x, y, size) {
+  .Call(C_r_page_barcode_qr, page, data, as.double(x), as.double(y),
+        as.double(size)); invisible(page)
+}
+
+#' Embed an image on the page.
+#'
+#' `bytes` is a `raw` vector of raw JPEG / PNG / WebP image data.
+#' `pdf_page_image_with_alt` adds accessibility alt text; `pdf_page_image_artifact`
+#' marks the image as a decorative `/Artifact`.
+#' @param page A `pdfoxide_page_builder`. @param bytes A `raw` vector.
+#' @param x,y,w,h Image rectangle in points. @param alt_text Accessibility text.
+#' @export
+pdf_page_image <- function(page, bytes, x, y, w, h) {
+  .Call(C_r_page_image, page, bytes, as.double(x), as.double(y), as.double(w),
+        as.double(h)); invisible(page)
+}
+#' @rdname pdf_page_image
+#' @export
+pdf_page_image_with_alt <- function(page, bytes, x, y, w, h, alt_text) {
+  .Call(C_r_page_image_with_alt, page, bytes, as.double(x), as.double(y),
+        as.double(w), as.double(h), alt_text); invisible(page)
+}
+#' @rdname pdf_page_image
+#' @export
+pdf_page_image_artifact <- function(page, bytes, x, y, w, h) {
+  .Call(C_r_page_image_artifact, page, bytes, as.double(x), as.double(y),
+        as.double(w), as.double(h)); invisible(page)
+}
+
+#' Draw a stroked rectangle outline (1pt black).
+#' @param page A `pdfoxide_page_builder`. @param x,y,w,h Rectangle in points.
+#' @export
+pdf_page_rect <- function(page, x, y, w, h) {
+  .Call(C_r_page_rect, page, as.double(x), as.double(y), as.double(w),
+        as.double(h)); invisible(page)
+}
+
+#' Draw a filled rectangle in RGB colour (channels 0-1).
+#' @param page A `pdfoxide_page_builder`. @param x,y,w,h Rectangle in points.
+#' @param r,g,b Fill colour channels (0-1).
+#' @export
+pdf_page_filled_rect <- function(page, x, y, w, h, r, g, b) {
+  .Call(C_r_page_filled_rect, page, as.double(x), as.double(y), as.double(w),
+        as.double(h), as.double(r), as.double(g), as.double(b)); invisible(page)
+}
+
+#' Draw a line with a 1pt black stroke.
+#' @param page A `pdfoxide_page_builder`. @param x1,y1,x2,y2 Endpoints in points.
+#' @export
+pdf_page_line <- function(page, x1, y1, x2, y2) {
+  .Call(C_r_page_line, page, as.double(x1), as.double(y1), as.double(x2),
+        as.double(y2)); invisible(page)
+}
+
+#' Draw a stroked rectangle with explicit width and RGB colour.
+#' @param page A `pdfoxide_page_builder`. @param x,y,w,h Rectangle in points.
+#' @param width Stroke width in points. @param r,g,b Stroke colour (0-1).
+#' @export
+pdf_page_stroke_rect <- function(page, x, y, w, h, width, r, g, b) {
+  .Call(C_r_page_stroke_rect, page, as.double(x), as.double(y), as.double(w),
+        as.double(h), as.double(width), as.double(r), as.double(g),
+        as.double(b)); invisible(page)
+}
+
+#' Draw a stroked line with explicit width and RGB colour.
+#' @param page A `pdfoxide_page_builder`. @param x1,y1,x2,y2 Endpoints in points.
+#' @param width Stroke width in points. @param r,g,b Stroke colour (0-1).
+#' @export
+pdf_page_stroke_line <- function(page, x1, y1, x2, y2, width, r, g, b) {
+  .Call(C_r_page_stroke_line, page, as.double(x1), as.double(y1), as.double(x2),
+        as.double(y2), as.double(width), as.double(r), as.double(g),
+        as.double(b)); invisible(page)
+}
+
+#' Draw a dashed stroked rectangle.
+#'
+#' `dash` is a numeric vector of alternating on/off lengths in points (empty for
+#' solid); `phase` is the starting offset into the pattern.
+#' @param page A `pdfoxide_page_builder`. @param x,y,w,h Rectangle in points.
+#' @param width Stroke width in points. @param r,g,b Stroke colour (0-1).
+#' @param dash Numeric dash pattern. @param phase Dash phase offset.
+#' @export
+pdf_page_stroke_rect_dashed <- function(page, x, y, w, h, width, r, g, b,
+                                        dash = numeric(0), phase = 0) {
+  .Call(C_r_page_stroke_rect_dashed, page, as.double(x), as.double(y),
+        as.double(w), as.double(h), as.double(width), as.double(r), as.double(g),
+        as.double(b), as.double(dash), as.double(phase)); invisible(page)
+}
+
+#' Draw a dashed stroked line.
+#' @param page A `pdfoxide_page_builder`. @param x1,y1,x2,y2 Endpoints in points.
+#' @param width Stroke width in points. @param r,g,b Stroke colour (0-1).
+#' @param dash Numeric dash pattern. @param phase Dash phase offset.
+#' @export
+pdf_page_stroke_line_dashed <- function(page, x1, y1, x2, y2, width, r, g, b,
+                                        dash = numeric(0), phase = 0) {
+  .Call(C_r_page_stroke_line_dashed, page, as.double(x1), as.double(y1),
+        as.double(x2), as.double(y2), as.double(width), as.double(r),
+        as.double(g), as.double(b), as.double(dash), as.double(phase))
+  invisible(page)
+}
+
+#' Lay out text inside a rectangle with an alignment.
+#'
+#' `align`: 0=Left, 1=Center, 2=Right.
+#' @param page A `pdfoxide_page_builder`. @param x,y,w,h Rectangle in points.
+#' @param text The text. @param align Alignment code (0/1/2).
+#' @export
+pdf_page_text_in_rect <- function(page, x, y, w, h, text, align = 0L) {
+  .Call(C_r_page_text_in_rect, page, as.double(x), as.double(y), as.double(w),
+        as.double(h), text, as.integer(align)); invisible(page)
+}
+
+#' Start a new page of the same size; subsequent ops land on the new page.
+#' @param page A `pdfoxide_page_builder`.
+#' @export
+pdf_page_new_page_same_size <- function(page) {
+  .Call(C_r_page_new_page_same_size, page); invisible(page)
+}
+
+#' Emit a table.
+#'
+#' `cells` is a character vector or matrix. A matrix is read row-major; a flat
+#' vector must already be row-major of length `n_rows * n_columns`. `widths` and
+#' `aligns` are length-`n_columns` vectors (aligns: 0=Left, 1=Center, 2=Right).
+#' @param page A `pdfoxide_page_builder`. @param widths Column widths (numeric).
+#' @param aligns Per-column alignment codes. @param cells Cell text (row-major).
+#' @param has_header Promote the first row to a header?
+#' @param n_columns,n_rows Dimensions; defaulted from a matrix `cells`.
+#' @export
+pdf_page_table <- function(page, widths, aligns, cells, has_header = FALSE,
+                           n_columns = length(widths), n_rows = NULL) {
+  if (is.matrix(cells)) {
+    if (missing(n_columns)) n_columns <- ncol(cells)
+    if (is.null(n_rows)) n_rows <- nrow(cells)
+    cells <- as.character(t(cells))  # row-major
+  } else {
+    cells <- as.character(cells)
+    if (is.null(n_rows)) n_rows <- length(cells) %/% max(1L, n_columns)
+  }
+  .Call(C_r_page_table, page, as.integer(n_columns), as.double(widths),
+        as.integer(aligns), as.integer(n_rows), cells, isTRUE(has_header))
+  invisible(page)
+}
+
+#' Open a streaming table on the page.
+#'
+#' `headers`, `widths`, `aligns` are length-`n_columns` parallel vectors
+#' (aligns: 0=Left, 1=Center, 2=Right). Feed rows with
+#' [pdf_page_streaming_table_push_row()]; close with
+#' [pdf_page_streaming_table_finish()].
+#' @param page A `pdfoxide_page_builder`. @param headers Column headers.
+#' @param widths Column widths. @param aligns Per-column alignment codes.
+#' @param repeat_header Repeat the header on each page break?
+#' @param n_columns Column count; defaulted from `headers`.
+#' @export
+pdf_page_streaming_table_begin <- function(page, headers, widths, aligns,
+                                           repeat_header = FALSE,
+                                           n_columns = length(headers)) {
+  .Call(C_r_page_streaming_table_begin, page, as.integer(n_columns),
+        as.character(headers), as.double(widths), as.integer(aligns),
+        isTRUE(repeat_header)); invisible(page)
+}
+
+#' Open a streaming table with a column-width mode and optional rowspan.
+#'
+#' `mode`: 0=Fixed, 1=Sample(sample_rows, min/max width). `max_rowspan` of 0/1
+#' disables rowspan.
+#' @inheritParams pdf_page_streaming_table_begin
+#' @param mode Column-width mode. @param sample_rows Rows to sample (mode 1).
+#' @param min_col_width_pt,max_col_width_pt Width bounds (mode 1).
+#' @param max_rowspan Maximum rowspan (>=2 enables).
+#' @export
+pdf_page_streaming_table_begin_v2 <- function(page, headers, widths, aligns,
+                                              repeat_header = FALSE, mode = 0L,
+                                              sample_rows = 0L,
+                                              min_col_width_pt = 0,
+                                              max_col_width_pt = 0,
+                                              max_rowspan = 0L,
+                                              n_columns = length(headers)) {
+  .Call(C_r_page_streaming_table_begin_v2, page, as.integer(n_columns),
+        as.character(headers), as.double(widths), as.integer(aligns),
+        isTRUE(repeat_header), as.integer(mode), as.integer(sample_rows),
+        as.double(min_col_width_pt), as.double(max_col_width_pt),
+        as.integer(max_rowspan)); invisible(page)
+}
+
+#' Set the batch size for the currently-open streaming table (0 defaults to 256).
+#' @param page A `pdfoxide_page_builder`. @param batch_size Rows per batch.
+#' @export
+pdf_page_streaming_table_set_batch_size <- function(page, batch_size) {
+  .Call(C_r_page_streaming_table_set_batch_size, page, as.integer(batch_size))
+  invisible(page)
+}
+
+#' Number of rows pushed since the last batch boundary.
+#' @param page A `pdfoxide_page_builder`.
+#' @export
+pdf_page_streaming_table_pending_row_count <- function(page) {
+  .Call(C_r_page_streaming_table_pending_row_count, page)
+}
+
+#' Number of complete batches recorded so far.
+#' @param page A `pdfoxide_page_builder`.
+#' @export
+pdf_page_streaming_table_batch_count <- function(page) {
+  .Call(C_r_page_streaming_table_batch_count, page)
+}
+
+#' Mark a batch boundary in the currently-open streaming table.
+#' @param page A `pdfoxide_page_builder`.
+#' @export
+pdf_page_streaming_table_flush <- function(page) {
+  .Call(C_r_page_streaming_table_flush, page); invisible(page)
+}
+
+#' Push one row into the currently-open streaming table.
+#'
+#' `cells` length must equal the column count given to begin.
+#' @param page A `pdfoxide_page_builder`. @param cells Character vector of cells.
+#' @export
+pdf_page_streaming_table_push_row <- function(page, cells) {
+  .Call(C_r_page_streaming_table_push_row, page, as.character(cells))
+  invisible(page)
+}
+
+#' Push one row with per-cell rowspan values.
+#'
+#' `rowspans` is an integer vector parallel to `cells` (1=normal, >=2=span), or
+#' `NULL` to treat all cells as rowspan=1.
+#' @param page A `pdfoxide_page_builder`. @param cells Character vector of cells.
+#' @param rowspans Integer rowspan vector, or `NULL`.
+#' @export
+pdf_page_streaming_table_push_row_v2 <- function(page, cells, rowspans = NULL) {
+  if (!is.null(rowspans)) rowspans <- as.integer(rowspans)
+  .Call(C_r_page_streaming_table_push_row_v2, page, as.character(cells),
+        rowspans); invisible(page)
+}
+
+#' Close the currently-open streaming table.
+#' @param page A `pdfoxide_page_builder`.
+#' @export
+pdf_page_streaming_table_finish <- function(page) {
+  .Call(C_r_page_streaming_table_finish, page); invisible(page)
+}
+
+#' Commit the page's buffered operations to its parent builder.
+#'
+#' Consumes the page handle; the handle must not be used afterward (later use
+#' raises "handle is closed").
+#' @param page A `pdfoxide_page_builder`.
+#' @export
+pdf_page_done <- function(page) {
+  if (!inherits(page, "pdfoxide_page_builder"))
+    stop("pdf_page_done: expected a pdfoxide_page_builder")
+  invisible(.Call(C_r_page_done, page))
+}
+
+#' Drop an uncommitted page handle without applying its operations (idempotent).
+#' @param page A `pdfoxide_page_builder`.
+#' @export
+pdf_page_close <- function(page) {
+  if (!inherits(page, "pdfoxide_page_builder"))
+    stop("pdf_page_close: expected a pdfoxide_page_builder")
+  invisible(.Call(C_r_page_close, page))
+}
+
+# ── PHASE-6: digital signatures / PKI / timestamps / TSA / DSS / validation ────
+# Five owned native handle families, each an external pointer freed by the GC
+# finalizer (or now via the explicit `*_close` helper): pdfoxide_certificate,
+# pdfoxide_signature, pdfoxide_timestamp, pdfoxide_tsa_client, pdfoxide_dss, plus
+# the validation result types pdfoxide_pdf_a_results / pdfoxide_ua_results /
+# pdfoxide_pdf_x_results. Epoch times are returned as numeric seconds; const
+# byte returns (timestamp token / message imprint) are copied into `raw`.
+
+# ── Logging ──
+
+#' Set the global library log level.
+#'
+#' Levels: `0` = Off, `1` = Error, `2` = Warn, `3` = Info, `4` = Debug,
+#' `5` = Trace.
+#' @param level Integer log level (0-5).
+#' @export
+pdf_set_log_level <- function(level) {
+  invisible(.Call(C_r_oxide_set_log_level, as.integer(level)))
+}
+
+#' Get the current library log level (0-5).
+#' @return An integer log level.
+#' @export
+pdf_get_log_level <- function() .Call(C_r_oxide_get_log_level)
+
+# ── Certificate ──
+
+#' Load signing credentials (certificate + private key) from PKCS#12 bytes.
+#' @param bytes A `raw` vector of PKCS#12 (.p12 / .pfx) data.
+#' @param password Passphrase protecting the PKCS#12, or `NULL`.
+#' @return A `pdfoxide_certificate` handle.
+#' @export
+pdf_certificate_load_from_bytes <- function(bytes, password = NULL) {
+  structure(.Call(C_r_certificate_load_from_bytes, bytes, password),
+            class = "pdfoxide_certificate")
+}
+
+#' Load signing credentials from PEM-encoded certificate + private-key strings.
+#' @param cert_pem PEM certificate string. @param key_pem PEM private-key string.
+#' @return A `pdfoxide_certificate` handle.
+#' @export
+pdf_certificate_load_from_pem <- function(cert_pem, key_pem) {
+  structure(.Call(C_r_certificate_load_from_pem, cert_pem, key_pem),
+            class = "pdfoxide_certificate")
+}
+
+#' Certificate subject / issuer distinguished name and serial number.
+#' @param cert A `pdfoxide_certificate`.
+#' @export
+pdf_certificate_subject <- function(cert) .Call(C_r_certificate_get_subject, cert)
+#' @rdname pdf_certificate_subject
+#' @export
+pdf_certificate_issuer <- function(cert) .Call(C_r_certificate_get_issuer, cert)
+#' @rdname pdf_certificate_subject
+#' @export
+pdf_certificate_serial <- function(cert) .Call(C_r_certificate_get_serial, cert)
+
+#' Certificate validity window as `list(not_before=, not_after=)` epoch seconds.
+#' @param cert A `pdfoxide_certificate`.
+#' @export
+pdf_certificate_validity <- function(cert) {
+  v <- .Call(C_r_certificate_get_validity, cert)
+  list(not_before = v[1], not_after = v[2])
+}
+
+#' Whether the certificate is currently within its validity window.
+#' @param cert A `pdfoxide_certificate`.
+#' @return A logical scalar.
+#' @export
+pdf_certificate_is_valid <- function(cert) .Call(C_r_certificate_is_valid, cert)
+
+#' Free a certificate handle now (idempotent).
+#' @param cert A `pdfoxide_certificate`.
+#' @export
+pdf_certificate_close <- function(cert) {
+  if (!inherits(cert, "pdfoxide_certificate"))
+    stop("pdf_certificate_close: expected a pdfoxide_certificate")
+  invisible(.Call(C_r_certificate_close, cert))
+}
+
+# ── Signing ──
+
+#' Sign raw PDF bytes with a certificate, returning the signed PDF.
+#' @param pdf A `raw` vector of PDF bytes.
+#' @param cert A `pdfoxide_certificate`.
+#' @param reason Signing reason, or `NULL`. @param location Location, or `NULL`.
+#' @return A `raw` vector of the signed PDF.
+#' @export
+pdf_sign_bytes <- function(pdf, cert, reason = NULL, location = NULL) {
+  if (!inherits(cert, "pdfoxide_certificate"))
+    stop("pdf_sign_bytes: expected a pdfoxide_certificate")
+  .Call(C_r_sign_bytes, pdf, cert, reason, location)
+}
+
+#' Sign raw PDF bytes at a PAdES baseline level.
+#'
+#' `level`: `0` = B-B, `1` = B-T, `2` = B-LT (`3` = B-LTA is unsupported).
+#' `tsa_url` is required for `level >= 1`. `certs`, `crls`, `ocsps` are lists of
+#' `raw` vectors (DER) carrying the B-LT revocation material.
+#' @param pdf A `raw` vector of PDF bytes. @param cert A `pdfoxide_certificate`.
+#' @param level PAdES baseline level (0-2). @param tsa_url RFC 3161 TSA URL.
+#' @param reason Signing reason. @param location Location.
+#' @param certs,crls,ocsps Lists of `raw` DER vectors (may be empty).
+#' @return A `raw` vector of the signed PDF.
+#' @export
+pdf_sign_bytes_pades <- function(pdf, cert, level = 0L, tsa_url = NULL,
+                                 reason = NULL, location = NULL,
+                                 certs = list(), crls = list(), ocsps = list()) {
+  if (!inherits(cert, "pdfoxide_certificate"))
+    stop("pdf_sign_bytes_pades: expected a pdfoxide_certificate")
+  .Call(C_r_sign_bytes_pades, pdf, cert, as.integer(level), tsa_url, reason,
+        location, as.list(certs), as.list(crls), as.list(ocsps))
+}
+
+#' Sign raw PDF bytes at a PAdES level via the struct-options entry point.
+#'
+#' Functionally identical to [pdf_sign_bytes_pades()]; uses the
+#' `PadesSignOptionsC` struct variant of the C ABI.
+#' @inheritParams pdf_sign_bytes_pades
+#' @return A `raw` vector of the signed PDF.
+#' @export
+pdf_sign_bytes_pades_opts <- function(pdf, cert, level = 0L, tsa_url = NULL,
+                                      reason = NULL, location = NULL,
+                                      certs = list(), crls = list(),
+                                      ocsps = list()) {
+  if (!inherits(cert, "pdfoxide_certificate"))
+    stop("pdf_sign_bytes_pades_opts: expected a pdfoxide_certificate")
+  .Call(C_r_sign_bytes_pades_opts, pdf, cert, as.integer(level), tsa_url, reason,
+        location, as.list(certs), as.list(crls), as.list(ocsps))
+}
+
+# ── SignatureInfo ──
+
+#' Number of signatures present in a document.
+#' @param doc A `pdfoxide_document`.
+#' @export
+pdf_signature_count <- function(doc) .Call(C_r_doc_signature_count, doc)
+
+#' Get the `index`-th signature (0-based) of a document.
+#' @param doc A `pdfoxide_document`. @param index 0-based signature index.
+#' @return A `pdfoxide_signature` handle.
+#' @export
+pdf_get_signature <- function(doc, index) {
+  structure(.Call(C_r_doc_get_signature, doc, as.integer(index)),
+            class = "pdfoxide_signature")
+}
+
+#' Signature signer name / signing reason / signing location.
+#' @param sig A `pdfoxide_signature`.
+#' @export
+pdf_signature_signer_name <- function(sig) {
+  .Call(C_r_signature_get_signer_name, sig)
+}
+#' @rdname pdf_signature_signer_name
+#' @export
+pdf_signature_signing_reason <- function(sig) {
+  .Call(C_r_signature_get_signing_reason, sig)
+}
+#' @rdname pdf_signature_signer_name
+#' @export
+pdf_signature_signing_location <- function(sig) {
+  .Call(C_r_signature_get_signing_location, sig)
+}
+
+#' Signing time as epoch seconds.
+#' @param sig A `pdfoxide_signature`.
+#' @export
+pdf_signature_signing_time <- function(sig) {
+  .Call(C_r_signature_get_signing_time, sig)
+}
+
+#' Get the signer certificate of a signature.
+#' @param sig A `pdfoxide_signature`.
+#' @return A `pdfoxide_certificate` handle.
+#' @export
+pdf_signature_certificate <- function(sig) {
+  structure(.Call(C_r_signature_get_certificate, sig),
+            class = "pdfoxide_certificate")
+}
+
+#' PAdES level of a signature (`0` = B-B, `1` = B-T, `2` = B-LT).
+#' @param sig A `pdfoxide_signature`.
+#' @export
+pdf_signature_pades_level <- function(sig) {
+  .Call(C_r_signature_get_pades_level, sig)
+}
+
+#' Whether a signature carries an embedded timestamp.
+#' @param sig A `pdfoxide_signature`.
+#' @return A logical scalar.
+#' @export
+pdf_signature_has_timestamp <- function(sig) {
+  .Call(C_r_signature_has_timestamp, sig)
+}
+
+#' Get the embedded timestamp of a signature.
+#' @param sig A `pdfoxide_signature`.
+#' @return A `pdfoxide_timestamp` handle.
+#' @export
+pdf_signature_timestamp <- function(sig) {
+  structure(.Call(C_r_signature_get_timestamp, sig),
+            class = "pdfoxide_timestamp")
+}
+
+#' Attach a timestamp to a signature.
+#' @param sig A `pdfoxide_signature`. @param timestamp A `pdfoxide_timestamp`.
+#' @return A logical scalar (TRUE on success).
+#' @export
+pdf_signature_add_timestamp <- function(sig, timestamp) {
+  if (!inherits(timestamp, "pdfoxide_timestamp"))
+    stop("pdf_signature_add_timestamp: expected a pdfoxide_timestamp")
+  .Call(C_r_signature_add_timestamp, sig, timestamp)
+}
+
+#' Verify a signature's signer-attributes crypto check.
+#'
+#' Returns `1` valid, `0` invalid, `-1` unknown / unsupported.
+#' @param sig A `pdfoxide_signature`.
+#' @export
+pdf_signature_verify <- function(sig) .Call(C_r_signature_verify, sig)
+
+#' Verify a signature end-to-end against the full PDF bytes.
+#'
+#' Returns `1` valid, `0` invalid, `-1` unknown / unsupported.
+#' @param sig A `pdfoxide_signature`. @param pdf A `raw` vector of the full PDF.
+#' @export
+pdf_signature_verify_detached <- function(sig, pdf) {
+  .Call(C_r_signature_verify_detached, sig, pdf)
+}
+
+#' Free a signature handle now (idempotent).
+#' @param sig A `pdfoxide_signature`.
+#' @export
+pdf_signature_close <- function(sig) {
+  if (!inherits(sig, "pdfoxide_signature"))
+    stop("pdf_signature_close: expected a pdfoxide_signature")
+  invisible(.Call(C_r_signature_close, sig))
+}
+
+# ── Timestamp ──
+
+#' Parse a DER-encoded RFC 3161 TimeStampToken into a timestamp handle.
+#' @param bytes A `raw` vector of DER TimeStampToken / TSTInfo.
+#' @return A `pdfoxide_timestamp` handle.
+#' @export
+pdf_timestamp_parse <- function(bytes) {
+  structure(.Call(C_r_timestamp_parse, bytes), class = "pdfoxide_timestamp")
+}
+
+#' Raw DER timestamp token / message imprint as a `raw` vector.
+#' @param timestamp A `pdfoxide_timestamp`.
+#' @export
+pdf_timestamp_token <- function(timestamp) {
+  .Call(C_r_timestamp_get_token, timestamp)
+}
+#' @rdname pdf_timestamp_token
+#' @export
+pdf_timestamp_message_imprint <- function(timestamp) {
+  .Call(C_r_timestamp_get_message_imprint, timestamp)
+}
+
+#' Timestamp time as epoch seconds.
+#' @param timestamp A `pdfoxide_timestamp`.
+#' @export
+pdf_timestamp_time <- function(timestamp) {
+  .Call(C_r_timestamp_get_time, timestamp)
+}
+
+#' Timestamp serial number / TSA name / policy OID strings.
+#' @param timestamp A `pdfoxide_timestamp`.
+#' @export
+pdf_timestamp_serial <- function(timestamp) {
+  .Call(C_r_timestamp_get_serial, timestamp)
+}
+#' @rdname pdf_timestamp_serial
+#' @export
+pdf_timestamp_tsa_name <- function(timestamp) {
+  .Call(C_r_timestamp_get_tsa_name, timestamp)
+}
+#' @rdname pdf_timestamp_serial
+#' @export
+pdf_timestamp_policy_oid <- function(timestamp) {
+  .Call(C_r_timestamp_get_policy_oid, timestamp)
+}
+
+#' Timestamp message-imprint hash algorithm code.
+#' @param timestamp A `pdfoxide_timestamp`.
+#' @export
+pdf_timestamp_hash_algorithm <- function(timestamp) {
+  .Call(C_r_timestamp_get_hash_algorithm, timestamp)
+}
+
+#' Verify a timestamp token.
+#' @param timestamp A `pdfoxide_timestamp`.
+#' @return A logical scalar.
+#' @export
+pdf_timestamp_verify <- function(timestamp) {
+  .Call(C_r_timestamp_verify, timestamp)
+}
+
+#' Free a timestamp handle now (idempotent).
+#' @param timestamp A `pdfoxide_timestamp`.
+#' @export
+pdf_timestamp_close <- function(timestamp) {
+  if (!inherits(timestamp, "pdfoxide_timestamp"))
+    stop("pdf_timestamp_close: expected a pdfoxide_timestamp")
+  invisible(.Call(C_r_timestamp_close, timestamp))
+}
+
+# ── TSA client ──
+
+#' Create an RFC 3161 Time-Stamping-Authority client.
+#' @param url TSA endpoint URL. @param username,password HTTP auth, or `NULL`.
+#' @param timeout Request timeout in seconds. @param hash_algo Hash algorithm code.
+#' @param use_nonce Include a nonce? @param cert_req Request the TSA certificate?
+#' @return A `pdfoxide_tsa_client` handle.
+#' @export
+pdf_tsa_client_create <- function(url, username = NULL, password = NULL,
+                                  timeout = 30L, hash_algo = 0L,
+                                  use_nonce = TRUE, cert_req = TRUE) {
+  structure(.Call(C_r_tsa_client_create, url, username, password,
+                  as.integer(timeout), as.integer(hash_algo),
+                  isTRUE(use_nonce), isTRUE(cert_req)),
+            class = "pdfoxide_tsa_client")
+}
+
+#' Request a timestamp over raw data bytes.
+#' @param client A `pdfoxide_tsa_client`. @param data A `raw` vector to stamp.
+#' @return A `pdfoxide_timestamp` handle.
+#' @export
+pdf_tsa_request_timestamp <- function(client, data) {
+  structure(.Call(C_r_tsa_request_timestamp, client, data),
+            class = "pdfoxide_timestamp")
+}
+
+#' Request a timestamp over a precomputed message-imprint hash.
+#' @param client A `pdfoxide_tsa_client`. @param hash A `raw` vector hash.
+#' @param hash_algo Hash algorithm code matching `hash`.
+#' @return A `pdfoxide_timestamp` handle.
+#' @export
+pdf_tsa_request_timestamp_hash <- function(client, hash, hash_algo = 0L) {
+  structure(.Call(C_r_tsa_request_timestamp_hash, client, hash,
+                  as.integer(hash_algo)),
+            class = "pdfoxide_timestamp")
+}
+
+#' Free a TSA-client handle now (idempotent).
+#' @param client A `pdfoxide_tsa_client`.
+#' @export
+pdf_tsa_client_close <- function(client) {
+  if (!inherits(client, "pdfoxide_tsa_client"))
+    stop("pdf_tsa_client_close: expected a pdfoxide_tsa_client")
+  invisible(.Call(C_r_tsa_client_close, client))
+}
+
+# ── DSS (Document Security Store) ──
+
+#' Read the document's `/DSS` into a handle.
+#'
+#' Returns `NULL` when the document has no DSS (not an error).
+#' @param doc A `pdfoxide_document`.
+#' @return A `pdfoxide_dss` handle, or `NULL`.
+#' @export
+pdf_get_dss <- function(doc) {
+  h <- .Call(C_r_doc_get_dss, doc)
+  if (is.null(h)) return(NULL)
+  structure(h, class = "pdfoxide_dss")
+}
+
+#' DSS certificate / CRL / OCSP / VRI entry counts.
+#' @param dss A `pdfoxide_dss`.
+#' @export
+pdf_dss_cert_count <- function(dss) .Call(C_r_dss_cert_count, dss)
+#' @rdname pdf_dss_cert_count
+#' @export
+pdf_dss_crl_count <- function(dss) .Call(C_r_dss_crl_count, dss)
+#' @rdname pdf_dss_cert_count
+#' @export
+pdf_dss_ocsp_count <- function(dss) .Call(C_r_dss_ocsp_count, dss)
+#' @rdname pdf_dss_cert_count
+#' @export
+pdf_dss_vri_count <- function(dss) .Call(C_r_dss_vri_count, dss)
+
+#' Get the `index`-th DSS certificate / CRL / OCSP entry (0-based) as `raw` DER.
+#' @param dss A `pdfoxide_dss`. @param index 0-based entry index.
+#' @export
+pdf_dss_get_cert <- function(dss, index) {
+  .Call(C_r_dss_get_cert, dss, as.integer(index))
+}
+#' @rdname pdf_dss_get_cert
+#' @export
+pdf_dss_get_crl <- function(dss, index) {
+  .Call(C_r_dss_get_crl, dss, as.integer(index))
+}
+#' @rdname pdf_dss_get_cert
+#' @export
+pdf_dss_get_ocsp <- function(dss, index) {
+  .Call(C_r_dss_get_ocsp, dss, as.integer(index))
+}
+
+#' Free a DSS handle now (idempotent).
+#' @param dss A `pdfoxide_dss`.
+#' @export
+pdf_dss_close <- function(dss) {
+  if (!inherits(dss, "pdfoxide_dss"))
+    stop("pdf_dss_close: expected a pdfoxide_dss")
+  invisible(.Call(C_r_dss_close, dss))
+}
+
+# ── Validation (PDF/A, PDF/UA, PDF/X) ──
+
+#' Validate a document against a PDF/A conformance level.
+#'
+#' `level`: 0=A1b 1=A1a 2=A2b 3=A2a 4=A2u 5=A3b 6=A3a 7=A3u.
+#' @param doc A `pdfoxide_document`. @param level PDF/A level.
+#' @return A `pdfoxide_pdf_a_results` handle.
+#' @export
+pdf_validate_pdf_a <- function(doc, level = 0L) {
+  structure(.Call(C_r_validate_pdf_a, doc, as.integer(level)),
+            class = "pdfoxide_pdf_a_results")
+}
+
+#' Whether the document is PDF/A compliant at the validated level.
+#' @param results A `pdfoxide_pdf_a_results`.
+#' @return A logical scalar.
+#' @export
+pdf_a_is_compliant <- function(results) .Call(C_r_pdf_a_is_compliant, results)
+
+#' PDF/A validation errors / warnings as a character vector.
+#' @param results A `pdfoxide_pdf_a_results`.
+#' @export
+pdf_a_errors <- function(results) {
+  n <- .Call(C_r_pdf_a_error_count, results)
+  if (n <= 0) return(character(0))
+  vapply(seq_len(n) - 1L, function(i) .Call(C_r_pdf_a_get_error, results, i),
+         character(1))
+}
+#' @rdname pdf_a_errors
+#' @export
+pdf_a_warning_count <- function(results) .Call(C_r_pdf_a_warning_count, results)
+
+#' Free a PDF/A results handle now (idempotent).
+#' @param results A `pdfoxide_pdf_a_results`.
+#' @export
+pdf_a_results_close <- function(results) {
+  if (!inherits(results, "pdfoxide_pdf_a_results"))
+    stop("pdf_a_results_close: expected a pdfoxide_pdf_a_results")
+  invisible(.Call(C_r_pdf_a_results_close, results))
+}
+
+#' Validate a document against a PDF/UA accessibility level.
+#' @param doc A `pdfoxide_document`. @param level PDF/UA level.
+#' @return A `pdfoxide_ua_results` handle.
+#' @export
+pdf_validate_pdf_ua <- function(doc, level = 0L) {
+  structure(.Call(C_r_validate_pdf_ua, doc, as.integer(level)),
+            class = "pdfoxide_ua_results")
+}
+
+#' Whether the document is PDF/UA accessible at the validated level.
+#' @param results A `pdfoxide_ua_results`.
+#' @return A logical scalar.
+#' @export
+pdf_ua_is_accessible <- function(results) {
+  .Call(C_r_pdf_ua_is_accessible, results)
+}
+
+#' PDF/UA validation errors / warnings as a character vector.
+#' @param results A `pdfoxide_ua_results`.
+#' @export
+pdf_ua_errors <- function(results) {
+  n <- .Call(C_r_pdf_ua_error_count, results)
+  if (n <= 0) return(character(0))
+  vapply(seq_len(n) - 1L, function(i) .Call(C_r_pdf_ua_get_error, results, i),
+         character(1))
+}
+#' @rdname pdf_ua_errors
+#' @export
+pdf_ua_warnings <- function(results) {
+  n <- .Call(C_r_pdf_ua_warning_count, results)
+  if (n <= 0) return(character(0))
+  vapply(seq_len(n) - 1L, function(i) .Call(C_r_pdf_ua_get_warning, results, i),
+         character(1))
+}
+
+#' PDF/UA structural statistics as a named list.
+#' @param results A `pdfoxide_ua_results`.
+#' @return `list(struct=, images=, tables=, forms=, annotations=, pages=)`.
+#' @export
+pdf_ua_stats <- function(results) {
+  s <- .Call(C_r_pdf_ua_get_stats, results)
+  list(struct = s[1], images = s[2], tables = s[3], forms = s[4],
+       annotations = s[5], pages = s[6])
+}
+
+#' Free a PDF/UA results handle now (idempotent).
+#' @param results A `pdfoxide_ua_results`.
+#' @export
+pdf_ua_results_close <- function(results) {
+  if (!inherits(results, "pdfoxide_ua_results"))
+    stop("pdf_ua_results_close: expected a pdfoxide_ua_results")
+  invisible(.Call(C_r_pdf_ua_results_close, results))
+}
+
+#' Validate a document against a PDF/X conformance level.
+#' @param doc A `pdfoxide_document`. @param level PDF/X level.
+#' @return A `pdfoxide_pdf_x_results` handle.
+#' @export
+pdf_validate_pdf_x <- function(doc, level = 0L) {
+  structure(.Call(C_r_validate_pdf_x, doc, as.integer(level)),
+            class = "pdfoxide_pdf_x_results")
+}
+
+#' Whether the document is PDF/X compliant at the validated level.
+#' @param results A `pdfoxide_pdf_x_results`.
+#' @return A logical scalar.
+#' @export
+pdf_x_is_compliant <- function(results) .Call(C_r_pdf_x_is_compliant, results)
+
+#' PDF/X validation errors as a character vector.
+#' @param results A `pdfoxide_pdf_x_results`.
+#' @export
+pdf_x_errors <- function(results) {
+  n <- .Call(C_r_pdf_x_error_count, results)
+  if (n <= 0) return(character(0))
+  vapply(seq_len(n) - 1L, function(i) .Call(C_r_pdf_x_get_error, results, i),
+         character(1))
+}
+
+#' Free a PDF/X results handle now (idempotent).
+#' @param results A `pdfoxide_pdf_x_results`.
+#' @export
+pdf_x_results_close <- function(results) {
+  if (!inherits(results, "pdfoxide_pdf_x_results"))
+    stop("pdf_x_results_close: expected a pdfoxide_pdf_x_results")
+  invisible(.Call(C_r_pdf_x_results_close, results))
+}

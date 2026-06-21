@@ -122,5 +122,151 @@ expect_true(length(edb) > 0)
 pdf_editor_close(ed); expect_true(TRUE)                 # pdf_editor_close (idempotent)
 pdf_editor_close(ed)                                    # second close is a no-op
 
+# ── PDF creation builder API ──────────────────────────────────────────────────
+# DocumentBuilder -> page -> font -> heading -> paragraph -> (free page) ->
+# build() -> reopen the bytes and assert the content round-trips.
+b <- pdf_builder_create()                               # pdf_builder_create
+pg_b <- pdf_builder_page(b, 595, 842)                   # pdf_builder_page (A4 pts)
+pdf_page_font(pg_b, "Helvetica", 12)                    # pdf_page_font
+pdf_page_heading(pg_b, 1L, "Title")                     # pdf_page_heading
+pdf_page_paragraph(pg_b, "Hello world from the builder.") # pdf_page_paragraph
+pdf_page_done(pg_b)                                     # pdf_page_done (consumes page)
+built <- pdf_builder_build(b)                           # pdf_builder_build
+expect_true(length(built) > 100)
+# Standard-font path only: no EmbeddedFont file required.
+bdoc <- pdf_open_from_bytes(built)                      # reopen built bytes
+expect_true(pdf_page_count(bdoc) >= 1)
+btxt <- pdf_extract_text(bdoc, 0)
+expect_true(grepl("Hello", btxt) || grepl("Title", btxt))
+pdf_close(bdoc)
+pdf_builder_close(b)                                    # pdf_builder_close (idempotent)
+pdf_builder_close(b)                                    # second close is a no-op
+
+# letterPage variant + page-close smoke (drop an uncommitted page handle):
+b2 <- pdf_builder_create()
+lpg <- pdf_builder_letter_page(b2)                      # pdf_builder_letter_page
+pdf_page_close(lpg); expect_true(TRUE)                  # pdf_page_close (idempotent)
+pdf_builder_close(b2)
+
+# EmbeddedFont registration: only exercised if real TTF/OTF bytes are available.
+# Synthetic bytes are not a valid font face, so we assert the entry points exist
+# and the standard-font build path (above) succeeds.
+expect_true(is.function(pdf_embedded_font_from_file))
+expect_true(is.function(pdf_embedded_font_from_bytes))
+expect_true(is.function(pdf_builder_register_embedded_font))
+
+# ── PHASE-6: log level (round-trip) ───────────────────────────────────────────
+old_lvl <- pdf_get_log_level()                         # pdf_get_log_level
+expect_true(is.numeric(old_lvl) || is.integer(old_lvl))
+pdf_set_log_level(3L)                                   # pdf_set_log_level
+expect_true(pdf_get_log_level() == 3L)
+pdf_set_log_level(2L)
+expect_true(pdf_get_log_level() == 2L)
+pdf_set_log_level(old_lvl)                              # restore
+
+# ── PHASE-6: validation (fully testable on the markdown sample) ────────────────
+vdoc <- pdf_open_from_bytes(sample_pdf())
+# PDF/A
+ares <- pdf_validate_pdf_a(vdoc, 0L)                    # pdf_validate_pdf_a
+expect_true(is.logical(pdf_a_is_compliant(ares)))      # pdf_a_is_compliant (bool)
+expect_true(is.character(pdf_a_errors(ares)))          # pdf_a_errors (list/vector)
+expect_true(pdf_a_warning_count(ares) >= 0)            # pdf_a_warning_count
+pdf_a_results_close(ares); pdf_a_results_close(ares)   # close (idempotent)
+# PDF/UA
+ures <- pdf_validate_pdf_ua(vdoc, 0L)                   # pdf_validate_pdf_ua
+expect_true(is.logical(pdf_ua_is_accessible(ures)))    # pdf_ua_is_accessible (bool)
+expect_true(is.character(pdf_ua_errors(ures)))         # pdf_ua_errors
+expect_true(is.character(pdf_ua_warnings(ures)))       # pdf_ua_warnings
+ust <- pdf_ua_stats(ures)                              # pdf_ua_stats
+expect_true(all(c("struct", "images", "tables", "forms", "annotations",
+                  "pages") %in% names(ust)))
+expect_true(ust$pages >= 0)
+pdf_ua_results_close(ures); pdf_ua_results_close(ures) # close (idempotent)
+# PDF/X
+xres <- pdf_validate_pdf_x(vdoc, 0L)                    # pdf_validate_pdf_x
+expect_true(is.logical(pdf_x_is_compliant(xres)))      # pdf_x_is_compliant (bool)
+expect_true(is.character(pdf_x_errors(xres)))          # pdf_x_errors
+pdf_x_results_close(xres); pdf_x_results_close(xres)   # close (idempotent)
+
+# ── PHASE-6: signature reading (sample has none → count 0) ─────────────────────
+expect_true(pdf_signature_count(vdoc) >= 0)            # pdf_signature_count
+# pdf_get_signature on an empty doc must either return a handle or raise:
+sig_try <- tryCatch(pdf_get_signature(vdoc, 0L),
+                    error = function(e) e)
+expect_true(inherits(sig_try, "pdfoxide_signature") ||
+            inherits(sig_try, "error"))
+# DSS: sample has none → NULL (not an error). Exercise the entry point.
+dss_try <- tryCatch(pdf_get_dss(vdoc), error = function(e) e)
+expect_true(is.null(dss_try) || inherits(dss_try, "pdfoxide_dss") ||
+            inherits(dss_try, "error"))
+if (inherits(dss_try, "pdfoxide_dss")) {
+  expect_true(pdf_dss_cert_count(dss_try) >= 0)        # pdf_dss_cert_count
+  expect_true(pdf_dss_crl_count(dss_try) >= 0)         # pdf_dss_crl_count
+  expect_true(pdf_dss_ocsp_count(dss_try) >= 0)        # pdf_dss_ocsp_count
+  expect_true(pdf_dss_vri_count(dss_try) >= 0)         # pdf_dss_vri_count
+  expect_true(inherits(tryCatch(pdf_dss_get_cert(dss_try, 0L),
+                                error = function(e) e),
+                       c("raw", "error")))             # pdf_dss_get_cert
+  expect_true(inherits(tryCatch(pdf_dss_get_crl(dss_try, 0L),
+                                error = function(e) e),
+                       c("raw", "error")))             # pdf_dss_get_crl
+  expect_true(inherits(tryCatch(pdf_dss_get_ocsp(dss_try, 0L),
+                                error = function(e) e),
+                       c("raw", "error")))             # pdf_dss_get_ocsp
+  pdf_dss_close(dss_try)                               # pdf_dss_close
+}
+pdf_close(vdoc)
+
+# ── PHASE-6: certificate / signing — exercise each wrapper without real PKI ────
+# Synthetic / empty inputs: each wrapper must either return or raise the binding
+# error type. We never require a real PKCS12 cert or network access.
+expect_error(pdf_certificate_load_from_bytes(as.raw(c(1, 2, 3)), "pw"))
+expect_error(pdf_certificate_load_from_pem("not-a-pem", "not-a-key"))
+# The accessor + signing entry points are at least present + callable:
+expect_true(is.function(pdf_certificate_subject))
+expect_true(is.function(pdf_certificate_issuer))
+expect_true(is.function(pdf_certificate_serial))
+expect_true(is.function(pdf_certificate_validity))
+expect_true(is.function(pdf_certificate_is_valid))
+expect_true(is.function(pdf_certificate_close))
+# Signing with a closed / NULL certificate handle must raise (closed-handle
+# guard), exercising the pdf_sign_bytes wrapper without real PKI.
+sample_bytes <- sample_pdf()
+expect_error(pdf_sign_bytes(sample_bytes,
+                            structure(NULL, class = "pdfoxide_certificate")))
+expect_true(is.function(pdf_sign_bytes_pades))
+expect_true(is.function(pdf_sign_bytes_pades_opts))
+
+# ── PHASE-6: timestamp — parse garbage must raise; accessors present ───────────
+expect_error(pdf_timestamp_parse(as.raw(c(0, 1, 2, 3))))
+expect_true(is.function(pdf_timestamp_token))
+expect_true(is.function(pdf_timestamp_message_imprint))
+expect_true(is.function(pdf_timestamp_time))
+expect_true(is.function(pdf_timestamp_serial))
+expect_true(is.function(pdf_timestamp_tsa_name))
+expect_true(is.function(pdf_timestamp_policy_oid))
+expect_true(is.function(pdf_timestamp_hash_algorithm))
+expect_true(is.function(pdf_timestamp_verify))
+expect_true(is.function(pdf_timestamp_close))
+expect_true(is.function(pdf_signature_add_timestamp))
+
+# ── PHASE-6: TSA client — create with an unreachable URL returns or raises ─────
+tsa_try <- tryCatch(
+  pdf_tsa_client_create("http://127.0.0.1:0/tsa", timeout = 1L),
+  error = function(e) e)
+expect_true(inherits(tsa_try, "pdfoxide_tsa_client") ||
+            inherits(tsa_try, "error"))
+if (inherits(tsa_try, "pdfoxide_tsa_client")) {
+  rq <- tryCatch(pdf_tsa_request_timestamp(tsa_try, as.raw(c(1, 2, 3))),
+                 error = function(e) e)
+  expect_true(inherits(rq, "pdfoxide_timestamp") || inherits(rq, "error"))
+  rqh <- tryCatch(pdf_tsa_request_timestamp_hash(tsa_try, as.raw(rep(0, 32)), 0L),
+                  error = function(e) e)
+  expect_true(inherits(rqh, "pdfoxide_timestamp") || inherits(rqh, "error"))
+  pdf_tsa_client_close(tsa_try)                        # pdf_tsa_client_close
+}
+expect_true(is.function(pdf_tsa_request_timestamp))
+expect_true(is.function(pdf_tsa_request_timestamp_hash))
+
 # ── Error path ────────────────────────────────────────────────────────────────
 expect_error(pdf_open("/nonexistent/nope.pdf"))

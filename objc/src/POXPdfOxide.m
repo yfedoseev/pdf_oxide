@@ -33,6 +33,33 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
 - (instancetype)initWithDocument:(POXDocument*)document index:(NSInteger)index;
 @end
 
+// Phase-6 private handle-taking initializers (used before the @implementation).
+// `POX_handle` exposes the raw native pointer to sibling Phase-6 types in this
+// translation unit (signing helpers, addTimestamp).
+@interface POXCertificate ()
+- (instancetype)initWithHandle:(void*)handle;
+- (void*)POX_handle;
+@end
+@interface POXTimestamp ()
+- (instancetype)initWithHandle:(void*)handle;
+- (void*)POX_handle;
+@end
+@interface POXSignatureInfo ()
+- (instancetype)initWithHandle:(FfiSignatureInfo*)handle;
+@end
+@interface POXDss ()
+- (instancetype)initWithHandle:(void*)handle;
+@end
+@interface POXPdfAResults ()
+- (instancetype)initWithHandle:(FfiPdfAResults*)handle;
+@end
+@interface POXUaResults ()
+- (instancetype)initWithHandle:(FfiUaResults*)handle;
+@end
+@interface POXPdfXResults ()
+- (instancetype)initWithHandle:(FfiPdfXResults*)handle;
+@end
+
 // ── Phase-1 element model types ──────────────────────────────────────────────
 
 @interface POXChar ()
@@ -785,6 +812,39 @@ static NSArray<POXSearchResult*>* POXTakeSearchResults(FfiSearchResults* list) {
     return [[POXRenderedImage alloc] initWithHandle:img];
 }
 
+- (POXPdfAResults*)validatePdfA:(int32_t)level error:(NSError**)error {
+    int32_t code = 0;
+    FfiPdfAResults* r = pdf_validate_pdf_a_level(_handle, level, &code);
+    if (!r) {
+        if (error)
+            *error = POXMakeError(code, @"validatePdfA");
+        return nil;
+    }
+    return [[POXPdfAResults alloc] initWithHandle:r];
+}
+
+- (POXUaResults*)validatePdfUa:(int32_t)level error:(NSError**)error {
+    int32_t code = 0;
+    FfiUaResults* r = pdf_validate_pdf_ua(_handle, level, &code);
+    if (!r) {
+        if (error)
+            *error = POXMakeError(code, @"validatePdfUa");
+        return nil;
+    }
+    return [[POXUaResults alloc] initWithHandle:r];
+}
+
+- (POXPdfXResults*)validatePdfX:(int32_t)level error:(NSError**)error {
+    int32_t code = 0;
+    FfiPdfXResults* r = pdf_validate_pdf_x_level(_handle, level, &code);
+    if (!r) {
+        if (error)
+            *error = POXMakeError(code, @"validatePdfX");
+        return nil;
+    }
+    return [[POXPdfXResults alloc] initWithHandle:r];
+}
+
 - (void)close {
     if (_handle) {
         pdf_document_free(_handle);
@@ -1452,6 +1512,1858 @@ static NSData* _Nullable POXTakeBytes(uint8_t* p, NSUInteger len, int32_t code,
     uint8_t* p = document_editor_save_encrypted_to_bytes(
         _handle, userPassword.UTF8String, ownerPassword.UTF8String, &len, &code);
     return POXTakeBytes(p, (NSUInteger)len, code, @"saveEncryptedToBytes", error);
+}
+
+@end
+
+// ── PDF creation builder API ─────────────────────────────────────────────────
+//
+// POXDocumentBuilder owns an FfiDocumentBuilder; -page:/-letterPage/-a4Page
+// produce a POXPageBuilder owning an FfiPageBuilder. POXEmbeddedFont owns an
+// EmbeddedFont, whose ownership transfers to the builder on a successful
+// register (the wrapper handle is then nulled). All int32 ops are status codes
+// (0 == ok); a non-zero return or non-zero error_code surfaces as NSError.
+
+// Private initializers used across builder types.
+@interface POXEmbeddedFont ()
+- (instancetype)initWithHandle:(EmbeddedFont*)handle;
+- (EmbeddedFont*)takeHandle; // releases ownership without freeing
+@end
+
+@interface POXPageBuilder ()
+- (instancetype)initWithHandle:(FfiPageBuilder*)handle;
+@end
+
+@implementation POXEmbeddedFont {
+    EmbeddedFont* _handle;
+}
+
++ (instancetype)fromPath:(NSString*)path error:(NSError**)error {
+    int32_t code = 0;
+    EmbeddedFont* h = pdf_embedded_font_from_file(path.UTF8String, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"embeddedFontFromFile");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
++ (instancetype)fromBytes:(NSData*)data name:(NSString*)name error:(NSError**)error {
+    int32_t code = 0;
+    EmbeddedFont* h = pdf_embedded_font_from_bytes(
+        data.bytes, data.length, name ? name.UTF8String : NULL, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"embeddedFontFromBytes");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
+- (instancetype)initWithHandle:(EmbeddedFont*)handle {
+    if ((self = [super init])) {
+        _handle = handle;
+    }
+    return self;
+}
+
+- (EmbeddedFont*)takeHandle {
+    EmbeddedFont* h = _handle;
+    _handle = NULL;
+    return h;
+}
+
+- (void)close {
+    if (_handle) {
+        pdf_embedded_font_free(_handle);
+        _handle = NULL;
+    }
+}
+
+- (void)dealloc {
+    if (_handle)
+        pdf_embedded_font_free(_handle);
+}
+
+@end
+
+@implementation POXPageBuilder {
+    FfiPageBuilder* _handle;
+}
+
+- (instancetype)initWithHandle:(FfiPageBuilder*)handle {
+    if ((self = [super init])) {
+        _handle = handle;
+    }
+    return self;
+}
+
+- (void)dealloc {
+    if (_handle)
+        pdf_page_builder_free(_handle);
+}
+
+// Guard against use after -done/-close. Returns NO and sets `error` if closed.
+- (BOOL)checkOpen:(NSString*)op error:(NSError**)error {
+    if (!_handle) {
+        if (error)
+            *error = POXMakeError(0, op);
+        return NO;
+    }
+    return YES;
+}
+
+// Wrap a status-code (0 == ok) FFI op result + error_code into BOOL + NSError.
+static BOOL POXPageStatus(int32_t rc, int32_t code, NSString* op, NSError** error) {
+    if (rc != 0 || code != 0) {
+        if (error)
+            *error = POXMakeError(code, op);
+        return NO;
+    }
+    return YES;
+}
+
+#define POX_PAGE_GUARD(op)                                                             \
+    if (![self checkOpen:(op) error:error])                                            \
+    return NO
+
+- (BOOL)font:(NSString*)name size:(float)size error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageFont");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_font(_handle, name.UTF8String, size, &code),
+                         code, @"pageFont", error);
+}
+
+- (BOOL)at:(float)x y:(float)y error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageAt");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_at(_handle, x, y, &code), code, @"pageAt",
+                         error);
+}
+
+- (BOOL)text:(NSString*)text error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageText");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_text(_handle, text.UTF8String, &code), code,
+                         @"pageText", error);
+}
+
+- (BOOL)heading:(uint8_t)level text:(NSString*)text error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageHeading");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_heading(_handle, level, text.UTF8String, &code), code,
+        @"pageHeading", error);
+}
+
+- (BOOL)paragraph:(NSString*)text error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageParagraph");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_paragraph(_handle, text.UTF8String, &code),
+                         code, @"pageParagraph", error);
+}
+
+- (BOOL)space:(float)points error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageSpace");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_space(_handle, points, &code), code,
+                         @"pageSpace", error);
+}
+
+- (BOOL)horizontalRule:(NSError**)error {
+    POX_PAGE_GUARD(@"pageHorizontalRule");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_horizontal_rule(_handle, &code), code,
+                         @"pageHorizontalRule", error);
+}
+
+- (BOOL)linkUrl:(NSString*)url error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageLinkUrl");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_link_url(_handle, url.UTF8String, &code),
+                         code, @"pageLinkUrl", error);
+}
+
+- (BOOL)linkPage:(NSInteger)page error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageLinkPage");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_link_page(_handle, (uintptr_t)page, &code),
+                         code, @"pageLinkPage", error);
+}
+
+- (BOOL)linkNamed:(NSString*)destination error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageLinkNamed");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_link_named(_handle, destination.UTF8String, &code), code,
+        @"pageLinkNamed", error);
+}
+
+- (BOOL)linkJavascript:(NSString*)script error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageLinkJavascript");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_link_javascript(_handle, script.UTF8String, &code), code,
+        @"pageLinkJavascript", error);
+}
+
+- (BOOL)onOpen:(NSString*)script error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageOnOpen");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_on_open(_handle, script.UTF8String, &code),
+                         code, @"pageOnOpen", error);
+}
+
+- (BOOL)onClose:(NSString*)script error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageOnClose");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_on_close(_handle, script.UTF8String, &code),
+                         code, @"pageOnClose", error);
+}
+
+- (BOOL)fieldKeystroke:(NSString*)script error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageFieldKeystroke");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_field_keystroke(_handle, script.UTF8String, &code), code,
+        @"pageFieldKeystroke", error);
+}
+
+- (BOOL)fieldFormat:(NSString*)script error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageFieldFormat");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_field_format(_handle, script.UTF8String, &code), code,
+        @"pageFieldFormat", error);
+}
+
+- (BOOL)fieldValidate:(NSString*)script error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageFieldValidate");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_field_validate(_handle, script.UTF8String, &code), code,
+        @"pageFieldValidate", error);
+}
+
+- (BOOL)fieldCalculate:(NSString*)script error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageFieldCalculate");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_field_calculate(_handle, script.UTF8String, &code), code,
+        @"pageFieldCalculate", error);
+}
+
+- (BOOL)highlightR:(float)r g:(float)g b:(float)b error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageHighlight");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_highlight(_handle, r, g, b, &code), code,
+                         @"pageHighlight", error);
+}
+
+- (BOOL)underlineR:(float)r g:(float)g b:(float)b error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageUnderline");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_underline(_handle, r, g, b, &code), code,
+                         @"pageUnderline", error);
+}
+
+- (BOOL)strikeoutR:(float)r g:(float)g b:(float)b error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageStrikeout");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_strikeout(_handle, r, g, b, &code), code,
+                         @"pageStrikeout", error);
+}
+
+- (BOOL)squigglyR:(float)r g:(float)g b:(float)b error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageSquiggly");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_squiggly(_handle, r, g, b, &code), code,
+                         @"pageSquiggly", error);
+}
+
+- (BOOL)stickyNote:(NSString*)text error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageStickyNote");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_sticky_note(_handle, text.UTF8String, &code),
+                         code, @"pageStickyNote", error);
+}
+
+- (BOOL)stickyNoteAt:(float)x y:(float)y text:(NSString*)text error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageStickyNoteAt");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_sticky_note_at(_handle, x, y, text.UTF8String, &code), code,
+        @"pageStickyNoteAt", error);
+}
+
+- (BOOL)watermark:(NSString*)text error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageWatermark");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_watermark(_handle, text.UTF8String, &code),
+                         code, @"pageWatermark", error);
+}
+
+- (BOOL)watermarkConfidential:(NSError**)error {
+    POX_PAGE_GUARD(@"pageWatermarkConfidential");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_watermark_confidential(_handle, &code), code,
+                         @"pageWatermarkConfidential", error);
+}
+
+- (BOOL)watermarkDraft:(NSError**)error {
+    POX_PAGE_GUARD(@"pageWatermarkDraft");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_watermark_draft(_handle, &code), code,
+                         @"pageWatermarkDraft", error);
+}
+
+- (BOOL)stamp:(NSString*)typeName error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageStamp");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_stamp(_handle, typeName.UTF8String, &code),
+                         code, @"pageStamp", error);
+}
+
+- (BOOL)freetextAtX:(float)x
+                  y:(float)y
+                  w:(float)w
+                  h:(float)h
+               text:(NSString*)text
+              error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageFreetext");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_freetext(_handle, x, y, w, h, text.UTF8String, &code), code,
+        @"pageFreetext", error);
+}
+
+- (BOOL)textFieldName:(NSString*)name
+                    x:(float)x
+                    y:(float)y
+                    w:(float)w
+                    h:(float)h
+         defaultValue:(NSString*)defaultValue
+                error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageTextField");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_text_field(
+                             _handle, name.UTF8String, x, y, w, h,
+                             defaultValue ? defaultValue.UTF8String : NULL, &code),
+                         code, @"pageTextField", error);
+}
+
+- (BOOL)checkboxName:(NSString*)name
+                   x:(float)x
+                   y:(float)y
+                   w:(float)w
+                   h:(float)h
+             checked:(BOOL)checked
+               error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageCheckbox");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_checkbox(_handle, name.UTF8String, x, y, w, h,
+                                                   checked ? 1 : 0, &code),
+                         code, @"pageCheckbox", error);
+}
+
+- (BOOL)comboBoxName:(NSString*)name
+                   x:(float)x
+                   y:(float)y
+                   w:(float)w
+                   h:(float)h
+             options:(NSArray<NSString*>*)options
+            selected:(NSString*)selected
+               error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageComboBox");
+    NSUInteger count = options.count;
+    const char** opts = count ? (const char**)malloc(sizeof(char*) * count) : NULL;
+    for (NSUInteger i = 0; i < count; ++i)
+        opts[i] = options[i].UTF8String;
+    int32_t code = 0;
+    int32_t rc = pdf_page_builder_combo_box(
+        _handle, name.UTF8String, x, y, w, h, opts, (uintptr_t)count,
+        selected ? selected.UTF8String : NULL, &code);
+    if (opts)
+        free(opts);
+    return POXPageStatus(rc, code, @"pageComboBox", error);
+}
+
+- (BOOL)radioGroupName:(NSString*)name
+                values:(NSArray<NSString*>*)values
+                    xs:(NSArray<NSNumber*>*)xs
+                    ys:(NSArray<NSNumber*>*)ys
+                    ws:(NSArray<NSNumber*>*)ws
+                    hs:(NSArray<NSNumber*>*)hs
+              selected:(NSString*)selected
+                 error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageRadioGroup");
+    NSUInteger count = values.count;
+    const char** vals = count ? (const char**)malloc(sizeof(char*) * count) : NULL;
+    float* fxs = count ? (float*)malloc(sizeof(float) * count) : NULL;
+    float* fys = count ? (float*)malloc(sizeof(float) * count) : NULL;
+    float* fws = count ? (float*)malloc(sizeof(float) * count) : NULL;
+    float* fhs = count ? (float*)malloc(sizeof(float) * count) : NULL;
+    for (NSUInteger i = 0; i < count; ++i) {
+        vals[i] = values[i].UTF8String;
+        fxs[i] = i < xs.count ? xs[i].floatValue : 0.0f;
+        fys[i] = i < ys.count ? ys[i].floatValue : 0.0f;
+        fws[i] = i < ws.count ? ws[i].floatValue : 0.0f;
+        fhs[i] = i < hs.count ? hs[i].floatValue : 0.0f;
+    }
+    int32_t code = 0;
+    int32_t rc = pdf_page_builder_radio_group(
+        _handle, name.UTF8String, vals, fxs, fys, fws, fhs, (uintptr_t)count,
+        selected ? selected.UTF8String : NULL, &code);
+    if (vals)
+        free(vals);
+    if (fxs)
+        free(fxs);
+    if (fys)
+        free(fys);
+    if (fws)
+        free(fws);
+    if (fhs)
+        free(fhs);
+    return POXPageStatus(rc, code, @"pageRadioGroup", error);
+}
+
+- (BOOL)pushButtonName:(NSString*)name
+                     x:(float)x
+                     y:(float)y
+                     w:(float)w
+                     h:(float)h
+               caption:(NSString*)caption
+                 error:(NSError**)error {
+    POX_PAGE_GUARD(@"pagePushButton");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_push_button(_handle, name.UTF8String, x, y, w,
+                                                      h, caption.UTF8String, &code),
+                         code, @"pagePushButton", error);
+}
+
+- (BOOL)signatureFieldName:(NSString*)name
+                         x:(float)x
+                         y:(float)y
+                         w:(float)w
+                         h:(float)h
+                     error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageSignatureField");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_signature_field(_handle, name.UTF8String, x, y, w, h, &code),
+        code, @"pageSignatureField", error);
+}
+
+- (BOOL)footnoteRefMark:(NSString*)refMark
+               noteText:(NSString*)noteText
+                  error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageFootnote");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_footnote(_handle, refMark.UTF8String,
+                                                   noteText.UTF8String, &code),
+                         code, @"pageFootnote", error);
+}
+
+- (BOOL)columnsCount:(uint32_t)columnCount
+               gapPt:(float)gapPt
+                text:(NSString*)text
+               error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageColumns");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_columns(_handle, columnCount, gapPt, text.UTF8String, &code),
+        code, @"pageColumns", error);
+}
+
+- (BOOL)inlineText:(NSString*)text error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageInline");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_inline(_handle, text.UTF8String, &code), code,
+                         @"pageInline", error);
+}
+
+- (BOOL)inlineBold:(NSString*)text error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageInlineBold");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_inline_bold(_handle, text.UTF8String, &code),
+                         code, @"pageInlineBold", error);
+}
+
+- (BOOL)inlineItalic:(NSString*)text error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageInlineItalic");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_inline_italic(_handle, text.UTF8String, &code), code,
+        @"pageInlineItalic", error);
+}
+
+- (BOOL)inlineColorR:(float)r
+                   g:(float)g
+                   b:(float)b
+                text:(NSString*)text
+               error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageInlineColor");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_inline_color(_handle, r, g, b, text.UTF8String, &code), code,
+        @"pageInlineColor", error);
+}
+
+- (BOOL)newline:(NSError**)error {
+    POX_PAGE_GUARD(@"pageNewline");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_newline(_handle, &code), code, @"pageNewline",
+                         error);
+}
+
+- (BOOL)barcode1d:(int32_t)barcodeType
+             data:(NSString*)data
+                x:(float)x
+                y:(float)y
+                w:(float)w
+                h:(float)h
+            error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageBarcode1d");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_barcode_1d(
+                             _handle, barcodeType, data.UTF8String, x, y, w, h, &code),
+                         code, @"pageBarcode1d", error);
+}
+
+- (BOOL)barcodeQrData:(NSString*)data
+                    x:(float)x
+                    y:(float)y
+                 size:(float)size
+                error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageBarcodeQr");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_barcode_qr(_handle, data.UTF8String, x, y, size, &code), code,
+        @"pageBarcodeQr", error);
+}
+
+- (BOOL)image:(NSData*)bytes
+            x:(float)x
+            y:(float)y
+            w:(float)w
+            h:(float)h
+        error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageImage");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_image(_handle, bytes.bytes, bytes.length, x, y, w, h, &code),
+        code, @"pageImage", error);
+}
+
+- (BOOL)imageWithAlt:(NSData*)bytes
+                   x:(float)x
+                   y:(float)y
+                   w:(float)w
+                   h:(float)h
+             altText:(NSString*)altText
+               error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageImageWithAlt");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_image_with_alt(_handle, bytes.bytes,
+                                                         bytes.length, x, y, w, h,
+                                                         altText.UTF8String, &code),
+                         code, @"pageImageWithAlt", error);
+}
+
+- (BOOL)imageArtifact:(NSData*)bytes
+                    x:(float)x
+                    y:(float)y
+                    w:(float)w
+                    h:(float)h
+                error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageImageArtifact");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_image_artifact(
+                             _handle, bytes.bytes, bytes.length, x, y, w, h, &code),
+                         code, @"pageImageArtifact", error);
+}
+
+- (BOOL)rectX:(float)x y:(float)y w:(float)w h:(float)h error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageRect");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_rect(_handle, x, y, w, h, &code), code,
+                         @"pageRect", error);
+}
+
+- (BOOL)filledRectX:(float)x
+                  y:(float)y
+                  w:(float)w
+                  h:(float)h
+                  r:(float)r
+                  g:(float)g
+                  b:(float)b
+              error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageFilledRect");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_filled_rect(_handle, x, y, w, h, r, g, b, &code), code,
+        @"pageFilledRect", error);
+}
+
+- (BOOL)lineX1:(float)x1 y1:(float)y1 x2:(float)x2 y2:(float)y2 error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageLine");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_line(_handle, x1, y1, x2, y2, &code), code,
+                         @"pageLine", error);
+}
+
+- (BOOL)strokeRectX:(float)x
+                  y:(float)y
+                  w:(float)w
+                  h:(float)h
+              width:(float)width
+                  r:(float)r
+                  g:(float)g
+                  b:(float)b
+              error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageStrokeRect");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_stroke_rect(_handle, x, y, w, h, width, r, g, b, &code), code,
+        @"pageStrokeRect", error);
+}
+
+- (BOOL)strokeLineX1:(float)x1
+                  y1:(float)y1
+                  x2:(float)x2
+                  y2:(float)y2
+               width:(float)width
+                   r:(float)r
+                   g:(float)g
+                   b:(float)b
+               error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageStrokeLine");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_stroke_line(_handle, x1, y1, x2, y2, width, r, g, b, &code),
+        code, @"pageStrokeLine", error);
+}
+
+// Marshal an NSArray<NSNumber*> dash pattern into a heap float array.
+static float* POXFloatArray(NSArray<NSNumber*>* nums, NSUInteger* outCount) {
+    NSUInteger n = nums.count;
+    *outCount = n;
+    if (n == 0)
+        return NULL;
+    float* a = (float*)malloc(sizeof(float) * n);
+    for (NSUInteger i = 0; i < n; ++i)
+        a[i] = nums[i].floatValue;
+    return a;
+}
+
+- (BOOL)strokeRectDashedX:(float)x
+                        y:(float)y
+                        w:(float)w
+                        h:(float)h
+                    width:(float)width
+                        r:(float)r
+                        g:(float)g
+                        b:(float)b
+                dashArray:(NSArray<NSNumber*>*)dashArray
+                    phase:(float)phase
+                    error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageStrokeRectDashed");
+    NSUInteger n = 0;
+    float* dash = POXFloatArray(dashArray, &n);
+    int32_t code = 0;
+    int32_t rc = pdf_page_builder_stroke_rect_dashed(
+        _handle, x, y, w, h, width, r, g, b, dash, (uintptr_t)n, phase, &code);
+    if (dash)
+        free(dash);
+    return POXPageStatus(rc, code, @"pageStrokeRectDashed", error);
+}
+
+- (BOOL)strokeLineDashedX1:(float)x1
+                        y1:(float)y1
+                        x2:(float)x2
+                        y2:(float)y2
+                     width:(float)width
+                         r:(float)r
+                         g:(float)g
+                         b:(float)b
+                 dashArray:(NSArray<NSNumber*>*)dashArray
+                     phase:(float)phase
+                     error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageStrokeLineDashed");
+    NSUInteger n = 0;
+    float* dash = POXFloatArray(dashArray, &n);
+    int32_t code = 0;
+    int32_t rc = pdf_page_builder_stroke_line_dashed(
+        _handle, x1, y1, x2, y2, width, r, g, b, dash, (uintptr_t)n, phase, &code);
+    if (dash)
+        free(dash);
+    return POXPageStatus(rc, code, @"pageStrokeLineDashed", error);
+}
+
+- (BOOL)textInRectX:(float)x
+                  y:(float)y
+                  w:(float)w
+                  h:(float)h
+               text:(NSString*)text
+              align:(int32_t)align
+              error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageTextInRect");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_text_in_rect(_handle, x, y, w, h,
+                                                       text.UTF8String, align, &code),
+                         code, @"pageTextInRect", error);
+}
+
+- (BOOL)newPageSameSize:(NSError**)error {
+    POX_PAGE_GUARD(@"pageNewPageSameSize");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_new_page_same_size(_handle, &code), code,
+                         @"pageNewPageSameSize", error);
+}
+
+- (BOOL)tableColumns:(NSArray<NSNumber*>*)widths
+              aligns:(NSArray<NSNumber*>*)aligns
+                rows:(NSArray<NSArray<NSString*>*>*)rows
+           hasHeader:(BOOL)hasHeader
+               error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageTable");
+    NSUInteger nCols = widths.count;
+    NSUInteger nRows = rows.count;
+    NSUInteger nCells = nCols * nRows;
+    float* fwidths = nCols ? (float*)malloc(sizeof(float) * nCols) : NULL;
+    int32_t* ialigns = nCols ? (int32_t*)malloc(sizeof(int32_t) * nCols) : NULL;
+    for (NSUInteger c = 0; c < nCols; ++c) {
+        fwidths[c] = widths[c].floatValue;
+        ialigns[c] = c < aligns.count ? (int32_t)aligns[c].integerValue : 0;
+    }
+    const char** cells = nCells ? (const char**)malloc(sizeof(char*) * nCells) : NULL;
+    for (NSUInteger rIdx = 0; rIdx < nRows; ++rIdx) {
+        NSArray<NSString*>* row = rows[rIdx];
+        for (NSUInteger c = 0; c < nCols; ++c)
+            cells[rIdx * nCols + c] = c < row.count ? row[c].UTF8String : "";
+    }
+    int32_t code = 0;
+    int32_t rc =
+        pdf_page_builder_table(_handle, (uintptr_t)nCols, fwidths, ialigns,
+                               (uintptr_t)nRows, cells, hasHeader ? 1 : 0, &code);
+    if (fwidths)
+        free(fwidths);
+    if (ialigns)
+        free(ialigns);
+    if (cells)
+        free(cells);
+    return POXPageStatus(rc, code, @"pageTable", error);
+}
+
+- (BOOL)streamingTableBeginHeaders:(NSArray<NSString*>*)headers
+                            widths:(NSArray<NSNumber*>*)widths
+                            aligns:(NSArray<NSNumber*>*)aligns
+                      repeatHeader:(BOOL)repeatHeader
+                             error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageStreamingTableBegin");
+    NSUInteger n = headers.count;
+    const char** hdrs = n ? (const char**)malloc(sizeof(char*) * n) : NULL;
+    float* fwidths = n ? (float*)malloc(sizeof(float) * n) : NULL;
+    int32_t* ialigns = n ? (int32_t*)malloc(sizeof(int32_t) * n) : NULL;
+    for (NSUInteger i = 0; i < n; ++i) {
+        hdrs[i] = headers[i].UTF8String;
+        fwidths[i] = i < widths.count ? widths[i].floatValue : 0.0f;
+        ialigns[i] = i < aligns.count ? (int32_t)aligns[i].integerValue : 0;
+    }
+    int32_t code = 0;
+    int32_t rc = pdf_page_builder_streaming_table_begin(
+        _handle, (uintptr_t)n, hdrs, fwidths, ialigns, repeatHeader ? 1 : 0, &code);
+    if (hdrs)
+        free(hdrs);
+    if (fwidths)
+        free(fwidths);
+    if (ialigns)
+        free(ialigns);
+    return POXPageStatus(rc, code, @"pageStreamingTableBegin", error);
+}
+
+- (BOOL)streamingTableBeginV2Headers:(NSArray<NSString*>*)headers
+                              widths:(NSArray<NSNumber*>*)widths
+                              aligns:(NSArray<NSNumber*>*)aligns
+                        repeatHeader:(BOOL)repeatHeader
+                                mode:(int32_t)mode
+                          sampleRows:(NSInteger)sampleRows
+                       minColWidthPt:(float)minColWidthPt
+                       maxColWidthPt:(float)maxColWidthPt
+                          maxRowspan:(NSInteger)maxRowspan
+                               error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageStreamingTableBeginV2");
+    NSUInteger n = headers.count;
+    const char** hdrs = n ? (const char**)malloc(sizeof(char*) * n) : NULL;
+    float* fwidths = n ? (float*)malloc(sizeof(float) * n) : NULL;
+    int32_t* ialigns = n ? (int32_t*)malloc(sizeof(int32_t) * n) : NULL;
+    for (NSUInteger i = 0; i < n; ++i) {
+        hdrs[i] = headers[i].UTF8String;
+        fwidths[i] = i < widths.count ? widths[i].floatValue : 0.0f;
+        ialigns[i] = i < aligns.count ? (int32_t)aligns[i].integerValue : 0;
+    }
+    int32_t code = 0;
+    int32_t rc = pdf_page_builder_streaming_table_begin_v2(
+        _handle, (uintptr_t)n, hdrs, fwidths, ialigns, repeatHeader ? 1 : 0, mode,
+        (uintptr_t)sampleRows, minColWidthPt, maxColWidthPt, (uintptr_t)maxRowspan,
+        &code);
+    if (hdrs)
+        free(hdrs);
+    if (fwidths)
+        free(fwidths);
+    if (ialigns)
+        free(ialigns);
+    return POXPageStatus(rc, code, @"pageStreamingTableBeginV2", error);
+}
+
+- (BOOL)streamingTableSetBatchSize:(NSInteger)batchSize error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageStreamingTableSetBatchSize");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_streaming_table_set_batch_size(
+                             _handle, (uintptr_t)batchSize, &code),
+                         code, @"pageStreamingTableSetBatchSize", error);
+}
+
+- (NSInteger)streamingTablePendingRowCount {
+    if (!_handle)
+        return 0;
+    return (NSInteger)pdf_page_builder_streaming_table_pending_row_count(_handle);
+}
+
+- (NSInteger)streamingTableBatchCount {
+    if (!_handle)
+        return 0;
+    return (NSInteger)pdf_page_builder_streaming_table_batch_count(_handle);
+}
+
+- (BOOL)streamingTableFlush:(NSError**)error {
+    POX_PAGE_GUARD(@"pageStreamingTableFlush");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_streaming_table_flush(_handle, &code), code,
+                         @"pageStreamingTableFlush", error);
+}
+
+- (BOOL)streamingTablePushRow:(NSArray<NSString*>*)cells error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageStreamingTablePushRow");
+    NSUInteger n = cells.count;
+    const char** c = n ? (const char**)malloc(sizeof(char*) * n) : NULL;
+    for (NSUInteger i = 0; i < n; ++i)
+        c[i] = cells[i].UTF8String;
+    int32_t code = 0;
+    int32_t rc =
+        pdf_page_builder_streaming_table_push_row(_handle, (uintptr_t)n, c, &code);
+    if (c)
+        free(c);
+    return POXPageStatus(rc, code, @"pageStreamingTablePushRow", error);
+}
+
+- (BOOL)streamingTablePushRowV2:(NSArray<NSString*>*)cells
+                       rowspans:(NSArray<NSNumber*>*)rowspans
+                          error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageStreamingTablePushRowV2");
+    NSUInteger n = cells.count;
+    const char** c = n ? (const char**)malloc(sizeof(char*) * n) : NULL;
+    for (NSUInteger i = 0; i < n; ++i)
+        c[i] = cells[i].UTF8String;
+    uintptr_t* spans =
+        (rowspans && n) ? (uintptr_t*)malloc(sizeof(uintptr_t) * n) : NULL;
+    if (spans)
+        for (NSUInteger i = 0; i < n; ++i)
+            spans[i] = i < rowspans.count ? (uintptr_t)rowspans[i].integerValue : 1;
+    int32_t code = 0;
+    int32_t rc = pdf_page_builder_streaming_table_push_row_v2(_handle, (uintptr_t)n, c,
+                                                              spans, &code);
+    if (c)
+        free(c);
+    if (spans)
+        free(spans);
+    return POXPageStatus(rc, code, @"pageStreamingTablePushRowV2", error);
+}
+
+- (BOOL)streamingTableFinish:(NSError**)error {
+    POX_PAGE_GUARD(@"pageStreamingTableFinish");
+    int32_t code = 0;
+    return POXPageStatus(pdf_page_builder_streaming_table_finish(_handle, &code), code,
+                         @"pageStreamingTableFinish", error);
+}
+
+- (BOOL)done:(NSError**)error {
+    POX_PAGE_GUARD(@"pageDone");
+    int32_t code = 0;
+    int32_t rc = pdf_page_builder_done(_handle, &code);
+    // _done consumes the native handle on success; never call _free afterward.
+    _handle = NULL;
+    return POXPageStatus(rc, code, @"pageDone", error);
+}
+
+- (void)close {
+    if (_handle) {
+        pdf_page_builder_free(_handle);
+        _handle = NULL;
+    }
+}
+
+@end
+
+@implementation POXDocumentBuilder {
+    FfiDocumentBuilder* _handle;
+}
+
++ (instancetype)createWithError:(NSError**)error {
+    int32_t code = 0;
+    FfiDocumentBuilder* h = pdf_document_builder_create(&code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"documentBuilderCreate");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
+- (instancetype)initWithHandle:(FfiDocumentBuilder*)handle {
+    if ((self = [super init])) {
+        _handle = handle;
+    }
+    return self;
+}
+
+- (void)dealloc {
+    if (_handle)
+        pdf_document_builder_free(_handle);
+}
+
+- (BOOL)checkOpen:(NSString*)op error:(NSError**)error {
+    if (!_handle) {
+        if (error)
+            *error = POXMakeError(0, op);
+        return NO;
+    }
+    return YES;
+}
+
+#define POX_DOC_GUARD(op)                                                              \
+    if (![self checkOpen:(op) error:error])                                            \
+    return NO
+
+- (BOOL)setTitle:(NSString*)title error:(NSError**)error {
+    POX_DOC_GUARD(@"setTitle");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_document_builder_set_title(_handle, title.UTF8String, &code), code,
+        @"setTitle", error);
+}
+
+- (BOOL)setAuthor:(NSString*)author error:(NSError**)error {
+    POX_DOC_GUARD(@"setAuthor");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_document_builder_set_author(_handle, author.UTF8String, &code), code,
+        @"setAuthor", error);
+}
+
+- (BOOL)setSubject:(NSString*)subject error:(NSError**)error {
+    POX_DOC_GUARD(@"setSubject");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_document_builder_set_subject(_handle, subject.UTF8String, &code), code,
+        @"setSubject", error);
+}
+
+- (BOOL)setKeywords:(NSString*)keywords error:(NSError**)error {
+    POX_DOC_GUARD(@"setKeywords");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_document_builder_set_keywords(_handle, keywords.UTF8String, &code), code,
+        @"setKeywords", error);
+}
+
+- (BOOL)setCreator:(NSString*)creator error:(NSError**)error {
+    POX_DOC_GUARD(@"setCreator");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_document_builder_set_creator(_handle, creator.UTF8String, &code), code,
+        @"setCreator", error);
+}
+
+- (BOOL)onOpen:(NSString*)script error:(NSError**)error {
+    POX_DOC_GUARD(@"documentOnOpen");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_document_builder_on_open(_handle, script.UTF8String, &code), code,
+        @"documentOnOpen", error);
+}
+
+- (BOOL)taggedPdfUa1:(NSError**)error {
+    POX_DOC_GUARD(@"taggedPdfUa1");
+    int32_t code = 0;
+    return POXPageStatus(pdf_document_builder_tagged_pdf_ua1(_handle, &code), code,
+                         @"taggedPdfUa1", error);
+}
+
+- (BOOL)language:(NSString*)lang error:(NSError**)error {
+    POX_DOC_GUARD(@"language");
+    int32_t code = 0;
+    return POXPageStatus(pdf_document_builder_language(_handle, lang.UTF8String, &code),
+                         code, @"language", error);
+}
+
+- (BOOL)roleMapCustom:(NSString*)custom
+             standard:(NSString*)standard
+                error:(NSError**)error {
+    POX_DOC_GUARD(@"roleMap");
+    int32_t code = 0;
+    return POXPageStatus(pdf_document_builder_role_map(_handle, custom.UTF8String,
+                                                       standard.UTF8String, &code),
+                         code, @"roleMap", error);
+}
+
+- (BOOL)registerEmbeddedFont:(NSString*)name
+                        font:(POXEmbeddedFont*)font
+                       error:(NSError**)error {
+    POX_DOC_GUARD(@"registerEmbeddedFont");
+    int32_t code = 0;
+    // Pass the native handle WITHOUT consuming it first — on error it must
+    // remain valid (and owned by the POXEmbeddedFont wrapper).
+    EmbeddedFont* fh = [font takeHandle];
+    int32_t rc = pdf_document_builder_register_embedded_font(_handle, name.UTF8String,
+                                                             fh, &code);
+    if (rc != 0 || code != 0) {
+        // Not consumed: hand ownership back to the wrapper so it can free it.
+        if (fh) {
+            POXEmbeddedFont* re = [[POXEmbeddedFont alloc] initWithHandle:fh];
+            (void)re; // re's dealloc will free fh
+        }
+        if (error)
+            *error = POXMakeError(code, @"registerEmbeddedFont");
+        return NO;
+    }
+    // Success: the builder owns fh; the wrapper was already nulled by takeHandle.
+    return YES;
+}
+
+- (POXPageBuilder*)a4PageWithError:(NSError**)error {
+    if (![self checkOpen:@"a4Page" error:error])
+        return nil;
+    int32_t code = 0;
+    FfiPageBuilder* h = pdf_document_builder_a4_page(_handle, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"a4Page");
+        return nil;
+    }
+    return [[POXPageBuilder alloc] initWithHandle:h];
+}
+
+- (POXPageBuilder*)letterPageWithError:(NSError**)error {
+    if (![self checkOpen:@"letterPage" error:error])
+        return nil;
+    int32_t code = 0;
+    FfiPageBuilder* h = pdf_document_builder_letter_page(_handle, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"letterPage");
+        return nil;
+    }
+    return [[POXPageBuilder alloc] initWithHandle:h];
+}
+
+- (POXPageBuilder*)pageWithWidth:(float)width
+                          height:(float)height
+                           error:(NSError**)error {
+    if (![self checkOpen:@"page" error:error])
+        return nil;
+    int32_t code = 0;
+    FfiPageBuilder* h = pdf_document_builder_page(_handle, width, height, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"page");
+        return nil;
+    }
+    return [[POXPageBuilder alloc] initWithHandle:h];
+}
+
+- (NSData*)buildWithError:(NSError**)error {
+    if (!_handle) {
+        if (error)
+            *error = POXMakeError(0, @"build");
+        return nil;
+    }
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p = pdf_document_builder_build(_handle, &len, &code);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"build", error);
+}
+
+- (BOOL)saveToPath:(NSString*)path error:(NSError**)error {
+    POX_DOC_GUARD(@"builderSave");
+    int32_t code = 0;
+    return POXPageStatus(pdf_document_builder_save(_handle, path.UTF8String, &code),
+                         code, @"builderSave", error);
+}
+
+- (BOOL)saveEncryptedToPath:(NSString*)path
+               userPassword:(NSString*)userPassword
+              ownerPassword:(NSString*)ownerPassword
+                      error:(NSError**)error {
+    POX_DOC_GUARD(@"builderSaveEncrypted");
+    int32_t code = 0;
+    return POXPageStatus(pdf_document_builder_save_encrypted(
+                             _handle, path.UTF8String, userPassword.UTF8String,
+                             ownerPassword.UTF8String, &code),
+                         code, @"builderSaveEncrypted", error);
+}
+
+- (NSData*)toBytesEncryptedWithUserPassword:(NSString*)userPassword
+                              ownerPassword:(NSString*)ownerPassword
+                                      error:(NSError**)error {
+    if (!_handle) {
+        if (error)
+            *error = POXMakeError(0, @"builderToBytesEncrypted");
+        return nil;
+    }
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p = pdf_document_builder_to_bytes_encrypted(
+        _handle, userPassword.UTF8String, ownerPassword.UTF8String, &len, &code);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"builderToBytesEncrypted", error);
+}
+
+- (void)close {
+    if (_handle) {
+        pdf_document_builder_free(_handle);
+        _handle = NULL;
+    }
+}
+
+@end
+
+// ── Phase-6: digital signatures / PKI / timestamps / conformance ─────────────
+
+// Copy a const byte buffer (NOT owned by the caller — do NOT free_bytes) into
+// NSData. A null pointer is treated as a failure (sets `error`).
+static NSData* _Nullable POXCopyConstBytes(const uint8_t* p, NSUInteger len,
+                                           int32_t code, NSString* op,
+                                           NSError** error) {
+    if (p == NULL) {
+        if (error)
+            *error = POXMakeError(code, op);
+        return nil;
+    }
+    return [NSData dataWithBytes:p length:len];
+}
+
+@implementation POXCertificate {
+    void* _handle;
+}
+
++ (instancetype)loadFromBytes:(NSData*)data
+                     password:(NSString*)password
+                        error:(NSError**)error {
+    int32_t code = 0;
+    void* h = pdf_certificate_load_from_bytes(data.bytes, (int32_t)data.length,
+                                              password.UTF8String, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"certificateLoadFromBytes");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
++ (instancetype)loadFromPemCert:(NSString*)certPem
+                         keyPem:(NSString*)keyPem
+                          error:(NSError**)error {
+    int32_t code = 0;
+    void* h =
+        pdf_certificate_load_from_pem(certPem.UTF8String, keyPem.UTF8String, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"certificateLoadFromPem");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
+- (instancetype)initWithHandle:(void*)handle {
+    if ((self = [super init])) {
+        _handle = handle;
+    }
+    return self;
+}
+
+// Expose the raw handle to sibling Phase-6 types in this translation unit.
+- (void*)POX_handle {
+    return _handle;
+}
+
+- (NSString*)subjectError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_certificate_get_subject(_handle, &code), code,
+                         @"certificateSubject", error);
+}
+- (NSString*)issuerError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_certificate_get_issuer(_handle, &code), code,
+                         @"certificateIssuer", error);
+}
+- (NSString*)serialError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_certificate_get_serial(_handle, &code), code,
+                         @"certificateSerial", error);
+}
+- (BOOL)validityNotBefore:(int64_t*)notBefore
+                 notAfter:(int64_t*)notAfter
+                    error:(NSError**)error {
+    int32_t code = 0;
+    int64_t nb = 0, na = 0;
+    pdf_certificate_get_validity(_handle, &nb, &na, &code);
+    if (code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"certificateValidity");
+        return NO;
+    }
+    if (notBefore)
+        *notBefore = nb;
+    if (notAfter)
+        *notAfter = na;
+    return YES;
+}
+- (int32_t)isValidError:(NSError**)error {
+    int32_t code = 0;
+    int32_t v = pdf_certificate_is_valid(_handle, &code);
+    if (v < 0 && error)
+        *error = POXMakeError(code, @"certificateIsValid");
+    return v;
+}
+
+- (void)close {
+    if (_handle) {
+        pdf_certificate_free(_handle);
+        _handle = NULL;
+    }
+}
+- (void)dealloc {
+    if (_handle)
+        pdf_certificate_free(_handle);
+}
+
+@end
+
+@implementation POXSignatureInfo {
+    FfiSignatureInfo* _handle;
+}
+
+- (instancetype)initWithHandle:(FfiSignatureInfo*)handle {
+    if ((self = [super init])) {
+        _handle = handle;
+    }
+    return self;
+}
+
+- (NSString*)signerNameError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_signature_get_signer_name(_handle, &code), code,
+                         @"signatureSignerName", error);
+}
+- (NSString*)signingReasonError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_signature_get_signing_reason(_handle, &code), code,
+                         @"signatureSigningReason", error);
+}
+- (NSString*)signingLocationError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_signature_get_signing_location(_handle, &code), code,
+                         @"signatureSigningLocation", error);
+}
+- (int64_t)signingTimeError:(NSError**)error {
+    int32_t code = 0;
+    int64_t t = pdf_signature_get_signing_time(_handle, &code);
+    if (code != 0 && error)
+        *error = POXMakeError(code, @"signatureSigningTime");
+    return t;
+}
+- (POXCertificate*)certificateError:(NSError**)error {
+    int32_t code = 0;
+    void* h = pdf_signature_get_certificate(_handle, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"signatureCertificate");
+        return nil;
+    }
+    return [[POXCertificate alloc] initWithHandle:h];
+}
+- (int32_t)padesLevelError:(NSError**)error {
+    int32_t code = 0;
+    int32_t lvl = pdf_signature_get_pades_level(_handle, &code);
+    if (lvl < 0 && error)
+        *error = POXMakeError(code, @"signaturePadesLevel");
+    return lvl;
+}
+- (BOOL)hasTimestampError:(NSError**)error {
+    int32_t code = 0;
+    bool has = pdf_signature_has_timestamp(_handle, &code);
+    if (code != 0 && error)
+        *error = POXMakeError(code, @"signatureHasTimestamp");
+    return has ? YES : NO;
+}
+- (POXTimestamp*)timestampError:(NSError**)error {
+    int32_t code = 0;
+    void* h = pdf_signature_get_timestamp(_handle, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"signatureTimestamp");
+        return nil;
+    }
+    return [[POXTimestamp alloc] initWithHandle:h];
+}
+- (BOOL)addTimestamp:(POXTimestamp*)timestamp error:(NSError**)error {
+    int32_t code = 0;
+    bool ok = pdf_signature_add_timestamp(_handle, [timestamp POX_handle], &code);
+    if (!ok && error)
+        *error = POXMakeError(code, @"signatureAddTimestamp");
+    return ok ? YES : NO;
+}
+- (int32_t)verifyError:(NSError**)error {
+    int32_t code = 0;
+    int32_t r = pdf_signature_verify(_handle, &code);
+    if (r < 0 && error)
+        *error = POXMakeError(code, @"signatureVerify");
+    return r;
+}
+- (int32_t)verifyDetached:(NSData*)pdf error:(NSError**)error {
+    int32_t code = 0;
+    int32_t r =
+        pdf_signature_verify_detached(_handle, pdf.bytes, (uintptr_t)pdf.length, &code);
+    if (r < 0 && error)
+        *error = POXMakeError(code, @"signatureVerifyDetached");
+    return r;
+}
+
+- (void)close {
+    if (_handle) {
+        pdf_signature_free(_handle);
+        _handle = NULL;
+    }
+}
+- (void)dealloc {
+    if (_handle)
+        pdf_signature_free(_handle);
+}
+
+@end
+
+@implementation POXTimestamp {
+    void* _handle;
+}
+
++ (instancetype)parse:(NSData*)data error:(NSError**)error {
+    int32_t code = 0;
+    void* h = pdf_timestamp_parse(data.bytes, (uintptr_t)data.length, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"timestampParse");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
+- (instancetype)initWithHandle:(void*)handle {
+    if ((self = [super init])) {
+        _handle = handle;
+    }
+    return self;
+}
+
+- (void*)POX_handle {
+    return _handle;
+}
+
+- (NSData*)tokenError:(NSError**)error {
+    int32_t code = 0;
+    uintptr_t len = 0;
+    const uint8_t* p = pdf_timestamp_get_token(_handle, &len, &code);
+    return POXCopyConstBytes(p, (NSUInteger)len, code, @"timestampToken", error);
+}
+- (NSData*)messageImprintError:(NSError**)error {
+    int32_t code = 0;
+    uintptr_t len = 0;
+    const uint8_t* p = pdf_timestamp_get_message_imprint(_handle, &len, &code);
+    return POXCopyConstBytes(p, (NSUInteger)len, code, @"timestampMessageImprint",
+                             error);
+}
+- (int64_t)timeError:(NSError**)error {
+    int32_t code = 0;
+    int64_t t = pdf_timestamp_get_time(_handle, &code);
+    if (code != 0 && error)
+        *error = POXMakeError(code, @"timestampTime");
+    return t;
+}
+- (NSString*)serialError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_timestamp_get_serial(_handle, &code), code,
+                         @"timestampSerial", error);
+}
+- (NSString*)tsaNameError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_timestamp_get_tsa_name(_handle, &code), code,
+                         @"timestampTsaName", error);
+}
+- (NSString*)policyOidError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_timestamp_get_policy_oid(_handle, &code), code,
+                         @"timestampPolicyOid", error);
+}
+- (int32_t)hashAlgorithmError:(NSError**)error {
+    int32_t code = 0;
+    int32_t a = pdf_timestamp_get_hash_algorithm(_handle, &code);
+    if (a < 0 && error)
+        *error = POXMakeError(code, @"timestampHashAlgorithm");
+    return a;
+}
+- (BOOL)verifyError:(NSError**)error {
+    int32_t code = 0;
+    bool ok = pdf_timestamp_verify(_handle, &code);
+    if (!ok && code != 0 && error)
+        *error = POXMakeError(code, @"timestampVerify");
+    return ok ? YES : NO;
+}
+
+- (void)close {
+    if (_handle) {
+        pdf_timestamp_free(_handle);
+        _handle = NULL;
+    }
+}
+- (void)dealloc {
+    if (_handle)
+        pdf_timestamp_free(_handle);
+}
+
+@end
+
+@implementation POXTsaClient {
+    void* _handle;
+}
+
++ (instancetype)createWithUrl:(NSString*)url
+                     username:(NSString*)username
+                     password:(NSString*)password
+                      timeout:(int32_t)timeout
+                     hashAlgo:(int32_t)hashAlgo
+                     useNonce:(BOOL)useNonce
+                      certReq:(BOOL)certReq
+                        error:(NSError**)error {
+    int32_t code = 0;
+    void* h =
+        pdf_tsa_client_create(url.UTF8String, username ? username.UTF8String : NULL,
+                              password ? password.UTF8String : NULL, timeout, hashAlgo,
+                              useNonce ? true : false, certReq ? true : false, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"tsaClientCreate");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
+- (instancetype)initWithHandle:(void*)handle {
+    if ((self = [super init])) {
+        _handle = handle;
+    }
+    return self;
+}
+
+- (POXTimestamp*)requestTimestamp:(NSData*)data error:(NSError**)error {
+    int32_t code = 0;
+    void* h =
+        pdf_tsa_request_timestamp(_handle, data.bytes, (uintptr_t)data.length, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"tsaRequestTimestamp");
+        return nil;
+    }
+    return [[POXTimestamp alloc] initWithHandle:h];
+}
+- (POXTimestamp*)requestTimestampHash:(NSData*)hash
+                             hashAlgo:(int32_t)hashAlgo
+                                error:(NSError**)error {
+    int32_t code = 0;
+    void* h = pdf_tsa_request_timestamp_hash(_handle, hash.bytes,
+                                             (uintptr_t)hash.length, hashAlgo, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"tsaRequestTimestampHash");
+        return nil;
+    }
+    return [[POXTimestamp alloc] initWithHandle:h];
+}
+
+- (void)close {
+    if (_handle) {
+        pdf_tsa_client_free(_handle);
+        _handle = NULL;
+    }
+}
+- (void)dealloc {
+    if (_handle)
+        pdf_tsa_client_free(_handle);
+}
+
+@end
+
+@implementation POXDss {
+    void* _handle;
+}
+
+- (instancetype)initWithHandle:(void*)handle {
+    if ((self = [super init])) {
+        _handle = handle;
+    }
+    return self;
+}
+
+- (int32_t)certCount {
+    return pdf_dss_cert_count(_handle);
+}
+- (int32_t)crlCount {
+    return pdf_dss_crl_count(_handle);
+}
+- (int32_t)ocspCount {
+    return pdf_dss_ocsp_count(_handle);
+}
+- (int32_t)vriCount {
+    return pdf_dss_vri_count(_handle);
+}
+- (NSData*)certAtIndex:(int32_t)index error:(NSError**)error {
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p = pdf_dss_get_cert(_handle, index, &len, &code);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"dssGetCert", error);
+}
+- (NSData*)crlAtIndex:(int32_t)index error:(NSError**)error {
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p = pdf_dss_get_crl(_handle, index, &len, &code);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"dssGetCrl", error);
+}
+- (NSData*)ocspAtIndex:(int32_t)index error:(NSError**)error {
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p = pdf_dss_get_ocsp(_handle, index, &len, &code);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"dssGetOcsp", error);
+}
+
+- (void)close {
+    if (_handle) {
+        pdf_dss_free(_handle);
+        _handle = NULL;
+    }
+}
+- (void)dealloc {
+    if (_handle)
+        pdf_dss_free(_handle);
+}
+
+@end
+
+@implementation POXPdfAResults {
+    FfiPdfAResults* _handle;
+}
+- (instancetype)initWithHandle:(FfiPdfAResults*)handle {
+    if ((self = [super init])) {
+        _handle = handle;
+    }
+    return self;
+}
+- (BOOL)isCompliantError:(NSError**)error {
+    int32_t code = 0;
+    bool ok = pdf_pdf_a_is_compliant(_handle, &code);
+    if (code != 0 && error)
+        *error = POXMakeError(code, @"pdfAIsCompliant");
+    return ok ? YES : NO;
+}
+- (int32_t)errorCount {
+    return pdf_pdf_a_error_count(_handle);
+}
+- (int32_t)warningCount {
+    return pdf_pdf_a_warning_count(_handle);
+}
+- (NSArray<NSString*>*)errors {
+    int32_t n = pdf_pdf_a_error_count(_handle);
+    NSMutableArray<NSString*>* out = [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        NSString* s = POXTakeString(pdf_pdf_a_get_error(_handle, i, &c), c,
+                                    @"pdfAGetError", NULL);
+        [out addObject:(s ?: @"")];
+    }
+    return out;
+}
+- (void)close {
+    if (_handle) {
+        pdf_pdf_a_results_free(_handle);
+        _handle = NULL;
+    }
+}
+- (void)dealloc {
+    if (_handle)
+        pdf_pdf_a_results_free(_handle);
+}
+@end
+
+@implementation POXUaResults {
+    FfiUaResults* _handle;
+}
+- (instancetype)initWithHandle:(FfiUaResults*)handle {
+    if ((self = [super init])) {
+        _handle = handle;
+    }
+    return self;
+}
+- (BOOL)isAccessibleError:(NSError**)error {
+    int32_t code = 0;
+    bool ok = pdf_pdf_ua_is_accessible(_handle, &code);
+    if (code != 0 && error)
+        *error = POXMakeError(code, @"pdfUaIsAccessible");
+    return ok ? YES : NO;
+}
+- (int32_t)errorCount {
+    return pdf_pdf_ua_error_count(_handle);
+}
+- (int32_t)warningCount {
+    return pdf_pdf_ua_warning_count(_handle);
+}
+- (NSArray<NSString*>*)errors {
+    int32_t n = pdf_pdf_ua_error_count(_handle);
+    NSMutableArray<NSString*>* out = [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        NSString* s = POXTakeString(pdf_pdf_ua_get_error(_handle, i, &c), c,
+                                    @"pdfUaGetError", NULL);
+        [out addObject:(s ?: @"")];
+    }
+    return out;
+}
+- (NSArray<NSString*>*)warnings {
+    int32_t n = pdf_pdf_ua_warning_count(_handle);
+    NSMutableArray<NSString*>* out = [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        NSString* s = POXTakeString(pdf_pdf_ua_get_warning(_handle, i, &c), c,
+                                    @"pdfUaGetWarning", NULL);
+        [out addObject:(s ?: @"")];
+    }
+    return out;
+}
+- (BOOL)stats:(POXUaStats*)stats error:(NSError**)error {
+    int32_t code = 0;
+    int32_t st = 0, im = 0, tb = 0, fm = 0, an = 0, pg = 0;
+    bool ok = pdf_pdf_ua_get_stats(_handle, &st, &im, &tb, &fm, &an, &pg, &code);
+    if (!ok) {
+        if (error)
+            *error = POXMakeError(code, @"pdfUaGetStats");
+        return NO;
+    }
+    if (stats) {
+        stats->structElements = st;
+        stats->images = im;
+        stats->tables = tb;
+        stats->forms = fm;
+        stats->annotations = an;
+        stats->pages = pg;
+    }
+    return YES;
+}
+- (void)close {
+    if (_handle) {
+        pdf_pdf_ua_results_free(_handle);
+        _handle = NULL;
+    }
+}
+- (void)dealloc {
+    if (_handle)
+        pdf_pdf_ua_results_free(_handle);
+}
+@end
+
+@implementation POXPdfXResults {
+    FfiPdfXResults* _handle;
+}
+- (instancetype)initWithHandle:(FfiPdfXResults*)handle {
+    if ((self = [super init])) {
+        _handle = handle;
+    }
+    return self;
+}
+- (BOOL)isCompliantError:(NSError**)error {
+    int32_t code = 0;
+    bool ok = pdf_pdf_x_is_compliant(_handle, &code);
+    if (code != 0 && error)
+        *error = POXMakeError(code, @"pdfXIsCompliant");
+    return ok ? YES : NO;
+}
+- (int32_t)errorCount {
+    return pdf_pdf_x_error_count(_handle);
+}
+- (NSArray<NSString*>*)errors {
+    int32_t n = pdf_pdf_x_error_count(_handle);
+    NSMutableArray<NSString*>* out = [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        NSString* s = POXTakeString(pdf_pdf_x_get_error(_handle, i, &c), c,
+                                    @"pdfXGetError", NULL);
+        [out addObject:(s ?: @"")];
+    }
+    return out;
+}
+- (void)close {
+    if (_handle) {
+        pdf_pdf_x_results_free(_handle);
+        _handle = NULL;
+    }
+}
+- (void)dealloc {
+    if (_handle)
+        pdf_pdf_x_results_free(_handle);
+}
+@end
+
+@implementation POXPadesSignOptions
+- (instancetype)init {
+    if ((self = [super init])) {
+        _certs = @[];
+        _crls = @[];
+        _ocsps = @[];
+    }
+    return self;
+}
+@end
+
+// Build three parallel C arrays of (pointer, length) for a list of NSData blobs.
+// The returned pointers borrow each NSData's bytes — valid only while `blobs`
+// is retained for the duration of the call. Frees nothing; caller frees `ptrs`
+// and `lens` via free().
+static void POXBuildByteArrays(NSArray<NSData*>* blobs, const uint8_t*** ptrs,
+                               uintptr_t** lens, uintptr_t* count) {
+    NSUInteger n = blobs.count;
+    *count = (uintptr_t)n;
+    *ptrs = n ? (const uint8_t**)malloc(sizeof(uint8_t*) * n) : NULL;
+    *lens = n ? (uintptr_t*)malloc(sizeof(uintptr_t) * n) : NULL;
+    for (NSUInteger i = 0; i < n; ++i) {
+        (*ptrs)[i] = (const uint8_t*)blobs[i].bytes;
+        (*lens)[i] = (uintptr_t)blobs[i].length;
+    }
+}
+
+@implementation POXSigning
+
++ (NSData*)signBytes:(NSData*)pdf
+         certificate:(POXCertificate*)certificate
+              reason:(NSString*)reason
+            location:(NSString*)location
+               error:(NSError**)error {
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p =
+        pdf_sign_bytes(pdf.bytes, (uintptr_t)pdf.length, [certificate POX_handle],
+                       reason ? reason.UTF8String : NULL,
+                       location ? location.UTF8String : NULL, &len, &code);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"signBytes", error);
+}
+
++ (NSData*)signBytesPades:(NSData*)pdf
+              certificate:(POXCertificate*)certificate
+                    level:(int32_t)level
+                   tsaUrl:(NSString*)tsaUrl
+                   reason:(NSString*)reason
+                 location:(NSString*)location
+                    certs:(NSArray<NSData*>*)certs
+                     crls:(NSArray<NSData*>*)crls
+                    ocsps:(NSArray<NSData*>*)ocsps
+                    error:(NSError**)error {
+    const uint8_t** certPtrs = NULL;
+    uintptr_t* certLens = NULL;
+    uintptr_t nCerts = 0;
+    const uint8_t** crlPtrs = NULL;
+    uintptr_t* crlLens = NULL;
+    uintptr_t nCrls = 0;
+    const uint8_t** ocspPtrs = NULL;
+    uintptr_t* ocspLens = NULL;
+    uintptr_t nOcsps = 0;
+    POXBuildByteArrays(certs ?: @[], &certPtrs, &certLens, &nCerts);
+    POXBuildByteArrays(crls ?: @[], &crlPtrs, &crlLens, &nCrls);
+    POXBuildByteArrays(ocsps ?: @[], &ocspPtrs, &ocspLens, &nOcsps);
+
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p = pdf_sign_bytes_pades(
+        pdf.bytes, (uintptr_t)pdf.length, [certificate POX_handle], level,
+        tsaUrl ? tsaUrl.UTF8String : NULL, reason ? reason.UTF8String : NULL,
+        location ? location.UTF8String : NULL, certPtrs, certLens, nCerts, crlPtrs,
+        crlLens, nCrls, ocspPtrs, ocspLens, nOcsps, &len, &code);
+
+    free(certPtrs);
+    free(certLens);
+    free(crlPtrs);
+    free(crlLens);
+    free(ocspPtrs);
+    free(ocspLens);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"signBytesPades", error);
+}
+
++ (NSData*)signBytesPadesOpts:(NSData*)pdf
+                      options:(POXPadesSignOptions*)options
+                        error:(NSError**)error {
+    const uint8_t** certPtrs = NULL;
+    uintptr_t* certLens = NULL;
+    uintptr_t nCerts = 0;
+    const uint8_t** crlPtrs = NULL;
+    uintptr_t* crlLens = NULL;
+    uintptr_t nCrls = 0;
+    const uint8_t** ocspPtrs = NULL;
+    uintptr_t* ocspLens = NULL;
+    uintptr_t nOcsps = 0;
+    POXBuildByteArrays(options.certs ?: @[], &certPtrs, &certLens, &nCerts);
+    POXBuildByteArrays(options.crls ?: @[], &crlPtrs, &crlLens, &nCrls);
+    POXBuildByteArrays(options.ocsps ?: @[], &ocspPtrs, &ocspLens, &nOcsps);
+
+    PadesSignOptionsC opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.certificate_handle = [options.certificate POX_handle];
+    opts.certs = certPtrs;
+    opts.cert_lens = certLens;
+    opts.n_certs = nCerts;
+    opts.crls = crlPtrs;
+    opts.crl_lens = crlLens;
+    opts.n_crls = nCrls;
+    opts.ocsps = ocspPtrs;
+    opts.ocsp_lens = ocspLens;
+    opts.n_ocsps = nOcsps;
+    opts.tsa_url = options.tsaUrl ? options.tsaUrl.UTF8String : NULL;
+    opts.reason = options.reason ? options.reason.UTF8String : NULL;
+    opts.location = options.location ? options.location.UTF8String : NULL;
+    opts.level = options.level;
+
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p =
+        pdf_sign_bytes_pades_opts(pdf.bytes, (uintptr_t)pdf.length, &opts, &len, &code);
+
+    free(certPtrs);
+    free(certLens);
+    free(crlPtrs);
+    free(crlLens);
+    free(ocspPtrs);
+    free(ocspLens);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"signBytesPadesOpts", error);
+}
+
++ (void)setLogLevel:(int32_t)level {
+    pdf_oxide_set_log_level(level);
+}
++ (int32_t)logLevel {
+    return pdf_oxide_get_log_level();
 }
 
 @end

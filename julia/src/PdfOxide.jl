@@ -42,6 +42,52 @@ export is_page_marked_for_redaction, unmark_page_for_redaction
 export flatten_annotations, flatten_all_annotations
 export set_form_field_value, flatten_forms, flatten_forms_on_page
 export flatten_warnings_count, flatten_warning
+# PDF creation builder API.
+export DocumentBuilder, PageBuilder, EmbeddedFont
+export embedded_font_from_file, embedded_font_from_bytes
+export set_title, set_author, set_subject, set_keywords, set_creator
+export on_open, language, role_map, register_embedded_font, tagged_pdf_ua1
+export a4_page, letter_page, build, save_encrypted_builder, to_bytes_encrypted
+export font, at, heading, paragraph, space, horizontal_rule
+export link_url, link_page, link_named, link_javascript, on_close
+export field_keystroke, field_format, field_validate, field_calculate
+export highlight, underline, strikeout, squiggly
+export sticky_note, sticky_note_at, watermark, watermark_confidential, watermark_draft
+export stamp, freetext, text_field, checkbox, combo_box, radio_group, push_button
+export signature_field, footnote, columns
+export inline, inline_bold, inline_italic, inline_color, newline
+export barcode_1d, barcode_qr, image, image_with_alt, image_artifact
+export rect, filled_rect, line, stroke_rect, stroke_line
+export stroke_rect_dashed, stroke_line_dashed, text_in_rect, new_page_same_size, table
+export streaming_table_begin, streaming_table_begin_v2, streaming_table_set_batch_size
+export streaming_table_pending_row_count, streaming_table_batch_count
+export streaming_table_flush, streaming_table_push_row, streaming_table_push_row_v2
+export streaming_table_finish, done
+# Phase-6: digital signatures / PKI / timestamps / TSA / DSS / validation.
+export set_log_level, get_log_level
+export Certificate, certificate_load_from_bytes, certificate_load_from_pem
+export certificate_get_subject, certificate_get_issuer, certificate_get_serial
+export certificate_get_validity, certificate_is_valid
+export sign_bytes, sign_bytes_pades, sign_bytes_pades_opts, PadesSignOptionsC
+export SignatureInfo
+export signature_get_signer_name, signature_get_signing_reason
+export signature_get_signing_location, signature_get_signing_time
+export signature_get_certificate, signature_get_pades_level
+export signature_has_timestamp, signature_get_timestamp, signature_add_timestamp
+export signature_verify, signature_verify_detached
+export Timestamp, timestamp_parse, timestamp_get_token, timestamp_get_message_imprint
+export timestamp_get_time, timestamp_get_serial, timestamp_get_tsa_name
+export timestamp_get_policy_oid, timestamp_get_hash_algorithm, timestamp_verify
+export TsaClient, tsa_client_create, tsa_request_timestamp, tsa_request_timestamp_hash
+export Dss, document_get_dss
+export dss_cert_count, dss_crl_count, dss_ocsp_count, dss_vri_count
+export dss_get_cert, dss_get_crl, dss_get_ocsp
+export PdfAResults, UaResults, PdfXResults
+export validate_pdf_a, validate_pdf_ua, validate_pdf_x
+export validatePdfA, validatePdfUa, validatePdfX
+export is_compliant, is_accessible, errors, warnings, ua_stats
+export pdf_a_error_count, pdf_a_warning_count, pdf_ua_error_count
+export pdf_ua_warning_count, pdf_x_error_count
 
 # Native library resolution: PDF_OXIDE_LIB_PATH (full path) -> PDF_OXIDE_LIB_DIR
 # -> common build dirs -> bare name (system loader).
@@ -1957,5 +2003,2467 @@ function flatten_warning(e::DocumentEditor, index::Integer)
     )
     return _take_string(ptr, code[], "flatten_warning")
 end
+
+# ── PDF creation builder ──────────────────────────────────────────────────────
+# Three owned native handles over the C ABI's builder API, mirroring the
+# PdfDocument/Pdf/DocumentEditor pattern: each wraps an owned native pointer,
+# uses the same PdfOxideError helpers, _take_string / free_bytes byte-take, and a
+# closed-handle guard; freed on close!/finalization. Methods use snake_case
+# (Julia idiom); page indices are 0-based.
+#
+#   EmbeddedFont    — a loaded TTF/OTF font handle (pdf_embedded_font_*).
+#   DocumentBuilder — accumulates metadata, fonts and pages (pdf_document_builder_*).
+#   PageBuilder     — fluent page content ops (pdf_page_builder_*).
+#
+# Ownership note: register_embedded_font CONSUMES the font handle on success — the
+# wrapper nulls its pointer so close!/finalizer will not double-free it. Likewise
+# done() CONSUMES the page handle (wrapper nulled). build()/save() consume the
+# builder STATE but not the wrapper handle, which must still be freed.
+
+# EmbeddedFont — owned font handle. Freed via pdf_embedded_font_free UNLESS a
+# successful register_embedded_font took ownership (then handle is nulled here).
+mutable struct EmbeddedFont
+    handle::Ptr{Cvoid}
+    function EmbeddedFont(h::Ptr{Cvoid})
+        f = new(h)
+        finalizer(close!, f)
+        return f
+    end
+end
+
+"""Free the native font handle now (idempotent; no-op once the builder took ownership)."""
+function close!(f::EmbeddedFont)
+    if f.handle != C_NULL
+        ccall((:pdf_embedded_font_free, LIB), Cvoid, (Ptr{Cvoid},), f.handle)
+        f.handle = C_NULL
+    end
+    return nothing
+end
+
+_font(f::EmbeddedFont) = (f.handle == C_NULL && error("EmbeddedFont is closed"); f.handle)
+
+"""Load a TTF/OTF font from a filesystem path."""
+function embedded_font_from_file(path::AbstractString)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_embedded_font_from_file, LIB),
+        Ptr{Cvoid},
+        (Cstring, Ref{Int32}),
+        path,
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "embedded_font_from_file"))
+    return EmbeddedFont(h)
+end
+
+"""Load a font from a byte buffer. `name` may be empty to use the PostScript name."""
+function embedded_font_from_bytes(
+    data::AbstractVector{UInt8};
+    name::Union{Nothing,AbstractString} = nothing,
+)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_embedded_font_from_bytes, LIB),
+        Ptr{Cvoid},
+        (Ptr{UInt8}, Csize_t, Cstring, Ref{Int32}),
+        data,
+        Csize_t(length(data)),
+        name === nothing ? C_NULL : name,
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "embedded_font_from_bytes"))
+    return EmbeddedFont(h)
+end
+
+# DocumentBuilder — accumulates metadata/fonts/pages then builds the PDF.
+mutable struct DocumentBuilder
+    handle::Ptr{Cvoid}
+    function DocumentBuilder(h::Ptr{Cvoid})
+        b = new(h)
+        finalizer(close!, b)
+        return b
+    end
+end
+
+"""Free the native builder handle now (idempotent; also runs at finalization)."""
+function close!(b::DocumentBuilder)
+    if b.handle != C_NULL
+        ccall((:pdf_document_builder_free, LIB), Cvoid, (Ptr{Cvoid},), b.handle)
+        b.handle = C_NULL
+    end
+    return nothing
+end
+
+_builder(b::DocumentBuilder) =
+    (b.handle == C_NULL && error("DocumentBuilder is closed"); b.handle)
+
+"""Create a new in-memory PDF builder."""
+function DocumentBuilder()
+    code = Ref{Int32}(0)
+    h = ccall((:pdf_document_builder_create, LIB), Ptr{Cvoid}, (Ref{Int32},), code)
+    h == C_NULL && throw(PdfOxideError(code[], "DocumentBuilder"))
+    return DocumentBuilder(h)
+end
+
+# Single-string-arg metadata setters — one per C function, generated with @eval
+# so each ccall references its C function name as a LITERAL symbol.
+for (jl_fn, c_fn) in (
+    (:set_title, :pdf_document_builder_set_title),
+    (:set_author, :pdf_document_builder_set_author),
+    (:set_subject, :pdf_document_builder_set_subject),
+    (:set_keywords, :pdf_document_builder_set_keywords),
+    (:set_creator, :pdf_document_builder_set_creator),
+    (:on_open, :pdf_document_builder_on_open),
+    (:language, :pdf_document_builder_language),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(b::DocumentBuilder, value::AbstractString)
+        code = Ref{Int32}(0)
+        rc = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Int32,
+            (Ptr{Cvoid}, Cstring, Ref{Int32}),
+            _builder(b),
+            value,
+            code,
+        )
+        (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], $op))
+        return b
+    end
+end
+
+"""Enable PDF/UA-1 tagged-PDF mode (opt-in)."""
+function tagged_pdf_ua1(b::DocumentBuilder)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_document_builder_tagged_pdf_ua1, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _builder(b),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "tagged_pdf_ua1"))
+    return b
+end
+
+"""Add a role-map entry mapping a `custom` structure type to a `standard` one."""
+function role_map(b::DocumentBuilder, custom::AbstractString, standard::AbstractString)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_document_builder_role_map, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Cstring, Ref{Int32}),
+        _builder(b),
+        custom,
+        standard,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "role_map"))
+    return b
+end
+
+"""
+Register a loaded `EmbeddedFont` under `name`. **Consumes** the font on success —
+the wrapper's handle is nulled so it will not be double-freed.
+"""
+function register_embedded_font(b::DocumentBuilder, name::AbstractString, f::EmbeddedFont)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_document_builder_register_embedded_font, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Ptr{Cvoid}, Ref{Int32}),
+        _builder(b),
+        name,
+        _font(f),
+        code,
+    )
+    if rc != 0 || code[] != 0
+        # On error the font is NOT consumed; leave the wrapper intact to free later.
+        throw(PdfOxideError(code[], "register_embedded_font"))
+    end
+    # Success: the builder took ownership; do NOT free the font handle again.
+    f.handle = C_NULL
+    return b
+end
+
+# Page-openers — one per entry point (NULL on error -> throw). Each opens a new
+# PageBuilder bound to this builder.
+for (jl_fn, c_fn) in (
+    (:a4_page, :pdf_document_builder_a4_page),
+    (:letter_page, :pdf_document_builder_letter_page),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(b::DocumentBuilder)
+        code = Ref{Int32}(0)
+        h = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Ptr{Cvoid},
+            (Ptr{Cvoid}, Ref{Int32}),
+            _builder(b),
+            code,
+        )
+        h == C_NULL && throw(PdfOxideError(code[], $op))
+        return PageBuilder(h)
+    end
+end
+
+"""Start a page with custom dimensions in PDF points (72 pt = 1 inch)."""
+function page(b::DocumentBuilder, width::Real, height::Real)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_document_builder_page, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Float32, Float32, Ref{Int32}),
+        _builder(b),
+        Float32(width),
+        Float32(height),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "page"))
+    return PageBuilder(h)
+end
+
+"""Build the PDF and return the bytes (`Vector{UInt8}`). The builder must still be closed."""
+function build(b::DocumentBuilder)
+    len = Ref{Csize_t}(0)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_document_builder_build, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ref{Csize_t}, Ref{Int32}),
+        _builder(b),
+        len,
+        code,
+    )
+    return _take_bytes_uptr(ptr, len[], code[], "build")
+end
+
+"""Build and save the PDF to `path`."""
+function save(b::DocumentBuilder, path::AbstractString)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_document_builder_save, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Ref{Int32}),
+        _builder(b),
+        path,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "save"))
+    return nothing
+end
+
+"""Build and save with AES-256 encryption to `path`."""
+function save_encrypted_builder(
+    b::DocumentBuilder,
+    path::AbstractString,
+    user_password::AbstractString,
+    owner_password::AbstractString,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_document_builder_save_encrypted, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Cstring, Cstring, Ref{Int32}),
+        _builder(b),
+        path,
+        user_password,
+        owner_password,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "save_encrypted_builder"))
+    return nothing
+end
+
+"""Build encrypted bytes (AES-256) and return them (`Vector{UInt8}`)."""
+function to_bytes_encrypted(
+    b::DocumentBuilder,
+    user_password::AbstractString,
+    owner_password::AbstractString,
+)
+    len = Ref{Csize_t}(0)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_document_builder_to_bytes_encrypted, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Cstring, Cstring, Ref{Csize_t}, Ref{Int32}),
+        _builder(b),
+        user_password,
+        owner_password,
+        len,
+        code,
+    )
+    return _take_bytes_uptr(ptr, len[], code[], "to_bytes_encrypted")
+end
+
+# PageBuilder — fluent page content ops. Owns its native page handle; freed via
+# pdf_page_builder_free UNLESS done() consumed it (then handle is nulled here).
+mutable struct PageBuilder
+    handle::Ptr{Cvoid}
+    function PageBuilder(h::Ptr{Cvoid})
+        p = new(h)
+        finalizer(close!, p)
+        return p
+    end
+end
+
+"""Drop the native page handle now (idempotent; no-op once done() consumed it)."""
+function close!(p::PageBuilder)
+    if p.handle != C_NULL
+        ccall((:pdf_page_builder_free, LIB), Cvoid, (Ptr{Cvoid},), p.handle)
+        p.handle = C_NULL
+    end
+    return nothing
+end
+
+_pagebuilder(p::PageBuilder) =
+    (p.handle == C_NULL && error("PageBuilder is closed"); p.handle)
+
+# No-arg fluent ops (status int + error_code) — generated with @eval (LITERAL ccall symbol).
+for (jl_fn, c_fn) in (
+    (:horizontal_rule, :pdf_page_builder_horizontal_rule),
+    (:newline, :pdf_page_builder_newline),
+    (:watermark_confidential, :pdf_page_builder_watermark_confidential),
+    (:watermark_draft, :pdf_page_builder_watermark_draft),
+    (:new_page_same_size, :pdf_page_builder_new_page_same_size),
+    (:streaming_table_flush, :pdf_page_builder_streaming_table_flush),
+    (:streaming_table_finish, :pdf_page_builder_streaming_table_finish),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(p::PageBuilder)
+        code = Ref{Int32}(0)
+        rc = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Int32,
+            (Ptr{Cvoid}, Ref{Int32}),
+            _pagebuilder(p),
+            code,
+        )
+        (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], $op))
+        return p
+    end
+end
+
+# Single-string-arg fluent ops — generated with @eval (LITERAL ccall symbol).
+for (jl_fn, c_fn) in (
+    (:text, :pdf_page_builder_text),
+    (:paragraph, :pdf_page_builder_paragraph),
+    (:link_url, :pdf_page_builder_link_url),
+    (:link_named, :pdf_page_builder_link_named),
+    (:link_javascript, :pdf_page_builder_link_javascript),
+    (:on_open, :pdf_page_builder_on_open),
+    (:on_close, :pdf_page_builder_on_close),
+    (:field_keystroke, :pdf_page_builder_field_keystroke),
+    (:field_format, :pdf_page_builder_field_format),
+    (:field_validate, :pdf_page_builder_field_validate),
+    (:field_calculate, :pdf_page_builder_field_calculate),
+    (:sticky_note, :pdf_page_builder_sticky_note),
+    (:watermark, :pdf_page_builder_watermark),
+    (:stamp, :pdf_page_builder_stamp),
+    (:inline, :pdf_page_builder_inline),
+    (:inline_bold, :pdf_page_builder_inline_bold),
+    (:inline_italic, :pdf_page_builder_inline_italic),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(p::PageBuilder, value::AbstractString)
+        code = Ref{Int32}(0)
+        rc = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Int32,
+            (Ptr{Cvoid}, Cstring, Ref{Int32}),
+            _pagebuilder(p),
+            value,
+            code,
+        )
+        (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], $op))
+        return p
+    end
+end
+
+# RGB-triplet fluent ops (r, g, b) — generated with @eval (LITERAL ccall symbol).
+for (jl_fn, c_fn) in (
+    (:highlight, :pdf_page_builder_highlight),
+    (:underline, :pdf_page_builder_underline),
+    (:strikeout, :pdf_page_builder_strikeout),
+    (:squiggly, :pdf_page_builder_squiggly),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(p::PageBuilder, r::Real, g::Real, b_::Real)
+        code = Ref{Int32}(0)
+        rc = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Int32,
+            (Ptr{Cvoid}, Float32, Float32, Float32, Ref{Int32}),
+            _pagebuilder(p),
+            Float32(r),
+            Float32(g),
+            Float32(b_),
+            code,
+        )
+        (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], $op))
+        return p
+    end
+end
+
+# Single-float-arg fluent ops — generated with @eval (LITERAL ccall symbol).
+for (jl_fn, c_fn) in ((:space, :pdf_page_builder_space),)
+    op = String(jl_fn)
+    @eval function $jl_fn(p::PageBuilder, value::Real)
+        code = Ref{Int32}(0)
+        rc = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Int32,
+            (Ptr{Cvoid}, Float32, Ref{Int32}),
+            _pagebuilder(p),
+            Float32(value),
+            code,
+        )
+        (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], $op))
+        return p
+    end
+end
+
+"""Set the font + size for subsequent text on this page."""
+function font(p::PageBuilder, name::AbstractString, size::Real)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_font, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Float32, Ref{Int32}),
+        _pagebuilder(p),
+        name,
+        Float32(size),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "font"))
+    return p
+end
+
+"""Move the cursor to absolute `(x, y)` (PDF points, from lower-left)."""
+function at(p::PageBuilder, x::Real, y::Real)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_at, LIB),
+        Int32,
+        (Ptr{Cvoid}, Float32, Float32, Ref{Int32}),
+        _pagebuilder(p),
+        Float32(x),
+        Float32(y),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "at"))
+    return p
+end
+
+"""Emit a heading at the given `level` (1–6) with `text`."""
+function heading(p::PageBuilder, level::Integer, text::AbstractString)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_heading, LIB),
+        Int32,
+        (Ptr{Cvoid}, UInt8, Cstring, Ref{Int32}),
+        _pagebuilder(p),
+        UInt8(level),
+        text,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "heading"))
+    return p
+end
+
+"""Link the previous text to an internal (0-based) page index."""
+function link_page(p::PageBuilder, page_index::Integer)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_link_page, LIB),
+        Int32,
+        (Ptr{Cvoid}, Csize_t, Ref{Int32}),
+        _pagebuilder(p),
+        Csize_t(page_index),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "link_page"))
+    return p
+end
+
+"""Place a free-standing sticky note at absolute `(x, y)` with `text`."""
+function sticky_note_at(p::PageBuilder, x::Real, y::Real, text::AbstractString)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_sticky_note_at, LIB),
+        Int32,
+        (Ptr{Cvoid}, Float32, Float32, Cstring, Ref{Int32}),
+        _pagebuilder(p),
+        Float32(x),
+        Float32(y),
+        text,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "sticky_note_at"))
+    return p
+end
+
+"""Place a free-flowing text annotation inside rect `(x, y, w, h)`."""
+function freetext(p::PageBuilder, x::Real, y::Real, w::Real, h::Real, text::AbstractString)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_freetext, LIB),
+        Int32,
+        (Ptr{Cvoid}, Float32, Float32, Float32, Float32, Cstring, Ref{Int32}),
+        _pagebuilder(p),
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        text,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "freetext"))
+    return p
+end
+
+"""Add a single-line text form field. `default_value` may be empty for blank."""
+function text_field(
+    p::PageBuilder,
+    name::AbstractString,
+    x::Real,
+    y::Real,
+    w::Real,
+    h::Real;
+    default_value::Union{Nothing,AbstractString} = nothing,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_text_field, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Float32, Float32, Float32, Float32, Cstring, Ref{Int32}),
+        _pagebuilder(p),
+        name,
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        default_value === nothing ? C_NULL : default_value,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "text_field"))
+    return p
+end
+
+"""Add a checkbox form field. `checked` toggles the initially-ticked state."""
+function checkbox(
+    p::PageBuilder,
+    name::AbstractString,
+    x::Real,
+    y::Real,
+    w::Real,
+    h::Real,
+    checked::Bool,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_checkbox, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Float32, Float32, Float32, Float32, Int32, Ref{Int32}),
+        _pagebuilder(p),
+        name,
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        Int32(checked ? 1 : 0),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "checkbox"))
+    return p
+end
+
+"""Add a dropdown combo-box with a fixed list of `options`. `selected` may be empty."""
+function combo_box(
+    p::PageBuilder,
+    name::AbstractString,
+    x::Real,
+    y::Real,
+    w::Real,
+    h::Real,
+    options::AbstractVector{<:AbstractString};
+    selected::Union{Nothing,AbstractString} = nothing,
+)
+    # Marshal the Julia String list to a C array of NUL-terminated pointers.
+    cstrs = [Base.unsafe_convert(Cstring, Base.cconvert(Cstring, s)) for s in options]
+    GC.@preserve options cstrs begin
+        code = Ref{Int32}(0)
+        rc = ccall(
+            (:pdf_page_builder_combo_box, LIB),
+            Int32,
+            (
+                Ptr{Cvoid},
+                Cstring,
+                Float32,
+                Float32,
+                Float32,
+                Float32,
+                Ptr{Cstring},
+                Csize_t,
+                Cstring,
+                Ref{Int32},
+            ),
+            _pagebuilder(p),
+            name,
+            Float32(x),
+            Float32(y),
+            Float32(w),
+            Float32(h),
+            cstrs,
+            Csize_t(length(cstrs)),
+            selected === nothing ? C_NULL : selected,
+            code,
+        )
+        (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "combo_box"))
+    end
+    return p
+end
+
+"""
+Add a radio-button group. `values`/`xs`/`ys`/`ws`/`hs` are parallel arrays
+describing each button's export value and rect. `selected` may be empty.
+"""
+function radio_group(
+    p::PageBuilder,
+    name::AbstractString,
+    values::AbstractVector{<:AbstractString},
+    xs::AbstractVector{<:Real},
+    ys::AbstractVector{<:Real},
+    ws::AbstractVector{<:Real},
+    hs::AbstractVector{<:Real};
+    selected::Union{Nothing,AbstractString} = nothing,
+)
+    n = length(values)
+    cstrs = [Base.unsafe_convert(Cstring, Base.cconvert(Cstring, s)) for s in values]
+    fxs = Float32[Float32(v) for v in xs]
+    fys = Float32[Float32(v) for v in ys]
+    fws = Float32[Float32(v) for v in ws]
+    fhs = Float32[Float32(v) for v in hs]
+    GC.@preserve values cstrs begin
+        code = Ref{Int32}(0)
+        rc = ccall(
+            (:pdf_page_builder_radio_group, LIB),
+            Int32,
+            (
+                Ptr{Cvoid},
+                Cstring,
+                Ptr{Cstring},
+                Ptr{Float32},
+                Ptr{Float32},
+                Ptr{Float32},
+                Ptr{Float32},
+                Csize_t,
+                Cstring,
+                Ref{Int32},
+            ),
+            _pagebuilder(p),
+            name,
+            cstrs,
+            fxs,
+            fys,
+            fws,
+            fhs,
+            Csize_t(n),
+            selected === nothing ? C_NULL : selected,
+            code,
+        )
+        (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "radio_group"))
+    end
+    return p
+end
+
+"""Add a clickable push button with a visible `caption`."""
+function push_button(
+    p::PageBuilder,
+    name::AbstractString,
+    x::Real,
+    y::Real,
+    w::Real,
+    h::Real,
+    caption::AbstractString,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_push_button, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Float32, Float32, Float32, Float32, Cstring, Ref{Int32}),
+        _pagebuilder(p),
+        name,
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        caption,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "push_button"))
+    return p
+end
+
+"""Add an unsigned signature placeholder field at rect `(x, y, w, h)`."""
+function signature_field(
+    p::PageBuilder,
+    name::AbstractString,
+    x::Real,
+    y::Real,
+    w::Real,
+    h::Real,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_signature_field, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Float32, Float32, Float32, Float32, Ref{Int32}),
+        _pagebuilder(p),
+        name,
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "signature_field"))
+    return p
+end
+
+"""Add a footnote: `ref_mark` inline superscript + `note_text` body at page end."""
+function footnote(p::PageBuilder, ref_mark::AbstractString, note_text::AbstractString)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_footnote, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Cstring, Ref{Int32}),
+        _pagebuilder(p),
+        ref_mark,
+        note_text,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "footnote"))
+    return p
+end
+
+"""Lay out `text` across `column_count` balanced columns with `gap_pt` between them."""
+function columns(p::PageBuilder, column_count::Integer, gap_pt::Real, text::AbstractString)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_columns, LIB),
+        Int32,
+        (Ptr{Cvoid}, UInt32, Float32, Cstring, Ref{Int32}),
+        _pagebuilder(p),
+        UInt32(column_count),
+        Float32(gap_pt),
+        text,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "columns"))
+    return p
+end
+
+"""Inline colored run (RGB 0.0–1.0) of `text`."""
+function inline_color(p::PageBuilder, r::Real, g::Real, b_::Real, text::AbstractString)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_inline_color, LIB),
+        Int32,
+        (Ptr{Cvoid}, Float32, Float32, Float32, Cstring, Ref{Int32}),
+        _pagebuilder(p),
+        Float32(r),
+        Float32(g),
+        Float32(b_),
+        text,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "inline_color"))
+    return p
+end
+
+"""
+Place a 1-D barcode image. `barcode_type`: 0=Code128 1=Code39 2=EAN13 3=EAN8
+4=UPCA 5=ITF 6=Code93 7=Codabar.
+"""
+function barcode_1d(
+    p::PageBuilder,
+    barcode_type::Integer,
+    data::AbstractString,
+    x::Real,
+    y::Real,
+    w::Real,
+    h::Real,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_barcode_1d, LIB),
+        Int32,
+        (Ptr{Cvoid}, Int32, Cstring, Float32, Float32, Float32, Float32, Ref{Int32}),
+        _pagebuilder(p),
+        Int32(barcode_type),
+        data,
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "barcode_1d"))
+    return p
+end
+
+"""Place a QR-code image (square `size × size` points)."""
+function barcode_qr(p::PageBuilder, data::AbstractString, x::Real, y::Real, size::Real)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_barcode_qr, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Float32, Float32, Float32, Ref{Int32}),
+        _pagebuilder(p),
+        data,
+        Float32(x),
+        Float32(y),
+        Float32(size),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "barcode_qr"))
+    return p
+end
+
+"""Embed an image at rect `(x, y, w, h)`. `bytes` is raw JPEG/PNG/WebP data."""
+function image(
+    p::PageBuilder,
+    bytes::AbstractVector{UInt8},
+    x::Real,
+    y::Real,
+    w::Real,
+    h::Real,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_image, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ptr{UInt8}, Csize_t, Float32, Float32, Float32, Float32, Ref{Int32}),
+        _pagebuilder(p),
+        bytes,
+        Csize_t(length(bytes)),
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "image"))
+    return p
+end
+
+"""Embed an image at rect `(x, y, w, h)` with accessibility `alt_text`."""
+function image_with_alt(
+    p::PageBuilder,
+    bytes::AbstractVector{UInt8},
+    x::Real,
+    y::Real,
+    w::Real,
+    h::Real,
+    alt_text::AbstractString,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_image_with_alt, LIB),
+        Int32,
+        (
+            Ptr{Cvoid},
+            Ptr{UInt8},
+            Csize_t,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Cstring,
+            Ref{Int32},
+        ),
+        _pagebuilder(p),
+        bytes,
+        Csize_t(length(bytes)),
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        alt_text,
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "image_with_alt"))
+    return p
+end
+
+"""Embed a decorative image at rect `(x, y, w, h)` as an /Artifact (no alt text)."""
+function image_artifact(
+    p::PageBuilder,
+    bytes::AbstractVector{UInt8},
+    x::Real,
+    y::Real,
+    w::Real,
+    h::Real,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_image_artifact, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ptr{UInt8}, Csize_t, Float32, Float32, Float32, Float32, Ref{Int32}),
+        _pagebuilder(p),
+        bytes,
+        Csize_t(length(bytes)),
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "image_artifact"))
+    return p
+end
+
+"""Draw a stroked rectangle outline (1pt black) at `(x, y, w, h)`."""
+function rect(p::PageBuilder, x::Real, y::Real, w::Real, h::Real)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_rect, LIB),
+        Int32,
+        (Ptr{Cvoid}, Float32, Float32, Float32, Float32, Ref{Int32}),
+        _pagebuilder(p),
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "rect"))
+    return p
+end
+
+"""Draw a filled rectangle at `(x, y, w, h)` in RGB colour (channels 0–1)."""
+function filled_rect(
+    p::PageBuilder,
+    x::Real,
+    y::Real,
+    w::Real,
+    h::Real,
+    r::Real,
+    g::Real,
+    b_::Real,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_filled_rect, LIB),
+        Int32,
+        (
+            Ptr{Cvoid},
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Ref{Int32},
+        ),
+        _pagebuilder(p),
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        Float32(r),
+        Float32(g),
+        Float32(b_),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "filled_rect"))
+    return p
+end
+
+"""Draw a 1pt black line from `(x1, y1)` to `(x2, y2)`."""
+function line(p::PageBuilder, x1::Real, y1::Real, x2::Real, y2::Real)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_line, LIB),
+        Int32,
+        (Ptr{Cvoid}, Float32, Float32, Float32, Float32, Ref{Int32}),
+        _pagebuilder(p),
+        Float32(x1),
+        Float32(y1),
+        Float32(x2),
+        Float32(y2),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "line"))
+    return p
+end
+
+"""Stroke a rectangle at `(x, y, w, h)` with `width`pt stroke in RGB colour (0–1)."""
+function stroke_rect(
+    p::PageBuilder,
+    x::Real,
+    y::Real,
+    w::Real,
+    h::Real,
+    width::Real,
+    r::Real,
+    g::Real,
+    b_::Real,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_stroke_rect, LIB),
+        Int32,
+        (
+            Ptr{Cvoid},
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Ref{Int32},
+        ),
+        _pagebuilder(p),
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        Float32(width),
+        Float32(r),
+        Float32(g),
+        Float32(b_),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "stroke_rect"))
+    return p
+end
+
+"""Stroke a line from `(x1, y1)` to `(x2, y2)` with `width`pt stroke in RGB (0–1)."""
+function stroke_line(
+    p::PageBuilder,
+    x1::Real,
+    y1::Real,
+    x2::Real,
+    y2::Real,
+    width::Real,
+    r::Real,
+    g::Real,
+    b_::Real,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_stroke_line, LIB),
+        Int32,
+        (
+            Ptr{Cvoid},
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Ref{Int32},
+        ),
+        _pagebuilder(p),
+        Float32(x1),
+        Float32(y1),
+        Float32(x2),
+        Float32(y2),
+        Float32(width),
+        Float32(r),
+        Float32(g),
+        Float32(b_),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "stroke_line"))
+    return p
+end
+
+"""Stroke a dashed rectangle. `dash_array` is alternating on/off lengths (pt); `phase` is the offset."""
+function stroke_rect_dashed(
+    p::PageBuilder,
+    x::Real,
+    y::Real,
+    w::Real,
+    h::Real,
+    width::Real,
+    r::Real,
+    g::Real,
+    b_::Real,
+    dash_array::AbstractVector{<:Real},
+    phase::Real,
+)
+    dash = Float32[Float32(v) for v in dash_array]
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_stroke_rect_dashed, LIB),
+        Int32,
+        (
+            Ptr{Cvoid},
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Ptr{Float32},
+            Csize_t,
+            Float32,
+            Ref{Int32},
+        ),
+        _pagebuilder(p),
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        Float32(width),
+        Float32(r),
+        Float32(g),
+        Float32(b_),
+        isempty(dash) ? C_NULL : dash,
+        Csize_t(length(dash)),
+        Float32(phase),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "stroke_rect_dashed"))
+    return p
+end
+
+"""Stroke a dashed line. `dash_array` is alternating on/off lengths (pt); `phase` is the offset."""
+function stroke_line_dashed(
+    p::PageBuilder,
+    x1::Real,
+    y1::Real,
+    x2::Real,
+    y2::Real,
+    width::Real,
+    r::Real,
+    g::Real,
+    b_::Real,
+    dash_array::AbstractVector{<:Real},
+    phase::Real,
+)
+    dash = Float32[Float32(v) for v in dash_array]
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_stroke_line_dashed, LIB),
+        Int32,
+        (
+            Ptr{Cvoid},
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Float32,
+            Ptr{Float32},
+            Csize_t,
+            Float32,
+            Ref{Int32},
+        ),
+        _pagebuilder(p),
+        Float32(x1),
+        Float32(y1),
+        Float32(x2),
+        Float32(y2),
+        Float32(width),
+        Float32(r),
+        Float32(g),
+        Float32(b_),
+        isempty(dash) ? C_NULL : dash,
+        Csize_t(length(dash)),
+        Float32(phase),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "stroke_line_dashed"))
+    return p
+end
+
+"""Draw `text` inside rect `(x, y, w, h)` with `align` (0=Left, 1=Center, 2=Right)."""
+function text_in_rect(
+    p::PageBuilder,
+    x::Real,
+    y::Real,
+    w::Real,
+    h::Real,
+    text::AbstractString,
+    align::Integer,
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_text_in_rect, LIB),
+        Int32,
+        (Ptr{Cvoid}, Float32, Float32, Float32, Float32, Cstring, Int32, Ref{Int32}),
+        _pagebuilder(p),
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        text,
+        Int32(align),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "text_in_rect"))
+    return p
+end
+
+"""
+Emit a buffered table. `aligns` encode 0=Left/1=Center/2=Right; `cell_strings`
+is a row-major matrix (`n_rows × n_columns`). `has_header` promotes the first row.
+"""
+function table(
+    p::PageBuilder,
+    n_columns::Integer,
+    widths::AbstractVector{<:Real},
+    aligns::AbstractVector{<:Integer},
+    n_rows::Integer,
+    cell_strings::AbstractMatrix{<:AbstractString},
+    has_header::Bool,
+)
+    fw = Float32[Float32(v) for v in widths]
+    al = Int32[Int32(v) for v in aligns]
+    # Flatten the matrix row-major: cell_strings[row*n_columns + col].
+    flat = Vector{String}(undef, Int(n_rows) * Int(n_columns))
+    for r = 0:(Int(n_rows)-1), c = 0:(Int(n_columns)-1)
+        flat[r*Int(n_columns)+c+1] = String(cell_strings[r+1, c+1])
+    end
+    cstrs = [Base.unsafe_convert(Cstring, Base.cconvert(Cstring, s)) for s in flat]
+    GC.@preserve flat cstrs begin
+        code = Ref{Int32}(0)
+        rc = ccall(
+            (:pdf_page_builder_table, LIB),
+            Int32,
+            (
+                Ptr{Cvoid},
+                Csize_t,
+                Ptr{Float32},
+                Ptr{Int32},
+                Csize_t,
+                Ptr{Cstring},
+                Int32,
+                Ref{Int32},
+            ),
+            _pagebuilder(p),
+            Csize_t(n_columns),
+            fw,
+            al,
+            Csize_t(n_rows),
+            cstrs,
+            Int32(has_header ? 1 : 0),
+            code,
+        )
+        (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "table"))
+    end
+    return p
+end
+
+"""
+Open a streaming table. `headers`/`widths`/`aligns` are parallel length-`n_columns`
+arrays (aligns: 0=Left/1=Center/2=Right). `repeat_header` repeats the header per page.
+"""
+function streaming_table_begin(
+    p::PageBuilder,
+    headers::AbstractVector{<:AbstractString},
+    widths::AbstractVector{<:Real},
+    aligns::AbstractVector{<:Integer},
+    repeat_header::Bool,
+)
+    n = length(headers)
+    cstrs = [Base.unsafe_convert(Cstring, Base.cconvert(Cstring, s)) for s in headers]
+    fw = Float32[Float32(v) for v in widths]
+    al = Int32[Int32(v) for v in aligns]
+    GC.@preserve headers cstrs begin
+        code = Ref{Int32}(0)
+        rc = ccall(
+            (:pdf_page_builder_streaming_table_begin, LIB),
+            Int32,
+            (
+                Ptr{Cvoid},
+                Csize_t,
+                Ptr{Cstring},
+                Ptr{Float32},
+                Ptr{Int32},
+                Int32,
+                Ref{Int32},
+            ),
+            _pagebuilder(p),
+            Csize_t(n),
+            cstrs,
+            fw,
+            al,
+            Int32(repeat_header ? 1 : 0),
+            code,
+        )
+        (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "streaming_table_begin"))
+    end
+    return p
+end
+
+"""
+Open a streaming table with a column-width `mode` (0=Fixed, 1=Sample, 2=AutoAll).
+`max_rowspan` ≥2 enables rowspans; 0/1 disables.
+"""
+function streaming_table_begin_v2(
+    p::PageBuilder,
+    headers::AbstractVector{<:AbstractString},
+    widths::AbstractVector{<:Real},
+    aligns::AbstractVector{<:Integer},
+    repeat_header::Bool,
+    mode::Integer,
+    sample_rows::Integer,
+    min_col_width_pt::Real,
+    max_col_width_pt::Real,
+    max_rowspan::Integer,
+)
+    n = length(headers)
+    cstrs = [Base.unsafe_convert(Cstring, Base.cconvert(Cstring, s)) for s in headers]
+    fw = Float32[Float32(v) for v in widths]
+    al = Int32[Int32(v) for v in aligns]
+    GC.@preserve headers cstrs begin
+        code = Ref{Int32}(0)
+        rc = ccall(
+            (:pdf_page_builder_streaming_table_begin_v2, LIB),
+            Int32,
+            (
+                Ptr{Cvoid},
+                Csize_t,
+                Ptr{Cstring},
+                Ptr{Float32},
+                Ptr{Int32},
+                Int32,
+                Int32,
+                Csize_t,
+                Float32,
+                Float32,
+                Csize_t,
+                Ref{Int32},
+            ),
+            _pagebuilder(p),
+            Csize_t(n),
+            cstrs,
+            fw,
+            al,
+            Int32(repeat_header ? 1 : 0),
+            Int32(mode),
+            Csize_t(sample_rows),
+            Float32(min_col_width_pt),
+            Float32(max_col_width_pt),
+            Csize_t(max_rowspan),
+            code,
+        )
+        (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "streaming_table_begin_v2"))
+    end
+    return p
+end
+
+"""Set the batch size for the currently-open streaming table (0 defaults to 256)."""
+function streaming_table_set_batch_size(p::PageBuilder, batch_size::Integer)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_streaming_table_set_batch_size, LIB),
+        Int32,
+        (Ptr{Cvoid}, Csize_t, Ref{Int32}),
+        _pagebuilder(p),
+        Csize_t(batch_size),
+        code,
+    )
+    (rc != 0 || code[] != 0) &&
+        throw(PdfOxideError(code[], "streaming_table_set_batch_size"))
+    return p
+end
+
+"""Rows pushed since the last batch boundary (0 if no table is open)."""
+streaming_table_pending_row_count(p::PageBuilder) = Int(
+    ccall(
+        (:pdf_page_builder_streaming_table_pending_row_count, LIB),
+        Csize_t,
+        (Ptr{Cvoid},),
+        _pagebuilder(p),
+    ),
+)
+
+"""Number of complete batches recorded so far (0 if no table is open)."""
+streaming_table_batch_count(p::PageBuilder) = Int(
+    ccall(
+        (:pdf_page_builder_streaming_table_batch_count, LIB),
+        Csize_t,
+        (Ptr{Cvoid},),
+        _pagebuilder(p),
+    ),
+)
+
+"""Push one row of `cells` into the open streaming table (all rowspan=1)."""
+function streaming_table_push_row(p::PageBuilder, cells::AbstractVector{<:AbstractString})
+    cstrs = [Base.unsafe_convert(Cstring, Base.cconvert(Cstring, s)) for s in cells]
+    GC.@preserve cells cstrs begin
+        code = Ref{Int32}(0)
+        rc = ccall(
+            (:pdf_page_builder_streaming_table_push_row, LIB),
+            Int32,
+            (Ptr{Cvoid}, Csize_t, Ptr{Cstring}, Ref{Int32}),
+            _pagebuilder(p),
+            Csize_t(length(cstrs)),
+            cstrs,
+            code,
+        )
+        (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "streaming_table_push_row"))
+    end
+    return p
+end
+
+"""
+Push one row of `cells` with per-cell `rowspans` (1=normal, ≥2=span). Pass an
+empty `rowspans` to treat every cell as rowspan=1.
+"""
+function streaming_table_push_row_v2(
+    p::PageBuilder,
+    cells::AbstractVector{<:AbstractString},
+    rowspans::AbstractVector{<:Integer},
+)
+    cstrs = [Base.unsafe_convert(Cstring, Base.cconvert(Cstring, s)) for s in cells]
+    spans = Csize_t[Csize_t(v) for v in rowspans]
+    GC.@preserve cells cstrs spans begin
+        code = Ref{Int32}(0)
+        rc = ccall(
+            (:pdf_page_builder_streaming_table_push_row_v2, LIB),
+            Int32,
+            (Ptr{Cvoid}, Csize_t, Ptr{Cstring}, Ptr{Csize_t}, Ref{Int32}),
+            _pagebuilder(p),
+            Csize_t(length(cstrs)),
+            cstrs,
+            isempty(spans) ? C_NULL : spans,
+            code,
+        )
+        (rc != 0 || code[] != 0) &&
+            throw(PdfOxideError(code[], "streaming_table_push_row_v2"))
+    end
+    return p
+end
+
+"""
+Commit this page's buffered operations to its parent builder. **Consumes** the
+page handle — the wrapper's pointer is nulled so it will not be double-freed.
+"""
+function done(p::PageBuilder)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_done, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _pagebuilder(p),
+        code,
+    )
+    if rc != 0 || code[] != 0
+        throw(PdfOxideError(code[], "done"))
+    end
+    # Success: the page was consumed by the parent builder; do NOT free it again.
+    p.handle = C_NULL
+    return nothing
+end
+
+# ── Phase-6 digital signatures / PKI / timestamps / TSA / validation ────────────
+# Mirrors the established binding patterns: opaque native handles wrapped in
+# mutable structs freed on close!/finalization; the PdfOxideError code helpers;
+# _take_string (free_string), free_bytes byte-take, and closed-handle guards.
+# All ccalls reference their C symbol as a LITERAL (generated families use
+# @eval + QuoteNode). Methods use snake_case (Julia idiom); indices are 0-based.
+
+# Copy a `const uint8_t *` return (out-len out-param) into a Julia Vector WITHOUT
+# freeing it — the timestamp token/message-imprint getters return a borrowed
+# pointer into the handle's storage (NOT an owned buffer), so free_bytes here
+# would corrupt the handle.
+function _copy_const_bytes(ptr::Ptr{UInt8}, len::Csize_t, code::Int32, op::String)
+    ptr == C_NULL && throw(PdfOxideError(code, op))
+    n = Int(len)
+    return copy(unsafe_wrap(Array, ptr, n < 0 ? 0 : n))
+end
+
+# ── Logging ─────────────────────────────────────────────────────────────────────
+"""Set the global log level (0=Off 1=Error 2=Warn 3=Info 4=Debug 5=Trace)."""
+set_log_level(level::Integer) =
+    ccall((:pdf_oxide_set_log_level, LIB), Cvoid, (Int32,), Int32(level))
+
+"""Get the current global log level (0-5)."""
+get_log_level() = Int(ccall((:pdf_oxide_get_log_level, LIB), Int32, ()))
+
+# ── Certificate ───────────────────────────────────────────────────────────────
+"""Signing credentials (certificate + private key) over the C ABI."""
+mutable struct Certificate
+    handle::Ptr{Cvoid}
+    function Certificate(h::Ptr{Cvoid})
+        c = new(h)
+        finalizer(close!, c)
+        return c
+    end
+end
+
+"""Free the native certificate handle now (idempotent; also runs at finalization)."""
+function close!(c::Certificate)
+    if c.handle != C_NULL
+        ccall((:pdf_certificate_free, LIB), Cvoid, (Ptr{Cvoid},), c.handle)
+        c.handle = C_NULL
+    end
+    return nothing
+end
+
+_cert(c::Certificate) = (c.handle == C_NULL && error("Certificate is closed"); c.handle)
+
+"""Load signing credentials from PKCS#12 / PFX bytes (optionally password-protected)."""
+function certificate_load_from_bytes(
+    data::AbstractVector{UInt8},
+    password::AbstractString = "",
+)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_certificate_load_from_bytes, LIB),
+        Ptr{Cvoid},
+        (Ptr{UInt8}, Int32, Cstring, Ref{Int32}),
+        data,
+        Int32(length(data)),
+        password,
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "certificate_load_from_bytes"))
+    return Certificate(h)
+end
+
+"""Load signing credentials from PEM-encoded certificate + private-key strings."""
+function certificate_load_from_pem(cert_pem::AbstractString, key_pem::AbstractString)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_certificate_load_from_pem, LIB),
+        Ptr{Cvoid},
+        (Cstring, Cstring, Ref{Int32}),
+        cert_pem,
+        key_pem,
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "certificate_load_from_pem"))
+    return Certificate(h)
+end
+
+# String accessors over a const void* certificate pointer (free_string return).
+for (jl_fn, c_fn) in (
+    (:certificate_get_subject, :pdf_certificate_get_subject),
+    (:certificate_get_issuer, :pdf_certificate_get_issuer),
+    (:certificate_get_serial, :pdf_certificate_get_serial),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(c::Certificate)
+        code = Ref{Int32}(0)
+        ptr = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Ptr{UInt8},
+            (Ptr{Cvoid}, Ref{Int32}),
+            _cert(c),
+            code,
+        )
+        return _take_string(ptr, code[], $op)
+    end
+end
+
+"""Certificate validity window as `(not_before, not_after)` Unix epoch seconds."""
+function certificate_get_validity(c::Certificate)
+    nb = Ref{Int64}(0)
+    na = Ref{Int64}(0)
+    code = Ref{Int32}(0)
+    ccall(
+        (:pdf_certificate_get_validity, LIB),
+        Cvoid,
+        (Ptr{Cvoid}, Ref{Int64}, Ref{Int64}, Ref{Int32}),
+        _cert(c),
+        nb,
+        na,
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "certificate_get_validity"))
+    return (Int(nb[]), Int(na[]))
+end
+
+"""Whether the certificate is currently valid (not expired / not-yet-valid)."""
+function certificate_is_valid(c::Certificate)
+    code = Ref{Int32}(0)
+    v = ccall(
+        (:pdf_certificate_is_valid, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _cert(c),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "certificate_is_valid"))
+    return v != 0
+end
+
+# ── Signing (top-level: return owned byte buffers via free_bytes) ─────────────────
+"""Sign raw PDF bytes with `cert`; returns the signed PDF as a `Vector{UInt8}`."""
+function sign_bytes(
+    pdf::AbstractVector{UInt8},
+    cert::Certificate,
+    reason::AbstractString,
+    location::AbstractString,
+)
+    len = Ref{Csize_t}(0)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_sign_bytes, LIB),
+        Ptr{UInt8},
+        (Ptr{UInt8}, Csize_t, Ptr{Cvoid}, Cstring, Cstring, Ref{Csize_t}, Ref{Int32}),
+        pdf,
+        Csize_t(length(pdf)),
+        _cert(cert),
+        reason,
+        location,
+        len,
+        code,
+    )
+    return _take_bytes_uptr(ptr, len[], code[], "sign_bytes")
+end
+
+# Marshal one parallel byte-array-array (Vec of buffers) into the
+# (const uint8* const*, const uintptr* lens) pair the C ABI expects. The
+# returned GC-roots keep the inner Julia buffers alive across the ccall.
+function _marshal_byte_arrays(arrs::AbstractVector{<:AbstractVector{UInt8}})
+    bufs = [Vector{UInt8}(a) for a in arrs]
+    ptrs = Ptr{UInt8}[pointer(b) for b in bufs]
+    lens = Csize_t[Csize_t(length(b)) for b in bufs]
+    return (ptrs, lens, Csize_t(length(bufs)), bufs)
+end
+
+"""
+Sign raw PDF bytes at a PAdES baseline `level` (0=B-B 1=B-T 2=B-LT). `tsa_url`
+is the RFC 3161 timestamp source (required for level >= 1). The three parallel
+byte-array lists carry the B-LT revocation material (DER certs / CRLs / OCSPs).
+Returns the signed PDF as a `Vector{UInt8}`.
+"""
+function sign_bytes_pades(
+    pdf::AbstractVector{UInt8},
+    cert::Certificate,
+    level::Integer,
+    tsa_url::Union{Nothing,AbstractString},
+    reason::AbstractString,
+    location::AbstractString;
+    certs::AbstractVector{<:AbstractVector{UInt8}} = Vector{UInt8}[],
+    crls::AbstractVector{<:AbstractVector{UInt8}} = Vector{UInt8}[],
+    ocsps::AbstractVector{<:AbstractVector{UInt8}} = Vector{UInt8}[],
+)
+    cp, cl, cn, _kc = _marshal_byte_arrays(certs)
+    rp, rl, rn, _kr = _marshal_byte_arrays(crls)
+    op, ol, on, _ko = _marshal_byte_arrays(ocsps)
+    tsa = tsa_url === nothing ? C_NULL : tsa_url
+    len = Ref{Csize_t}(0)
+    code = Ref{Int32}(0)
+    ptr = GC.@preserve _kc _kr _ko cp cl rp rl op ol ccall(
+        (:pdf_sign_bytes_pades, LIB),
+        Ptr{UInt8},
+        (
+            Ptr{UInt8},
+            Csize_t,
+            Ptr{Cvoid},
+            Int32,
+            Cstring,
+            Cstring,
+            Cstring,
+            Ptr{Ptr{UInt8}},
+            Ptr{Csize_t},
+            Csize_t,
+            Ptr{Ptr{UInt8}},
+            Ptr{Csize_t},
+            Csize_t,
+            Ptr{Ptr{UInt8}},
+            Ptr{Csize_t},
+            Csize_t,
+            Ref{Csize_t},
+            Ref{Int32},
+        ),
+        pdf,
+        Csize_t(length(pdf)),
+        _cert(cert),
+        Int32(level),
+        tsa,
+        reason,
+        location,
+        cp,
+        cl,
+        cn,
+        rp,
+        rl,
+        rn,
+        op,
+        ol,
+        on,
+        len,
+        code,
+    )
+    return _take_bytes_uptr(ptr, len[], code[], "sign_bytes_pades")
+end
+
+# Mirror of the C `PadesSignOptionsC` #[repr(C)] struct (field order/types exact).
+struct PadesSignOptionsC
+    certificate_handle::Ptr{Cvoid}
+    certs::Ptr{Ptr{UInt8}}
+    cert_lens::Ptr{Csize_t}
+    n_certs::Csize_t
+    crls::Ptr{Ptr{UInt8}}
+    crl_lens::Ptr{Csize_t}
+    n_crls::Csize_t
+    ocsps::Ptr{Ptr{UInt8}}
+    ocsp_lens::Ptr{Csize_t}
+    n_ocsps::Csize_t
+    tsa_url::Cstring
+    reason::Cstring
+    location::Cstring
+    level::Int32
+end
+
+"""
+Struct-options variant of [`sign_bytes_pades`] — builds the `PadesSignOptionsC`
+struct and delegates to `pdf_sign_bytes_pades_opts`. Behaviour is identical.
+Returns the signed PDF as a `Vector{UInt8}`.
+"""
+function sign_bytes_pades_opts(
+    pdf::AbstractVector{UInt8},
+    cert::Certificate,
+    level::Integer,
+    tsa_url::Union{Nothing,AbstractString},
+    reason::AbstractString,
+    location::AbstractString;
+    certs::AbstractVector{<:AbstractVector{UInt8}} = Vector{UInt8}[],
+    crls::AbstractVector{<:AbstractVector{UInt8}} = Vector{UInt8}[],
+    ocsps::AbstractVector{<:AbstractVector{UInt8}} = Vector{UInt8}[],
+)
+    cp, cl, cn, _kc = _marshal_byte_arrays(certs)
+    rp, rl, rn, _kr = _marshal_byte_arrays(crls)
+    op, ol, on, _ko = _marshal_byte_arrays(ocsps)
+    # NUL-terminated C strings kept alive for the ccall duration.
+    tsa_c =
+        tsa_url === nothing ? UInt8[0] : Vector{UInt8}(codeunits(string(tsa_url) * "\0"))
+    reason_c = Vector{UInt8}(codeunits(string(reason) * "\0"))
+    location_c = Vector{UInt8}(codeunits(string(location) * "\0"))
+    len = Ref{Csize_t}(0)
+    code = Ref{Int32}(0)
+    ptr = GC.@preserve _kc _kr _ko cp cl rp rl op ol tsa_c reason_c location_c begin
+        # Empty parallel arrays marshal to a NULL pointer (count 0).
+        ptr_or_null(a) = isempty(a) ? Ptr{Ptr{UInt8}}(0) : pointer(a)
+        lens_or_null(a) = isempty(a) ? Ptr{Csize_t}(0) : pointer(a)
+        opts = PadesSignOptionsC(
+            _cert(cert),
+            ptr_or_null(cp),
+            lens_or_null(cl),
+            cn,
+            ptr_or_null(rp),
+            lens_or_null(rl),
+            rn,
+            ptr_or_null(op),
+            lens_or_null(ol),
+            on,
+            tsa_url === nothing ? Cstring(C_NULL) : Cstring(pointer(tsa_c)),
+            Cstring(pointer(reason_c)),
+            Cstring(pointer(location_c)),
+            Int32(level),
+        )
+        ref = Ref(opts)
+        GC.@preserve ref ccall(
+            (:pdf_sign_bytes_pades_opts, LIB),
+            Ptr{UInt8},
+            (Ptr{UInt8}, Csize_t, Ptr{PadesSignOptionsC}, Ref{Csize_t}, Ref{Int32}),
+            pdf,
+            Csize_t(length(pdf)),
+            ref,
+            len,
+            code,
+        )
+    end
+    return _take_bytes_uptr(ptr, len[], code[], "sign_bytes_pades_opts")
+end
+
+# ── SignatureInfo ─────────────────────────────────────────────────────────────
+"""A digital signature extracted from a PDF (FfiSignatureInfo over the C ABI)."""
+mutable struct SignatureInfo
+    handle::Ptr{Cvoid}
+    function SignatureInfo(h::Ptr{Cvoid})
+        s = new(h)
+        finalizer(close!, s)
+        return s
+    end
+end
+
+"""Free the native signature handle now (idempotent; also runs at finalization)."""
+function close!(s::SignatureInfo)
+    if s.handle != C_NULL
+        ccall((:pdf_signature_free, LIB), Cvoid, (Ptr{Cvoid},), s.handle)
+        s.handle = C_NULL
+    end
+    return nothing
+end
+
+_sig(s::SignatureInfo) = (s.handle == C_NULL && error("SignatureInfo is closed"); s.handle)
+
+# String accessors over the signature handle (free_string return).
+for (jl_fn, c_fn) in (
+    (:signature_get_signer_name, :pdf_signature_get_signer_name),
+    (:signature_get_signing_reason, :pdf_signature_get_signing_reason),
+    (:signature_get_signing_location, :pdf_signature_get_signing_location),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(s::SignatureInfo)
+        code = Ref{Int32}(0)
+        ptr = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Ptr{UInt8},
+            (Ptr{Cvoid}, Ref{Int32}),
+            _sig(s),
+            code,
+        )
+        return _take_string(ptr, code[], $op)
+    end
+end
+
+"""Signing time as Unix epoch seconds."""
+function signature_get_signing_time(s::SignatureInfo)
+    code = Ref{Int32}(0)
+    t = ccall(
+        (:pdf_signature_get_signing_time, LIB),
+        Int64,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _sig(s),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "signature_get_signing_time"))
+    return Int(t)
+end
+
+"""Signer's `Certificate` (owned; free via close!)."""
+function signature_get_certificate(s::SignatureInfo)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_signature_get_certificate, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _sig(s),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "signature_get_certificate"))
+    return Certificate(h)
+end
+
+"""PAdES level code of the signature, or throws on error."""
+function signature_get_pades_level(s::SignatureInfo)
+    code = Ref{Int32}(0)
+    v = ccall(
+        (:pdf_signature_get_pades_level, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _sig(s),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "signature_get_pades_level"))
+    return Int(v)
+end
+
+"""Whether the signature carries an embedded RFC 3161 timestamp."""
+function signature_has_timestamp(s::SignatureInfo)
+    code = Ref{Int32}(0)
+    v = ccall(
+        (:pdf_signature_has_timestamp, LIB),
+        Bool,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _sig(s),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "signature_has_timestamp"))
+    return v
+end
+
+"""The signature's embedded `Timestamp` (owned; free via close!)."""
+function signature_get_timestamp(s::SignatureInfo)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_signature_get_timestamp, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _sig(s),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "signature_get_timestamp"))
+    return Timestamp(h)
+end
+
+"""Attach `ts` to the signature; returns `true` on success."""
+function signature_add_timestamp(s::SignatureInfo, ts)
+    code = Ref{Int32}(0)
+    v = ccall(
+        (:pdf_signature_add_timestamp, LIB),
+        Bool,
+        (Ptr{Cvoid}, Ptr{Cvoid}, Ref{Int32}),
+        _sig(s),
+        _ts(ts),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "signature_add_timestamp"))
+    return v
+end
+
+"""Run the signer-attributes crypto check. Returns 1=valid 0=invalid -1=unknown."""
+function signature_verify(s::SignatureInfo)
+    code = Ref{Int32}(0)
+    v = ccall((:pdf_signature_verify, LIB), Int32, (Ptr{Cvoid}, Ref{Int32}), _sig(s), code)
+    code[] != 0 && throw(PdfOxideError(code[], "signature_verify"))
+    return Int(v)
+end
+
+"""End-to-end verify against the full `pdf` bytes. Returns 1=valid 0=invalid -1=unknown."""
+function signature_verify_detached(s::SignatureInfo, pdf::AbstractVector{UInt8})
+    code = Ref{Int32}(0)
+    v = ccall(
+        (:pdf_signature_verify_detached, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ptr{UInt8}, Csize_t, Ref{Int32}),
+        _sig(s),
+        pdf,
+        Csize_t(length(pdf)),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "signature_verify_detached"))
+    return Int(v)
+end
+
+# ── Timestamp ─────────────────────────────────────────────────────────────────
+"""A parsed RFC 3161 timestamp token (owned handle over the C ABI)."""
+mutable struct Timestamp
+    handle::Ptr{Cvoid}
+    function Timestamp(h::Ptr{Cvoid})
+        t = new(h)
+        finalizer(close!, t)
+        return t
+    end
+end
+
+"""Free the native timestamp handle now (idempotent; also runs at finalization)."""
+function close!(t::Timestamp)
+    if t.handle != C_NULL
+        ccall((:pdf_timestamp_free, LIB), Cvoid, (Ptr{Cvoid},), t.handle)
+        t.handle = C_NULL
+    end
+    return nothing
+end
+
+_ts(t::Timestamp) = (t.handle == C_NULL && error("Timestamp is closed"); t.handle)
+
+"""Parse a DER-encoded RFC 3161 TimeStampToken (or bare TSTInfo) into a `Timestamp`."""
+function timestamp_parse(data::AbstractVector{UInt8})
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_timestamp_parse, LIB),
+        Ptr{Cvoid},
+        (Ptr{UInt8}, Csize_t, Ref{Int32}),
+        data,
+        Csize_t(length(data)),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "timestamp_parse"))
+    return Timestamp(h)
+end
+
+# const uint8_t* + out-len getters — COPY the borrowed bytes, do NOT free_bytes.
+for (jl_fn, c_fn) in (
+    (:timestamp_get_token, :pdf_timestamp_get_token),
+    (:timestamp_get_message_imprint, :pdf_timestamp_get_message_imprint),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(t::Timestamp)
+        len = Ref{Csize_t}(0)
+        code = Ref{Int32}(0)
+        ptr = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Ptr{UInt8},
+            (Ptr{Cvoid}, Ref{Csize_t}, Ref{Int32}),
+            _ts(t),
+            len,
+            code,
+        )
+        return _copy_const_bytes(ptr, len[], code[], $op)
+    end
+end
+
+"""Timestamp time as Unix epoch seconds."""
+function timestamp_get_time(t::Timestamp)
+    code = Ref{Int32}(0)
+    v = ccall((:pdf_timestamp_get_time, LIB), Int64, (Ptr{Cvoid}, Ref{Int32}), _ts(t), code)
+    code[] != 0 && throw(PdfOxideError(code[], "timestamp_get_time"))
+    return Int(v)
+end
+
+# String getters over the timestamp handle (free_string return).
+for (jl_fn, c_fn) in (
+    (:timestamp_get_serial, :pdf_timestamp_get_serial),
+    (:timestamp_get_tsa_name, :pdf_timestamp_get_tsa_name),
+    (:timestamp_get_policy_oid, :pdf_timestamp_get_policy_oid),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(t::Timestamp)
+        code = Ref{Int32}(0)
+        ptr = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Ptr{UInt8},
+            (Ptr{Cvoid}, Ref{Int32}),
+            _ts(t),
+            code,
+        )
+        return _take_string(ptr, code[], $op)
+    end
+end
+
+"""Digest algorithm code of the timestamp's message imprint."""
+function timestamp_get_hash_algorithm(t::Timestamp)
+    code = Ref{Int32}(0)
+    v = ccall(
+        (:pdf_timestamp_get_hash_algorithm, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _ts(t),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "timestamp_get_hash_algorithm"))
+    return Int(v)
+end
+
+"""Whether the timestamp token verifies (bool)."""
+function timestamp_verify(t::Timestamp)
+    code = Ref{Int32}(0)
+    v = ccall((:pdf_timestamp_verify, LIB), Bool, (Ptr{Cvoid}, Ref{Int32}), _ts(t), code)
+    code[] != 0 && throw(PdfOxideError(code[], "timestamp_verify"))
+    return v
+end
+
+# ── TSA client ────────────────────────────────────────────────────────────────
+"""An RFC 3161 Time-Stamping Authority client (owned handle over the C ABI)."""
+mutable struct TsaClient
+    handle::Ptr{Cvoid}
+    function TsaClient(h::Ptr{Cvoid})
+        t = new(h)
+        finalizer(close!, t)
+        return t
+    end
+end
+
+"""Free the native TSA-client handle now (idempotent; also runs at finalization)."""
+function close!(t::TsaClient)
+    if t.handle != C_NULL
+        ccall((:pdf_tsa_client_free, LIB), Cvoid, (Ptr{Cvoid},), t.handle)
+        t.handle = C_NULL
+    end
+    return nothing
+end
+
+_tsa(t::TsaClient) = (t.handle == C_NULL && error("TsaClient is closed"); t.handle)
+
+"""Create a TSA client for `url` (optional basic-auth, timeout, hash algo, nonce, cert-req)."""
+function tsa_client_create(
+    url::AbstractString;
+    username::Union{Nothing,AbstractString} = nothing,
+    password::Union{Nothing,AbstractString} = nothing,
+    timeout::Integer = 30,
+    hash_algo::Integer = 0,
+    use_nonce::Bool = true,
+    cert_req::Bool = true,
+)
+    code = Ref{Int32}(0)
+    u = username === nothing ? C_NULL : username
+    p = password === nothing ? C_NULL : password
+    h = ccall(
+        (:pdf_tsa_client_create, LIB),
+        Ptr{Cvoid},
+        (Cstring, Cstring, Cstring, Int32, Int32, Bool, Bool, Ref{Int32}),
+        url,
+        u,
+        p,
+        Int32(timeout),
+        Int32(hash_algo),
+        use_nonce,
+        cert_req,
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "tsa_client_create"))
+    return TsaClient(h)
+end
+
+"""Request a timestamp over `data`; returns a `Timestamp` (performs network I/O)."""
+function tsa_request_timestamp(t::TsaClient, data::AbstractVector{UInt8})
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_tsa_request_timestamp, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Ptr{UInt8}, Csize_t, Ref{Int32}),
+        _tsa(t),
+        data,
+        Csize_t(length(data)),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "tsa_request_timestamp"))
+    return Timestamp(h)
+end
+
+"""Request a timestamp over a precomputed `hash`; returns a `Timestamp`."""
+function tsa_request_timestamp_hash(
+    t::TsaClient,
+    hash::AbstractVector{UInt8},
+    hash_algo::Integer,
+)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_tsa_request_timestamp_hash, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Ptr{UInt8}, Csize_t, Int32, Ref{Int32}),
+        _tsa(t),
+        hash,
+        Csize_t(length(hash)),
+        Int32(hash_algo),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "tsa_request_timestamp_hash"))
+    return Timestamp(h)
+end
+
+# ── DSS (Document Security Store) ────────────────────────────────────────────────
+"""A document `/DSS` (validation material) over the C ABI."""
+mutable struct Dss
+    handle::Ptr{Cvoid}
+    function Dss(h::Ptr{Cvoid})
+        d = new(h)
+        finalizer(close!, d)
+        return d
+    end
+end
+
+"""Free the native DSS handle now (idempotent; also runs at finalization)."""
+function close!(d::Dss)
+    if d.handle != C_NULL
+        ccall((:pdf_dss_free, LIB), Cvoid, (Ptr{Cvoid},), d.handle)
+        d.handle = C_NULL
+    end
+    return nothing
+end
+
+_dss(d::Dss) = (d.handle == C_NULL && error("Dss is closed"); d.handle)
+
+"""
+Read the document `/DSS` into a `Dss`, or `nothing` when the document has no DSS
+(not an error). The `Dss` handle is owned and freed via close!.
+"""
+function document_get_dss(doc::PdfDocument)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_document_get_dss, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _doc(doc),
+        code,
+    )
+    if h == C_NULL
+        code[] != 0 && throw(PdfOxideError(code[], "document_get_dss"))
+        return nothing
+    end
+    return Dss(h)
+end
+
+# Count accessors (no error out-param).
+for (jl_fn, c_fn) in (
+    (:dss_cert_count, :pdf_dss_cert_count),
+    (:dss_crl_count, :pdf_dss_crl_count),
+    (:dss_ocsp_count, :pdf_dss_ocsp_count),
+    (:dss_vri_count, :pdf_dss_vri_count),
+)
+    @eval $jl_fn(d::Dss) =
+        Int(ccall(($(QuoteNode(c_fn)), LIB), Int32, (Ptr{Cvoid},), _dss(d)))
+end
+
+# Indexed DER getters returning owned buffers (free via free_bytes).
+for (jl_fn, c_fn) in (
+    (:dss_get_cert, :pdf_dss_get_cert),
+    (:dss_get_crl, :pdf_dss_get_crl),
+    (:dss_get_ocsp, :pdf_dss_get_ocsp),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(d::Dss, index::Integer)
+        len = Ref{Csize_t}(0)
+        code = Ref{Int32}(0)
+        ptr = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Ptr{UInt8},
+            (Ptr{Cvoid}, Int32, Ref{Csize_t}, Ref{Int32}),
+            _dss(d),
+            Int32(index),
+            len,
+            code,
+        )
+        return _take_bytes_uptr(ptr, len[], code[], $op)
+    end
+end
+
+# ── Validation (PDF/A, PDF/UA, PDF/X) ────────────────────────────────────────────
+"""PDF/A validation result (FfiPdfAResults, freed on close!/finalization)."""
+mutable struct PdfAResults
+    handle::Ptr{Cvoid}
+    function PdfAResults(h::Ptr{Cvoid})
+        r = new(h)
+        finalizer(close!, r)
+        return r
+    end
+end
+function close!(r::PdfAResults)
+    if r.handle != C_NULL
+        ccall((:pdf_pdf_a_results_free, LIB), Cvoid, (Ptr{Cvoid},), r.handle)
+        r.handle = C_NULL
+    end
+    return nothing
+end
+_pdfa(r::PdfAResults) = (r.handle == C_NULL && error("PdfAResults is closed"); r.handle)
+
+"""PDF/UA validation result (FfiUaResults, freed on close!/finalization)."""
+mutable struct UaResults
+    handle::Ptr{Cvoid}
+    function UaResults(h::Ptr{Cvoid})
+        r = new(h)
+        finalizer(close!, r)
+        return r
+    end
+end
+function close!(r::UaResults)
+    if r.handle != C_NULL
+        ccall((:pdf_pdf_ua_results_free, LIB), Cvoid, (Ptr{Cvoid},), r.handle)
+        r.handle = C_NULL
+    end
+    return nothing
+end
+_ua(r::UaResults) = (r.handle == C_NULL && error("UaResults is closed"); r.handle)
+
+"""PDF/X validation result (FfiPdfXResults, freed on close!/finalization)."""
+mutable struct PdfXResults
+    handle::Ptr{Cvoid}
+    function PdfXResults(h::Ptr{Cvoid})
+        r = new(h)
+        finalizer(close!, r)
+        return r
+    end
+end
+function close!(r::PdfXResults)
+    if r.handle != C_NULL
+        ccall((:pdf_pdf_x_results_free, LIB), Cvoid, (Ptr{Cvoid},), r.handle)
+        r.handle = C_NULL
+    end
+    return nothing
+end
+_pdfx(r::PdfXResults) = (r.handle == C_NULL && error("PdfXResults is closed"); r.handle)
+
+"""Validate the document against PDF/A at `level`; returns a `PdfAResults`."""
+function validate_pdf_a(doc::PdfDocument, level::Integer)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_validate_pdf_a_level, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _doc(doc),
+        Int32(level),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "validate_pdf_a"))
+    return PdfAResults(h)
+end
+
+"""Validate the document against PDF/UA at `level`; returns a `UaResults`."""
+function validate_pdf_ua(doc::PdfDocument, level::Integer)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_validate_pdf_ua, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _doc(doc),
+        Int32(level),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "validate_pdf_ua"))
+    return UaResults(h)
+end
+
+"""Validate the document against PDF/X at `level`; returns a `PdfXResults`."""
+function validate_pdf_x(doc::PdfDocument, level::Integer)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_validate_pdf_x_level, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _doc(doc),
+        Int32(level),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "validate_pdf_x"))
+    return PdfXResults(h)
+end
+
+"""Whether the document is PDF/A compliant (bool)."""
+function is_compliant(r::PdfAResults)
+    code = Ref{Int32}(0)
+    v = ccall(
+        (:pdf_pdf_a_is_compliant, LIB),
+        Bool,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _pdfa(r),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "is_compliant"))
+    return v
+end
+
+"""Whether the document is PDF/UA accessible (bool)."""
+function is_accessible(r::UaResults)
+    code = Ref{Int32}(0)
+    v = ccall(
+        (:pdf_pdf_ua_is_accessible, LIB),
+        Bool,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _ua(r),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "is_accessible"))
+    return v
+end
+
+"""Whether the document is PDF/X compliant (bool)."""
+function is_compliant(r::PdfXResults)
+    code = Ref{Int32}(0)
+    v = ccall(
+        (:pdf_pdf_x_is_compliant, LIB),
+        Bool,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _pdfx(r),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "is_compliant"))
+    return v
+end
+
+# Per-result error/warning collectors. Each builds a Vector{String} from the
+# count + indexed getter, mirroring the index-addressed list pattern.
+# Generated with @eval so each ccall references its C function as a LITERAL
+# symbol (ccall forbids a variable function name). One collector per (count,get).
+for (count_fn, get_fn) in (
+    (:pdf_pdf_a_error_count, :pdf_pdf_a_get_error),
+    (:pdf_pdf_a_warning_count, :pdf_pdf_a_get_error),
+    (:pdf_pdf_ua_error_count, :pdf_pdf_ua_get_error),
+    (:pdf_pdf_ua_warning_count, :pdf_pdf_ua_get_warning),
+    (:pdf_pdf_x_error_count, :pdf_pdf_x_get_error),
+)
+    fname = Symbol("_collect_", count_fn)
+    @eval function $fname(handle, op::String)
+        n = ccall(($(QuoteNode(count_fn)), LIB), Int32, (Ptr{Cvoid},), handle)
+        out = String[]
+        for i = 0:(Int(n)-1)
+            code = Ref{Int32}(0)
+            ptr = ccall(
+                ($(QuoteNode(get_fn)), LIB),
+                Ptr{UInt8},
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                handle,
+                Int32(i),
+                code,
+            )
+            push!(out, _take_string(ptr, code[], op))
+        end
+        return out
+    end
+end
+
+"""PDF/A error messages as a `Vector{String}`."""
+errors(r::PdfAResults) = _collect_pdf_pdf_a_error_count(_pdfa(r), "errors")
+"""PDF/A warning messages as a `Vector{String}`."""
+warnings(r::PdfAResults) = _collect_pdf_pdf_a_warning_count(_pdfa(r), "warnings")
+"""PDF/UA error messages as a `Vector{String}`."""
+errors(r::UaResults) = _collect_pdf_pdf_ua_error_count(_ua(r), "errors")
+"""PDF/UA warning messages as a `Vector{String}`."""
+warnings(r::UaResults) = _collect_pdf_pdf_ua_warning_count(_ua(r), "warnings")
+"""PDF/X error messages as a `Vector{String}`."""
+errors(r::PdfXResults) = _collect_pdf_pdf_x_error_count(_pdfx(r), "errors")
+"""PDF/X has no warning channel; returns an empty `Vector{String}`."""
+warnings(::PdfXResults) = String[]
+
+"""PDF/A error count (Int)."""
+pdf_a_error_count(r::PdfAResults) =
+    Int(ccall((:pdf_pdf_a_error_count, LIB), Int32, (Ptr{Cvoid},), _pdfa(r)))
+"""PDF/A warning count (Int)."""
+pdf_a_warning_count(r::PdfAResults) =
+    Int(ccall((:pdf_pdf_a_warning_count, LIB), Int32, (Ptr{Cvoid},), _pdfa(r)))
+"""PDF/UA error count (Int)."""
+pdf_ua_error_count(r::UaResults) =
+    Int(ccall((:pdf_pdf_ua_error_count, LIB), Int32, (Ptr{Cvoid},), _ua(r)))
+"""PDF/UA warning count (Int)."""
+pdf_ua_warning_count(r::UaResults) =
+    Int(ccall((:pdf_pdf_ua_warning_count, LIB), Int32, (Ptr{Cvoid},), _ua(r)))
+"""PDF/X error count (Int)."""
+pdf_x_error_count(r::PdfXResults) =
+    Int(ccall((:pdf_pdf_x_error_count, LIB), Int32, (Ptr{Cvoid},), _pdfx(r)))
+
+"""
+PDF/UA accessibility-element statistics: a `NamedTuple` of element counts
+`(structure, images, tables, forms, annotations, pages)`.
+"""
+function ua_stats(r::UaResults)
+    s = Ref{Int32}(0)
+    im = Ref{Int32}(0)
+    tb = Ref{Int32}(0)
+    fm = Ref{Int32}(0)
+    an = Ref{Int32}(0)
+    pg = Ref{Int32}(0)
+    code = Ref{Int32}(0)
+    ok = ccall(
+        (:pdf_pdf_ua_get_stats, LIB),
+        Bool,
+        (
+            Ptr{Cvoid},
+            Ref{Int32},
+            Ref{Int32},
+            Ref{Int32},
+            Ref{Int32},
+            Ref{Int32},
+            Ref{Int32},
+            Ref{Int32},
+        ),
+        _ua(r),
+        s,
+        im,
+        tb,
+        fm,
+        an,
+        pg,
+        code,
+    )
+    (code[] != 0 || !ok) && throw(PdfOxideError(code[], "ua_stats"))
+    return (
+        structure = Int(s[]),
+        images = Int(im[]),
+        tables = Int(tb[]),
+        forms = Int(fm[]),
+        annotations = Int(an[]),
+        pages = Int(pg[]),
+    )
+end
+
+# Document-level convenience aliases mirroring the cross-binding naming.
+"""Validate `doc` against PDF/A `level` (alias of [`validate_pdf_a`])."""
+validatePdfA(doc::PdfDocument, level::Integer) = validate_pdf_a(doc, level)
+"""Validate `doc` against PDF/UA `level` (alias of [`validate_pdf_ua`])."""
+validatePdfUa(doc::PdfDocument, level::Integer) = validate_pdf_ua(doc, level)
+"""Validate `doc` against PDF/X `level` (alias of [`validate_pdf_x`])."""
+validatePdfX(doc::PdfDocument, level::Integer) = validate_pdf_x(doc, level)
 
 end # module

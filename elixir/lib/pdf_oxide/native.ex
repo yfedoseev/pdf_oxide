@@ -100,4 +100,214 @@ defmodule PdfOxide.Native do
   def editor_flatten_warnings_count(_ed), do: nif_error()
   def editor_flatten_warning(_ed, _index), do: nif_error()
   def editor_close(_ed), do: nif_error()
+
+  # PDF creation builder — embedded font
+  def font_from_file(_path), do: nif_error()
+  def font_from_bytes(_bytes, _name), do: nif_error()
+  def font_close(_font), do: nif_error()
+
+  # PDF creation builder — document builder
+  def dbld_create, do: nif_error()
+  def dbld_set_title(_db, _title), do: nif_error()
+  def dbld_set_author(_db, _author), do: nif_error()
+  def dbld_set_subject(_db, _subject), do: nif_error()
+  def dbld_set_keywords(_db, _keywords), do: nif_error()
+  def dbld_set_creator(_db, _creator), do: nif_error()
+  def dbld_on_open(_db, _script), do: nif_error()
+  def dbld_language(_db, _lang), do: nif_error()
+  def dbld_tagged_pdf_ua1(_db), do: nif_error()
+  def dbld_role_map(_db, _custom, _standard), do: nif_error()
+  def dbld_register_embedded_font(_db, _name, _font), do: nif_error()
+  def dbld_a4_page(_db), do: nif_error()
+  def dbld_letter_page(_db), do: nif_error()
+  def dbld_page(_db, _width, _height), do: nif_error()
+  def dbld_build(_db), do: nif_error()
+  def dbld_save(_db, _path), do: nif_error()
+  def dbld_save_encrypted(_db, _path, _user_pw, _owner_pw), do: nif_error()
+  def dbld_to_bytes_encrypted(_db, _user_pw, _owner_pw), do: nif_error()
+  def dbld_close(_db), do: nif_error()
+
+  # PDF creation builder — page builder
+  def pbld_font(_pb, _name, _size), do: nif_error()
+  def pbld_at(_pb, _x, _y), do: nif_error()
+  def pbld_text(_pb, _text), do: nif_error()
+  def pbld_heading(_pb, _level, _text), do: nif_error()
+  def pbld_paragraph(_pb, _text), do: nif_error()
+  def pbld_space(_pb, _points), do: nif_error()
+  def pbld_horizontal_rule(_pb), do: nif_error()
+  def pbld_link_url(_pb, _url), do: nif_error()
+  def pbld_link_page(_pb, _page_index), do: nif_error()
+  def pbld_link_named(_pb, _destination), do: nif_error()
+  def pbld_link_javascript(_pb, _script), do: nif_error()
+  def pbld_on_open(_pb, _script), do: nif_error()
+  def pbld_on_close(_pb, _script), do: nif_error()
+  def pbld_field_keystroke(_pb, _script), do: nif_error()
+  def pbld_field_format(_pb, _script), do: nif_error()
+  def pbld_field_validate(_pb, _script), do: nif_error()
+  def pbld_field_calculate(_pb, _script), do: nif_error()
+  def pbld_highlight(_pb, _r, _g, _b), do: nif_error()
+  def pbld_underline(_pb, _r, _g, _b), do: nif_error()
+  def pbld_strikeout(_pb, _r, _g, _b), do: nif_error()
+  def pbld_squiggly(_pb, _r, _g, _b), do: nif_error()
+  def pbld_sticky_note(_pb, _text), do: nif_error()
+  def pbld_sticky_note_at(_pb, _x, _y, _text), do: nif_error()
+  def pbld_watermark(_pb, _text), do: nif_error()
+  def pbld_watermark_confidential(_pb), do: nif_error()
+  def pbld_watermark_draft(_pb), do: nif_error()
+  def pbld_stamp(_pb, _type_name), do: nif_error()
+  def pbld_freetext(_pb, _x, _y, _w, _h, _text), do: nif_error()
+  def pbld_text_field(_pb, _name, _x, _y, _w, _h, _default_value), do: nif_error()
+  def pbld_checkbox(_pb, _name, _x, _y, _w, _h, _checked), do: nif_error()
+  def pbld_combo_box(_pb, _name, _x, _y, _w, _h, _options, _selected), do: nif_error()
+  def pbld_radio_group(_pb, _name, _values, _xs, _ys, _ws, _hs, _selected), do: nif_error()
+  def pbld_push_button(_pb, _name, _x, _y, _w, _h, _caption), do: nif_error()
+  def pbld_signature_field(_pb, _name, _x, _y, _w, _h), do: nif_error()
+  def pbld_footnote(_pb, _ref_mark, _note_text), do: nif_error()
+  def pbld_columns(_pb, _column_count, _gap_pt, _text), do: nif_error()
+  def pbld_inline(_pb, _text), do: nif_error()
+  def pbld_inline_bold(_pb, _text), do: nif_error()
+  def pbld_inline_italic(_pb, _text), do: nif_error()
+  def pbld_inline_color(_pb, _r, _g, _b, _text), do: nif_error()
+  def pbld_newline(_pb), do: nif_error()
+  def pbld_barcode_1d(_pb, _barcode_type, _data, _x, _y, _w, _h), do: nif_error()
+  def pbld_barcode_qr(_pb, _data, _x, _y, _size), do: nif_error()
+  def pbld_image(_pb, _bytes, _x, _y, _w, _h), do: nif_error()
+  def pbld_image_with_alt(_pb, _bytes, _x, _y, _w, _h, _alt_text), do: nif_error()
+  def pbld_image_artifact(_pb, _bytes, _x, _y, _w, _h), do: nif_error()
+  def pbld_rect(_pb, _x, _y, _w, _h), do: nif_error()
+  def pbld_filled_rect(_pb, _x, _y, _w, _h, _r, _g, _b), do: nif_error()
+  def pbld_line(_pb, _x1, _y1, _x2, _y2), do: nif_error()
+  def pbld_stroke_rect(_pb, _x, _y, _w, _h, _width, _r, _g, _b), do: nif_error()
+  def pbld_stroke_line(_pb, _x1, _y1, _x2, _y2, _width, _r, _g, _b), do: nif_error()
+
+  def pbld_stroke_rect_dashed(_pb, _x, _y, _w, _h, _width, _r, _g, _b, _dash, _phase),
+    do: nif_error()
+
+  def pbld_stroke_line_dashed(_pb, _x1, _y1, _x2, _y2, _width, _r, _g, _b, _dash, _phase),
+    do: nif_error()
+
+  def pbld_text_in_rect(_pb, _x, _y, _w, _h, _text, _align), do: nif_error()
+  def pbld_new_page_same_size(_pb), do: nif_error()
+
+  def pbld_table(_pb, _n_columns, _widths, _aligns, _n_rows, _cell_strings, _has_header),
+    do: nif_error()
+
+  def pbld_streaming_table_begin(_pb, _n_columns, _headers, _widths, _aligns, _repeat_header),
+    do: nif_error()
+
+  def pbld_streaming_table_begin_v2(
+        _pb,
+        _n_columns,
+        _headers,
+        _widths,
+        _aligns,
+        _repeat_header,
+        _mode,
+        _sample_rows,
+        _min_w,
+        _max_w,
+        _max_rowspan
+      ),
+      do: nif_error()
+
+  def pbld_streaming_table_set_batch_size(_pb, _batch_size), do: nif_error()
+  def pbld_streaming_table_pending_row_count(_pb), do: nif_error()
+  def pbld_streaming_table_batch_count(_pb), do: nif_error()
+  def pbld_streaming_table_push_row(_pb, _cells), do: nif_error()
+  def pbld_streaming_table_push_row_v2(_pb, _cells, _rowspans), do: nif_error()
+  def pbld_streaming_table_flush(_pb), do: nif_error()
+  def pbld_streaming_table_finish(_pb), do: nif_error()
+  def pbld_done(_pb), do: nif_error()
+  def pbld_close(_pb), do: nif_error()
+
+  # phase 6 — digital signatures / PKI / timestamps / TSA / DSS / validation
+  def cert_load_from_bytes(_bytes, _password), do: nif_error()
+  def cert_load_from_pem(_cert_pem, _key_pem), do: nif_error()
+  def cert_get_subject(_cert), do: nif_error()
+  def cert_get_issuer(_cert), do: nif_error()
+  def cert_get_serial(_cert), do: nif_error()
+  def cert_get_validity(_cert), do: nif_error()
+  def cert_is_valid(_cert), do: nif_error()
+  def cert_close(_cert), do: nif_error()
+
+  def sign_bytes(_pdf, _cert, _reason, _location), do: nif_error()
+
+  def sign_bytes_pades(_pdf, _cert, _level, _tsa_url, _reason, _location, _certs, _crls, _ocsps),
+    do: nif_error()
+
+  def sign_bytes_pades_opts(
+        _pdf,
+        _cert,
+        _level,
+        _tsa_url,
+        _reason,
+        _location,
+        _certs,
+        _crls,
+        _ocsps
+      ),
+      do: nif_error()
+
+  def sig_get_signer_name(_sig), do: nif_error()
+  def sig_get_signing_reason(_sig), do: nif_error()
+  def sig_get_signing_location(_sig), do: nif_error()
+  def sig_get_signing_time(_sig), do: nif_error()
+  def sig_get_certificate(_sig), do: nif_error()
+  def sig_get_pades_level(_sig), do: nif_error()
+  def sig_has_timestamp(_sig), do: nif_error()
+  def sig_get_timestamp(_sig), do: nif_error()
+  def sig_add_timestamp(_sig, _ts), do: nif_error()
+  def sig_verify(_sig), do: nif_error()
+  def sig_verify_detached(_sig, _pdf), do: nif_error()
+  def sig_close(_sig), do: nif_error()
+
+  def ts_parse(_bytes), do: nif_error()
+  def ts_get_token(_ts), do: nif_error()
+  def ts_get_message_imprint(_ts), do: nif_error()
+  def ts_get_time(_ts), do: nif_error()
+  def ts_get_serial(_ts), do: nif_error()
+  def ts_get_tsa_name(_ts), do: nif_error()
+  def ts_get_policy_oid(_ts), do: nif_error()
+  def ts_get_hash_algorithm(_ts), do: nif_error()
+  def ts_verify(_ts), do: nif_error()
+  def ts_close(_ts), do: nif_error()
+
+  def tsa_create(_url, _username, _password, _timeout, _hash_algo, _use_nonce, _cert_req),
+    do: nif_error()
+
+  def tsa_request_timestamp(_client, _data), do: nif_error()
+  def tsa_request_timestamp_hash(_client, _hash, _hash_algo), do: nif_error()
+  def tsa_close(_client), do: nif_error()
+
+  def dss_cert_count(_dss), do: nif_error()
+  def dss_crl_count(_dss), do: nif_error()
+  def dss_ocsp_count(_dss), do: nif_error()
+  def dss_vri_count(_dss), do: nif_error()
+  def dss_get_cert(_dss, _index), do: nif_error()
+  def dss_get_crl(_dss, _index), do: nif_error()
+  def dss_get_ocsp(_dss, _index), do: nif_error()
+  def dss_close(_dss), do: nif_error()
+
+  def validate_pdf_a(_doc, _level), do: nif_error()
+  def validate_pdf_ua(_doc, _level), do: nif_error()
+  def validate_pdf_x(_doc, _level), do: nif_error()
+  def pdf_a_is_compliant(_results), do: nif_error()
+  def pdf_a_error_count(_results), do: nif_error()
+  def pdf_a_warning_count(_results), do: nif_error()
+  def pdf_a_get_error(_results, _index), do: nif_error()
+  def pdf_a_close(_results), do: nif_error()
+  def pdf_ua_is_accessible(_results), do: nif_error()
+  def pdf_ua_error_count(_results), do: nif_error()
+  def pdf_ua_warning_count(_results), do: nif_error()
+  def pdf_ua_get_error(_results, _index), do: nif_error()
+  def pdf_ua_get_warning(_results, _index), do: nif_error()
+  def pdf_ua_get_stats(_results), do: nif_error()
+  def pdf_ua_close(_results), do: nif_error()
+  def pdf_x_is_compliant(_results), do: nif_error()
+  def pdf_x_error_count(_results), do: nif_error()
+  def pdf_x_get_error(_results, _index), do: nif_error()
+  def pdf_x_close(_results), do: nif_error()
+
+  def oxide_set_log_level(_level), do: nif_error()
+  def oxide_get_log_level, do: nif_error()
 end

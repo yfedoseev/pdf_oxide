@@ -579,6 +579,47 @@ public final class Document {
         Page(document: self, index: index)
     }
 
+    // ── Phase-6 validation (PDF/A, PDF/UA, PDF/X) ────────────────────────────
+
+    /// Validate the document against a PDF/A conformance level.
+    /// `level`: 0=A1b 1=A1a 2=A2b 3=A2a 4=A2u 5=A3b 6=A3a 7=A3u.
+    public func validatePdfA(_ level: Int32) throws -> PdfAResults {
+        var code: Int32 = 0
+        guard let h = pdf_validate_pdf_a_level(try ptr(), level, &code) else {
+            throw PdfOxideError(code: code, op: "validatePdfA")
+        }
+        return PdfAResults(h)
+    }
+
+    /// Validate the document against a PDF/UA accessibility level.
+    public func validatePdfUa(_ level: Int32) throws -> UaResults {
+        var code: Int32 = 0
+        guard let h = pdf_validate_pdf_ua(try ptr(), level, &code) else {
+            throw PdfOxideError(code: code, op: "validatePdfUa")
+        }
+        return UaResults(h)
+    }
+
+    /// Validate the document against a PDF/X conformance level.
+    public func validatePdfX(_ level: Int32) throws -> PdfXResults {
+        var code: Int32 = 0
+        guard let h = pdf_validate_pdf_x_level(try ptr(), level, &code) else {
+            throw PdfOxideError(code: code, op: "validatePdfX")
+        }
+        return PdfXResults(h)
+    }
+
+    /// Read the document's `/DSS` (Document Security Store), if present.
+    /// Returns `nil` when the document carries no DSS.
+    public func dss() throws -> Dss? {
+        var code: Int32 = 0
+        guard let h = pdf_document_get_dss(UnsafeRawPointer(try ptr()), &code) else {
+            if code != 0 { throw PdfOxideError(code: code, op: "dss") }
+            return nil  // no DSS is not an error
+        }
+        return Dss(h)
+    }
+
     /// Free the native handle now (idempotent).
     public func close() {
         if let h = handle { pdf_document_free(h); handle = nil }
@@ -1026,5 +1067,1242 @@ public final class DocumentEditor {
         var len = 0
         let p = document_editor_save_encrypted_to_bytes(try ptr(), userPassword, ownerPassword, &len, &code)
         return try takeBytes(p, len, code, "saveEncryptedToBytes")
+    }
+}
+
+// ── PDF creation: builder API ────────────────────────────────────────────────
+
+/// A loadable TTF/OTF font, ready to be registered with a `DocumentBuilder`.
+///
+/// Wraps the `pdf_embedded_font_*` C functions. The native handle is freed in
+/// `deinit`/`close()` — BUT a successful `DocumentBuilder.registerEmbeddedFont`
+/// **consumes** the handle (the builder takes ownership); this wrapper nulls its
+/// handle out at that point so it is not double-freed.
+public final class EmbeddedFont {
+    fileprivate var handle: OpaquePointer?
+
+    private init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { if let h = handle { pdf_embedded_font_free(h) } }
+
+    /// Load a TTF/OTF font from a filesystem path.
+    public static func fromFile(_ path: String) throws -> EmbeddedFont {
+        var code: Int32 = 0
+        guard let h = pdf_embedded_font_from_file(path, &code) else {
+            throw PdfOxideError(code: code, op: "EmbeddedFont.fromFile")
+        }
+        return EmbeddedFont(h)
+    }
+
+    /// Load a font from a byte buffer. `name` may be nil to use the font's own
+    /// PostScript name.
+    public static func fromBytes(_ bytes: [UInt8], name: String? = nil) throws -> EmbeddedFont {
+        var code: Int32 = 0
+        let h = bytes.withUnsafeBufferPointer { buf in
+            pdf_embedded_font_from_bytes(buf.baseAddress, buf.count, name, &code)
+        }
+        guard let h else { throw PdfOxideError(code: code, op: "EmbeddedFont.fromBytes") }
+        return EmbeddedFont(h)
+    }
+
+    // The builder takes ownership on a successful register; this releases the
+    // wrapper's claim so deinit/close won't double-free.
+    fileprivate func release() -> OpaquePointer? {
+        let h = handle
+        handle = nil
+        return h
+    }
+
+    /// Free the native handle now (idempotent). No-op once consumed by a builder.
+    public func close() {
+        if let h = handle { pdf_embedded_font_free(h); handle = nil }
+    }
+}
+
+/// A page being built inside a `DocumentBuilder`.
+///
+/// Wraps every `pdf_page_builder_*` C function as a fluent op (each returns
+/// `self`, throwing on a non-success status). Obtain one from
+/// `DocumentBuilder.page(_:_:)` / `.a4Page()` / `.letterPage()`. Commit it with
+/// `done()` (consumes the native handle) or discard it with `close()`. The
+/// native handle is also freed in `deinit` if neither was called.
+public final class PageBuilder {
+    private var handle: OpaquePointer?
+
+    fileprivate init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { if let h = handle { pdf_page_builder_free(h) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "PageBuilder is closed") }
+        return h
+    }
+
+    // Run a status-returning op and return self for chaining.
+    @discardableResult
+    private func op(_ name: String, _ body: (OpaquePointer, inout Int32) -> Int32) throws -> PageBuilder {
+        let h = try ptr()
+        var code: Int32 = 0
+        if body(h, &code) != 0 { throw PdfOxideError(code: code, op: name) }
+        return self
+    }
+
+    // ── text / layout ─────────────────────────────────────────────────────────
+
+    @discardableResult public func font(_ name: String, _ size: Float) throws -> PageBuilder {
+        try op("font") { pdf_page_builder_font($0, name, size, &$1) }
+    }
+    @discardableResult public func at(_ x: Float, _ y: Float) throws -> PageBuilder {
+        try op("at") { pdf_page_builder_at($0, x, y, &$1) }
+    }
+    @discardableResult public func text(_ text: String) throws -> PageBuilder {
+        try op("text") { pdf_page_builder_text($0, text, &$1) }
+    }
+    @discardableResult public func heading(_ level: Int, _ text: String) throws -> PageBuilder {
+        try op("heading") { pdf_page_builder_heading($0, UInt8(level), text, &$1) }
+    }
+    @discardableResult public func paragraph(_ text: String) throws -> PageBuilder {
+        try op("paragraph") { pdf_page_builder_paragraph($0, text, &$1) }
+    }
+    @discardableResult public func space(_ points: Float) throws -> PageBuilder {
+        try op("space") { pdf_page_builder_space($0, points, &$1) }
+    }
+    @discardableResult public func horizontalRule() throws -> PageBuilder {
+        try op("horizontalRule") { pdf_page_builder_horizontal_rule($0, &$1) }
+    }
+    @discardableResult public func columns(_ columnCount: UInt32, _ gapPt: Float, _ text: String) throws -> PageBuilder {
+        try op("columns") { pdf_page_builder_columns($0, columnCount, gapPt, text, &$1) }
+    }
+    @discardableResult public func footnote(_ refMark: String, _ noteText: String) throws -> PageBuilder {
+        try op("footnote") { pdf_page_builder_footnote($0, refMark, noteText, &$1) }
+    }
+
+    // ── inline runs ─────────────────────────────────────────────────────────────
+
+    @discardableResult public func inline(_ text: String) throws -> PageBuilder {
+        try op("inline") { pdf_page_builder_inline($0, text, &$1) }
+    }
+    @discardableResult public func inlineBold(_ text: String) throws -> PageBuilder {
+        try op("inlineBold") { pdf_page_builder_inline_bold($0, text, &$1) }
+    }
+    @discardableResult public func inlineItalic(_ text: String) throws -> PageBuilder {
+        try op("inlineItalic") { pdf_page_builder_inline_italic($0, text, &$1) }
+    }
+    @discardableResult public func inlineColor(_ r: Float, _ g: Float, _ b: Float, _ text: String) throws -> PageBuilder {
+        try op("inlineColor") { pdf_page_builder_inline_color($0, r, g, b, text, &$1) }
+    }
+    @discardableResult public func newline() throws -> PageBuilder {
+        try op("newline") { pdf_page_builder_newline($0, &$1) }
+    }
+
+    // ── links ─────────────────────────────────────────────────────────────────
+
+    @discardableResult public func linkUrl(_ url: String) throws -> PageBuilder {
+        try op("linkUrl") { pdf_page_builder_link_url($0, url, &$1) }
+    }
+    @discardableResult public func linkPage(_ page: Int) throws -> PageBuilder {
+        try op("linkPage") { pdf_page_builder_link_page($0, page, &$1) }
+    }
+    @discardableResult public func linkNamed(_ destination: String) throws -> PageBuilder {
+        try op("linkNamed") { pdf_page_builder_link_named($0, destination, &$1) }
+    }
+    @discardableResult public func linkJavascript(_ script: String) throws -> PageBuilder {
+        try op("linkJavascript") { pdf_page_builder_link_javascript($0, script, &$1) }
+    }
+
+    // ── page / field actions ─────────────────────────────────────────────────────
+
+    @discardableResult public func onOpen(_ script: String) throws -> PageBuilder {
+        try op("onOpen") { pdf_page_builder_on_open($0, script, &$1) }
+    }
+    @discardableResult public func onClose(_ script: String) throws -> PageBuilder {
+        try op("onClose") { pdf_page_builder_on_close($0, script, &$1) }
+    }
+    @discardableResult public func fieldKeystroke(_ script: String) throws -> PageBuilder {
+        try op("fieldKeystroke") { pdf_page_builder_field_keystroke($0, script, &$1) }
+    }
+    @discardableResult public func fieldFormat(_ script: String) throws -> PageBuilder {
+        try op("fieldFormat") { pdf_page_builder_field_format($0, script, &$1) }
+    }
+    @discardableResult public func fieldValidate(_ script: String) throws -> PageBuilder {
+        try op("fieldValidate") { pdf_page_builder_field_validate($0, script, &$1) }
+    }
+    @discardableResult public func fieldCalculate(_ script: String) throws -> PageBuilder {
+        try op("fieldCalculate") { pdf_page_builder_field_calculate($0, script, &$1) }
+    }
+
+    // ── text-markup annotations ──────────────────────────────────────────────────
+
+    @discardableResult public func highlight(_ r: Float, _ g: Float, _ b: Float) throws -> PageBuilder {
+        try op("highlight") { pdf_page_builder_highlight($0, r, g, b, &$1) }
+    }
+    @discardableResult public func underline(_ r: Float, _ g: Float, _ b: Float) throws -> PageBuilder {
+        try op("underline") { pdf_page_builder_underline($0, r, g, b, &$1) }
+    }
+    @discardableResult public func strikeout(_ r: Float, _ g: Float, _ b: Float) throws -> PageBuilder {
+        try op("strikeout") { pdf_page_builder_strikeout($0, r, g, b, &$1) }
+    }
+    @discardableResult public func squiggly(_ r: Float, _ g: Float, _ b: Float) throws -> PageBuilder {
+        try op("squiggly") { pdf_page_builder_squiggly($0, r, g, b, &$1) }
+    }
+
+    // ── notes / stamps / watermarks ──────────────────────────────────────────────
+
+    @discardableResult public func stickyNote(_ text: String) throws -> PageBuilder {
+        try op("stickyNote") { pdf_page_builder_sticky_note($0, text, &$1) }
+    }
+    @discardableResult public func stickyNoteAt(_ x: Float, _ y: Float, _ text: String) throws -> PageBuilder {
+        try op("stickyNoteAt") { pdf_page_builder_sticky_note_at($0, x, y, text, &$1) }
+    }
+    @discardableResult public func watermark(_ text: String) throws -> PageBuilder {
+        try op("watermark") { pdf_page_builder_watermark($0, text, &$1) }
+    }
+    @discardableResult public func watermarkConfidential() throws -> PageBuilder {
+        try op("watermarkConfidential") { pdf_page_builder_watermark_confidential($0, &$1) }
+    }
+    @discardableResult public func watermarkDraft() throws -> PageBuilder {
+        try op("watermarkDraft") { pdf_page_builder_watermark_draft($0, &$1) }
+    }
+    @discardableResult public func stamp(_ typeName: String) throws -> PageBuilder {
+        try op("stamp") { pdf_page_builder_stamp($0, typeName, &$1) }
+    }
+    @discardableResult public func freetext(_ x: Float, _ y: Float, _ w: Float, _ h: Float, _ text: String) throws -> PageBuilder {
+        try op("freetext") { pdf_page_builder_freetext($0, x, y, w, h, text, &$1) }
+    }
+
+    // ── form fields ──────────────────────────────────────────────────────────────
+
+    @discardableResult public func textField(_ name: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float, defaultValue: String? = nil) throws -> PageBuilder {
+        try op("textField") { pdf_page_builder_text_field($0, name, x, y, w, h, defaultValue, &$1) }
+    }
+    @discardableResult public func checkbox(_ name: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float, checked: Bool) throws -> PageBuilder {
+        try op("checkbox") { pdf_page_builder_checkbox($0, name, x, y, w, h, checked ? 1 : 0, &$1) }
+    }
+    @discardableResult public func pushButton(_ name: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float, _ caption: String) throws -> PageBuilder {
+        try op("pushButton") { pdf_page_builder_push_button($0, name, x, y, w, h, caption, &$1) }
+    }
+    @discardableResult public func signatureField(_ name: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float) throws -> PageBuilder {
+        try op("signatureField") { pdf_page_builder_signature_field($0, name, x, y, w, h, &$1) }
+    }
+
+    /// Add a dropdown combo-box. `selected` may be nil for no initial selection.
+    @discardableResult public func comboBox(_ name: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float, options: [String], selected: String? = nil) throws -> PageBuilder {
+        let h0 = try ptr()
+        var code: Int32 = 0
+        let status = withCStringArray(options) { optsPtr in
+            pdf_page_builder_combo_box(h0, name, x, y, w, h, optsPtr, options.count, selected, &code)
+        }
+        if status != 0 { throw PdfOxideError(code: code, op: "comboBox") }
+        return self
+    }
+
+    /// Add a radio-button group. `values`/`xs`/`ys`/`ws`/`hs` are parallel arrays.
+    @discardableResult public func radioGroup(_ name: String, values: [String], xs: [Float], ys: [Float], ws: [Float], hs: [Float], selected: String? = nil) throws -> PageBuilder {
+        let h0 = try ptr()
+        var code: Int32 = 0
+        let count = values.count
+        let status = withCStringArray(values) { valsPtr in
+            xs.withUnsafeBufferPointer { xsP in
+                ys.withUnsafeBufferPointer { ysP in
+                    ws.withUnsafeBufferPointer { wsP in
+                        hs.withUnsafeBufferPointer { hsP in
+                            pdf_page_builder_radio_group(
+                                h0, name, valsPtr,
+                                xsP.baseAddress, ysP.baseAddress, wsP.baseAddress, hsP.baseAddress,
+                                count, selected, &code
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        if status != 0 { throw PdfOxideError(code: code, op: "radioGroup") }
+        return self
+    }
+
+    // ── barcodes ─────────────────────────────────────────────────────────────────
+
+    @discardableResult public func barcode1d(_ barcodeType: Int32, _ data: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float) throws -> PageBuilder {
+        try op("barcode1d") { pdf_page_builder_barcode_1d($0, barcodeType, data, x, y, w, h, &$1) }
+    }
+    @discardableResult public func barcodeQr(_ data: String, _ x: Float, _ y: Float, _ size: Float) throws -> PageBuilder {
+        try op("barcodeQr") { pdf_page_builder_barcode_qr($0, data, x, y, size, &$1) }
+    }
+
+    // ── images ───────────────────────────────────────────────────────────────────
+
+    @discardableResult public func image(_ bytes: [UInt8], _ x: Float, _ y: Float, _ w: Float, _ h: Float) throws -> PageBuilder {
+        let h0 = try ptr()
+        var code: Int32 = 0
+        let status = bytes.withUnsafeBufferPointer { buf in
+            pdf_page_builder_image(h0, buf.baseAddress, buf.count, x, y, w, h, &code)
+        }
+        if status != 0 { throw PdfOxideError(code: code, op: "image") }
+        return self
+    }
+    @discardableResult public func imageWithAlt(_ bytes: [UInt8], _ x: Float, _ y: Float, _ w: Float, _ h: Float, altText: String) throws -> PageBuilder {
+        let h0 = try ptr()
+        var code: Int32 = 0
+        let status = bytes.withUnsafeBufferPointer { buf in
+            pdf_page_builder_image_with_alt(h0, buf.baseAddress, buf.count, x, y, w, h, altText, &code)
+        }
+        if status != 0 { throw PdfOxideError(code: code, op: "imageWithAlt") }
+        return self
+    }
+    @discardableResult public func imageArtifact(_ bytes: [UInt8], _ x: Float, _ y: Float, _ w: Float, _ h: Float) throws -> PageBuilder {
+        let h0 = try ptr()
+        var code: Int32 = 0
+        let status = bytes.withUnsafeBufferPointer { buf in
+            pdf_page_builder_image_artifact(h0, buf.baseAddress, buf.count, x, y, w, h, &code)
+        }
+        if status != 0 { throw PdfOxideError(code: code, op: "imageArtifact") }
+        return self
+    }
+
+    // ── vector graphics ──────────────────────────────────────────────────────────
+
+    @discardableResult public func rect(_ x: Float, _ y: Float, _ w: Float, _ h: Float) throws -> PageBuilder {
+        try op("rect") { pdf_page_builder_rect($0, x, y, w, h, &$1) }
+    }
+    @discardableResult public func filledRect(_ x: Float, _ y: Float, _ w: Float, _ h: Float, _ r: Float, _ g: Float, _ b: Float) throws -> PageBuilder {
+        try op("filledRect") { pdf_page_builder_filled_rect($0, x, y, w, h, r, g, b, &$1) }
+    }
+    @discardableResult public func line(_ x1: Float, _ y1: Float, _ x2: Float, _ y2: Float) throws -> PageBuilder {
+        try op("line") { pdf_page_builder_line($0, x1, y1, x2, y2, &$1) }
+    }
+    @discardableResult public func strokeRect(_ x: Float, _ y: Float, _ w: Float, _ h: Float, width: Float, _ r: Float, _ g: Float, _ b: Float) throws -> PageBuilder {
+        try op("strokeRect") { pdf_page_builder_stroke_rect($0, x, y, w, h, width, r, g, b, &$1) }
+    }
+    @discardableResult public func strokeLine(_ x1: Float, _ y1: Float, _ x2: Float, _ y2: Float, width: Float, _ r: Float, _ g: Float, _ b: Float) throws -> PageBuilder {
+        try op("strokeLine") { pdf_page_builder_stroke_line($0, x1, y1, x2, y2, width, r, g, b, &$1) }
+    }
+
+    @discardableResult public func strokeRectDashed(_ x: Float, _ y: Float, _ w: Float, _ h: Float, width: Float, _ r: Float, _ g: Float, _ b: Float, dashArray: [Float], phase: Float) throws -> PageBuilder {
+        let h0 = try ptr()
+        var code: Int32 = 0
+        let status = dashArray.withUnsafeBufferPointer { buf in
+            pdf_page_builder_stroke_rect_dashed(h0, x, y, w, h, width, r, g, b, buf.baseAddress, dashArray.count, phase, &code)
+        }
+        if status != 0 { throw PdfOxideError(code: code, op: "strokeRectDashed") }
+        return self
+    }
+    @discardableResult public func strokeLineDashed(_ x1: Float, _ y1: Float, _ x2: Float, _ y2: Float, width: Float, _ r: Float, _ g: Float, _ b: Float, dashArray: [Float], phase: Float) throws -> PageBuilder {
+        let h0 = try ptr()
+        var code: Int32 = 0
+        let status = dashArray.withUnsafeBufferPointer { buf in
+            pdf_page_builder_stroke_line_dashed(h0, x1, y1, x2, y2, width, r, g, b, buf.baseAddress, dashArray.count, phase, &code)
+        }
+        if status != 0 { throw PdfOxideError(code: code, op: "strokeLineDashed") }
+        return self
+    }
+
+    @discardableResult public func textInRect(_ x: Float, _ y: Float, _ w: Float, _ h: Float, _ text: String, align: Int32) throws -> PageBuilder {
+        try op("textInRect") { pdf_page_builder_text_in_rect($0, x, y, w, h, text, align, &$1) }
+    }
+    @discardableResult public func newPageSameSize() throws -> PageBuilder {
+        try op("newPageSameSize") { pdf_page_builder_new_page_same_size($0, &$1) }
+    }
+
+    // ── tables ───────────────────────────────────────────────────────────────────
+
+    /// Buffer a static table. `cellStrings` is row-major (`row * nColumns + col`).
+    @discardableResult public func table(nColumns: Int, widths: [Float], aligns: [Int32], nRows: Int, cellStrings: [String], hasHeader: Bool) throws -> PageBuilder {
+        let h0 = try ptr()
+        var code: Int32 = 0
+        let status = widths.withUnsafeBufferPointer { wP in
+            aligns.withUnsafeBufferPointer { aP in
+                withCStringArray(cellStrings) { cellsPtr in
+                    pdf_page_builder_table(h0, nColumns, wP.baseAddress, aP.baseAddress, nRows, cellsPtr, hasHeader ? 1 : 0, &code)
+                }
+            }
+        }
+        if status != 0 { throw PdfOxideError(code: code, op: "table") }
+        return self
+    }
+
+    @discardableResult public func streamingTableBegin(nColumns: Int, headers: [String], widths: [Float], aligns: [Int32], repeatHeader: Bool) throws -> PageBuilder {
+        let h0 = try ptr()
+        var code: Int32 = 0
+        let status = widths.withUnsafeBufferPointer { wP in
+            aligns.withUnsafeBufferPointer { aP in
+                withCStringArray(headers) { hdrPtr in
+                    pdf_page_builder_streaming_table_begin(h0, nColumns, hdrPtr, wP.baseAddress, aP.baseAddress, repeatHeader ? 1 : 0, &code)
+                }
+            }
+        }
+        if status != 0 { throw PdfOxideError(code: code, op: "streamingTableBegin") }
+        return self
+    }
+
+    @discardableResult public func streamingTableBeginV2(nColumns: Int, headers: [String], widths: [Float], aligns: [Int32], repeatHeader: Bool, mode: Int32, sampleRows: Int, minColWidthPt: Float, maxColWidthPt: Float, maxRowspan: Int) throws -> PageBuilder {
+        let h0 = try ptr()
+        var code: Int32 = 0
+        let status = widths.withUnsafeBufferPointer { wP in
+            aligns.withUnsafeBufferPointer { aP in
+                withCStringArray(headers) { hdrPtr in
+                    pdf_page_builder_streaming_table_begin_v2(h0, nColumns, hdrPtr, wP.baseAddress, aP.baseAddress, repeatHeader ? 1 : 0, mode, sampleRows, minColWidthPt, maxColWidthPt, maxRowspan, &code)
+                }
+            }
+        }
+        if status != 0 { throw PdfOxideError(code: code, op: "streamingTableBeginV2") }
+        return self
+    }
+
+    @discardableResult public func streamingTableSetBatchSize(_ batchSize: Int) throws -> PageBuilder {
+        try op("streamingTableSetBatchSize") { pdf_page_builder_streaming_table_set_batch_size($0, batchSize, &$1) }
+    }
+    public func streamingTablePendingRowCount() throws -> Int {
+        Int(pdf_page_builder_streaming_table_pending_row_count(try ptr()))
+    }
+    public func streamingTableBatchCount() throws -> Int {
+        Int(pdf_page_builder_streaming_table_batch_count(try ptr()))
+    }
+    @discardableResult public func streamingTableFlush() throws -> PageBuilder {
+        try op("streamingTableFlush") { pdf_page_builder_streaming_table_flush($0, &$1) }
+    }
+
+    @discardableResult public func streamingTablePushRow(_ cells: [String]) throws -> PageBuilder {
+        let h0 = try ptr()
+        var code: Int32 = 0
+        let status = withCStringArray(cells) { cellsPtr in
+            pdf_page_builder_streaming_table_push_row(h0, cells.count, cellsPtr, &code)
+        }
+        if status != 0 { throw PdfOxideError(code: code, op: "streamingTablePushRow") }
+        return self
+    }
+
+    @discardableResult public func streamingTablePushRowV2(_ cells: [String], rowspans: [Int]?) throws -> PageBuilder {
+        let h0 = try ptr()
+        var code: Int32 = 0
+        let spans = rowspans
+        let status = withCStringArray(cells) { cellsPtr -> Int32 in
+            if let spans {
+                return spans.withUnsafeBufferPointer { sP in
+                    pdf_page_builder_streaming_table_push_row_v2(h0, cells.count, cellsPtr, sP.baseAddress, &code)
+                }
+            }
+            return pdf_page_builder_streaming_table_push_row_v2(h0, cells.count, cellsPtr, nil, &code)
+        }
+        if status != 0 { throw PdfOxideError(code: code, op: "streamingTablePushRowV2") }
+        return self
+    }
+
+    @discardableResult public func streamingTableFinish() throws -> PageBuilder {
+        try op("streamingTableFinish") { pdf_page_builder_streaming_table_finish($0, &$1) }
+    }
+
+    // ── commit / discard ─────────────────────────────────────────────────────────
+
+    /// Commit this page's buffered ops to its parent builder. **Consumes** the
+    /// native handle — the wrapper is invalid afterwards (idempotent guard).
+    public func done() throws {
+        let h = try ptr()
+        var code: Int32 = 0
+        if pdf_page_builder_done(h, &code) != 0 {
+            throw PdfOxideError(code: code, op: "done")
+        }
+        // done() consumed the native handle; do not free it again.
+        handle = nil
+    }
+
+    /// Drop this page's uncommitted handle (idempotent). Does NOT apply ops.
+    public func close() {
+        if let h = handle { pdf_page_builder_free(h); handle = nil }
+    }
+}
+
+/// Builds a brand-new PDF from scratch.
+///
+/// Wraps every `pdf_document_builder_*` C function. Set metadata, start pages
+/// via `page(_:_:)` / `a4Page()` / `letterPage()`, then `build()` / `save(_:)`.
+/// The native handle is freed in `deinit`/`close()`.
+public final class DocumentBuilder {
+    private var handle: OpaquePointer?
+
+    private init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { if let h = handle { pdf_document_builder_free(h) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "DocumentBuilder is closed") }
+        return h
+    }
+
+    // Copy a C byte buffer return into [UInt8] and free it via free_bytes.
+    private func takeBytes(_ p: UnsafeMutablePointer<UInt8>?, _ len: Int, _ code: Int32, _ op: String) throws -> [UInt8] {
+        guard let p else { throw PdfOxideError(code: code, op: op) }
+        defer { free_bytes(p) }
+        let n = len < 0 ? 0 : len
+        return Array(UnsafeBufferPointer(start: p, count: n))
+    }
+
+    @discardableResult
+    private func op(_ name: String, _ body: (OpaquePointer, inout Int32) -> Int32) throws -> DocumentBuilder {
+        let h = try ptr()
+        var code: Int32 = 0
+        if body(h, &code) != 0 { throw PdfOxideError(code: code, op: name) }
+        return self
+    }
+
+    /// Create a new, empty document builder.
+    public static func create() throws -> DocumentBuilder {
+        var code: Int32 = 0
+        guard let h = pdf_document_builder_create(&code) else {
+            throw PdfOxideError(code: code, op: "DocumentBuilder.create")
+        }
+        return DocumentBuilder(h)
+    }
+
+    // ── metadata ─────────────────────────────────────────────────────────────────
+
+    @discardableResult public func setTitle(_ title: String) throws -> DocumentBuilder {
+        try op("setTitle") { pdf_document_builder_set_title($0, title, &$1) }
+    }
+    @discardableResult public func setAuthor(_ author: String) throws -> DocumentBuilder {
+        try op("setAuthor") { pdf_document_builder_set_author($0, author, &$1) }
+    }
+    @discardableResult public func setSubject(_ subject: String) throws -> DocumentBuilder {
+        try op("setSubject") { pdf_document_builder_set_subject($0, subject, &$1) }
+    }
+    @discardableResult public func setKeywords(_ keywords: String) throws -> DocumentBuilder {
+        try op("setKeywords") { pdf_document_builder_set_keywords($0, keywords, &$1) }
+    }
+    @discardableResult public func setCreator(_ creator: String) throws -> DocumentBuilder {
+        try op("setCreator") { pdf_document_builder_set_creator($0, creator, &$1) }
+    }
+    @discardableResult public func onOpen(_ script: String) throws -> DocumentBuilder {
+        try op("onOpen") { pdf_document_builder_on_open($0, script, &$1) }
+    }
+    @discardableResult public func taggedPdfUa1() throws -> DocumentBuilder {
+        try op("taggedPdfUa1") { pdf_document_builder_tagged_pdf_ua1($0, &$1) }
+    }
+    @discardableResult public func language(_ lang: String) throws -> DocumentBuilder {
+        try op("language") { pdf_document_builder_language($0, lang, &$1) }
+    }
+    @discardableResult public func roleMap(custom: String, standard: String) throws -> DocumentBuilder {
+        try op("roleMap") { pdf_document_builder_role_map($0, custom, standard, &$1) }
+    }
+
+    /// Register a TTF/OTF font under `name`. On success the builder **consumes**
+    /// `font` (its handle is released so it won't be double-freed).
+    @discardableResult public func registerEmbeddedFont(_ name: String, _ font: EmbeddedFont) throws -> DocumentBuilder {
+        let h = try ptr()
+        guard let fontHandle = font.handle else {
+            throw PdfOxideError(code: 0, op: "registerEmbeddedFont: font already consumed")
+        }
+        var code: Int32 = 0
+        if pdf_document_builder_register_embedded_font(h, name, fontHandle, &code) != 0 {
+            // On error the font handle is NOT consumed; leave the wrapper owning it.
+            throw PdfOxideError(code: code, op: "registerEmbeddedFont")
+        }
+        // Success: builder took ownership. Detach so deinit won't double-free.
+        _ = font.release()
+        return self
+    }
+
+    // ── pages ────────────────────────────────────────────────────────────────────
+
+    /// Start an A4 page.
+    public func a4Page() throws -> PageBuilder {
+        var code: Int32 = 0
+        guard let p = pdf_document_builder_a4_page(try ptr(), &code) else {
+            throw PdfOxideError(code: code, op: "a4Page")
+        }
+        return PageBuilder(p)
+    }
+    /// Start a US Letter page.
+    public func letterPage() throws -> PageBuilder {
+        var code: Int32 = 0
+        guard let p = pdf_document_builder_letter_page(try ptr(), &code) else {
+            throw PdfOxideError(code: code, op: "letterPage")
+        }
+        return PageBuilder(p)
+    }
+    /// Start a custom-size page (dimensions in PDF points, 72pt = 1in).
+    public func page(_ width: Float, _ height: Float) throws -> PageBuilder {
+        var code: Int32 = 0
+        guard let p = pdf_document_builder_page(try ptr(), width, height, &code) else {
+            throw PdfOxideError(code: code, op: "page")
+        }
+        return PageBuilder(p)
+    }
+
+    // ── build / save ───────────────────────────────────────────────────────────
+
+    /// Build the PDF and return its bytes. Consumes the builder *state*; the
+    /// wrapper handle remains valid and is freed on `close()`/`deinit`.
+    public func build() throws -> [UInt8] {
+        var len = 0, code: Int32 = 0
+        let p = pdf_document_builder_build(try ptr(), &len, &code)
+        return try takeBytes(p, len, code, "build")
+    }
+
+    /// Build and save the PDF to `path`.
+    public func save(_ path: String) throws {
+        var code: Int32 = 0
+        if pdf_document_builder_save(try ptr(), path, &code) != 0 {
+            throw PdfOxideError(code: code, op: "save")
+        }
+    }
+
+    /// Build and save with AES-256 encryption.
+    public func saveEncrypted(_ path: String, userPassword: String, ownerPassword: String) throws {
+        var code: Int32 = 0
+        if pdf_document_builder_save_encrypted(try ptr(), path, userPassword, ownerPassword, &code) != 0 {
+            throw PdfOxideError(code: code, op: "saveEncrypted")
+        }
+    }
+
+    /// Build encrypted bytes (AES-256).
+    public func toBytesEncrypted(userPassword: String, ownerPassword: String) throws -> [UInt8] {
+        var len = 0, code: Int32 = 0
+        let p = pdf_document_builder_to_bytes_encrypted(try ptr(), userPassword, ownerPassword, &len, &code)
+        return try takeBytes(p, len, code, "toBytesEncrypted")
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_document_builder_free(h); handle = nil }
+    }
+}
+
+// ── Phase-6: digital signatures / PKI / timestamps / TSA / validation ─────────
+
+// Copy an owned C byte buffer return into [UInt8] and free it via free_bytes.
+private func takeBytes(_ p: UnsafeMutablePointer<UInt8>?, _ len: Int, _ code: Int32, _ op: String) throws -> [UInt8] {
+    guard let p else { throw PdfOxideError(code: code, op: op) }
+    defer { free_bytes(p) }
+    let n = len < 0 ? 0 : len
+    return Array(UnsafeBufferPointer(start: p, count: n))
+}
+
+/// Validity window of a certificate, as Unix epoch seconds.
+public struct CertificateValidity {
+    public let notBefore: Int64
+    public let notAfter: Int64
+}
+
+/// Per-PDF/UA structural statistics returned by `UaResults.stats()`.
+public struct UaStats {
+    public let structElements: Int
+    public let images: Int
+    public let tables: Int
+    public let forms: Int
+    public let annotations: Int
+    public let pages: Int
+}
+
+/// A signing certificate / credentials handle (opaque, freed in `deinit`/`close()`).
+///
+/// Obtain one via `Certificate.loadFromBytes` (PKCS#12) or `Certificate.loadFromPem`,
+/// or from `SignatureInfo.certificate()`. Wraps the `pdf_certificate_*` C functions.
+public final class Certificate {
+    private var handle: OpaquePointer?
+
+    fileprivate init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { if let h = handle { pdf_certificate_free(UnsafeMutableRawPointer(h)) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "Certificate is closed") }
+        return h
+    }
+
+    // Expose the raw handle (for signing) — throws if closed.
+    fileprivate func rawPtr() throws -> UnsafeRawPointer {
+        UnsafeRawPointer(try ptr())
+    }
+
+    /// Load a PKCS#12 (PFX) certificate + key from bytes, decrypting with `password`.
+    public static func loadFromBytes(_ bytes: [UInt8], password: String) throws -> Certificate {
+        var code: Int32 = 0
+        let h = bytes.withUnsafeBufferPointer { buf in
+            pdf_certificate_load_from_bytes(buf.baseAddress, Int32(buf.count), password, &code)
+        }
+        guard let h else { throw PdfOxideError(code: code, op: "Certificate.loadFromBytes") }
+        return Certificate(OpaquePointer(h))
+    }
+
+    /// Load signing credentials from PEM-encoded certificate + private-key strings.
+    public static func loadFromPem(certPem: String, keyPem: String) throws -> Certificate {
+        var code: Int32 = 0
+        guard let h = pdf_certificate_load_from_pem(certPem, keyPem, &code) else {
+            throw PdfOxideError(code: code, op: "Certificate.loadFromPem")
+        }
+        return Certificate(OpaquePointer(h))
+    }
+
+    public func subject() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_certificate_get_subject(UnsafeRawPointer(try ptr()), &code), code, "Certificate.subject")
+    }
+    public func issuer() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_certificate_get_issuer(UnsafeRawPointer(try ptr()), &code), code, "Certificate.issuer")
+    }
+    public func serial() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_certificate_get_serial(UnsafeRawPointer(try ptr()), &code), code, "Certificate.serial")
+    }
+
+    /// The certificate's validity window (epoch seconds).
+    public func validity() throws -> CertificateValidity {
+        var code: Int32 = 0
+        var notBefore: Int64 = 0, notAfter: Int64 = 0
+        pdf_certificate_get_validity(UnsafeRawPointer(try ptr()), &notBefore, &notAfter, &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "Certificate.validity") }
+        return CertificateValidity(notBefore: notBefore, notAfter: notAfter)
+    }
+
+    /// Whether the certificate is currently valid (1 == valid).
+    public func isValid() throws -> Bool {
+        var code: Int32 = 0
+        return pdf_certificate_is_valid(UnsafeRawPointer(try ptr()), &code) == 1
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_certificate_free(UnsafeMutableRawPointer(h)); handle = nil }
+    }
+}
+
+/// Information about a single PDF signature (opaque `FfiSignatureInfo`, freed in
+/// `deinit`/`close()`). Wraps the `pdf_signature_*` C functions.
+public final class SignatureInfo {
+    private var handle: OpaquePointer?
+
+    fileprivate init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { if let h = handle { pdf_signature_free(h) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "SignatureInfo is closed") }
+        return h
+    }
+
+    public func signerName() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_signature_get_signer_name(try ptr(), &code), code, "SignatureInfo.signerName")
+    }
+    public func signingReason() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_signature_get_signing_reason(try ptr(), &code), code, "SignatureInfo.signingReason")
+    }
+    public func signingLocation() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_signature_get_signing_location(try ptr(), &code), code, "SignatureInfo.signingLocation")
+    }
+
+    /// Signing time as Unix epoch seconds.
+    public func signingTime() throws -> Int64 {
+        var code: Int32 = 0
+        let t = pdf_signature_get_signing_time(try ptr(), &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "SignatureInfo.signingTime") }
+        return t
+    }
+
+    /// The signer's certificate, if available.
+    public func certificate() throws -> Certificate? {
+        var code: Int32 = 0
+        guard let c = pdf_signature_get_certificate(UnsafeRawPointer(try ptr()), &code) else { return nil }
+        return Certificate(OpaquePointer(c))
+    }
+
+    /// The PAdES level code classified from the signature's CMS attributes (-1 on error).
+    public func padesLevel() throws -> Int32 {
+        var code: Int32 = 0
+        return pdf_signature_get_pades_level(UnsafeRawPointer(try ptr()), &code)
+    }
+
+    /// Whether this signature carries an embedded RFC 3161 timestamp.
+    public func hasTimestamp() throws -> Bool {
+        var code: Int32 = 0
+        return pdf_signature_has_timestamp(UnsafeRawPointer(try ptr()), &code)
+    }
+
+    /// The signature's embedded timestamp, if any.
+    public func timestamp() throws -> Timestamp? {
+        var code: Int32 = 0
+        guard let t = pdf_signature_get_timestamp(UnsafeRawPointer(try ptr()), &code) else { return nil }
+        return Timestamp(OpaquePointer(t))
+    }
+
+    /// Attach `ts` to this signature. Returns true on success.
+    @discardableResult
+    public func addTimestamp(_ ts: Timestamp) throws -> Bool {
+        var code: Int32 = 0
+        let ok = pdf_signature_add_timestamp(UnsafeRawPointer(try ptr()), try ts.rawPtr(), &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "SignatureInfo.addTimestamp") }
+        return ok
+    }
+
+    /// Run the signer-attributes crypto check. Returns 1=valid, 0=invalid, -1=unknown/unsupported.
+    public func verify() throws -> Int32 {
+        var code: Int32 = 0
+        return pdf_signature_verify(UnsafeRawPointer(try ptr()), &code)
+    }
+
+    /// End-to-end verify against the full PDF bytes. Returns 1=valid, 0=invalid, -1=unknown.
+    public func verifyDetached(_ pdf: [UInt8]) throws -> Int32 {
+        let h = UnsafeRawPointer(try ptr())
+        var code: Int32 = 0
+        return pdf.withUnsafeBufferPointer { buf in
+            pdf_signature_verify_detached(h, buf.baseAddress, UInt(buf.count), &code)
+        }
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_signature_free(h); handle = nil }
+    }
+}
+
+/// A parsed RFC 3161 timestamp token (opaque, freed in `deinit`/`close()`).
+/// Wraps the `pdf_timestamp_*` C functions.
+public final class Timestamp {
+    private var handle: OpaquePointer?
+
+    fileprivate init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { if let h = handle { pdf_timestamp_free(UnsafeMutableRawPointer(h)) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "Timestamp is closed") }
+        return h
+    }
+    fileprivate func rawPtr() throws -> UnsafeRawPointer { UnsafeRawPointer(try ptr()) }
+
+    /// Parse a DER-encoded RFC 3161 TimeStampToken (or bare TSTInfo).
+    public static func parse(_ bytes: [UInt8]) throws -> Timestamp {
+        var code: Int32 = 0
+        let h = bytes.withUnsafeBufferPointer { buf in
+            pdf_timestamp_parse(buf.baseAddress, UInt(buf.count), &code)
+        }
+        guard let h else { throw PdfOxideError(code: code, op: "Timestamp.parse") }
+        return Timestamp(OpaquePointer(h))
+    }
+
+    // The token / message-imprint accessors return a BORROWED const pointer that
+    // must be copied (NOT freed) — the bytes are owned by the handle.
+    private func copyConstBytes(_ p: UnsafePointer<UInt8>?, _ len: Int, _ code: Int32, _ op: String) throws -> [UInt8] {
+        guard let p else { throw PdfOxideError(code: code, op: op) }
+        let n = len < 0 ? 0 : len
+        return Array(UnsafeBufferPointer(start: p, count: n))
+    }
+
+    /// The raw timestamp token bytes (copied from a borrowed buffer).
+    public func token() throws -> [UInt8] {
+        let h = UnsafeRawPointer(try ptr())
+        var outLen: UInt = 0, code: Int32 = 0
+        let p = pdf_timestamp_get_token(h, &outLen, &code)
+        return try copyConstBytes(p, Int(outLen), code, "Timestamp.token")
+    }
+
+    /// The message imprint bytes (copied from a borrowed buffer).
+    public func messageImprint() throws -> [UInt8] {
+        let h = UnsafeRawPointer(try ptr())
+        var outLen: UInt = 0, code: Int32 = 0
+        let p = pdf_timestamp_get_message_imprint(h, &outLen, &code)
+        return try copyConstBytes(p, Int(outLen), code, "Timestamp.messageImprint")
+    }
+
+    /// Timestamp time as Unix epoch seconds.
+    public func time() throws -> Int64 {
+        var code: Int32 = 0
+        let t = pdf_timestamp_get_time(UnsafeRawPointer(try ptr()), &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "Timestamp.time") }
+        return t
+    }
+    public func serial() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_timestamp_get_serial(UnsafeRawPointer(try ptr()), &code), code, "Timestamp.serial")
+    }
+    public func tsaName() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_timestamp_get_tsa_name(UnsafeRawPointer(try ptr()), &code), code, "Timestamp.tsaName")
+    }
+    public func policyOid() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_timestamp_get_policy_oid(UnsafeRawPointer(try ptr()), &code), code, "Timestamp.policyOid")
+    }
+    public func hashAlgorithm() throws -> Int32 {
+        var code: Int32 = 0
+        return pdf_timestamp_get_hash_algorithm(UnsafeRawPointer(try ptr()), &code)
+    }
+
+    /// Verify the timestamp token's internal consistency.
+    public func verify() throws -> Bool {
+        var code: Int32 = 0
+        return pdf_timestamp_verify(UnsafeRawPointer(try ptr()), &code)
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_timestamp_free(UnsafeMutableRawPointer(h)); handle = nil }
+    }
+}
+
+/// An RFC 3161 Time-Stamp Authority client (opaque, freed in `deinit`/`close()`).
+/// Wraps the `pdf_tsa_client_*` and `pdf_tsa_request_*` C functions.
+public final class TsaClient {
+    private var handle: OpaquePointer?
+
+    private init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { if let h = handle { pdf_tsa_client_free(UnsafeMutableRawPointer(h)) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "TsaClient is closed") }
+        return h
+    }
+
+    /// Create a TSA client. `username`/`password` may be nil for unauthenticated TSAs.
+    public static func create(
+        url: String, username: String? = nil, password: String? = nil,
+        timeout: Int32 = 30, hashAlgo: Int32 = 0, useNonce: Bool = true, certReq: Bool = true
+    ) throws -> TsaClient {
+        var code: Int32 = 0
+        guard let h = pdf_tsa_client_create(url, username, password, timeout, hashAlgo, useNonce, certReq, &code) else {
+            throw PdfOxideError(code: code, op: "TsaClient.create")
+        }
+        return TsaClient(OpaquePointer(h))
+    }
+
+    /// Request a timestamp over `data` (the TSA hashes it). Returns the token.
+    public func requestTimestamp(_ data: [UInt8]) throws -> Timestamp {
+        let h = UnsafeRawPointer(try ptr())
+        var code: Int32 = 0
+        let t = data.withUnsafeBufferPointer { buf in
+            pdf_tsa_request_timestamp(h, buf.baseAddress, UInt(buf.count), &code)
+        }
+        guard let t else { throw PdfOxideError(code: code, op: "TsaClient.requestTimestamp") }
+        return Timestamp(OpaquePointer(t))
+    }
+
+    /// Request a timestamp over a pre-computed `hash` (algorithm = `hashAlgo`).
+    public func requestTimestampHash(_ hash: [UInt8], hashAlgo: Int32) throws -> Timestamp {
+        let h = UnsafeRawPointer(try ptr())
+        var code: Int32 = 0
+        let t = hash.withUnsafeBufferPointer { buf in
+            pdf_tsa_request_timestamp_hash(h, buf.baseAddress, UInt(buf.count), hashAlgo, &code)
+        }
+        guard let t else { throw PdfOxideError(code: code, op: "TsaClient.requestTimestampHash") }
+        return Timestamp(OpaquePointer(t))
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_tsa_client_free(UnsafeMutableRawPointer(h)); handle = nil }
+    }
+}
+
+/// A document Security Store (`/DSS`) handle (opaque, freed in `deinit`/`close()`).
+/// Wraps the `pdf_dss_*` C functions.
+public final class Dss {
+    private var handle: OpaquePointer?
+
+    fileprivate init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { if let h = handle { pdf_dss_free(UnsafeMutableRawPointer(h)) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "Dss is closed") }
+        return h
+    }
+
+    public func certCount() throws -> Int { Int(pdf_dss_cert_count(UnsafeRawPointer(try ptr()))) }
+    public func crlCount() throws -> Int { Int(pdf_dss_crl_count(UnsafeRawPointer(try ptr()))) }
+    public func ocspCount() throws -> Int { Int(pdf_dss_ocsp_count(UnsafeRawPointer(try ptr()))) }
+    public func vriCount() throws -> Int { Int(pdf_dss_vri_count(UnsafeRawPointer(try ptr()))) }
+
+    /// The DER bytes of the certificate at `index`.
+    public func cert(_ index: Int) throws -> [UInt8] {
+        let h = UnsafeRawPointer(try ptr())
+        var outLen: UInt = 0, code: Int32 = 0
+        let p = pdf_dss_get_cert(h, Int32(index), &outLen, &code)
+        return try takeBytes(p, Int(outLen), code, "Dss.cert")
+    }
+    /// The DER bytes of the CRL at `index`.
+    public func crl(_ index: Int) throws -> [UInt8] {
+        let h = UnsafeRawPointer(try ptr())
+        var outLen: UInt = 0, code: Int32 = 0
+        let p = pdf_dss_get_crl(h, Int32(index), &outLen, &code)
+        return try takeBytes(p, Int(outLen), code, "Dss.crl")
+    }
+    /// The DER bytes of the OCSP response at `index`.
+    public func ocsp(_ index: Int) throws -> [UInt8] {
+        let h = UnsafeRawPointer(try ptr())
+        var outLen: UInt = 0, code: Int32 = 0
+        let p = pdf_dss_get_ocsp(h, Int32(index), &outLen, &code)
+        return try takeBytes(p, Int(outLen), code, "Dss.ocsp")
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_dss_free(UnsafeMutableRawPointer(h)); handle = nil }
+    }
+}
+
+/// Result of a PDF/A validation (opaque `FfiPdfAResults`, freed in `deinit`/`close()`).
+public final class PdfAResults {
+    private var handle: OpaquePointer?
+
+    fileprivate init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { if let h = handle { pdf_pdf_a_results_free(h) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "PdfAResults is closed") }
+        return h
+    }
+
+    /// Whether the document is PDF/A compliant.
+    public func isCompliant() throws -> Bool {
+        var code: Int32 = 0
+        return pdf_pdf_a_is_compliant(try ptr(), &code)
+    }
+
+    /// The list of compliance errors.
+    public func errors() throws -> [String] {
+        let h = try ptr()
+        var code: Int32 = 0
+        let n = Int(pdf_pdf_a_error_count(h))
+        var out: [String] = []
+        out.reserveCapacity(max(0, n))
+        for i in 0..<max(0, n) {
+            out.append(try takeString(pdf_pdf_a_get_error(h, Int32(i), &code), code, "PdfAResults.error"))
+        }
+        return out
+    }
+
+    /// Number of warnings.
+    public func warningCount() throws -> Int { Int(pdf_pdf_a_warning_count(try ptr())) }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_pdf_a_results_free(h); handle = nil }
+    }
+}
+
+/// Result of a PDF/UA validation (opaque `FfiUaResults`, freed in `deinit`/`close()`).
+public final class UaResults {
+    private var handle: OpaquePointer?
+
+    fileprivate init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { if let h = handle { pdf_pdf_ua_results_free(h) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "UaResults is closed") }
+        return h
+    }
+
+    /// Whether the document is PDF/UA accessible.
+    public func isAccessible() throws -> Bool {
+        var code: Int32 = 0
+        return pdf_pdf_ua_is_accessible(try ptr(), &code)
+    }
+
+    /// The list of accessibility errors.
+    public func errors() throws -> [String] {
+        let h = try ptr()
+        var code: Int32 = 0
+        let n = Int(pdf_pdf_ua_error_count(h))
+        var out: [String] = []
+        out.reserveCapacity(max(0, n))
+        for i in 0..<max(0, n) {
+            out.append(try takeString(pdf_pdf_ua_get_error(h, Int32(i), &code), code, "UaResults.error"))
+        }
+        return out
+    }
+
+    /// The list of accessibility warnings.
+    public func warnings() throws -> [String] {
+        let h = try ptr()
+        var code: Int32 = 0
+        let n = Int(pdf_pdf_ua_warning_count(h))
+        var out: [String] = []
+        out.reserveCapacity(max(0, n))
+        for i in 0..<max(0, n) {
+            out.append(try takeString(pdf_pdf_ua_get_warning(h, Int32(i), &code), code, "UaResults.warning"))
+        }
+        return out
+    }
+
+    /// Structural statistics for the document.
+    public func stats() throws -> UaStats {
+        let h = try ptr()
+        var s: Int32 = 0, im: Int32 = 0, t: Int32 = 0, f: Int32 = 0, a: Int32 = 0, p: Int32 = 0, code: Int32 = 0
+        if !pdf_pdf_ua_get_stats(h, &s, &im, &t, &f, &a, &p, &code) {
+            throw PdfOxideError(code: code, op: "UaResults.stats")
+        }
+        return UaStats(
+            structElements: Int(s), images: Int(im), tables: Int(t),
+            forms: Int(f), annotations: Int(a), pages: Int(p)
+        )
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_pdf_ua_results_free(h); handle = nil }
+    }
+}
+
+/// Result of a PDF/X validation (opaque `FfiPdfXResults`, freed in `deinit`/`close()`).
+public final class PdfXResults {
+    private var handle: OpaquePointer?
+
+    fileprivate init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { if let h = handle { pdf_pdf_x_results_free(h) } }
+
+    private func ptr() throws -> OpaquePointer {
+        guard let h = handle else { throw PdfOxideError(code: 0, op: "PdfXResults is closed") }
+        return h
+    }
+
+    /// Whether the document is PDF/X compliant.
+    public func isCompliant() throws -> Bool {
+        var code: Int32 = 0
+        return pdf_pdf_x_is_compliant(try ptr(), &code)
+    }
+
+    /// The list of compliance errors.
+    public func errors() throws -> [String] {
+        let h = try ptr()
+        var code: Int32 = 0
+        let n = Int(pdf_pdf_x_error_count(h))
+        var out: [String] = []
+        out.reserveCapacity(max(0, n))
+        for i in 0..<max(0, n) {
+            out.append(try takeString(pdf_pdf_x_get_error(h, Int32(i), &code), code, "PdfXResults.error"))
+        }
+        return out
+    }
+
+    /// Free the native handle now (idempotent).
+    public func close() {
+        if let h = handle { pdf_pdf_x_results_free(h); handle = nil }
+    }
+}
+
+// ── Phase-6 top-level: signing + log level ───────────────────────────────────
+
+/// Sign raw PDF `pdf` bytes with `certificate`, returning the signed PDF bytes.
+public func signBytes(_ pdf: [UInt8], certificate: Certificate, reason: String? = nil, location: String? = nil) throws -> [UInt8] {
+    let cert = try certificate.rawPtr()
+    var outLen: UInt = 0, code: Int32 = 0
+    let p = pdf.withUnsafeBufferPointer { buf in
+        pdf_sign_bytes(buf.baseAddress, UInt(buf.count), cert, reason, location, &outLen, &code)
+    }
+    return try takeBytes(p, Int(outLen), code, "signBytes")
+}
+
+/// Sign raw PDF `pdf` bytes at a PAdES baseline `level` (0=B-B 1=B-T 2=B-LT).
+/// `tsaUrl` is required for level >= 1. The three revocation-material arrays
+/// (DER certs / CRLs / OCSPs) carry the B-LT validation data.
+public func signBytesPades(
+    _ pdf: [UInt8], certificate: Certificate, level: Int32,
+    tsaUrl: String? = nil, reason: String? = nil, location: String? = nil,
+    certs: [[UInt8]] = [], crls: [[UInt8]] = [], ocsps: [[UInt8]] = []
+) throws -> [UInt8] {
+    let cert = try certificate.rawPtr()
+    var outLen: UInt = 0, code: Int32 = 0
+    let p = try withByteArrayArray(certs) { certsPtr, certLens in
+        try withByteArrayArray(crls) { crlsPtr, crlLens in
+            try withByteArrayArray(ocsps) { ocspsPtr, ocspLens in
+                pdf.withUnsafeBufferPointer { buf -> UnsafeMutablePointer<UInt8>? in
+                    pdf_sign_bytes_pades(
+                        buf.baseAddress, UInt(buf.count), cert, level, tsaUrl, reason, location,
+                        certsPtr, certLens, UInt(certs.count),
+                        crlsPtr, crlLens, UInt(crls.count),
+                        ocspsPtr, ocspLens, UInt(ocsps.count),
+                        &outLen, &code
+                    )
+                }
+            }
+        }
+    }
+    return try takeBytes(p, Int(outLen), code, "signBytesPades")
+}
+
+/// Struct-options variant of `signBytesPades` — builds a `PadesSignOptionsC`
+/// and delegates to the native struct-pointer entry point.
+public func signBytesPadesOpts(
+    _ pdf: [UInt8], certificate: Certificate, level: Int32,
+    tsaUrl: String? = nil, reason: String? = nil, location: String? = nil,
+    certs: [[UInt8]] = [], crls: [[UInt8]] = [], ocsps: [[UInt8]] = []
+) throws -> [UInt8] {
+    let cert = try certificate.rawPtr()
+    var outLen: UInt = 0, code: Int32 = 0
+
+    // C strings must outlive the call; strdup them and free afterwards.
+    let tsaC = tsaUrl.map { strdup($0) } ?? nil
+    let reasonC = reason.map { strdup($0) } ?? nil
+    let locationC = location.map { strdup($0) } ?? nil
+    defer {
+        if let p = tsaC { free(p) }
+        if let p = reasonC { free(p) }
+        if let p = locationC { free(p) }
+    }
+
+    let p = try withByteArrayArray(certs) { certsPtr, certLens in
+        try withByteArrayArray(crls) { crlsPtr, crlLens in
+            try withByteArrayArray(ocsps) { ocspsPtr, ocspLens in
+                pdf.withUnsafeBufferPointer { buf -> UnsafeMutablePointer<UInt8>? in
+                    var opts = PadesSignOptionsC(
+                        certificate_handle: cert,
+                        certs: certsPtr, cert_lens: certLens, n_certs: UInt(certs.count),
+                        crls: crlsPtr, crl_lens: crlLens, n_crls: UInt(crls.count),
+                        ocsps: ocspsPtr, ocsp_lens: ocspLens, n_ocsps: UInt(ocsps.count),
+                        tsa_url: tsaC.map { UnsafePointer($0) }, reason: reasonC.map { UnsafePointer($0) },
+                        location: locationC.map { UnsafePointer($0) }, level: level
+                    )
+                    return pdf_sign_bytes_pades_opts(buf.baseAddress, UInt(buf.count), &opts, &outLen, &code)
+                }
+            }
+        }
+    }
+    return try takeBytes(p, Int(outLen), code, "signBytesPadesOpts")
+}
+
+/// Set the global library log level (0=Off 1=Error 2=Warn 3=Info 4=Debug 5=Trace).
+public func setLogLevel(_ level: Int32) {
+    pdf_oxide_set_log_level(level)
+}
+
+/// Get the current global library log level (0-5).
+public func getLogLevel() -> Int32 {
+    pdf_oxide_get_log_level()
+}
+
+// Marshal `[[UInt8]]` into a C `const uint8_t* const*` + parallel `const uintptr_t*`
+// lengths array for the duration of `body`. Pointers are valid only inside `body`.
+private func withByteArrayArray<R>(
+    _ arrays: [[UInt8]],
+    _ body: (UnsafePointer<UnsafePointer<UInt8>?>?, UnsafePointer<UInt>?) throws -> R
+) rethrows -> R {
+    // Recursively pin each inner buffer so its baseAddress stays valid for `body`.
+    var ptrs: [UnsafePointer<UInt8>?] = []
+    var lens: [UInt] = []
+    ptrs.reserveCapacity(arrays.count)
+    lens.reserveCapacity(arrays.count)
+
+    func pin(_ i: Int) throws -> R {
+        if i == arrays.count {
+            return try ptrs.withUnsafeBufferPointer { pBuf in
+                try lens.withUnsafeBufferPointer { lBuf in
+                    try body(pBuf.baseAddress, lBuf.baseAddress)
+                }
+            }
+        }
+        return try arrays[i].withUnsafeBufferPointer { buf in
+            ptrs.append(buf.baseAddress)
+            lens.append(UInt(buf.count))
+            return try pin(i + 1)
+        }
+    }
+    return try pin(0)
+}
+
+// Marshal a [String] into a C `const char* const*` for the duration of `body`.
+// The C strings (and their backing buffer) are valid only inside `body`.
+private func withCStringArray<R>(_ strings: [String], _ body: (UnsafePointer<UnsafePointer<CChar>?>?) -> R) -> R {
+    var cstrs: [UnsafeMutablePointer<CChar>?] = strings.map { strdup($0) }
+    defer { for p in cstrs where p != nil { free(p) } }
+    return cstrs.withUnsafeMutableBufferPointer { buf in
+        // Reinterpret [char*] as `const char* const*`.
+        buf.baseAddress!.withMemoryRebound(to: UnsafePointer<CChar>?.self, capacity: buf.count) { rebased in
+            body(rebased)
+        }
     }
 }

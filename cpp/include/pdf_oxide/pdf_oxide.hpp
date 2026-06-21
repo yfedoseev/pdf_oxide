@@ -350,6 +350,17 @@ class Document {
     class Page;
     Page page(int index) const;
 
+    // ── PHASE-6 validation (defined out-of-line after the result types) ──────
+    /// Validate PDF/A conformance at `level` (0=A1b 1=A1a 2=A2b 3=A2a 4=A2u
+    /// 5=A3b 6=A3a 7=A3u).
+    class PdfAResults validate_pdf_a(int level) const;
+    /// Validate PDF/UA accessibility at `level`.
+    class UaResults validate_pdf_ua(int level) const;
+    /// Validate PDF/X conformance at `level`.
+    class PdfXResults validate_pdf_x(int level) const;
+    /// Read the document's DSS (Document Security Store), if present.
+    class Dss get_dss() const;
+
     /// Structured content as a JSON string.
     std::string extract_structured_json(int page_index) const {
         int32_t code = 0;
@@ -1302,6 +1313,1483 @@ class DocumentEditor {
     }
     std::unique_ptr<::DocumentEditor, Deleter> handle_;
 };
+
+// ── PDF CREATION builder API ─────────────────────────────────────────────────
+//
+// Three owned native handles mirroring the existing pattern (string-take +
+// free_string, byte-take + free_bytes, closed-handle guard, RAII free on
+// destruction):
+//   EmbeddedFont    — a loaded TTF/OTF font (pdf_embedded_font_*). Consumed by a
+//                     successful DocumentBuilder::register_embedded_font, after
+//                     which the wrapper nulls its handle so it is NOT freed twice.
+//   PageBuilder     — a page under construction (pdf_page_builder_*). Each op is
+//                     fluent (returns *this). done() commits + consumes the
+//                     handle; close()/dtor drop it via pdf_page_builder_free.
+//   DocumentBuilder — the top-level builder (pdf_document_builder_*). Spawns
+//                     PageBuilders, registers fonts, and builds/saves bytes.
+
+/// A loaded TTF/OTF font for embedding. Move-only; owns the native EmbeddedFont
+/// handle and frees it on destruction — UNLESS a successful
+/// DocumentBuilder::register_embedded_font has consumed it (the wrapper handle
+/// is nulled then, so the builder's ownership is not double-freed).
+class EmbeddedFont {
+  public:
+    /// Load a TTF/OTF font from a filesystem path.
+    static EmbeddedFont from_file(const std::string& path) {
+        int32_t code = 0;
+        ::EmbeddedFont* h = pdf_embedded_font_from_file(path.c_str(), &code);
+        if (h == nullptr) {
+            throw Error(code, "EmbeddedFont::from_file");
+        }
+        return EmbeddedFont(h);
+    }
+
+    /// Load a font from a byte buffer. `name` may be empty to use the
+    /// PostScript name from the font face.
+    static EmbeddedFont from_bytes(const std::vector<std::uint8_t>& data,
+                                   const std::string& name = "") {
+        int32_t code = 0;
+        ::EmbeddedFont* h = pdf_embedded_font_from_bytes(
+            data.data(), data.size(), name.empty() ? nullptr : name.c_str(), &code);
+        if (h == nullptr) {
+            throw Error(code, "EmbeddedFont::from_bytes");
+        }
+        return EmbeddedFont(h);
+    }
+
+    /// Free the native handle now (idempotent). RAII also frees at scope exit.
+    void close() { handle_.reset(); }
+
+  private:
+    friend class DocumentBuilder;
+    struct Deleter {
+        void operator()(::EmbeddedFont* h) const noexcept {
+            if (h)
+                pdf_embedded_font_free(h);
+        }
+    };
+    explicit EmbeddedFont(::EmbeddedFont* h) : handle_(h) {}
+    ::EmbeddedFont* ptr() const {
+        if (!handle_)
+            throw Error(0, "EmbeddedFont is closed");
+        return handle_.get();
+    }
+    /// Relinquish ownership of the native handle to the caller (the builder).
+    /// After this the wrapper is empty and will not free the handle.
+    ::EmbeddedFont* release() { return handle_.release(); }
+    std::unique_ptr<::EmbeddedFont, Deleter> handle_;
+};
+
+/// A page under construction. Move-only; owns the native FfiPageBuilder handle.
+/// Every layout op is fluent (returns *this). done() commits the buffered ops to
+/// the parent DocumentBuilder and consumes the handle; after done() the wrapper
+/// is empty. close()/dtor drop an uncommitted handle via pdf_page_builder_free.
+class PageBuilder {
+  public:
+    // ── text + layout ────────────────────────────────────────────────────
+    PageBuilder& font(const std::string& name, float size) {
+        return op1(pdf_page_builder_font(ptr(), name.c_str(), size, &c()), "font");
+    }
+    PageBuilder& at(float x, float y) {
+        return op1(pdf_page_builder_at(ptr(), x, y, &c()), "at");
+    }
+    PageBuilder& text(const std::string& t) {
+        return op1(pdf_page_builder_text(ptr(), t.c_str(), &c()), "text");
+    }
+    PageBuilder& heading(int level, const std::string& t) {
+        return op1(pdf_page_builder_heading(ptr(), static_cast<std::uint8_t>(level),
+                                            t.c_str(), &c()),
+                   "heading");
+    }
+    PageBuilder& paragraph(const std::string& t) {
+        return op1(pdf_page_builder_paragraph(ptr(), t.c_str(), &c()), "paragraph");
+    }
+    PageBuilder& space(float points) {
+        return op1(pdf_page_builder_space(ptr(), points, &c()), "space");
+    }
+    PageBuilder& horizontal_rule() {
+        return op1(pdf_page_builder_horizontal_rule(ptr(), &c()), "horizontal_rule");
+    }
+    PageBuilder& columns(std::uint32_t column_count, float gap_pt,
+                         const std::string& t) {
+        return op1(
+            pdf_page_builder_columns(ptr(), column_count, gap_pt, t.c_str(), &c()),
+            "columns");
+    }
+    PageBuilder& footnote(const std::string& ref_mark, const std::string& note_text) {
+        return op1(
+            pdf_page_builder_footnote(ptr(), ref_mark.c_str(), note_text.c_str(), &c()),
+            "footnote");
+    }
+    PageBuilder& inline_text(const std::string& t) {
+        return op1(pdf_page_builder_inline(ptr(), t.c_str(), &c()), "inline_text");
+    }
+    PageBuilder& inline_bold(const std::string& t) {
+        return op1(pdf_page_builder_inline_bold(ptr(), t.c_str(), &c()), "inline_bold");
+    }
+    PageBuilder& inline_italic(const std::string& t) {
+        return op1(pdf_page_builder_inline_italic(ptr(), t.c_str(), &c()),
+                   "inline_italic");
+    }
+    PageBuilder& inline_color(float r, float g, float b, const std::string& t) {
+        return op1(pdf_page_builder_inline_color(ptr(), r, g, b, t.c_str(), &c()),
+                   "inline_color");
+    }
+    PageBuilder& newline() {
+        return op1(pdf_page_builder_newline(ptr(), &c()), "newline");
+    }
+
+    // ── links ────────────────────────────────────────────────────────────
+    PageBuilder& link_url(const std::string& url) {
+        return op1(pdf_page_builder_link_url(ptr(), url.c_str(), &c()), "link_url");
+    }
+    PageBuilder& link_page(int page_index) {
+        return op1(pdf_page_builder_link_page(
+                       ptr(), static_cast<std::uintptr_t>(page_index), &c()),
+                   "link_page");
+    }
+    PageBuilder& link_named(const std::string& destination) {
+        return op1(pdf_page_builder_link_named(ptr(), destination.c_str(), &c()),
+                   "link_named");
+    }
+    PageBuilder& link_javascript(const std::string& script) {
+        return op1(pdf_page_builder_link_javascript(ptr(), script.c_str(), &c()),
+                   "link_javascript");
+    }
+
+    // ── page + field JS actions ──────────────────────────────────────────
+    PageBuilder& on_open(const std::string& script) {
+        return op1(pdf_page_builder_on_open(ptr(), script.c_str(), &c()), "on_open");
+    }
+    PageBuilder& on_close(const std::string& script) {
+        return op1(pdf_page_builder_on_close(ptr(), script.c_str(), &c()), "on_close");
+    }
+    PageBuilder& field_keystroke(const std::string& script) {
+        return op1(pdf_page_builder_field_keystroke(ptr(), script.c_str(), &c()),
+                   "field_keystroke");
+    }
+    PageBuilder& field_format(const std::string& script) {
+        return op1(pdf_page_builder_field_format(ptr(), script.c_str(), &c()),
+                   "field_format");
+    }
+    PageBuilder& field_validate(const std::string& script) {
+        return op1(pdf_page_builder_field_validate(ptr(), script.c_str(), &c()),
+                   "field_validate");
+    }
+    PageBuilder& field_calculate(const std::string& script) {
+        return op1(pdf_page_builder_field_calculate(ptr(), script.c_str(), &c()),
+                   "field_calculate");
+    }
+
+    // ── text-mark annotations (RGB 0..1) ─────────────────────────────────
+    PageBuilder& highlight(float r, float g, float b) {
+        return op1(pdf_page_builder_highlight(ptr(), r, g, b, &c()), "highlight");
+    }
+    PageBuilder& underline(float r, float g, float b) {
+        return op1(pdf_page_builder_underline(ptr(), r, g, b, &c()), "underline");
+    }
+    PageBuilder& strikeout(float r, float g, float b) {
+        return op1(pdf_page_builder_strikeout(ptr(), r, g, b, &c()), "strikeout");
+    }
+    PageBuilder& squiggly(float r, float g, float b) {
+        return op1(pdf_page_builder_squiggly(ptr(), r, g, b, &c()), "squiggly");
+    }
+
+    // ── note / watermark / stamp annotations ─────────────────────────────
+    PageBuilder& sticky_note(const std::string& t) {
+        return op1(pdf_page_builder_sticky_note(ptr(), t.c_str(), &c()), "sticky_note");
+    }
+    PageBuilder& sticky_note_at(float x, float y, const std::string& t) {
+        return op1(pdf_page_builder_sticky_note_at(ptr(), x, y, t.c_str(), &c()),
+                   "sticky_note_at");
+    }
+    PageBuilder& watermark(const std::string& t) {
+        return op1(pdf_page_builder_watermark(ptr(), t.c_str(), &c()), "watermark");
+    }
+    PageBuilder& watermark_confidential() {
+        return op1(pdf_page_builder_watermark_confidential(ptr(), &c()),
+                   "watermark_confidential");
+    }
+    PageBuilder& watermark_draft() {
+        return op1(pdf_page_builder_watermark_draft(ptr(), &c()), "watermark_draft");
+    }
+    PageBuilder& stamp(const std::string& type_name) {
+        return op1(pdf_page_builder_stamp(ptr(), type_name.c_str(), &c()), "stamp");
+    }
+    PageBuilder& freetext(float x, float y, float w, float h, const std::string& t) {
+        return op1(pdf_page_builder_freetext(ptr(), x, y, w, h, t.c_str(), &c()),
+                   "freetext");
+    }
+
+    // ── form fields ──────────────────────────────────────────────────────
+    PageBuilder& text_field(const std::string& name, float x, float y, float w, float h,
+                            const std::string& default_value = "") {
+        return op1(pdf_page_builder_text_field(
+                       ptr(), name.c_str(), x, y, w, h,
+                       default_value.empty() ? nullptr : default_value.c_str(), &c()),
+                   "text_field");
+    }
+    PageBuilder& checkbox(const std::string& name, float x, float y, float w, float h,
+                          bool checked) {
+        return op1(pdf_page_builder_checkbox(ptr(), name.c_str(), x, y, w, h,
+                                             checked ? 1 : 0, &c()),
+                   "checkbox");
+    }
+    PageBuilder& combo_box(const std::string& name, float x, float y, float w, float h,
+                           const std::vector<std::string>& options,
+                           const std::string& selected = "") {
+        std::vector<const char*> opts;
+        opts.reserve(options.size());
+        for (const auto& o : options) {
+            opts.push_back(o.c_str());
+        }
+        return op1(pdf_page_builder_combo_box(
+                       ptr(), name.c_str(), x, y, w, h, opts.data(), opts.size(),
+                       selected.empty() ? nullptr : selected.c_str(), &c()),
+                   "combo_box");
+    }
+    PageBuilder& radio_group(const std::string& name,
+                             const std::vector<std::string>& values,
+                             const std::vector<float>& xs, const std::vector<float>& ys,
+                             const std::vector<float>& ws, const std::vector<float>& hs,
+                             const std::string& selected = "") {
+        std::vector<const char*> vals;
+        vals.reserve(values.size());
+        for (const auto& v : values) {
+            vals.push_back(v.c_str());
+        }
+        return op1(pdf_page_builder_radio_group(
+                       ptr(), name.c_str(), vals.data(), xs.data(), ys.data(),
+                       ws.data(), hs.data(), values.size(),
+                       selected.empty() ? nullptr : selected.c_str(), &c()),
+                   "radio_group");
+    }
+    PageBuilder& push_button(const std::string& name, float x, float y, float w,
+                             float h, const std::string& caption) {
+        return op1(pdf_page_builder_push_button(ptr(), name.c_str(), x, y, w, h,
+                                                caption.c_str(), &c()),
+                   "push_button");
+    }
+    PageBuilder& signature_field(const std::string& name, float x, float y, float w,
+                                 float h) {
+        return op1(
+            pdf_page_builder_signature_field(ptr(), name.c_str(), x, y, w, h, &c()),
+            "signature_field");
+    }
+
+    // ── barcodes ─────────────────────────────────────────────────────────
+    PageBuilder& barcode_1d(int barcode_type, const std::string& data, float x, float y,
+                            float w, float h) {
+        return op1(pdf_page_builder_barcode_1d(ptr(), barcode_type, data.c_str(), x, y,
+                                               w, h, &c()),
+                   "barcode_1d");
+    }
+    PageBuilder& barcode_qr(const std::string& data, float x, float y, float size) {
+        return op1(pdf_page_builder_barcode_qr(ptr(), data.c_str(), x, y, size, &c()),
+                   "barcode_qr");
+    }
+
+    // ── images ───────────────────────────────────────────────────────────
+    PageBuilder& image(const std::vector<std::uint8_t>& bytes, float x, float y,
+                       float w, float h) {
+        return op1(
+            pdf_page_builder_image(ptr(), bytes.data(), bytes.size(), x, y, w, h, &c()),
+            "image");
+    }
+    PageBuilder& image_with_alt(const std::vector<std::uint8_t>& bytes, float x,
+                                float y, float w, float h,
+                                const std::string& alt_text) {
+        return op1(pdf_page_builder_image_with_alt(ptr(), bytes.data(), bytes.size(), x,
+                                                   y, w, h, alt_text.c_str(), &c()),
+                   "image_with_alt");
+    }
+    PageBuilder& image_artifact(const std::vector<std::uint8_t>& bytes, float x,
+                                float y, float w, float h) {
+        return op1(pdf_page_builder_image_artifact(ptr(), bytes.data(), bytes.size(), x,
+                                                   y, w, h, &c()),
+                   "image_artifact");
+    }
+
+    // ── vector graphics ──────────────────────────────────────────────────
+    PageBuilder& rect(float x, float y, float w, float h) {
+        return op1(pdf_page_builder_rect(ptr(), x, y, w, h, &c()), "rect");
+    }
+    PageBuilder& filled_rect(float x, float y, float w, float h, float r, float g,
+                             float b) {
+        return op1(pdf_page_builder_filled_rect(ptr(), x, y, w, h, r, g, b, &c()),
+                   "filled_rect");
+    }
+    PageBuilder& line(float x1, float y1, float x2, float y2) {
+        return op1(pdf_page_builder_line(ptr(), x1, y1, x2, y2, &c()), "line");
+    }
+    PageBuilder& stroke_rect(float x, float y, float w, float h, float width, float r,
+                             float g, float b) {
+        return op1(
+            pdf_page_builder_stroke_rect(ptr(), x, y, w, h, width, r, g, b, &c()),
+            "stroke_rect");
+    }
+    PageBuilder& stroke_line(float x1, float y1, float x2, float y2, float width,
+                             float r, float g, float b) {
+        return op1(
+            pdf_page_builder_stroke_line(ptr(), x1, y1, x2, y2, width, r, g, b, &c()),
+            "stroke_line");
+    }
+    PageBuilder& stroke_rect_dashed(float x, float y, float w, float h, float width,
+                                    float r, float g, float b,
+                                    const std::vector<float>& dash_array, float phase) {
+        return op1(pdf_page_builder_stroke_rect_dashed(
+                       ptr(), x, y, w, h, width, r, g, b,
+                       dash_array.empty() ? nullptr : dash_array.data(),
+                       dash_array.size(), phase, &c()),
+                   "stroke_rect_dashed");
+    }
+    PageBuilder& stroke_line_dashed(float x1, float y1, float x2, float y2, float width,
+                                    float r, float g, float b,
+                                    const std::vector<float>& dash_array, float phase) {
+        return op1(pdf_page_builder_stroke_line_dashed(
+                       ptr(), x1, y1, x2, y2, width, r, g, b,
+                       dash_array.empty() ? nullptr : dash_array.data(),
+                       dash_array.size(), phase, &c()),
+                   "stroke_line_dashed");
+    }
+    PageBuilder& text_in_rect(float x, float y, float w, float h, const std::string& t,
+                              int align) {
+        return op1(
+            pdf_page_builder_text_in_rect(ptr(), x, y, w, h, t.c_str(), align, &c()),
+            "text_in_rect");
+    }
+    PageBuilder& new_page_same_size() {
+        return op1(pdf_page_builder_new_page_same_size(ptr(), &c()),
+                   "new_page_same_size");
+    }
+
+    // ── buffered table ───────────────────────────────────────────────────
+    /// Buffer a table. `widths`/`aligns` are length n_columns; `cells` is
+    /// row-major (n_rows × n_columns). `has_header` promotes the first row.
+    PageBuilder& table(std::size_t n_columns, const std::vector<float>& widths,
+                       const std::vector<int32_t>& aligns, std::size_t n_rows,
+                       const std::vector<std::string>& cells, bool has_header) {
+        std::vector<const char*> cell_ptrs;
+        cell_ptrs.reserve(cells.size());
+        for (const auto& s : cells) {
+            cell_ptrs.push_back(s.c_str());
+        }
+        return op1(pdf_page_builder_table(ptr(), n_columns, widths.data(),
+                                          aligns.data(), n_rows, cell_ptrs.data(),
+                                          has_header ? 1 : 0, &c()),
+                   "table");
+    }
+
+    // ── streaming table ──────────────────────────────────────────────────
+    PageBuilder& streaming_table_begin(std::size_t n_columns,
+                                       const std::vector<std::string>& headers,
+                                       const std::vector<float>& widths,
+                                       const std::vector<int32_t>& aligns,
+                                       bool repeat_header) {
+        std::vector<const char*> hdrs;
+        hdrs.reserve(headers.size());
+        for (const auto& s : headers) {
+            hdrs.push_back(s.c_str());
+        }
+        return op1(pdf_page_builder_streaming_table_begin(ptr(), n_columns, hdrs.data(),
+                                                          widths.data(), aligns.data(),
+                                                          repeat_header ? 1 : 0, &c()),
+                   "streaming_table_begin");
+    }
+    PageBuilder& streaming_table_begin_v2(
+        std::size_t n_columns, const std::vector<std::string>& headers,
+        const std::vector<float>& widths, const std::vector<int32_t>& aligns,
+        bool repeat_header, int mode, std::size_t sample_rows, float min_col_width_pt,
+        float max_col_width_pt, std::size_t max_rowspan) {
+        std::vector<const char*> hdrs;
+        hdrs.reserve(headers.size());
+        for (const auto& s : headers) {
+            hdrs.push_back(s.c_str());
+        }
+        return op1(pdf_page_builder_streaming_table_begin_v2(
+                       ptr(), n_columns, hdrs.data(), widths.data(), aligns.data(),
+                       repeat_header ? 1 : 0, mode, sample_rows, min_col_width_pt,
+                       max_col_width_pt, max_rowspan, &c()),
+                   "streaming_table_begin_v2");
+    }
+    PageBuilder& streaming_table_set_batch_size(std::size_t batch_size) {
+        return op1(
+            pdf_page_builder_streaming_table_set_batch_size(ptr(), batch_size, &c()),
+            "streaming_table_set_batch_size");
+    }
+    std::size_t streaming_table_pending_row_count() {
+        return static_cast<std::size_t>(
+            pdf_page_builder_streaming_table_pending_row_count(ptr()));
+    }
+    std::size_t streaming_table_batch_count() {
+        return static_cast<std::size_t>(
+            pdf_page_builder_streaming_table_batch_count(ptr()));
+    }
+    PageBuilder& streaming_table_flush() {
+        return op1(pdf_page_builder_streaming_table_flush(ptr(), &c()),
+                   "streaming_table_flush");
+    }
+    PageBuilder& streaming_table_push_row(const std::vector<std::string>& cells) {
+        std::vector<const char*> cell_ptrs;
+        cell_ptrs.reserve(cells.size());
+        for (const auto& s : cells) {
+            cell_ptrs.push_back(s.c_str());
+        }
+        return op1(pdf_page_builder_streaming_table_push_row(ptr(), cell_ptrs.size(),
+                                                             cell_ptrs.data(), &c()),
+                   "streaming_table_push_row");
+    }
+    PageBuilder&
+    streaming_table_push_row_v2(const std::vector<std::string>& cells,
+                                const std::vector<std::uintptr_t>& rowspans) {
+        std::vector<const char*> cell_ptrs;
+        cell_ptrs.reserve(cells.size());
+        for (const auto& s : cells) {
+            cell_ptrs.push_back(s.c_str());
+        }
+        return op1(pdf_page_builder_streaming_table_push_row_v2(
+                       ptr(), cell_ptrs.size(), cell_ptrs.data(),
+                       rowspans.empty() ? nullptr : rowspans.data(), &c()),
+                   "streaming_table_push_row_v2");
+    }
+    PageBuilder& streaming_table_finish() {
+        return op1(pdf_page_builder_streaming_table_finish(ptr(), &c()),
+                   "streaming_table_finish");
+    }
+
+    /// Commit this page's buffered ops to its parent builder. **Consumes** the
+    /// handle — after a successful call the wrapper is empty (no further ops).
+    void done() {
+        int32_t code = 0;
+        if (pdf_page_builder_done(ptr(), &code) != 0) {
+            throw Error(code, "PageBuilder::done");
+        }
+        // The C side consumed the handle; release so the dtor does not free it.
+        (void)handle_.release();
+    }
+
+    /// Drop an uncommitted page handle now (idempotent). RAII also frees at
+    /// scope exit via pdf_page_builder_free.
+    void close() { handle_.reset(); }
+
+  private:
+    friend class DocumentBuilder;
+    struct Deleter {
+        void operator()(::FfiPageBuilder* h) const noexcept {
+            if (h)
+                pdf_page_builder_free(h);
+        }
+    };
+    explicit PageBuilder(::FfiPageBuilder* h) : handle_(h) {}
+    ::FfiPageBuilder* ptr() const {
+        if (!handle_)
+            throw Error(0, "PageBuilder is closed");
+        return handle_.get();
+    }
+    /// Per-call error_code scratch.
+    int32_t& c() {
+        code_ = 0;
+        return code_;
+    }
+    /// Raise on a non-zero status; otherwise return *this for fluent chaining.
+    PageBuilder& op1(int32_t status, const char* op) {
+        if (status != 0) {
+            throw Error(code_, op);
+        }
+        return *this;
+    }
+    int32_t code_ = 0;
+    std::unique_ptr<::FfiPageBuilder, Deleter> handle_;
+};
+
+/// The top-level PDF builder. Move-only; owns the native FfiDocumentBuilder
+/// handle and frees it on destruction. Spawns PageBuilders, registers fonts, and
+/// builds/saves the document to bytes or disk.
+class DocumentBuilder {
+  public:
+    /// Create a new, empty document builder.
+    static DocumentBuilder create() {
+        int32_t code = 0;
+        ::FfiDocumentBuilder* h = pdf_document_builder_create(&code);
+        if (h == nullptr) {
+            throw Error(code, "DocumentBuilder::create");
+        }
+        return DocumentBuilder(h);
+    }
+
+    // ── metadata ─────────────────────────────────────────────────────────
+    DocumentBuilder& set_title(const std::string& title) {
+        return op1(pdf_document_builder_set_title(ptr(), title.c_str(), &c()),
+                   "set_title");
+    }
+    DocumentBuilder& set_author(const std::string& author) {
+        return op1(pdf_document_builder_set_author(ptr(), author.c_str(), &c()),
+                   "set_author");
+    }
+    DocumentBuilder& set_subject(const std::string& subject) {
+        return op1(pdf_document_builder_set_subject(ptr(), subject.c_str(), &c()),
+                   "set_subject");
+    }
+    DocumentBuilder& set_keywords(const std::string& keywords) {
+        return op1(pdf_document_builder_set_keywords(ptr(), keywords.c_str(), &c()),
+                   "set_keywords");
+    }
+    DocumentBuilder& set_creator(const std::string& creator) {
+        return op1(pdf_document_builder_set_creator(ptr(), creator.c_str(), &c()),
+                   "set_creator");
+    }
+    DocumentBuilder& on_open(const std::string& script) {
+        return op1(pdf_document_builder_on_open(ptr(), script.c_str(), &c()),
+                   "on_open");
+    }
+    DocumentBuilder& tagged_pdf_ua1() {
+        return op1(pdf_document_builder_tagged_pdf_ua1(ptr(), &c()), "tagged_pdf_ua1");
+    }
+    DocumentBuilder& language(const std::string& lang) {
+        return op1(pdf_document_builder_language(ptr(), lang.c_str(), &c()),
+                   "language");
+    }
+    DocumentBuilder& role_map(const std::string& custom, const std::string& standard) {
+        return op1(pdf_document_builder_role_map(ptr(), custom.c_str(),
+                                                 standard.c_str(), &c()),
+                   "role_map");
+    }
+
+    /// Register a TTF/OTF font under `name`. On SUCCESS this **consumes** the
+    /// EmbeddedFont (its native handle is released to the builder so it will not
+    /// be freed twice). On error the font is left intact for retry/free.
+    DocumentBuilder& register_embedded_font(const std::string& name,
+                                            EmbeddedFont& font) {
+        int32_t code = 0;
+        int32_t status = pdf_document_builder_register_embedded_font(
+            ptr(), name.c_str(), font.ptr(), &code);
+        if (status != 0) {
+            throw Error(code, "register_embedded_font");
+        }
+        // The builder took ownership; relinquish so EmbeddedFont's dtor is a no-op.
+        (void)font.release();
+        return *this;
+    }
+
+    // ── page factories ───────────────────────────────────────────────────
+    /// Start an A4 page. Only one page may be open per builder at a time.
+    PageBuilder a4_page() {
+        int32_t code = 0;
+        ::FfiPageBuilder* h = pdf_document_builder_a4_page(ptr(), &code);
+        if (h == nullptr) {
+            throw Error(code, "DocumentBuilder::a4_page");
+        }
+        return PageBuilder(h);
+    }
+    /// Start a US Letter page.
+    PageBuilder letter_page() {
+        int32_t code = 0;
+        ::FfiPageBuilder* h = pdf_document_builder_letter_page(ptr(), &code);
+        if (h == nullptr) {
+            throw Error(code, "DocumentBuilder::letter_page");
+        }
+        return PageBuilder(h);
+    }
+    /// Start a page with custom dimensions in PDF points (72 pt = 1 inch).
+    PageBuilder page(float width, float height) {
+        int32_t code = 0;
+        ::FfiPageBuilder* h = pdf_document_builder_page(ptr(), width, height, &code);
+        if (h == nullptr) {
+            throw Error(code, "DocumentBuilder::page");
+        }
+        return PageBuilder(h);
+    }
+
+    // ── output ───────────────────────────────────────────────────────────
+    /// Build the PDF and return the bytes. Consumes the builder STATE (the
+    /// wrapper handle stays alive and is freed by the dtor).
+    std::vector<std::uint8_t> build() {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        std::uint8_t* p = pdf_document_builder_build(ptr(), &out_len, &code);
+        return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                                  "DocumentBuilder::build");
+    }
+    /// Build and save the PDF to `path`.
+    void save(const std::string& path) {
+        int32_t code = 0;
+        if (pdf_document_builder_save(ptr(), path.c_str(), &code) != 0) {
+            throw Error(code, "DocumentBuilder::save");
+        }
+    }
+    /// Build and save AES-256 encrypted to `path`.
+    void save_encrypted(const std::string& path, const std::string& user_password,
+                        const std::string& owner_password) {
+        int32_t code = 0;
+        if (pdf_document_builder_save_encrypted(ptr(), path.c_str(),
+                                                user_password.c_str(),
+                                                owner_password.c_str(), &code) != 0) {
+            throw Error(code, "DocumentBuilder::save_encrypted");
+        }
+    }
+    /// Build encrypted bytes (AES-256).
+    std::vector<std::uint8_t> to_bytes_encrypted(const std::string& user_password,
+                                                 const std::string& owner_password) {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        std::uint8_t* p = pdf_document_builder_to_bytes_encrypted(
+            ptr(), user_password.c_str(), owner_password.c_str(), &out_len, &code);
+        return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                                  "DocumentBuilder::to_bytes_encrypted");
+    }
+
+    /// Free the native handle now (idempotent). RAII also frees at scope exit.
+    void close() { handle_.reset(); }
+
+  private:
+    struct Deleter {
+        void operator()(::FfiDocumentBuilder* h) const noexcept {
+            if (h)
+                pdf_document_builder_free(h);
+        }
+    };
+    explicit DocumentBuilder(::FfiDocumentBuilder* h) : handle_(h) {}
+    ::FfiDocumentBuilder* ptr() const {
+        if (!handle_)
+            throw Error(0, "DocumentBuilder is closed");
+        return handle_.get();
+    }
+    int32_t& c() {
+        code_ = 0;
+        return code_;
+    }
+    DocumentBuilder& op1(int32_t status, const char* op) {
+        if (status != 0) {
+            throw Error(code_, op);
+        }
+        return *this;
+    }
+    int32_t code_ = 0;
+    std::unique_ptr<::FfiDocumentBuilder, Deleter> handle_;
+};
+
+// ── PHASE-6 digital signatures / PKI / timestamps / TSA / validation ─────────
+//
+// Mirrors the established pattern: owned opaque handles wrapped move-only and
+// freed via their pdf_*_free on close()/dtor; string returns copied + freed
+// with free_string (detail::take_string); owned byte buffers copied + freed
+// with free_bytes (detail::take_bytes); a closed-handle guard on every ptr().
+//
+// NB: the C ABI for this phase keys failure off a NULL handle / NULL char* /
+// negative or sentinel int return with *error_code set, exactly like earlier
+// phases. The bool-returning accessors raise only when *error_code != 0.
+
+/// PAdES B-LT revocation material for signBytesPades — three parallel sets of
+/// DER blobs (certificates, CRLs, OCSP responses). Empty sets are fine.
+struct RevocationMaterial {
+    std::vector<std::vector<std::uint8_t>> certs;
+    std::vector<std::vector<std::uint8_t>> crls;
+    std::vector<std::vector<std::uint8_t>> ocsps;
+};
+
+namespace detail {
+
+/// Build the (ptr-array, len-array) pair the C ABI expects for one set of byte
+/// blobs. The returned vectors' storage backs the pointers, so both MUST stay
+/// alive for the duration of the C call.
+struct ByteArrayArray {
+    std::vector<const std::uint8_t*> ptrs;
+    std::vector<std::uintptr_t> lens;
+    explicit ByteArrayArray(const std::vector<std::vector<std::uint8_t>>& blobs) {
+        ptrs.reserve(blobs.size());
+        lens.reserve(blobs.size());
+        for (const auto& b : blobs) {
+            ptrs.push_back(b.data());
+            lens.push_back(static_cast<std::uintptr_t>(b.size()));
+        }
+    }
+    const std::uint8_t* const* data() const { return ptrs.data(); }
+    const std::uintptr_t* lengths() const { return lens.data(); }
+    std::uintptr_t count() const { return static_cast<std::uintptr_t>(ptrs.size()); }
+};
+
+} // namespace detail
+
+/// A loaded signing certificate / credential pair (opaque Certificate handle).
+/// Move-only; frees via pdf_certificate_free on close()/dtor.
+class Certificate {
+  public:
+    /// Load a PKCS#12 certificate (+ key) from DER/PFX bytes, optionally
+    /// unlocking it with `password`.
+    static Certificate load_from_bytes(const std::vector<std::uint8_t>& data,
+                                       const std::string& password = "") {
+        int32_t code = 0;
+        void* h = pdf_certificate_load_from_bytes(
+            data.data(), static_cast<int32_t>(data.size()),
+            password.empty() ? nullptr : password.c_str(), &code);
+        if (h == nullptr) {
+            throw Error(code, "Certificate::load_from_bytes");
+        }
+        return Certificate(h);
+    }
+
+    /// Load signing credentials from PEM-encoded certificate + private key.
+    static Certificate load_from_pem(const std::string& cert_pem,
+                                     const std::string& key_pem) {
+        int32_t code = 0;
+        void* h =
+            pdf_certificate_load_from_pem(cert_pem.c_str(), key_pem.c_str(), &code);
+        if (h == nullptr) {
+            throw Error(code, "Certificate::load_from_pem");
+        }
+        return Certificate(h);
+    }
+
+    /// Certificate subject (distinguished name).
+    std::string subject() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_certificate_get_subject(ptr(), &code), code,
+                                   "Certificate::subject");
+    }
+
+    /// Certificate issuer (distinguished name).
+    std::string issuer() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_certificate_get_issuer(ptr(), &code), code,
+                                   "Certificate::issuer");
+    }
+
+    /// Certificate serial number (decimal/hex string).
+    std::string serial() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_certificate_get_serial(ptr(), &code), code,
+                                   "Certificate::serial");
+    }
+
+    /// Validity window as Unix epoch seconds (not_before, not_after).
+    std::pair<std::int64_t, std::int64_t> validity() const {
+        int32_t code = 0;
+        std::int64_t not_before = 0, not_after = 0;
+        pdf_certificate_get_validity(ptr(), &not_before, &not_after, &code);
+        if (code != 0) {
+            throw Error(code, "Certificate::validity");
+        }
+        return {not_before, not_after};
+    }
+
+    /// True if the certificate is currently within its validity window.
+    bool is_valid() const {
+        int32_t code = 0;
+        int32_t r = pdf_certificate_is_valid(ptr(), &code);
+        if (r < 0) {
+            throw Error(code, "Certificate::is_valid");
+        }
+        return r == 1;
+    }
+
+    /// Free the native handle now (idempotent). RAII also frees at scope exit.
+    void close() { handle_.reset(); }
+
+    /// Borrow the raw native handle (non-owning) for the signing free functions.
+    /// The Certificate retains ownership.
+    const void* handle_get() const { return ptr(); }
+
+  private:
+    friend class SignatureInfo;
+    struct Deleter {
+        void operator()(void* h) const noexcept {
+            if (h)
+                pdf_certificate_free(h);
+        }
+    };
+    explicit Certificate(void* h) : handle_(h) {}
+    void* ptr() const {
+        if (!handle_)
+            throw Error(0, "Certificate is closed");
+        return handle_.get();
+    }
+    std::unique_ptr<void, Deleter> handle_;
+};
+
+/// A parsed RFC 3161 timestamp token (opaque Timestamp handle). Move-only;
+/// frees via pdf_timestamp_free on close()/dtor.
+class Timestamp {
+  public:
+    /// Parse a DER-encoded TimeStampToken (or bare TSTInfo).
+    static Timestamp parse(const std::vector<std::uint8_t>& bytes) {
+        int32_t code = 0;
+        void* h = pdf_timestamp_parse(bytes.data(),
+                                      static_cast<std::uintptr_t>(bytes.size()), &code);
+        if (h == nullptr) {
+            throw Error(code, "Timestamp::parse");
+        }
+        return Timestamp(h);
+    }
+
+    /// The raw DER token bytes. The C ABI returns a borrowed const buffer that
+    /// is owned by the handle, so we COPY it and do NOT free it.
+    std::vector<std::uint8_t> token() const {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        const std::uint8_t* p = pdf_timestamp_get_token(ptr(), &out_len, &code);
+        if (p == nullptr) {
+            throw Error(code, "Timestamp::token");
+        }
+        return std::vector<std::uint8_t>(p, p + out_len);
+    }
+
+    /// The message imprint (hashed value). Borrowed const buffer → COPY, no free.
+    std::vector<std::uint8_t> message_imprint() const {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        const std::uint8_t* p =
+            pdf_timestamp_get_message_imprint(ptr(), &out_len, &code);
+        if (p == nullptr) {
+            throw Error(code, "Timestamp::message_imprint");
+        }
+        return std::vector<std::uint8_t>(p, p + out_len);
+    }
+
+    /// Timestamp time as Unix epoch seconds.
+    std::int64_t time() const {
+        int32_t code = 0;
+        std::int64_t t = pdf_timestamp_get_time(ptr(), &code);
+        if (code != 0) {
+            throw Error(code, "Timestamp::time");
+        }
+        return t;
+    }
+
+    /// Timestamp serial number.
+    std::string serial() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_timestamp_get_serial(ptr(), &code), code,
+                                   "Timestamp::serial");
+    }
+
+    /// Issuing TSA name.
+    std::string tsa_name() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_timestamp_get_tsa_name(ptr(), &code), code,
+                                   "Timestamp::tsa_name");
+    }
+
+    /// TSA policy OID.
+    std::string policy_oid() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_timestamp_get_policy_oid(ptr(), &code), code,
+                                   "Timestamp::policy_oid");
+    }
+
+    /// Hash algorithm code used for the message imprint.
+    int hash_algorithm() const {
+        int32_t code = 0;
+        int32_t a = pdf_timestamp_get_hash_algorithm(ptr(), &code);
+        if (a < 0) {
+            throw Error(code, "Timestamp::hash_algorithm");
+        }
+        return a;
+    }
+
+    /// Verify the timestamp token's internal consistency.
+    bool verify() const {
+        int32_t code = 0;
+        bool ok = pdf_timestamp_verify(ptr(), &code);
+        if (!ok && code != 0) {
+            throw Error(code, "Timestamp::verify");
+        }
+        return ok;
+    }
+
+    /// Free the native handle now (idempotent). RAII also frees at scope exit.
+    void close() { handle_.reset(); }
+
+  private:
+    friend class SignatureInfo;
+    friend class TsaClient;
+    struct Deleter {
+        void operator()(void* h) const noexcept {
+            if (h)
+                pdf_timestamp_free(h);
+        }
+    };
+    explicit Timestamp(void* h) : handle_(h) {}
+    void* ptr() const {
+        if (!handle_)
+            throw Error(0, "Timestamp is closed");
+        return handle_.get();
+    }
+    void* raw() const { return ptr(); }
+    std::unique_ptr<void, Deleter> handle_;
+};
+
+/// A parsed PDF signature (FfiSignatureInfo handle). Move-only; frees via
+/// pdf_signature_free on close()/dtor.
+class SignatureInfo {
+  public:
+    /// Wrap an FfiSignatureInfo handle obtained from the C ABI (takes ownership).
+    static SignatureInfo from_handle(FfiSignatureInfo* h) {
+        if (h == nullptr) {
+            throw Error(0, "SignatureInfo::from_handle");
+        }
+        return SignatureInfo(h);
+    }
+
+    /// Signer common name.
+    std::string signer_name() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_signature_get_signer_name(ptr(), &code), code,
+                                   "SignatureInfo::signer_name");
+    }
+
+    /// Stated signing reason.
+    std::string signing_reason() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_signature_get_signing_reason(ptr(), &code), code,
+                                   "SignatureInfo::signing_reason");
+    }
+
+    /// Stated signing location.
+    std::string signing_location() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_signature_get_signing_location(ptr(), &code),
+                                   code, "SignatureInfo::signing_location");
+    }
+
+    /// Signing time as Unix epoch seconds.
+    std::int64_t signing_time() const {
+        int32_t code = 0;
+        std::int64_t t = pdf_signature_get_signing_time(ptr(), &code);
+        if (code != 0) {
+            throw Error(code, "SignatureInfo::signing_time");
+        }
+        return t;
+    }
+
+    /// The signer's certificate.
+    Certificate certificate() const {
+        int32_t code = 0;
+        void* h = pdf_signature_get_certificate(ptr(), &code);
+        if (h == nullptr) {
+            throw Error(code, "SignatureInfo::certificate");
+        }
+        return Certificate(h);
+    }
+
+    /// Classified PAdES level (B-B/B-T; B-LT needs the DSS).
+    int pades_level() const {
+        int32_t code = 0;
+        int32_t lvl = pdf_signature_get_pades_level(ptr(), &code);
+        if (lvl < 0) {
+            throw Error(code, "SignatureInfo::pades_level");
+        }
+        return lvl;
+    }
+
+    /// True if the signature carries a timestamp.
+    bool has_timestamp() const {
+        int32_t code = 0;
+        bool r = pdf_signature_has_timestamp(ptr(), &code);
+        if (!r && code != 0) {
+            throw Error(code, "SignatureInfo::has_timestamp");
+        }
+        return r;
+    }
+
+    /// The signature's timestamp.
+    Timestamp timestamp() const {
+        int32_t code = 0;
+        void* h = pdf_signature_get_timestamp(ptr(), &code);
+        if (h == nullptr) {
+            throw Error(code, "SignatureInfo::timestamp");
+        }
+        return Timestamp(h);
+    }
+
+    /// Attach a timestamp to this signature. Returns true on success.
+    bool add_timestamp(const Timestamp& ts) {
+        int32_t code = 0;
+        bool ok = pdf_signature_add_timestamp(ptr(), ts.raw(), &code);
+        if (!ok && code != 0) {
+            throw Error(code, "SignatureInfo::add_timestamp");
+        }
+        return ok;
+    }
+
+    /// Run the signer-attributes crypto check. Returns the raw tri-state code
+    /// (1 = valid, 0 = invalid, -1 = unknown/unsupported).
+    int verify() const {
+        int32_t code = 0;
+        return pdf_signature_verify(ptr(), &code);
+    }
+
+    /// End-to-end detached verification against the full PDF bytes. Returns the
+    /// raw tri-state code (1 = valid, 0 = invalid, -1 = unknown/unsupported).
+    int verify_detached(const std::vector<std::uint8_t>& pdf_data) const {
+        int32_t code = 0;
+        return pdf_signature_verify_detached(
+            ptr(), pdf_data.data(), static_cast<std::uintptr_t>(pdf_data.size()),
+            &code);
+    }
+
+    /// Free the native handle now (idempotent). RAII also frees at scope exit.
+    void close() { handle_.reset(); }
+
+  private:
+    struct Deleter {
+        void operator()(FfiSignatureInfo* h) const noexcept {
+            if (h)
+                pdf_signature_free(h);
+        }
+    };
+    explicit SignatureInfo(FfiSignatureInfo* h) : handle_(h) {}
+    FfiSignatureInfo* ptr() const {
+        if (!handle_)
+            throw Error(0, "SignatureInfo is closed");
+        return handle_.get();
+    }
+    std::unique_ptr<FfiSignatureInfo, Deleter> handle_;
+};
+
+/// An RFC 3161 TSA client (opaque handle). Move-only; frees via
+/// pdf_tsa_client_free on close()/dtor.
+class TsaClient {
+  public:
+    /// Create a TSA client for `url`. `username`/`password` may be empty for
+    /// anonymous TSAs.
+    static TsaClient create(const std::string& url, const std::string& username = "",
+                            const std::string& password = "", int timeout = 30,
+                            int hash_algo = 0, bool use_nonce = true,
+                            bool cert_req = true) {
+        int32_t code = 0;
+        void* h = pdf_tsa_client_create(url.c_str(),
+                                        username.empty() ? nullptr : username.c_str(),
+                                        password.empty() ? nullptr : password.c_str(),
+                                        timeout, hash_algo, use_nonce, cert_req, &code);
+        if (h == nullptr) {
+            throw Error(code, "TsaClient::create");
+        }
+        return TsaClient(h);
+    }
+
+    /// Request a timestamp over `data` (the TSA hashes it).
+    Timestamp request_timestamp(const std::vector<std::uint8_t>& data) const {
+        int32_t code = 0;
+        void* h = pdf_tsa_request_timestamp(
+            ptr(), data.data(), static_cast<std::uintptr_t>(data.size()), &code);
+        if (h == nullptr) {
+            throw Error(code, "TsaClient::request_timestamp");
+        }
+        return Timestamp(h);
+    }
+
+    /// Request a timestamp over a precomputed `hash` (with `hash_algo`).
+    Timestamp request_timestamp_hash(const std::vector<std::uint8_t>& hash,
+                                     int hash_algo) const {
+        int32_t code = 0;
+        void* h = pdf_tsa_request_timestamp_hash(
+            ptr(), hash.data(), static_cast<std::uintptr_t>(hash.size()), hash_algo,
+            &code);
+        if (h == nullptr) {
+            throw Error(code, "TsaClient::request_timestamp_hash");
+        }
+        return Timestamp(h);
+    }
+
+    /// Free the native handle now (idempotent). RAII also frees at scope exit.
+    void close() { handle_.reset(); }
+
+  private:
+    struct Deleter {
+        void operator()(void* h) const noexcept {
+            if (h)
+                pdf_tsa_client_free(h);
+        }
+    };
+    explicit TsaClient(void* h) : handle_(h) {}
+    void* ptr() const {
+        if (!handle_)
+            throw Error(0, "TsaClient is closed");
+        return handle_.get();
+    }
+    std::unique_ptr<void, Deleter> handle_;
+};
+
+/// A Document Security Store (opaque DSS handle). Move-only; frees via
+/// pdf_dss_free on close()/dtor.
+class Dss {
+  public:
+    /// Wrap a DSS handle obtained from the C ABI (takes ownership).
+    static Dss from_handle(void* h) {
+        if (h == nullptr) {
+            throw Error(0, "Dss::from_handle");
+        }
+        return Dss(h);
+    }
+
+    /// Number of certificates in the DSS.
+    int cert_count() const {
+        int32_t n = pdf_dss_cert_count(ptr());
+        return n < 0 ? 0 : n;
+    }
+    /// Number of CRLs in the DSS.
+    int crl_count() const {
+        int32_t n = pdf_dss_crl_count(ptr());
+        return n < 0 ? 0 : n;
+    }
+    /// Number of OCSP responses in the DSS.
+    int ocsp_count() const {
+        int32_t n = pdf_dss_ocsp_count(ptr());
+        return n < 0 ? 0 : n;
+    }
+    /// Number of VRI (validation-related info) entries in the DSS.
+    int vri_count() const {
+        int32_t n = pdf_dss_vri_count(ptr());
+        return n < 0 ? 0 : n;
+    }
+
+    /// DER bytes of the `index`-th certificate.
+    std::vector<std::uint8_t> get_cert(int index) const {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        std::uint8_t* p = pdf_dss_get_cert(ptr(), index, &out_len, &code);
+        return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                                  "Dss::get_cert");
+    }
+    /// DER bytes of the `index`-th CRL.
+    std::vector<std::uint8_t> get_crl(int index) const {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        std::uint8_t* p = pdf_dss_get_crl(ptr(), index, &out_len, &code);
+        return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                                  "Dss::get_crl");
+    }
+    /// DER bytes of the `index`-th OCSP response.
+    std::vector<std::uint8_t> get_ocsp(int index) const {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        std::uint8_t* p = pdf_dss_get_ocsp(ptr(), index, &out_len, &code);
+        return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                                  "Dss::get_ocsp");
+    }
+
+    /// Free the native handle now (idempotent). RAII also frees at scope exit.
+    void close() { handle_.reset(); }
+
+  private:
+    struct Deleter {
+        void operator()(void* h) const noexcept {
+            if (h)
+                pdf_dss_free(h);
+        }
+    };
+    explicit Dss(void* h) : handle_(h) {}
+    void* ptr() const {
+        if (!handle_)
+            throw Error(0, "Dss is closed");
+        return handle_.get();
+    }
+    std::unique_ptr<void, Deleter> handle_;
+};
+
+/// PDF/A conformance result (FfiPdfAResults handle). Move-only; frees via
+/// pdf_pdf_a_results_free on close()/dtor.
+class PdfAResults {
+  public:
+    static PdfAResults from_handle(FfiPdfAResults* h) {
+        if (h == nullptr) {
+            throw Error(0, "PdfAResults::from_handle");
+        }
+        return PdfAResults(h);
+    }
+    /// True if the document is PDF/A compliant at the requested level.
+    bool is_compliant() const {
+        int32_t code = 0;
+        bool r = pdf_pdf_a_is_compliant(ptr(), &code);
+        if (!r && code != 0) {
+            throw Error(code, "PdfAResults::is_compliant");
+        }
+        return r;
+    }
+    /// Conformance error messages.
+    std::vector<std::string> errors() const {
+        std::vector<std::string> out;
+        int32_t n = pdf_pdf_a_error_count(ptr());
+        for (int32_t i = 0; i < n; ++i) {
+            int32_t code = 0;
+            out.push_back(detail::take_string(pdf_pdf_a_get_error(ptr(), i, &code),
+                                              code, "PdfAResults::errors"));
+        }
+        return out;
+    }
+    /// Number of conformance warnings.
+    int warning_count() const {
+        int32_t n = pdf_pdf_a_warning_count(ptr());
+        return n < 0 ? 0 : n;
+    }
+
+    void close() { handle_.reset(); }
+
+  private:
+    struct Deleter {
+        void operator()(FfiPdfAResults* h) const noexcept {
+            if (h)
+                pdf_pdf_a_results_free(h);
+        }
+    };
+    explicit PdfAResults(FfiPdfAResults* h) : handle_(h) {}
+    FfiPdfAResults* ptr() const {
+        if (!handle_)
+            throw Error(0, "PdfAResults is closed");
+        return handle_.get();
+    }
+    std::unique_ptr<FfiPdfAResults, Deleter> handle_;
+};
+
+/// PDF/UA accessibility statistics returned by UaResults::stats().
+struct UaStats {
+    int structure;
+    int images;
+    int tables;
+    int forms;
+    int annotations;
+    int pages;
+};
+
+/// PDF/UA accessibility result (FfiUaResults handle). Move-only; frees via
+/// pdf_pdf_ua_results_free on close()/dtor.
+class UaResults {
+  public:
+    static UaResults from_handle(FfiUaResults* h) {
+        if (h == nullptr) {
+            throw Error(0, "UaResults::from_handle");
+        }
+        return UaResults(h);
+    }
+    /// True if the document is accessible at the requested level.
+    bool is_accessible() const {
+        int32_t code = 0;
+        bool r = pdf_pdf_ua_is_accessible(ptr(), &code);
+        if (!r && code != 0) {
+            throw Error(code, "UaResults::is_accessible");
+        }
+        return r;
+    }
+    /// Accessibility error messages.
+    std::vector<std::string> errors() const {
+        std::vector<std::string> out;
+        int32_t n = pdf_pdf_ua_error_count(ptr());
+        for (int32_t i = 0; i < n; ++i) {
+            int32_t code = 0;
+            out.push_back(detail::take_string(pdf_pdf_ua_get_error(ptr(), i, &code),
+                                              code, "UaResults::errors"));
+        }
+        return out;
+    }
+    /// Accessibility warning messages.
+    std::vector<std::string> warnings() const {
+        std::vector<std::string> out;
+        int32_t n = pdf_pdf_ua_warning_count(ptr());
+        for (int32_t i = 0; i < n; ++i) {
+            int32_t code = 0;
+            out.push_back(detail::take_string(pdf_pdf_ua_get_warning(ptr(), i, &code),
+                                              code, "UaResults::warnings"));
+        }
+        return out;
+    }
+    /// Accessibility element counts.
+    UaStats stats() const {
+        int32_t code = 0;
+        int32_t s = 0, im = 0, t = 0, f = 0, a = 0, p = 0;
+        if (!pdf_pdf_ua_get_stats(ptr(), &s, &im, &t, &f, &a, &p, &code)) {
+            throw Error(code, "UaResults::stats");
+        }
+        return UaStats{s, im, t, f, a, p};
+    }
+
+    void close() { handle_.reset(); }
+
+  private:
+    struct Deleter {
+        void operator()(FfiUaResults* h) const noexcept {
+            if (h)
+                pdf_pdf_ua_results_free(h);
+        }
+    };
+    explicit UaResults(FfiUaResults* h) : handle_(h) {}
+    FfiUaResults* ptr() const {
+        if (!handle_)
+            throw Error(0, "UaResults is closed");
+        return handle_.get();
+    }
+    std::unique_ptr<FfiUaResults, Deleter> handle_;
+};
+
+/// PDF/X conformance result (FfiPdfXResults handle). Move-only; frees via
+/// pdf_pdf_x_results_free on close()/dtor.
+class PdfXResults {
+  public:
+    static PdfXResults from_handle(FfiPdfXResults* h) {
+        if (h == nullptr) {
+            throw Error(0, "PdfXResults::from_handle");
+        }
+        return PdfXResults(h);
+    }
+    /// True if the document is PDF/X compliant at the requested level.
+    bool is_compliant() const {
+        int32_t code = 0;
+        bool r = pdf_pdf_x_is_compliant(ptr(), &code);
+        if (!r && code != 0) {
+            throw Error(code, "PdfXResults::is_compliant");
+        }
+        return r;
+    }
+    /// Conformance error messages.
+    std::vector<std::string> errors() const {
+        std::vector<std::string> out;
+        int32_t n = pdf_pdf_x_error_count(ptr());
+        for (int32_t i = 0; i < n; ++i) {
+            int32_t code = 0;
+            out.push_back(detail::take_string(pdf_pdf_x_get_error(ptr(), i, &code),
+                                              code, "PdfXResults::errors"));
+        }
+        return out;
+    }
+
+    void close() { handle_.reset(); }
+
+  private:
+    struct Deleter {
+        void operator()(FfiPdfXResults* h) const noexcept {
+            if (h)
+                pdf_pdf_x_results_free(h);
+        }
+    };
+    explicit PdfXResults(FfiPdfXResults* h) : handle_(h) {}
+    FfiPdfXResults* ptr() const {
+        if (!handle_)
+            throw Error(0, "PdfXResults is closed");
+        return handle_.get();
+    }
+    std::unique_ptr<FfiPdfXResults, Deleter> handle_;
+};
+
+// ── Document-level PHASE-6 validation (out-of-line; need the result types) ───
+
+inline PdfAResults Document::validate_pdf_a(int level) const {
+    int32_t code = 0;
+    FfiPdfAResults* h =
+        pdf_validate_pdf_a_level(ptr(), static_cast<int32_t>(level), &code);
+    if (h == nullptr) {
+        throw Error(code, "Document::validate_pdf_a");
+    }
+    return PdfAResults::from_handle(h);
+}
+
+inline UaResults Document::validate_pdf_ua(int level) const {
+    int32_t code = 0;
+    FfiUaResults* h = pdf_validate_pdf_ua(ptr(), static_cast<int32_t>(level), &code);
+    if (h == nullptr) {
+        throw Error(code, "Document::validate_pdf_ua");
+    }
+    return UaResults::from_handle(h);
+}
+
+inline PdfXResults Document::validate_pdf_x(int level) const {
+    int32_t code = 0;
+    FfiPdfXResults* h =
+        pdf_validate_pdf_x_level(ptr(), static_cast<int32_t>(level), &code);
+    if (h == nullptr) {
+        throw Error(code, "Document::validate_pdf_x");
+    }
+    return PdfXResults::from_handle(h);
+}
+
+inline Dss Document::get_dss() const {
+    int32_t code = 0;
+    void* h = pdf_document_get_dss(ptr(), &code);
+    if (h == nullptr) {
+        throw Error(code, "Document::get_dss");
+    }
+    return Dss::from_handle(h);
+}
+
+// ── Top-level PHASE-6 free functions ─────────────────────────────────────────
+
+/// Set the global library log level (0=Off 1=Error 2=Warn 3=Info 4=Debug
+/// 5=Trace).
+inline void set_log_level(int level) {
+    pdf_oxide_set_log_level(static_cast<int32_t>(level));
+}
+
+/// Get the current global library log level.
+inline int get_log_level() { return static_cast<int>(pdf_oxide_get_log_level()); }
+
+/// Sign raw PDF bytes with `cert`, returning the signed PDF.
+inline std::vector<std::uint8_t> sign_bytes(const std::vector<std::uint8_t>& pdf_data,
+                                            const Certificate& cert,
+                                            const std::string& reason = "",
+                                            const std::string& location = "") {
+    int32_t code = 0;
+    std::uintptr_t out_len = 0;
+    std::uint8_t* p =
+        pdf_sign_bytes(pdf_data.data(), static_cast<std::uintptr_t>(pdf_data.size()),
+                       cert.handle_get(), reason.empty() ? nullptr : reason.c_str(),
+                       location.empty() ? nullptr : location.c_str(), &out_len, &code);
+    return detail::take_bytes(p, static_cast<std::size_t>(out_len), code, "sign_bytes");
+}
+
+/// Sign raw PDF bytes at a PAdES baseline `level` (0=B-B 1=B-T 2=B-LT). `tsa_url`
+/// is required for level >= 1; `revocation` carries B-LT material.
+inline std::vector<std::uint8_t>
+sign_bytes_pades(const std::vector<std::uint8_t>& pdf_data, const Certificate& cert,
+                 int level, const std::string& tsa_url = "",
+                 const std::string& reason = "", const std::string& location = "",
+                 const RevocationMaterial& revocation = {}) {
+    detail::ByteArrayArray certs(revocation.certs);
+    detail::ByteArrayArray crls(revocation.crls);
+    detail::ByteArrayArray ocsps(revocation.ocsps);
+    int32_t code = 0;
+    std::uintptr_t out_len = 0;
+    std::uint8_t* p = pdf_sign_bytes_pades(
+        pdf_data.data(), static_cast<std::uintptr_t>(pdf_data.size()),
+        cert.handle_get(), static_cast<int32_t>(level),
+        tsa_url.empty() ? nullptr : tsa_url.c_str(),
+        reason.empty() ? nullptr : reason.c_str(),
+        location.empty() ? nullptr : location.c_str(), certs.data(), certs.lengths(),
+        certs.count(), crls.data(), crls.lengths(), crls.count(), ocsps.data(),
+        ocsps.lengths(), ocsps.count(), &out_len, &code);
+    return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                              "sign_bytes_pades");
+}
+
+/// Struct-options variant of sign_bytes_pades — builds the PadesSignOptionsC and
+/// delegates. Functionally identical to sign_bytes_pades.
+inline std::vector<std::uint8_t> sign_bytes_pades_opts(
+    const std::vector<std::uint8_t>& pdf_data, const Certificate& cert, int level,
+    const std::string& tsa_url = "", const std::string& reason = "",
+    const std::string& location = "", const RevocationMaterial& revocation = {}) {
+    detail::ByteArrayArray certs(revocation.certs);
+    detail::ByteArrayArray crls(revocation.crls);
+    detail::ByteArrayArray ocsps(revocation.ocsps);
+    PadesSignOptionsC options{};
+    options.certificate_handle = cert.handle_get();
+    options.certs = certs.data();
+    options.cert_lens = certs.lengths();
+    options.n_certs = certs.count();
+    options.crls = crls.data();
+    options.crl_lens = crls.lengths();
+    options.n_crls = crls.count();
+    options.ocsps = ocsps.data();
+    options.ocsp_lens = ocsps.lengths();
+    options.n_ocsps = ocsps.count();
+    options.tsa_url = tsa_url.empty() ? nullptr : tsa_url.c_str();
+    options.reason = reason.empty() ? nullptr : reason.c_str();
+    options.location = location.empty() ? nullptr : location.c_str();
+    options.level = static_cast<int32_t>(level);
+    int32_t code = 0;
+    std::uintptr_t out_len = 0;
+    std::uint8_t* p = pdf_sign_bytes_pades_opts(
+        pdf_data.data(), static_cast<std::uintptr_t>(pdf_data.size()), &options,
+        &out_len, &code);
+    return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                              "sign_bytes_pades_opts");
+}
 
 } // namespace pdf_oxide
 

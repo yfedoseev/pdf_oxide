@@ -234,6 +234,250 @@ typedef _DeWarnCountD = int Function(Pointer<Void>);
 typedef _DeWarnC = Pointer<Utf8> Function(Pointer<Void>, Int32, Pointer<Int32>);
 typedef _DeWarnD = Pointer<Utf8> Function(Pointer<Void>, int, Pointer<Int32>);
 
+// PDF creation builder. Three opaque handle types:
+//   DocumentBuilder  — `FfiDocumentBuilder` from pdf_document_builder_create
+//   PageBuilder      — `FfiPageBuilder` from pdf_document_builder_page/_letter/_a4
+//   EmbeddedFont     — `EmbeddedFont` from pdf_embedded_font_from_file/_bytes
+// int32 returns are status codes (0 = success); a non-zero return OR a non-zero
+// error_code raises. byte returns use a `uintptr_t` out-len + free_bytes. String
+// arrays are `const char* const*`; float/int32 arrays marshal from Dart lists.
+//
+// Ownership: pdf_document_builder_register_embedded_font CONSUMES the font on
+// success — the EmbeddedFont wrapper nulls its handle so close()/finalizer won't
+// double-free. pdf_page_builder_done CONSUMES the page; _free drops an
+// uncommitted one. build()/save()/to_bytes_encrypted consume builder STATE but
+// the handle must still be freed via pdf_document_builder_free.
+
+// EmbeddedFont
+typedef _EfFromFileC = Pointer<Void> Function(Pointer<Utf8>, Pointer<Int32>);
+typedef _EfFromFileD = Pointer<Void> Function(Pointer<Utf8>, Pointer<Int32>);
+typedef _EfFromBytesC = Pointer<Void> Function(
+    Pointer<Uint8>, IntPtr, Pointer<Utf8>, Pointer<Int32>);
+typedef _EfFromBytesD = Pointer<Void> Function(
+    Pointer<Uint8>, int, Pointer<Utf8>, Pointer<Int32>);
+typedef _EfFreeC = Void Function(Pointer<Void>);
+typedef _EfFreeD = void Function(Pointer<Void>);
+
+// DocumentBuilder
+typedef _DbCreateC = Pointer<Void> Function(Pointer<Int32>);
+typedef _DbCreateD = Pointer<Void> Function(Pointer<Int32>);
+typedef _DbFreeC = Void Function(Pointer<Void>);
+typedef _DbFreeD = void Function(Pointer<Void>);
+typedef _DbSetStrC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DbSetStrD = int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DbStatus0C = Int32 Function(Pointer<Void>, Pointer<Int32>);
+typedef _DbStatus0D = int Function(Pointer<Void>, Pointer<Int32>);
+typedef _DbRoleMapC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DbRoleMapD = int Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DbRegisterFontC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Void>, Pointer<Int32>);
+typedef _DbRegisterFontD = int Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Void>, Pointer<Int32>);
+typedef _DbPageC = Pointer<Void> Function(Pointer<Void>, Pointer<Int32>);
+typedef _DbPageD = Pointer<Void> Function(Pointer<Void>, Pointer<Int32>);
+typedef _DbPageSizeC = Pointer<Void> Function(
+    Pointer<Void>, Float, Float, Pointer<Int32>);
+typedef _DbPageSizeD = Pointer<Void> Function(
+    Pointer<Void>, double, double, Pointer<Int32>);
+typedef _DbBuildC = Pointer<Uint8> Function(
+    Pointer<Void>, Pointer<IntPtr>, Pointer<Int32>);
+typedef _DbBuildD = Pointer<Uint8> Function(
+    Pointer<Void>, Pointer<IntPtr>, Pointer<Int32>);
+typedef _DbSaveC = Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DbSaveD = int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DbSaveEncC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DbSaveEncD = int Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DbToBytesEncC = Pointer<Uint8> Function(Pointer<Void>, Pointer<Utf8>,
+    Pointer<Utf8>, Pointer<IntPtr>, Pointer<Int32>);
+typedef _DbToBytesEncD = Pointer<Uint8> Function(Pointer<Void>, Pointer<Utf8>,
+    Pointer<Utf8>, Pointer<IntPtr>, Pointer<Int32>);
+
+// PageBuilder — grouped by C signature shape.
+typedef _PbFreeC = Void Function(Pointer<Void>);
+typedef _PbFreeD = void Function(Pointer<Void>);
+typedef _PbStatus0C = Int32 Function(Pointer<Void>, Pointer<Int32>);
+typedef _PbStatus0D = int Function(Pointer<Void>, Pointer<Int32>);
+typedef _PbStrC = Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbStrD = int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbFontC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Float, Pointer<Int32>);
+typedef _PbFontD = int Function(
+    Pointer<Void>, Pointer<Utf8>, double, Pointer<Int32>);
+typedef _PbAtC = Int32 Function(Pointer<Void>, Float, Float, Pointer<Int32>);
+typedef _PbAtD = int Function(Pointer<Void>, double, double, Pointer<Int32>);
+typedef _PbHeadingC = Int32 Function(
+    Pointer<Void>, Uint8, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbHeadingD = int Function(
+    Pointer<Void>, int, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbSpaceC = Int32 Function(Pointer<Void>, Float, Pointer<Int32>);
+typedef _PbSpaceD = int Function(Pointer<Void>, double, Pointer<Int32>);
+typedef _PbLinkPageC = Int32 Function(Pointer<Void>, IntPtr, Pointer<Int32>);
+typedef _PbLinkPageD = int Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _PbRgbC = Int32 Function(
+    Pointer<Void>, Float, Float, Float, Pointer<Int32>);
+typedef _PbRgbD = int Function(
+    Pointer<Void>, double, double, double, Pointer<Int32>);
+typedef _PbStickyAtC = Int32 Function(
+    Pointer<Void>, Float, Float, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbStickyAtD = int Function(
+    Pointer<Void>, double, double, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbFreetextC = Int32 Function(
+    Pointer<Void>, Float, Float, Float, Float, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbFreetextD = int Function(Pointer<Void>, double, double, double,
+    double, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbImageC = Int32 Function(Pointer<Void>, Pointer<Uint8>, IntPtr, Float,
+    Float, Float, Float, Pointer<Int32>);
+typedef _PbImageD = int Function(Pointer<Void>, Pointer<Uint8>, int, double,
+    double, double, double, Pointer<Int32>);
+typedef _PbImageAltC = Int32 Function(Pointer<Void>, Pointer<Uint8>, IntPtr,
+    Float, Float, Float, Float, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbImageAltD = int Function(Pointer<Void>, Pointer<Uint8>, int, double,
+    double, double, double, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbRectC = Int32 Function(
+    Pointer<Void>, Float, Float, Float, Float, Pointer<Int32>);
+typedef _PbRectD = int Function(
+    Pointer<Void>, double, double, double, double, Pointer<Int32>);
+typedef _PbFilledRectC = Int32 Function(Pointer<Void>, Float, Float, Float,
+    Float, Float, Float, Float, Pointer<Int32>);
+typedef _PbFilledRectD = int Function(Pointer<Void>, double, double, double,
+    double, double, double, double, Pointer<Int32>);
+typedef _PbLineC = Int32 Function(
+    Pointer<Void>, Float, Float, Float, Float, Pointer<Int32>);
+typedef _PbLineD = int Function(
+    Pointer<Void>, double, double, double, double, Pointer<Int32>);
+typedef _PbStrokeRectC = Int32 Function(Pointer<Void>, Float, Float, Float,
+    Float, Float, Float, Float, Float, Pointer<Int32>);
+typedef _PbStrokeRectD = int Function(Pointer<Void>, double, double, double,
+    double, double, double, double, double, Pointer<Int32>);
+typedef _PbStrokeLineC = Int32 Function(Pointer<Void>, Float, Float, Float,
+    Float, Float, Float, Float, Float, Pointer<Int32>);
+typedef _PbStrokeLineD = int Function(Pointer<Void>, double, double, double,
+    double, double, double, double, double, Pointer<Int32>);
+typedef _PbStrokeRectDashedC = Int32 Function(
+    Pointer<Void>,
+    Float,
+    Float,
+    Float,
+    Float,
+    Float,
+    Float,
+    Float,
+    Float,
+    Pointer<Float>,
+    IntPtr,
+    Float,
+    Pointer<Int32>);
+typedef _PbStrokeRectDashedD = int Function(
+    Pointer<Void>,
+    double,
+    double,
+    double,
+    double,
+    double,
+    double,
+    double,
+    double,
+    Pointer<Float>,
+    int,
+    double,
+    Pointer<Int32>);
+typedef _PbTextInRectC = Int32 Function(Pointer<Void>, Float, Float, Float,
+    Float, Pointer<Utf8>, Int32, Pointer<Int32>);
+typedef _PbTextInRectD = int Function(Pointer<Void>, double, double, double,
+    double, Pointer<Utf8>, int, Pointer<Int32>);
+typedef _PbFootnoteC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbFootnoteD = int Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbColumnsC = Int32 Function(
+    Pointer<Void>, Uint32, Float, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbColumnsD = int Function(
+    Pointer<Void>, int, double, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbInlineColorC = Int32 Function(
+    Pointer<Void>, Float, Float, Float, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbInlineColorD = int Function(
+    Pointer<Void>, double, double, double, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbBarcode1dC = Int32 Function(Pointer<Void>, Int32, Pointer<Utf8>,
+    Float, Float, Float, Float, Pointer<Int32>);
+typedef _PbBarcode1dD = int Function(Pointer<Void>, int, Pointer<Utf8>, double,
+    double, double, double, Pointer<Int32>);
+typedef _PbBarcodeQrC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Float, Float, Float, Pointer<Int32>);
+typedef _PbBarcodeQrD = int Function(
+    Pointer<Void>, Pointer<Utf8>, double, double, double, Pointer<Int32>);
+typedef _PbTextFieldC = Int32 Function(Pointer<Void>, Pointer<Utf8>, Float,
+    Float, Float, Float, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbTextFieldD = int Function(Pointer<Void>, Pointer<Utf8>, double,
+    double, double, double, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbCheckboxC = Int32 Function(Pointer<Void>, Pointer<Utf8>, Float,
+    Float, Float, Float, Int32, Pointer<Int32>);
+typedef _PbCheckboxD = int Function(Pointer<Void>, Pointer<Utf8>, double,
+    double, double, double, int, Pointer<Int32>);
+typedef _PbSigFieldC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Float, Float, Float, Float, Pointer<Int32>);
+typedef _PbSigFieldD = int Function(Pointer<Void>, Pointer<Utf8>, double,
+    double, double, double, Pointer<Int32>);
+typedef _PbPushButtonC = Int32 Function(Pointer<Void>, Pointer<Utf8>, Float,
+    Float, Float, Float, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbPushButtonD = int Function(Pointer<Void>, Pointer<Utf8>, double,
+    double, double, double, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbComboBoxC = Int32 Function(
+    Pointer<Void>,
+    Pointer<Utf8>,
+    Float,
+    Float,
+    Float,
+    Float,
+    Pointer<Pointer<Utf8>>,
+    IntPtr,
+    Pointer<Utf8>,
+    Pointer<Int32>);
+typedef _PbComboBoxD = int Function(
+    Pointer<Void>,
+    Pointer<Utf8>,
+    double,
+    double,
+    double,
+    double,
+    Pointer<Pointer<Utf8>>,
+    int,
+    Pointer<Utf8>,
+    Pointer<Int32>);
+typedef _PbRadioGroupC = Int32 Function(
+    Pointer<Void>,
+    Pointer<Utf8>,
+    Pointer<Pointer<Utf8>>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    IntPtr,
+    Pointer<Utf8>,
+    Pointer<Int32>);
+typedef _PbRadioGroupD = int Function(
+    Pointer<Void>,
+    Pointer<Utf8>,
+    Pointer<Pointer<Utf8>>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    int,
+    Pointer<Utf8>,
+    Pointer<Int32>);
+typedef _PbStampC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbStampD = int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _PbTableC = Int32 Function(Pointer<Void>, IntPtr, Pointer<Float>,
+    Pointer<Int32>, IntPtr, Pointer<Pointer<Utf8>>, Int32, Pointer<Int32>);
+typedef _PbTableD = int Function(Pointer<Void>, int, Pointer<Float>,
+    Pointer<Int32>, int, Pointer<Pointer<Utf8>>, int, Pointer<Int32>);
+
 /// Resolved native library + bound functions (loaded once).
 class _Native {
   _Native(this.lib)
@@ -542,7 +786,303 @@ class _Native {
             lib.lookupFunction<_DeWarnCountC, _DeWarnCountD>(
                 'document_editor_flatten_warnings_count'),
         deFlattenWarning = lib.lookupFunction<_DeWarnC, _DeWarnD>(
-            'document_editor_flatten_warning');
+            'document_editor_flatten_warning'),
+        // PDF creation — EmbeddedFont
+        efFromFile = lib.lookupFunction<_EfFromFileC, _EfFromFileD>(
+            'pdf_embedded_font_from_file'),
+        efFromBytes = lib.lookupFunction<_EfFromBytesC, _EfFromBytesD>(
+            'pdf_embedded_font_from_bytes'),
+        efFree =
+            lib.lookupFunction<_EfFreeC, _EfFreeD>('pdf_embedded_font_free'),
+        // PDF creation — DocumentBuilder
+        dbCreate = lib.lookupFunction<_DbCreateC, _DbCreateD>(
+            'pdf_document_builder_create'),
+        dbFree =
+            lib.lookupFunction<_DbFreeC, _DbFreeD>('pdf_document_builder_free'),
+        dbSetTitle = lib.lookupFunction<_DbSetStrC, _DbSetStrD>(
+            'pdf_document_builder_set_title'),
+        dbSetAuthor = lib.lookupFunction<_DbSetStrC, _DbSetStrD>(
+            'pdf_document_builder_set_author'),
+        dbSetSubject = lib.lookupFunction<_DbSetStrC, _DbSetStrD>(
+            'pdf_document_builder_set_subject'),
+        dbSetKeywords = lib.lookupFunction<_DbSetStrC, _DbSetStrD>(
+            'pdf_document_builder_set_keywords'),
+        dbSetCreator = lib.lookupFunction<_DbSetStrC, _DbSetStrD>(
+            'pdf_document_builder_set_creator'),
+        dbOnOpen = lib.lookupFunction<_DbSetStrC, _DbSetStrD>(
+            'pdf_document_builder_on_open'),
+        dbTaggedPdfUa1 = lib.lookupFunction<_DbStatus0C, _DbStatus0D>(
+            'pdf_document_builder_tagged_pdf_ua1'),
+        dbLanguage = lib.lookupFunction<_DbSetStrC, _DbSetStrD>(
+            'pdf_document_builder_language'),
+        dbRoleMap = lib.lookupFunction<_DbRoleMapC, _DbRoleMapD>(
+            'pdf_document_builder_role_map'),
+        dbRegisterFont = lib.lookupFunction<_DbRegisterFontC, _DbRegisterFontD>(
+            'pdf_document_builder_register_embedded_font'),
+        dbA4Page = lib
+            .lookupFunction<_DbPageC, _DbPageD>('pdf_document_builder_a4_page'),
+        dbLetterPage = lib.lookupFunction<_DbPageC, _DbPageD>(
+            'pdf_document_builder_letter_page'),
+        dbPage = lib.lookupFunction<_DbPageSizeC, _DbPageSizeD>(
+            'pdf_document_builder_page'),
+        dbBuild = lib
+            .lookupFunction<_DbBuildC, _DbBuildD>('pdf_document_builder_build'),
+        dbSave =
+            lib.lookupFunction<_DbSaveC, _DbSaveD>('pdf_document_builder_save'),
+        dbSaveEncrypted = lib.lookupFunction<_DbSaveEncC, _DbSaveEncD>(
+            'pdf_document_builder_save_encrypted'),
+        dbToBytesEncrypted = lib.lookupFunction<_DbToBytesEncC, _DbToBytesEncD>(
+            'pdf_document_builder_to_bytes_encrypted'),
+        // PDF creation — PageBuilder
+        pbFree =
+            lib.lookupFunction<_PbFreeC, _PbFreeD>('pdf_page_builder_free'),
+        pbDone = lib
+            .lookupFunction<_PbStatus0C, _PbStatus0D>('pdf_page_builder_done'),
+        pbFont =
+            lib.lookupFunction<_PbFontC, _PbFontD>('pdf_page_builder_font'),
+        pbAt = lib.lookupFunction<_PbAtC, _PbAtD>('pdf_page_builder_at'),
+        pbText = lib.lookupFunction<_PbStrC, _PbStrD>('pdf_page_builder_text'),
+        pbHeading = lib.lookupFunction<_PbHeadingC, _PbHeadingD>(
+            'pdf_page_builder_heading'),
+        pbParagraph =
+            lib.lookupFunction<_PbStrC, _PbStrD>('pdf_page_builder_paragraph'),
+        pbSpace =
+            lib.lookupFunction<_PbSpaceC, _PbSpaceD>('pdf_page_builder_space'),
+        pbHorizontalRule = lib.lookupFunction<_PbStatus0C, _PbStatus0D>(
+            'pdf_page_builder_horizontal_rule'),
+        pbLinkUrl =
+            lib.lookupFunction<_PbStrC, _PbStrD>('pdf_page_builder_link_url'),
+        pbLinkPage = lib.lookupFunction<_PbLinkPageC, _PbLinkPageD>(
+            'pdf_page_builder_link_page'),
+        pbLinkNamed =
+            lib.lookupFunction<_PbStrC, _PbStrD>('pdf_page_builder_link_named'),
+        pbLinkJavascript = lib.lookupFunction<_PbStrC, _PbStrD>(
+            'pdf_page_builder_link_javascript'),
+        pbOnOpen =
+            lib.lookupFunction<_PbStrC, _PbStrD>('pdf_page_builder_on_open'),
+        pbOnClose =
+            lib.lookupFunction<_PbStrC, _PbStrD>('pdf_page_builder_on_close'),
+        pbFieldKeystroke = lib.lookupFunction<_PbStrC, _PbStrD>(
+            'pdf_page_builder_field_keystroke'),
+        pbFieldFormat = lib
+            .lookupFunction<_PbStrC, _PbStrD>('pdf_page_builder_field_format'),
+        pbFieldValidate = lib.lookupFunction<_PbStrC, _PbStrD>(
+            'pdf_page_builder_field_validate'),
+        pbFieldCalculate = lib.lookupFunction<_PbStrC, _PbStrD>(
+            'pdf_page_builder_field_calculate'),
+        pbHighlight =
+            lib.lookupFunction<_PbRgbC, _PbRgbD>('pdf_page_builder_highlight'),
+        pbUnderline =
+            lib.lookupFunction<_PbRgbC, _PbRgbD>('pdf_page_builder_underline'),
+        pbStrikeout =
+            lib.lookupFunction<_PbRgbC, _PbRgbD>('pdf_page_builder_strikeout'),
+        pbSquiggly =
+            lib.lookupFunction<_PbRgbC, _PbRgbD>('pdf_page_builder_squiggly'),
+        pbStickyNote = lib
+            .lookupFunction<_PbStrC, _PbStrD>('pdf_page_builder_sticky_note'),
+        pbStickyNoteAt = lib.lookupFunction<_PbStickyAtC, _PbStickyAtD>(
+            'pdf_page_builder_sticky_note_at'),
+        pbWatermark =
+            lib.lookupFunction<_PbStrC, _PbStrD>('pdf_page_builder_watermark'),
+        pbWatermarkConfidential = lib.lookupFunction<_PbStatus0C, _PbStatus0D>(
+            'pdf_page_builder_watermark_confidential'),
+        pbWatermarkDraft = lib.lookupFunction<_PbStatus0C, _PbStatus0D>(
+            'pdf_page_builder_watermark_draft'),
+        pbStamp =
+            lib.lookupFunction<_PbStampC, _PbStampD>('pdf_page_builder_stamp'),
+        pbFreetext = lib.lookupFunction<_PbFreetextC, _PbFreetextD>(
+            'pdf_page_builder_freetext'),
+        pbTextField = lib.lookupFunction<_PbTextFieldC, _PbTextFieldD>(
+            'pdf_page_builder_text_field'),
+        pbCheckbox = lib.lookupFunction<_PbCheckboxC, _PbCheckboxD>(
+            'pdf_page_builder_checkbox'),
+        pbComboBox = lib.lookupFunction<_PbComboBoxC, _PbComboBoxD>(
+            'pdf_page_builder_combo_box'),
+        pbRadioGroup = lib.lookupFunction<_PbRadioGroupC, _PbRadioGroupD>(
+            'pdf_page_builder_radio_group'),
+        pbPushButton = lib.lookupFunction<_PbPushButtonC, _PbPushButtonD>(
+            'pdf_page_builder_push_button'),
+        pbSignatureField = lib.lookupFunction<_PbSigFieldC, _PbSigFieldD>(
+            'pdf_page_builder_signature_field'),
+        pbFootnote = lib.lookupFunction<_PbFootnoteC, _PbFootnoteD>(
+            'pdf_page_builder_footnote'),
+        pbColumns = lib.lookupFunction<_PbColumnsC, _PbColumnsD>(
+            'pdf_page_builder_columns'),
+        pbInline =
+            lib.lookupFunction<_PbStrC, _PbStrD>('pdf_page_builder_inline'),
+        pbInlineBold = lib
+            .lookupFunction<_PbStrC, _PbStrD>('pdf_page_builder_inline_bold'),
+        pbInlineItalic = lib
+            .lookupFunction<_PbStrC, _PbStrD>('pdf_page_builder_inline_italic'),
+        pbInlineColor = lib.lookupFunction<_PbInlineColorC, _PbInlineColorD>(
+            'pdf_page_builder_inline_color'),
+        pbNewline = lib.lookupFunction<_PbStatus0C, _PbStatus0D>(
+            'pdf_page_builder_newline'),
+        pbBarcode1d = lib.lookupFunction<_PbBarcode1dC, _PbBarcode1dD>(
+            'pdf_page_builder_barcode_1d'),
+        pbBarcodeQr = lib.lookupFunction<_PbBarcodeQrC, _PbBarcodeQrD>(
+            'pdf_page_builder_barcode_qr'),
+        pbImage =
+            lib.lookupFunction<_PbImageC, _PbImageD>('pdf_page_builder_image'),
+        pbImageWithAlt = lib.lookupFunction<_PbImageAltC, _PbImageAltD>(
+            'pdf_page_builder_image_with_alt'),
+        pbImageArtifact = lib.lookupFunction<_PbImageC, _PbImageD>(
+            'pdf_page_builder_image_artifact'),
+        pbRect =
+            lib.lookupFunction<_PbRectC, _PbRectD>('pdf_page_builder_rect'),
+        pbFilledRect = lib.lookupFunction<_PbFilledRectC, _PbFilledRectD>(
+            'pdf_page_builder_filled_rect'),
+        pbLine =
+            lib.lookupFunction<_PbLineC, _PbLineD>('pdf_page_builder_line'),
+        pbStrokeRect = lib.lookupFunction<_PbStrokeRectC, _PbStrokeRectD>(
+            'pdf_page_builder_stroke_rect'),
+        pbStrokeLine = lib.lookupFunction<_PbStrokeLineC, _PbStrokeLineD>(
+            'pdf_page_builder_stroke_line'),
+        pbStrokeRectDashed =
+            lib.lookupFunction<_PbStrokeRectDashedC, _PbStrokeRectDashedD>(
+                'pdf_page_builder_stroke_rect_dashed'),
+        pbStrokeLineDashed =
+            lib.lookupFunction<_PbStrokeRectDashedC, _PbStrokeRectDashedD>(
+                'pdf_page_builder_stroke_line_dashed'),
+        pbTextInRect = lib.lookupFunction<_PbTextInRectC, _PbTextInRectD>(
+            'pdf_page_builder_text_in_rect'),
+        pbNewPageSameSize = lib.lookupFunction<_PbStatus0C, _PbStatus0D>(
+            'pdf_page_builder_new_page_same_size'),
+        pbTable =
+            lib.lookupFunction<_PbTableC, _PbTableD>('pdf_page_builder_table'),
+        // ── Phase 6: signatures / PKI / timestamps / TSA / DSS / validation ──
+        certLoadFromBytes =
+            lib.lookupFunction<_CertLoadBytesC, _CertLoadBytesD>(
+                'pdf_certificate_load_from_bytes'),
+        certLoadFromPem = lib.lookupFunction<_CertLoadPemC, _CertLoadPemD>(
+            'pdf_certificate_load_from_pem'),
+        certGetSubject = lib.lookupFunction<_CertStrC, _CertStrD>(
+            'pdf_certificate_get_subject'),
+        certGetIssuer = lib
+            .lookupFunction<_CertStrC, _CertStrD>('pdf_certificate_get_issuer'),
+        certGetSerial = lib
+            .lookupFunction<_CertStrC, _CertStrD>('pdf_certificate_get_serial'),
+        certGetValidity = lib.lookupFunction<_CertValidityC, _CertValidityD>(
+            'pdf_certificate_get_validity'),
+        certIsValid = lib
+            .lookupFunction<_CertI32C, _CertI32D>('pdf_certificate_is_valid'),
+        certFree =
+            lib.lookupFunction<_PtrFreeC, _PtrFreeD>('pdf_certificate_free'),
+        signBytes =
+            lib.lookupFunction<_SignBytesC, _SignBytesD>('pdf_sign_bytes'),
+        signBytesPades = lib
+            .lookupFunction<_SignPadesC, _SignPadesD>('pdf_sign_bytes_pades'),
+        signBytesPadesOpts =
+            lib.lookupFunction<_SignPadesOptsC, _SignPadesOptsD>(
+                'pdf_sign_bytes_pades_opts'),
+        sigGetSignerName = lib.lookupFunction<_SigStrC, _SigStrD>(
+            'pdf_signature_get_signer_name'),
+        sigGetSigningReason = lib.lookupFunction<_SigStrC, _SigStrD>(
+            'pdf_signature_get_signing_reason'),
+        sigGetSigningLocation = lib.lookupFunction<_SigStrC, _SigStrD>(
+            'pdf_signature_get_signing_location'),
+        sigGetSigningTime = lib.lookupFunction<_SigI64C, _SigI64D>(
+            'pdf_signature_get_signing_time'),
+        sigGetCertificate = lib.lookupFunction<_SigPtrC, _SigPtrD>(
+            'pdf_signature_get_certificate'),
+        sigGetPadesLevel = lib.lookupFunction<_SigI32C, _SigI32D>(
+            'pdf_signature_get_pades_level'),
+        sigHasTimestamp = lib.lookupFunction<_SigBoolC, _SigBoolD>(
+            'pdf_signature_has_timestamp'),
+        sigGetTimestamp = lib
+            .lookupFunction<_SigPtrC, _SigPtrD>('pdf_signature_get_timestamp'),
+        sigAddTimestamp = lib.lookupFunction<_SigAddTsC, _SigAddTsD>(
+            'pdf_signature_add_timestamp'),
+        sigVerify =
+            lib.lookupFunction<_SigI32C, _SigI32D>('pdf_signature_verify'),
+        sigVerifyDetached =
+            lib.lookupFunction<_SigVerifyDetachedC, _SigVerifyDetachedD>(
+                'pdf_signature_verify_detached'),
+        sigFree =
+            lib.lookupFunction<_PtrFreeC, _PtrFreeD>('pdf_signature_free'),
+        tsParse =
+            lib.lookupFunction<_TsParseC, _TsParseD>('pdf_timestamp_parse'),
+        tsGetToken = lib.lookupFunction<_TsConstBytesC, _TsConstBytesD>(
+            'pdf_timestamp_get_token'),
+        tsGetMessageImprint =
+            lib.lookupFunction<_TsConstBytesC, _TsConstBytesD>(
+                'pdf_timestamp_get_message_imprint'),
+        tsGetTime =
+            lib.lookupFunction<_TsI64C, _TsI64D>('pdf_timestamp_get_time'),
+        tsGetSerial =
+            lib.lookupFunction<_TsStrC, _TsStrD>('pdf_timestamp_get_serial'),
+        tsGetTsaName =
+            lib.lookupFunction<_TsStrC, _TsStrD>('pdf_timestamp_get_tsa_name'),
+        tsGetPolicyOid = lib
+            .lookupFunction<_TsStrC, _TsStrD>('pdf_timestamp_get_policy_oid'),
+        tsGetHashAlgorithm = lib.lookupFunction<_TsI32C, _TsI32D>(
+            'pdf_timestamp_get_hash_algorithm'),
+        tsVerify =
+            lib.lookupFunction<_TsBoolC, _TsBoolD>('pdf_timestamp_verify'),
+        tsFree = lib.lookupFunction<_PtrFreeC, _PtrFreeD>('pdf_timestamp_free'),
+        tsaClientCreate = lib
+            .lookupFunction<_TsaCreateC, _TsaCreateD>('pdf_tsa_client_create'),
+        tsaRequestTimestamp =
+            lib.lookupFunction<_TsaReqC, _TsaReqD>('pdf_tsa_request_timestamp'),
+        tsaRequestTimestampHash =
+            lib.lookupFunction<_TsaReqHashC, _TsaReqHashD>(
+                'pdf_tsa_request_timestamp_hash'),
+        tsaClientFree =
+            lib.lookupFunction<_PtrFreeC, _PtrFreeD>('pdf_tsa_client_free'),
+        dssCertCount =
+            lib.lookupFunction<_DssCountC, _DssCountD>('pdf_dss_cert_count'),
+        dssCrlCount =
+            lib.lookupFunction<_DssCountC, _DssCountD>('pdf_dss_crl_count'),
+        dssOcspCount =
+            lib.lookupFunction<_DssCountC, _DssCountD>('pdf_dss_ocsp_count'),
+        dssVriCount =
+            lib.lookupFunction<_DssCountC, _DssCountD>('pdf_dss_vri_count'),
+        dssGetCert = lib.lookupFunction<_DssGetC, _DssGetD>('pdf_dss_get_cert'),
+        dssGetCrl = lib.lookupFunction<_DssGetC, _DssGetD>('pdf_dss_get_crl'),
+        dssGetOcsp = lib.lookupFunction<_DssGetC, _DssGetD>('pdf_dss_get_ocsp'),
+        dssFree = lib.lookupFunction<_PtrFreeC, _PtrFreeD>('pdf_dss_free'),
+        validatePdfALevel = lib
+            .lookupFunction<_ValidateC, _ValidateD>('pdf_validate_pdf_a_level'),
+        validatePdfUa =
+            lib.lookupFunction<_ValidateC, _ValidateD>('pdf_validate_pdf_ua'),
+        validatePdfXLevel = lib
+            .lookupFunction<_ValidateC, _ValidateD>('pdf_validate_pdf_x_level'),
+        pdfAIsCompliant =
+            lib.lookupFunction<_ValBoolC, _ValBoolD>('pdf_pdf_a_is_compliant'),
+        pdfAErrorCount =
+            lib.lookupFunction<_ValCountC, _ValCountD>('pdf_pdf_a_error_count'),
+        pdfAWarningCount = lib
+            .lookupFunction<_ValCountC, _ValCountD>('pdf_pdf_a_warning_count'),
+        pdfAGetError =
+            lib.lookupFunction<_ValGetC, _ValGetD>('pdf_pdf_a_get_error'),
+        pdfAResultsFree =
+            lib.lookupFunction<_ValFreeC, _ValFreeD>('pdf_pdf_a_results_free'),
+        pdfUaIsAccessible = lib
+            .lookupFunction<_ValBoolC, _ValBoolD>('pdf_pdf_ua_is_accessible'),
+        pdfUaErrorCount = lib
+            .lookupFunction<_ValCountC, _ValCountD>('pdf_pdf_ua_error_count'),
+        pdfUaWarningCount = lib
+            .lookupFunction<_ValCountC, _ValCountD>('pdf_pdf_ua_warning_count'),
+        pdfUaGetError =
+            lib.lookupFunction<_ValGetC, _ValGetD>('pdf_pdf_ua_get_error'),
+        pdfUaGetWarning =
+            lib.lookupFunction<_ValGetC, _ValGetD>('pdf_pdf_ua_get_warning'),
+        pdfUaGetStats =
+            lib.lookupFunction<_UaStatsC, _UaStatsD>('pdf_pdf_ua_get_stats'),
+        pdfUaResultsFree =
+            lib.lookupFunction<_ValFreeC, _ValFreeD>('pdf_pdf_ua_results_free'),
+        pdfXIsCompliant =
+            lib.lookupFunction<_ValBoolC, _ValBoolD>('pdf_pdf_x_is_compliant'),
+        pdfXErrorCount =
+            lib.lookupFunction<_ValCountC, _ValCountD>('pdf_pdf_x_error_count'),
+        pdfXGetError =
+            lib.lookupFunction<_ValGetC, _ValGetD>('pdf_pdf_x_get_error'),
+        pdfXResultsFree =
+            lib.lookupFunction<_ValFreeC, _ValFreeD>('pdf_pdf_x_results_free'),
+        setLogLevel =
+            lib.lookupFunction<_SetLogC, _SetLogD>('pdf_oxide_set_log_level'),
+        getLogLevel =
+            lib.lookupFunction<_GetLogC, _GetLogD>('pdf_oxide_get_log_level');
 
   final DynamicLibrary lib;
   final _OpenD open;
@@ -698,6 +1238,130 @@ class _Native {
   final _DeI32I32D deFlattenFormsOnPage;
   final _DeWarnCountD deFlattenWarningsCount;
   final _DeWarnD deFlattenWarning;
+  // PDF creation — EmbeddedFont
+  final _EfFromFileD efFromFile;
+  final _EfFromBytesD efFromBytes;
+  final _EfFreeD efFree;
+  // PDF creation — DocumentBuilder
+  final _DbCreateD dbCreate;
+  final _DbFreeD dbFree;
+  final _DbSetStrD dbSetTitle;
+  final _DbSetStrD dbSetAuthor;
+  final _DbSetStrD dbSetSubject;
+  final _DbSetStrD dbSetKeywords;
+  final _DbSetStrD dbSetCreator;
+  final _DbSetStrD dbOnOpen;
+  final _DbStatus0D dbTaggedPdfUa1;
+  final _DbSetStrD dbLanguage;
+  final _DbRoleMapD dbRoleMap;
+  final _DbRegisterFontD dbRegisterFont;
+  final _DbPageD dbA4Page;
+  final _DbPageD dbLetterPage;
+  final _DbPageSizeD dbPage;
+  final _DbBuildD dbBuild;
+  final _DbSaveD dbSave;
+  final _DbSaveEncD dbSaveEncrypted;
+  final _DbToBytesEncD dbToBytesEncrypted;
+  // PDF creation — PageBuilder
+  final _PbFreeD pbFree;
+  final _PbStatus0D pbDone;
+  final _PbFontD pbFont;
+  final _PbAtD pbAt;
+  final _PbStrD pbText;
+  final _PbHeadingD pbHeading;
+  final _PbStrD pbParagraph;
+  final _PbSpaceD pbSpace;
+  final _PbStatus0D pbHorizontalRule;
+  final _PbStrD pbLinkUrl;
+  final _PbLinkPageD pbLinkPage;
+  final _PbStrD pbLinkNamed;
+  final _PbStrD pbLinkJavascript;
+  final _PbStrD pbOnOpen;
+  final _PbStrD pbOnClose;
+  final _PbStrD pbFieldKeystroke;
+  final _PbStrD pbFieldFormat;
+  final _PbStrD pbFieldValidate;
+  final _PbStrD pbFieldCalculate;
+  final _PbRgbD pbHighlight;
+  final _PbRgbD pbUnderline;
+  final _PbRgbD pbStrikeout;
+  final _PbRgbD pbSquiggly;
+  final _PbStrD pbStickyNote;
+  final _PbStickyAtD pbStickyNoteAt;
+  final _PbStrD pbWatermark;
+  final _PbStatus0D pbWatermarkConfidential;
+  final _PbStatus0D pbWatermarkDraft;
+  final _PbStampD pbStamp;
+  final _PbFreetextD pbFreetext;
+  final _PbTextFieldD pbTextField;
+  final _PbCheckboxD pbCheckbox;
+  final _PbComboBoxD pbComboBox;
+  final _PbRadioGroupD pbRadioGroup;
+  final _PbPushButtonD pbPushButton;
+  final _PbSigFieldD pbSignatureField;
+  final _PbFootnoteD pbFootnote;
+  final _PbColumnsD pbColumns;
+  final _PbStrD pbInline;
+  final _PbStrD pbInlineBold;
+  final _PbStrD pbInlineItalic;
+  final _PbInlineColorD pbInlineColor;
+  final _PbStatus0D pbNewline;
+  final _PbBarcode1dD pbBarcode1d;
+  final _PbBarcodeQrD pbBarcodeQr;
+  final _PbImageD pbImage;
+  final _PbImageAltD pbImageWithAlt;
+  final _PbImageD pbImageArtifact;
+  final _PbRectD pbRect;
+  final _PbFilledRectD pbFilledRect;
+  final _PbLineD pbLine;
+  final _PbStrokeRectD pbStrokeRect;
+  final _PbStrokeLineD pbStrokeLine;
+  final _PbStrokeRectDashedD pbStrokeRectDashed;
+  final _PbStrokeRectDashedD pbStrokeLineDashed;
+  final _PbTextInRectD pbTextInRect;
+  final _PbStatus0D pbNewPageSameSize;
+  final _PbTableD pbTable;
+  // Phase 6: signatures / PKI / timestamps / TSA / DSS / validation
+  final _CertLoadBytesD certLoadFromBytes;
+  final _CertLoadPemD certLoadFromPem;
+  final _CertStrD certGetSubject, certGetIssuer, certGetSerial;
+  final _CertValidityD certGetValidity;
+  final _CertI32D certIsValid;
+  final _PtrFreeD certFree;
+  final _SignBytesD signBytes;
+  final _SignPadesD signBytesPades;
+  final _SignPadesOptsD signBytesPadesOpts;
+  final _SigStrD sigGetSignerName, sigGetSigningReason, sigGetSigningLocation;
+  final _SigI64D sigGetSigningTime;
+  final _SigPtrD sigGetCertificate, sigGetTimestamp;
+  final _SigI32D sigGetPadesLevel, sigVerify;
+  final _SigBoolD sigHasTimestamp;
+  final _SigAddTsD sigAddTimestamp;
+  final _SigVerifyDetachedD sigVerifyDetached;
+  final _PtrFreeD sigFree;
+  final _TsParseD tsParse;
+  final _TsConstBytesD tsGetToken, tsGetMessageImprint;
+  final _TsI64D tsGetTime;
+  final _TsStrD tsGetSerial, tsGetTsaName, tsGetPolicyOid;
+  final _TsI32D tsGetHashAlgorithm;
+  final _TsBoolD tsVerify;
+  final _PtrFreeD tsFree;
+  final _TsaCreateD tsaClientCreate;
+  final _TsaReqD tsaRequestTimestamp;
+  final _TsaReqHashD tsaRequestTimestampHash;
+  final _PtrFreeD tsaClientFree;
+  final _DssCountD dssCertCount, dssCrlCount, dssOcspCount, dssVriCount;
+  final _DssGetD dssGetCert, dssGetCrl, dssGetOcsp;
+  final _PtrFreeD dssFree;
+  final _ValidateD validatePdfALevel, validatePdfUa, validatePdfXLevel;
+  final _ValBoolD pdfAIsCompliant, pdfUaIsAccessible, pdfXIsCompliant;
+  final _ValCountD pdfAErrorCount, pdfAWarningCount;
+  final _ValCountD pdfUaErrorCount, pdfUaWarningCount, pdfXErrorCount;
+  final _ValGetD pdfAGetError, pdfUaGetError, pdfUaGetWarning, pdfXGetError;
+  final _UaStatsD pdfUaGetStats;
+  final _ValFreeD pdfAResultsFree, pdfUaResultsFree, pdfXResultsFree;
+  final _SetLogD setLogLevel;
+  final _GetLogD getLogLevel;
 }
 
 typedef _OpenD = Pointer<Void> Function(Pointer<Utf8>, Pointer<Int32>);
@@ -705,6 +1369,212 @@ typedef _OpenBytesD = Pointer<Void> Function(
     Pointer<Uint8>, int, Pointer<Int32>);
 typedef _OpenPwD = Pointer<Void> Function(
     Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+
+// ── Phase 6: digital signatures / PKI / timestamps / TSA / PDF-A,X,UA ─────────
+// Conventions match earlier phases: opaque handles are `Pointer<Void>` freed via
+// their `*_free` symbol (on close()/finalizer + closed-handle guards); owned
+// `char*` go through `_takeString` + `free_string`; owned `uint8*` buffers are
+// copied then released with `free_bytes`. A `const uint8*` return (timestamp
+// token / message imprint) is COPIED only — never `free_bytes`'d. Validation
+// result handles are freed by their dedicated `*_results_free`. The PAdES sign
+// entry points marshal three parallel DER byte-array arrays.
+
+// PadesSignOptionsC mirrors the #[repr(C)] struct in the header (14 fields).
+final class _PadesSignOptionsC extends Struct {
+  external Pointer<Void> certificateHandle;
+  external Pointer<Pointer<Uint8>> certs;
+  external Pointer<IntPtr> certLens;
+  @IntPtr()
+  external int nCerts;
+  external Pointer<Pointer<Uint8>> crls;
+  external Pointer<IntPtr> crlLens;
+  @IntPtr()
+  external int nCrls;
+  external Pointer<Pointer<Uint8>> ocsps;
+  external Pointer<IntPtr> ocspLens;
+  @IntPtr()
+  external int nOcsps;
+  external Pointer<Utf8> tsaUrl;
+  external Pointer<Utf8> reason;
+  external Pointer<Utf8> location;
+  @Int32()
+  external int level;
+}
+
+// certificate / signing
+typedef _CertLoadBytesC = Pointer<Void> Function(
+    Pointer<Uint8>, Int32, Pointer<Utf8>, Pointer<Int32>);
+typedef _CertLoadBytesD = Pointer<Void> Function(
+    Pointer<Uint8>, int, Pointer<Utf8>, Pointer<Int32>);
+typedef _CertLoadPemC = Pointer<Void> Function(
+    Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _CertLoadPemD = Pointer<Void> Function(
+    Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _CertStrC = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _CertStrD = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _CertValidityC = Void Function(
+    Pointer<Void>, Pointer<Int64>, Pointer<Int64>, Pointer<Int32>);
+typedef _CertValidityD = void Function(
+    Pointer<Void>, Pointer<Int64>, Pointer<Int64>, Pointer<Int32>);
+typedef _CertI32C = Int32 Function(Pointer<Void>, Pointer<Int32>);
+typedef _CertI32D = int Function(Pointer<Void>, Pointer<Int32>);
+typedef _PtrFreeC = Void Function(Pointer<Void>);
+typedef _PtrFreeD = void Function(Pointer<Void>);
+
+typedef _SignBytesC = Pointer<Uint8> Function(
+    Pointer<Uint8>,
+    IntPtr,
+    Pointer<Void>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<IntPtr>,
+    Pointer<Int32>);
+typedef _SignBytesD = Pointer<Uint8> Function(
+    Pointer<Uint8>,
+    int,
+    Pointer<Void>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<IntPtr>,
+    Pointer<Int32>);
+typedef _SignPadesC = Pointer<Uint8> Function(
+    Pointer<Uint8>,
+    IntPtr,
+    Pointer<Void>,
+    Int32,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Pointer<Uint8>>,
+    Pointer<IntPtr>,
+    IntPtr,
+    Pointer<Pointer<Uint8>>,
+    Pointer<IntPtr>,
+    IntPtr,
+    Pointer<Pointer<Uint8>>,
+    Pointer<IntPtr>,
+    IntPtr,
+    Pointer<IntPtr>,
+    Pointer<Int32>);
+typedef _SignPadesD = Pointer<Uint8> Function(
+    Pointer<Uint8>,
+    int,
+    Pointer<Void>,
+    int,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Pointer<Uint8>>,
+    Pointer<IntPtr>,
+    int,
+    Pointer<Pointer<Uint8>>,
+    Pointer<IntPtr>,
+    int,
+    Pointer<Pointer<Uint8>>,
+    Pointer<IntPtr>,
+    int,
+    Pointer<IntPtr>,
+    Pointer<Int32>);
+typedef _SignPadesOptsC = Pointer<Uint8> Function(Pointer<Uint8>, IntPtr,
+    Pointer<_PadesSignOptionsC>, Pointer<IntPtr>, Pointer<Int32>);
+typedef _SignPadesOptsD = Pointer<Uint8> Function(Pointer<Uint8>, int,
+    Pointer<_PadesSignOptionsC>, Pointer<IntPtr>, Pointer<Int32>);
+
+// signature info
+typedef _SigStrC = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _SigStrD = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _SigI64C = Int64 Function(Pointer<Void>, Pointer<Int32>);
+typedef _SigI64D = int Function(Pointer<Void>, Pointer<Int32>);
+typedef _SigPtrC = Pointer<Void> Function(Pointer<Void>, Pointer<Int32>);
+typedef _SigPtrD = Pointer<Void> Function(Pointer<Void>, Pointer<Int32>);
+typedef _SigI32C = Int32 Function(Pointer<Void>, Pointer<Int32>);
+typedef _SigI32D = int Function(Pointer<Void>, Pointer<Int32>);
+typedef _SigBoolC = Bool Function(Pointer<Void>, Pointer<Int32>);
+typedef _SigBoolD = bool Function(Pointer<Void>, Pointer<Int32>);
+typedef _SigAddTsC = Bool Function(
+    Pointer<Void>, Pointer<Void>, Pointer<Int32>);
+typedef _SigAddTsD = bool Function(
+    Pointer<Void>, Pointer<Void>, Pointer<Int32>);
+typedef _SigVerifyDetachedC = Int32 Function(
+    Pointer<Void>, Pointer<Uint8>, IntPtr, Pointer<Int32>);
+typedef _SigVerifyDetachedD = int Function(
+    Pointer<Void>, Pointer<Uint8>, int, Pointer<Int32>);
+
+// timestamp
+typedef _TsParseC = Pointer<Void> Function(
+    Pointer<Uint8>, IntPtr, Pointer<Int32>);
+typedef _TsParseD = Pointer<Void> Function(Pointer<Uint8>, int, Pointer<Int32>);
+typedef _TsConstBytesC = Pointer<Uint8> Function(
+    Pointer<Void>, Pointer<IntPtr>, Pointer<Int32>);
+typedef _TsConstBytesD = Pointer<Uint8> Function(
+    Pointer<Void>, Pointer<IntPtr>, Pointer<Int32>);
+typedef _TsI64C = Int64 Function(Pointer<Void>, Pointer<Int32>);
+typedef _TsI64D = int Function(Pointer<Void>, Pointer<Int32>);
+typedef _TsStrC = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _TsStrD = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _TsI32C = Int32 Function(Pointer<Void>, Pointer<Int32>);
+typedef _TsI32D = int Function(Pointer<Void>, Pointer<Int32>);
+typedef _TsBoolC = Bool Function(Pointer<Void>, Pointer<Int32>);
+typedef _TsBoolD = bool Function(Pointer<Void>, Pointer<Int32>);
+
+// TSA client
+typedef _TsaCreateC = Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>,
+    Pointer<Utf8>, Int32, Int32, Bool, Bool, Pointer<Int32>);
+typedef _TsaCreateD = Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>,
+    Pointer<Utf8>, int, int, bool, bool, Pointer<Int32>);
+typedef _TsaReqC = Pointer<Void> Function(
+    Pointer<Void>, Pointer<Uint8>, IntPtr, Pointer<Int32>);
+typedef _TsaReqD = Pointer<Void> Function(
+    Pointer<Void>, Pointer<Uint8>, int, Pointer<Int32>);
+typedef _TsaReqHashC = Pointer<Void> Function(
+    Pointer<Void>, Pointer<Uint8>, IntPtr, Int32, Pointer<Int32>);
+typedef _TsaReqHashD = Pointer<Void> Function(
+    Pointer<Void>, Pointer<Uint8>, int, int, Pointer<Int32>);
+
+// DSS
+typedef _DssCountC = Int32 Function(Pointer<Void>);
+typedef _DssCountD = int Function(Pointer<Void>);
+typedef _DssGetC = Pointer<Uint8> Function(
+    Pointer<Void>, Int32, Pointer<IntPtr>, Pointer<Int32>);
+typedef _DssGetD = Pointer<Uint8> Function(
+    Pointer<Void>, int, Pointer<IntPtr>, Pointer<Int32>);
+
+// validation
+typedef _ValidateC = Pointer<Void> Function(
+    Pointer<Void>, Int32, Pointer<Int32>);
+typedef _ValidateD = Pointer<Void> Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _ValBoolC = Bool Function(Pointer<Void>, Pointer<Int32>);
+typedef _ValBoolD = bool Function(Pointer<Void>, Pointer<Int32>);
+typedef _ValCountC = Int32 Function(Pointer<Void>);
+typedef _ValCountD = int Function(Pointer<Void>);
+typedef _ValGetC = Pointer<Utf8> Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _ValGetD = Pointer<Utf8> Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _ValFreeC = Void Function(Pointer<Void>);
+typedef _ValFreeD = void Function(Pointer<Void>);
+typedef _UaStatsC = Bool Function(
+    Pointer<Void>,
+    Pointer<Int32>,
+    Pointer<Int32>,
+    Pointer<Int32>,
+    Pointer<Int32>,
+    Pointer<Int32>,
+    Pointer<Int32>,
+    Pointer<Int32>);
+typedef _UaStatsD = bool Function(
+    Pointer<Void>,
+    Pointer<Int32>,
+    Pointer<Int32>,
+    Pointer<Int32>,
+    Pointer<Int32>,
+    Pointer<Int32>,
+    Pointer<Int32>,
+    Pointer<Int32>);
+
+// log level
+typedef _SetLogC = Void Function(Int32);
+typedef _SetLogD = void Function(int);
+typedef _GetLogC = Int32 Function();
+typedef _GetLogD = int Function();
 
 _Native? _cached;
 
@@ -1468,6 +2338,47 @@ class PdfDocument implements Finalizable {
   /// reference to this document and must not be used after [close].
   Page page(int index) => Page._(this, index);
 
+  // ── Phase 6: conformance validation ─────────────────────────────────────────
+
+  /// Validate against PDF/A at the given [level] (an integer conformance code).
+  PdfAResults validatePdfA(int level) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.validatePdfALevel(_handle, level, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'validatePdfA');
+      return PdfAResults._(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Validate against PDF/UA accessibility at the given [level].
+  UaResults validatePdfUa(int level) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.validatePdfUa(_handle, level, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'validatePdfUa');
+      return UaResults._(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Validate against PDF/X at the given [level] (an integer conformance code).
+  PdfXResults validatePdfX(int level) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.validatePdfXLevel(_handle, level, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'validatePdfX');
+      return PdfXResults._(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
   /// Free the native handle now (idempotent).
   void close() {
     if (_handle != nullptr) {
@@ -2150,3 +3061,2042 @@ class DocumentEditor implements Finalizable {
     }
   }
 }
+
+// ── PDF creation (builder API) ───────────────────────────────────────────────
+
+/// A loaded TTF/OTF font for embedding via [DocumentBuilder.registerEmbeddedFont].
+///
+/// Owns the native `EmbeddedFont` handle (freed on [close], the finalizer, or
+/// dealloc). After a *successful* [DocumentBuilder.registerEmbeddedFont] the
+/// builder takes ownership of the underlying handle, so the wrapper's handle is
+/// nulled and must not be freed again (the contract in the C header).
+class EmbeddedFont implements Finalizable {
+  EmbeddedFont._(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_EfFreeC>>('pdf_embedded_font_free'));
+  Pointer<Void> _handle;
+
+  /// Load a TTF/OTF font from a filesystem [path].
+  static EmbeddedFont fromFile(String path) {
+    final cPath = path.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.efFromFile(cPath, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'embeddedFontFromFile');
+      return EmbeddedFont._(h);
+    } finally {
+      calloc.free(cPath);
+      calloc.free(code);
+    }
+  }
+
+  /// Load a font from in-memory [data]. [name] may be null to use the
+  /// PostScript name from the font face.
+  static EmbeddedFont fromBytes(Uint8List data, [String? name]) {
+    final buf = calloc<Uint8>(data.length);
+    buf.asTypedList(data.length).setAll(0, data);
+    final cName = name == null ? nullptr : name.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.efFromBytes(buf, data.length, cName.cast(), code);
+      if (h == nullptr)
+        throw PdfOxideError(code.value, 'embeddedFontFromBytes');
+      return EmbeddedFont._(h);
+    } finally {
+      calloc.free(buf);
+      if (cName != nullptr) calloc.free(cName);
+      calloc.free(code);
+    }
+  }
+
+  void _check() {
+    if (_handle == nullptr) throw StateError('EmbeddedFont is closed');
+  }
+
+  // Internal: surrender the raw handle to a builder that has taken ownership.
+  // Detaches the finalizer and nulls the field so close()/dealloc won't free it.
+  Pointer<Void> _surrender() {
+    _check();
+    _finalizer.detach(this);
+    final h = _handle;
+    _handle = nullptr;
+    return h;
+  }
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.efFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+/// A fluent builder for a single page, created by [DocumentBuilder.page],
+/// [DocumentBuilder.letterPage], or [DocumentBuilder.a4Page].
+///
+/// Owns the native `FfiPageBuilder` handle. Each op returns `this` for
+/// chaining. Call [done] to commit the buffered ops to the parent builder
+/// (this consumes the handle), or [close] to discard them. After either, the
+/// handle is null and further ops throw [StateError]. The finalizer frees an
+/// uncommitted handle if you forget to call [done]/[close].
+class PageBuilder implements Finalizable {
+  PageBuilder._(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_PbFreeC>>('pdf_page_builder_free'));
+  Pointer<Void> _handle;
+
+  void _check() {
+    if (_handle == nullptr) throw StateError('PageBuilder is closed');
+  }
+
+  // ── shared op shapes ───────────────────────────────────────────────────────
+
+  PageBuilder _status0(_PbStatus0D fn, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (fn(_handle, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, op);
+      }
+      return this;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder _str(_PbStrD fn, String value, String op) {
+    _check();
+    final c = value.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (fn(_handle, c, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, op);
+      }
+      return this;
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder _rgb(_PbRgbD fn, double r, double g, double b, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (fn(_handle, r, g, b, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, op);
+      }
+      return this;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  // ── text / layout ──────────────────────────────────────────────────────────
+
+  PageBuilder font(String name, double size) {
+    _check();
+    final c = name.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbFont(_handle, c, size, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'font');
+      }
+      return this;
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder at(double x, double y) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbAt(_handle, x, y, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'at');
+      }
+      return this;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder text(String value) => _str(_n.pbText, value, 'text');
+
+  PageBuilder heading(int level, String value) {
+    _check();
+    final c = value.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbHeading(_handle, level, c, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'heading');
+      }
+      return this;
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder paragraph(String value) =>
+      _str(_n.pbParagraph, value, 'paragraph');
+
+  PageBuilder space(double points) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbSpace(_handle, points, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'space');
+      }
+      return this;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder horizontalRule() =>
+      _status0(_n.pbHorizontalRule, 'horizontalRule');
+
+  PageBuilder columns(int columnCount, double gapPt, String value) {
+    _check();
+    final c = value.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbColumns(_handle, columnCount, gapPt, c, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'columns');
+      }
+      return this;
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder inline(String value) => _str(_n.pbInline, value, 'inline');
+  PageBuilder inlineBold(String value) =>
+      _str(_n.pbInlineBold, value, 'inlineBold');
+  PageBuilder inlineItalic(String value) =>
+      _str(_n.pbInlineItalic, value, 'inlineItalic');
+
+  PageBuilder inlineColor(double r, double g, double b, String value) {
+    _check();
+    final c = value.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbInlineColor(_handle, r, g, b, c, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'inlineColor');
+      }
+      return this;
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder newline() => _status0(_n.pbNewline, 'newline');
+
+  PageBuilder footnote(String refMark, String noteText) {
+    _check();
+    final cRef = refMark.toNativeUtf8();
+    final cNote = noteText.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbFootnote(_handle, cRef, cNote, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'footnote');
+      }
+      return this;
+    } finally {
+      calloc.free(cRef);
+      calloc.free(cNote);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder textInRect(
+      double x, double y, double w, double h, String value, int align) {
+    _check();
+    final c = value.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbTextInRect(_handle, x, y, w, h, c, align, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'textInRect');
+      }
+      return this;
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder newPageSameSize() =>
+      _status0(_n.pbNewPageSameSize, 'newPageSameSize');
+
+  // ── links ──────────────────────────────────────────────────────────────────
+
+  PageBuilder linkUrl(String url) => _str(_n.pbLinkUrl, url, 'linkUrl');
+
+  PageBuilder linkPage(int page) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbLinkPage(_handle, page, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'linkPage');
+      }
+      return this;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder linkNamed(String destination) =>
+      _str(_n.pbLinkNamed, destination, 'linkNamed');
+  PageBuilder linkJavascript(String script) =>
+      _str(_n.pbLinkJavascript, script, 'linkJavascript');
+
+  // ── actions / fields ───────────────────────────────────────────────────────
+
+  PageBuilder onOpen(String script) => _str(_n.pbOnOpen, script, 'onOpen');
+  PageBuilder onClose(String script) => _str(_n.pbOnClose, script, 'onClose');
+
+  PageBuilder fieldKeystroke(String script) =>
+      _str(_n.pbFieldKeystroke, script, 'fieldKeystroke');
+  PageBuilder fieldFormat(String script) =>
+      _str(_n.pbFieldFormat, script, 'fieldFormat');
+  PageBuilder fieldValidate(String script) =>
+      _str(_n.pbFieldValidate, script, 'fieldValidate');
+  PageBuilder fieldCalculate(String script) =>
+      _str(_n.pbFieldCalculate, script, 'fieldCalculate');
+
+  // ── text markup ────────────────────────────────────────────────────────────
+
+  PageBuilder highlight(double r, double g, double b) =>
+      _rgb(_n.pbHighlight, r, g, b, 'highlight');
+  PageBuilder underline(double r, double g, double b) =>
+      _rgb(_n.pbUnderline, r, g, b, 'underline');
+  PageBuilder strikeout(double r, double g, double b) =>
+      _rgb(_n.pbStrikeout, r, g, b, 'strikeout');
+  PageBuilder squiggly(double r, double g, double b) =>
+      _rgb(_n.pbSquiggly, r, g, b, 'squiggly');
+
+  // ── annotations / watermark / stamp ────────────────────────────────────────
+
+  PageBuilder stickyNote(String value) =>
+      _str(_n.pbStickyNote, value, 'stickyNote');
+
+  PageBuilder stickyNoteAt(double x, double y, String value) {
+    _check();
+    final c = value.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbStickyNoteAt(_handle, x, y, c, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'stickyNoteAt');
+      }
+      return this;
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder watermark(String value) =>
+      _str(_n.pbWatermark, value, 'watermark');
+  PageBuilder watermarkConfidential() =>
+      _status0(_n.pbWatermarkConfidential, 'watermarkConfidential');
+  PageBuilder watermarkDraft() =>
+      _status0(_n.pbWatermarkDraft, 'watermarkDraft');
+  PageBuilder stamp(String typeName) => _str(_n.pbStamp, typeName, 'stamp');
+
+  PageBuilder freetext(double x, double y, double w, double h, String value) {
+    _check();
+    final c = value.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbFreetext(_handle, x, y, w, h, c, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'freetext');
+      }
+      return this;
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  // ── images ─────────────────────────────────────────────────────────────────
+
+  PageBuilder _imageCall(_PbImageD fn, Uint8List bytes, double x, double y,
+      double w, double h, String op) {
+    _check();
+    final buf = calloc<Uint8>(bytes.length);
+    buf.asTypedList(bytes.length).setAll(0, bytes);
+    final code = calloc<Int32>();
+    try {
+      if (fn(_handle, buf, bytes.length, x, y, w, h, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, op);
+      }
+      return this;
+    } finally {
+      calloc.free(buf);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder image(Uint8List bytes, double x, double y, double w, double h) =>
+      _imageCall(_n.pbImage, bytes, x, y, w, h, 'image');
+
+  PageBuilder imageArtifact(
+          Uint8List bytes, double x, double y, double w, double h) =>
+      _imageCall(_n.pbImageArtifact, bytes, x, y, w, h, 'imageArtifact');
+
+  PageBuilder imageWithAlt(
+      Uint8List bytes, double x, double y, double w, double h, String altText) {
+    _check();
+    final buf = calloc<Uint8>(bytes.length);
+    buf.asTypedList(bytes.length).setAll(0, bytes);
+    final cAlt = altText.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbImageWithAlt(
+                  _handle, buf, bytes.length, x, y, w, h, cAlt, code) !=
+              0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'imageWithAlt');
+      }
+      return this;
+    } finally {
+      calloc.free(buf);
+      calloc.free(cAlt);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder barcode1d(
+      int barcodeType, String data, double x, double y, double w, double h) {
+    _check();
+    final c = data.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbBarcode1d(_handle, barcodeType, c, x, y, w, h, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'barcode1d');
+      }
+      return this;
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder barcodeQr(String data, double x, double y, double size) {
+    _check();
+    final c = data.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbBarcodeQr(_handle, c, x, y, size, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'barcodeQr');
+      }
+      return this;
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  // ── vector graphics ────────────────────────────────────────────────────────
+
+  PageBuilder rect(double x, double y, double w, double h) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbRect(_handle, x, y, w, h, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'rect');
+      }
+      return this;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder filledRect(
+      double x, double y, double w, double h, double r, double g, double b) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbFilledRect(_handle, x, y, w, h, r, g, b, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'filledRect');
+      }
+      return this;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder line(double x1, double y1, double x2, double y2) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbLine(_handle, x1, y1, x2, y2, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'line');
+      }
+      return this;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder strokeRect(double x, double y, double w, double h, double width,
+      double r, double g, double b) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbStrokeRect(_handle, x, y, w, h, width, r, g, b, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'strokeRect');
+      }
+      return this;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder strokeLine(double x1, double y1, double x2, double y2,
+      double width, double r, double g, double b) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbStrokeLine(_handle, x1, y1, x2, y2, width, r, g, b, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'strokeLine');
+      }
+      return this;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder _strokeDashed(
+      _PbStrokeRectDashedD fn,
+      double a,
+      double b,
+      double c,
+      double d,
+      double width,
+      double r,
+      double g,
+      double bl,
+      List<double> dashArray,
+      double phase,
+      String op) {
+    _check();
+    final n = dashArray.length;
+    final dash = n == 0 ? nullptr : calloc<Float>(n);
+    final code = calloc<Int32>();
+    try {
+      for (var i = 0; i < n; i++) {
+        dash[i] = dashArray[i];
+      }
+      if (fn(_handle, a, b, c, d, width, r, g, bl, dash.cast(), n, phase,
+                  code) !=
+              0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, op);
+      }
+      return this;
+    } finally {
+      if (dash != nullptr) calloc.free(dash);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder strokeRectDashed(double x, double y, double w, double h,
+          double width, double r, double g, double b, List<double> dashArray,
+          [double phase = 0]) =>
+      _strokeDashed(_n.pbStrokeRectDashed, x, y, w, h, width, r, g, b,
+          dashArray, phase, 'strokeRectDashed');
+
+  PageBuilder strokeLineDashed(double x1, double y1, double x2, double y2,
+          double width, double r, double g, double b, List<double> dashArray,
+          [double phase = 0]) =>
+      _strokeDashed(_n.pbStrokeLineDashed, x1, y1, x2, y2, width, r, g, b,
+          dashArray, phase, 'strokeLineDashed');
+
+  // ── form fields ────────────────────────────────────────────────────────────
+
+  PageBuilder textField(String name, double x, double y, double w, double h,
+      [String? defaultValue]) {
+    _check();
+    final cName = name.toNativeUtf8();
+    final cDef = defaultValue == null ? nullptr : defaultValue.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbTextField(_handle, cName, x, y, w, h, cDef.cast(), code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'textField');
+      }
+      return this;
+    } finally {
+      calloc.free(cName);
+      if (cDef != nullptr) calloc.free(cDef);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder checkbox(
+      String name, double x, double y, double w, double h, bool checked) {
+    _check();
+    final cName = name.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbCheckbox(_handle, cName, x, y, w, h, checked ? 1 : 0, code) !=
+              0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'checkbox');
+      }
+      return this;
+    } finally {
+      calloc.free(cName);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder comboBox(String name, double x, double y, double w, double h,
+      List<String> options, int count,
+      [String? selected]) {
+    _check();
+    final cName = name.toNativeUtf8();
+    final cSel = selected == null ? nullptr : selected.toNativeUtf8();
+    final opts = calloc<Pointer<Utf8>>(count);
+    final cStrings = <Pointer<Utf8>>[];
+    final code = calloc<Int32>();
+    try {
+      for (var i = 0; i < count; i++) {
+        final s = options[i].toNativeUtf8();
+        cStrings.add(s);
+        opts[i] = s;
+      }
+      if (_n.pbComboBox(
+                  _handle, cName, x, y, w, h, opts, count, cSel.cast(), code) !=
+              0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'comboBox');
+      }
+      return this;
+    } finally {
+      for (final s in cStrings) {
+        calloc.free(s);
+      }
+      calloc.free(opts);
+      calloc.free(cName);
+      if (cSel != nullptr) calloc.free(cSel);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder radioGroup(String name, List<String> values, List<double> xs,
+      List<double> ys, List<double> ws, List<double> hs, int count,
+      [String? selected]) {
+    _check();
+    final cName = name.toNativeUtf8();
+    final cSel = selected == null ? nullptr : selected.toNativeUtf8();
+    final vals = calloc<Pointer<Utf8>>(count);
+    final cStrings = <Pointer<Utf8>>[];
+    final pxs = calloc<Float>(count);
+    final pys = calloc<Float>(count);
+    final pws = calloc<Float>(count);
+    final phs = calloc<Float>(count);
+    final code = calloc<Int32>();
+    try {
+      for (var i = 0; i < count; i++) {
+        final s = values[i].toNativeUtf8();
+        cStrings.add(s);
+        vals[i] = s;
+        pxs[i] = xs[i];
+        pys[i] = ys[i];
+        pws[i] = ws[i];
+        phs[i] = hs[i];
+      }
+      if (_n.pbRadioGroup(_handle, cName, vals, pxs, pys, pws, phs, count,
+                  cSel.cast(), code) !=
+              0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'radioGroup');
+      }
+      return this;
+    } finally {
+      for (final s in cStrings) {
+        calloc.free(s);
+      }
+      calloc.free(vals);
+      calloc.free(pxs);
+      calloc.free(pys);
+      calloc.free(pws);
+      calloc.free(phs);
+      calloc.free(cName);
+      if (cSel != nullptr) calloc.free(cSel);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder pushButton(
+      String name, double x, double y, double w, double h, String caption) {
+    _check();
+    final cName = name.toNativeUtf8();
+    final cCap = caption.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbPushButton(_handle, cName, x, y, w, h, cCap, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'pushButton');
+      }
+      return this;
+    } finally {
+      calloc.free(cName);
+      calloc.free(cCap);
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder signatureField(
+      String name, double x, double y, double w, double h) {
+    _check();
+    final cName = name.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.pbSignatureField(_handle, cName, x, y, w, h, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'signatureField');
+      }
+      return this;
+    } finally {
+      calloc.free(cName);
+      calloc.free(code);
+    }
+  }
+
+  // ── table ──────────────────────────────────────────────────────────────────
+
+  /// Buffer a static table. [widths]/[aligns] are length [nCols]; [cellStrings]
+  /// is row-major (`cellStrings[row * nCols + col]`) of length `nCols * nRows`.
+  /// [aligns] encodes 0=Left, 1=Center, 2=Right.
+  PageBuilder table(int nCols, List<double> widths, List<int> aligns, int nRows,
+      List<String> cellStrings, bool hasHeader) {
+    _check();
+    final pw = calloc<Float>(nCols);
+    final pa = calloc<Int32>(nCols);
+    final cells = calloc<Pointer<Utf8>>(nCols * nRows);
+    final cStrings = <Pointer<Utf8>>[];
+    final code = calloc<Int32>();
+    try {
+      for (var i = 0; i < nCols; i++) {
+        pw[i] = widths[i];
+        pa[i] = aligns[i];
+      }
+      for (var i = 0; i < nCols * nRows; i++) {
+        final s = cellStrings[i].toNativeUtf8();
+        cStrings.add(s);
+        cells[i] = s;
+      }
+      if (_n.pbTable(_handle, nCols, pw, pa, nRows, cells, hasHeader ? 1 : 0,
+                  code) !=
+              0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'table');
+      }
+      return this;
+    } finally {
+      for (final s in cStrings) {
+        calloc.free(s);
+      }
+      calloc.free(cells);
+      calloc.free(pw);
+      calloc.free(pa);
+      calloc.free(code);
+    }
+  }
+
+  // ── lifecycle ──────────────────────────────────────────────────────────────
+
+  /// Commit this page's buffered ops to the parent builder. **Consumes** the
+  /// handle — after this the page builder is closed (do not call further ops).
+  void done() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final rc = _n.pbDone(_handle, code);
+      // _done consumes the native handle regardless of success; detach the
+      // finalizer and null our field so we never call _free on it.
+      _finalizer.detach(this);
+      _handle = nullptr;
+      if (rc != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'done');
+      }
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Discard this page (drops buffered ops) and free the handle (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.pbFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+/// A builder for assembling a brand-new PDF document.
+///
+/// Owns the native `FfiDocumentBuilder` handle. Set metadata, register fonts,
+/// open pages via [page]/[letterPage]/[a4Page], then [build]/[save]/etc. The
+/// terminal ops consume the builder *state* but the handle is still freed via
+/// [close]/the finalizer/dealloc (per the C contract). C status returns are
+/// 0 = success; a non-zero return or set error_code raises [PdfOxideError].
+class DocumentBuilder implements Finalizable {
+  DocumentBuilder._(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_DbFreeC>>('pdf_document_builder_free'));
+  Pointer<Void> _handle;
+
+  /// Create a fresh document builder.
+  static DocumentBuilder create() {
+    final code = calloc<Int32>();
+    try {
+      final h = _n.dbCreate(code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'create');
+      return DocumentBuilder._(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  void _check() {
+    if (_handle == nullptr) throw StateError('DocumentBuilder is closed');
+  }
+
+  // ── metadata (fluent) ──────────────────────────────────────────────────────
+
+  DocumentBuilder _setStr(_DbSetStrD fn, String value, String op) {
+    _check();
+    final c = value.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (fn(_handle, c, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, op);
+      }
+      return this;
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  DocumentBuilder setTitle(String value) =>
+      _setStr(_n.dbSetTitle, value, 'setTitle');
+  DocumentBuilder setAuthor(String value) =>
+      _setStr(_n.dbSetAuthor, value, 'setAuthor');
+  DocumentBuilder setSubject(String value) =>
+      _setStr(_n.dbSetSubject, value, 'setSubject');
+  DocumentBuilder setKeywords(String value) =>
+      _setStr(_n.dbSetKeywords, value, 'setKeywords');
+  DocumentBuilder setCreator(String value) =>
+      _setStr(_n.dbSetCreator, value, 'setCreator');
+  DocumentBuilder onOpen(String script) =>
+      _setStr(_n.dbOnOpen, script, 'onOpen');
+  DocumentBuilder language(String lang) =>
+      _setStr(_n.dbLanguage, lang, 'language');
+
+  /// Enable PDF/UA-1 tagged PDF mode.
+  DocumentBuilder taggedPdfUa1() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.dbTaggedPdfUa1(_handle, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'taggedPdfUa1');
+      }
+      return this;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Add a role-map entry: [custom] structure type → [standard] PDF type.
+  DocumentBuilder roleMap(String custom, String standard) {
+    _check();
+    final cCustom = custom.toNativeUtf8();
+    final cStd = standard.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.dbRoleMap(_handle, cCustom, cStd, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'roleMap');
+      }
+      return this;
+    } finally {
+      calloc.free(cCustom);
+      calloc.free(cStd);
+      calloc.free(code);
+    }
+  }
+
+  /// Register an [EmbeddedFont] under [name]. On success the builder takes
+  /// ownership of the font's native handle (the [EmbeddedFont] is consumed and
+  /// must not be used or freed afterwards). On error the font remains valid.
+  DocumentBuilder registerEmbeddedFont(String name, EmbeddedFont font) {
+    _check();
+    font._check();
+    final cName = name.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      final rc = _n.dbRegisterFont(_handle, cName, font._handle, code);
+      if (rc != 0 || code.value != 0) {
+        // Font NOT consumed on error — leave the wrapper owning it.
+        throw PdfOxideError(code.value, 'registerEmbeddedFont');
+      }
+      // Consumed: surrender so the EmbeddedFont won't double-free.
+      font._surrender();
+      return this;
+    } finally {
+      calloc.free(cName);
+      calloc.free(code);
+    }
+  }
+
+  // ── pages ──────────────────────────────────────────────────────────────────
+
+  PageBuilder _openPage(_DbPageD fn, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = fn(_handle, code);
+      if (h == nullptr) throw PdfOxideError(code.value, op);
+      return PageBuilder._(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  PageBuilder a4Page() => _openPage(_n.dbA4Page, 'a4Page');
+  PageBuilder letterPage() => _openPage(_n.dbLetterPage, 'letterPage');
+
+  PageBuilder page(double width, double height) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.dbPage(_handle, width, height, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'page');
+      return PageBuilder._(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  // ── build / save ───────────────────────────────────────────────────────────
+
+  /// Build the PDF and return its bytes.
+  Uint8List build() {
+    _check();
+    final len = calloc<IntPtr>();
+    final code = calloc<Int32>();
+    try {
+      final p = _n.dbBuild(_handle, len, code);
+      if (p == nullptr) throw PdfOxideError(code.value, 'build');
+      final out =
+          Uint8List.fromList(p.asTypedList(len.value < 0 ? 0 : len.value));
+      _n.freeBytes(p);
+      return out;
+    } finally {
+      calloc.free(len);
+      calloc.free(code);
+    }
+  }
+
+  /// Build and save the PDF to [path].
+  void save(String path) {
+    _check();
+    final c = path.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.dbSave(_handle, c, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'save');
+      }
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  /// Build and save with AES-256 encryption to [path].
+  void saveEncrypted(String path, String userPassword, String ownerPassword) {
+    _check();
+    final cPath = path.toNativeUtf8();
+    final cUser = userPassword.toNativeUtf8();
+    final cOwner = ownerPassword.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.dbSaveEncrypted(_handle, cPath, cUser, cOwner, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'saveEncrypted');
+      }
+    } finally {
+      calloc.free(cPath);
+      calloc.free(cUser);
+      calloc.free(cOwner);
+      calloc.free(code);
+    }
+  }
+
+  /// Build encrypted bytes (AES-256).
+  Uint8List toBytesEncrypted(String userPassword, String ownerPassword) {
+    _check();
+    final cUser = userPassword.toNativeUtf8();
+    final cOwner = ownerPassword.toNativeUtf8();
+    final len = calloc<IntPtr>();
+    final code = calloc<Int32>();
+    try {
+      final p = _n.dbToBytesEncrypted(_handle, cUser, cOwner, len, code);
+      if (p == nullptr) throw PdfOxideError(code.value, 'toBytesEncrypted');
+      final out =
+          Uint8List.fromList(p.asTypedList(len.value < 0 ? 0 : len.value));
+      _n.freeBytes(p);
+      return out;
+    } finally {
+      calloc.free(cUser);
+      calloc.free(cOwner);
+      calloc.free(len);
+      calloc.free(code);
+    }
+  }
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.dbFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Phase 6 — digital signatures / PKI / timestamps / TSA / DSS / validation.
+//
+// Style matches earlier phases: every opaque native handle is wrapped in a
+// `Finalizable` class freed via its `*_free` symbol on `close()` (idempotent)
+// and a `NativeFinalizer`; calls after close throw `StateError`. Owned `char*`
+// returns go through `_takeString` (+ `free_string`); owned `uint8*` buffers are
+// copied then released with `free_bytes`. `const uint8*` returns (timestamp
+// token / message imprint) are COPIED ONLY — never `free_bytes`'d. Validation
+// result handles use their dedicated `*_results_free`.
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Copy an owned native `uint8*` buffer into Dart and release it via `free_bytes`.
+Uint8List _takeBytes(Pointer<Uint8> p, int len, int code, String op) {
+  if (p == nullptr) throw PdfOxideError(code, op);
+  final out = Uint8List.fromList(p.asTypedList(len < 0 ? 0 : len));
+  _n.freeBytes(p);
+  return out;
+}
+
+/// Marshal a list of DER byte buffers into the parallel
+/// `(const uint8* const*, const uintptr*, count)` triple the PAdES signer
+/// expects. Returns the two allocated pointer arrays plus every per-element
+/// buffer so the caller can [calloc.free] them after the call returns.
+class _ByteArrayArray {
+  _ByteArrayArray(List<Uint8List> items)
+      : count = items.length,
+        ptrs = items.isEmpty ? nullptr : calloc<Pointer<Uint8>>(items.length),
+        lens = items.isEmpty ? nullptr : calloc<IntPtr>(items.length) {
+    for (var i = 0; i < items.length; i++) {
+      final item = items[i];
+      final buf = calloc<Uint8>(item.isEmpty ? 1 : item.length);
+      if (item.isNotEmpty) buf.asTypedList(item.length).setAll(0, item);
+      _bufs.add(buf);
+      ptrs[i] = buf;
+      lens[i] = item.length;
+    }
+  }
+
+  final int count;
+  final Pointer<Pointer<Uint8>> ptrs;
+  final Pointer<IntPtr> lens;
+  final List<Pointer<Uint8>> _bufs = [];
+
+  void free() {
+    for (final b in _bufs) {
+      calloc.free(b);
+    }
+    if (ptrs != nullptr) calloc.free(ptrs);
+    if (lens != nullptr) calloc.free(lens);
+  }
+}
+
+/// Validity window of a [Certificate] as Unix epoch seconds.
+class CertificateValidity {
+  const CertificateValidity(this.notBefore, this.notAfter);
+  final int notBefore;
+  final int notAfter;
+  @override
+  String toString() => 'CertificateValidity($notBefore..$notAfter)';
+}
+
+/// Signing credentials / X.509 certificate. Created via [loadFromBytes]
+/// (PKCS#12) or [loadFromPem]; freed via [close] (or the finalizer).
+class Certificate implements Finalizable {
+  Certificate._(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_PtrFreeC>>('pdf_certificate_free'));
+  Pointer<Void> _handle;
+
+  void _check() {
+    if (_handle == nullptr) throw StateError('Certificate is closed');
+  }
+
+  /// Load credentials from a PKCS#12 (.p12/.pfx) byte buffer with [password].
+  static Certificate loadFromBytes(Uint8List bytes, String password) {
+    final buf = calloc<Uint8>(bytes.isEmpty ? 1 : bytes.length);
+    if (bytes.isNotEmpty) buf.asTypedList(bytes.length).setAll(0, bytes);
+    final cPw = password.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.certLoadFromBytes(buf, bytes.length, cPw, code);
+      if (h == nullptr) {
+        throw PdfOxideError(code.value, 'certificateLoadFromBytes');
+      }
+      return Certificate._(h);
+    } finally {
+      calloc.free(buf);
+      calloc.free(cPw);
+      calloc.free(code);
+    }
+  }
+
+  /// Load credentials from PEM-encoded certificate + private-key strings.
+  static Certificate loadFromPem(String certPem, String keyPem) {
+    final cCert = certPem.toNativeUtf8();
+    final cKey = keyPem.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.certLoadFromPem(cCert, cKey, code);
+      if (h == nullptr) {
+        throw PdfOxideError(code.value, 'certificateLoadFromPem');
+      }
+      return Certificate._(h);
+    } finally {
+      calloc.free(cCert);
+      calloc.free(cKey);
+      calloc.free(code);
+    }
+  }
+
+  String _str(_CertStrD fn, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(fn(_handle, code), code.value, op);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The certificate subject (distinguished name).
+  String get subject => _str(_n.certGetSubject, 'certificateGetSubject');
+
+  /// The certificate issuer (distinguished name).
+  String get issuer => _str(_n.certGetIssuer, 'certificateGetIssuer');
+
+  /// The certificate serial number (decimal/hex string).
+  String get serial => _str(_n.certGetSerial, 'certificateGetSerial');
+
+  /// The validity window (notBefore/notAfter, Unix epoch seconds).
+  CertificateValidity get validity {
+    _check();
+    final nb = calloc<Int64>();
+    final na = calloc<Int64>();
+    final code = calloc<Int32>();
+    try {
+      _n.certGetValidity(_handle, nb, na, code);
+      if (code.value != 0) {
+        throw PdfOxideError(code.value, 'certificateGetValidity');
+      }
+      return CertificateValidity(nb.value, na.value);
+    } finally {
+      calloc.free(nb);
+      calloc.free(na);
+      calloc.free(code);
+    }
+  }
+
+  /// Whether the certificate is currently valid (not expired / not before).
+  bool isValid() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final r = _n.certIsValid(_handle, code);
+      if (code.value != 0) {
+        throw PdfOxideError(code.value, 'certificateIsValid');
+      }
+      return r != 0;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.certFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+/// An RFC 3161 timestamp token, parsed via [parse]. Freed via [close].
+class Timestamp implements Finalizable {
+  Timestamp._(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_PtrFreeC>>('pdf_timestamp_free'));
+  Pointer<Void> _handle;
+
+  void _check() {
+    if (_handle == nullptr) throw StateError('Timestamp is closed');
+  }
+
+  /// Parse a DER-encoded RFC 3161 TimeStampToken (or bare TSTInfo).
+  static Timestamp parse(Uint8List bytes) {
+    final buf = calloc<Uint8>(bytes.isEmpty ? 1 : bytes.length);
+    if (bytes.isNotEmpty) buf.asTypedList(bytes.length).setAll(0, bytes);
+    final code = calloc<Int32>();
+    try {
+      final h = _n.tsParse(buf, bytes.length, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'timestampParse');
+      return Timestamp._(h);
+    } finally {
+      calloc.free(buf);
+      calloc.free(code);
+    }
+  }
+
+  // The token / message-imprint returns are `const uint8*` owned by the handle:
+  // copy them out, never free_bytes.
+  Uint8List _constBytes(_TsConstBytesD fn, String op) {
+    _check();
+    final len = calloc<IntPtr>();
+    final code = calloc<Int32>();
+    try {
+      final p = fn(_handle, len, code);
+      if (p == nullptr) throw PdfOxideError(code.value, op);
+      return Uint8List.fromList(p.asTypedList(len.value < 0 ? 0 : len.value));
+    } finally {
+      calloc.free(len);
+      calloc.free(code);
+    }
+  }
+
+  /// The full DER TimeStampToken bytes (copied; not owned by the caller).
+  Uint8List get token => _constBytes(_n.tsGetToken, 'timestampGetToken');
+
+  /// The hashed message imprint bytes (copied; not owned by the caller).
+  Uint8List get messageImprint =>
+      _constBytes(_n.tsGetMessageImprint, 'timestampGetMessageImprint');
+
+  String _str(_TsStrD fn, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(fn(_handle, code), code.value, op);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The timestamp time (Unix epoch seconds).
+  int get time {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final t = _n.tsGetTime(_handle, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'timestampGetTime');
+      return t;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The token serial number.
+  String get serial => _str(_n.tsGetSerial, 'timestampGetSerial');
+
+  /// The TSA (timestamp authority) name.
+  String get tsaName => _str(_n.tsGetTsaName, 'timestampGetTsaName');
+
+  /// The TSA policy OID.
+  String get policyOid => _str(_n.tsGetPolicyOid, 'timestampGetPolicyOid');
+
+  /// The message-imprint hash algorithm code.
+  int get hashAlgorithm {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.tsGetHashAlgorithm(_handle, code);
+      if (code.value != 0) {
+        throw PdfOxideError(code.value, 'timestampGetHashAlgorithm');
+      }
+      return h;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Cryptographically verify the timestamp token.
+  bool verify() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final r = _n.tsVerify(_handle, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'timestampVerify');
+      return r;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.tsFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+/// An RFC 3161 TSA (timestamp authority) client. Created via [create]; freed via
+/// [close]. Requests return owned [Timestamp] handles.
+class TsaClient implements Finalizable {
+  TsaClient._(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_PtrFreeC>>('pdf_tsa_client_free'));
+  Pointer<Void> _handle;
+
+  void _check() {
+    if (_handle == nullptr) throw StateError('TsaClient is closed');
+  }
+
+  /// Create a TSA client for [url]. [username]/[password] are optional HTTP
+  /// basic-auth credentials (pass empty strings to omit).
+  static TsaClient create(
+    String url, {
+    String username = '',
+    String password = '',
+    int timeout = 30,
+    int hashAlgo = 0,
+    bool useNonce = true,
+    bool certReq = true,
+  }) {
+    final cUrl = url.toNativeUtf8();
+    final cUser = username.toNativeUtf8();
+    final cPw = password.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.tsaClientCreate(
+          cUrl, cUser, cPw, timeout, hashAlgo, useNonce, certReq, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'tsaClientCreate');
+      return TsaClient._(h);
+    } finally {
+      calloc.free(cUrl);
+      calloc.free(cUser);
+      calloc.free(cPw);
+      calloc.free(code);
+    }
+  }
+
+  /// Request a timestamp over raw [data] (the client hashes it).
+  Timestamp requestTimestamp(Uint8List data) {
+    _check();
+    final buf = calloc<Uint8>(data.isEmpty ? 1 : data.length);
+    if (data.isNotEmpty) buf.asTypedList(data.length).setAll(0, data);
+    final code = calloc<Int32>();
+    try {
+      final h = _n.tsaRequestTimestamp(_handle, buf, data.length, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'tsaRequestTimestamp');
+      return Timestamp._(h);
+    } finally {
+      calloc.free(buf);
+      calloc.free(code);
+    }
+  }
+
+  /// Request a timestamp over a precomputed [hash] of the given [hashAlgo].
+  Timestamp requestTimestampHash(Uint8List hash, int hashAlgo) {
+    _check();
+    final buf = calloc<Uint8>(hash.isEmpty ? 1 : hash.length);
+    if (hash.isNotEmpty) buf.asTypedList(hash.length).setAll(0, hash);
+    final code = calloc<Int32>();
+    try {
+      final h =
+          _n.tsaRequestTimestampHash(_handle, buf, hash.length, hashAlgo, code);
+      if (h == nullptr) {
+        throw PdfOxideError(code.value, 'tsaRequestTimestampHash');
+      }
+      return Timestamp._(h);
+    } finally {
+      calloc.free(buf);
+      calloc.free(code);
+    }
+  }
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.tsaClientFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+/// Information about a digital signature embedded in a PDF. Wraps an
+/// `FfiSignatureInfo*` handle (e.g. from `pdf_signature_get_timestamp`'s peers);
+/// freed via [close].
+class SignatureInfo implements Finalizable {
+  /// Adopt a raw `FfiSignatureInfo*` handle (advanced/interop use).
+  SignatureInfo.fromHandle(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_PtrFreeC>>('pdf_signature_free'));
+  Pointer<Void> _handle;
+
+  /// The raw native handle (advanced/interop use).
+  Pointer<Void> get handle => _handle;
+
+  void _check() {
+    if (_handle == nullptr) throw StateError('SignatureInfo is closed');
+  }
+
+  String _str(_SigStrD fn, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(fn(_handle, code), code.value, op);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The signer name.
+  String get signerName => _str(_n.sigGetSignerName, 'signatureGetSignerName');
+
+  /// The signing reason.
+  String get signingReason =>
+      _str(_n.sigGetSigningReason, 'signatureGetSigningReason');
+
+  /// The signing location.
+  String get signingLocation =>
+      _str(_n.sigGetSigningLocation, 'signatureGetSigningLocation');
+
+  /// The signing time (Unix epoch seconds).
+  int get signingTime {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final t = _n.sigGetSigningTime(_handle, code);
+      if (code.value != 0) {
+        throw PdfOxideError(code.value, 'signatureGetSigningTime');
+      }
+      return t;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The signer's [Certificate].
+  Certificate get certificate {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.sigGetCertificate(_handle, code);
+      if (h == nullptr) {
+        throw PdfOxideError(code.value, 'signatureGetCertificate');
+      }
+      return Certificate._(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The PAdES baseline level code (B-B/B-T/...), or `-1` if not PAdES.
+  int get padesLevel {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _n.sigGetPadesLevel(_handle, code);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Whether this signature carries an embedded timestamp.
+  bool hasTimestamp() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final r = _n.sigHasTimestamp(_handle, code);
+      if (code.value != 0) {
+        throw PdfOxideError(code.value, 'signatureHasTimestamp');
+      }
+      return r;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The embedded [Timestamp].
+  Timestamp get timestamp {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.sigGetTimestamp(_handle, code);
+      if (h == nullptr) {
+        throw PdfOxideError(code.value, 'signatureGetTimestamp');
+      }
+      return Timestamp._(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Attach a [ts] timestamp to this signature. Returns whether it succeeded.
+  bool addTimestamp(Timestamp ts) {
+    _check();
+    ts._check();
+    final code = calloc<Int32>();
+    try {
+      final r = _n.sigAddTimestamp(_handle, ts._handle, code);
+      if (code.value != 0) {
+        throw PdfOxideError(code.value, 'signatureAddTimestamp');
+      }
+      return r;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Run the signer-attributes crypto check. Returns 1 valid / 0 invalid /
+  /// -1 unknown-or-unsupported.
+  int verify() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _n.sigVerify(_handle, code);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Verify end-to-end against the full [pdf] file bytes. Returns 1 valid /
+  /// 0 invalid / -1 unknown-or-unsupported.
+  int verifyDetached(Uint8List pdf) {
+    _check();
+    final buf = calloc<Uint8>(pdf.isEmpty ? 1 : pdf.length);
+    if (pdf.isNotEmpty) buf.asTypedList(pdf.length).setAll(0, pdf);
+    final code = calloc<Int32>();
+    try {
+      return _n.sigVerifyDetached(_handle, buf, pdf.length, code);
+    } finally {
+      calloc.free(buf);
+      calloc.free(code);
+    }
+  }
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.sigFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+/// A document `/DSS` (document security store). Freed via [close].
+class Dss implements Finalizable {
+  /// Adopt a raw DSS handle (advanced/interop use).
+  Dss.fromHandle(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer =
+      NativeFinalizer(_n.lib.lookup<NativeFunction<_PtrFreeC>>('pdf_dss_free'));
+  Pointer<Void> _handle;
+
+  void _check() {
+    if (_handle == nullptr) throw StateError('Dss is closed');
+  }
+
+  /// Number of certificates in the DSS.
+  int get certCount {
+    _check();
+    return _n.dssCertCount(_handle);
+  }
+
+  /// Number of CRLs in the DSS.
+  int get crlCount {
+    _check();
+    return _n.dssCrlCount(_handle);
+  }
+
+  /// Number of OCSP responses in the DSS.
+  int get ocspCount {
+    _check();
+    return _n.dssOcspCount(_handle);
+  }
+
+  /// Number of VRI (validation-related info) entries in the DSS.
+  int get vriCount {
+    _check();
+    return _n.dssVriCount(_handle);
+  }
+
+  Uint8List _get(_DssGetD fn, int index, String op) {
+    _check();
+    final len = calloc<IntPtr>();
+    final code = calloc<Int32>();
+    try {
+      final p = fn(_handle, index, len, code);
+      return _takeBytes(p, len.value, code.value, op);
+    } finally {
+      calloc.free(len);
+      calloc.free(code);
+    }
+  }
+
+  /// The DER bytes of the certificate at [index].
+  Uint8List getCert(int index) => _get(_n.dssGetCert, index, 'dssGetCert');
+
+  /// The DER bytes of the CRL at [index].
+  Uint8List getCrl(int index) => _get(_n.dssGetCrl, index, 'dssGetCrl');
+
+  /// The DER bytes of the OCSP response at [index].
+  Uint8List getOcsp(int index) => _get(_n.dssGetOcsp, index, 'dssGetOcsp');
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.dssFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+/// PDF/UA accessibility element statistics.
+class UaStats {
+  const UaStats(this.structElements, this.images, this.tables, this.forms,
+      this.annotations, this.pages);
+  final int structElements;
+  final int images;
+  final int tables;
+  final int forms;
+  final int annotations;
+  final int pages;
+  @override
+  String toString() =>
+      'UaStats(struct=$structElements, images=$images, tables=$tables, '
+      'forms=$forms, annotations=$annotations, pages=$pages)';
+}
+
+/// PDF/A validation results. Freed via [close].
+class PdfAResults implements Finalizable {
+  PdfAResults._(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_ValFreeC>>('pdf_pdf_a_results_free'));
+  Pointer<Void> _handle;
+
+  void _check() {
+    if (_handle == nullptr) throw StateError('PdfAResults is closed');
+  }
+
+  /// Whether the document is PDF/A compliant.
+  bool isCompliant() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final r = _n.pdfAIsCompliant(_handle, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'pdfAIsCompliant');
+      return r;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The validation error messages.
+  List<String> errors() {
+    _check();
+    final n = _n.pdfAErrorCount(_handle);
+    final out = <String>[];
+    final code = calloc<Int32>();
+    try {
+      for (var i = 0; i < n; i++) {
+        out.add(_takeString(
+            _n.pdfAGetError(_handle, i, code), code.value, 'pdfAGetError'));
+      }
+      return out;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The validation warning messages (PDF/A exposes warning counts only).
+  List<String> warnings() {
+    _check();
+    // The C ABI exposes a warning count for PDF/A but no per-warning getter;
+    // surface placeholder entries so warnings() stays a List like the others.
+    final n = _n.pdfAWarningCount(_handle);
+    return List<String>.generate(n, (i) => 'warning $i');
+  }
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.pdfAResultsFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+/// PDF/UA accessibility validation results. Freed via [close].
+class UaResults implements Finalizable {
+  UaResults._(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_ValFreeC>>('pdf_pdf_ua_results_free'));
+  Pointer<Void> _handle;
+
+  void _check() {
+    if (_handle == nullptr) throw StateError('UaResults is closed');
+  }
+
+  /// Whether the document is PDF/UA accessible.
+  bool isAccessible() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final r = _n.pdfUaIsAccessible(_handle, code);
+      if (code.value != 0) {
+        throw PdfOxideError(code.value, 'pdfUaIsAccessible');
+      }
+      return r;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The accessibility error messages.
+  List<String> errors() {
+    _check();
+    final n = _n.pdfUaErrorCount(_handle);
+    final out = <String>[];
+    final code = calloc<Int32>();
+    try {
+      for (var i = 0; i < n; i++) {
+        out.add(_takeString(
+            _n.pdfUaGetError(_handle, i, code), code.value, 'pdfUaGetError'));
+      }
+      return out;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The accessibility warning messages.
+  List<String> warnings() {
+    _check();
+    final n = _n.pdfUaWarningCount(_handle);
+    final out = <String>[];
+    final code = calloc<Int32>();
+    try {
+      for (var i = 0; i < n; i++) {
+        out.add(_takeString(_n.pdfUaGetWarning(_handle, i, code), code.value,
+            'pdfUaGetWarning'));
+      }
+      return out;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Element statistics gathered during accessibility validation.
+  UaStats uaStats() {
+    _check();
+    final s = calloc<Int32>();
+    final im = calloc<Int32>();
+    final t = calloc<Int32>();
+    final f = calloc<Int32>();
+    final a = calloc<Int32>();
+    final p = calloc<Int32>();
+    final code = calloc<Int32>();
+    try {
+      final ok = _n.pdfUaGetStats(_handle, s, im, t, f, a, p, code);
+      if (!ok || code.value != 0) {
+        throw PdfOxideError(code.value, 'pdfUaGetStats');
+      }
+      return UaStats(s.value, im.value, t.value, f.value, a.value, p.value);
+    } finally {
+      calloc.free(s);
+      calloc.free(im);
+      calloc.free(t);
+      calloc.free(f);
+      calloc.free(a);
+      calloc.free(p);
+      calloc.free(code);
+    }
+  }
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.pdfUaResultsFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+/// PDF/X validation results. Freed via [close].
+class PdfXResults implements Finalizable {
+  PdfXResults._(this._handle) {
+    _finalizer.attach(this, _handle, detach: this);
+  }
+
+  static final _finalizer = NativeFinalizer(
+      _n.lib.lookup<NativeFunction<_ValFreeC>>('pdf_pdf_x_results_free'));
+  Pointer<Void> _handle;
+
+  void _check() {
+    if (_handle == nullptr) throw StateError('PdfXResults is closed');
+  }
+
+  /// Whether the document is PDF/X compliant.
+  bool isCompliant() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final r = _n.pdfXIsCompliant(_handle, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'pdfXIsCompliant');
+      return r;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The validation error messages.
+  List<String> errors() {
+    _check();
+    final n = _n.pdfXErrorCount(_handle);
+    final out = <String>[];
+    final code = calloc<Int32>();
+    try {
+      for (var i = 0; i < n; i++) {
+        out.add(_takeString(
+            _n.pdfXGetError(_handle, i, code), code.value, 'pdfXGetError'));
+      }
+      return out;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Free the native handle now (idempotent).
+  void close() {
+    if (_handle != nullptr) {
+      _finalizer.detach(this);
+      _n.pdfXResultsFree(_handle);
+      _handle = nullptr;
+    }
+  }
+}
+
+// ── top-level Phase 6 signing / logging entry points ─────────────────────────
+
+/// Sign raw PDF [pdf] bytes with [cert]; returns the signed PDF bytes.
+Uint8List signBytes(
+  Uint8List pdf,
+  Certificate cert, {
+  String reason = '',
+  String location = '',
+}) {
+  cert._check();
+  final buf = calloc<Uint8>(pdf.isEmpty ? 1 : pdf.length);
+  if (pdf.isNotEmpty) buf.asTypedList(pdf.length).setAll(0, pdf);
+  final cReason = reason.toNativeUtf8();
+  final cLocation = location.toNativeUtf8();
+  final len = calloc<IntPtr>();
+  final code = calloc<Int32>();
+  try {
+    final p = _n.signBytes(
+        buf, pdf.length, cert._handle, cReason, cLocation, len, code);
+    return _takeBytes(p, len.value, code.value, 'signBytes');
+  } finally {
+    calloc.free(buf);
+    calloc.free(cReason);
+    calloc.free(cLocation);
+    calloc.free(len);
+    calloc.free(code);
+  }
+}
+
+/// Sign raw PDF [pdf] bytes at a PAdES baseline [level] (0=B-B 1=B-T 2=B-LT).
+/// [tsaUrl] is required for level >= 1. [certs]/[crls]/[ocsps] carry B-LT
+/// revocation material (DER). Returns the signed PDF bytes.
+Uint8List signBytesPades(
+  Uint8List pdf,
+  Certificate cert,
+  int level, {
+  String? tsaUrl,
+  String reason = '',
+  String location = '',
+  List<Uint8List> certs = const [],
+  List<Uint8List> crls = const [],
+  List<Uint8List> ocsps = const [],
+}) {
+  cert._check();
+  final buf = calloc<Uint8>(pdf.isEmpty ? 1 : pdf.length);
+  if (pdf.isNotEmpty) buf.asTypedList(pdf.length).setAll(0, pdf);
+  final cTsa = tsaUrl == null ? nullptr : tsaUrl.toNativeUtf8();
+  final cReason = reason.toNativeUtf8();
+  final cLocation = location.toNativeUtf8();
+  final certArr = _ByteArrayArray(certs);
+  final crlArr = _ByteArrayArray(crls);
+  final ocspArr = _ByteArrayArray(ocsps);
+  final len = calloc<IntPtr>();
+  final code = calloc<Int32>();
+  try {
+    final p = _n.signBytesPades(
+      buf,
+      pdf.length,
+      cert._handle,
+      level,
+      cTsa.cast(),
+      cReason,
+      cLocation,
+      certArr.ptrs,
+      certArr.lens,
+      certArr.count,
+      crlArr.ptrs,
+      crlArr.lens,
+      crlArr.count,
+      ocspArr.ptrs,
+      ocspArr.lens,
+      ocspArr.count,
+      len,
+      code,
+    );
+    return _takeBytes(p, len.value, code.value, 'signBytesPades');
+  } finally {
+    calloc.free(buf);
+    if (cTsa != nullptr) calloc.free(cTsa);
+    calloc.free(cReason);
+    calloc.free(cLocation);
+    certArr.free();
+    crlArr.free();
+    ocspArr.free();
+    calloc.free(len);
+    calloc.free(code);
+  }
+}
+
+/// Struct-options variant of [signBytesPades] — identical behaviour, marshalled
+/// through the `PadesSignOptionsC` struct.
+Uint8List signBytesPadesOpts(
+  Uint8List pdf,
+  Certificate cert,
+  int level, {
+  String? tsaUrl,
+  String reason = '',
+  String location = '',
+  List<Uint8List> certs = const [],
+  List<Uint8List> crls = const [],
+  List<Uint8List> ocsps = const [],
+}) {
+  cert._check();
+  final buf = calloc<Uint8>(pdf.isEmpty ? 1 : pdf.length);
+  if (pdf.isNotEmpty) buf.asTypedList(pdf.length).setAll(0, pdf);
+  final cTsa = tsaUrl == null ? nullptr : tsaUrl.toNativeUtf8();
+  final cReason = reason.toNativeUtf8();
+  final cLocation = location.toNativeUtf8();
+  final certArr = _ByteArrayArray(certs);
+  final crlArr = _ByteArrayArray(crls);
+  final ocspArr = _ByteArrayArray(ocsps);
+  final opts = calloc<_PadesSignOptionsC>();
+  final len = calloc<IntPtr>();
+  final code = calloc<Int32>();
+  try {
+    final o = opts.ref;
+    o.certificateHandle = cert._handle;
+    o.certs = certArr.ptrs;
+    o.certLens = certArr.lens;
+    o.nCerts = certArr.count;
+    o.crls = crlArr.ptrs;
+    o.crlLens = crlArr.lens;
+    o.nCrls = crlArr.count;
+    o.ocsps = ocspArr.ptrs;
+    o.ocspLens = ocspArr.lens;
+    o.nOcsps = ocspArr.count;
+    o.tsaUrl = cTsa.cast();
+    o.reason = cReason;
+    o.location = cLocation;
+    o.level = level;
+    final p = _n.signBytesPadesOpts(buf, pdf.length, opts, len, code);
+    return _takeBytes(p, len.value, code.value, 'signBytesPadesOpts');
+  } finally {
+    calloc.free(buf);
+    if (cTsa != nullptr) calloc.free(cTsa);
+    calloc.free(cReason);
+    calloc.free(cLocation);
+    certArr.free();
+    crlArr.free();
+    ocspArr.free();
+    calloc.free(opts);
+    calloc.free(len);
+    calloc.free(code);
+  }
+}
+
+/// Set the global library log level (0=Off 1=Error 2=Warn 3=Info 4=Debug 5=Trace).
+void setLogLevel(int level) => _n.setLogLevel(level);
+
+/// Get the current global library log level (0-5).
+int getLogLevel() => _n.getLogLevel();

@@ -1155,6 +1155,1383 @@ SEXP r_editor_close(SEXP ext) {
     return R_NilValue;
 }
 
+/* ── PDF creation builder API ────────────────────────────────────────────────
+ * Three owned native handle types, each wrapped in an R external pointer with a
+ * GC finalizer, mirroring the PdfDocument/Pdf/DocumentEditor pattern above:
+ *
+ *   FfiDocumentBuilder  — pdf_document_builder_create / _free
+ *   FfiPageBuilder      — documentBuilder.page()/letterPage()/a4Page() / _free
+ *   EmbeddedFont        — pdf_embedded_font_from_file/_from_bytes / _free
+ *
+ * int32 returns are status codes (0 = success); a non-zero return OR a set
+ * error_code raises a classed pdfoxide_error via pdfox_raise. Owned uint8*
+ * buffers are copied into RAWSXP and released with free_bytes.
+ *
+ * Ownership subtleties carried over from the header:
+ *  - pdf_page_builder_done CONSUMES the page handle (do not _free after); we
+ *    clear the external pointer on success so the finalizer is a no-op.
+ *  - pdf_document_builder_register_embedded_font CONSUMES the font handle on
+ *    success; we clear the font external pointer so it is never double-freed.
+ *  - build/save/to_bytes_encrypted consume builder STATE only — the wrapper is
+ *    still freed by the finalizer (pdf_document_builder_free). */
+static void doc_builder_finalizer(SEXP ext) {
+    FfiDocumentBuilder *h = (FfiDocumentBuilder *)R_ExternalPtrAddr(ext);
+    if (h) {
+        pdf_document_builder_free(h);
+        R_ClearExternalPtr(ext);
+    }
+}
+static SEXP wrap_doc_builder(FfiDocumentBuilder *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, doc_builder_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+static FfiDocumentBuilder *doc_builder_ptr(SEXP ext) {
+    FfiDocumentBuilder *h = (FfiDocumentBuilder *)R_ExternalPtrAddr(ext);
+    if (!h) Rf_error("pdf_oxide: document-builder handle is closed");
+    return h;
+}
+
+static void page_builder_finalizer(SEXP ext) {
+    FfiPageBuilder *h = (FfiPageBuilder *)R_ExternalPtrAddr(ext);
+    if (h) {
+        pdf_page_builder_free(h);
+        R_ClearExternalPtr(ext);
+    }
+}
+static SEXP wrap_page_builder(FfiPageBuilder *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, page_builder_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+static FfiPageBuilder *page_builder_ptr(SEXP ext) {
+    FfiPageBuilder *h = (FfiPageBuilder *)R_ExternalPtrAddr(ext);
+    if (!h) Rf_error("pdf_oxide: page-builder handle is closed");
+    return h;
+}
+
+static void embedded_font_finalizer(SEXP ext) {
+    EmbeddedFont *h = (EmbeddedFont *)R_ExternalPtrAddr(ext);
+    if (h) {
+        pdf_embedded_font_free(h);
+        R_ClearExternalPtr(ext);
+    }
+}
+static SEXP wrap_embedded_font(EmbeddedFont *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, embedded_font_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+static EmbeddedFont *embedded_font_ptr(SEXP ext) {
+    EmbeddedFont *h = (EmbeddedFont *)R_ExternalPtrAddr(ext);
+    if (!h) Rf_error("pdf_oxide: embedded-font handle is closed");
+    return h;
+}
+
+/* Marshal an R character vector into a heap array of `const char*` pointing at
+ * the (R-owned) CHARSXP buffers. The returned array must be R_Free'd; the
+ * pointed-at strings stay valid while `vec` is protected by the caller. */
+static const char **strvec_to_c(SEXP vec, uintptr_t *out_n) {
+    R_xlen_t n = (vec == R_NilValue) ? 0 : XLENGTH(vec);
+    *out_n = (uintptr_t)n;
+    if (n == 0) return NULL;
+    const char **arr = (const char **)R_alloc((size_t)n, sizeof(const char *));
+    for (R_xlen_t i = 0; i < n; i++) arr[i] = CHAR(STRING_ELT(vec, i));
+    return arr;
+}
+
+/* ── EmbeddedFont ── */
+SEXP r_embedded_font_from_file(SEXP path) {
+    int32_t code = 0;
+    EmbeddedFont *h = pdf_embedded_font_from_file(CHAR(STRING_ELT(path, 0)), &code);
+    if (!h) pdfox_raise(code, "embedded_font_from_file");
+    return wrap_embedded_font(h);
+}
+SEXP r_embedded_font_from_bytes(SEXP raw, SEXP name) {
+    int32_t code = 0;
+    const char *nm = (name == R_NilValue) ? NULL : CHAR(STRING_ELT(name, 0));
+    EmbeddedFont *h = pdf_embedded_font_from_bytes(
+        RAW(raw), (uintptr_t)XLENGTH(raw), nm, &code);
+    if (!h) pdfox_raise(code, "embedded_font_from_bytes");
+    return wrap_embedded_font(h);
+}
+SEXP r_embedded_font_close(SEXP ext) {
+    EmbeddedFont *h = (EmbeddedFont *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_embedded_font_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+
+/* ── DocumentBuilder ── */
+SEXP r_builder_create(void) {
+    int32_t code = 0;
+    FfiDocumentBuilder *h = pdf_document_builder_create(&code);
+    if (!h) pdfox_raise(code, "builder_create");
+    return wrap_doc_builder(h);
+}
+SEXP r_builder_close(SEXP ext) {
+    FfiDocumentBuilder *h = (FfiDocumentBuilder *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_document_builder_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+
+/* metadata + catalog setters (all int32 status) */
+#define BUILDER_STR_SETTER(rname, cfn, op)                                     \
+    SEXP rname(SEXP ext, SEXP value) {                                         \
+        int32_t code = 0;                                                      \
+        if (cfn(doc_builder_ptr(ext), CHAR(STRING_ELT(value, 0)), &code) != 0) \
+            pdfox_raise(code, op);                                             \
+        return R_NilValue;                                                     \
+    }
+BUILDER_STR_SETTER(r_builder_set_title,    pdf_document_builder_set_title,    "builder_set_title")
+BUILDER_STR_SETTER(r_builder_set_author,   pdf_document_builder_set_author,   "builder_set_author")
+BUILDER_STR_SETTER(r_builder_set_subject,  pdf_document_builder_set_subject,  "builder_set_subject")
+BUILDER_STR_SETTER(r_builder_set_keywords, pdf_document_builder_set_keywords, "builder_set_keywords")
+BUILDER_STR_SETTER(r_builder_set_creator,  pdf_document_builder_set_creator,  "builder_set_creator")
+BUILDER_STR_SETTER(r_builder_on_open,      pdf_document_builder_on_open,      "builder_on_open")
+BUILDER_STR_SETTER(r_builder_language,     pdf_document_builder_language,     "builder_language")
+
+SEXP r_builder_tagged_pdf_ua1(SEXP ext) {
+    int32_t code = 0;
+    if (pdf_document_builder_tagged_pdf_ua1(doc_builder_ptr(ext), &code) != 0)
+        pdfox_raise(code, "builder_tagged_pdf_ua1");
+    return R_NilValue;
+}
+SEXP r_builder_role_map(SEXP ext, SEXP custom, SEXP standard) {
+    int32_t code = 0;
+    if (pdf_document_builder_role_map(doc_builder_ptr(ext),
+                                      CHAR(STRING_ELT(custom, 0)),
+                                      CHAR(STRING_ELT(standard, 0)), &code) != 0)
+        pdfox_raise(code, "builder_role_map");
+    return R_NilValue;
+}
+/* Consumes the font handle on success — clear its external pointer so the GC
+ * finalizer (and any explicit close) becomes a no-op and we never double-free. */
+SEXP r_builder_register_embedded_font(SEXP ext, SEXP name, SEXP font_ext) {
+    int32_t code = 0;
+    if (pdf_document_builder_register_embedded_font(
+            doc_builder_ptr(ext), CHAR(STRING_ELT(name, 0)),
+            embedded_font_ptr(font_ext), &code) != 0)
+        pdfox_raise(code, "builder_register_embedded_font");
+    R_ClearExternalPtr(font_ext); /* ownership transferred to the builder */
+    return R_NilValue;
+}
+
+/* page factories — return a wrapped FfiPageBuilder */
+SEXP r_builder_a4_page(SEXP ext) {
+    int32_t code = 0;
+    FfiPageBuilder *p = pdf_document_builder_a4_page(doc_builder_ptr(ext), &code);
+    if (!p) pdfox_raise(code, "builder_a4_page");
+    return wrap_page_builder(p);
+}
+SEXP r_builder_letter_page(SEXP ext) {
+    int32_t code = 0;
+    FfiPageBuilder *p = pdf_document_builder_letter_page(doc_builder_ptr(ext), &code);
+    if (!p) pdfox_raise(code, "builder_letter_page");
+    return wrap_page_builder(p);
+}
+SEXP r_builder_page(SEXP ext, SEXP width, SEXP height) {
+    int32_t code = 0;
+    FfiPageBuilder *p = pdf_document_builder_page(
+        doc_builder_ptr(ext), (float)Rf_asReal(width), (float)Rf_asReal(height),
+        &code);
+    if (!p) pdfox_raise(code, "builder_page");
+    return wrap_page_builder(p);
+}
+
+/* build / save (builder STATE consumed; wrapper still freed by finalizer) */
+SEXP r_builder_build(SEXP ext) {
+    int32_t code = 0;
+    uintptr_t out_len = 0;
+    uint8_t *buf = pdf_document_builder_build(doc_builder_ptr(ext), &out_len, &code);
+    if (!buf) pdfox_raise(code, "builder_build");
+    R_xlen_t n = (R_xlen_t)out_len;
+    SEXP out = PROTECT(Rf_allocVector(RAWSXP, n));
+    if (n) memcpy(RAW(out), buf, (size_t)n);
+    free_bytes(buf);
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_builder_save(SEXP ext, SEXP path) {
+    int32_t code = 0;
+    if (pdf_document_builder_save(doc_builder_ptr(ext),
+                                  CHAR(STRING_ELT(path, 0)), &code) != 0)
+        pdfox_raise(code, "builder_save");
+    return R_NilValue;
+}
+SEXP r_builder_save_encrypted(SEXP ext, SEXP path, SEXP user_pw, SEXP owner_pw) {
+    int32_t code = 0;
+    if (pdf_document_builder_save_encrypted(
+            doc_builder_ptr(ext), CHAR(STRING_ELT(path, 0)),
+            CHAR(STRING_ELT(user_pw, 0)), CHAR(STRING_ELT(owner_pw, 0)),
+            &code) != 0)
+        pdfox_raise(code, "builder_save_encrypted");
+    return R_NilValue;
+}
+SEXP r_builder_to_bytes_encrypted(SEXP ext, SEXP user_pw, SEXP owner_pw) {
+    int32_t code = 0;
+    uintptr_t out_len = 0;
+    uint8_t *buf = pdf_document_builder_to_bytes_encrypted(
+        doc_builder_ptr(ext), CHAR(STRING_ELT(user_pw, 0)),
+        CHAR(STRING_ELT(owner_pw, 0)), &out_len, &code);
+    if (!buf) pdfox_raise(code, "builder_to_bytes_encrypted");
+    R_xlen_t n = (R_xlen_t)out_len;
+    SEXP out = PROTECT(Rf_allocVector(RAWSXP, n));
+    if (n) memcpy(RAW(out), buf, (size_t)n);
+    free_bytes(buf);
+    UNPROTECT(1);
+    return out;
+}
+
+/* ── PageBuilder ── fluent ops (all int32 status unless noted) */
+SEXP r_page_font(SEXP ext, SEXP name, SEXP size) {
+    int32_t code = 0;
+    if (pdf_page_builder_font(page_builder_ptr(ext), CHAR(STRING_ELT(name, 0)),
+                              (float)Rf_asReal(size), &code) != 0)
+        pdfox_raise(code, "page_font");
+    return R_NilValue;
+}
+SEXP r_page_at(SEXP ext, SEXP x, SEXP y) {
+    int32_t code = 0;
+    if (pdf_page_builder_at(page_builder_ptr(ext), (float)Rf_asReal(x),
+                            (float)Rf_asReal(y), &code) != 0)
+        pdfox_raise(code, "page_at");
+    return R_NilValue;
+}
+
+/* one-string-arg fluent ops sharing the same shape */
+#define PAGE_STR_OP(rname, cfn, op)                                            \
+    SEXP rname(SEXP ext, SEXP text) {                                          \
+        int32_t code = 0;                                                      \
+        if (cfn(page_builder_ptr(ext), CHAR(STRING_ELT(text, 0)), &code) != 0) \
+            pdfox_raise(code, op);                                             \
+        return R_NilValue;                                                     \
+    }
+PAGE_STR_OP(r_page_text,           pdf_page_builder_text,           "page_text")
+PAGE_STR_OP(r_page_paragraph,      pdf_page_builder_paragraph,      "page_paragraph")
+PAGE_STR_OP(r_page_link_url,       pdf_page_builder_link_url,       "page_link_url")
+PAGE_STR_OP(r_page_link_named,     pdf_page_builder_link_named,     "page_link_named")
+PAGE_STR_OP(r_page_link_javascript,pdf_page_builder_link_javascript,"page_link_javascript")
+PAGE_STR_OP(r_page_on_open,        pdf_page_builder_on_open,        "page_on_open")
+PAGE_STR_OP(r_page_on_close,       pdf_page_builder_on_close,       "page_on_close")
+PAGE_STR_OP(r_page_field_keystroke,pdf_page_builder_field_keystroke,"page_field_keystroke")
+PAGE_STR_OP(r_page_field_format,   pdf_page_builder_field_format,   "page_field_format")
+PAGE_STR_OP(r_page_field_validate, pdf_page_builder_field_validate, "page_field_validate")
+PAGE_STR_OP(r_page_field_calculate,pdf_page_builder_field_calculate,"page_field_calculate")
+PAGE_STR_OP(r_page_sticky_note,    pdf_page_builder_sticky_note,    "page_sticky_note")
+PAGE_STR_OP(r_page_watermark,      pdf_page_builder_watermark,      "page_watermark")
+PAGE_STR_OP(r_page_stamp,          pdf_page_builder_stamp,          "page_stamp")
+PAGE_STR_OP(r_page_inline,         pdf_page_builder_inline,         "page_inline")
+PAGE_STR_OP(r_page_inline_bold,    pdf_page_builder_inline_bold,    "page_inline_bold")
+PAGE_STR_OP(r_page_inline_italic,  pdf_page_builder_inline_italic,  "page_inline_italic")
+
+/* no-arg fluent ops sharing the same shape */
+#define PAGE_VOID_OP(rname, cfn, op)                                           \
+    SEXP rname(SEXP ext) {                                                     \
+        int32_t code = 0;                                                      \
+        if (cfn(page_builder_ptr(ext), &code) != 0) pdfox_raise(code, op);     \
+        return R_NilValue;                                                     \
+    }
+PAGE_VOID_OP(r_page_horizontal_rule,        pdf_page_builder_horizontal_rule,        "page_horizontal_rule")
+PAGE_VOID_OP(r_page_watermark_confidential, pdf_page_builder_watermark_confidential, "page_watermark_confidential")
+PAGE_VOID_OP(r_page_watermark_draft,        pdf_page_builder_watermark_draft,        "page_watermark_draft")
+PAGE_VOID_OP(r_page_new_page_same_size,     pdf_page_builder_new_page_same_size,     "page_new_page_same_size")
+PAGE_VOID_OP(r_page_newline,                pdf_page_builder_newline,                "page_newline")
+
+SEXP r_page_heading(SEXP ext, SEXP level, SEXP text) {
+    int32_t code = 0;
+    if (pdf_page_builder_heading(page_builder_ptr(ext),
+                                 (uint8_t)Rf_asInteger(level),
+                                 CHAR(STRING_ELT(text, 0)), &code) != 0)
+        pdfox_raise(code, "page_heading");
+    return R_NilValue;
+}
+SEXP r_page_space(SEXP ext, SEXP points) {
+    int32_t code = 0;
+    if (pdf_page_builder_space(page_builder_ptr(ext), (float)Rf_asReal(points),
+                               &code) != 0)
+        pdfox_raise(code, "page_space");
+    return R_NilValue;
+}
+SEXP r_page_link_page(SEXP ext, SEXP page_index) {
+    int32_t code = 0;
+    if (pdf_page_builder_link_page(page_builder_ptr(ext),
+                                   (uintptr_t)Rf_asInteger(page_index), &code) != 0)
+        pdfox_raise(code, "page_link_page");
+    return R_NilValue;
+}
+
+/* RGB-colour decorations sharing the (r, g, b) shape */
+#define PAGE_RGB_OP(rname, cfn, op)                                            \
+    SEXP rname(SEXP ext, SEXP r, SEXP g, SEXP b) {                             \
+        int32_t code = 0;                                                      \
+        if (cfn(page_builder_ptr(ext), (float)Rf_asReal(r),                   \
+                (float)Rf_asReal(g), (float)Rf_asReal(b), &code) != 0)        \
+            pdfox_raise(code, op);                                             \
+        return R_NilValue;                                                     \
+    }
+PAGE_RGB_OP(r_page_highlight, pdf_page_builder_highlight, "page_highlight")
+PAGE_RGB_OP(r_page_underline, pdf_page_builder_underline, "page_underline")
+PAGE_RGB_OP(r_page_strikeout, pdf_page_builder_strikeout, "page_strikeout")
+PAGE_RGB_OP(r_page_squiggly,  pdf_page_builder_squiggly,  "page_squiggly")
+
+SEXP r_page_inline_color(SEXP ext, SEXP r, SEXP g, SEXP b, SEXP text) {
+    int32_t code = 0;
+    if (pdf_page_builder_inline_color(page_builder_ptr(ext), (float)Rf_asReal(r),
+                                      (float)Rf_asReal(g), (float)Rf_asReal(b),
+                                      CHAR(STRING_ELT(text, 0)), &code) != 0)
+        pdfox_raise(code, "page_inline_color");
+    return R_NilValue;
+}
+SEXP r_page_sticky_note_at(SEXP ext, SEXP x, SEXP y, SEXP text) {
+    int32_t code = 0;
+    if (pdf_page_builder_sticky_note_at(page_builder_ptr(ext), (float)Rf_asReal(x),
+                                        (float)Rf_asReal(y),
+                                        CHAR(STRING_ELT(text, 0)), &code) != 0)
+        pdfox_raise(code, "page_sticky_note_at");
+    return R_NilValue;
+}
+SEXP r_page_freetext(SEXP ext, SEXP x, SEXP y, SEXP w, SEXP h, SEXP text) {
+    int32_t code = 0;
+    if (pdf_page_builder_freetext(page_builder_ptr(ext), (float)Rf_asReal(x),
+                                  (float)Rf_asReal(y), (float)Rf_asReal(w),
+                                  (float)Rf_asReal(h), CHAR(STRING_ELT(text, 0)),
+                                  &code) != 0)
+        pdfox_raise(code, "page_freetext");
+    return R_NilValue;
+}
+SEXP r_page_footnote(SEXP ext, SEXP ref_mark, SEXP note_text) {
+    int32_t code = 0;
+    if (pdf_page_builder_footnote(page_builder_ptr(ext),
+                                  CHAR(STRING_ELT(ref_mark, 0)),
+                                  CHAR(STRING_ELT(note_text, 0)), &code) != 0)
+        pdfox_raise(code, "page_footnote");
+    return R_NilValue;
+}
+SEXP r_page_columns(SEXP ext, SEXP column_count, SEXP gap_pt, SEXP text) {
+    int32_t code = 0;
+    if (pdf_page_builder_columns(page_builder_ptr(ext),
+                                 (uint32_t)Rf_asInteger(column_count),
+                                 (float)Rf_asReal(gap_pt),
+                                 CHAR(STRING_ELT(text, 0)), &code) != 0)
+        pdfox_raise(code, "page_columns");
+    return R_NilValue;
+}
+
+/* form fields */
+SEXP r_page_text_field(SEXP ext, SEXP name, SEXP x, SEXP y, SEXP w, SEXP h,
+                       SEXP default_value) {
+    int32_t code = 0;
+    const char *dv = (default_value == R_NilValue) ? NULL
+                                                   : CHAR(STRING_ELT(default_value, 0));
+    if (pdf_page_builder_text_field(page_builder_ptr(ext),
+                                    CHAR(STRING_ELT(name, 0)), (float)Rf_asReal(x),
+                                    (float)Rf_asReal(y), (float)Rf_asReal(w),
+                                    (float)Rf_asReal(h), dv, &code) != 0)
+        pdfox_raise(code, "page_text_field");
+    return R_NilValue;
+}
+SEXP r_page_checkbox(SEXP ext, SEXP name, SEXP x, SEXP y, SEXP w, SEXP h,
+                     SEXP checked) {
+    int32_t code = 0;
+    if (pdf_page_builder_checkbox(page_builder_ptr(ext),
+                                  CHAR(STRING_ELT(name, 0)), (float)Rf_asReal(x),
+                                  (float)Rf_asReal(y), (float)Rf_asReal(w),
+                                  (float)Rf_asReal(h),
+                                  Rf_asLogical(checked) == TRUE ? 1 : 0,
+                                  &code) != 0)
+        pdfox_raise(code, "page_checkbox");
+    return R_NilValue;
+}
+SEXP r_page_combo_box(SEXP ext, SEXP name, SEXP x, SEXP y, SEXP w, SEXP h,
+                      SEXP options, SEXP selected) {
+    int32_t code = 0;
+    uintptr_t n = 0;
+    const char **opts = strvec_to_c(options, &n);
+    const char *sel = (selected == R_NilValue) ? NULL : CHAR(STRING_ELT(selected, 0));
+    if (pdf_page_builder_combo_box(page_builder_ptr(ext),
+                                   CHAR(STRING_ELT(name, 0)), (float)Rf_asReal(x),
+                                   (float)Rf_asReal(y), (float)Rf_asReal(w),
+                                   (float)Rf_asReal(h), opts, n, sel, &code) != 0)
+        pdfox_raise(code, "page_combo_box");
+    return R_NilValue;
+}
+SEXP r_page_radio_group(SEXP ext, SEXP name, SEXP values, SEXP xs, SEXP ys,
+                        SEXP ws, SEXP hs, SEXP selected) {
+    int32_t code = 0;
+    uintptr_t n = 0;
+    const char **vals = strvec_to_c(values, &n);
+    SEXP xr = PROTECT(Rf_coerceVector(xs, REALSXP));
+    SEXP yr = PROTECT(Rf_coerceVector(ys, REALSXP));
+    SEXP wr = PROTECT(Rf_coerceVector(ws, REALSXP));
+    SEXP hr = PROTECT(Rf_coerceVector(hs, REALSXP));
+    /* C ABI wants float arrays — narrow the doubles into stack/heap floats. */
+    float *fx = (float *)R_alloc((size_t)n, sizeof(float));
+    float *fy = (float *)R_alloc((size_t)n, sizeof(float));
+    float *fw = (float *)R_alloc((size_t)n, sizeof(float));
+    float *fh = (float *)R_alloc((size_t)n, sizeof(float));
+    for (uintptr_t i = 0; i < n; i++) {
+        fx[i] = (float)REAL(xr)[i]; fy[i] = (float)REAL(yr)[i];
+        fw[i] = (float)REAL(wr)[i]; fh[i] = (float)REAL(hr)[i];
+    }
+    const char *sel = (selected == R_NilValue) ? NULL : CHAR(STRING_ELT(selected, 0));
+    int32_t rc = pdf_page_builder_radio_group(page_builder_ptr(ext),
+                                              CHAR(STRING_ELT(name, 0)), vals,
+                                              fx, fy, fw, fh, n, sel, &code);
+    UNPROTECT(4);
+    if (rc != 0) pdfox_raise(code, "page_radio_group");
+    return R_NilValue;
+}
+SEXP r_page_push_button(SEXP ext, SEXP name, SEXP x, SEXP y, SEXP w, SEXP h,
+                        SEXP caption) {
+    int32_t code = 0;
+    if (pdf_page_builder_push_button(page_builder_ptr(ext),
+                                     CHAR(STRING_ELT(name, 0)), (float)Rf_asReal(x),
+                                     (float)Rf_asReal(y), (float)Rf_asReal(w),
+                                     (float)Rf_asReal(h),
+                                     CHAR(STRING_ELT(caption, 0)), &code) != 0)
+        pdfox_raise(code, "page_push_button");
+    return R_NilValue;
+}
+SEXP r_page_signature_field(SEXP ext, SEXP name, SEXP x, SEXP y, SEXP w, SEXP h) {
+    int32_t code = 0;
+    if (pdf_page_builder_signature_field(page_builder_ptr(ext),
+                                         CHAR(STRING_ELT(name, 0)),
+                                         (float)Rf_asReal(x), (float)Rf_asReal(y),
+                                         (float)Rf_asReal(w), (float)Rf_asReal(h),
+                                         &code) != 0)
+        pdfox_raise(code, "page_signature_field");
+    return R_NilValue;
+}
+
+/* barcodes */
+SEXP r_page_barcode_1d(SEXP ext, SEXP barcode_type, SEXP data, SEXP x, SEXP y,
+                       SEXP w, SEXP h) {
+    int32_t code = 0;
+    if (pdf_page_builder_barcode_1d(page_builder_ptr(ext),
+                                    Rf_asInteger(barcode_type),
+                                    CHAR(STRING_ELT(data, 0)), (float)Rf_asReal(x),
+                                    (float)Rf_asReal(y), (float)Rf_asReal(w),
+                                    (float)Rf_asReal(h), &code) != 0)
+        pdfox_raise(code, "page_barcode_1d");
+    return R_NilValue;
+}
+SEXP r_page_barcode_qr(SEXP ext, SEXP data, SEXP x, SEXP y, SEXP size) {
+    int32_t code = 0;
+    if (pdf_page_builder_barcode_qr(page_builder_ptr(ext),
+                                    CHAR(STRING_ELT(data, 0)), (float)Rf_asReal(x),
+                                    (float)Rf_asReal(y), (float)Rf_asReal(size),
+                                    &code) != 0)
+        pdfox_raise(code, "page_barcode_qr");
+    return R_NilValue;
+}
+
+/* images */
+SEXP r_page_image(SEXP ext, SEXP raw, SEXP x, SEXP y, SEXP w, SEXP h) {
+    int32_t code = 0;
+    if (pdf_page_builder_image(page_builder_ptr(ext), RAW(raw),
+                               (uintptr_t)XLENGTH(raw), (float)Rf_asReal(x),
+                               (float)Rf_asReal(y), (float)Rf_asReal(w),
+                               (float)Rf_asReal(h), &code) != 0)
+        pdfox_raise(code, "page_image");
+    return R_NilValue;
+}
+SEXP r_page_image_with_alt(SEXP ext, SEXP raw, SEXP x, SEXP y, SEXP w, SEXP h,
+                           SEXP alt_text) {
+    int32_t code = 0;
+    if (pdf_page_builder_image_with_alt(page_builder_ptr(ext), RAW(raw),
+                                        (uintptr_t)XLENGTH(raw), (float)Rf_asReal(x),
+                                        (float)Rf_asReal(y), (float)Rf_asReal(w),
+                                        (float)Rf_asReal(h),
+                                        CHAR(STRING_ELT(alt_text, 0)), &code) != 0)
+        pdfox_raise(code, "page_image_with_alt");
+    return R_NilValue;
+}
+SEXP r_page_image_artifact(SEXP ext, SEXP raw, SEXP x, SEXP y, SEXP w, SEXP h) {
+    int32_t code = 0;
+    if (pdf_page_builder_image_artifact(page_builder_ptr(ext), RAW(raw),
+                                        (uintptr_t)XLENGTH(raw), (float)Rf_asReal(x),
+                                        (float)Rf_asReal(y), (float)Rf_asReal(w),
+                                        (float)Rf_asReal(h), &code) != 0)
+        pdfox_raise(code, "page_image_artifact");
+    return R_NilValue;
+}
+
+/* vector graphics */
+SEXP r_page_rect(SEXP ext, SEXP x, SEXP y, SEXP w, SEXP h) {
+    int32_t code = 0;
+    if (pdf_page_builder_rect(page_builder_ptr(ext), (float)Rf_asReal(x),
+                              (float)Rf_asReal(y), (float)Rf_asReal(w),
+                              (float)Rf_asReal(h), &code) != 0)
+        pdfox_raise(code, "page_rect");
+    return R_NilValue;
+}
+SEXP r_page_filled_rect(SEXP ext, SEXP x, SEXP y, SEXP w, SEXP h, SEXP r, SEXP g,
+                        SEXP b) {
+    int32_t code = 0;
+    if (pdf_page_builder_filled_rect(page_builder_ptr(ext), (float)Rf_asReal(x),
+                                     (float)Rf_asReal(y), (float)Rf_asReal(w),
+                                     (float)Rf_asReal(h), (float)Rf_asReal(r),
+                                     (float)Rf_asReal(g), (float)Rf_asReal(b),
+                                     &code) != 0)
+        pdfox_raise(code, "page_filled_rect");
+    return R_NilValue;
+}
+SEXP r_page_line(SEXP ext, SEXP x1, SEXP y1, SEXP x2, SEXP y2) {
+    int32_t code = 0;
+    if (pdf_page_builder_line(page_builder_ptr(ext), (float)Rf_asReal(x1),
+                              (float)Rf_asReal(y1), (float)Rf_asReal(x2),
+                              (float)Rf_asReal(y2), &code) != 0)
+        pdfox_raise(code, "page_line");
+    return R_NilValue;
+}
+SEXP r_page_stroke_rect(SEXP ext, SEXP x, SEXP y, SEXP w, SEXP h, SEXP width,
+                        SEXP r, SEXP g, SEXP b) {
+    int32_t code = 0;
+    if (pdf_page_builder_stroke_rect(page_builder_ptr(ext), (float)Rf_asReal(x),
+                                     (float)Rf_asReal(y), (float)Rf_asReal(w),
+                                     (float)Rf_asReal(h), (float)Rf_asReal(width),
+                                     (float)Rf_asReal(r), (float)Rf_asReal(g),
+                                     (float)Rf_asReal(b), &code) != 0)
+        pdfox_raise(code, "page_stroke_rect");
+    return R_NilValue;
+}
+SEXP r_page_stroke_line(SEXP ext, SEXP x1, SEXP y1, SEXP x2, SEXP y2, SEXP width,
+                        SEXP r, SEXP g, SEXP b) {
+    int32_t code = 0;
+    if (pdf_page_builder_stroke_line(page_builder_ptr(ext), (float)Rf_asReal(x1),
+                                     (float)Rf_asReal(y1), (float)Rf_asReal(x2),
+                                     (float)Rf_asReal(y2), (float)Rf_asReal(width),
+                                     (float)Rf_asReal(r), (float)Rf_asReal(g),
+                                     (float)Rf_asReal(b), &code) != 0)
+        pdfox_raise(code, "page_stroke_line");
+    return R_NilValue;
+}
+/* Narrow an R numeric `dash` vector into a heap float array (NULL when empty). */
+static const float *dash_to_c(SEXP dash, uintptr_t *out_n) {
+    R_xlen_t n = (dash == R_NilValue) ? 0 : XLENGTH(dash);
+    *out_n = (uintptr_t)n;
+    if (n == 0) return NULL;
+    SEXP d = PROTECT(Rf_coerceVector(dash, REALSXP));
+    float *arr = (float *)R_alloc((size_t)n, sizeof(float));
+    for (R_xlen_t i = 0; i < n; i++) arr[i] = (float)REAL(d)[i];
+    UNPROTECT(1);
+    return arr;
+}
+SEXP r_page_stroke_rect_dashed(SEXP ext, SEXP x, SEXP y, SEXP w, SEXP h,
+                               SEXP width, SEXP r, SEXP g, SEXP b, SEXP dash,
+                               SEXP phase) {
+    int32_t code = 0;
+    uintptr_t n_dash = 0;
+    const float *darr = dash_to_c(dash, &n_dash);
+    if (pdf_page_builder_stroke_rect_dashed(
+            page_builder_ptr(ext), (float)Rf_asReal(x), (float)Rf_asReal(y),
+            (float)Rf_asReal(w), (float)Rf_asReal(h), (float)Rf_asReal(width),
+            (float)Rf_asReal(r), (float)Rf_asReal(g), (float)Rf_asReal(b),
+            darr, n_dash, (float)Rf_asReal(phase), &code) != 0)
+        pdfox_raise(code, "page_stroke_rect_dashed");
+    return R_NilValue;
+}
+SEXP r_page_stroke_line_dashed(SEXP ext, SEXP x1, SEXP y1, SEXP x2, SEXP y2,
+                               SEXP width, SEXP r, SEXP g, SEXP b, SEXP dash,
+                               SEXP phase) {
+    int32_t code = 0;
+    uintptr_t n_dash = 0;
+    const float *darr = dash_to_c(dash, &n_dash);
+    if (pdf_page_builder_stroke_line_dashed(
+            page_builder_ptr(ext), (float)Rf_asReal(x1), (float)Rf_asReal(y1),
+            (float)Rf_asReal(x2), (float)Rf_asReal(y2), (float)Rf_asReal(width),
+            (float)Rf_asReal(r), (float)Rf_asReal(g), (float)Rf_asReal(b),
+            darr, n_dash, (float)Rf_asReal(phase), &code) != 0)
+        pdfox_raise(code, "page_stroke_line_dashed");
+    return R_NilValue;
+}
+SEXP r_page_text_in_rect(SEXP ext, SEXP x, SEXP y, SEXP w, SEXP h, SEXP text,
+                         SEXP align) {
+    int32_t code = 0;
+    if (pdf_page_builder_text_in_rect(page_builder_ptr(ext), (float)Rf_asReal(x),
+                                      (float)Rf_asReal(y), (float)Rf_asReal(w),
+                                      (float)Rf_asReal(h),
+                                      CHAR(STRING_ELT(text, 0)),
+                                      Rf_asInteger(align), &code) != 0)
+        pdfox_raise(code, "page_text_in_rect");
+    return R_NilValue;
+}
+
+/* table — `cells` is a row-major character vector of length n_rows*n_columns;
+ * `widths` length n_columns numeric; `aligns` length n_columns integer. */
+SEXP r_page_table(SEXP ext, SEXP n_columns, SEXP widths, SEXP aligns,
+                  SEXP n_rows, SEXP cells, SEXP has_header) {
+    int32_t code = 0;
+    uintptr_t ncol = (uintptr_t)Rf_asInteger(n_columns);
+    uintptr_t nrow = (uintptr_t)Rf_asInteger(n_rows);
+    uintptr_t ncells = 0;
+    const char **cellp = strvec_to_c(cells, &ncells);
+    uintptr_t wn = 0;
+    const float *wp = dash_to_c(widths, &wn);
+    SEXP ai = PROTECT(Rf_coerceVector(aligns, INTSXP));
+    int32_t rc = pdf_page_builder_table(page_builder_ptr(ext), ncol, wp,
+                                        INTEGER(ai), nrow, cellp,
+                                        Rf_asLogical(has_header) == TRUE ? 1 : 0,
+                                        &code);
+    UNPROTECT(1);
+    if (rc != 0) pdfox_raise(code, "page_table");
+    return R_NilValue;
+}
+
+/* streaming table */
+SEXP r_page_streaming_table_begin(SEXP ext, SEXP n_columns, SEXP headers,
+                                  SEXP widths, SEXP aligns, SEXP repeat_header) {
+    int32_t code = 0;
+    uintptr_t ncol = (uintptr_t)Rf_asInteger(n_columns);
+    uintptr_t hn = 0;
+    const char **hp = strvec_to_c(headers, &hn);
+    uintptr_t wn = 0;
+    const float *wp = dash_to_c(widths, &wn);
+    SEXP ai = PROTECT(Rf_coerceVector(aligns, INTSXP));
+    int32_t rc = pdf_page_builder_streaming_table_begin(
+        page_builder_ptr(ext), ncol, hp, wp, INTEGER(ai),
+        Rf_asLogical(repeat_header) == TRUE ? 1 : 0, &code);
+    UNPROTECT(1);
+    if (rc != 0) pdfox_raise(code, "page_streaming_table_begin");
+    return R_NilValue;
+}
+SEXP r_page_streaming_table_begin_v2(SEXP ext, SEXP n_columns, SEXP headers,
+                                     SEXP widths, SEXP aligns, SEXP repeat_header,
+                                     SEXP mode, SEXP sample_rows,
+                                     SEXP min_col_width_pt, SEXP max_col_width_pt,
+                                     SEXP max_rowspan) {
+    int32_t code = 0;
+    uintptr_t ncol = (uintptr_t)Rf_asInteger(n_columns);
+    uintptr_t hn = 0;
+    const char **hp = strvec_to_c(headers, &hn);
+    uintptr_t wn = 0;
+    const float *wp = dash_to_c(widths, &wn);
+    SEXP ai = PROTECT(Rf_coerceVector(aligns, INTSXP));
+    int32_t rc = pdf_page_builder_streaming_table_begin_v2(
+        page_builder_ptr(ext), ncol, hp, wp, INTEGER(ai),
+        Rf_asLogical(repeat_header) == TRUE ? 1 : 0, Rf_asInteger(mode),
+        (uintptr_t)Rf_asInteger(sample_rows), (float)Rf_asReal(min_col_width_pt),
+        (float)Rf_asReal(max_col_width_pt), (uintptr_t)Rf_asInteger(max_rowspan),
+        &code);
+    UNPROTECT(1);
+    if (rc != 0) pdfox_raise(code, "page_streaming_table_begin_v2");
+    return R_NilValue;
+}
+SEXP r_page_streaming_table_set_batch_size(SEXP ext, SEXP batch_size) {
+    int32_t code = 0;
+    if (pdf_page_builder_streaming_table_set_batch_size(
+            page_builder_ptr(ext), (uintptr_t)Rf_asInteger(batch_size), &code) != 0)
+        pdfox_raise(code, "page_streaming_table_set_batch_size");
+    return R_NilValue;
+}
+SEXP r_page_streaming_table_pending_row_count(SEXP ext) {
+    return Rf_ScalarReal(
+        (double)pdf_page_builder_streaming_table_pending_row_count(page_builder_ptr(ext)));
+}
+SEXP r_page_streaming_table_batch_count(SEXP ext) {
+    return Rf_ScalarReal(
+        (double)pdf_page_builder_streaming_table_batch_count(page_builder_ptr(ext)));
+}
+SEXP r_page_streaming_table_flush(SEXP ext) {
+    int32_t code = 0;
+    if (pdf_page_builder_streaming_table_flush(page_builder_ptr(ext), &code) != 0)
+        pdfox_raise(code, "page_streaming_table_flush");
+    return R_NilValue;
+}
+SEXP r_page_streaming_table_push_row(SEXP ext, SEXP cells) {
+    int32_t code = 0;
+    uintptr_t n = 0;
+    const char **cp = strvec_to_c(cells, &n);
+    if (pdf_page_builder_streaming_table_push_row(page_builder_ptr(ext), n, cp,
+                                                  &code) != 0)
+        pdfox_raise(code, "page_streaming_table_push_row");
+    return R_NilValue;
+}
+SEXP r_page_streaming_table_push_row_v2(SEXP ext, SEXP cells, SEXP rowspans) {
+    int32_t code = 0;
+    uintptr_t n = 0;
+    const char **cp = strvec_to_c(cells, &n);
+    const uintptr_t *rsp = NULL;
+    if (rowspans != R_NilValue && XLENGTH(rowspans) > 0) {
+        SEXP ri = PROTECT(Rf_coerceVector(rowspans, INTSXP));
+        R_xlen_t rn = XLENGTH(ri);
+        uintptr_t *rs = (uintptr_t *)R_alloc((size_t)rn, sizeof(uintptr_t));
+        for (R_xlen_t i = 0; i < rn; i++) rs[i] = (uintptr_t)INTEGER(ri)[i];
+        rsp = rs;
+        UNPROTECT(1);
+    }
+    if (pdf_page_builder_streaming_table_push_row_v2(page_builder_ptr(ext), n, cp,
+                                                     rsp, &code) != 0)
+        pdfox_raise(code, "page_streaming_table_push_row_v2");
+    return R_NilValue;
+}
+SEXP r_page_streaming_table_finish(SEXP ext) {
+    int32_t code = 0;
+    if (pdf_page_builder_streaming_table_finish(page_builder_ptr(ext), &code) != 0)
+        pdfox_raise(code, "page_streaming_table_finish");
+    return R_NilValue;
+}
+
+/* done — CONSUMES the page handle; clear the external pointer on success so the
+ * finalizer (and any explicit close) is a no-op (no double-free). */
+SEXP r_page_done(SEXP ext) {
+    int32_t code = 0;
+    if (pdf_page_builder_done(page_builder_ptr(ext), &code) != 0)
+        pdfox_raise(code, "page_done");
+    R_ClearExternalPtr(ext);
+    return R_NilValue;
+}
+/* Explicit, idempotent free of an uncommitted page handle. */
+SEXP r_page_close(SEXP ext) {
+    FfiPageBuilder *h = (FfiPageBuilder *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_page_builder_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+
+/* ── PHASE-6 digital signatures / PKI / timestamps / TSA / validation ─────────
+ * Five opaque native handle families, each wrapped in an R external pointer with
+ * a GC finalizer (or an explicit idempotent close), mirroring the
+ * PdfDocument/Pdf/DocumentEditor pattern above:
+ *
+ *   Certificate (void*)    — pdf_certificate_load_* / pdf_certificate_free
+ *   SignatureInfo          — pdf_document_get_signature / pdf_signature_free
+ *   Timestamp (void*)      — pdf_timestamp_parse / pdf_timestamp_free
+ *   TsaClient (void*)      — pdf_tsa_client_create / pdf_tsa_client_free
+ *   Dss (void*)            — pdf_document_get_dss / pdf_dss_free
+ *   PdfA/Ua/X results      — pdf_validate_* / pdf_pdf_*_results_free
+ *
+ * Owned char* returns use take_string + free_string; owned uint8* buffers are
+ * copied into RAWSXP and released with free_bytes; const uint8* returns (the
+ * timestamp token / message-imprint, owned by the live handle) are COPIED but
+ * NOT freed. Errors raise the same classed pdfoxide_error via pdfox_raise. */
+
+/* Certificate (opaque void*) */
+static void certificate_finalizer(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (h) { pdf_certificate_free(h); R_ClearExternalPtr(ext); }
+}
+static SEXP wrap_certificate(void *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, certificate_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+static void *certificate_ptr(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (!h) Rf_error("pdf_oxide: certificate handle is closed");
+    return h;
+}
+
+/* SignatureInfo */
+static void signature_finalizer(SEXP ext) {
+    FfiSignatureInfo *h = (FfiSignatureInfo *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_signature_free(h); R_ClearExternalPtr(ext); }
+}
+static SEXP wrap_signature(FfiSignatureInfo *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, signature_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+static FfiSignatureInfo *signature_ptr(SEXP ext) {
+    FfiSignatureInfo *h = (FfiSignatureInfo *)R_ExternalPtrAddr(ext);
+    if (!h) Rf_error("pdf_oxide: signature handle is closed");
+    return h;
+}
+
+/* Timestamp (opaque void*) */
+static void timestamp_finalizer(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (h) { pdf_timestamp_free(h); R_ClearExternalPtr(ext); }
+}
+static SEXP wrap_timestamp(void *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, timestamp_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+static void *timestamp_ptr(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (!h) Rf_error("pdf_oxide: timestamp handle is closed");
+    return h;
+}
+
+/* TsaClient (opaque void*) */
+static void tsa_client_finalizer(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (h) { pdf_tsa_client_free(h); R_ClearExternalPtr(ext); }
+}
+static SEXP wrap_tsa_client(void *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, tsa_client_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+static void *tsa_client_ptr(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (!h) Rf_error("pdf_oxide: TSA client handle is closed");
+    return h;
+}
+
+/* Dss (opaque void*) */
+static void dss_finalizer(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (h) { pdf_dss_free(h); R_ClearExternalPtr(ext); }
+}
+static SEXP wrap_dss(void *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, dss_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+static void *dss_ptr(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (!h) Rf_error("pdf_oxide: DSS handle is closed");
+    return h;
+}
+
+/* PdfA / Ua / X result handles */
+static void pdf_a_results_finalizer(SEXP ext) {
+    FfiPdfAResults *h = (FfiPdfAResults *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_pdf_a_results_free(h); R_ClearExternalPtr(ext); }
+}
+static SEXP wrap_pdf_a_results(FfiPdfAResults *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, pdf_a_results_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+static FfiPdfAResults *pdf_a_results_ptr(SEXP ext) {
+    FfiPdfAResults *h = (FfiPdfAResults *)R_ExternalPtrAddr(ext);
+    if (!h) Rf_error("pdf_oxide: PDF/A results handle is closed");
+    return h;
+}
+static void ua_results_finalizer(SEXP ext) {
+    FfiUaResults *h = (FfiUaResults *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_pdf_ua_results_free(h); R_ClearExternalPtr(ext); }
+}
+static SEXP wrap_ua_results(FfiUaResults *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, ua_results_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+static FfiUaResults *ua_results_ptr(SEXP ext) {
+    FfiUaResults *h = (FfiUaResults *)R_ExternalPtrAddr(ext);
+    if (!h) Rf_error("pdf_oxide: PDF/UA results handle is closed");
+    return h;
+}
+static void pdf_x_results_finalizer(SEXP ext) {
+    FfiPdfXResults *h = (FfiPdfXResults *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_pdf_x_results_free(h); R_ClearExternalPtr(ext); }
+}
+static SEXP wrap_pdf_x_results(FfiPdfXResults *h) {
+    SEXP ext = PROTECT(R_MakeExternalPtr(h, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(ext, pdf_x_results_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+static FfiPdfXResults *pdf_x_results_ptr(SEXP ext) {
+    FfiPdfXResults *h = (FfiPdfXResults *)R_ExternalPtrAddr(ext);
+    if (!h) Rf_error("pdf_oxide: PDF/X results handle is closed");
+    return h;
+}
+
+/* Copy an owned uint8* buffer into a RAWSXP and free_bytes it (NULL ⇒ raise). */
+static SEXP take_bytes(uint8_t *p, uintptr_t len, int32_t code, const char *op) {
+    if (!p) pdfox_raise(code, op);
+    R_xlen_t n = (R_xlen_t)len;
+    SEXP out = PROTECT(Rf_allocVector(RAWSXP, n));
+    if (n) memcpy(RAW(out), p, (size_t)n);
+    free_bytes(p);
+    UNPROTECT(1);
+    return out;
+}
+
+/* ── log level ── */
+SEXP r_oxide_set_log_level(SEXP level) {
+    pdf_oxide_set_log_level(Rf_asInteger(level));
+    return R_NilValue;
+}
+SEXP r_oxide_get_log_level(void) {
+    return Rf_ScalarInteger(pdf_oxide_get_log_level());
+}
+
+/* ── Certificate ── */
+SEXP r_certificate_load_from_bytes(SEXP raw, SEXP password) {
+    int32_t code = 0;
+    const char *pw = (password == R_NilValue) ? NULL : CHAR(STRING_ELT(password, 0));
+    void *h = pdf_certificate_load_from_bytes(RAW(raw), (int32_t)XLENGTH(raw),
+                                              pw, &code);
+    if (!h) pdfox_raise(code, "certificate_load_from_bytes");
+    return wrap_certificate(h);
+}
+SEXP r_certificate_load_from_pem(SEXP cert_pem, SEXP key_pem) {
+    int32_t code = 0;
+    void *h = pdf_certificate_load_from_pem(CHAR(STRING_ELT(cert_pem, 0)),
+                                            CHAR(STRING_ELT(key_pem, 0)), &code);
+    if (!h) pdfox_raise(code, "certificate_load_from_pem");
+    return wrap_certificate(h);
+}
+SEXP r_certificate_get_subject(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_certificate_get_subject(certificate_ptr(ext), &code),
+                       code, "certificate_get_subject");
+}
+SEXP r_certificate_get_issuer(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_certificate_get_issuer(certificate_ptr(ext), &code),
+                       code, "certificate_get_issuer");
+}
+SEXP r_certificate_get_serial(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_certificate_get_serial(certificate_ptr(ext), &code),
+                       code, "certificate_get_serial");
+}
+SEXP r_certificate_get_validity(SEXP ext) {
+    int32_t code = 0;
+    int64_t nb = 0, na = 0;
+    pdf_certificate_get_validity(certificate_ptr(ext), &nb, &na, &code);
+    if (code != 0) pdfox_raise(code, "certificate_get_validity");
+    SEXP out = PROTECT(Rf_allocVector(REALSXP, 2));
+    REAL(out)[0] = (double)nb;
+    REAL(out)[1] = (double)na;
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_certificate_is_valid(SEXP ext) {
+    int32_t code = 0;
+    int32_t r = pdf_certificate_is_valid(certificate_ptr(ext), &code);
+    if (r < 0) pdfox_raise(code, "certificate_is_valid");
+    return Rf_ScalarLogical(r == 1);
+}
+SEXP r_certificate_close(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (h) { pdf_certificate_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+
+/* ── Signing (return owned byte buffers via free_bytes) ── */
+SEXP r_sign_bytes(SEXP pdf, SEXP cert_ext, SEXP reason, SEXP location) {
+    int32_t code = 0;
+    uintptr_t out_len = 0;
+    const char *rs = (reason == R_NilValue) ? NULL : CHAR(STRING_ELT(reason, 0));
+    const char *loc = (location == R_NilValue) ? NULL : CHAR(STRING_ELT(location, 0));
+    uint8_t *buf = pdf_sign_bytes(RAW(pdf), (uintptr_t)XLENGTH(pdf),
+                                  certificate_ptr(cert_ext), rs, loc, &out_len,
+                                  &code);
+    return take_bytes(buf, out_len, code, "sign_bytes");
+}
+
+/* Marshal an R list of raw vectors into a parallel (const uint8* const*, lens[])
+ * pair via R_alloc (valid while the SEXP list is protected by the caller). An
+ * empty / NULL list yields (NULL, NULL, 0). */
+static const uint8_t *const *rawlist_to_c(SEXP lst, const uintptr_t **out_lens,
+                                          uintptr_t *out_n) {
+    R_xlen_t n = (lst == R_NilValue) ? 0 : XLENGTH(lst);
+    *out_n = (uintptr_t)n;
+    if (n == 0) { *out_lens = NULL; return NULL; }
+    const uint8_t **ptrs = (const uint8_t **)R_alloc((size_t)n, sizeof(uint8_t *));
+    uintptr_t *lens = (uintptr_t *)R_alloc((size_t)n, sizeof(uintptr_t));
+    for (R_xlen_t i = 0; i < n; i++) {
+        SEXP el = VECTOR_ELT(lst, i);
+        ptrs[i] = (el == R_NilValue) ? NULL : RAW(el);
+        lens[i] = (el == R_NilValue) ? 0 : (uintptr_t)XLENGTH(el);
+    }
+    *out_lens = lens;
+    return ptrs;
+}
+
+SEXP r_sign_bytes_pades(SEXP pdf, SEXP cert_ext, SEXP level, SEXP tsa_url,
+                        SEXP reason, SEXP location, SEXP certs, SEXP crls,
+                        SEXP ocsps) {
+    int32_t code = 0;
+    uintptr_t out_len = 0;
+    const char *url = (tsa_url == R_NilValue) ? NULL : CHAR(STRING_ELT(tsa_url, 0));
+    const char *rs = (reason == R_NilValue) ? NULL : CHAR(STRING_ELT(reason, 0));
+    const char *loc = (location == R_NilValue) ? NULL : CHAR(STRING_ELT(location, 0));
+    const uintptr_t *cert_lens, *crl_lens, *ocsp_lens;
+    uintptr_t n_certs, n_crls, n_ocsps;
+    const uint8_t *const *cp = rawlist_to_c(certs, &cert_lens, &n_certs);
+    const uint8_t *const *rp = rawlist_to_c(crls, &crl_lens, &n_crls);
+    const uint8_t *const *op = rawlist_to_c(ocsps, &ocsp_lens, &n_ocsps);
+    uint8_t *buf = pdf_sign_bytes_pades(
+        RAW(pdf), (uintptr_t)XLENGTH(pdf), certificate_ptr(cert_ext),
+        Rf_asInteger(level), url, rs, loc, cp, cert_lens, n_certs, rp, crl_lens,
+        n_crls, op, ocsp_lens, n_ocsps, &out_len, &code);
+    return take_bytes(buf, out_len, code, "sign_bytes_pades");
+}
+
+SEXP r_sign_bytes_pades_opts(SEXP pdf, SEXP cert_ext, SEXP level, SEXP tsa_url,
+                             SEXP reason, SEXP location, SEXP certs, SEXP crls,
+                             SEXP ocsps) {
+    int32_t code = 0;
+    uintptr_t out_len = 0;
+    const char *url = (tsa_url == R_NilValue) ? NULL : CHAR(STRING_ELT(tsa_url, 0));
+    const char *rs = (reason == R_NilValue) ? NULL : CHAR(STRING_ELT(reason, 0));
+    const char *loc = (location == R_NilValue) ? NULL : CHAR(STRING_ELT(location, 0));
+    const uintptr_t *cert_lens, *crl_lens, *ocsp_lens;
+    uintptr_t n_certs, n_crls, n_ocsps;
+    const uint8_t *const *cp = rawlist_to_c(certs, &cert_lens, &n_certs);
+    const uint8_t *const *rp = rawlist_to_c(crls, &crl_lens, &n_crls);
+    const uint8_t *const *op = rawlist_to_c(ocsps, &ocsp_lens, &n_ocsps);
+    PadesSignOptionsC options;
+    options.certificate_handle = certificate_ptr(cert_ext);
+    options.certs = cp;       options.cert_lens = cert_lens; options.n_certs = n_certs;
+    options.crls = rp;        options.crl_lens = crl_lens;   options.n_crls = n_crls;
+    options.ocsps = op;       options.ocsp_lens = ocsp_lens; options.n_ocsps = n_ocsps;
+    options.tsa_url = url;     options.reason = rs;           options.location = loc;
+    options.level = Rf_asInteger(level);
+    uint8_t *buf = pdf_sign_bytes_pades_opts(RAW(pdf), (uintptr_t)XLENGTH(pdf),
+                                             &options, &out_len, &code);
+    return take_bytes(buf, out_len, code, "sign_bytes_pades_opts");
+}
+
+/* ── SignatureInfo ── */
+SEXP r_doc_signature_count(SEXP ext) {
+    int32_t code = 0;
+    int32_t n = pdf_document_get_signature_count(doc_ptr(ext), &code);
+    if (n < 0) pdfox_raise(code, "signature_count");
+    return Rf_ScalarInteger(n);
+}
+SEXP r_doc_get_signature(SEXP ext, SEXP index) {
+    int32_t code = 0;
+    void *h = pdf_document_get_signature(doc_ptr(ext), Rf_asInteger(index), &code);
+    if (!h) pdfox_raise(code, "get_signature");
+    return wrap_signature((FfiSignatureInfo *)h);
+}
+SEXP r_signature_get_signer_name(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_signature_get_signer_name(signature_ptr(ext), &code),
+                       code, "signature_get_signer_name");
+}
+SEXP r_signature_get_signing_reason(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_signature_get_signing_reason(signature_ptr(ext), &code),
+                       code, "signature_get_signing_reason");
+}
+SEXP r_signature_get_signing_location(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_signature_get_signing_location(signature_ptr(ext), &code),
+                       code, "signature_get_signing_location");
+}
+SEXP r_signature_get_signing_time(SEXP ext) {
+    int32_t code = 0;
+    int64_t t = pdf_signature_get_signing_time(signature_ptr(ext), &code);
+    if (code != 0) pdfox_raise(code, "signature_get_signing_time");
+    return Rf_ScalarReal((double)t);
+}
+SEXP r_signature_get_certificate(SEXP ext) {
+    int32_t code = 0;
+    void *h = pdf_signature_get_certificate(signature_ptr(ext), &code);
+    if (!h) pdfox_raise(code, "signature_get_certificate");
+    return wrap_certificate(h);
+}
+SEXP r_signature_get_pades_level(SEXP ext) {
+    int32_t code = 0;
+    int32_t lvl = pdf_signature_get_pades_level(signature_ptr(ext), &code);
+    if (lvl < 0) pdfox_raise(code, "signature_get_pades_level");
+    return Rf_ScalarInteger(lvl);
+}
+SEXP r_signature_has_timestamp(SEXP ext) {
+    int32_t code = 0;
+    bool r = pdf_signature_has_timestamp(signature_ptr(ext), &code);
+    if (code != 0) pdfox_raise(code, "signature_has_timestamp");
+    return Rf_ScalarLogical(r);
+}
+SEXP r_signature_get_timestamp(SEXP ext) {
+    int32_t code = 0;
+    void *h = pdf_signature_get_timestamp(signature_ptr(ext), &code);
+    if (!h) pdfox_raise(code, "signature_get_timestamp");
+    return wrap_timestamp(h);
+}
+SEXP r_signature_add_timestamp(SEXP ext, SEXP ts_ext) {
+    int32_t code = 0;
+    bool r = pdf_signature_add_timestamp(signature_ptr(ext), timestamp_ptr(ts_ext),
+                                         &code);
+    if (code != 0) pdfox_raise(code, "signature_add_timestamp");
+    return Rf_ScalarLogical(r);
+}
+SEXP r_signature_verify(SEXP ext) {
+    int32_t code = 0;
+    int32_t r = pdf_signature_verify(signature_ptr(ext), &code);
+    return Rf_ScalarInteger(r);
+}
+SEXP r_signature_verify_detached(SEXP ext, SEXP pdf) {
+    int32_t code = 0;
+    int32_t r = pdf_signature_verify_detached(signature_ptr(ext), RAW(pdf),
+                                              (uintptr_t)XLENGTH(pdf), &code);
+    return Rf_ScalarInteger(r);
+}
+SEXP r_signature_close(SEXP ext) {
+    FfiSignatureInfo *h = (FfiSignatureInfo *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_signature_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+
+/* ── Timestamp ── */
+SEXP r_timestamp_parse(SEXP raw) {
+    int32_t code = 0;
+    void *h = pdf_timestamp_parse(RAW(raw), (uintptr_t)XLENGTH(raw), &code);
+    if (!h) pdfox_raise(code, "timestamp_parse");
+    return wrap_timestamp(h);
+}
+/* const uint8* returns are owned by the live handle: COPY, do NOT free_bytes. */
+SEXP r_timestamp_get_token(SEXP ext) {
+    int32_t code = 0;
+    uintptr_t out_len = 0;
+    const uint8_t *p = pdf_timestamp_get_token(timestamp_ptr(ext), &out_len, &code);
+    if (!p) pdfox_raise(code, "timestamp_get_token");
+    R_xlen_t n = (R_xlen_t)out_len;
+    SEXP out = PROTECT(Rf_allocVector(RAWSXP, n));
+    if (n) memcpy(RAW(out), p, (size_t)n);
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_timestamp_get_message_imprint(SEXP ext) {
+    int32_t code = 0;
+    uintptr_t out_len = 0;
+    const uint8_t *p =
+        pdf_timestamp_get_message_imprint(timestamp_ptr(ext), &out_len, &code);
+    if (!p) pdfox_raise(code, "timestamp_get_message_imprint");
+    R_xlen_t n = (R_xlen_t)out_len;
+    SEXP out = PROTECT(Rf_allocVector(RAWSXP, n));
+    if (n) memcpy(RAW(out), p, (size_t)n);
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_timestamp_get_time(SEXP ext) {
+    int32_t code = 0;
+    int64_t t = pdf_timestamp_get_time(timestamp_ptr(ext), &code);
+    if (code != 0) pdfox_raise(code, "timestamp_get_time");
+    return Rf_ScalarReal((double)t);
+}
+SEXP r_timestamp_get_serial(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_timestamp_get_serial(timestamp_ptr(ext), &code), code,
+                       "timestamp_get_serial");
+}
+SEXP r_timestamp_get_tsa_name(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_timestamp_get_tsa_name(timestamp_ptr(ext), &code), code,
+                       "timestamp_get_tsa_name");
+}
+SEXP r_timestamp_get_policy_oid(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_timestamp_get_policy_oid(timestamp_ptr(ext), &code), code,
+                       "timestamp_get_policy_oid");
+}
+SEXP r_timestamp_get_hash_algorithm(SEXP ext) {
+    int32_t code = 0;
+    int32_t a = pdf_timestamp_get_hash_algorithm(timestamp_ptr(ext), &code);
+    if (code != 0) pdfox_raise(code, "timestamp_get_hash_algorithm");
+    return Rf_ScalarInteger(a);
+}
+SEXP r_timestamp_verify(SEXP ext) {
+    int32_t code = 0;
+    bool r = pdf_timestamp_verify(timestamp_ptr(ext), &code);
+    if (code != 0) pdfox_raise(code, "timestamp_verify");
+    return Rf_ScalarLogical(r);
+}
+SEXP r_timestamp_close(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (h) { pdf_timestamp_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+
+/* ── TSA client ── */
+SEXP r_tsa_client_create(SEXP url, SEXP username, SEXP password, SEXP timeout,
+                         SEXP hash_algo, SEXP use_nonce, SEXP cert_req) {
+    int32_t code = 0;
+    const char *un = (username == R_NilValue) ? NULL : CHAR(STRING_ELT(username, 0));
+    const char *pw = (password == R_NilValue) ? NULL : CHAR(STRING_ELT(password, 0));
+    void *h = pdf_tsa_client_create(CHAR(STRING_ELT(url, 0)), un, pw,
+                                    Rf_asInteger(timeout), Rf_asInteger(hash_algo),
+                                    Rf_asLogical(use_nonce) == TRUE,
+                                    Rf_asLogical(cert_req) == TRUE, &code);
+    if (!h) pdfox_raise(code, "tsa_client_create");
+    return wrap_tsa_client(h);
+}
+SEXP r_tsa_request_timestamp(SEXP ext, SEXP data) {
+    int32_t code = 0;
+    void *h = pdf_tsa_request_timestamp(tsa_client_ptr(ext), RAW(data),
+                                        (uintptr_t)XLENGTH(data), &code);
+    if (!h) pdfox_raise(code, "tsa_request_timestamp");
+    return wrap_timestamp(h);
+}
+SEXP r_tsa_request_timestamp_hash(SEXP ext, SEXP hash, SEXP hash_algo) {
+    int32_t code = 0;
+    void *h = pdf_tsa_request_timestamp_hash(tsa_client_ptr(ext), RAW(hash),
+                                             (uintptr_t)XLENGTH(hash),
+                                             Rf_asInteger(hash_algo), &code);
+    if (!h) pdfox_raise(code, "tsa_request_timestamp_hash");
+    return wrap_timestamp(h);
+}
+SEXP r_tsa_client_close(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (h) { pdf_tsa_client_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+
+/* ── DSS ── */
+SEXP r_doc_get_dss(SEXP ext) {
+    int32_t code = 0;
+    void *h = pdf_document_get_dss(doc_ptr(ext), &code);
+    /* NULL with code==0 means "no DSS" (not an error): return NULL handle. */
+    if (!h) { if (code != 0) pdfox_raise(code, "get_dss"); return R_NilValue; }
+    return wrap_dss(h);
+}
+SEXP r_dss_cert_count(SEXP ext) {
+    return Rf_ScalarInteger(pdf_dss_cert_count(dss_ptr(ext)));
+}
+SEXP r_dss_crl_count(SEXP ext) {
+    return Rf_ScalarInteger(pdf_dss_crl_count(dss_ptr(ext)));
+}
+SEXP r_dss_ocsp_count(SEXP ext) {
+    return Rf_ScalarInteger(pdf_dss_ocsp_count(dss_ptr(ext)));
+}
+SEXP r_dss_vri_count(SEXP ext) {
+    return Rf_ScalarInteger(pdf_dss_vri_count(dss_ptr(ext)));
+}
+SEXP r_dss_get_cert(SEXP ext, SEXP index) {
+    int32_t code = 0;
+    uintptr_t out_len = 0;
+    uint8_t *buf = pdf_dss_get_cert(dss_ptr(ext), Rf_asInteger(index), &out_len,
+                                    &code);
+    return take_bytes(buf, out_len, code, "dss_get_cert");
+}
+SEXP r_dss_get_crl(SEXP ext, SEXP index) {
+    int32_t code = 0;
+    uintptr_t out_len = 0;
+    uint8_t *buf = pdf_dss_get_crl(dss_ptr(ext), Rf_asInteger(index), &out_len,
+                                   &code);
+    return take_bytes(buf, out_len, code, "dss_get_crl");
+}
+SEXP r_dss_get_ocsp(SEXP ext, SEXP index) {
+    int32_t code = 0;
+    uintptr_t out_len = 0;
+    uint8_t *buf = pdf_dss_get_ocsp(dss_ptr(ext), Rf_asInteger(index), &out_len,
+                                    &code);
+    return take_bytes(buf, out_len, code, "dss_get_ocsp");
+}
+SEXP r_dss_close(SEXP ext) {
+    void *h = R_ExternalPtrAddr(ext);
+    if (h) { pdf_dss_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+
+/* ── Validation (Document → result handle) ── */
+SEXP r_validate_pdf_a(SEXP ext, SEXP level) {
+    int32_t code = 0;
+    FfiPdfAResults *h = pdf_validate_pdf_a_level(doc_ptr(ext), Rf_asInteger(level),
+                                                 &code);
+    if (!h) pdfox_raise(code, "validate_pdf_a");
+    return wrap_pdf_a_results(h);
+}
+SEXP r_validate_pdf_ua(SEXP ext, SEXP level) {
+    int32_t code = 0;
+    FfiUaResults *h = pdf_validate_pdf_ua(doc_ptr(ext), Rf_asInteger(level), &code);
+    if (!h) pdfox_raise(code, "validate_pdf_ua");
+    return wrap_ua_results(h);
+}
+SEXP r_validate_pdf_x(SEXP ext, SEXP level) {
+    int32_t code = 0;
+    FfiPdfXResults *h = pdf_validate_pdf_x_level(doc_ptr(ext), Rf_asInteger(level),
+                                                 &code);
+    if (!h) pdfox_raise(code, "validate_pdf_x");
+    return wrap_pdf_x_results(h);
+}
+/* PDF/A results */
+SEXP r_pdf_a_is_compliant(SEXP ext) {
+    int32_t code = 0;
+    bool r = pdf_pdf_a_is_compliant(pdf_a_results_ptr(ext), &code);
+    if (code != 0) pdfox_raise(code, "pdf_a_is_compliant");
+    return Rf_ScalarLogical(r);
+}
+SEXP r_pdf_a_error_count(SEXP ext) {
+    return Rf_ScalarInteger(pdf_pdf_a_error_count(pdf_a_results_ptr(ext)));
+}
+SEXP r_pdf_a_warning_count(SEXP ext) {
+    return Rf_ScalarInteger(pdf_pdf_a_warning_count(pdf_a_results_ptr(ext)));
+}
+SEXP r_pdf_a_get_error(SEXP ext, SEXP index) {
+    int32_t code = 0;
+    return take_string(pdf_pdf_a_get_error(pdf_a_results_ptr(ext),
+                                           Rf_asInteger(index), &code),
+                       code, "pdf_a_get_error");
+}
+SEXP r_pdf_a_results_close(SEXP ext) {
+    FfiPdfAResults *h = (FfiPdfAResults *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_pdf_a_results_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+/* PDF/UA results */
+SEXP r_pdf_ua_is_accessible(SEXP ext) {
+    int32_t code = 0;
+    bool r = pdf_pdf_ua_is_accessible(ua_results_ptr(ext), &code);
+    if (code != 0) pdfox_raise(code, "pdf_ua_is_accessible");
+    return Rf_ScalarLogical(r);
+}
+SEXP r_pdf_ua_error_count(SEXP ext) {
+    return Rf_ScalarInteger(pdf_pdf_ua_error_count(ua_results_ptr(ext)));
+}
+SEXP r_pdf_ua_warning_count(SEXP ext) {
+    return Rf_ScalarInteger(pdf_pdf_ua_warning_count(ua_results_ptr(ext)));
+}
+SEXP r_pdf_ua_get_error(SEXP ext, SEXP index) {
+    int32_t code = 0;
+    return take_string(pdf_pdf_ua_get_error(ua_results_ptr(ext),
+                                            Rf_asInteger(index), &code),
+                       code, "pdf_ua_get_error");
+}
+SEXP r_pdf_ua_get_warning(SEXP ext, SEXP index) {
+    int32_t code = 0;
+    return take_string(pdf_pdf_ua_get_warning(ua_results_ptr(ext),
+                                              Rf_asInteger(index), &code),
+                       code, "pdf_ua_get_warning");
+}
+SEXP r_pdf_ua_get_stats(SEXP ext) {
+    int32_t code = 0;
+    int32_t s = 0, im = 0, t = 0, f = 0, an = 0, pg = 0;
+    bool ok = pdf_pdf_ua_get_stats(ua_results_ptr(ext), &s, &im, &t, &f, &an, &pg,
+                                   &code);
+    if (!ok && code != 0) pdfox_raise(code, "pdf_ua_get_stats");
+    SEXP out = PROTECT(Rf_allocVector(INTSXP, 6));
+    INTEGER(out)[0] = s; INTEGER(out)[1] = im; INTEGER(out)[2] = t;
+    INTEGER(out)[3] = f; INTEGER(out)[4] = an; INTEGER(out)[5] = pg;
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_pdf_ua_results_close(SEXP ext) {
+    FfiUaResults *h = (FfiUaResults *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_pdf_ua_results_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+/* PDF/X results */
+SEXP r_pdf_x_is_compliant(SEXP ext) {
+    int32_t code = 0;
+    bool r = pdf_pdf_x_is_compliant(pdf_x_results_ptr(ext), &code);
+    if (code != 0) pdfox_raise(code, "pdf_x_is_compliant");
+    return Rf_ScalarLogical(r);
+}
+SEXP r_pdf_x_error_count(SEXP ext) {
+    return Rf_ScalarInteger(pdf_pdf_x_error_count(pdf_x_results_ptr(ext)));
+}
+SEXP r_pdf_x_get_error(SEXP ext, SEXP index) {
+    int32_t code = 0;
+    return take_string(pdf_pdf_x_get_error(pdf_x_results_ptr(ext),
+                                           Rf_asInteger(index), &code),
+                       code, "pdf_x_get_error");
+}
+SEXP r_pdf_x_results_close(SEXP ext) {
+    FfiPdfXResults *h = (FfiPdfXResults *)R_ExternalPtrAddr(ext);
+    if (h) { pdf_pdf_x_results_free(h); R_ClearExternalPtr(ext); }
+    return R_NilValue;
+}
+
 /* ── Native routine registration (R Writing-R-Extensions §5.4) ──────────────
  * Backs `useDynLib(pdfoxide, .registration = TRUE, .fixes = "C_")` so R resolves
  * each .Call via a registered symbol object rather than a runtime string lookup,
@@ -1252,6 +2629,166 @@ static const R_CallMethodDef CallEntries[] = {
     CDEF(r_editor_save_encrypted, 4),
     CDEF(r_editor_save_encrypted_to_bytes, 3),
     CDEF(r_editor_close, 1),
+    /* PDF creation builder API */
+    CDEF(r_embedded_font_from_file, 1),
+    CDEF(r_embedded_font_from_bytes, 2),
+    CDEF(r_embedded_font_close, 1),
+    CDEF(r_builder_create, 0),
+    CDEF(r_builder_close, 1),
+    CDEF(r_builder_set_title, 2),
+    CDEF(r_builder_set_author, 2),
+    CDEF(r_builder_set_subject, 2),
+    CDEF(r_builder_set_keywords, 2),
+    CDEF(r_builder_set_creator, 2),
+    CDEF(r_builder_on_open, 2),
+    CDEF(r_builder_language, 2),
+    CDEF(r_builder_tagged_pdf_ua1, 1),
+    CDEF(r_builder_role_map, 3),
+    CDEF(r_builder_register_embedded_font, 3),
+    CDEF(r_builder_a4_page, 1),
+    CDEF(r_builder_letter_page, 1),
+    CDEF(r_builder_page, 3),
+    CDEF(r_builder_build, 1),
+    CDEF(r_builder_save, 2),
+    CDEF(r_builder_save_encrypted, 4),
+    CDEF(r_builder_to_bytes_encrypted, 3),
+    CDEF(r_page_font, 3),
+    CDEF(r_page_at, 3),
+    CDEF(r_page_text, 2),
+    CDEF(r_page_heading, 3),
+    CDEF(r_page_paragraph, 2),
+    CDEF(r_page_space, 2),
+    CDEF(r_page_horizontal_rule, 1),
+    CDEF(r_page_link_url, 2),
+    CDEF(r_page_link_page, 2),
+    CDEF(r_page_link_named, 2),
+    CDEF(r_page_link_javascript, 2),
+    CDEF(r_page_on_open, 2),
+    CDEF(r_page_on_close, 2),
+    CDEF(r_page_field_keystroke, 2),
+    CDEF(r_page_field_format, 2),
+    CDEF(r_page_field_validate, 2),
+    CDEF(r_page_field_calculate, 2),
+    CDEF(r_page_highlight, 4),
+    CDEF(r_page_underline, 4),
+    CDEF(r_page_strikeout, 4),
+    CDEF(r_page_squiggly, 4),
+    CDEF(r_page_sticky_note, 2),
+    CDEF(r_page_sticky_note_at, 4),
+    CDEF(r_page_watermark, 2),
+    CDEF(r_page_watermark_confidential, 1),
+    CDEF(r_page_watermark_draft, 1),
+    CDEF(r_page_stamp, 2),
+    CDEF(r_page_freetext, 6),
+    CDEF(r_page_footnote, 3),
+    CDEF(r_page_columns, 4),
+    CDEF(r_page_inline, 2),
+    CDEF(r_page_inline_bold, 2),
+    CDEF(r_page_inline_italic, 2),
+    CDEF(r_page_inline_color, 5),
+    CDEF(r_page_newline, 1),
+    CDEF(r_page_text_field, 7),
+    CDEF(r_page_checkbox, 7),
+    CDEF(r_page_combo_box, 8),
+    CDEF(r_page_radio_group, 8),
+    CDEF(r_page_push_button, 7),
+    CDEF(r_page_signature_field, 6),
+    CDEF(r_page_barcode_1d, 7),
+    CDEF(r_page_barcode_qr, 5),
+    CDEF(r_page_image, 6),
+    CDEF(r_page_image_with_alt, 7),
+    CDEF(r_page_image_artifact, 6),
+    CDEF(r_page_rect, 5),
+    CDEF(r_page_filled_rect, 8),
+    CDEF(r_page_line, 5),
+    CDEF(r_page_stroke_rect, 9),
+    CDEF(r_page_stroke_line, 9),
+    CDEF(r_page_stroke_rect_dashed, 11),
+    CDEF(r_page_stroke_line_dashed, 11),
+    CDEF(r_page_text_in_rect, 7),
+    CDEF(r_page_new_page_same_size, 1),
+    CDEF(r_page_table, 7),
+    CDEF(r_page_streaming_table_begin, 6),
+    CDEF(r_page_streaming_table_begin_v2, 11),
+    CDEF(r_page_streaming_table_set_batch_size, 2),
+    CDEF(r_page_streaming_table_pending_row_count, 1),
+    CDEF(r_page_streaming_table_batch_count, 1),
+    CDEF(r_page_streaming_table_flush, 1),
+    CDEF(r_page_streaming_table_push_row, 2),
+    CDEF(r_page_streaming_table_push_row_v2, 3),
+    CDEF(r_page_streaming_table_finish, 1),
+    CDEF(r_page_done, 1),
+    CDEF(r_page_close, 1),
+    /* PHASE-6 signatures / PKI / timestamps / TSA / DSS / validation */
+    CDEF(r_oxide_set_log_level, 1),
+    CDEF(r_oxide_get_log_level, 0),
+    CDEF(r_certificate_load_from_bytes, 2),
+    CDEF(r_certificate_load_from_pem, 2),
+    CDEF(r_certificate_get_subject, 1),
+    CDEF(r_certificate_get_issuer, 1),
+    CDEF(r_certificate_get_serial, 1),
+    CDEF(r_certificate_get_validity, 1),
+    CDEF(r_certificate_is_valid, 1),
+    CDEF(r_certificate_close, 1),
+    CDEF(r_sign_bytes, 4),
+    CDEF(r_sign_bytes_pades, 9),
+    CDEF(r_sign_bytes_pades_opts, 9),
+    CDEF(r_doc_signature_count, 1),
+    CDEF(r_doc_get_signature, 2),
+    CDEF(r_signature_get_signer_name, 1),
+    CDEF(r_signature_get_signing_reason, 1),
+    CDEF(r_signature_get_signing_location, 1),
+    CDEF(r_signature_get_signing_time, 1),
+    CDEF(r_signature_get_certificate, 1),
+    CDEF(r_signature_get_pades_level, 1),
+    CDEF(r_signature_has_timestamp, 1),
+    CDEF(r_signature_get_timestamp, 1),
+    CDEF(r_signature_add_timestamp, 2),
+    CDEF(r_signature_verify, 1),
+    CDEF(r_signature_verify_detached, 2),
+    CDEF(r_signature_close, 1),
+    CDEF(r_timestamp_parse, 1),
+    CDEF(r_timestamp_get_token, 1),
+    CDEF(r_timestamp_get_message_imprint, 1),
+    CDEF(r_timestamp_get_time, 1),
+    CDEF(r_timestamp_get_serial, 1),
+    CDEF(r_timestamp_get_tsa_name, 1),
+    CDEF(r_timestamp_get_policy_oid, 1),
+    CDEF(r_timestamp_get_hash_algorithm, 1),
+    CDEF(r_timestamp_verify, 1),
+    CDEF(r_timestamp_close, 1),
+    CDEF(r_tsa_client_create, 7),
+    CDEF(r_tsa_request_timestamp, 2),
+    CDEF(r_tsa_request_timestamp_hash, 3),
+    CDEF(r_tsa_client_close, 1),
+    CDEF(r_doc_get_dss, 1),
+    CDEF(r_dss_cert_count, 1),
+    CDEF(r_dss_crl_count, 1),
+    CDEF(r_dss_ocsp_count, 1),
+    CDEF(r_dss_vri_count, 1),
+    CDEF(r_dss_get_cert, 2),
+    CDEF(r_dss_get_crl, 2),
+    CDEF(r_dss_get_ocsp, 2),
+    CDEF(r_dss_close, 1),
+    CDEF(r_validate_pdf_a, 2),
+    CDEF(r_validate_pdf_ua, 2),
+    CDEF(r_validate_pdf_x, 2),
+    CDEF(r_pdf_a_is_compliant, 1),
+    CDEF(r_pdf_a_error_count, 1),
+    CDEF(r_pdf_a_warning_count, 1),
+    CDEF(r_pdf_a_get_error, 2),
+    CDEF(r_pdf_a_results_close, 1),
+    CDEF(r_pdf_ua_is_accessible, 1),
+    CDEF(r_pdf_ua_error_count, 1),
+    CDEF(r_pdf_ua_warning_count, 1),
+    CDEF(r_pdf_ua_get_error, 2),
+    CDEF(r_pdf_ua_get_warning, 2),
+    CDEF(r_pdf_ua_get_stats, 1),
+    CDEF(r_pdf_ua_results_close, 1),
+    CDEF(r_pdf_x_is_compliant, 1),
+    CDEF(r_pdf_x_error_count, 1),
+    CDEF(r_pdf_x_get_error, 2),
+    CDEF(r_pdf_x_results_close, 1),
     {NULL, NULL, 0}
 };
 
