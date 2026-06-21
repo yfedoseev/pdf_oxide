@@ -3684,6 +3684,813 @@ static ERL_NIF_TERM add_timestamp(ErlNifEnv *env, int argc, const ERL_NIF_TERM a
     return ok_bytes(env, out_data, (size_t)out_len, code);
 }
 
+/* ── phase 8: final coverage — office I/O, in-rect/auto extraction, header/
+ * footer/artifact erase, forms, doc structure/metadata, doc-level signatures,
+ * annotation/element/JSON accessors, crypto/FIPS, models/config, PDF/A. The
+ * list-shaped accessors (form fields, fonts/annotations/elements/search JSON,
+ * per-annotation extras) re-extract the owning native list, read from it, then
+ * free it via its matching *_free — matching the inline list-then-free pattern
+ * the phase-1/2 extractors already use, so no new long-lived resource type is
+ * needed. */
+
+/* A document-only handle fetch (no page arg). */
+#define GET_DOC                                                                  \
+    DocRes *r;                                                                   \
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r))                     \
+        return enif_make_badarg(env);                                            \
+    if (!r->h) return enif_make_badarg(env);
+
+/* GET_DOC plus a 0-based page int in a[1] (own name to avoid GET_DOC_PAGE's
+ * `page` var when both are not needed). */
+#define GET_DOC_AND_PAGE                                                         \
+    DocRes *r;                                                                   \
+    int page_idx;                                                                \
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||                   \
+        !enif_get_int(env, a[1], &page_idx))                                     \
+        return enif_make_badarg(env);                                            \
+    if (!r->h) return enif_make_badarg(env);
+
+/* ── office: open from docx/pptx/xlsx bytes ───────────────────────────────── */
+static ERL_NIF_TERM doc_open_from_docx_bytes(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    ErlNifBinary bin;
+    if (!enif_inspect_binary(env, a[0], &bin)) return enif_make_badarg(env);
+    int32_t code = 0;
+    PdfDocument *h = pdf_document_open_from_docx_bytes(bin.data, bin.size, &code);
+    return h ? make_doc(env, h) : err_tuple(env, code);
+}
+static ERL_NIF_TERM doc_open_from_pptx_bytes(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    ErlNifBinary bin;
+    if (!enif_inspect_binary(env, a[0], &bin)) return enif_make_badarg(env);
+    int32_t code = 0;
+    PdfDocument *h = pdf_document_open_from_pptx_bytes(bin.data, bin.size, &code);
+    return h ? make_doc(env, h) : err_tuple(env, code);
+}
+static ERL_NIF_TERM doc_open_from_xlsx_bytes(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    ErlNifBinary bin;
+    if (!enif_inspect_binary(env, a[0], &bin)) return enif_make_badarg(env);
+    int32_t code = 0;
+    PdfDocument *h = pdf_document_open_from_xlsx_bytes(bin.data, bin.size, &code);
+    return h ? make_doc(env, h) : err_tuple(env, code);
+}
+
+/* ── office: export to docx/pptx/xlsx bytes ───────────────────────────────── */
+static ERL_NIF_TERM doc_to_docx(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    uintptr_t out_len = 0;
+    int32_t code = 0;
+    uint8_t *p = pdf_document_to_docx(r->h, &out_len, &code);
+    return ok_bytes(env, p, (size_t)out_len, code);
+}
+static ERL_NIF_TERM doc_to_pptx(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    uintptr_t out_len = 0;
+    int32_t code = 0;
+    uint8_t *p = pdf_document_to_pptx(r->h, &out_len, &code);
+    return ok_bytes(env, p, (size_t)out_len, code);
+}
+static ERL_NIF_TERM doc_to_xlsx(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    uintptr_t out_len = 0;
+    int32_t code = 0;
+    uint8_t *p = pdf_document_to_xlsx(r->h, &out_len, &code);
+    return ok_bytes(env, p, (size_t)out_len, code);
+}
+
+/* ── in-rect extractors ───────────────────────────────────────────────────── */
+#define GET_DOC_RECT                                                             \
+    DocRes *r;                                                                   \
+    int page_idx;                                                                \
+    double x, y, w, h;                                                           \
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||                   \
+        !enif_get_int(env, a[1], &page_idx) ||                                   \
+        !enif_get_double(env, a[2], &x) || !enif_get_double(env, a[3], &y) ||    \
+        !enif_get_double(env, a[4], &w) || !enif_get_double(env, a[5], &h))      \
+        return enif_make_badarg(env);                                            \
+    if (!r->h) return enif_make_badarg(env);
+
+static ERL_NIF_TERM doc_extract_text_in_rect(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC_RECT
+    int32_t code = 0;
+    return ok_string(env, pdf_document_extract_text_in_rect(r->h, page_idx,
+                          (float)x, (float)y, (float)w, (float)h, &code), code);
+}
+static ERL_NIF_TERM doc_extract_words_in_rect(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC_RECT
+    int32_t code = 0;
+    FfiWordList *list = pdf_document_extract_words_in_rect(r->h, page_idx,
+                            (float)x, (float)y, (float)w, (float)h, &code);
+    if (!list) return err_tuple(env, code);
+    int32_t n = pdf_oxide_word_count(list);
+    if (n < 0) n = 0;
+    ERL_NIF_TERM items = enif_make_list(env, 0);
+    for (int32_t i = n - 1; i >= 0; i--) {
+        int32_t c = 0;
+        ERL_NIF_TERM text = take_string(env, pdf_oxide_word_get_text(list, i, &c));
+        float bx = 0, by = 0, bw = 0, bh = 0;
+        pdf_oxide_word_get_bbox(list, i, &bx, &by, &bw, &bh, &c);
+        ERL_NIF_TERM font = take_string(env, pdf_oxide_word_get_font_name(list, i, &c));
+        float size = pdf_oxide_word_get_font_size(list, i, &c);
+        bool bold = pdf_oxide_word_is_bold(list, i, &c);
+        ERL_NIF_TERM item = enif_make_tuple(env, 8, text,
+                                            enif_make_double(env, bx), enif_make_double(env, by),
+                                            enif_make_double(env, bw), enif_make_double(env, bh),
+                                            font, enif_make_double(env, size),
+                                            enif_make_atom(env, bold ? "true" : "false"));
+        items = enif_make_list_cell(env, item, items);
+    }
+    pdf_oxide_word_list_free(list);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), items);
+}
+static ERL_NIF_TERM doc_extract_lines_in_rect(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC_RECT
+    int32_t code = 0;
+    FfiTextLineList *list = pdf_document_extract_lines_in_rect(r->h, page_idx,
+                                (float)x, (float)y, (float)w, (float)h, &code);
+    if (!list) return err_tuple(env, code);
+    int32_t n = pdf_oxide_line_count(list);
+    if (n < 0) n = 0;
+    ERL_NIF_TERM items = enif_make_list(env, 0);
+    for (int32_t i = n - 1; i >= 0; i--) {
+        int32_t c = 0;
+        ERL_NIF_TERM text = take_string(env, pdf_oxide_line_get_text(list, i, &c));
+        float bx = 0, by = 0, bw = 0, bh = 0;
+        pdf_oxide_line_get_bbox(list, i, &bx, &by, &bw, &bh, &c);
+        int32_t wc = pdf_oxide_line_get_word_count(list, i, &c);
+        ERL_NIF_TERM item = enif_make_tuple6(env, text,
+                                             enif_make_double(env, bx), enif_make_double(env, by),
+                                             enif_make_double(env, bw), enif_make_double(env, bh),
+                                             enif_make_int(env, wc));
+        items = enif_make_list_cell(env, item, items);
+    }
+    pdf_oxide_line_list_free(list);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), items);
+}
+static ERL_NIF_TERM doc_extract_tables_in_rect(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC_RECT
+    int32_t code = 0;
+    FfiTableList *list = pdf_document_extract_tables_in_rect(r->h, page_idx,
+                             (float)x, (float)y, (float)w, (float)h, &code);
+    if (!list) return err_tuple(env, code);
+    int32_t n = pdf_oxide_table_count(list);
+    if (n < 0) n = 0;
+    ERL_NIF_TERM tables = enif_make_list(env, 0);
+    for (int32_t i = n - 1; i >= 0; i--) {
+        int32_t c = 0;
+        int32_t rows = pdf_oxide_table_get_row_count(list, i, &c);
+        int32_t cols = pdf_oxide_table_get_col_count(list, i, &c);
+        bool header = pdf_oxide_table_has_header(list, i, &c);
+        int32_t rr = rows < 0 ? 0 : rows;
+        int32_t cc = cols < 0 ? 0 : cols;
+        ERL_NIF_TERM grid = enif_make_list(env, 0);
+        for (int32_t row = rr - 1; row >= 0; row--) {
+            ERL_NIF_TERM line = enif_make_list(env, 0);
+            for (int32_t col = cc - 1; col >= 0; col--) {
+                ERL_NIF_TERM cell = take_string(env, pdf_oxide_table_get_cell_text(list, i, row, col, &c));
+                line = enif_make_list_cell(env, cell, line);
+            }
+            grid = enif_make_list_cell(env, line, grid);
+        }
+        ERL_NIF_TERM item = enif_make_tuple4(env, enif_make_int(env, rr),
+                                             enif_make_int(env, cc),
+                                             enif_make_atom(env, header ? "true" : "false"),
+                                             grid);
+        tables = enif_make_list_cell(env, item, tables);
+    }
+    pdf_oxide_table_list_free(list);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), tables);
+}
+static ERL_NIF_TERM doc_extract_images_in_rect(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC_RECT
+    int32_t code = 0;
+    FfiImageList *list = pdf_document_extract_images_in_rect(r->h, page_idx,
+                             (float)x, (float)y, (float)w, (float)h, &code);
+    if (!list) return err_tuple(env, code);
+    int32_t n = pdf_oxide_image_count(list);
+    if (n < 0) n = 0;
+    ERL_NIF_TERM items = enif_make_list(env, 0);
+    for (int32_t i = n - 1; i >= 0; i--) {
+        int32_t c = 0;
+        int32_t iw = pdf_oxide_image_get_width(list, i, &c);
+        int32_t ih = pdf_oxide_image_get_height(list, i, &c);
+        int32_t bpc = pdf_oxide_image_get_bits_per_component(list, i, &c);
+        ERL_NIF_TERM format = take_string(env, pdf_oxide_image_get_format(list, i, &c));
+        ERL_NIF_TERM colorspace = take_string(env, pdf_oxide_image_get_colorspace(list, i, &c));
+        int32_t dlen = 0;
+        uint8_t *p = pdf_oxide_image_get_data(list, i, &dlen, &c);
+        size_t dn = (p && dlen > 0) ? (size_t)dlen : 0;
+        ERL_NIF_TERM data;
+        unsigned char *buf = enif_make_new_binary(env, dn, &data);
+        if (dn) memcpy(buf, p, dn);
+        if (p) free_bytes(p);
+        ERL_NIF_TERM item = enif_make_tuple6(env, enif_make_int(env, iw),
+                                             enif_make_int(env, ih),
+                                             enif_make_int(env, bpc),
+                                             format, colorspace, data);
+        items = enif_make_list_cell(env, item, items);
+    }
+    pdf_oxide_image_list_free(list);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), items);
+}
+
+/* ── auto extraction / classification ─────────────────────────────────────── */
+static ERL_NIF_TERM doc_extract_text_auto(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC_AND_PAGE
+    int32_t code = 0;
+    return ok_string(env, pdf_document_extract_text_auto(r->h, page_idx, &code), code);
+}
+static ERL_NIF_TERM doc_extract_all_text(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    int32_t code = 0;
+    return ok_string(env, pdf_document_extract_all_text(r->h, &code), code);
+}
+static ERL_NIF_TERM doc_extract_page_auto(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC_AND_PAGE
+    char *opts = term_to_cstr(env, a[2]);
+    if (!opts) return enif_make_badarg(env);
+    int32_t code = 0;
+    char *s = pdf_document_extract_page_auto(r->h, page_idx,
+                                             opts[0] == '\0' ? NULL : opts, &code);
+    enif_free(opts);
+    return ok_string(env, s, code);
+}
+static ERL_NIF_TERM doc_classify_page(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC_AND_PAGE
+    int32_t code = 0;
+    return ok_string(env, pdf_document_classify_page(r->h, page_idx, &code), code);
+}
+static ERL_NIF_TERM doc_classify_document(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    int32_t code = 0;
+    return ok_string(env, pdf_document_classify_document(r->h, &code), code);
+}
+
+/* ── header / footer / artifact erase + remove ────────────────────────────── */
+static ERL_NIF_TERM doc_erase_header(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC_AND_PAGE
+    int32_t code = 0;
+    int32_t v = pdf_document_erase_header(r->h, page_idx, &code);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int(env, v));
+}
+static ERL_NIF_TERM doc_erase_footer(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC_AND_PAGE
+    int32_t code = 0;
+    int32_t v = pdf_document_erase_footer(r->h, page_idx, &code);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int(env, v));
+}
+static ERL_NIF_TERM doc_erase_artifacts(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC_AND_PAGE
+    int32_t code = 0;
+    int32_t v = pdf_document_erase_artifacts(r->h, page_idx, &code);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int(env, v));
+}
+static ERL_NIF_TERM doc_remove_headers(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    double threshold;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||
+        !enif_get_double(env, a[1], &threshold))
+        return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    int32_t v = pdf_document_remove_headers(r->h, (float)threshold, &code);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int(env, v));
+}
+static ERL_NIF_TERM doc_remove_footers(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    double threshold;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||
+        !enif_get_double(env, a[1], &threshold))
+        return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    int32_t v = pdf_document_remove_footers(r->h, (float)threshold, &code);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int(env, v));
+}
+static ERL_NIF_TERM doc_remove_artifacts(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    double threshold;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||
+        !enif_get_double(env, a[1], &threshold))
+        return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    int32_t v = pdf_document_remove_artifacts(r->h, (float)threshold, &code);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int(env, v));
+}
+
+/* ── forms ────────────────────────────────────────────────────────────────── */
+/* Re-extract the form-field list, marshal every field into a list of tuples,
+ * then free the list. An empty document yields an empty list (not an error). */
+static ERL_NIF_TERM doc_get_form_fields(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    int32_t code = 0;
+    FfiFormFieldList *list = pdf_document_get_form_fields(r->h, &code);
+    if (!list) return err_tuple(env, code);
+    int32_t n = pdf_oxide_form_field_count(list);
+    if (n < 0) n = 0;
+    ERL_NIF_TERM items = enif_make_list(env, 0);
+    for (int32_t i = n - 1; i >= 0; i--) {
+        int32_t c = 0;
+        ERL_NIF_TERM name = take_string(env, pdf_oxide_form_field_get_name(list, i, &c));
+        ERL_NIF_TERM value = take_string(env, pdf_oxide_form_field_get_value(list, i, &c));
+        ERL_NIF_TERM type = take_string(env, pdf_oxide_form_field_get_type(list, i, &c));
+        bool ro = pdf_oxide_form_field_is_readonly(list, i, &c);
+        bool req = pdf_oxide_form_field_is_required(list, i, &c);
+        ERL_NIF_TERM item = enif_make_tuple5(env, name, value, type,
+                                             enif_make_atom(env, ro ? "true" : "false"),
+                                             enif_make_atom(env, req ? "true" : "false"));
+        items = enif_make_list_cell(env, item, items);
+    }
+    pdf_oxide_form_field_list_free(list);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), items);
+}
+static ERL_NIF_TERM doc_export_form_data_to_bytes(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    int format_type;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||
+        !enif_get_int(env, a[1], &format_type))
+        return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    uintptr_t out_len = 0;
+    int32_t code = 0;
+    uint8_t *p = pdf_document_export_form_data_to_bytes(r->h, format_type, &out_len, &code);
+    return ok_bytes(env, p, (size_t)out_len, code);
+}
+static ERL_NIF_TERM doc_import_form_data(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    char *data_path = term_to_cstr(env, a[1]);
+    if (!data_path) return enif_make_badarg(env);
+    int32_t code = 0;
+    int32_t v = pdf_document_import_form_data(r->h, data_path, &code);
+    enif_free(data_path);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int(env, v));
+}
+static ERL_NIF_TERM editor_import_fdf_bytes(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    EditRes *r;
+    ErlNifBinary bin;
+    if (!enif_get_resource(env, a[0], EDIT_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    if (!enif_inspect_binary(env, a[1], &bin)) return enif_make_badarg(env);
+    int32_t code = 0;
+    int32_t v = pdf_editor_import_fdf_bytes(r->h, bin.data, bin.size, &code);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int(env, v));
+}
+static ERL_NIF_TERM editor_import_xfdf_bytes(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    EditRes *r;
+    ErlNifBinary bin;
+    if (!enif_get_resource(env, a[0], EDIT_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    if (!enif_inspect_binary(env, a[1], &bin)) return enif_make_badarg(env);
+    int32_t code = 0;
+    int32_t v = pdf_editor_import_xfdf_bytes(r->h, bin.data, bin.size, &code);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int(env, v));
+}
+static ERL_NIF_TERM form_import_from_file(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    char *filename = term_to_cstr(env, a[1]);
+    if (!filename) return enif_make_badarg(env);
+    int32_t code = 0;
+    bool ok = pdf_form_import_from_file(r->h, filename, &code);
+    enif_free(filename);
+    if (!ok) return err_tuple(env, code);
+    return enif_make_atom(env, "ok");
+}
+
+/* ── document structure / metadata ────────────────────────────────────────── */
+static ERL_NIF_TERM doc_get_outline(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    int32_t code = 0;
+    return ok_string(env, pdf_document_get_outline(r->h, &code), code);
+}
+static ERL_NIF_TERM doc_get_page_labels(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    int32_t code = 0;
+    return ok_string(env, pdf_document_get_page_labels(r->h, &code), code);
+}
+static ERL_NIF_TERM doc_get_xmp_metadata(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    int32_t code = 0;
+    return ok_string(env, pdf_document_get_xmp_metadata(r->h, &code), code);
+}
+static ERL_NIF_TERM doc_get_source_bytes(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    uintptr_t out_len = 0;
+    int32_t code = 0;
+    uint8_t *p = pdf_document_get_source_bytes(r->h, &out_len, &code);
+    return ok_bytes(env, p, (size_t)out_len, code);
+}
+static ERL_NIF_TERM doc_has_xfa(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    bool b = pdf_document_has_xfa(r->h);
+    return enif_make_atom(env, b ? "true" : "false");
+}
+static ERL_NIF_TERM doc_get_page_count(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    PdfRes *r;
+    if (!enif_get_resource(env, a[0], PDF_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    int32_t v = pdf_get_page_count(r->h, &code);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int(env, v));
+}
+static ERL_NIF_TERM doc_plan_split_by_bookmarks(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    char *opts = term_to_cstr(env, a[1]);
+    if (!opts) return enif_make_badarg(env);
+    int32_t code = 0;
+    char *s = pdf_document_plan_split_by_bookmarks(r->h, opts[0] == '\0' ? NULL : opts, &code);
+    enif_free(opts);
+    return ok_string(env, s, code);
+}
+
+/* ── document-level signatures ────────────────────────────────────────────── */
+static ERL_NIF_TERM doc_sign(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    CertRes *c;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    if (!enif_get_resource(env, a[1], CERT_RES, (void **)&c)) return enif_make_badarg(env);
+    if (!c->h) return enif_make_badarg(env);
+    char *reason = term_to_cstr(env, a[2]);
+    char *location = term_to_cstr(env, a[3]);
+    if (!reason || !location) { enif_free(reason); enif_free(location); return enif_make_badarg(env); }
+    int32_t code = 0;
+    int32_t v = pdf_document_sign(r->h, c->h,
+                                  reason[0] == '\0' ? NULL : reason,
+                                  location[0] == '\0' ? NULL : location, &code);
+    enif_free(reason); enif_free(location);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int(env, v));
+}
+static ERL_NIF_TERM doc_get_signature_count(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    int32_t code = 0;
+    int32_t v = pdf_document_get_signature_count(r->h, &code);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int(env, v));
+}
+static ERL_NIF_TERM doc_get_signature(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    int index;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||
+        !enif_get_int(env, a[1], &index))
+        return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    void *h = pdf_document_get_signature(r->h, index, &code);
+    if (!h) return err_tuple(env, code);
+    MAKE_HANDLE(SIG_RES, SigRes, (FfiSignatureInfo *)h);
+}
+static ERL_NIF_TERM doc_verify_all_signatures(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    int32_t code = 0;
+    int32_t v = pdf_document_verify_all_signatures(r->h, &code);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int(env, v));
+}
+static ERL_NIF_TERM doc_has_timestamp(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    int32_t code = 0;
+    int32_t v = pdf_document_has_timestamp(r->h, &code);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"),
+                            enif_make_atom(env, v != 0 ? "true" : "false"));
+}
+static ERL_NIF_TERM doc_get_dss(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    int32_t code = 0;
+    void *h = pdf_document_get_dss(r->h, &code);
+    if (!h) return err_tuple(env, code);
+    MAKE_HANDLE(DSS_RES, DssRes, h);
+}
+
+/* ── annotation extras ────────────────────────────────────────────────────── */
+/* Re-extract the page's annotation list, read the per-index accessor, then free
+ * it. index out of range / wrong subtype surfaces as {:error, code}. */
+#define ANNOT_ACCESSOR_PROLOGUE                                                  \
+    DocRes *r;                                                                   \
+    int page_idx, index;                                                         \
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||                   \
+        !enif_get_int(env, a[1], &page_idx) ||                                   \
+        !enif_get_int(env, a[2], &index))                                        \
+        return enif_make_badarg(env);                                            \
+    if (!r->h) return enif_make_badarg(env);                                     \
+    int32_t lcode = 0;                                                           \
+    FfiAnnotationList *list = pdf_document_get_page_annotations(r->h, page_idx, &lcode); \
+    if (!list) return err_tuple(env, lcode);
+
+static ERL_NIF_TERM annot_get_color(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; ANNOT_ACCESSOR_PROLOGUE
+    int32_t code = 0;
+    uint32_t v = pdf_oxide_annotation_get_color(list, index, &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_uint(env, v));
+}
+static ERL_NIF_TERM annot_get_creation_date(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; ANNOT_ACCESSOR_PROLOGUE
+    int32_t code = 0;
+    int64_t v = pdf_oxide_annotation_get_creation_date(list, index, &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int64(env, v));
+}
+static ERL_NIF_TERM annot_get_modification_date(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; ANNOT_ACCESSOR_PROLOGUE
+    int32_t code = 0;
+    int64_t v = pdf_oxide_annotation_get_modification_date(list, index, &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int64(env, v));
+}
+static ERL_NIF_TERM annot_is_hidden(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; ANNOT_ACCESSOR_PROLOGUE
+    int32_t code = 0;
+    bool v = pdf_oxide_annotation_is_hidden(list, index, &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_atom(env, v ? "true" : "false"));
+}
+static ERL_NIF_TERM annot_is_marked_deleted(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; ANNOT_ACCESSOR_PROLOGUE
+    int32_t code = 0;
+    bool v = pdf_oxide_annotation_is_marked_deleted(list, index, &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_atom(env, v ? "true" : "false"));
+}
+static ERL_NIF_TERM annot_is_printable(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; ANNOT_ACCESSOR_PROLOGUE
+    int32_t code = 0;
+    bool v = pdf_oxide_annotation_is_printable(list, index, &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_atom(env, v ? "true" : "false"));
+}
+static ERL_NIF_TERM annot_is_read_only(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; ANNOT_ACCESSOR_PROLOGUE
+    int32_t code = 0;
+    bool v = pdf_oxide_annotation_is_read_only(list, index, &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_atom(env, v ? "true" : "false"));
+}
+static ERL_NIF_TERM annot_link_get_uri(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; ANNOT_ACCESSOR_PROLOGUE
+    int32_t code = 0;
+    char *s = pdf_oxide_link_annotation_get_uri(list, index, &code);
+    ERL_NIF_TERM res = ok_string(env, s, code);
+    pdf_oxide_annotation_list_free(list);
+    return res;
+}
+static ERL_NIF_TERM annot_text_get_icon_name(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; ANNOT_ACCESSOR_PROLOGUE
+    int32_t code = 0;
+    char *s = pdf_oxide_text_annotation_get_icon_name(list, index, &code);
+    ERL_NIF_TERM res = ok_string(env, s, code);
+    pdf_oxide_annotation_list_free(list);
+    return res;
+}
+static ERL_NIF_TERM annot_highlight_quad_points_count(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; ANNOT_ACCESSOR_PROLOGUE
+    int32_t code = 0;
+    int32_t v = pdf_oxide_highlight_annotation_get_quad_points_count(list, index, &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_int(env, v));
+}
+static ERL_NIF_TERM annot_highlight_quad_point(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    int page_idx, index, quad_index;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||
+        !enif_get_int(env, a[1], &page_idx) ||
+        !enif_get_int(env, a[2], &index) ||
+        !enif_get_int(env, a[3], &quad_index))
+        return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t lcode = 0;
+    FfiAnnotationList *list = pdf_document_get_page_annotations(r->h, page_idx, &lcode);
+    if (!list) return err_tuple(env, lcode);
+    float x1 = 0, y1 = 0, x2 = 0, y2 = 0, x3 = 0, y3 = 0, x4 = 0, y4 = 0;
+    int32_t code = 0;
+    pdf_oxide_highlight_annotation_get_quad_point(list, index, quad_index,
+                                                  &x1, &y1, &x2, &y2, &x3, &y3, &x4, &y4, &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"),
+                            enif_make_tuple(env, 8,
+                                            enif_make_double(env, x1), enif_make_double(env, y1),
+                                            enif_make_double(env, x2), enif_make_double(env, y2),
+                                            enif_make_double(env, x3), enif_make_double(env, y3),
+                                            enif_make_double(env, x4), enif_make_double(env, y4)));
+}
+static ERL_NIF_TERM annotations_to_json(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC_AND_PAGE
+    int32_t lcode = 0;
+    FfiAnnotationList *list = pdf_document_get_page_annotations(r->h, page_idx, &lcode);
+    if (!list) return err_tuple(env, lcode);
+    int32_t code = 0;
+    char *s = pdf_oxide_annotations_to_json(list, &code);
+    ERL_NIF_TERM res = ok_string(env, s, code);
+    pdf_oxide_annotation_list_free(list);
+    return res;
+}
+
+/* ── element / font / search JSON accessors ───────────────────────────────── */
+static ERL_NIF_TERM element_get_type(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    ElemsRes *r;
+    int index;
+    if (!enif_get_resource(env, a[0], ELEMS_RES, (void **)&r) ||
+        !enif_get_int(env, a[1], &index))
+        return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    return ok_string(env, pdf_oxide_element_get_type(r->h, index, &code), code);
+}
+static ERL_NIF_TERM element_get_text(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    ElemsRes *r;
+    int index;
+    if (!enif_get_resource(env, a[0], ELEMS_RES, (void **)&r) ||
+        !enif_get_int(env, a[1], &index))
+        return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    return ok_string(env, pdf_oxide_element_get_text(r->h, index, &code), code);
+}
+static ERL_NIF_TERM element_get_rect(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    ElemsRes *r;
+    int index;
+    if (!enif_get_resource(env, a[0], ELEMS_RES, (void **)&r) ||
+        !enif_get_int(env, a[1], &index))
+        return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    float x = 0, y = 0, w = 0, h = 0;
+    int32_t code = 0;
+    pdf_oxide_element_get_rect(r->h, index, &x, &y, &w, &h, &code);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"),
+                            enif_make_tuple4(env, enif_make_double(env, x), enif_make_double(env, y),
+                                             enif_make_double(env, w), enif_make_double(env, h)));
+}
+static ERL_NIF_TERM elements_to_json(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    ElemsRes *r;
+    if (!enif_get_resource(env, a[0], ELEMS_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    return ok_string(env, pdf_oxide_elements_to_json(r->h, &code), code);
+}
+/* Font size + fonts JSON re-extract the page's font list, read, then free. */
+static ERL_NIF_TERM font_get_size(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    int page_idx, index;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||
+        !enif_get_int(env, a[1], &page_idx) ||
+        !enif_get_int(env, a[2], &index))
+        return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t lcode = 0;
+    FfiFontList *list = pdf_document_get_embedded_fonts(r->h, page_idx, &lcode);
+    if (!list) return err_tuple(env, lcode);
+    int32_t code = 0;
+    float v = pdf_oxide_font_get_size(list, index, &code);
+    pdf_oxide_font_list_free(list);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_double(env, v));
+}
+static ERL_NIF_TERM fonts_to_json(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC_AND_PAGE
+    int32_t lcode = 0;
+    FfiFontList *list = pdf_document_get_embedded_fonts(r->h, page_idx, &lcode);
+    if (!list) return err_tuple(env, lcode);
+    int32_t code = 0;
+    char *s = pdf_oxide_fonts_to_json(list, &code);
+    ERL_NIF_TERM res = ok_string(env, s, code);
+    pdf_oxide_font_list_free(list);
+    return res;
+}
+static ERL_NIF_TERM search_results_to_json(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    char *term = term_to_cstr(env, a[1]);
+    if (!term) return enif_make_badarg(env);
+    int cs;
+    if (!enif_get_int(env, a[2], &cs)) { enif_free(term); return enif_make_badarg(env); }
+    int32_t lcode = 0;
+    FfiSearchResults *list = pdf_document_search_all(r->h, term, cs != 0, &lcode);
+    enif_free(term);
+    if (!list) return err_tuple(env, lcode);
+    int32_t code = 0;
+    char *s = pdf_oxide_search_results_to_json(list, &code);
+    ERL_NIF_TERM res = ok_string(env, s, code);
+    pdf_oxide_search_result_free(list);
+    return res;
+}
+
+/* ── crypto / FIPS ────────────────────────────────────────────────────────── */
+static ERL_NIF_TERM crypto_active_provider(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; (void)a;
+    return ok_string(env, pdf_oxide_crypto_active_provider(), -1);
+}
+static ERL_NIF_TERM crypto_cbom(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; (void)a;
+    return ok_string(env, pdf_oxide_crypto_cbom(), -1);
+}
+static ERL_NIF_TERM crypto_inventory(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; (void)a;
+    return ok_string(env, pdf_oxide_crypto_inventory(), -1);
+}
+static ERL_NIF_TERM crypto_policy(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; (void)a;
+    return ok_string(env, pdf_oxide_crypto_policy(), -1);
+}
+static ERL_NIF_TERM crypto_fips_available(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; (void)a;
+    return enif_make_int(env, pdf_oxide_crypto_fips_available());
+}
+static ERL_NIF_TERM crypto_use_fips(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; (void)a;
+    return enif_make_int(env, pdf_oxide_crypto_use_fips());
+}
+static ERL_NIF_TERM crypto_set_policy(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    char *spec = term_to_cstr(env, a[0]);
+    if (!spec) return enif_make_badarg(env);
+    int32_t v = pdf_oxide_crypto_set_policy(spec);
+    enif_free(spec);
+    return enif_make_int(env, v);
+}
+
+/* ── models / config ──────────────────────────────────────────────────────── */
+static ERL_NIF_TERM model_manifest(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; (void)a;
+    return ok_string(env, pdf_oxide_model_manifest(), -1);
+}
+static ERL_NIF_TERM prefetch_available(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; (void)a;
+    return enif_make_int(env, pdf_oxide_prefetch_available());
+}
+static ERL_NIF_TERM prefetch_models(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    char *langs = term_to_cstr(env, a[0]);
+    if (!langs) return enif_make_badarg(env);
+    int32_t code = 0;
+    char *s = pdf_oxide_prefetch_models(langs[0] == '\0' ? NULL : langs, &code);
+    enif_free(langs);
+    return ok_string(env, s, code);
+}
+static ERL_NIF_TERM set_max_ops_per_stream(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    ErlNifSInt64 limit;
+    if (!enif_get_int64(env, a[0], &limit)) return enif_make_badarg(env);
+    return enif_make_int64(env, pdf_oxide_set_max_ops_per_stream((int64_t)limit));
+}
+static ERL_NIF_TERM set_preserve_unmapped_glyphs(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    int preserve;
+    if (!enif_get_int(env, a[0], &preserve)) return enif_make_badarg(env);
+    return enif_make_int(env, pdf_oxide_set_preserve_unmapped_glyphs(preserve));
+}
+
+/* ── PDF/A conversion (on a Document) ─────────────────────────────────────── */
+static ERL_NIF_TERM doc_convert_to_pdf_a(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    int level;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r) ||
+        !enif_get_int(env, a[1], &level))
+        return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    bool ok = pdf_convert_to_pdf_a(r->h, level, &code);
+    if (!ok) return err_tuple(env, code);
+    return enif_make_atom(env, "ok");
+}
+
 #define DIRTY ERL_NIF_DIRTY_JOB_CPU_BOUND
 static ErlNifFunc funcs[] = {
     {"from_markdown", 1, from_markdown, DIRTY},
@@ -3981,6 +4788,91 @@ static ErlNifFunc funcs[] = {
     {"elements_close", 1, elements_close, 0},
     /* phase 7 — timestamp */
     {"add_timestamp", 3, add_timestamp, DIRTY},
+    /* phase 8 — office I/O */
+    {"doc_open_from_docx_bytes", 1, doc_open_from_docx_bytes, DIRTY},
+    {"doc_open_from_pptx_bytes", 1, doc_open_from_pptx_bytes, DIRTY},
+    {"doc_open_from_xlsx_bytes", 1, doc_open_from_xlsx_bytes, DIRTY},
+    {"doc_to_docx", 1, doc_to_docx, DIRTY},
+    {"doc_to_pptx", 1, doc_to_pptx, DIRTY},
+    {"doc_to_xlsx", 1, doc_to_xlsx, DIRTY},
+    /* phase 8 — in-rect extractors */
+    {"doc_extract_text_in_rect", 6, doc_extract_text_in_rect, DIRTY},
+    {"doc_extract_words_in_rect", 6, doc_extract_words_in_rect, DIRTY},
+    {"doc_extract_lines_in_rect", 6, doc_extract_lines_in_rect, DIRTY},
+    {"doc_extract_tables_in_rect", 6, doc_extract_tables_in_rect, DIRTY},
+    {"doc_extract_images_in_rect", 6, doc_extract_images_in_rect, DIRTY},
+    /* phase 8 — auto extraction / classification */
+    {"doc_extract_text_auto", 2, doc_extract_text_auto, DIRTY},
+    {"doc_extract_all_text", 1, doc_extract_all_text, DIRTY},
+    {"doc_extract_page_auto", 3, doc_extract_page_auto, DIRTY},
+    {"doc_classify_page", 2, doc_classify_page, DIRTY},
+    {"doc_classify_document", 1, doc_classify_document, DIRTY},
+    /* phase 8 — header / footer / artifact */
+    {"doc_erase_header", 2, doc_erase_header, DIRTY},
+    {"doc_erase_footer", 2, doc_erase_footer, DIRTY},
+    {"doc_erase_artifacts", 2, doc_erase_artifacts, DIRTY},
+    {"doc_remove_headers", 2, doc_remove_headers, DIRTY},
+    {"doc_remove_footers", 2, doc_remove_footers, DIRTY},
+    {"doc_remove_artifacts", 2, doc_remove_artifacts, DIRTY},
+    /* phase 8 — forms */
+    {"doc_get_form_fields", 1, doc_get_form_fields, DIRTY},
+    {"doc_export_form_data_to_bytes", 2, doc_export_form_data_to_bytes, DIRTY},
+    {"doc_import_form_data", 2, doc_import_form_data, DIRTY},
+    {"editor_import_fdf_bytes", 2, editor_import_fdf_bytes, DIRTY},
+    {"editor_import_xfdf_bytes", 2, editor_import_xfdf_bytes, DIRTY},
+    {"form_import_from_file", 2, form_import_from_file, DIRTY},
+    /* phase 8 — document structure / metadata */
+    {"doc_get_outline", 1, doc_get_outline, DIRTY},
+    {"doc_get_page_labels", 1, doc_get_page_labels, DIRTY},
+    {"doc_get_xmp_metadata", 1, doc_get_xmp_metadata, DIRTY},
+    {"doc_get_source_bytes", 1, doc_get_source_bytes, DIRTY},
+    {"doc_has_xfa", 1, doc_has_xfa, 0},
+    {"doc_get_page_count", 1, doc_get_page_count, 0},
+    {"doc_plan_split_by_bookmarks", 2, doc_plan_split_by_bookmarks, DIRTY},
+    /* phase 8 — document-level signatures */
+    {"doc_sign", 4, doc_sign, DIRTY},
+    {"doc_get_signature_count", 1, doc_get_signature_count, 0},
+    {"doc_get_signature", 2, doc_get_signature, 0},
+    {"doc_verify_all_signatures", 1, doc_verify_all_signatures, DIRTY},
+    {"doc_has_timestamp", 1, doc_has_timestamp, 0},
+    {"doc_get_dss", 1, doc_get_dss, 0},
+    /* phase 8 — annotation extras */
+    {"annot_get_color", 3, annot_get_color, DIRTY},
+    {"annot_get_creation_date", 3, annot_get_creation_date, DIRTY},
+    {"annot_get_modification_date", 3, annot_get_modification_date, DIRTY},
+    {"annot_is_hidden", 3, annot_is_hidden, DIRTY},
+    {"annot_is_marked_deleted", 3, annot_is_marked_deleted, DIRTY},
+    {"annot_is_printable", 3, annot_is_printable, DIRTY},
+    {"annot_is_read_only", 3, annot_is_read_only, DIRTY},
+    {"annot_link_get_uri", 3, annot_link_get_uri, DIRTY},
+    {"annot_text_get_icon_name", 3, annot_text_get_icon_name, DIRTY},
+    {"annot_highlight_quad_points_count", 3, annot_highlight_quad_points_count, DIRTY},
+    {"annot_highlight_quad_point", 4, annot_highlight_quad_point, DIRTY},
+    {"annotations_to_json", 2, annotations_to_json, DIRTY},
+    /* phase 8 — element / font / search JSON accessors */
+    {"element_get_type", 2, element_get_type, 0},
+    {"element_get_text", 2, element_get_text, 0},
+    {"element_get_rect", 2, element_get_rect, 0},
+    {"elements_to_json", 1, elements_to_json, DIRTY},
+    {"font_get_size", 3, font_get_size, DIRTY},
+    {"fonts_to_json", 2, fonts_to_json, DIRTY},
+    {"search_results_to_json", 3, search_results_to_json, DIRTY},
+    /* phase 8 — crypto / FIPS */
+    {"crypto_active_provider", 0, crypto_active_provider, 0},
+    {"crypto_cbom", 0, crypto_cbom, 0},
+    {"crypto_inventory", 0, crypto_inventory, 0},
+    {"crypto_policy", 0, crypto_policy, 0},
+    {"crypto_fips_available", 0, crypto_fips_available, 0},
+    {"crypto_use_fips", 0, crypto_use_fips, 0},
+    {"crypto_set_policy", 1, crypto_set_policy, 0},
+    /* phase 8 — models / config */
+    {"model_manifest", 0, model_manifest, 0},
+    {"prefetch_available", 0, prefetch_available, 0},
+    {"prefetch_models", 1, prefetch_models, DIRTY},
+    {"set_max_ops_per_stream", 1, set_max_ops_per_stream, 0},
+    {"set_preserve_unmapped_glyphs", 1, set_preserve_unmapped_glyphs, 0},
+    /* phase 8 — PDF/A conversion */
+    {"doc_convert_to_pdf_a", 2, doc_convert_to_pdf_a, DIRTY},
 };
 
 ERL_NIF_INIT(Elixir.PdfOxide.Native, funcs, load, NULL, NULL, NULL)

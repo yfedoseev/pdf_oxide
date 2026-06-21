@@ -19,6 +19,9 @@ extern NSString* const POXErrorDomain;
 @class POXBarcode;
 @class POXOcrEngine;
 @class POXElementList;
+@class POXSignatureInfo;
+@class POXDss;
+@class POXDocument;
 
 /// PDF version with named major/minor fields.
 typedef struct {
@@ -77,6 +80,8 @@ typedef struct {
 @property(nonatomic, readonly, copy) NSString* encoding;
 @property(nonatomic, readonly) BOOL embedded;
 @property(nonatomic, readonly) BOOL subset;
+/// Nominal font size in points (0 if unknown).
+@property(nonatomic, readonly) float size;
 @end
 
 /// A single embedded image (Phase-2 extraction).
@@ -97,6 +102,31 @@ typedef struct {
 @property(nonatomic, readonly, copy) NSString* author;
 @property(nonatomic, readonly) POXBbox rect;
 @property(nonatomic, readonly) float borderWidth;
+/// Annotation color packed as 0xAARRGGBB (0 if absent).
+@property(nonatomic, readonly) uint32_t color;
+/// Creation / modification time as Unix epoch seconds (0 if absent).
+@property(nonatomic, readonly) int64_t creationDate;
+@property(nonatomic, readonly) int64_t modificationDate;
+@property(nonatomic, readonly) BOOL hidden;
+@property(nonatomic, readonly) BOOL markedDeleted;
+@property(nonatomic, readonly) BOOL printable;
+@property(nonatomic, readonly) BOOL readOnly;
+/// For Link annotations: the target URI (nil if none).
+@property(nonatomic, readonly, copy, nullable) NSString* linkUri;
+/// For Text (note) annotations: the icon name (nil if none).
+@property(nonatomic, readonly, copy, nullable) NSString* iconName;
+/// For Highlight annotations: an array of quad points, each an 8-element
+/// NSArray<NSNumber*> {x1,y1,x2,y2,x3,y3,x4,y4}. Empty when not a highlight.
+@property(nonatomic, readonly, copy) NSArray<NSArray<NSNumber*>*>* quadPoints;
+@end
+
+/// An AcroForm field (name / value / type, plus the readonly & required flags).
+@interface POXFormField : NSObject
+@property(nonatomic, readonly, copy) NSString* name;
+@property(nonatomic, readonly, copy) NSString* value;
+@property(nonatomic, readonly, copy) NSString* type;
+@property(nonatomic, readonly) BOOL readonly;
+@property(nonatomic, readonly) BOOL required;
 @end
 
 /// A single vector path (Phase-2 extraction).
@@ -140,6 +170,16 @@ typedef struct {
 + (nullable instancetype)openWithPassword:(NSString*)path
                                  password:(NSString*)password
                                     error:(NSError**)error;
+
+/// Convert Office documents (in-memory bytes) to a PDF document.
++ (nullable instancetype)openFromDocxBytes:(NSData*)data error:(NSError**)error;
++ (nullable instancetype)openFromPptxBytes:(NSData*)data error:(NSError**)error;
++ (nullable instancetype)openFromXlsxBytes:(NSData*)data error:(NSError**)error;
+
+/// Export the document to an Office format (owned bytes).
+- (nullable NSData*)toDocxWithError:(NSError**)error;
+- (nullable NSData*)toPptxWithError:(NSError**)error;
+- (nullable NSData*)toXlsxWithError:(NSError**)error;
 
 /// Number of pages, or -1 on error (sets `error`).
 - (NSInteger)pageCountError:(NSError**)error;
@@ -274,6 +314,95 @@ typedef struct {
                               engine:(nullable POXOcrEngine*)engine
                                error:(NSError**)error;
 
+// ── In-rect extractors (page-index 0-based; rect in user-space points) ────────
+- (nullable NSString*)extractTextInRect:(NSInteger)page
+                                      x:(float)x
+                                      y:(float)y
+                                  width:(float)width
+                                 height:(float)height
+                                  error:(NSError**)error;
+- (nullable NSArray<POXWord*>*)extractWordsInRect:(NSInteger)page
+                                               x:(float)x
+                                               y:(float)y
+                                           width:(float)width
+                                          height:(float)height
+                                           error:(NSError**)error;
+- (nullable NSArray<POXTextLine*>*)extractLinesInRect:(NSInteger)page
+                                                   x:(float)x
+                                                   y:(float)y
+                                               width:(float)width
+                                              height:(float)height
+                                               error:(NSError**)error;
+- (nullable NSArray<POXTable*>*)extractTablesInRect:(NSInteger)page
+                                                 x:(float)x
+                                                 y:(float)y
+                                             width:(float)width
+                                            height:(float)height
+                                             error:(NSError**)error;
+- (nullable NSArray<POXImage*>*)extractImagesInRect:(NSInteger)page
+                                                 x:(float)x
+                                                 y:(float)y
+                                             width:(float)width
+                                            height:(float)height
+                                             error:(NSError**)error;
+
+// ── Auto extraction / classification ─────────────────────────────────────────
+- (nullable NSString*)extractTextAuto:(NSInteger)page error:(NSError**)error;
+- (nullable NSString*)extractAllTextWithError:(NSError**)error;
+- (nullable NSString*)extractPageAuto:(NSInteger)page
+                          optionsJson:(nullable NSString*)optionsJson
+                                error:(NSError**)error;
+- (nullable NSString*)classifyPage:(NSInteger)page error:(NSError**)error;
+- (nullable NSString*)classifyDocumentWithError:(NSError**)error;
+
+// ── Header / footer / artifact removal ───────────────────────────────────────
+- (int32_t)eraseHeader:(NSInteger)page error:(NSError**)error;
+- (int32_t)eraseFooter:(NSInteger)page error:(NSError**)error;
+- (int32_t)eraseArtifacts:(NSInteger)page error:(NSError**)error;
+- (int32_t)removeHeaders:(float)threshold error:(NSError**)error;
+- (int32_t)removeFooters:(float)threshold error:(NSError**)error;
+- (int32_t)removeArtifacts:(float)threshold error:(NSError**)error;
+
+// ── AcroForm fields & form data ──────────────────────────────────────────────
+- (nullable NSArray<POXFormField*>*)formFieldsWithError:(NSError**)error;
+- (nullable NSData*)exportFormDataToBytes:(int32_t)formatType error:(NSError**)error;
+- (BOOL)importFormDataFromPath:(NSString*)dataPath error:(NSError**)error;
+- (BOOL)importFormFromFile:(NSString*)filename error:(NSError**)error;
+
+// ── Document structure / metadata ────────────────────────────────────────────
+- (nullable NSString*)outlineWithError:(NSError**)error;
+- (nullable NSString*)pageLabelsWithError:(NSError**)error;
+- (nullable NSString*)xmpMetadataWithError:(NSError**)error;
+- (nullable NSData*)sourceBytesWithError:(NSError**)error;
+- (BOOL)hasXfa;
+- (NSInteger)pageCountAliasError:(NSError**)error;
+- (nullable NSString*)planSplitByBookmarks:(nullable NSString*)optionsJson
+                                      error:(NSError**)error;
+
+// ── PDF/A conversion ─────────────────────────────────────────────────────────
+- (BOOL)convertToPdfA:(int32_t)level error:(NSError**)error;
+
+// ── Signatures (document-level) ──────────────────────────────────────────────
+- (BOOL)sign:(POXCertificate*)certificate
+       reason:(nullable NSString*)reason
+     location:(nullable NSString*)location
+        error:(NSError**)error;
+- (int32_t)signatureCountWithError:(NSError**)error;
+- (nullable POXSignatureInfo*)signatureAtIndex:(int32_t)index error:(NSError**)error;
+- (int32_t)verifyAllSignaturesWithError:(NSError**)error;
+- (int32_t)hasTimestampWithError:(NSError**)error;
+- (nullable POXDss*)dssWithError:(NSError**)error;
+
+// ── Annotations as JSON ──────────────────────────────────────────────────────
+- (nullable NSString*)annotationsJson:(NSInteger)page error:(NSError**)error;
+
+// ── Fonts / search results as JSON ───────────────────────────────────────────
+- (nullable NSString*)embeddedFontsJson:(NSInteger)page error:(NSError**)error;
+- (nullable NSString*)searchJson:(NSInteger)page
+                            term:(NSString*)term
+                   caseSensitive:(BOOL)caseSensitive
+                           error:(NSError**)error;
+
 /// Free the native handle now (idempotent).
 - (void)close;
 
@@ -320,6 +449,8 @@ typedef struct {
 
 - (BOOL)saveToPath:(NSString*)path error:(NSError**)error;
 - (nullable NSData*)toBytesWithError:(NSError**)error;
+/// Number of pages, or -1 on error (sets `error`).
+- (NSInteger)pageCountError:(NSError**)error;
 
 /// Free the native handle now (idempotent).
 - (void)close;
@@ -471,6 +602,10 @@ typedef struct {
              width:(float)width
             height:(float)height
              error:(NSError**)error;
+
+/// Import form data from raw FDF / XFDF bytes into the editor's document.
+- (BOOL)importFdfBytes:(NSData*)data error:(NSError**)error;
+- (BOOL)importXfdfBytes:(NSData*)data error:(NSError**)error;
 
 /// Free the native handle now (idempotent).
 - (void)close;
@@ -1112,6 +1247,55 @@ typedef struct {
                           tsaUrl:(NSString*)tsaUrl
                            error:(NSError**)error;
 
+@end
+
+/// Crypto-provider introspection and FIPS policy (process-global).
+@interface POXCrypto : NSObject
+/// Name of the active crypto provider (nil on error).
++ (nullable NSString*)activeProviderWithError:(NSError**)error;
+/// CycloneDX CBOM JSON for the active provider (nil on error).
++ (nullable NSString*)cbomWithError:(NSError**)error;
+/// Crypto inventory JSON (nil on error).
++ (nullable NSString*)inventoryWithError:(NSError**)error;
+/// Active crypto policy JSON / descriptor (nil on error).
++ (nullable NSString*)policyWithError:(NSError**)error;
+/// 1 if a FIPS-validated provider is available, 0 if not, -1 on error.
++ (int32_t)fipsAvailable;
+/// Switch to the FIPS provider; returns 0 on success.
++ (int32_t)useFips;
+/// Set the crypto policy from a spec string; returns 0 on success.
++ (int32_t)setPolicy:(NSString*)spec;
+@end
+
+/// Model manifest / prefetch (offline ML model management).
+@interface POXModels : NSObject
+/// Bundled model manifest JSON (nil on error).
++ (nullable NSString*)manifestWithError:(NSError**)error;
+/// 1 if model prefetch is available, 0 if not, -1 on error.
++ (int32_t)prefetchAvailable;
+/// Prefetch models for the comma-separated language codes; returns a status JSON
+/// (nil on error — e.g. when network/models are unavailable).
++ (nullable NSString*)prefetchModels:(NSString*)languagesCsv error:(NSError**)error;
+@end
+
+/// Process-global configuration knobs and the standalone renderer handle.
+@interface POXConfig : NSObject
+/// Cap operators decoded per content stream; returns the previous limit.
++ (int64_t)setMaxOpsPerStream:(int64_t)limit;
+/// Toggle keeping unmapped glyphs in extracted text; returns the previous flag.
++ (int32_t)setPreserveUnmappedGlyphs:(int32_t)preserve;
+@end
+
+/// A standalone renderer handle (independent of a document). Owns the native
+/// handle and frees it on -close/-dealloc.
+@interface POXRenderer : NSObject
++ (nullable instancetype)createWithDpi:(int32_t)dpi
+                                format:(int32_t)format
+                               quality:(int32_t)quality
+                             antiAlias:(BOOL)antiAlias
+                                 error:(NSError**)error;
+/// Free the native handle now (idempotent).
+- (void)close;
 @end
 
 NS_ASSUME_NONNULL_END

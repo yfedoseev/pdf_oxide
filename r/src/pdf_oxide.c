@@ -2911,6 +2911,644 @@ SEXP r_add_timestamp(SEXP pdf_data, SEXP sig_index, SEXP tsa_url) {
     return take_bytes(out_data, out_len, code, "add_timestamp");
 }
 
+/* ══ PHASE-8: 100%-coverage closeout — every remaining C-ABI symbol ══════════
+ * Same contracts as the earlier phases: char* returns -> take_string/free_string;
+ * owned uint8* -> take_bytes/free_bytes; LIST handles are opened, drained into
+ * named R lists with the matching *_list_free, then freed; non-success status or
+ * a set error_code raises a classed pdfoxide_error. */
+
+/* ── OFFICE: open-from-bytes (-> Document) ── */
+SEXP r_doc_open_from_docx_bytes(SEXP raw) {
+    int32_t code = 0;
+    PdfDocument *h = pdf_document_open_from_docx_bytes(RAW(raw), (uintptr_t)XLENGTH(raw), &code);
+    if (!h) pdfox_raise(code, "open_from_docx_bytes");
+    return wrap_doc(h);
+}
+SEXP r_doc_open_from_pptx_bytes(SEXP raw) {
+    int32_t code = 0;
+    PdfDocument *h = pdf_document_open_from_pptx_bytes(RAW(raw), (uintptr_t)XLENGTH(raw), &code);
+    if (!h) pdfox_raise(code, "open_from_pptx_bytes");
+    return wrap_doc(h);
+}
+SEXP r_doc_open_from_xlsx_bytes(SEXP raw) {
+    int32_t code = 0;
+    PdfDocument *h = pdf_document_open_from_xlsx_bytes(RAW(raw), (uintptr_t)XLENGTH(raw), &code);
+    if (!h) pdfox_raise(code, "open_from_xlsx_bytes");
+    return wrap_doc(h);
+}
+/* ── OFFICE: to-office bytes (-> raw via free_bytes) ── */
+SEXP r_doc_to_docx(SEXP ext) {
+    int32_t code = 0; uintptr_t out_len = 0;
+    uint8_t *p = pdf_document_to_docx(doc_ptr(ext), &out_len, &code);
+    return take_bytes(p, out_len, code, "to_docx");
+}
+SEXP r_doc_to_pptx(SEXP ext) {
+    int32_t code = 0; uintptr_t out_len = 0;
+    uint8_t *p = pdf_document_to_pptx(doc_ptr(ext), &out_len, &code);
+    return take_bytes(p, out_len, code, "to_pptx");
+}
+SEXP r_doc_to_xlsx(SEXP ext) {
+    int32_t code = 0; uintptr_t out_len = 0;
+    uint8_t *p = pdf_document_to_xlsx(doc_ptr(ext), &out_len, &code);
+    return take_bytes(p, out_len, code, "to_xlsx");
+}
+
+/* ── IN-RECT extractors (reuse the element list marshalling) ── */
+SEXP r_doc_extract_text_in_rect(SEXP ext, SEXP page, SEXP x, SEXP y, SEXP w, SEXP h) {
+    int32_t code = 0;
+    return take_string(
+        pdf_document_extract_text_in_rect(doc_ptr(ext), Rf_asInteger(page),
+            (float)Rf_asReal(x), (float)Rf_asReal(y), (float)Rf_asReal(w),
+            (float)Rf_asReal(h), &code),
+        code, "extract_text_in_rect");
+}
+SEXP r_doc_extract_words_in_rect(SEXP ext, SEXP page, SEXP x, SEXP y, SEXP w, SEXP h) {
+    int32_t code = 0;
+    FfiWordList *list = pdf_document_extract_words_in_rect(doc_ptr(ext),
+        Rf_asInteger(page), (float)Rf_asReal(x), (float)Rf_asReal(y),
+        (float)Rf_asReal(w), (float)Rf_asReal(h), &code);
+    if (!list) pdfox_raise(code, "extract_words_in_rect");
+    int32_t n = pdf_oxide_word_count(list);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    for (int32_t i = 0; i < n; i++) {
+        code = 0;
+        char *txt = pdf_oxide_word_get_text(list, i, &code);
+        if (!txt) { pdf_oxide_word_list_free(list); pdfox_raise(code, "extract_words_in_rect"); }
+        float bx = 0, by = 0, bw = 0, bh = 0;
+        code = 0;
+        pdf_oxide_word_get_bbox(list, i, &bx, &by, &bw, &bh, &code);
+        if (code != 0) { free_string(txt); pdf_oxide_word_list_free(list); pdfox_raise(code, "extract_words_in_rect"); }
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 2));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 2));
+        SEXP txtstr = PROTECT(Rf_mkChar(txt)); free_string(txt);
+        SET_VECTOR_ELT(rec, 0, Rf_ScalarString(txtstr));  SET_STRING_ELT(nms, 0, Rf_mkChar("text"));
+        SET_VECTOR_ELT(rec, 1, make_bbox(bx, by, bw, bh)); SET_STRING_ELT(nms, 1, Rf_mkChar("bbox"));
+        Rf_setAttrib(rec, R_NamesSymbol, nms);
+        SET_VECTOR_ELT(out, i, rec);
+        UNPROTECT(3);
+    }
+    pdf_oxide_word_list_free(list);
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_doc_extract_lines_in_rect(SEXP ext, SEXP page, SEXP x, SEXP y, SEXP w, SEXP h) {
+    int32_t code = 0;
+    FfiTextLineList *list = pdf_document_extract_lines_in_rect(doc_ptr(ext),
+        Rf_asInteger(page), (float)Rf_asReal(x), (float)Rf_asReal(y),
+        (float)Rf_asReal(w), (float)Rf_asReal(h), &code);
+    if (!list) pdfox_raise(code, "extract_lines_in_rect");
+    int32_t n = pdf_oxide_line_count(list);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    for (int32_t i = 0; i < n; i++) {
+        code = 0;
+        char *txt = pdf_oxide_line_get_text(list, i, &code);
+        if (!txt) { pdf_oxide_line_list_free(list); pdfox_raise(code, "extract_lines_in_rect"); }
+        float bx = 0, by = 0, bw = 0, bh = 0;
+        code = 0;
+        pdf_oxide_line_get_bbox(list, i, &bx, &by, &bw, &bh, &code);
+        if (code != 0) { free_string(txt); pdf_oxide_line_list_free(list); pdfox_raise(code, "extract_lines_in_rect"); }
+        code = 0;
+        int32_t wc = pdf_oxide_line_get_word_count(list, i, &code);
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 3));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 3));
+        SEXP txtstr = PROTECT(Rf_mkChar(txt)); free_string(txt);
+        SET_VECTOR_ELT(rec, 0, Rf_ScalarString(txtstr));  SET_STRING_ELT(nms, 0, Rf_mkChar("text"));
+        SET_VECTOR_ELT(rec, 1, make_bbox(bx, by, bw, bh)); SET_STRING_ELT(nms, 1, Rf_mkChar("bbox"));
+        SET_VECTOR_ELT(rec, 2, Rf_ScalarInteger(wc));      SET_STRING_ELT(nms, 2, Rf_mkChar("word_count"));
+        Rf_setAttrib(rec, R_NamesSymbol, nms);
+        SET_VECTOR_ELT(out, i, rec);
+        UNPROTECT(3);
+    }
+    pdf_oxide_line_list_free(list);
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_doc_extract_tables_in_rect(SEXP ext, SEXP page, SEXP x, SEXP y, SEXP w, SEXP h) {
+    int32_t code = 0;
+    FfiTableList *list = pdf_document_extract_tables_in_rect(doc_ptr(ext),
+        Rf_asInteger(page), (float)Rf_asReal(x), (float)Rf_asReal(y),
+        (float)Rf_asReal(w), (float)Rf_asReal(h), &code);
+    if (!list) pdfox_raise(code, "extract_tables_in_rect");
+    int32_t n = pdf_oxide_table_count(list);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    for (int32_t i = 0; i < n; i++) {
+        code = 0;
+        int32_t rows = pdf_oxide_table_get_row_count(list, i, &code);
+        if (code != 0) { pdf_oxide_table_list_free(list); pdfox_raise(code, "extract_tables_in_rect"); }
+        code = 0;
+        int32_t cols = pdf_oxide_table_get_col_count(list, i, &code);
+        if (code != 0) { pdf_oxide_table_list_free(list); pdfox_raise(code, "extract_tables_in_rect"); }
+        code = 0;
+        bool hdr = pdf_oxide_table_has_header(list, i, &code);
+        if (rows < 0) rows = 0;
+        if (cols < 0) cols = 0;
+        SEXP cells = PROTECT(Rf_allocMatrix(STRSXP, rows, cols));
+        for (int32_t r = 0; r < rows; r++) {
+            for (int32_t c = 0; c < cols; c++) {
+                code = 0;
+                char *cell = pdf_oxide_table_get_cell_text(list, i, r, c, &code);
+                if (!cell) { pdf_oxide_table_list_free(list); pdfox_raise(code, "extract_tables_in_rect"); }
+                SET_STRING_ELT(cells, r + c * rows, Rf_mkChar(cell));
+                free_string(cell);
+            }
+        }
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 4));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 4));
+        SET_VECTOR_ELT(rec, 0, Rf_ScalarInteger(rows)); SET_STRING_ELT(nms, 0, Rf_mkChar("row_count"));
+        SET_VECTOR_ELT(rec, 1, Rf_ScalarInteger(cols)); SET_STRING_ELT(nms, 1, Rf_mkChar("col_count"));
+        SET_VECTOR_ELT(rec, 2, Rf_ScalarLogical(hdr));  SET_STRING_ELT(nms, 2, Rf_mkChar("has_header"));
+        SET_VECTOR_ELT(rec, 3, cells);                  SET_STRING_ELT(nms, 3, Rf_mkChar("cells"));
+        Rf_setAttrib(rec, R_NamesSymbol, nms);
+        SET_VECTOR_ELT(out, i, rec);
+        UNPROTECT(3);
+    }
+    pdf_oxide_table_list_free(list);
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_doc_extract_images_in_rect(SEXP ext, SEXP page, SEXP x, SEXP y, SEXP w, SEXP h) {
+    int32_t code = 0;
+    FfiImageList *list = pdf_document_extract_images_in_rect(doc_ptr(ext),
+        Rf_asInteger(page), (float)Rf_asReal(x), (float)Rf_asReal(y),
+        (float)Rf_asReal(w), (float)Rf_asReal(h), &code);
+    if (!list) pdfox_raise(code, "extract_images_in_rect");
+    int32_t n = pdf_oxide_image_count(list);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    for (int32_t i = 0; i < n; i++) {
+        code = 0;
+        int32_t iw = pdf_oxide_image_get_width(list, i, &code);
+        if (code != 0) { pdf_oxide_image_list_free(list); pdfox_raise(code, "extract_images_in_rect"); }
+        code = 0;
+        int32_t ih = pdf_oxide_image_get_height(list, i, &code);
+        if (code != 0) { pdf_oxide_image_list_free(list); pdfox_raise(code, "extract_images_in_rect"); }
+        code = 0;
+        int32_t bpc = pdf_oxide_image_get_bits_per_component(list, i, &code);
+        code = 0;
+        char *fmt = pdf_oxide_image_get_format(list, i, &code);
+        if (!fmt) { pdf_oxide_image_list_free(list); pdfox_raise(code, "extract_images_in_rect"); }
+        code = 0;
+        char *cs = pdf_oxide_image_get_colorspace(list, i, &code);
+        if (!cs) { free_string(fmt); pdf_oxide_image_list_free(list); pdfox_raise(code, "extract_images_in_rect"); }
+        code = 0;
+        int32_t dlen = 0;
+        uint8_t *data = pdf_oxide_image_get_data(list, i, &dlen, &code);
+        if (!data) { free_string(fmt); free_string(cs); pdf_oxide_image_list_free(list); pdfox_raise(code, "extract_images_in_rect"); }
+        R_xlen_t dn = dlen < 0 ? 0 : (R_xlen_t)dlen;
+        SEXP rawd = PROTECT(Rf_allocVector(RAWSXP, dn));
+        if (dn) memcpy(RAW(rawd), data, (size_t)dn);
+        free_bytes(data);
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 6));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 6));
+        SET_VECTOR_ELT(rec, 0, Rf_ScalarInteger(iw));   SET_STRING_ELT(nms, 0, Rf_mkChar("width"));
+        SET_VECTOR_ELT(rec, 1, Rf_ScalarInteger(ih));   SET_STRING_ELT(nms, 1, Rf_mkChar("height"));
+        SET_VECTOR_ELT(rec, 2, Rf_ScalarInteger(bpc));  SET_STRING_ELT(nms, 2, Rf_mkChar("bits_per_component"));
+        SEXP fstr = PROTECT(Rf_mkChar(fmt)); free_string(fmt);
+        SET_VECTOR_ELT(rec, 3, Rf_ScalarString(fstr));  SET_STRING_ELT(nms, 3, Rf_mkChar("format"));
+        SEXP csstr = PROTECT(Rf_mkChar(cs)); free_string(cs);
+        SET_VECTOR_ELT(rec, 4, Rf_ScalarString(csstr)); SET_STRING_ELT(nms, 4, Rf_mkChar("colorspace"));
+        SET_VECTOR_ELT(rec, 5, rawd);                   SET_STRING_ELT(nms, 5, Rf_mkChar("data"));
+        Rf_setAttrib(rec, R_NamesSymbol, nms);
+        SET_VECTOR_ELT(out, i, rec);
+        UNPROTECT(4);
+    }
+    pdf_oxide_image_list_free(list);
+    UNPROTECT(1);
+    return out;
+}
+
+/* ── AUTO extraction + classification (all char* JSON / string) ── */
+SEXP r_doc_extract_all_text(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_document_extract_all_text(doc_ptr(ext), &code), code,
+                       "extract_all_text");
+}
+SEXP r_doc_extract_text_auto(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    return take_string(
+        pdf_document_extract_text_auto(doc_ptr(ext), Rf_asInteger(page), &code),
+        code, "extract_text_auto");
+}
+SEXP r_doc_extract_page_auto(SEXP ext, SEXP page, SEXP options_json) {
+    int32_t code = 0;
+    const char *opts = (options_json == R_NilValue) ? NULL : CHAR(STRING_ELT(options_json, 0));
+    return take_string(
+        pdf_document_extract_page_auto(doc_ptr(ext), Rf_asInteger(page), opts, &code),
+        code, "extract_page_auto");
+}
+SEXP r_doc_classify_page(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    return take_string(
+        pdf_document_classify_page(doc_ptr(ext), Rf_asInteger(page), &code),
+        code, "classify_page");
+}
+SEXP r_doc_classify_document(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_document_classify_document(doc_ptr(ext), &code), code,
+                       "classify_document");
+}
+
+/* ── HEADER / FOOTER / ARTIFACT (all int32 status) ── */
+SEXP r_doc_remove_headers(SEXP ext, SEXP threshold) {
+    int32_t code = 0;
+    int32_t n = pdf_document_remove_headers(doc_ptr(ext), (float)Rf_asReal(threshold), &code);
+    if (n < 0) pdfox_raise(code, "remove_headers");
+    return Rf_ScalarInteger(n);
+}
+SEXP r_doc_remove_footers(SEXP ext, SEXP threshold) {
+    int32_t code = 0;
+    int32_t n = pdf_document_remove_footers(doc_ptr(ext), (float)Rf_asReal(threshold), &code);
+    if (n < 0) pdfox_raise(code, "remove_footers");
+    return Rf_ScalarInteger(n);
+}
+SEXP r_doc_remove_artifacts(SEXP ext, SEXP threshold) {
+    int32_t code = 0;
+    int32_t n = pdf_document_remove_artifacts(doc_ptr(ext), (float)Rf_asReal(threshold), &code);
+    if (n < 0) pdfox_raise(code, "remove_artifacts");
+    return Rf_ScalarInteger(n);
+}
+SEXP r_doc_erase_header(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    int32_t n = pdf_document_erase_header(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (n < 0) pdfox_raise(code, "erase_header");
+    return Rf_ScalarInteger(n);
+}
+SEXP r_doc_erase_footer(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    int32_t n = pdf_document_erase_footer(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (n < 0) pdfox_raise(code, "erase_footer");
+    return Rf_ScalarInteger(n);
+}
+SEXP r_doc_erase_artifacts(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    int32_t n = pdf_document_erase_artifacts(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (n < 0) pdfox_raise(code, "erase_artifacts");
+    return Rf_ScalarInteger(n);
+}
+
+/* ── FORMS ── */
+SEXP r_doc_get_form_fields(SEXP ext) {
+    int32_t code = 0;
+    FfiFormFieldList *list = pdf_document_get_form_fields(doc_ptr(ext), &code);
+    if (!list) pdfox_raise(code, "get_form_fields");
+    int32_t n = pdf_oxide_form_field_count(list);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    for (int32_t i = 0; i < n; i++) {
+        code = 0;
+        char *name = pdf_oxide_form_field_get_name(list, i, &code);
+        if (!name) { pdf_oxide_form_field_list_free(list); pdfox_raise(code, "get_form_fields"); }
+        code = 0;
+        char *type = pdf_oxide_form_field_get_type(list, i, &code);
+        if (!type) { free_string(name); pdf_oxide_form_field_list_free(list); pdfox_raise(code, "get_form_fields"); }
+        code = 0;
+        char *value = pdf_oxide_form_field_get_value(list, i, &code);
+        if (!value) { free_string(name); free_string(type); pdf_oxide_form_field_list_free(list); pdfox_raise(code, "get_form_fields"); }
+        code = 0;
+        bool ro = pdf_oxide_form_field_is_readonly(list, i, &code);
+        code = 0;
+        bool req = pdf_oxide_form_field_is_required(list, i, &code);
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 5));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 5));
+        SEXP nstr = PROTECT(Rf_mkChar(name)); free_string(name);
+        SET_VECTOR_ELT(rec, 0, Rf_ScalarString(nstr));  SET_STRING_ELT(nms, 0, Rf_mkChar("name"));
+        SEXP tstr = PROTECT(Rf_mkChar(type)); free_string(type);
+        SET_VECTOR_ELT(rec, 1, Rf_ScalarString(tstr));  SET_STRING_ELT(nms, 1, Rf_mkChar("type"));
+        SEXP vstr = PROTECT(Rf_mkChar(value)); free_string(value);
+        SET_VECTOR_ELT(rec, 2, Rf_ScalarString(vstr));  SET_STRING_ELT(nms, 2, Rf_mkChar("value"));
+        SET_VECTOR_ELT(rec, 3, Rf_ScalarLogical(ro));   SET_STRING_ELT(nms, 3, Rf_mkChar("readonly"));
+        SET_VECTOR_ELT(rec, 4, Rf_ScalarLogical(req));  SET_STRING_ELT(nms, 4, Rf_mkChar("required"));
+        Rf_setAttrib(rec, R_NamesSymbol, nms);
+        SET_VECTOR_ELT(out, i, rec);
+        UNPROTECT(4);
+    }
+    pdf_oxide_form_field_list_free(list);
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_doc_export_form_data_to_bytes(SEXP ext, SEXP format_type) {
+    int32_t code = 0; uintptr_t out_len = 0;
+    uint8_t *p = pdf_document_export_form_data_to_bytes(doc_ptr(ext),
+        Rf_asInteger(format_type), &out_len, &code);
+    return take_bytes(p, out_len, code, "export_form_data_to_bytes");
+}
+SEXP r_doc_import_form_data(SEXP ext, SEXP data_path) {
+    int32_t code = 0;
+    if (pdf_document_import_form_data(doc_ptr(ext), CHAR(STRING_ELT(data_path, 0)), &code) != 0)
+        pdfox_raise(code, "import_form_data");
+    return R_NilValue;
+}
+SEXP r_form_import_from_file(SEXP ext, SEXP filename) {
+    int32_t code = 0;
+    bool ok = pdf_form_import_from_file(doc_ptr(ext), CHAR(STRING_ELT(filename, 0)), &code);
+    if (code != 0) pdfox_raise(code, "form_import_from_file");
+    return Rf_ScalarLogical(ok);
+}
+SEXP r_editor_import_fdf_bytes(SEXP ext, SEXP raw) {
+    int32_t code = 0;
+    if (pdf_editor_import_fdf_bytes(editor_ptr(ext), RAW(raw),
+            (uintptr_t)XLENGTH(raw), &code) != 0)
+        pdfox_raise(code, "editor_import_fdf_bytes");
+    return R_NilValue;
+}
+SEXP r_editor_import_xfdf_bytes(SEXP ext, SEXP raw) {
+    int32_t code = 0;
+    if (pdf_editor_import_xfdf_bytes(editor_ptr(ext), RAW(raw),
+            (uintptr_t)XLENGTH(raw), &code) != 0)
+        pdfox_raise(code, "editor_import_xfdf_bytes");
+    return R_NilValue;
+}
+
+/* ── DOC STRUCTURE / METADATA (char* JSON / raw / bool / int) ── */
+SEXP r_doc_get_outline(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_document_get_outline(doc_ptr(ext), &code), code, "get_outline");
+}
+SEXP r_doc_get_page_labels(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_document_get_page_labels(doc_ptr(ext), &code), code, "get_page_labels");
+}
+SEXP r_doc_get_xmp_metadata(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_document_get_xmp_metadata(doc_ptr(ext), &code), code, "get_xmp_metadata");
+}
+SEXP r_doc_get_source_bytes(SEXP ext) {
+    int32_t code = 0; uintptr_t out_len = 0;
+    uint8_t *p = pdf_document_get_source_bytes(doc_ptr(ext), &out_len, &code);
+    return take_bytes(p, out_len, code, "get_source_bytes");
+}
+SEXP r_doc_has_xfa(SEXP ext) {
+    return Rf_ScalarLogical(pdf_document_has_xfa(doc_ptr(ext)));
+}
+SEXP r_doc_plan_split_by_bookmarks(SEXP ext, SEXP options_json) {
+    int32_t code = 0;
+    const char *opts = (options_json == R_NilValue) ? NULL : CHAR(STRING_ELT(options_json, 0));
+    return take_string(
+        pdf_document_plan_split_by_bookmarks(doc_ptr(ext), opts, &code),
+        code, "plan_split_by_bookmarks");
+}
+/* pdf_get_page_count operates on a built Pdf* (not a PdfDocument). */
+SEXP r_pdf_get_page_count(SEXP ext) {
+    int32_t code = 0;
+    int32_t n = pdf_get_page_count(pdf_ptr(ext), &code);
+    if (n < 0) pdfox_raise(code, "get_page_count");
+    return Rf_ScalarInteger(n);
+}
+
+/* ── SIGNATURES on document (reuse SignatureInfo / Dss handles) ── */
+SEXP r_doc_sign(SEXP ext, SEXP cert_ext, SEXP reason, SEXP location) {
+    int32_t code = 0;
+    const char *rs = (reason == R_NilValue) ? NULL : CHAR(STRING_ELT(reason, 0));
+    const char *loc = (location == R_NilValue) ? NULL : CHAR(STRING_ELT(location, 0));
+    if (pdf_document_sign(doc_ptr(ext), certificate_ptr(cert_ext), rs, loc, &code) != 0)
+        pdfox_raise(code, "document_sign");
+    return R_NilValue;
+}
+SEXP r_doc_verify_all_signatures(SEXP ext) {
+    int32_t code = 0;
+    int32_t r = pdf_document_verify_all_signatures(doc_ptr(ext), &code);
+    return Rf_ScalarInteger(r);
+}
+SEXP r_doc_has_timestamp(SEXP ext) {
+    int32_t code = 0;
+    int32_t r = pdf_document_has_timestamp(doc_ptr(ext), &code);
+    if (r < 0) pdfox_raise(code, "has_timestamp");
+    return Rf_ScalarLogical(r != 0);
+}
+
+/* ── ANNOTATION EXTRAS (extend the FfiAnnotationList accessors) ── */
+SEXP r_annotation_get_color(SEXP ext, SEXP page, SEXP index) {
+    int32_t code = 0;
+    FfiAnnotationList *list = pdf_document_get_page_annotations(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "annotation_get_color");
+    code = 0;
+    uint32_t color = pdf_oxide_annotation_get_color(list, Rf_asInteger(index), &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) pdfox_raise(code, "annotation_get_color");
+    return Rf_ScalarInteger((int32_t)color);
+}
+SEXP r_annotation_get_creation_date(SEXP ext, SEXP page, SEXP index) {
+    int32_t code = 0;
+    FfiAnnotationList *list = pdf_document_get_page_annotations(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "annotation_get_creation_date");
+    code = 0;
+    int64_t t = pdf_oxide_annotation_get_creation_date(list, Rf_asInteger(index), &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) pdfox_raise(code, "annotation_get_creation_date");
+    return Rf_ScalarReal((double)t);
+}
+SEXP r_annotation_get_modification_date(SEXP ext, SEXP page, SEXP index) {
+    int32_t code = 0;
+    FfiAnnotationList *list = pdf_document_get_page_annotations(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "annotation_get_modification_date");
+    code = 0;
+    int64_t t = pdf_oxide_annotation_get_modification_date(list, Rf_asInteger(index), &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) pdfox_raise(code, "annotation_get_modification_date");
+    return Rf_ScalarReal((double)t);
+}
+SEXP r_annotation_is_hidden(SEXP ext, SEXP page, SEXP index) {
+    int32_t code = 0;
+    FfiAnnotationList *list = pdf_document_get_page_annotations(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "annotation_is_hidden");
+    code = 0;
+    bool r = pdf_oxide_annotation_is_hidden(list, Rf_asInteger(index), &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) pdfox_raise(code, "annotation_is_hidden");
+    return Rf_ScalarLogical(r);
+}
+SEXP r_annotation_is_marked_deleted(SEXP ext, SEXP page, SEXP index) {
+    int32_t code = 0;
+    FfiAnnotationList *list = pdf_document_get_page_annotations(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "annotation_is_marked_deleted");
+    code = 0;
+    bool r = pdf_oxide_annotation_is_marked_deleted(list, Rf_asInteger(index), &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) pdfox_raise(code, "annotation_is_marked_deleted");
+    return Rf_ScalarLogical(r);
+}
+SEXP r_annotation_is_printable(SEXP ext, SEXP page, SEXP index) {
+    int32_t code = 0;
+    FfiAnnotationList *list = pdf_document_get_page_annotations(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "annotation_is_printable");
+    code = 0;
+    bool r = pdf_oxide_annotation_is_printable(list, Rf_asInteger(index), &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) pdfox_raise(code, "annotation_is_printable");
+    return Rf_ScalarLogical(r);
+}
+SEXP r_annotation_is_read_only(SEXP ext, SEXP page, SEXP index) {
+    int32_t code = 0;
+    FfiAnnotationList *list = pdf_document_get_page_annotations(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "annotation_is_read_only");
+    code = 0;
+    bool r = pdf_oxide_annotation_is_read_only(list, Rf_asInteger(index), &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) pdfox_raise(code, "annotation_is_read_only");
+    return Rf_ScalarLogical(r);
+}
+SEXP r_link_annotation_get_uri(SEXP ext, SEXP page, SEXP index) {
+    int32_t code = 0;
+    FfiAnnotationList *list = pdf_document_get_page_annotations(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "link_annotation_get_uri");
+    code = 0;
+    char *uri = pdf_oxide_link_annotation_get_uri(list, Rf_asInteger(index), &code);
+    if (!uri) { pdf_oxide_annotation_list_free(list); pdfox_raise(code, "link_annotation_get_uri"); }
+    SEXP out = PROTECT(Rf_mkString(uri));
+    free_string(uri);
+    pdf_oxide_annotation_list_free(list);
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_text_annotation_get_icon_name(SEXP ext, SEXP page, SEXP index) {
+    int32_t code = 0;
+    FfiAnnotationList *list = pdf_document_get_page_annotations(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "text_annotation_get_icon_name");
+    code = 0;
+    char *icon = pdf_oxide_text_annotation_get_icon_name(list, Rf_asInteger(index), &code);
+    if (!icon) { pdf_oxide_annotation_list_free(list); pdfox_raise(code, "text_annotation_get_icon_name"); }
+    SEXP out = PROTECT(Rf_mkString(icon));
+    free_string(icon);
+    pdf_oxide_annotation_list_free(list);
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_highlight_annotation_quad_points_count(SEXP ext, SEXP page, SEXP index) {
+    int32_t code = 0;
+    FfiAnnotationList *list = pdf_document_get_page_annotations(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "highlight_quad_points_count");
+    code = 0;
+    int32_t n = pdf_oxide_highlight_annotation_get_quad_points_count(list, Rf_asInteger(index), &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) pdfox_raise(code, "highlight_quad_points_count");
+    return Rf_ScalarInteger(n);
+}
+SEXP r_highlight_annotation_quad_point(SEXP ext, SEXP page, SEXP index, SEXP quad_index) {
+    int32_t code = 0;
+    FfiAnnotationList *list = pdf_document_get_page_annotations(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "highlight_quad_point");
+    float x1 = 0, y1 = 0, x2 = 0, y2 = 0, x3 = 0, y3 = 0, x4 = 0, y4 = 0;
+    code = 0;
+    pdf_oxide_highlight_annotation_get_quad_point(list, Rf_asInteger(index),
+        Rf_asInteger(quad_index), &x1, &y1, &x2, &y2, &x3, &y3, &x4, &y4, &code);
+    pdf_oxide_annotation_list_free(list);
+    if (code != 0) pdfox_raise(code, "highlight_quad_point");
+    SEXP out = PROTECT(Rf_allocVector(REALSXP, 8));
+    REAL(out)[0] = x1; REAL(out)[1] = y1; REAL(out)[2] = x2; REAL(out)[3] = y2;
+    REAL(out)[4] = x3; REAL(out)[5] = y3; REAL(out)[6] = x4; REAL(out)[7] = y4;
+    UNPROTECT(1);
+    return out;
+}
+SEXP r_annotations_to_json(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    FfiAnnotationList *list = pdf_document_get_page_annotations(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "annotations_to_json");
+    code = 0;
+    char *json = pdf_oxide_annotations_to_json(list, &code);
+    pdf_oxide_annotation_list_free(list);
+    return take_string(json, code, "annotations_to_json");
+}
+
+/* ── ELEMENT / FONT / SEARCH JSON accessors ── */
+SEXP r_font_get_size(SEXP ext, SEXP page, SEXP index) {
+    int32_t code = 0;
+    FfiFontList *list = pdf_document_get_embedded_fonts(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "font_get_size");
+    code = 0;
+    float sz = pdf_oxide_font_get_size(list, Rf_asInteger(index), &code);
+    pdf_oxide_font_list_free(list);
+    if (code != 0) pdfox_raise(code, "font_get_size");
+    return Rf_ScalarReal((double)sz);
+}
+SEXP r_fonts_to_json(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    FfiFontList *list = pdf_document_get_embedded_fonts(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "fonts_to_json");
+    code = 0;
+    char *json = pdf_oxide_fonts_to_json(list, &code);
+    pdf_oxide_font_list_free(list);
+    return take_string(json, code, "fonts_to_json");
+}
+SEXP r_elements_to_json(SEXP ext, SEXP page) {
+    int32_t code = 0;
+    FfiElementList *list = pdf_page_get_elements(doc_ptr(ext), Rf_asInteger(page), &code);
+    if (!list) pdfox_raise(code, "elements_to_json");
+    code = 0;
+    char *json = pdf_oxide_elements_to_json(list, &code);
+    pdf_oxide_elements_free(list);
+    return take_string(json, code, "elements_to_json");
+}
+SEXP r_search_results_to_json(SEXP ext, SEXP page, SEXP term, SEXP case_sensitive) {
+    int32_t code = 0;
+    FfiSearchResults *list = pdf_document_search_page(doc_ptr(ext), Rf_asInteger(page),
+        CHAR(STRING_ELT(term, 0)), Rf_asLogical(case_sensitive) == TRUE, &code);
+    if (!list) pdfox_raise(code, "search_results_to_json");
+    code = 0;
+    char *json = pdf_oxide_search_results_to_json(list, &code);
+    pdf_oxide_search_result_free(list);
+    return take_string(json, code, "search_results_to_json");
+}
+
+/* ── CRYPTO / FIPS / governance ── */
+SEXP r_crypto_active_provider(void) {
+    char *s = pdf_oxide_crypto_active_provider();
+    return take_string(s, 0, "crypto_active_provider");
+}
+SEXP r_crypto_fips_available(void) {
+    return Rf_ScalarLogical(pdf_oxide_crypto_fips_available() != 0);
+}
+SEXP r_crypto_use_fips(void) {
+    int32_t r = pdf_oxide_crypto_use_fips();
+    return Rf_ScalarInteger(r);
+}
+SEXP r_crypto_set_policy(SEXP spec) {
+    int32_t r = pdf_oxide_crypto_set_policy(CHAR(STRING_ELT(spec, 0)));
+    return Rf_ScalarInteger(r);
+}
+SEXP r_crypto_policy(void) {
+    char *s = pdf_oxide_crypto_policy();
+    return take_string(s, 0, "crypto_policy");
+}
+SEXP r_crypto_inventory(void) {
+    char *s = pdf_oxide_crypto_inventory();
+    return take_string(s, 0, "crypto_inventory");
+}
+SEXP r_crypto_cbom(void) {
+    char *s = pdf_oxide_crypto_cbom();
+    return take_string(s, 0, "crypto_cbom");
+}
+
+/* ── MODELS / CONFIG ── */
+SEXP r_model_manifest(void) {
+    char *s = pdf_oxide_model_manifest();
+    return take_string(s, 0, "model_manifest");
+}
+SEXP r_prefetch_available(void) {
+    return Rf_ScalarLogical(pdf_oxide_prefetch_available() != 0);
+}
+SEXP r_prefetch_models(SEXP languages_csv) {
+    int32_t code = 0;
+    const char *csv = (languages_csv == R_NilValue) ? NULL : CHAR(STRING_ELT(languages_csv, 0));
+    return take_string(pdf_oxide_prefetch_models(csv, &code), code, "prefetch_models");
+}
+SEXP r_set_max_ops_per_stream(SEXP limit) {
+    int64_t prev = pdf_oxide_set_max_ops_per_stream((int64_t)Rf_asReal(limit));
+    return Rf_ScalarReal((double)prev);
+}
+SEXP r_set_preserve_unmapped_glyphs(SEXP preserve) {
+    int32_t prev = pdf_oxide_set_preserve_unmapped_glyphs(Rf_asInteger(preserve));
+    return Rf_ScalarInteger(prev);
+}
+SEXP r_doc_convert_to_pdf_a(SEXP ext, SEXP level) {
+    int32_t code = 0;
+    bool ok = pdf_convert_to_pdf_a(doc_ptr(ext), Rf_asInteger(level), &code);
+    if (code != 0) pdfox_raise(code, "convert_to_pdf_a");
+    return Rf_ScalarLogical(ok);
+}
+
 /* ── Native routine registration (R Writing-R-Extensions §5.4) ──────────────
  * Backs `useDynLib(pdfoxide, .registration = TRUE, .fixes = "C_")` so R resolves
  * each .Call via a registered symbol object rather than a runtime string lookup,
@@ -3205,6 +3843,74 @@ static const R_CallMethodDef CallEntries[] = {
     CDEF(r_page_get_rotation, 2),
     CDEF(r_page_get_elements, 2),
     CDEF(r_add_timestamp, 3),
+    /* PHASE-8: 100%-coverage closeout */
+    CDEF(r_doc_open_from_docx_bytes, 1),
+    CDEF(r_doc_open_from_pptx_bytes, 1),
+    CDEF(r_doc_open_from_xlsx_bytes, 1),
+    CDEF(r_doc_to_docx, 1),
+    CDEF(r_doc_to_pptx, 1),
+    CDEF(r_doc_to_xlsx, 1),
+    CDEF(r_doc_extract_text_in_rect, 6),
+    CDEF(r_doc_extract_words_in_rect, 6),
+    CDEF(r_doc_extract_lines_in_rect, 6),
+    CDEF(r_doc_extract_tables_in_rect, 6),
+    CDEF(r_doc_extract_images_in_rect, 6),
+    CDEF(r_doc_extract_all_text, 1),
+    CDEF(r_doc_extract_text_auto, 2),
+    CDEF(r_doc_extract_page_auto, 3),
+    CDEF(r_doc_classify_page, 2),
+    CDEF(r_doc_classify_document, 1),
+    CDEF(r_doc_remove_headers, 2),
+    CDEF(r_doc_remove_footers, 2),
+    CDEF(r_doc_remove_artifacts, 2),
+    CDEF(r_doc_erase_header, 2),
+    CDEF(r_doc_erase_footer, 2),
+    CDEF(r_doc_erase_artifacts, 2),
+    CDEF(r_doc_get_form_fields, 1),
+    CDEF(r_doc_export_form_data_to_bytes, 2),
+    CDEF(r_doc_import_form_data, 2),
+    CDEF(r_form_import_from_file, 2),
+    CDEF(r_editor_import_fdf_bytes, 2),
+    CDEF(r_editor_import_xfdf_bytes, 2),
+    CDEF(r_doc_get_outline, 1),
+    CDEF(r_doc_get_page_labels, 1),
+    CDEF(r_doc_get_xmp_metadata, 1),
+    CDEF(r_doc_get_source_bytes, 1),
+    CDEF(r_doc_has_xfa, 1),
+    CDEF(r_doc_plan_split_by_bookmarks, 2),
+    CDEF(r_pdf_get_page_count, 1),
+    CDEF(r_doc_sign, 4),
+    CDEF(r_doc_verify_all_signatures, 1),
+    CDEF(r_doc_has_timestamp, 1),
+    CDEF(r_annotation_get_color, 3),
+    CDEF(r_annotation_get_creation_date, 3),
+    CDEF(r_annotation_get_modification_date, 3),
+    CDEF(r_annotation_is_hidden, 3),
+    CDEF(r_annotation_is_marked_deleted, 3),
+    CDEF(r_annotation_is_printable, 3),
+    CDEF(r_annotation_is_read_only, 3),
+    CDEF(r_link_annotation_get_uri, 3),
+    CDEF(r_text_annotation_get_icon_name, 3),
+    CDEF(r_highlight_annotation_quad_points_count, 3),
+    CDEF(r_highlight_annotation_quad_point, 4),
+    CDEF(r_annotations_to_json, 2),
+    CDEF(r_font_get_size, 3),
+    CDEF(r_fonts_to_json, 2),
+    CDEF(r_elements_to_json, 2),
+    CDEF(r_search_results_to_json, 4),
+    CDEF(r_crypto_active_provider, 0),
+    CDEF(r_crypto_fips_available, 0),
+    CDEF(r_crypto_use_fips, 0),
+    CDEF(r_crypto_set_policy, 1),
+    CDEF(r_crypto_policy, 0),
+    CDEF(r_crypto_inventory, 0),
+    CDEF(r_crypto_cbom, 0),
+    CDEF(r_model_manifest, 0),
+    CDEF(r_prefetch_available, 0),
+    CDEF(r_prefetch_models, 1),
+    CDEF(r_set_max_ops_per_stream, 1),
+    CDEF(r_set_preserve_unmapped_glyphs, 1),
+    CDEF(r_doc_convert_to_pdf_a, 2),
     {NULL, NULL, 0}
 };
 

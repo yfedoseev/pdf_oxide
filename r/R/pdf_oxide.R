@@ -2428,3 +2428,417 @@ pdf_page_get_elements <- function(doc, page) {
 pdf_add_timestamp <- function(pdf_data, sig_index, tsa_url) {
   .Call(C_r_add_timestamp, as.raw(pdf_data), as.integer(sig_index), tsa_url)
 }
+
+# ══ PHASE-8: 100%-coverage closeout ════════════════════════════════════════════
+
+# ── Office round-trip ─────────────────────────────────────────────────────────
+
+#' Open a `pdfoxide_document` from DOCX / PPTX / XLSX bytes.
+#' @param bytes A `raw` vector of office-document bytes.
+#' @return A `pdfoxide_document` handle.
+#' @export
+pdf_open_from_docx_bytes <- function(bytes) {
+  structure(.Call(C_r_doc_open_from_docx_bytes, as.raw(bytes)),
+            class = "pdfoxide_document")
+}
+#' @rdname pdf_open_from_docx_bytes
+#' @export
+pdf_open_from_pptx_bytes <- function(bytes) {
+  structure(.Call(C_r_doc_open_from_pptx_bytes, as.raw(bytes)),
+            class = "pdfoxide_document")
+}
+#' @rdname pdf_open_from_docx_bytes
+#' @export
+pdf_open_from_xlsx_bytes <- function(bytes) {
+  structure(.Call(C_r_doc_open_from_xlsx_bytes, as.raw(bytes)),
+            class = "pdfoxide_document")
+}
+
+#' Convert the whole document to DOCX / PPTX / XLSX bytes.
+#' @param doc A `pdfoxide_document`.
+#' @return A `raw` vector of office-document bytes.
+#' @export
+pdf_to_docx <- function(doc) .Call(C_r_doc_to_docx, doc)
+#' @rdname pdf_to_docx
+#' @export
+pdf_to_pptx <- function(doc) .Call(C_r_doc_to_pptx, doc)
+#' @rdname pdf_to_docx
+#' @export
+pdf_to_xlsx <- function(doc) .Call(C_r_doc_to_xlsx, doc)
+
+# ── In-rect extractors ────────────────────────────────────────────────────────
+
+#' Extract reading-order text within a rectangle on a (0-based) page.
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param x,y,width,height The rectangle in user-space points.
+#' @export
+pdf_extract_text_in_rect <- function(doc, page, x, y, width, height) {
+  .Call(C_r_doc_extract_text_in_rect, doc, as.integer(page),
+        as.double(x), as.double(y), as.double(width), as.double(height))
+}
+#' Extract words within a rectangle on a (0-based) page.
+#' @inheritParams pdf_extract_text_in_rect
+#' @return A list of `Word` records (`list(text=, bbox=)`).
+#' @export
+pdf_extract_words_in_rect <- function(doc, page, x, y, width, height) {
+  .Call(C_r_doc_extract_words_in_rect, doc, as.integer(page),
+        as.double(x), as.double(y), as.double(width), as.double(height))
+}
+#' Extract text lines within a rectangle on a (0-based) page.
+#' @inheritParams pdf_extract_text_in_rect
+#' @return A list of `TextLine` records.
+#' @export
+pdf_extract_lines_in_rect <- function(doc, page, x, y, width, height) {
+  .Call(C_r_doc_extract_lines_in_rect, doc, as.integer(page),
+        as.double(x), as.double(y), as.double(width), as.double(height))
+}
+#' Extract tables within a rectangle on a (0-based) page.
+#' @inheritParams pdf_extract_text_in_rect
+#' @return A list of `Table` records.
+#' @export
+pdf_extract_tables_in_rect <- function(doc, page, x, y, width, height) {
+  .Call(C_r_doc_extract_tables_in_rect, doc, as.integer(page),
+        as.double(x), as.double(y), as.double(width), as.double(height))
+}
+#' Extract images within a rectangle on a (0-based) page.
+#' @inheritParams pdf_extract_text_in_rect
+#' @return A list of `Image` records.
+#' @export
+pdf_extract_images_in_rect <- function(doc, page, x, y, width, height) {
+  .Call(C_r_doc_extract_images_in_rect, doc, as.integer(page),
+        as.double(x), as.double(y), as.double(width), as.double(height))
+}
+
+# ── Auto extraction + classification ──────────────────────────────────────────
+
+#' Extract all text from the document (whole-document, reading order).
+#' @param doc A `pdfoxide_document`.
+#' @export
+pdf_extract_all_text <- function(doc) .Call(C_r_doc_extract_all_text, doc)
+
+#' Auto-routed (text-vs-OCR) text extraction for one (0-based) page.
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @export
+pdf_extract_text_auto <- function(doc, page) {
+  .Call(C_r_doc_extract_text_auto, doc, as.integer(page))
+}
+
+#' Rich per-page auto extraction (JSON `PageExtraction`).
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param options_json `{}`-tolerant `AutoExtractOptions` JSON, or `NULL`.
+#' @export
+pdf_extract_page_auto <- function(doc, page, options_json = NULL) {
+  .Call(C_r_doc_extract_page_auto, doc, as.integer(page), options_json)
+}
+
+#' Cheap per-page text-vs-OCR classification (JSON `PageClassification`).
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @export
+pdf_classify_page <- function(doc, page) {
+  .Call(C_r_doc_classify_page, doc, as.integer(page))
+}
+
+#' Cheap whole-document classification (JSON `DocumentClassification`).
+#' @param doc A `pdfoxide_document`.
+#' @export
+pdf_classify_document <- function(doc) .Call(C_r_doc_classify_document, doc)
+
+# ── Header / footer / artifact removal ────────────────────────────────────────
+
+#' Remove repeating headers / footers / artifacts across the document.
+#' @param doc A `pdfoxide_document`. @param threshold Repetition threshold (0..1).
+#' @return The number of affected pages.
+#' @export
+pdf_remove_headers <- function(doc, threshold = 0.5) {
+  .Call(C_r_doc_remove_headers, doc, as.double(threshold))
+}
+#' @rdname pdf_remove_headers
+#' @export
+pdf_remove_footers <- function(doc, threshold = 0.5) {
+  .Call(C_r_doc_remove_footers, doc, as.double(threshold))
+}
+#' @rdname pdf_remove_headers
+#' @export
+pdf_remove_artifacts <- function(doc, threshold = 0.5) {
+  .Call(C_r_doc_remove_artifacts, doc, as.double(threshold))
+}
+
+#' Erase the header / footer / artifacts on a single (0-based) page.
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @export
+pdf_erase_header <- function(doc, page) {
+  .Call(C_r_doc_erase_header, doc, as.integer(page))
+}
+#' @rdname pdf_erase_header
+#' @export
+pdf_erase_footer <- function(doc, page) {
+  .Call(C_r_doc_erase_footer, doc, as.integer(page))
+}
+#' @rdname pdf_erase_header
+#' @export
+pdf_erase_artifacts <- function(doc, page) {
+  .Call(C_r_doc_erase_artifacts, doc, as.integer(page))
+}
+
+# ── Forms ─────────────────────────────────────────────────────────────────────
+
+#' List the document's AcroForm fields.
+#' @param doc A `pdfoxide_document`.
+#' @return A list of `FormField` records
+#'   (`list(name=, type=, value=, readonly=, required=)`).
+#' @export
+pdf_get_form_fields <- function(doc) .Call(C_r_doc_get_form_fields, doc)
+
+#' Export form data as FDF (0) or XFDF (1) bytes.
+#' @param doc A `pdfoxide_document`. @param format_type 0=FDF, 1=XFDF.
+#' @return A `raw` vector.
+#' @export
+pdf_export_form_data_to_bytes <- function(doc, format_type = 0L) {
+  .Call(C_r_doc_export_form_data_to_bytes, doc, as.integer(format_type))
+}
+#' Import form data from a file path into the document.
+#' @param doc A `pdfoxide_document`. @param data_path Path to FDF/XFDF data.
+#' @export
+pdf_import_form_data <- function(doc, data_path) {
+  invisible(.Call(C_r_doc_import_form_data, doc, data_path))
+}
+#' Import form fields from a file into the document.
+#' @param doc A `pdfoxide_document`. @param filename Path to the form file.
+#' @return `TRUE` on success.
+#' @export
+pdf_form_import_from_file <- function(doc, filename) {
+  .Call(C_r_form_import_from_file, doc, filename)
+}
+#' Import FDF / XFDF bytes into an editor's form.
+#' @param editor A `pdfoxide_editor`. @param bytes A `raw` vector of FDF/XFDF.
+#' @export
+pdf_editor_import_fdf_bytes <- function(editor, bytes) {
+  invisible(.Call(C_r_editor_import_fdf_bytes, editor, as.raw(bytes)))
+}
+#' @rdname pdf_editor_import_fdf_bytes
+#' @export
+pdf_editor_import_xfdf_bytes <- function(editor, bytes) {
+  invisible(.Call(C_r_editor_import_xfdf_bytes, editor, as.raw(bytes)))
+}
+
+# ── Document structure / metadata ─────────────────────────────────────────────
+
+#' Document outline (bookmarks) as JSON.
+#' @param doc A `pdfoxide_document`.
+#' @export
+pdf_get_outline <- function(doc) .Call(C_r_doc_get_outline, doc)
+#' Page labels as JSON.
+#' @param doc A `pdfoxide_document`.
+#' @export
+pdf_get_page_labels <- function(doc) .Call(C_r_doc_get_page_labels, doc)
+#' XMP metadata as JSON.
+#' @param doc A `pdfoxide_document`.
+#' @export
+pdf_get_xmp_metadata <- function(doc) .Call(C_r_doc_get_xmp_metadata, doc)
+#' Current source bytes of the document (after any in-place conversion).
+#' @param doc A `pdfoxide_document`.
+#' @return A `raw` vector.
+#' @export
+pdf_get_source_bytes <- function(doc) .Call(C_r_doc_get_source_bytes, doc)
+#' Whether the document carries XFA forms.
+#' @param doc A `pdfoxide_document`.
+#' @export
+pdf_has_xfa <- function(doc) .Call(C_r_doc_has_xfa, doc)
+#' Plan a bookmark-based split (JSON array of segments).
+#' @param doc A `pdfoxide_document`. @param options_json `{}`-tolerant options JSON, or `NULL`.
+#' @export
+pdf_plan_split_by_bookmarks <- function(doc, options_json = NULL) {
+  .Call(C_r_doc_plan_split_by_bookmarks, doc, options_json)
+}
+#' Number of pages of a built `pdfoxide_pdf` (not a document).
+#' @param pdf A `pdfoxide_pdf`.
+#' @export
+pdf_get_page_count <- function(pdf) .Call(C_r_pdf_get_page_count, pdf)
+
+# ── Signatures on a document ──────────────────────────────────────────────────
+
+#' Sign the document in place with a loaded certificate.
+#' @param doc A `pdfoxide_document`. @param certificate A `pdfoxide_certificate`.
+#' @param reason,location Optional strings.
+#' @export
+pdf_sign <- function(doc, certificate, reason = NULL, location = NULL) {
+  invisible(.Call(C_r_doc_sign, doc, certificate, reason, location))
+}
+#' Verify all signatures in the document.
+#' @param doc A `pdfoxide_document`.
+#' @return An integer status (1 valid / 0 invalid / -1 unknown).
+#' @export
+pdf_verify_all_signatures <- function(doc) {
+  .Call(C_r_doc_verify_all_signatures, doc)
+}
+#' Whether the document carries a document-scoped archival timestamp.
+#' @param doc A `pdfoxide_document`.
+#' @export
+pdf_has_timestamp <- function(doc) .Call(C_r_doc_has_timestamp, doc)
+
+# ── Annotation extras (page + index addressed) ────────────────────────────────
+
+#' Annotation color (packed 0xRRGGBB) for the i-th annotation on a page.
+#' @param doc A `pdfoxide_document`. @param page 0-based page. @param index 0-based annotation index.
+#' @export
+pdf_annotation_get_color <- function(doc, page, index) {
+  .Call(C_r_annotation_get_color, doc, as.integer(page), as.integer(index))
+}
+#' Annotation creation date (epoch seconds).
+#' @inheritParams pdf_annotation_get_color
+#' @export
+pdf_annotation_get_creation_date <- function(doc, page, index) {
+  .Call(C_r_annotation_get_creation_date, doc, as.integer(page), as.integer(index))
+}
+#' Annotation modification date (epoch seconds).
+#' @inheritParams pdf_annotation_get_color
+#' @export
+pdf_annotation_get_modification_date <- function(doc, page, index) {
+  .Call(C_r_annotation_get_modification_date, doc, as.integer(page), as.integer(index))
+}
+#' Whether the annotation is hidden.
+#' @inheritParams pdf_annotation_get_color
+#' @export
+pdf_annotation_is_hidden <- function(doc, page, index) {
+  .Call(C_r_annotation_is_hidden, doc, as.integer(page), as.integer(index))
+}
+#' Whether the annotation is marked deleted.
+#' @inheritParams pdf_annotation_get_color
+#' @export
+pdf_annotation_is_marked_deleted <- function(doc, page, index) {
+  .Call(C_r_annotation_is_marked_deleted, doc, as.integer(page), as.integer(index))
+}
+#' Whether the annotation is printable.
+#' @inheritParams pdf_annotation_get_color
+#' @export
+pdf_annotation_is_printable <- function(doc, page, index) {
+  .Call(C_r_annotation_is_printable, doc, as.integer(page), as.integer(index))
+}
+#' Whether the annotation is read-only.
+#' @inheritParams pdf_annotation_get_color
+#' @export
+pdf_annotation_is_read_only <- function(doc, page, index) {
+  .Call(C_r_annotation_is_read_only, doc, as.integer(page), as.integer(index))
+}
+#' URI of a link annotation.
+#' @inheritParams pdf_annotation_get_color
+#' @export
+pdf_link_annotation_get_uri <- function(doc, page, index) {
+  .Call(C_r_link_annotation_get_uri, doc, as.integer(page), as.integer(index))
+}
+#' Icon name of a text annotation.
+#' @inheritParams pdf_annotation_get_color
+#' @export
+pdf_text_annotation_get_icon_name <- function(doc, page, index) {
+  .Call(C_r_text_annotation_get_icon_name, doc, as.integer(page), as.integer(index))
+}
+#' Number of quad points of a highlight annotation.
+#' @inheritParams pdf_annotation_get_color
+#' @export
+pdf_highlight_annotation_quad_points_count <- function(doc, page, index) {
+  .Call(C_r_highlight_annotation_quad_points_count, doc, as.integer(page), as.integer(index))
+}
+#' The `quad_index`-th quad point (8 numbers: x1,y1..x4,y4) of a highlight.
+#' @inheritParams pdf_annotation_get_color
+#' @param quad_index 0-based quad index.
+#' @export
+pdf_highlight_annotation_quad_point <- function(doc, page, index, quad_index) {
+  .Call(C_r_highlight_annotation_quad_point, doc, as.integer(page),
+        as.integer(index), as.integer(quad_index))
+}
+#' All annotations on a page serialized to JSON.
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @export
+pdf_annotations_to_json <- function(doc, page) {
+  .Call(C_r_annotations_to_json, doc, as.integer(page))
+}
+
+# ── Element / font / search JSON accessors ────────────────────────────────────
+
+#' Font size of the i-th embedded font on a page.
+#' @param doc A `pdfoxide_document`. @param page 0-based page. @param index 0-based font index.
+#' @export
+pdf_font_get_size <- function(doc, page, index) {
+  .Call(C_r_font_get_size, doc, as.integer(page), as.integer(index))
+}
+#' Embedded fonts of a page serialized to JSON.
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @export
+pdf_fonts_to_json <- function(doc, page) {
+  .Call(C_r_fonts_to_json, doc, as.integer(page))
+}
+#' Layout elements of a page serialized to JSON.
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @export
+pdf_elements_to_json <- function(doc, page) {
+  .Call(C_r_elements_to_json, doc, as.integer(page))
+}
+#' Search results for a term on a page serialized to JSON.
+#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param term Search term. @param case_sensitive Logical.
+#' @export
+pdf_search_results_to_json <- function(doc, page, term, case_sensitive = FALSE) {
+  .Call(C_r_search_results_to_json, doc, as.integer(page), term,
+        as.logical(case_sensitive))
+}
+
+# ── Crypto / FIPS / governance ────────────────────────────────────────────────
+
+#' Active cryptographic provider name.
+#' @export
+pdf_crypto_active_provider <- function() .Call(C_r_crypto_active_provider)
+#' Whether the FIPS provider was compiled in.
+#' @export
+pdf_crypto_fips_available <- function() .Call(C_r_crypto_fips_available)
+#' Install the FIPS provider (returns a status code).
+#' @export
+pdf_crypto_use_fips <- function() .Call(C_r_crypto_use_fips)
+#' Install the runtime crypto policy from its grammar string.
+#' @param spec The policy spec string.
+#' @return A status code (0 = success).
+#' @export
+pdf_crypto_set_policy <- function(spec) .Call(C_r_crypto_set_policy, spec)
+#' The active crypto policy as its canonical grammar string.
+#' @export
+pdf_crypto_policy <- function() .Call(C_r_crypto_policy)
+#' Comma-joined tokens of algorithms exercised so far (governance inventory).
+#' @export
+pdf_crypto_inventory <- function() .Call(C_r_crypto_inventory)
+#' CycloneDX Cryptographic Bill of Materials (JSON).
+#' @export
+pdf_crypto_cbom <- function() .Call(C_r_crypto_cbom)
+
+# ── Models / config ───────────────────────────────────────────────────────────
+
+#' Air-gapped OCR model manifest (JSON).
+#' @export
+pdf_model_manifest <- function() .Call(C_r_model_manifest)
+#' Whether this build can download OCR models.
+#' @export
+pdf_prefetch_available <- function() .Call(C_r_prefetch_available)
+#' Prefetch OCR models for the given comma-separated languages.
+#' @param languages_csv Comma-separated language codes, or `NULL` for English.
+#' @return The model cache directory path.
+#' @export
+pdf_prefetch_models <- function(languages_csv = NULL) {
+  .Call(C_r_prefetch_models, languages_csv)
+}
+#' Set the global content-stream operator cap. Returns the previous cap.
+#' @param limit New cap (negative restores the default).
+#' @export
+pdf_set_max_ops_per_stream <- function(limit) {
+  .Call(C_r_set_max_ops_per_stream, as.double(limit))
+}
+#' Toggle preservation of unmapped (U+FFFD) glyphs. Returns the previous value.
+#' @param preserve 1 to preserve, 0 to filter.
+#' @export
+pdf_set_preserve_unmapped_glyphs <- function(preserve) {
+  .Call(C_r_set_preserve_unmapped_glyphs, as.integer(preserve))
+}
+#' Convert the document to PDF/A in place.
+#' @param doc A `pdfoxide_document`. @param level The PDF/A level.
+#' @return `TRUE` on success.
+#' @export
+pdf_convert_to_pdf_a <- function(doc, level = 2L) {
+  .Call(C_r_doc_convert_to_pdf_a, doc, as.integer(level))
+}

@@ -15,6 +15,11 @@ static NSError* POXMakeError(int32_t code, NSString* op) {
                }];
 }
 
+// Copy an owned byte buffer into NSData and free it via free_bytes (defined
+// later); forward-declared so document-level byte returns can use it.
+static NSData* _Nullable POXTakeBytes(uint8_t* p, NSUInteger len, int32_t code,
+                                      NSString* op, NSError** error);
+
 // Copy a C string return into NSString and free it via free_string.
 static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
                                          NSError** error) {
@@ -107,6 +112,7 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
                     encoding:(NSString*)encoding
                     embedded:(BOOL)embedded
                       subset:(BOOL)subset;
+@property(nonatomic, readwrite) float size;
 @end
 
 @interface POXImage ()
@@ -125,6 +131,24 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
                       author:(NSString*)author
                         rect:(POXBbox)rect
                  borderWidth:(float)borderWidth;
+@property(nonatomic, readwrite) uint32_t color;
+@property(nonatomic, readwrite) int64_t creationDate;
+@property(nonatomic, readwrite) int64_t modificationDate;
+@property(nonatomic, readwrite) BOOL hidden;
+@property(nonatomic, readwrite) BOOL markedDeleted;
+@property(nonatomic, readwrite) BOOL printable;
+@property(nonatomic, readwrite) BOOL readOnly;
+@property(nonatomic, readwrite, copy, nullable) NSString* linkUri;
+@property(nonatomic, readwrite, copy, nullable) NSString* iconName;
+@property(nonatomic, readwrite, copy) NSArray<NSArray<NSNumber*>*>* quadPoints;
+@end
+
+@interface POXFormField ()
+- (instancetype)initWithName:(NSString*)name
+                       value:(NSString*)value
+                        type:(NSString*)type
+                    readonly:(BOOL)readonly
+                    required:(BOOL)required;
 @end
 
 @interface POXPath ()
@@ -265,6 +289,24 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
         _author = [author copy];
         _rect = rect;
         _borderWidth = borderWidth;
+        _quadPoints = @[];
+    }
+    return self;
+}
+@end
+
+@implementation POXFormField
+- (instancetype)initWithName:(NSString*)name
+                       value:(NSString*)value
+                        type:(NSString*)type
+                    readonly:(BOOL)readonly
+                    required:(BOOL)required {
+    if ((self = [super init])) {
+        _name = [name copy];
+        _value = [value copy];
+        _type = [type copy];
+        _readonly = readonly;
+        _required = required;
     }
     return self;
 }
@@ -616,14 +658,31 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
                                            @"fontEncoding", NULL);
         bool embedded = pdf_oxide_font_is_embedded(list, i, &c) != 0;
         bool subset = pdf_oxide_font_is_subset(list, i, &c) != 0;
-        [out addObject:[[POXFont alloc]
-                           initWithName:(name ?: @"")
-                                   type:(type ?: @"")encoding:(encoding ?: @"")embedded
-                                       :(embedded ? YES : NO)subset
-                                       :(subset ? YES : NO)]];
+        float size = pdf_oxide_font_get_size(list, i, &c);
+        POXFont* f = [[POXFont alloc]
+            initWithName:(name ?: @"")
+                    type:(type ?: @"")encoding:(encoding ?: @"")embedded
+                        :(embedded ? YES : NO)subset
+                        :(subset ? YES : NO)];
+        f.size = size;
+        [out addObject:f];
     }
     pdf_oxide_font_list_free(list);
     return out;
+}
+
+- (NSString*)embeddedFontsJson:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    FfiFontList* list = pdf_document_get_embedded_fonts(_handle, (int32_t)page, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"embeddedFontsJson");
+        return nil;
+    }
+    NSString* json =
+        POXTakeString(pdf_oxide_fonts_to_json(list, &code), code, @"fontsToJson", error);
+    pdf_oxide_font_list_free(list);
+    return json;
 }
 
 - (NSArray<POXImage*>*)embeddedImages:(NSInteger)page error:(NSError**)error {
@@ -689,14 +748,56 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
         pdf_oxide_annotation_get_rect(list, i, &x, &y, &w, &h, &c);
         float borderWidth = pdf_oxide_annotation_get_border_width(list, i, &c);
         POXBbox rect = {x, y, w, h};
-        [out addObject:[[POXAnnotation alloc]
-                           initWithType:(type ?: @"")
-                                subtype:(subtype ?: @"")content:(content ?: @"")author
-                                       :(author ?: @"")rect:rect
-                            borderWidth:borderWidth]];
+        POXAnnotation* a = [[POXAnnotation alloc]
+            initWithType:(type ?: @"")
+                 subtype:(subtype ?: @"")content:(content ?: @"")author
+                        :(author ?: @"")rect:rect
+             borderWidth:borderWidth];
+        a.color = pdf_oxide_annotation_get_color(list, i, &c);
+        a.creationDate = pdf_oxide_annotation_get_creation_date(list, i, &c);
+        a.modificationDate = pdf_oxide_annotation_get_modification_date(list, i, &c);
+        a.hidden = pdf_oxide_annotation_is_hidden(list, i, &c) ? YES : NO;
+        a.markedDeleted = pdf_oxide_annotation_is_marked_deleted(list, i, &c) ? YES : NO;
+        a.printable = pdf_oxide_annotation_is_printable(list, i, &c) ? YES : NO;
+        a.readOnly = pdf_oxide_annotation_is_read_only(list, i, &c) ? YES : NO;
+        a.linkUri = POXTakeString(pdf_oxide_link_annotation_get_uri(list, i, &c), c,
+                                  @"linkUri", NULL);
+        a.iconName = POXTakeString(pdf_oxide_text_annotation_get_icon_name(list, i, &c),
+                                   c, @"iconName", NULL);
+        int32_t quadCount =
+            pdf_oxide_highlight_annotation_get_quad_points_count(list, i, &c);
+        if (quadCount > 0) {
+            NSMutableArray<NSArray<NSNumber*>*>* quads =
+                [NSMutableArray arrayWithCapacity:(NSUInteger)quadCount];
+            for (int32_t q = 0; q < quadCount; ++q) {
+                float x1 = 0, y1 = 0, x2 = 0, y2 = 0, x3 = 0, y3 = 0, x4 = 0, y4 = 0;
+                pdf_oxide_highlight_annotation_get_quad_point(
+                    list, i, q, &x1, &y1, &x2, &y2, &x3, &y3, &x4, &y4, &c);
+                [quads addObject:@[
+                    @(x1), @(y1), @(x2), @(y2), @(x3), @(y3), @(x4), @(y4)
+                ]];
+            }
+            a.quadPoints = quads;
+        }
+        [out addObject:a];
     }
     pdf_oxide_annotation_list_free(list);
     return out;
+}
+
+- (NSString*)annotationsJson:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    FfiAnnotationList* list =
+        pdf_document_get_page_annotations(_handle, (int32_t)page, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"annotationsJson");
+        return nil;
+    }
+    NSString* json = POXTakeString(pdf_oxide_annotations_to_json(list, &code), code,
+                                   @"annotationsToJson", error);
+    pdf_oxide_annotation_list_free(list);
+    return json;
 }
 
 - (NSArray<POXPath*>*)extractPaths:(NSInteger)page error:(NSError**)error {
@@ -776,6 +877,24 @@ static NSArray<POXSearchResult*>* POXTakeSearchResults(FfiSearchResults* list) {
         return nil;
     }
     return POXTakeSearchResults(list);
+}
+
+- (NSString*)searchJson:(NSInteger)page
+                   term:(NSString*)term
+          caseSensitive:(BOOL)caseSensitive
+                  error:(NSError**)error {
+    int32_t code = 0;
+    FfiSearchResults* list = pdf_document_search_page(
+        _handle, (int32_t)page, term.UTF8String, caseSensitive ? true : false, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"searchJson");
+        return nil;
+    }
+    NSString* json = POXTakeString(pdf_oxide_search_results_to_json(list, &code), code,
+                                   @"searchResultsToJson", error);
+    pdf_oxide_search_result_free(list);
+    return json;
 }
 
 - (POXRenderedImage*)renderPage:(NSInteger)pageIndex
@@ -1026,6 +1145,486 @@ static NSArray<POXSearchResult*>* POXTakeSearchResults(FfiSearchResults* list) {
                          code, @"ocrExtractText", error);
 }
 
+// ── Office open/export ───────────────────────────────────────────────────────
+
++ (instancetype)openFromDocxBytes:(NSData*)data error:(NSError**)error {
+    int32_t code = 0;
+    PdfDocument* h =
+        pdf_document_open_from_docx_bytes(data.bytes, (uintptr_t)data.length, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"openFromDocxBytes");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
++ (instancetype)openFromPptxBytes:(NSData*)data error:(NSError**)error {
+    int32_t code = 0;
+    PdfDocument* h =
+        pdf_document_open_from_pptx_bytes(data.bytes, (uintptr_t)data.length, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"openFromPptxBytes");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
++ (instancetype)openFromXlsxBytes:(NSData*)data error:(NSError**)error {
+    int32_t code = 0;
+    PdfDocument* h =
+        pdf_document_open_from_xlsx_bytes(data.bytes, (uintptr_t)data.length, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"openFromXlsxBytes");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
+}
+
+- (NSData*)toDocxWithError:(NSError**)error {
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p = pdf_document_to_docx(_handle, &len, &code);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"toDocx", error);
+}
+- (NSData*)toPptxWithError:(NSError**)error {
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p = pdf_document_to_pptx(_handle, &len, &code);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"toPptx", error);
+}
+- (NSData*)toXlsxWithError:(NSError**)error {
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p = pdf_document_to_xlsx(_handle, &len, &code);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"toXlsx", error);
+}
+
+// ── In-rect extractors ───────────────────────────────────────────────────────
+
+- (NSString*)extractTextInRect:(NSInteger)page
+                             x:(float)x
+                             y:(float)y
+                         width:(float)width
+                        height:(float)height
+                         error:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_document_extract_text_in_rect(_handle, (int32_t)page, x, y,
+                                                           width, height, &code),
+                         code, @"extractTextInRect", error);
+}
+
+- (NSArray<POXWord*>*)extractWordsInRect:(NSInteger)page
+                                      x:(float)x
+                                      y:(float)y
+                                  width:(float)width
+                                 height:(float)height
+                                  error:(NSError**)error {
+    int32_t code = 0;
+    FfiWordList* list = pdf_document_extract_words_in_rect(_handle, (int32_t)page, x, y,
+                                                           width, height, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"extractWordsInRect");
+        return nil;
+    }
+    int32_t n = pdf_oxide_word_count(list);
+    NSMutableArray<POXWord*>* out = [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        NSString* text =
+            POXTakeString(pdf_oxide_word_get_text(list, i, &c), c, @"wordText", NULL);
+        float bx = 0, by = 0, bw = 0, bh = 0;
+        pdf_oxide_word_get_bbox(list, i, &bx, &by, &bw, &bh, &c);
+        NSString* fontName = POXTakeString(pdf_oxide_word_get_font_name(list, i, &c), c,
+                                           @"wordFontName", NULL);
+        float fontSize = pdf_oxide_word_get_font_size(list, i, &c);
+        bool bold = pdf_oxide_word_is_bold(list, i, &c);
+        POXBbox bbox = {bx, by, bw, bh};
+        [out addObject:[[POXWord alloc] initWithText:(text ?: @"")
+                                                bbox:bbox
+                                            fontName:(fontName ?: @"")fontSize:fontSize
+                                                bold:(bold ? YES : NO)]];
+    }
+    pdf_oxide_word_list_free(list);
+    return out;
+}
+
+- (NSArray<POXTextLine*>*)extractLinesInRect:(NSInteger)page
+                                          x:(float)x
+                                          y:(float)y
+                                      width:(float)width
+                                     height:(float)height
+                                      error:(NSError**)error {
+    int32_t code = 0;
+    FfiTextLineList* list = pdf_document_extract_lines_in_rect(_handle, (int32_t)page, x,
+                                                               y, width, height, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"extractLinesInRect");
+        return nil;
+    }
+    int32_t n = pdf_oxide_line_count(list);
+    NSMutableArray<POXTextLine*>* out =
+        [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        NSString* text =
+            POXTakeString(pdf_oxide_line_get_text(list, i, &c), c, @"lineText", NULL);
+        float bx = 0, by = 0, bw = 0, bh = 0;
+        pdf_oxide_line_get_bbox(list, i, &bx, &by, &bw, &bh, &c);
+        int32_t wordCount = pdf_oxide_line_get_word_count(list, i, &c);
+        POXBbox bbox = {bx, by, bw, bh};
+        [out addObject:[[POXTextLine alloc] initWithText:(text ?: @"")
+                                                    bbox:bbox
+                                               wordCount:wordCount]];
+    }
+    pdf_oxide_line_list_free(list);
+    return out;
+}
+
+- (NSArray<POXTable*>*)extractTablesInRect:(NSInteger)page
+                                        x:(float)x
+                                        y:(float)y
+                                    width:(float)width
+                                   height:(float)height
+                                    error:(NSError**)error {
+    int32_t code = 0;
+    FfiTableList* list = pdf_document_extract_tables_in_rect(_handle, (int32_t)page, x, y,
+                                                             width, height, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"extractTablesInRect");
+        return nil;
+    }
+    int32_t n = pdf_oxide_table_count(list);
+    NSMutableArray<POXTable*>* out = [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        int32_t rowCount = pdf_oxide_table_get_row_count(list, i, &c);
+        int32_t colCount = pdf_oxide_table_get_col_count(list, i, &c);
+        bool hasHeader = pdf_oxide_table_has_header(list, i, &c);
+        NSMutableArray<NSArray<NSString*>*>* cells =
+            [NSMutableArray arrayWithCapacity:(rowCount < 0 ? 0 : rowCount)];
+        for (int32_t r = 0; r < rowCount; ++r) {
+            NSMutableArray<NSString*>* row =
+                [NSMutableArray arrayWithCapacity:(colCount < 0 ? 0 : colCount)];
+            for (int32_t col = 0; col < colCount; ++col) {
+                NSString* cell =
+                    POXTakeString(pdf_oxide_table_get_cell_text(list, i, r, col, &c), c,
+                                  @"tableCell", NULL);
+                [row addObject:(cell ?: @"")];
+            }
+            [cells addObject:row];
+        }
+        [out addObject:[[POXTable alloc]
+                           initWithRowCount:rowCount
+                                   colCount:colCount
+                                  hasHeader:(hasHeader ? YES : NO)cells:cells]];
+    }
+    pdf_oxide_table_list_free(list);
+    return out;
+}
+
+- (NSArray<POXImage*>*)extractImagesInRect:(NSInteger)page
+                                        x:(float)x
+                                        y:(float)y
+                                    width:(float)width
+                                   height:(float)height
+                                    error:(NSError**)error {
+    int32_t code = 0;
+    FfiImageList* list = pdf_document_extract_images_in_rect(_handle, (int32_t)page, x, y,
+                                                             width, height, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"extractImagesInRect");
+        return nil;
+    }
+    int32_t n = pdf_oxide_image_count(list);
+    NSMutableArray<POXImage*>* out = [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        int32_t iw = pdf_oxide_image_get_width(list, i, &c);
+        int32_t ih = pdf_oxide_image_get_height(list, i, &c);
+        int32_t bpc = pdf_oxide_image_get_bits_per_component(list, i, &c);
+        NSString* format = POXTakeString(pdf_oxide_image_get_format(list, i, &c), c,
+                                         @"imageFormat", NULL);
+        NSString* colorspace = POXTakeString(
+            pdf_oxide_image_get_colorspace(list, i, &c), c, @"imageColorspace", NULL);
+        int32_t dataLen = 0;
+        uint8_t* p = pdf_oxide_image_get_data(list, i, &dataLen, &c);
+        NSData* data =
+            p ? [NSData dataWithBytes:p length:(dataLen < 0 ? 0 : (NSUInteger)dataLen)]
+              : [NSData data];
+        if (p)
+            free_bytes(p);
+        [out addObject:[[POXImage alloc] initWithWidth:iw
+                                                height:ih
+                                      bitsPerComponent:bpc
+                                                format:(format ?: @"")colorspace
+                                                      :(colorspace ?: @"")data:data]];
+    }
+    pdf_oxide_image_list_free(list);
+    return out;
+}
+
+// ── Auto extraction / classification ─────────────────────────────────────────
+
+- (NSString*)extractTextAuto:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_document_extract_text_auto(_handle, (int32_t)page, &code),
+                         code, @"extractTextAuto", error);
+}
+- (NSString*)extractAllTextWithError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_document_extract_all_text(_handle, &code), code,
+                         @"extractAllText", error);
+}
+- (NSString*)extractPageAuto:(NSInteger)page
+                 optionsJson:(NSString*)optionsJson
+                       error:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(
+        pdf_document_extract_page_auto(_handle, (int32_t)page,
+                                       optionsJson ? optionsJson.UTF8String : NULL,
+                                       &code),
+        code, @"extractPageAuto", error);
+}
+- (NSString*)classifyPage:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_document_classify_page(_handle, (int32_t)page, &code), code,
+                         @"classifyPage", error);
+}
+- (NSString*)classifyDocumentWithError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_document_classify_document(_handle, &code), code,
+                         @"classifyDocument", error);
+}
+
+// ── Header / footer / artifact removal ───────────────────────────────────────
+
+- (int32_t)eraseHeader:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    int32_t n = pdf_document_erase_header(_handle, (int32_t)page, &code);
+    if (n < 0 && error)
+        *error = POXMakeError(code, @"eraseHeader");
+    return n;
+}
+- (int32_t)eraseFooter:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    int32_t n = pdf_document_erase_footer(_handle, (int32_t)page, &code);
+    if (n < 0 && error)
+        *error = POXMakeError(code, @"eraseFooter");
+    return n;
+}
+- (int32_t)eraseArtifacts:(NSInteger)page error:(NSError**)error {
+    int32_t code = 0;
+    int32_t n = pdf_document_erase_artifacts(_handle, (int32_t)page, &code);
+    if (n < 0 && error)
+        *error = POXMakeError(code, @"eraseArtifacts");
+    return n;
+}
+- (int32_t)removeHeaders:(float)threshold error:(NSError**)error {
+    int32_t code = 0;
+    int32_t n = pdf_document_remove_headers(_handle, threshold, &code);
+    if (n < 0 && error)
+        *error = POXMakeError(code, @"removeHeaders");
+    return n;
+}
+- (int32_t)removeFooters:(float)threshold error:(NSError**)error {
+    int32_t code = 0;
+    int32_t n = pdf_document_remove_footers(_handle, threshold, &code);
+    if (n < 0 && error)
+        *error = POXMakeError(code, @"removeFooters");
+    return n;
+}
+- (int32_t)removeArtifacts:(float)threshold error:(NSError**)error {
+    int32_t code = 0;
+    int32_t n = pdf_document_remove_artifacts(_handle, threshold, &code);
+    if (n < 0 && error)
+        *error = POXMakeError(code, @"removeArtifacts");
+    return n;
+}
+
+// ── AcroForm fields & form data ──────────────────────────────────────────────
+
+- (NSArray<POXFormField*>*)formFieldsWithError:(NSError**)error {
+    int32_t code = 0;
+    FfiFormFieldList* list = pdf_document_get_form_fields(_handle, &code);
+    if (!list) {
+        if (error)
+            *error = POXMakeError(code, @"formFields");
+        return nil;
+    }
+    int32_t n = pdf_oxide_form_field_count(list);
+    NSMutableArray<POXFormField*>* out =
+        [NSMutableArray arrayWithCapacity:(n < 0 ? 0 : n)];
+    for (int32_t i = 0; i < n; ++i) {
+        int32_t c = 0;
+        NSString* name = POXTakeString(pdf_oxide_form_field_get_name(list, i, &c), c,
+                                       @"formFieldName", NULL);
+        NSString* value = POXTakeString(pdf_oxide_form_field_get_value(list, i, &c), c,
+                                        @"formFieldValue", NULL);
+        NSString* ftype = POXTakeString(pdf_oxide_form_field_get_type(list, i, &c), c,
+                                        @"formFieldType", NULL);
+        bool ro = pdf_oxide_form_field_is_readonly(list, i, &c);
+        bool req = pdf_oxide_form_field_is_required(list, i, &c);
+        [out addObject:[[POXFormField alloc] initWithName:(name ?: @"")
+                                                    value:(value ?: @"")
+                                                     type:(ftype ?: @"")
+                                                 readonly:(ro ? YES : NO)
+                                                 required:(req ? YES : NO)]];
+    }
+    pdf_oxide_form_field_list_free(list);
+    return out;
+}
+
+- (NSData*)exportFormDataToBytes:(int32_t)formatType error:(NSError**)error {
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p = pdf_document_export_form_data_to_bytes(_handle, formatType, &len, &code);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"exportFormDataToBytes", error);
+}
+
+- (BOOL)importFormDataFromPath:(NSString*)dataPath error:(NSError**)error {
+    int32_t code = 0;
+    int32_t rc =
+        pdf_document_import_form_data(_handle, dataPath.UTF8String, &code);
+    if (rc != 0 || code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"importFormData");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)importFormFromFile:(NSString*)filename error:(NSError**)error {
+    int32_t code = 0;
+    bool ok = pdf_form_import_from_file(_handle, filename.UTF8String, &code);
+    if (!ok || code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"importFormFromFile");
+        return NO;
+    }
+    return YES;
+}
+
+// ── Document structure / metadata ────────────────────────────────────────────
+
+- (NSString*)outlineWithError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_document_get_outline(_handle, &code), code, @"outline",
+                         error);
+}
+- (NSString*)pageLabelsWithError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_document_get_page_labels(_handle, &code), code,
+                         @"pageLabels", error);
+}
+- (NSString*)xmpMetadataWithError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_document_get_xmp_metadata(_handle, &code), code,
+                         @"xmpMetadata", error);
+}
+- (NSData*)sourceBytesWithError:(NSError**)error {
+    uintptr_t len = 0;
+    int32_t code = 0;
+    uint8_t* p = pdf_document_get_source_bytes(_handle, &len, &code);
+    return POXTakeBytes(p, (NSUInteger)len, code, @"sourceBytes", error);
+}
+- (BOOL)hasXfa {
+    return pdf_document_has_xfa(_handle) ? YES : NO;
+}
+- (NSInteger)pageCountAliasError:(NSError**)error {
+    int32_t code = 0;
+    int32_t n = pdf_get_page_count((Pdf*)(void*)_handle, &code);
+    if (n < 0) {
+        if (error)
+            *error = POXMakeError(code, @"pageCountAlias");
+        return -1;
+    }
+    return n;
+}
+- (NSString*)planSplitByBookmarks:(NSString*)optionsJson error:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(
+        pdf_document_plan_split_by_bookmarks(
+            _handle, optionsJson ? optionsJson.UTF8String : NULL, &code),
+        code, @"planSplitByBookmarks", error);
+}
+
+// ── PDF/A conversion ─────────────────────────────────────────────────────────
+
+- (BOOL)convertToPdfA:(int32_t)level error:(NSError**)error {
+    int32_t code = 0;
+    bool ok = pdf_convert_to_pdf_a(_handle, level, &code);
+    if (!ok || code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"convertToPdfA");
+        return NO;
+    }
+    return YES;
+}
+
+// ── Signatures (document-level) ──────────────────────────────────────────────
+
+- (BOOL)sign:(POXCertificate*)certificate
+       reason:(NSString*)reason
+     location:(NSString*)location
+        error:(NSError**)error {
+    int32_t code = 0;
+    int32_t rc = pdf_document_sign(_handle, [certificate POX_handle],
+                                   reason ? reason.UTF8String : NULL,
+                                   location ? location.UTF8String : NULL, &code);
+    if (rc != 0 || code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"sign");
+        return NO;
+    }
+    return YES;
+}
+- (int32_t)signatureCountWithError:(NSError**)error {
+    int32_t code = 0;
+    int32_t n = pdf_document_get_signature_count(_handle, &code);
+    if (n < 0 && error)
+        *error = POXMakeError(code, @"signatureCount");
+    return n;
+}
+- (POXSignatureInfo*)signatureAtIndex:(int32_t)index error:(NSError**)error {
+    int32_t code = 0;
+    void* h = pdf_document_get_signature(_handle, index, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"signature");
+        return nil;
+    }
+    return [[POXSignatureInfo alloc] initWithHandle:(FfiSignatureInfo*)h];
+}
+- (int32_t)verifyAllSignaturesWithError:(NSError**)error {
+    int32_t code = 0;
+    int32_t r = pdf_document_verify_all_signatures(_handle, &code);
+    if (r < 0 && error)
+        *error = POXMakeError(code, @"verifyAllSignatures");
+    return r;
+}
+- (int32_t)hasTimestampWithError:(NSError**)error {
+    int32_t code = 0;
+    int32_t r = pdf_document_has_timestamp(_handle, &code);
+    if (r < 0 && error)
+        *error = POXMakeError(code, @"hasTimestamp");
+    return r;
+}
+- (POXDss*)dssWithError:(NSError**)error {
+    int32_t code = 0;
+    void* h = pdf_document_get_dss(_handle, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"dss");
+        return nil;
+    }
+    return [[POXDss alloc] initWithHandle:h];
+}
+
 - (void)close {
     if (_handle) {
         pdf_document_free(_handle);
@@ -1176,6 +1775,17 @@ static NSArray<POXSearchResult*>* POXTakeSearchResults(FfiSearchResults* list) {
     NSData* out = [NSData dataWithBytes:p length:(len < 0 ? 0 : (NSUInteger)len)];
     free_bytes(p);
     return out;
+}
+
+- (NSInteger)pageCountError:(NSError**)error {
+    int32_t code = 0;
+    int32_t n = pdf_get_page_count(_handle, &code);
+    if (n < 0) {
+        if (error)
+            *error = POXMakeError(code, @"pageCount");
+        return -1;
+    }
+    return n;
 }
 
 - (void)close {
@@ -1832,6 +2442,30 @@ static NSData* _Nullable POXTakeBytes(uint8_t* p, NSUInteger len, int32_t code,
         code != 0) {
         if (error)
             *error = POXMakeError(code, @"addBarcodeToPage");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)importFdfBytes:(NSData*)data error:(NSError**)error {
+    int32_t code = 0;
+    int32_t rc = pdf_editor_import_fdf_bytes(_handle, data.bytes,
+                                             (uintptr_t)data.length, &code);
+    if (rc != 0 || code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"importFdfBytes");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)importXfdfBytes:(NSData*)data error:(NSError**)error {
+    int32_t code = 0;
+    int32_t rc = pdf_editor_import_xfdf_bytes(_handle, data.bytes,
+                                              (uintptr_t)data.length, &code);
+    if (rc != 0 || code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"importXfdfBytes");
         return NO;
     }
     return YES;
@@ -3914,6 +4548,101 @@ static void POXBuildByteArrays(NSArray<NSData*>* blobs, const uint8_t*** ptrs,
         return nil;
     }
     return POXTakeBytes(out, (NSUInteger)outLen, code, @"addTimestamp", error);
+}
+
+@end
+
+// ── Crypto / FIPS / models / config / renderer ───────────────────────────────
+
+@implementation POXCrypto
+
++ (NSString*)activeProviderWithError:(NSError**)error {
+    char* s = pdf_oxide_crypto_active_provider();
+    return POXTakeString(s, -1, @"cryptoActiveProvider", error);
+}
++ (NSString*)cbomWithError:(NSError**)error {
+    char* s = pdf_oxide_crypto_cbom();
+    return POXTakeString(s, -1, @"cryptoCbom", error);
+}
++ (NSString*)inventoryWithError:(NSError**)error {
+    char* s = pdf_oxide_crypto_inventory();
+    return POXTakeString(s, -1, @"cryptoInventory", error);
+}
++ (NSString*)policyWithError:(NSError**)error {
+    char* s = pdf_oxide_crypto_policy();
+    return POXTakeString(s, -1, @"cryptoPolicy", error);
+}
++ (int32_t)fipsAvailable {
+    return pdf_oxide_crypto_fips_available();
+}
++ (int32_t)useFips {
+    return pdf_oxide_crypto_use_fips();
+}
++ (int32_t)setPolicy:(NSString*)spec {
+    return pdf_oxide_crypto_set_policy(spec.UTF8String);
+}
+
+@end
+
+@implementation POXModels
+
++ (NSString*)manifestWithError:(NSError**)error {
+    char* s = pdf_oxide_model_manifest();
+    return POXTakeString(s, -1, @"modelManifest", error);
+}
++ (int32_t)prefetchAvailable {
+    return pdf_oxide_prefetch_available();
+}
++ (NSString*)prefetchModels:(NSString*)languagesCsv error:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_oxide_prefetch_models(languagesCsv.UTF8String, &code), code,
+                         @"prefetchModels", error);
+}
+
+@end
+
+@implementation POXConfig
+
++ (int64_t)setMaxOpsPerStream:(int64_t)limit {
+    return pdf_oxide_set_max_ops_per_stream(limit);
+}
++ (int32_t)setPreserveUnmappedGlyphs:(int32_t)preserve {
+    return pdf_oxide_set_preserve_unmapped_glyphs(preserve);
+}
+
+@end
+
+@implementation POXRenderer {
+    void* _handle;
+}
+
++ (instancetype)createWithDpi:(int32_t)dpi
+                       format:(int32_t)format
+                      quality:(int32_t)quality
+                    antiAlias:(BOOL)antiAlias
+                        error:(NSError**)error {
+    int32_t code = 0;
+    void* h = pdf_create_renderer(dpi, format, quality, antiAlias ? true : false, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"createRenderer");
+        return nil;
+    }
+    POXRenderer* r = [[self alloc] init];
+    if (r)
+        r->_handle = h;
+    return r;
+}
+
+- (void)close {
+    if (_handle) {
+        pdf_renderer_free(_handle);
+        _handle = NULL;
+    }
+}
+- (void)dealloc {
+    if (_handle)
+        pdf_renderer_free(_handle);
 }
 
 @end

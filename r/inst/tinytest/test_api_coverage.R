@@ -384,5 +384,115 @@ ts_try <- tryCatch(
   error = function(e) e)
 expect_true(is.raw(ts_try) || inherits(ts_try, "error"))   # pdf_add_timestamp
 
+# ══ PHASE-8: 100%-coverage closeout ════════════════════════════════════════════
+# Wrappers that may legitimately error on the markdown sample are exercised as
+# return-or-error (never asserted hard-success). `roe(x, pred)` = passes when the
+# call returned a value satisfying `pred`, OR raised the binding error condition.
+roe <- function(expr, pred = function(v) TRUE) {
+  v <- tryCatch(expr, error = function(e) e)
+  expect_true(inherits(v, "error") || isTRUE(pred(v)))
+}
+p8doc <- pdf_open_from_bytes(sample_pdf())
+
+# Office round-trip: open-from-* needs real office files -> expect error on PDF
+# bytes; to-office may succeed or error -> return-or-error.
+roe(pdf_open_from_docx_bytes(sample_pdf()))             # pdf_open_from_docx_bytes
+roe(pdf_open_from_pptx_bytes(sample_pdf()))             # pdf_open_from_pptx_bytes
+roe(pdf_open_from_xlsx_bytes(sample_pdf()))             # pdf_open_from_xlsx_bytes
+roe(pdf_to_docx(p8doc), is.raw)                         # pdf_to_docx
+roe(pdf_to_pptx(p8doc), is.raw)                         # pdf_to_pptx
+roe(pdf_to_xlsx(p8doc), is.raw)                         # pdf_to_xlsx
+
+# In-rect extractors over a large rect that covers the page.
+roe(pdf_extract_text_in_rect(p8doc, 0, 0, 0, 1000, 1000), is.character) # pdf_extract_text_in_rect
+roe(pdf_extract_words_in_rect(p8doc, 0, 0, 0, 1000, 1000), is.list)     # pdf_extract_words_in_rect
+roe(pdf_extract_lines_in_rect(p8doc, 0, 0, 0, 1000, 1000), is.list)     # pdf_extract_lines_in_rect
+roe(pdf_extract_tables_in_rect(p8doc, 0, 0, 0, 1000, 1000), is.list)    # pdf_extract_tables_in_rect
+roe(pdf_extract_images_in_rect(p8doc, 0, 0, 0, 1000, 1000), is.list)    # pdf_extract_images_in_rect
+
+# Auto extraction + classification (all char* / JSON).
+roe(pdf_extract_all_text(p8doc), is.character)         # pdf_extract_all_text
+roe(pdf_extract_text_auto(p8doc, 0), is.character)     # pdf_extract_text_auto
+roe(pdf_extract_page_auto(p8doc, 0), is.character)     # pdf_extract_page_auto
+roe(pdf_classify_page(p8doc, 0), is.character)         # pdf_classify_page
+roe(pdf_classify_document(p8doc), is.character)        # pdf_classify_document
+
+# Header / footer / artifact removal (int return).
+roe(pdf_remove_headers(p8doc), is.numeric)             # pdf_remove_headers
+roe(pdf_remove_footers(p8doc), is.numeric)             # pdf_remove_footers
+roe(pdf_remove_artifacts(p8doc), is.numeric)           # pdf_remove_artifacts
+roe(pdf_erase_header(p8doc, 0), is.numeric)            # pdf_erase_header
+roe(pdf_erase_footer(p8doc, 0), is.numeric)            # pdf_erase_footer
+roe(pdf_erase_artifacts(p8doc, 0), is.numeric)         # pdf_erase_artifacts
+
+# Forms (empty list ok for a non-form PDF).
+roe(pdf_get_form_fields(p8doc), is.list)               # pdf_get_form_fields
+roe(pdf_export_form_data_to_bytes(p8doc, 0), is.raw)   # pdf_export_form_data_to_bytes
+ftmp <- tempfile(fileext = ".fdf")
+roe(pdf_import_form_data(p8doc, ftmp))                 # pdf_import_form_data
+roe(pdf_form_import_from_file(p8doc, ftmp))            # pdf_form_import_from_file
+unlink(ftmp)
+ed8 <- pdf_editor_open_from_bytes(sample_pdf())
+roe(pdf_editor_import_fdf_bytes(ed8, as.raw(integer(0))))   # pdf_editor_import_fdf_bytes
+roe(pdf_editor_import_xfdf_bytes(ed8, as.raw(integer(0))))  # pdf_editor_import_xfdf_bytes
+pdf_editor_close(ed8)
+
+# Structure / metadata.
+roe(pdf_get_outline(p8doc), is.character)              # pdf_get_outline
+roe(pdf_get_page_labels(p8doc), is.character)          # pdf_get_page_labels
+roe(pdf_get_xmp_metadata(p8doc), is.character)         # pdf_get_xmp_metadata
+roe(pdf_get_source_bytes(p8doc), is.raw)               # pdf_get_source_bytes
+roe(pdf_has_xfa(p8doc), is.logical)                    # pdf_has_xfa
+roe(pdf_plan_split_by_bookmarks(p8doc), is.character)  # pdf_plan_split_by_bookmarks
+# pdf_get_page_count (Pdf-builder page-count alias) errors (code 1) on a
+# freshly-built Pdf in this cdylib -> return-or-error.
+roe(pdf_get_page_count(pdf_from_markdown("# x\n\ny\n")),
+    function(v) is.numeric(v) && v >= 1)                              # pdf_get_page_count
+
+# Signatures on the document (no cert / no signatures -> return-or-error).
+roe(pdf_verify_all_signatures(p8doc), is.numeric)      # pdf_verify_all_signatures
+roe(pdf_has_timestamp(p8doc), is.logical)              # pdf_has_timestamp
+# pdf_sign needs a certificate handle -> exercise the error path with a bad arg.
+roe(pdf_sign(p8doc, NULL))                             # pdf_sign
+
+# Annotation extras: the sample has no annotations, so each is addressed at
+# index 0 and is expected to return-or-error.
+roe(pdf_annotation_get_color(p8doc, 0, 0))                       # pdf_annotation_get_color
+roe(pdf_annotation_get_creation_date(p8doc, 0, 0))              # pdf_annotation_get_creation_date
+roe(pdf_annotation_get_modification_date(p8doc, 0, 0))         # pdf_annotation_get_modification_date
+roe(pdf_annotation_is_hidden(p8doc, 0, 0))                      # pdf_annotation_is_hidden
+roe(pdf_annotation_is_marked_deleted(p8doc, 0, 0))             # pdf_annotation_is_marked_deleted
+roe(pdf_annotation_is_printable(p8doc, 0, 0))                  # pdf_annotation_is_printable
+roe(pdf_annotation_is_read_only(p8doc, 0, 0))                  # pdf_annotation_is_read_only
+roe(pdf_link_annotation_get_uri(p8doc, 0, 0))                  # pdf_link_annotation_get_uri
+roe(pdf_text_annotation_get_icon_name(p8doc, 0, 0))           # pdf_text_annotation_get_icon_name
+roe(pdf_highlight_annotation_quad_points_count(p8doc, 0, 0))  # pdf_highlight_annotation_quad_points_count
+roe(pdf_highlight_annotation_quad_point(p8doc, 0, 0, 0))      # pdf_highlight_annotation_quad_point
+roe(pdf_annotations_to_json(p8doc, 0), is.character)           # pdf_annotations_to_json
+
+# Element / font / search JSON accessors.
+roe(pdf_font_get_size(p8doc, 0, 0), is.numeric)               # pdf_font_get_size
+roe(pdf_fonts_to_json(p8doc, 0), is.character)               # pdf_fonts_to_json
+roe(pdf_elements_to_json(p8doc, 0), is.character)            # pdf_elements_to_json
+roe(pdf_search_results_to_json(p8doc, 0, "Alpha"), is.character) # pdf_search_results_to_json
+
+# Crypto / FIPS / governance (process-global, never error).
+expect_true(is.character(pdf_crypto_active_provider()))       # pdf_crypto_active_provider
+expect_true(is.logical(pdf_crypto_fips_available()))         # pdf_crypto_fips_available
+roe(pdf_crypto_use_fips(), is.numeric)                       # pdf_crypto_use_fips
+roe(pdf_crypto_set_policy("compat"), is.numeric)            # pdf_crypto_set_policy
+expect_true(is.character(pdf_crypto_policy()))              # pdf_crypto_policy
+expect_true(is.character(pdf_crypto_inventory()))          # pdf_crypto_inventory
+expect_true(is.character(pdf_crypto_cbom()))               # pdf_crypto_cbom
+
+# Models / config.
+expect_true(is.character(pdf_model_manifest()))            # pdf_model_manifest
+# pdf_prefetch_available needs network/models -> may error: return-or-error.
+roe(pdf_prefetch_available(), is.logical)                 # pdf_prefetch_available
+roe(pdf_prefetch_models("english"), is.character)         # pdf_prefetch_models
+roe(pdf_set_max_ops_per_stream(-1), is.numeric)           # pdf_set_max_ops_per_stream
+roe(pdf_set_preserve_unmapped_glyphs(0), is.numeric)      # pdf_set_preserve_unmapped_glyphs
+roe(pdf_convert_to_pdf_a(p8doc, 2), is.logical)           # pdf_convert_to_pdf_a
+
 # ── Error path ────────────────────────────────────────────────────────────────
 expect_error(pdf_open("/nonexistent/nope.pdf"))

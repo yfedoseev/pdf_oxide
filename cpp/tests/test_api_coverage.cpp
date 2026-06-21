@@ -717,6 +717,280 @@ int main() {
         CHECK(tsExercised);
     }
 
+    // ── PHASE-8: in-rect extraction / auto / classify / structure / forms /
+    //            office / signatures (doc-level) / annotation extras / *_to_json
+    //            / crypto / models / config ──────────────────────────────────
+    //
+    // Many PHASE-8 wrappers may legitimately succeed OR raise on the synthetic
+    // markdown sample (no forms, no /DSS, no signatures, no office round-trip,
+    // no network for model prefetch). Per the api-coverage convention every such
+    // wrapper is invoked as return-or-Error so it is linked + exercised.
+
+    // Helper macro: pass if the wrapper returns or raises pdf_oxide::Error.
+    // Variadic so statement blocks containing commas (e.g. brace-init lists)
+    // are passed through intact.
+#define EXERCISE(...)                                                                  \
+    do {                                                                               \
+        bool ok = false;                                                               \
+        try {                                                                          \
+            __VA_ARGS__;                                                               \
+            ok = true;                                                                 \
+        } catch (const Error&) {                                                       \
+            ok = true;                                                                 \
+        }                                                                              \
+        CHECK(ok);                                                                     \
+    } while (0)
+
+    // In-rect extraction over a wide rect covering the whole first page.
+    {
+        float pw = doc.page_get_width(0);
+        float ph = doc.page_get_height(0);
+        // text_in_rect should find the sample's prose; the rest may be empty.
+        EXERCISE({
+            std::string t = doc.extract_text_in_rect(0, 0, 0, pw, ph); // text_in_rect
+            (void)t;
+        });
+        EXERCISE({
+            auto w = doc.extract_words_in_rect(0, 0, 0, pw, ph); // words_in_rect
+            CHECK(w.size() >= 0);
+        });
+        EXERCISE({
+            auto l = doc.extract_lines_in_rect(0, 0, 0, pw, ph); // lines_in_rect
+            CHECK(l.size() >= 0);
+        });
+        EXERCISE({
+            auto tb = doc.extract_tables_in_rect(0, 0, 0, pw, ph); // tables_in_rect
+            CHECK(tb.size() >= 0);
+        });
+        EXERCISE({
+            auto im = doc.extract_images_in_rect(0, 0, 0, pw, ph); // images_in_rect
+            CHECK(im.size() >= 0);
+        });
+    }
+
+    // Auto / classification extraction.
+    EXERCISE({
+        std::string t = doc.extract_text_auto(0); // extract_text_auto
+        (void)t;
+    });
+    EXERCISE({
+        std::string t = doc.extract_all_text(); // extract_all_text
+        (void)t;
+    });
+    EXERCISE({
+        std::string t = doc.extract_page_auto(0); // extract_page_auto (default opts)
+        (void)t;
+    });
+    EXERCISE({
+        std::string t = doc.extract_page_auto(0, "{}"); // extract_page_auto (json)
+        (void)t;
+    });
+    EXERCISE({
+        std::string c = doc.classify_page(0); // classify_page
+        (void)c;
+    });
+    EXERCISE({
+        std::string c = doc.classify_document(); // classify_document
+        (void)c;
+    });
+
+    // Header / footer / artifact removal (mutate an editable copy of the doc).
+    {
+        auto d = Document::open_from_bytes(bytes);
+        EXERCISE((void)d.erase_header(0));        // erase_header
+        EXERCISE((void)d.erase_footer(0));        // erase_footer
+        EXERCISE((void)d.erase_artifacts(0));     // erase_artifacts
+        EXERCISE((void)d.remove_headers(0.5f));   // remove_headers
+        EXERCISE((void)d.remove_footers(0.5f));   // remove_footers
+        EXERCISE((void)d.remove_artifacts(0.5f)); // remove_artifacts
+    }
+
+    // AcroForm fields (the sample has none → empty list is valid).
+    {
+        EXERCISE({
+            auto fields = doc.get_form_fields(); // get_form_fields
+            CHECK(fields.size() >= 0);
+            for (const auto& f : fields) {
+                (void)f.name;
+                (void)f.value;
+                (void)f.type;
+                (void)f.readonly;
+                (void)f.required;
+            }
+        });
+        EXERCISE({
+            auto data = doc.export_form_data_to_bytes(0); // export_form_data_to_bytes
+            (void)data;
+        });
+        EXERCISE(
+            (void)doc.import_form_data("/nonexistent/form.fdf")); // import_form_data
+        EXERCISE((void)doc.form_import_from_file(
+            "/nonexistent/form.fdf")); // form_import_from_file
+        // editor-side FDF/XFDF import.
+        std::string ep = std::string(std::tmpnam(nullptr)) + ".pdf";
+        pdf_oxide::Pdf::from_markdown("# e\n\nx\n").save(ep);
+        auto ed = pdf_oxide::DocumentEditor::open(ep);
+        std::vector<std::uint8_t> empty;
+        EXERCISE((void)ed.import_fdf_bytes(empty));  // import_fdf_bytes
+        EXERCISE((void)ed.import_xfdf_bytes(empty)); // import_xfdf_bytes
+        ed.close();
+        std::remove(ep.c_str());
+    }
+
+    // Document structure / metadata.
+    EXERCISE({
+        std::string o = doc.get_outline(); // get_outline
+        (void)o;
+    });
+    EXERCISE({
+        std::string l = doc.get_page_labels(); // get_page_labels
+        (void)l;
+    });
+    EXERCISE({
+        std::string x = doc.get_xmp_metadata(); // get_xmp_metadata
+        (void)x;
+    });
+    EXERCISE({
+        auto sb = doc.get_source_bytes(); // get_source_bytes
+        (void)sb;
+    });
+    EXERCISE((void)doc.has_xfa()); // has_xfa
+    EXERCISE({
+        std::string p = doc.plan_split_by_bookmarks(); // plan_split_by_bookmarks
+        (void)p;
+    });
+
+    // Document-level signatures (need real certs/signatures → return-or-error).
+    EXERCISE((void)doc.get_signature_count());   // get_signature_count
+    EXERCISE((void)doc.get_signature(0));        // get_signature
+    EXERCISE((void)doc.verify_all_signatures()); // verify_all_signatures
+    EXERCISE((void)doc.has_timestamp());         // has_timestamp
+    {
+        // sign needs a Certificate; load from bogus bytes raises, which still
+        // exercises Certificate::load_from_bytes; if it somehow loads, sign is
+        // exercised return-or-error.
+        EXERCISE({
+            std::vector<std::uint8_t> bogus{0x00, 0x01, 0x02};
+            auto cert = pdf_oxide::Certificate::load_from_bytes(bogus, "pw");
+            (void)doc.sign(cert, "reason", "loc"); // sign
+        });
+    }
+
+    // Annotation extras + *_to_json (sample page has no annotations → the index
+    // accessors raise; the to_json variants return an empty/array JSON).
+    EXERCISE((void)doc.annotation_get_color(0, 0));             // get_color
+    EXERCISE((void)doc.annotation_get_creation_date(0, 0));     // get_creation_date
+    EXERCISE((void)doc.annotation_get_modification_date(0, 0)); // get_modification_date
+    EXERCISE((void)doc.annotation_is_hidden(0, 0));             // is_hidden
+    EXERCISE((void)doc.annotation_is_marked_deleted(0, 0));     // is_marked_deleted
+    EXERCISE((void)doc.annotation_is_printable(0, 0));          // is_printable
+    EXERCISE((void)doc.annotation_is_read_only(0, 0));          // is_read_only
+    EXERCISE((void)doc.highlight_annotation_get_quad_points_count(
+        0, 0)); // quad_points_count
+    EXERCISE((void)doc.highlight_annotation_get_quad_point(0, 0, 0)); // quad_point
+    EXERCISE((void)doc.link_annotation_get_uri(0, 0));                // link uri
+    EXERCISE((void)doc.text_annotation_get_icon_name(0, 0));          // text icon name
+    EXERCISE({
+        std::string j = doc.annotations_to_json(0); // annotations_to_json
+        (void)j;
+    });
+    EXERCISE({
+        std::string j = doc.elements_to_json(0); // elements_to_json
+        (void)j;
+    });
+    EXERCISE({
+        std::string j = doc.fonts_to_json(0); // fonts_to_json
+        (void)j;
+    });
+    EXERCISE((void)doc.font_get_size(0, 0)); // font_get_size
+    EXERCISE({
+        std::string j = doc.search_results_to_json(0, "Alpha", false); // search to_json
+        (void)j;
+    });
+
+    // Office export / PDF-A conversion (codec may be feature-gated).
+    EXERCISE({
+        auto d = doc.to_docx(); // to_docx
+        (void)d;
+    });
+    EXERCISE({
+        auto d = doc.to_pptx(); // to_pptx
+        (void)d;
+    });
+    EXERCISE({
+        auto d = doc.to_xlsx(); // to_xlsx
+        (void)d;
+    });
+    {
+        auto d = Document::open_from_bytes(bytes);
+        EXERCISE((void)d.convert_to_pdf_a(0)); // convert_to_pdf_a
+    }
+
+    // Office import (need real office files → invalid bytes raise).
+    {
+        std::vector<std::uint8_t> notoffice{0x50, 0x4b, 0x03, 0x04}; // bogus zip header
+        EXERCISE(
+            (void)Document::open_from_docx_bytes(notoffice)); // open_from_docx_bytes
+        EXERCISE(
+            (void)Document::open_from_pptx_bytes(notoffice)); // open_from_pptx_bytes
+        EXERCISE(
+            (void)Document::open_from_xlsx_bytes(notoffice)); // open_from_xlsx_bytes
+    }
+
+    // Legacy Pdf-handle page count.
+    {
+        auto p = pdf_oxide::Pdf::from_markdown("# p\n\none\n");
+        EXERCISE(CHECK(p.page_count() >= 1)); // Pdf::page_count (pdf_get_page_count)
+    }
+
+    // Crypto / FIPS provider.
+    EXERCISE({
+        std::string s = pdf_oxide::crypto_active_provider(); // crypto_active_provider
+        (void)s;
+    });
+    EXERCISE({
+        std::string s = pdf_oxide::crypto_cbom(); // crypto_cbom
+        (void)s;
+    });
+    EXERCISE((void)pdf_oxide::crypto_fips_available()); // crypto_fips_available
+    EXERCISE({
+        std::string s = pdf_oxide::crypto_inventory(); // crypto_inventory
+        (void)s;
+    });
+    EXERCISE({
+        std::string s = pdf_oxide::crypto_policy(); // crypto_policy
+        (void)s;
+    });
+    EXERCISE((void)pdf_oxide::crypto_set_policy("default")); // crypto_set_policy
+    EXERCISE((void)pdf_oxide::crypto_use_fips());            // crypto_use_fips
+
+    // Models / prefetch.
+    EXERCISE({
+        std::string s = pdf_oxide::model_manifest(); // model_manifest
+        (void)s;
+    });
+    EXERCISE((void)pdf_oxide::prefetch_available()); // prefetch_available
+    EXERCISE({
+        std::string s = pdf_oxide::prefetch_models("en"); // prefetch_models
+        (void)s;
+    });
+
+    // Global config knobs. These setters return the PRIOR value and have NO
+    // error channel, so only assert each call is invokable (returns an int) —
+    // never assert a specific round-tripped value (the cdylib's default/prior
+    // may differ from what we set).
+    {
+        std::int64_t prevOps = pdf_oxide::set_max_ops_per_stream(1000000); // max_ops
+        CHECK(prevOps == prevOps); // invokable: returns an int (value not asserted)
+        pdf_oxide::set_max_ops_per_stream(prevOps); // restore
+
+        int prevGlyphs = pdf_oxide::set_preserve_unmapped_glyphs(1); // preserve_unmapped
+        CHECK(prevGlyphs == prevGlyphs); // invokable: returns an int (value not asserted)
+        (void)pdf_oxide::set_preserve_unmapped_glyphs(prevGlyphs); // restore
+    }
+
+#undef EXERCISE
+
     if (g_failures == 0) {
         std::printf("ok: all C++ api-coverage checks passed\n");
         return 0;

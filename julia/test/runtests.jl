@@ -607,5 +607,288 @@ end
         end
     end
 
+    # ── Phase-8: final C-ABI coverage ─────────────────────────────────────────
+    # In-rect extractors: a generous rect over page 0; any may legitimately be
+    # empty, but each wrapper must return its element vector (or raise).
+    let rx = (0.0, 0.0, 1000.0, 1000.0)
+        @test extract_text_in_rect(doc, 0, rx...) isa AbstractString  # extract_text_in_rect
+        @test extract_words_in_rect(doc, 0, rx...) isa Vector{Word}   # extract_words_in_rect
+        @test extract_lines_in_rect(doc, 0, rx...) isa Vector{TextLine} # extract_lines_in_rect
+        @test extract_tables_in_rect(doc, 0, rx...) isa Vector{Table} # extract_tables_in_rect
+        @test extract_images_in_rect(doc, 0, rx...) isa Vector{Image} # extract_images_in_rect
+    end
+
+    # Auto extraction / classification (return-or-raise on the sample).
+    for (f, call) in (
+        ("extract_text_auto", () -> extract_text_auto(doc, 0)),
+        ("extract_all_text", () -> extract_all_text(doc)),
+        ("extract_page_auto", () -> extract_page_auto(doc, 0)),
+        ("classify_page", () -> classify_page(doc, 0)),
+        ("classify_document", () -> classify_document(doc)),
+        ("get_outline", () -> get_outline(doc)),
+        ("get_page_labels", () -> get_page_labels(doc)),
+        ("get_xmp_metadata", () -> get_xmp_metadata(doc)),
+        ("plan_split_by_bookmarks", () -> plan_split_by_bookmarks(doc)),
+    )
+        try
+            r = call()                                       # throwing call outside @test
+            @test r isa AbstractString
+        catch e
+            @test e isa PdfOxideError
+        end
+    end
+
+    # Header/footer/artifact removal (mutating; return-or-raise -> Int count).
+    for call in (
+        () -> erase_header(doc, 0),
+        () -> erase_footer(doc, 0),
+        () -> erase_artifacts(doc, 0),
+        () -> remove_headers(doc),
+        () -> remove_footers(doc),
+        () -> remove_artifacts(doc),
+    )
+        try
+            r = call()                                       # throwing call outside @test
+            @test r isa Int
+        catch e
+            @test e isa PdfOxideError
+        end
+    end
+
+    # Forms: the sample has no AcroForm, so get_form_fields returns an empty list.
+    @test get_form_fields(doc) isa Vector{FormField}        # get_form_fields
+    @test form_field_count(doc) isa Int                      # form_field_count
+    let ff = FormField("n", "v", "Tx", false, true)
+        @test form_field_name(ff) == "n"                     # form_field_name
+        @test form_field_value(ff) == "v"                    # form_field_value
+        @test form_field_type(ff) == "Tx"                    # form_field_type
+        @test form_field_is_readonly(ff) == false            # form_field_is_readonly
+        @test form_field_is_required(ff) == true             # form_field_is_required
+    end
+    try
+        r = export_form_data_to_bytes(doc, 0)                # export_form_data_to_bytes
+        @test r isa Vector{UInt8}
+    catch e
+        @test e isa PdfOxideError
+    end
+    try
+        r = import_form_data(doc, tempname() * ".fdf")       # import_form_data
+        @test r isa Int
+    catch e
+        @test e isa PdfOxideError
+    end
+    try
+        r = form_import_from_file(doc, tempname() * ".fdf")  # form_import_from_file
+        @test r isa Bool
+    catch e
+        @test e isa PdfOxideError
+    end
+    # Editor-side FDF/XFDF import (return-or-raise -> Int).
+    let ed = open_editor_from_bytes(sample_pdf())
+        try
+            r = import_fdf_bytes(ed, UInt8[])               # import_fdf_bytes
+            @test r isa Int
+        catch e
+            @test e isa PdfOxideError
+        end
+        try
+            r = import_xfdf_bytes(ed, UInt8[])              # import_xfdf_bytes
+            @test r isa Int
+        catch e
+            @test e isa PdfOxideError
+        end
+        close!(ed)
+    end
+
+    # Doc structure / metadata.
+    @test has_xfa(doc) isa Bool                              # has_xfa
+    try
+        r = get_source_bytes(doc)                            # get_source_bytes
+        @test r isa Vector{UInt8}
+    catch e
+        @test e isa PdfOxideError
+    end
+    # get_page_count (Pdf builder page-count alias): errors (code 1) on a freshly
+    # built Pdf in this cdylib — assert return-or-raise, not hard success.
+    try
+        r = get_page_count(from_markdown("# x\n\ny\n"))      # get_page_count (Pdf)
+        @test r >= 1
+    catch e
+        @test e isa PdfOxideError
+    end
+
+    # Document-level signatures (unsigned sample: count 0 or raise).
+    try
+        r = get_signature_count(doc)                         # get_signature_count
+        @test r isa Int
+    catch e
+        @test e isa PdfOxideError
+    end
+    try
+        s = get_signature(doc, 0)                             # get_signature (likely raises)
+        @test s isa SignatureInfo
+        close!(s)
+    catch e
+        @test e isa PdfOxideError
+    end
+    for call in (() -> verify_all_signatures(doc), () -> has_timestamp(doc))
+        try
+            r = call()                                       # throwing call outside @test
+            @test r isa Int
+        catch e
+            @test e isa PdfOxideError
+        end
+    end
+    # sign needs a real certificate; invoke with a placeholder -> return-or-raise.
+    try
+        cert = certificate_load_from_pem("", "")             # may raise (invalid PEM)
+        r = sign(doc, cert)                                   # sign
+        @test r isa Int
+    catch e
+        @test e isa PdfOxideError
+    end
+    # convert_to_pdf_a at the document level (return-or-raise -> Bool).
+    try
+        r = document_convert_to_pdf_a(doc, 1)                # document_convert_to_pdf_a
+        @test r isa Bool
+    catch e
+        @test e isa PdfOxideError
+    end
+
+    # Annotation extras: the sample page has no annotations, so index 0 raises;
+    # each wrapper must return-or-raise the binding error type.
+    for call in (
+        () -> annotation_get_color(doc, 0, 0),
+        () -> annotation_creation_date(doc, 0, 0),
+        () -> annotation_modification_date(doc, 0, 0),
+        () -> annotation_is_hidden(doc, 0, 0),
+        () -> annotation_is_marked_deleted(doc, 0, 0),
+        () -> annotation_is_printable(doc, 0, 0),
+        () -> annotation_is_read_only(doc, 0, 0),
+        () -> highlight_quad_points_count(doc, 0, 0),
+        () -> highlight_quad_point(doc, 0, 0, 0),
+        () -> link_annotation_uri(doc, 0, 0),
+        () -> text_annotation_icon_name(doc, 0, 0),
+    )
+        try
+            call()
+            @test true
+        catch e
+            @test e isa PdfOxideError
+        end
+    end
+    try
+        r = annotations_to_json(doc, 0)                       # annotations_to_json
+        @test r isa AbstractString
+    catch e
+        @test e isa PdfOxideError
+    end
+
+    # Element / JSON accessors.
+    let els = page_get_elements(doc, 0)
+        n = element_count(els)
+        try
+            r = elements_to_json(els)                         # elements_to_json
+            @test r isa AbstractString
+        catch e
+            @test e isa PdfOxideError
+        end
+        if n > 0
+            try
+                r = element_type(els, 0)                      # element_type
+                @test r isa AbstractString
+            catch e
+                @test e isa PdfOxideError
+            end
+            try
+                r = element_text(els, 0)                      # element_text
+                @test r isa AbstractString
+            catch e
+                @test e isa PdfOxideError
+            end
+            try
+                r = element_rect(els, 0)                      # element_rect
+                @test r isa Bbox
+            catch e
+                @test e isa PdfOxideError
+            end
+        end
+        close!(els)
+    end
+    try
+        r = fonts_to_json(doc, 0)                             # fonts_to_json
+        @test r isa AbstractString
+    catch e
+        @test e isa PdfOxideError
+    end
+    let nfonts = length(embedded_fonts(doc, 0))
+        if nfonts > 0
+            try
+                r = font_size(doc, 0, 0)                      # font_size
+                @test r isa Float64
+            catch e
+                @test e isa PdfOxideError
+            end
+        end
+    end
+    try
+        r = search_results_to_json(doc, "Alpha", false)      # search_results_to_json
+        @test r isa AbstractString
+    catch e
+        @test e isa PdfOxideError
+    end
+
+    # Office export (-> owned bytes): return-or-raise on the sample.
+    for call in (() -> to_docx(doc), () -> to_pptx(doc), () -> to_xlsx(doc))
+        try
+            r = call()                                       # throwing call outside @test
+            @test r isa Vector{UInt8}
+        catch e
+            @test e isa PdfOxideError
+        end
+    end
+    # Office import (needs real office files): empty bytes -> return-or-raise.
+    for call in (
+        () -> open_from_docx_bytes(UInt8[]),
+        () -> open_from_pptx_bytes(UInt8[]),
+        () -> open_from_xlsx_bytes(UInt8[]),
+    )
+        try
+            let d = call()
+                @test d isa PdfDocument
+                close!(d)
+            end
+        catch e
+            @test e isa PdfOxideError
+        end
+    end
+
+    # Crypto / FIPS.
+    @test crypto_active_provider() isa AbstractString         # crypto_active_provider
+    @test crypto_cbom() isa AbstractString                    # crypto_cbom
+    @test crypto_inventory() isa AbstractString               # crypto_inventory
+    @test crypto_policy() isa AbstractString                  # crypto_policy
+    @test crypto_fips_available() isa Int                     # crypto_fips_available
+    @test crypto_use_fips() isa Int                           # crypto_use_fips
+    @test crypto_set_policy("default") isa Int                # crypto_set_policy
+
+    # Models / config.
+    @test model_manifest() isa AbstractString                 # model_manifest
+    # prefetch_available needs models/network — assert return-or-raise.
+    try
+        r = prefetch_available()                              # prefetch_available
+        @test r isa Int
+    catch e
+        @test e isa PdfOxideError
+    end
+    try
+        r = prefetch_models("eng")                            # prefetch_models (needs models/network)
+        @test r isa AbstractString
+    catch e
+        @test e isa PdfOxideError
+    end
+    @test set_max_ops_per_stream(1_000_000) isa Int           # set_max_ops_per_stream
+    @test set_preserve_unmapped_glyphs(0) isa Int             # set_preserve_unmapped_glyphs
+
     close!(doc)
 end

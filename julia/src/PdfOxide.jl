@@ -102,6 +102,37 @@ export from_image, from_image_bytes, from_html_css, from_html_css_with_fonts, me
 export page_get_width, page_get_height, page_get_rotation
 export ElementList, page_get_elements, element_count
 export add_timestamp
+# Phase-8 (final coverage): office I/O, in-rect extractors, auto extraction,
+# header/footer/artifact removal, forms, doc structure/metadata, doc-level
+# signatures, annotation extras, element/JSON accessors, crypto/FIPS, models.
+export open_from_docx_bytes, open_from_pptx_bytes, open_from_xlsx_bytes
+export to_docx, to_pptx, to_xlsx
+export extract_text_in_rect, extract_words_in_rect, extract_lines_in_rect
+export extract_tables_in_rect, extract_images_in_rect
+export extract_text_auto, extract_all_text, extract_page_auto
+export classify_page, classify_document
+export erase_header, erase_footer, erase_artifacts
+export remove_headers, remove_footers, remove_artifacts
+export FormField, get_form_fields, form_field_count
+export form_field_name, form_field_value, form_field_type
+export form_field_is_readonly, form_field_is_required
+export export_form_data_to_bytes, import_form_data
+export import_fdf_bytes, import_xfdf_bytes, form_import_from_file
+export get_outline, get_page_labels, get_xmp_metadata, get_source_bytes
+export has_xfa, get_page_count, plan_split_by_bookmarks
+export sign, get_signature, get_signature_count, verify_all_signatures
+export has_timestamp, document_convert_to_pdf_a
+export annotation_get_color, annotation_creation_date, annotation_modification_date
+export annotation_is_hidden, annotation_is_marked_deleted, annotation_is_printable
+export annotation_is_read_only
+export highlight_quad_points_count, highlight_quad_point
+export link_annotation_uri, text_annotation_icon_name, annotations_to_json
+export element_type, element_text, element_rect, elements_to_json
+export fonts_to_json, font_size, search_results_to_json
+export crypto_active_provider, crypto_cbom, crypto_fips_available, crypto_inventory
+export crypto_policy, crypto_set_policy, crypto_use_fips
+export model_manifest, prefetch_available, prefetch_models
+export set_max_ops_per_stream, set_preserve_unmapped_glyphs
 
 # Native library resolution: PDF_OXIDE_LIB_PATH (full path) -> PDF_OXIDE_LIB_DIR
 # -> common build dirs -> bare name (system loader).
@@ -5317,5 +5348,1160 @@ function add_timestamp(
         throw(PdfOxideError(code[], "add_timestamp"))
     return _take_bytes_uptr(out_ptr[], out_len[], code[], "add_timestamp")
 end
+
+# ── Phase-8: final C-ABI coverage ─────────────────────────────────────────────
+# Everything below wraps the remaining unwrapped symbols in pdf_oxide.h, reusing
+# the existing handle structs (PdfDocument/DocumentEditor/Pdf/SignatureInfo/Dss/
+# Word/TextLine/Table/Image/Bbox/ElementList) and helpers (_take_string,
+# _take_bytes_uptr, PdfOxideError). Every ccall uses a LITERAL symbol; @eval +
+# QuoteNode is used wherever the C function name is parameterised.
+
+# ── Office: open from DOCX/PPTX/XLSX bytes (-> PdfDocument) ─────────────────────
+for (jl_fn, c_fn) in (
+    (:open_from_docx_bytes, :pdf_document_open_from_docx_bytes),
+    (:open_from_pptx_bytes, :pdf_document_open_from_pptx_bytes),
+    (:open_from_xlsx_bytes, :pdf_document_open_from_xlsx_bytes),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(data::AbstractVector{UInt8})
+        code = Ref{Int32}(0)
+        h = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Ptr{Cvoid},
+            (Ptr{UInt8}, Csize_t, Ref{Int32}),
+            data,
+            Csize_t(length(data)),
+            code,
+        )
+        h == C_NULL && throw(PdfOxideError(code[], $op))
+        return PdfDocument(h)
+    end
+end
+
+# ── Office: export the document to DOCX/PPTX/XLSX (-> owned bytes) ──────────────
+for (jl_fn, c_fn) in (
+    (:to_docx, :pdf_document_to_docx),
+    (:to_pptx, :pdf_document_to_pptx),
+    (:to_xlsx, :pdf_document_to_xlsx),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(d::PdfDocument)
+        len = Ref{Csize_t}(0)
+        code = Ref{Int32}(0)
+        ptr = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Ptr{UInt8},
+            (Ptr{Cvoid}, Ref{Csize_t}, Ref{Int32}),
+            _doc(d),
+            len,
+            code,
+        )
+        return _take_bytes_uptr(ptr, len[], code[], $op)
+    end
+end
+
+# ── In-rect text extraction (-> String) ────────────────────────────────────────
+"""Extract plain text inside the rect `(x, y, w, h)` on a (0-based) page."""
+function extract_text_in_rect(
+    d::PdfDocument,
+    page::Integer,
+    x::Real,
+    y::Real,
+    w::Real,
+    h::Real,
+)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_document_extract_text_in_rect, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Int32, Float32, Float32, Float32, Float32, Ref{Int32}),
+        _doc(d),
+        Int32(page),
+        Float32(x),
+        Float32(y),
+        Float32(w),
+        Float32(h),
+        code,
+    )
+    return _take_string(ptr, code[], "extract_text_in_rect")
+end
+
+# In-rect list openers (NULL on error -> throw); each returns the list handle.
+for (jl_fn, c_fn) in (
+    (:_open_words_rect, :pdf_document_extract_words_in_rect),
+    (:_open_lines_rect, :pdf_document_extract_lines_in_rect),
+    (:_open_tables_rect, :pdf_document_extract_tables_in_rect),
+    (:_open_images_rect, :pdf_document_extract_images_in_rect),
+)
+    @eval function $jl_fn(
+        d::PdfDocument,
+        page::Integer,
+        x::Real,
+        y::Real,
+        w::Real,
+        h::Real,
+        op::String,
+    )
+        code = Ref{Int32}(0)
+        list = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Ptr{Cvoid},
+            (Ptr{Cvoid}, Int32, Float32, Float32, Float32, Float32, Ref{Int32}),
+            _doc(d),
+            Int32(page),
+            Float32(x),
+            Float32(y),
+            Float32(w),
+            Float32(h),
+            code,
+        )
+        list == C_NULL && throw(PdfOxideError(code[], op))
+        return list
+    end
+end
+
+# Build the per-element list reusing the same accessor C functions the whole-page
+# extractors use (the in-rect openers return identical list shapes).
+function _words_from_list(list::Ptr{Cvoid}, op::String)
+    try
+        n = ccall((:pdf_oxide_word_count, LIB), Int32, (Ptr{Cvoid},), list)
+        out = Vector{Word}(undef, n < 0 ? 0 : Int(n))
+        for i = 0:(Int(n)-1)
+            txt = _take_string(
+                ccall(
+                    (:pdf_oxide_word_get_text, LIB),
+                    Ptr{UInt8},
+                    (Ptr{Cvoid}, Int32, Ref{Int32}),
+                    list,
+                    Int32(i),
+                    Ref{Int32}(0),
+                ),
+                Int32(0),
+                op,
+            )
+            bb = _bbox_word(list, i, op)
+            font = _take_string(
+                ccall(
+                    (:pdf_oxide_word_get_font_name, LIB),
+                    Ptr{UInt8},
+                    (Ptr{Cvoid}, Int32, Ref{Int32}),
+                    list,
+                    Int32(i),
+                    Ref{Int32}(0),
+                ),
+                Int32(0),
+                op,
+            )
+            scode = Ref{Int32}(0)
+            fs = ccall(
+                (:pdf_oxide_word_get_font_size, LIB),
+                Float32,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                scode,
+            )
+            scode[] != 0 && throw(PdfOxideError(scode[], op))
+            bcode = Ref{Int32}(0)
+            bold = ccall(
+                (:pdf_oxide_word_is_bold, LIB),
+                Bool,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                bcode,
+            )
+            bcode[] != 0 && throw(PdfOxideError(bcode[], op))
+            out[i+1] = Word(txt, bb, font, Float64(fs), bold)
+        end
+        return out
+    finally
+        ccall((:pdf_oxide_word_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+function _lines_from_list(list::Ptr{Cvoid}, op::String)
+    try
+        n = ccall((:pdf_oxide_line_count, LIB), Int32, (Ptr{Cvoid},), list)
+        out = Vector{TextLine}(undef, n < 0 ? 0 : Int(n))
+        for i = 0:(Int(n)-1)
+            txt = _take_string(
+                ccall(
+                    (:pdf_oxide_line_get_text, LIB),
+                    Ptr{UInt8},
+                    (Ptr{Cvoid}, Int32, Ref{Int32}),
+                    list,
+                    Int32(i),
+                    Ref{Int32}(0),
+                ),
+                Int32(0),
+                op,
+            )
+            bb = _bbox_line(list, i, op)
+            wcode = Ref{Int32}(0)
+            wc = ccall(
+                (:pdf_oxide_line_get_word_count, LIB),
+                Int32,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                wcode,
+            )
+            wcode[] != 0 && throw(PdfOxideError(wcode[], op))
+            out[i+1] = TextLine(txt, bb, Int(wc))
+        end
+        return out
+    finally
+        ccall((:pdf_oxide_line_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+function _tables_from_list(list::Ptr{Cvoid}, op::String)
+    try
+        n = ccall((:pdf_oxide_table_count, LIB), Int32, (Ptr{Cvoid},), list)
+        out = Vector{Table}(undef, n < 0 ? 0 : Int(n))
+        for i = 0:(Int(n)-1)
+            rcode = Ref{Int32}(0)
+            rows = ccall(
+                (:pdf_oxide_table_get_row_count, LIB),
+                Int32,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                rcode,
+            )
+            rcode[] != 0 && throw(PdfOxideError(rcode[], op))
+            ccode = Ref{Int32}(0)
+            cols = ccall(
+                (:pdf_oxide_table_get_col_count, LIB),
+                Int32,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                ccode,
+            )
+            ccode[] != 0 && throw(PdfOxideError(ccode[], op))
+            hcode = Ref{Int32}(0)
+            hdr = ccall(
+                (:pdf_oxide_table_has_header, LIB),
+                Bool,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                hcode,
+            )
+            hcode[] != 0 && throw(PdfOxideError(hcode[], op))
+            nr = rows < 0 ? 0 : Int(rows)
+            nc = cols < 0 ? 0 : Int(cols)
+            cells = Matrix{String}(undef, nr, nc)
+            for r = 0:(nr-1), c = 0:(nc-1)
+                xcode = Ref{Int32}(0)
+                cptr = ccall(
+                    (:pdf_oxide_table_get_cell_text, LIB),
+                    Ptr{UInt8},
+                    (Ptr{Cvoid}, Int32, Int32, Int32, Ref{Int32}),
+                    list,
+                    Int32(i),
+                    Int32(r),
+                    Int32(c),
+                    xcode,
+                )
+                cells[r+1, c+1] = _take_string(cptr, xcode[], op)
+            end
+            out[i+1] = Table(nr, nc, hdr, cells)
+        end
+        return out
+    finally
+        ccall((:pdf_oxide_table_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+function _images_from_list(list::Ptr{Cvoid}, op::String)
+    try
+        n = ccall((:pdf_oxide_image_count, LIB), Int32, (Ptr{Cvoid},), list)
+        out = Vector{Image}(undef, n < 0 ? 0 : Int(n))
+        for i = 0:(Int(n)-1)
+            w = _i32_image_width(list, i, op)
+            h = _i32_image_height(list, i, op)
+            bpc = _i32_image_bpc(list, i, op)
+            fmt = _str_image_format(list, i, op)
+            cs = _str_image_colorspace(list, i, op)
+            dlen = Ref{Int32}(0)
+            dcode = Ref{Int32}(0)
+            dptr = ccall(
+                (:pdf_oxide_image_get_data, LIB),
+                Ptr{UInt8},
+                (Ptr{Cvoid}, Int32, Ref{Int32}, Ref{Int32}),
+                list,
+                Int32(i),
+                dlen,
+                dcode,
+            )
+            data = if dptr == C_NULL
+                dcode[] != 0 && throw(PdfOxideError(dcode[], op))
+                UInt8[]
+            else
+                m = dlen[] < 0 ? 0 : Int(dlen[])
+                bytes = copy(unsafe_wrap(Array, dptr, m))
+                ccall((:free_bytes, LIB), Cvoid, (Ptr{UInt8},), dptr)
+                bytes
+            end
+            out[i+1] = Image(w, h, bpc, fmt, cs, data)
+        end
+        return out
+    finally
+        ccall((:pdf_oxide_image_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+"""Words inside the rect `(x, y, w, h)` on a (0-based) page as `Vector{Word}`."""
+extract_words_in_rect(d::PdfDocument, page::Integer, x, y, w, h) = _words_from_list(
+    _open_words_rect(d, page, x, y, w, h, "extract_words_in_rect"),
+    "extract_words_in_rect",
+)
+
+"""Lines inside the rect `(x, y, w, h)` on a (0-based) page as `Vector{TextLine}`."""
+extract_lines_in_rect(d::PdfDocument, page::Integer, x, y, w, h) = _lines_from_list(
+    _open_lines_rect(d, page, x, y, w, h, "extract_lines_in_rect"),
+    "extract_lines_in_rect",
+)
+
+"""Tables inside the rect `(x, y, w, h)` on a (0-based) page as `Vector{Table}`."""
+extract_tables_in_rect(d::PdfDocument, page::Integer, x, y, w, h) = _tables_from_list(
+    _open_tables_rect(d, page, x, y, w, h, "extract_tables_in_rect"),
+    "extract_tables_in_rect",
+)
+
+"""Images inside the rect `(x, y, w, h)` on a (0-based) page as `Vector{Image}`."""
+extract_images_in_rect(d::PdfDocument, page::Integer, x, y, w, h) = _images_from_list(
+    _open_images_rect(d, page, x, y, w, h, "extract_images_in_rect"),
+    "extract_images_in_rect",
+)
+
+# ── Auto extraction / classification (-> String) ───────────────────────────────
+"""Auto-pick the best text extraction for a (0-based) page (-> String)."""
+function extract_text_auto(d::PdfDocument, page::Integer)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_document_extract_text_auto, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _doc(d),
+        Int32(page),
+        code,
+    )
+    return _take_string(ptr, code[], "extract_text_auto")
+end
+
+"""Whole-document auto text extraction (-> String)."""
+function extract_all_text(d::PdfDocument)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_document_extract_all_text, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _doc(d),
+        code,
+    )
+    return _take_string(ptr, code[], "extract_all_text")
+end
+
+"""Auto page extraction with a JSON `options` string (-> String)."""
+function extract_page_auto(d::PdfDocument, page::Integer, options::AbstractString = "{}")
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_document_extract_page_auto, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Int32, Cstring, Ref{Int32}),
+        _doc(d),
+        Int32(page),
+        options,
+        code,
+    )
+    return _take_string(ptr, code[], "extract_page_auto")
+end
+
+"""Classify a (0-based) page; returns the classifier's JSON string."""
+function classify_page(d::PdfDocument, page::Integer)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_document_classify_page, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _doc(d),
+        Int32(page),
+        code,
+    )
+    return _take_string(ptr, code[], "classify_page")
+end
+
+"""Classify the whole document; returns the classifier's JSON string."""
+function classify_document(d::PdfDocument)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_document_classify_document, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _doc(d),
+        code,
+    )
+    return _take_string(ptr, code[], "classify_document")
+end
+
+# ── Header / footer / artifact removal (mutating; -> count) ────────────────────
+# Per-page eraser: (handle, page_index) -> i32 count.
+for (jl_fn, c_fn) in (
+    (:erase_header, :pdf_document_erase_header),
+    (:erase_footer, :pdf_document_erase_footer),
+    (:erase_artifacts, :pdf_document_erase_artifacts),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(d::PdfDocument, page::Integer)
+        code = Ref{Int32}(0)
+        n = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Int32,
+            (Ptr{Cvoid}, Int32, Ref{Int32}),
+            _doc(d),
+            Int32(page),
+            code,
+        )
+        code[] != 0 && throw(PdfOxideError(code[], $op))
+        return Int(n)
+    end
+end
+
+# Document-wide remover: (handle, threshold) -> i32 count.
+for (jl_fn, c_fn) in (
+    (:remove_headers, :pdf_document_remove_headers),
+    (:remove_footers, :pdf_document_remove_footers),
+    (:remove_artifacts, :pdf_document_remove_artifacts),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(d::PdfDocument, threshold::Real = 0.5)
+        code = Ref{Int32}(0)
+        n = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Int32,
+            (Ptr{Cvoid}, Float32, Ref{Int32}),
+            _doc(d),
+            Float32(threshold),
+            code,
+        )
+        code[] != 0 && throw(PdfOxideError(code[], $op))
+        return Int(n)
+    end
+end
+
+# ── Forms ─────────────────────────────────────────────────────────────────────
+"""An AcroForm field: `name`, `value`, `type`, `readonly`, `required`."""
+struct FormField
+    name::String
+    value::String
+    type::String
+    readonly::Bool
+    required::Bool
+end
+
+# Per-field string accessor over a FfiFormFieldList handle (free_string return).
+for (jl_fn, c_fn) in (
+    (:_ff_name, :pdf_oxide_form_field_get_name),
+    (:_ff_value, :pdf_oxide_form_field_get_value),
+    (:_ff_type, :pdf_oxide_form_field_get_type),
+)
+    @eval function $jl_fn(list::Ptr{Cvoid}, index::Integer, op::String)
+        code = Ref{Int32}(0)
+        ptr = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Ptr{UInt8},
+            (Ptr{Cvoid}, Int32, Ref{Int32}),
+            list,
+            Int32(index),
+            code,
+        )
+        return _take_string(ptr, code[], op)
+    end
+end
+
+# Per-field bool accessor over a FfiFormFieldList handle.
+for (jl_fn, c_fn) in (
+    (:_ff_readonly, :pdf_oxide_form_field_is_readonly),
+    (:_ff_required, :pdf_oxide_form_field_is_required),
+)
+    @eval function $jl_fn(list::Ptr{Cvoid}, index::Integer, op::String)
+        code = Ref{Int32}(0)
+        v = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Bool,
+            (Ptr{Cvoid}, Int32, Ref{Int32}),
+            list,
+            Int32(index),
+            code,
+        )
+        code[] != 0 && throw(PdfOxideError(code[], op))
+        return v
+    end
+end
+
+"""All AcroForm fields as a `Vector{FormField}` (empty when the doc has none)."""
+function get_form_fields(d::PdfDocument)
+    code = Ref{Int32}(0)
+    list = ccall(
+        (:pdf_document_get_form_fields, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _doc(d),
+        code,
+    )
+    list == C_NULL && throw(PdfOxideError(code[], "get_form_fields"))
+    try
+        n = ccall((:pdf_oxide_form_field_count, LIB), Int32, (Ptr{Cvoid},), list)
+        out = Vector{FormField}(undef, n < 0 ? 0 : Int(n))
+        for i = 0:(Int(n)-1)
+            out[i+1] = FormField(
+                _ff_name(list, i, "get_form_fields"),
+                _ff_value(list, i, "get_form_fields"),
+                _ff_type(list, i, "get_form_fields"),
+                _ff_readonly(list, i, "get_form_fields"),
+                _ff_required(list, i, "get_form_fields"),
+            )
+        end
+        return out
+    finally
+        ccall((:pdf_oxide_form_field_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+# Lower-level form-field-list accessors (also exported for parity with the C ABI).
+"""Field count of a freshly fetched form-field list (convenience over the doc)."""
+function form_field_count(d::PdfDocument)
+    code = Ref{Int32}(0)
+    list = ccall(
+        (:pdf_document_get_form_fields, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _doc(d),
+        code,
+    )
+    list == C_NULL && throw(PdfOxideError(code[], "form_field_count"))
+    try
+        return Int(ccall((:pdf_oxide_form_field_count, LIB), Int32, (Ptr{Cvoid},), list))
+    finally
+        ccall((:pdf_oxide_form_field_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+form_field_name(f::FormField) = f.name
+form_field_value(f::FormField) = f.value
+form_field_type(f::FormField) = f.type
+form_field_is_readonly(f::FormField) = f.readonly
+form_field_is_required(f::FormField) = f.required
+
+"""Export form data as owned bytes in `format_type` (FDF/XFDF code)."""
+function export_form_data_to_bytes(d::PdfDocument, format_type::Integer)
+    len = Ref{Csize_t}(0)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_document_export_form_data_to_bytes, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Int32, Ref{Csize_t}, Ref{Int32}),
+        _doc(d),
+        Int32(format_type),
+        len,
+        code,
+    )
+    return _take_bytes_uptr(ptr, len[], code[], "export_form_data_to_bytes")
+end
+
+"""Import form data from a file `path`; returns the C status code."""
+function import_form_data(d::PdfDocument, path::AbstractString)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_document_import_form_data, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Ref{Int32}),
+        _doc(d),
+        path,
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "import_form_data"))
+    return Int(rc)
+end
+
+# Editor-side FDF/XFDF byte importers (mutating; -> status code).
+for (jl_fn, c_fn) in (
+    (:import_fdf_bytes, :pdf_editor_import_fdf_bytes),
+    (:import_xfdf_bytes, :pdf_editor_import_xfdf_bytes),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(e::DocumentEditor, data::AbstractVector{UInt8})
+        code = Ref{Int32}(0)
+        rc = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Int32,
+            (Ptr{Cvoid}, Ptr{UInt8}, Csize_t, Ref{Int32}),
+            _editor(e),
+            data,
+            Csize_t(length(data)),
+            code,
+        )
+        code[] != 0 && throw(PdfOxideError(code[], $op))
+        return Int(rc)
+    end
+end
+
+"""Import form data from `filename` into a document; returns `true` on success."""
+function form_import_from_file(d::PdfDocument, filename::AbstractString)
+    code = Ref{Int32}(0)
+    ok = ccall(
+        (:pdf_form_import_from_file, LIB),
+        Bool,
+        (Ptr{Cvoid}, Cstring, Ref{Int32}),
+        _doc(d),
+        filename,
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "form_import_from_file"))
+    return ok
+end
+
+# ── Document structure / metadata (-> String / bytes / bool) ───────────────────
+for (jl_fn, c_fn) in (
+    (:get_outline, :pdf_document_get_outline),
+    (:get_page_labels, :pdf_document_get_page_labels),
+    (:get_xmp_metadata, :pdf_document_get_xmp_metadata),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(d::PdfDocument)
+        code = Ref{Int32}(0)
+        ptr = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Ptr{UInt8},
+            (Ptr{Cvoid}, Ref{Int32}),
+            _doc(d),
+            code,
+        )
+        return _take_string(ptr, code[], $op)
+    end
+end
+
+"""Plan a split-by-bookmarks with a JSON `options` string (-> JSON String)."""
+function plan_split_by_bookmarks(d::PdfDocument, options::AbstractString = "{}")
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_document_plan_split_by_bookmarks, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Cstring, Ref{Int32}),
+        _doc(d),
+        options,
+        code,
+    )
+    return _take_string(ptr, code[], "plan_split_by_bookmarks")
+end
+
+"""The document's original source bytes (owned; via free_bytes)."""
+function get_source_bytes(d::PdfDocument)
+    len = Ref{Csize_t}(0)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_document_get_source_bytes, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ref{Csize_t}, Ref{Int32}),
+        _doc(d),
+        len,
+        code,
+    )
+    return _take_bytes_uptr(ptr, len[], code[], "get_source_bytes")
+end
+
+"""Whether the document carries an XFA form (bool)."""
+has_xfa(d::PdfDocument) = ccall((:pdf_document_has_xfa, LIB), Bool, (Ptr{Cvoid},), _doc(d))
+
+"""Page count of a builder `Pdf` handle (mirrors `pdf_get_page_count`)."""
+function get_page_count(p::Pdf)
+    code = Ref{Int32}(0)
+    n = ccall((:pdf_get_page_count, LIB), Int32, (Ptr{Cvoid}, Ref{Int32}), _pdf(p), code)
+    code[] != 0 && throw(PdfOxideError(code[], "get_page_count"))
+    return Int(n)
+end
+
+# ── Document-level signatures ──────────────────────────────────────────────────
+"""Number of signatures in the document (-> Int)."""
+function get_signature_count(d::PdfDocument)
+    code = Ref{Int32}(0)
+    n = ccall(
+        (:pdf_document_get_signature_count, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _doc(d),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "get_signature_count"))
+    return Int(n)
+end
+
+"""The `index`-th signature as a `SignatureInfo` (owned; free via close!)."""
+function get_signature(d::PdfDocument, index::Integer)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_document_get_signature, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _doc(d),
+        Int32(index),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "get_signature"))
+    return SignatureInfo(h)
+end
+
+"""Sign the document with `cert`, optional `reason`/`location`; -> status code."""
+function sign(
+    d::PdfDocument,
+    cert::Certificate;
+    reason::AbstractString = "",
+    location::AbstractString = "",
+)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_document_sign, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ptr{Cvoid}, Cstring, Cstring, Ref{Int32}),
+        _doc(d),
+        _cert(cert),
+        reason,
+        location,
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "sign"))
+    return Int(rc)
+end
+
+"""Verify all signatures in the document; -> status code."""
+function verify_all_signatures(d::PdfDocument)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_document_verify_all_signatures, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _doc(d),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "verify_all_signatures"))
+    return Int(rc)
+end
+
+"""Whether the document carries a document-level timestamp; -> status code."""
+function has_timestamp(d::PdfDocument)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_document_has_timestamp, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _doc(d),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "has_timestamp"))
+    return Int(rc)
+end
+
+"""Convert the document to PDF/A in place at `level`; returns `true` on success."""
+function document_convert_to_pdf_a(d::PdfDocument, level::Integer)
+    code = Ref{Int32}(0)
+    ok = ccall(
+        (:pdf_convert_to_pdf_a, LIB),
+        Bool,
+        (Ptr{Cvoid}, Int32, Ref{Int32}),
+        _doc(d),
+        Int32(level),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "document_convert_to_pdf_a"))
+    return ok
+end
+
+# ── Annotation extras (operate on the page annotation-list handle + index) ──────
+"""32-bit packed RGBA color of the `index`-th annotation on a (0-based) page."""
+function annotation_get_color(d::PdfDocument, page::Integer, index::Integer)
+    list = _open_annotations(d, page, "annotation_get_color")
+    try
+        code = Ref{Int32}(0)
+        v = ccall(
+            (:pdf_oxide_annotation_get_color, LIB),
+            UInt32,
+            (Ptr{Cvoid}, Int32, Ref{Int32}),
+            list,
+            Int32(index),
+            code,
+        )
+        code[] != 0 && throw(PdfOxideError(code[], "annotation_get_color"))
+        return v
+    finally
+        ccall((:pdf_oxide_annotation_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+# Int64 date accessors over the page annotation-list handle.
+for (jl_fn, c_fn) in (
+    (:annotation_creation_date, :pdf_oxide_annotation_get_creation_date),
+    (:annotation_modification_date, :pdf_oxide_annotation_get_modification_date),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(d::PdfDocument, page::Integer, index::Integer)
+        list = _open_annotations(d, page, $op)
+        try
+            code = Ref{Int32}(0)
+            v = ccall(
+                ($(QuoteNode(c_fn)), LIB),
+                Int64,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(index),
+                code,
+            )
+            code[] != 0 && throw(PdfOxideError(code[], $op))
+            return Int(v)
+        finally
+            ccall((:pdf_oxide_annotation_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+        end
+    end
+end
+
+# Bool flag accessors over the page annotation-list handle.
+for (jl_fn, c_fn) in (
+    (:annotation_is_hidden, :pdf_oxide_annotation_is_hidden),
+    (:annotation_is_marked_deleted, :pdf_oxide_annotation_is_marked_deleted),
+    (:annotation_is_printable, :pdf_oxide_annotation_is_printable),
+    (:annotation_is_read_only, :pdf_oxide_annotation_is_read_only),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(d::PdfDocument, page::Integer, index::Integer)
+        list = _open_annotations(d, page, $op)
+        try
+            code = Ref{Int32}(0)
+            v = ccall(
+                ($(QuoteNode(c_fn)), LIB),
+                Bool,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(index),
+                code,
+            )
+            code[] != 0 && throw(PdfOxideError(code[], $op))
+            return v
+        finally
+            ccall((:pdf_oxide_annotation_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+        end
+    end
+end
+
+"""Quad-point count of the `index`-th highlight annotation on a (0-based) page."""
+function highlight_quad_points_count(d::PdfDocument, page::Integer, index::Integer)
+    list = _open_annotations(d, page, "highlight_quad_points_count")
+    try
+        code = Ref{Int32}(0)
+        n = ccall(
+            (:pdf_oxide_highlight_annotation_get_quad_points_count, LIB),
+            Int32,
+            (Ptr{Cvoid}, Int32, Ref{Int32}),
+            list,
+            Int32(index),
+            code,
+        )
+        code[] != 0 && throw(PdfOxideError(code[], "highlight_quad_points_count"))
+        return Int(n)
+    finally
+        ccall((:pdf_oxide_annotation_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+"""The `quad_index`-th quad of the `index`-th highlight annotation as 8 floats."""
+function highlight_quad_point(
+    d::PdfDocument,
+    page::Integer,
+    index::Integer,
+    quad_index::Integer,
+)
+    list = _open_annotations(d, page, "highlight_quad_point")
+    try
+        x1 = Ref{Float32}(0);
+        y1 = Ref{Float32}(0)
+        x2 = Ref{Float32}(0);
+        y2 = Ref{Float32}(0)
+        x3 = Ref{Float32}(0);
+        y3 = Ref{Float32}(0)
+        x4 = Ref{Float32}(0);
+        y4 = Ref{Float32}(0)
+        code = Ref{Int32}(0)
+        ccall(
+            (:pdf_oxide_highlight_annotation_get_quad_point, LIB),
+            Cvoid,
+            (
+                Ptr{Cvoid},
+                Int32,
+                Int32,
+                Ref{Float32},
+                Ref{Float32},
+                Ref{Float32},
+                Ref{Float32},
+                Ref{Float32},
+                Ref{Float32},
+                Ref{Float32},
+                Ref{Float32},
+                Ref{Int32},
+            ),
+            list,
+            Int32(index),
+            Int32(quad_index),
+            x1,
+            y1,
+            x2,
+            y2,
+            x3,
+            y3,
+            x4,
+            y4,
+            code,
+        )
+        code[] != 0 && throw(PdfOxideError(code[], "highlight_quad_point"))
+        return (
+            Float64(x1[]),
+            Float64(y1[]),
+            Float64(x2[]),
+            Float64(y2[]),
+            Float64(x3[]),
+            Float64(y3[]),
+            Float64(x4[]),
+            Float64(y4[]),
+        )
+    finally
+        ccall((:pdf_oxide_annotation_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+# String annotation accessors over the page annotation-list handle.
+for (jl_fn, c_fn) in (
+    (:link_annotation_uri, :pdf_oxide_link_annotation_get_uri),
+    (:text_annotation_icon_name, :pdf_oxide_text_annotation_get_icon_name),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(d::PdfDocument, page::Integer, index::Integer)
+        list = _open_annotations(d, page, $op)
+        try
+            code = Ref{Int32}(0)
+            ptr = ccall(
+                ($(QuoteNode(c_fn)), LIB),
+                Ptr{UInt8},
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(index),
+                code,
+            )
+            return _take_string(ptr, code[], $op)
+        finally
+            ccall((:pdf_oxide_annotation_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+        end
+    end
+end
+
+"""All annotations on a (0-based) page serialised to a JSON string."""
+function annotations_to_json(d::PdfDocument, page::Integer)
+    list = _open_annotations(d, page, "annotations_to_json")
+    try
+        code = Ref{Int32}(0)
+        ptr = ccall(
+            (:pdf_oxide_annotations_to_json, LIB),
+            Ptr{UInt8},
+            (Ptr{Cvoid}, Ref{Int32}),
+            list,
+            code,
+        )
+        return _take_string(ptr, code[], "annotations_to_json")
+    finally
+        ccall((:pdf_oxide_annotation_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+# ── Element / JSON accessors (operate on an ElementList handle) ─────────────────
+# String element accessors over an ElementList handle.
+for (jl_fn, c_fn) in (
+    (:element_type, :pdf_oxide_element_get_type),
+    (:element_text, :pdf_oxide_element_get_text),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn(l::ElementList, index::Integer)
+        code = Ref{Int32}(0)
+        ptr = ccall(
+            ($(QuoteNode(c_fn)), LIB),
+            Ptr{UInt8},
+            (Ptr{Cvoid}, Int32, Ref{Int32}),
+            _elements(l),
+            Int32(index),
+            code,
+        )
+        return _take_string(ptr, code[], $op)
+    end
+end
+
+"""The `index`-th element's bounding box as a `Bbox`."""
+function element_rect(l::ElementList, index::Integer)
+    x = Ref{Float32}(0);
+    y = Ref{Float32}(0)
+    w = Ref{Float32}(0);
+    h = Ref{Float32}(0)
+    code = Ref{Int32}(0)
+    ccall(
+        (:pdf_oxide_element_get_rect, LIB),
+        Cvoid,
+        (
+            Ptr{Cvoid},
+            Int32,
+            Ref{Float32},
+            Ref{Float32},
+            Ref{Float32},
+            Ref{Float32},
+            Ref{Int32},
+        ),
+        _elements(l),
+        Int32(index),
+        x,
+        y,
+        w,
+        h,
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "element_rect"))
+    return Bbox(Float64(x[]), Float64(y[]), Float64(w[]), Float64(h[]))
+end
+
+"""All page elements serialised to a JSON string."""
+function elements_to_json(l::ElementList)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_oxide_elements_to_json, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _elements(l),
+        code,
+    )
+    return _take_string(ptr, code[], "elements_to_json")
+end
+
+"""Embedded fonts on a (0-based) page serialised to a JSON string."""
+function fonts_to_json(d::PdfDocument, page::Integer)
+    list = _open_fonts(d, page, "fonts_to_json")
+    try
+        code = Ref{Int32}(0)
+        ptr = ccall(
+            (:pdf_oxide_fonts_to_json, LIB),
+            Ptr{UInt8},
+            (Ptr{Cvoid}, Ref{Int32}),
+            list,
+            code,
+        )
+        return _take_string(ptr, code[], "fonts_to_json")
+    finally
+        ccall((:pdf_oxide_font_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+"""Font size of the `index`-th embedded font on a (0-based) page."""
+function font_size(d::PdfDocument, page::Integer, index::Integer)
+    list = _open_fonts(d, page, "font_size")
+    try
+        code = Ref{Int32}(0)
+        v = ccall(
+            (:pdf_oxide_font_get_size, LIB),
+            Float32,
+            (Ptr{Cvoid}, Int32, Ref{Int32}),
+            list,
+            Int32(index),
+            code,
+        )
+        code[] != 0 && throw(PdfOxideError(code[], "font_size"))
+        return Float64(v)
+    finally
+        ccall((:pdf_oxide_font_list_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+"""Serialise the results of a whole-document search for `term` to a JSON string."""
+function search_results_to_json(d::PdfDocument, term::AbstractString, caseSensitive::Bool)
+    code = Ref{Int32}(0)
+    list = ccall(
+        (:pdf_document_search_all, LIB),
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Cstring, Bool, Ref{Int32}),
+        _doc(d),
+        term,
+        caseSensitive,
+        code,
+    )
+    list == C_NULL && throw(PdfOxideError(code[], "search_results_to_json"))
+    try
+        jcode = Ref{Int32}(0)
+        ptr = ccall(
+            (:pdf_oxide_search_results_to_json, LIB),
+            Ptr{UInt8},
+            (Ptr{Cvoid}, Ref{Int32}),
+            list,
+            jcode,
+        )
+        return _take_string(ptr, jcode[], "search_results_to_json")
+    finally
+        ccall((:pdf_oxide_search_result_free, LIB), Cvoid, (Ptr{Cvoid},), list)
+    end
+end
+
+# ── Crypto / FIPS ──────────────────────────────────────────────────────────────
+# Parameterless string getters (free_string return, no error out-param).
+for (jl_fn, c_fn) in (
+    (:crypto_active_provider, :pdf_oxide_crypto_active_provider),
+    (:crypto_cbom, :pdf_oxide_crypto_cbom),
+    (:crypto_inventory, :pdf_oxide_crypto_inventory),
+    (:crypto_policy, :pdf_oxide_crypto_policy),
+    (:model_manifest, :pdf_oxide_model_manifest),
+)
+    op = String(jl_fn)
+    @eval function $jl_fn()
+        ptr = ccall(($(QuoteNode(c_fn)), LIB), Ptr{UInt8}, ())
+        return _take_string(ptr, Int32(0), $op)
+    end
+end
+
+# Parameterless i32 getters (no error out-param).
+for (jl_fn, c_fn) in (
+    (:crypto_fips_available, :pdf_oxide_crypto_fips_available),
+    (:crypto_use_fips, :pdf_oxide_crypto_use_fips),
+    (:prefetch_available, :pdf_oxide_prefetch_available),
+)
+    @eval $jl_fn() = Int(ccall(($(QuoteNode(c_fn)), LIB), Int32, ()))
+end
+
+"""Set the active crypto policy from `spec`; -> status code."""
+crypto_set_policy(spec::AbstractString) =
+    Int(ccall((:pdf_oxide_crypto_set_policy, LIB), Int32, (Cstring,), spec))
+
+# ── Models / config ────────────────────────────────────────────────────────────
+"""Prefetch OCR/layout models for the comma-separated `languages_csv`; -> String."""
+function prefetch_models(languages_csv::AbstractString)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_oxide_prefetch_models, LIB),
+        Ptr{UInt8},
+        (Cstring, Ref{Int32}),
+        languages_csv,
+        code,
+    )
+    return _take_string(ptr, code[], "prefetch_models")
+end
+
+"""Set the per-stream content-op limit; returns the previous limit."""
+set_max_ops_per_stream(limit::Integer) =
+    Int(ccall((:pdf_oxide_set_max_ops_per_stream, LIB), Int64, (Int64,), Int64(limit)))
+
+"""Toggle preservation of unmapped glyphs; returns the previous setting."""
+set_preserve_unmapped_glyphs(preserve::Integer) = Int(
+    ccall((:pdf_oxide_set_preserve_unmapped_glyphs, LIB), Int32, (Int32,), Int32(preserve)),
+)
 
 end # module

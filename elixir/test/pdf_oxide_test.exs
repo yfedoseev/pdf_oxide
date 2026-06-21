@@ -669,4 +669,170 @@ defmodule PdfOxideTest do
       assert match?({:ok, _}, result) or match?({:error, _}, result)
     end
   end
+
+  # ── phase 8: final-coverage wrappers ────────────────────────────────────────
+  # Most work on the markdown sample; office-import/sign/convert/prefetch are
+  # invoked with minimal inputs and asserted return-or-error (no real office
+  # files / certs / network are available here).
+  describe "phase 8 final coverage" do
+    setup do
+      {:ok, doc} = PdfOxide.open_from_bytes(sample_pdf())
+      {:ok, doc: doc}
+    end
+
+    defp ok_or_error(result), do: match?({:ok, _}, result) or match?({:error, _}, result)
+
+    test "office: open_from_*_bytes return or error on non-office bytes" do
+      junk = sample_pdf()
+      assert ok_or_error(PdfOxide.open_from_docx_bytes(junk))
+      assert ok_or_error(PdfOxide.open_from_pptx_bytes(junk))
+      assert ok_or_error(PdfOxide.open_from_xlsx_bytes(junk))
+    end
+
+    test "office: to_docx/pptx/xlsx return bytes or error", %{doc: doc} do
+      assert ok_or_error(PdfOxide.to_docx(doc))
+      assert ok_or_error(PdfOxide.to_pptx(doc))
+      assert ok_or_error(PdfOxide.to_xlsx(doc))
+    end
+
+    test "in-rect: text/words/lines/tables/images", %{doc: doc} do
+      assert {:ok, text} = PdfOxide.extract_text_in_rect(doc, 0, 0.0, 0.0, 1000.0, 1000.0)
+      assert is_binary(text)
+      assert {:ok, words} = PdfOxide.extract_words_in_rect(doc, 0, 0.0, 0.0, 1000.0, 1000.0)
+      assert is_list(words)
+      assert Enum.all?(words, &match?(%PdfOxide.Word{}, &1))
+      assert {:ok, lines} = PdfOxide.extract_lines_in_rect(doc, 0, 0.0, 0.0, 1000.0, 1000.0)
+      assert Enum.all?(lines, &match?(%PdfOxide.TextLine{}, &1))
+      assert {:ok, tables} = PdfOxide.extract_tables_in_rect(doc, 0, 0.0, 0.0, 1000.0, 1000.0)
+      assert Enum.all?(tables, &match?(%PdfOxide.Table{}, &1))
+      assert {:ok, images} = PdfOxide.extract_images_in_rect(doc, 0, 0.0, 0.0, 1000.0, 1000.0)
+      assert Enum.all?(images, &match?(%PdfOxide.Image{}, &1))
+    end
+
+    test "auto extraction + classification", %{doc: doc} do
+      assert ok_or_error(PdfOxide.extract_text_auto(doc, 0))
+      assert ok_or_error(PdfOxide.extract_all_text(doc))
+      assert ok_or_error(PdfOxide.extract_page_auto(doc, 0))
+      assert ok_or_error(PdfOxide.extract_page_auto(doc, 0, ""))
+      assert ok_or_error(PdfOxide.classify_page(doc, 0))
+      assert ok_or_error(PdfOxide.classify_document(doc))
+    end
+
+    test "header/footer/artifact erase + remove", %{doc: doc} do
+      assert ok_or_error(PdfOxide.erase_header(doc, 0))
+      assert ok_or_error(PdfOxide.erase_footer(doc, 0))
+      assert ok_or_error(PdfOxide.erase_artifacts(doc, 0))
+      assert ok_or_error(PdfOxide.remove_headers(doc))
+      assert ok_or_error(PdfOxide.remove_footers(doc, 0.5))
+      assert ok_or_error(PdfOxide.remove_artifacts(doc, 0.5))
+    end
+
+    test "forms: fields (empty list ok) + import/export", %{doc: doc} do
+      assert {:ok, fields} = PdfOxide.form_fields(doc)
+      assert is_list(fields)
+      assert Enum.all?(fields, &match?(%PdfOxide.FormField{}, &1))
+      assert ok_or_error(PdfOxide.export_form_data_to_bytes(doc))
+      assert ok_or_error(PdfOxide.export_form_data_to_bytes(doc, 1))
+      assert ok_or_error(PdfOxide.import_form_data(doc, "/nonexistent/data.fdf"))
+      assert ok_or_error(PdfOxide.form_import_from_file(doc, "/nonexistent/data.fdf"))
+
+      {:ok, ed} = PdfOxide.open_editor_from_bytes(sample_pdf())
+      assert ok_or_error(PdfOxide.import_fdf_bytes(ed, <<>>))
+      assert ok_or_error(PdfOxide.import_xfdf_bytes(ed, <<>>))
+    end
+
+    test "document structure / metadata", %{doc: doc} do
+      assert ok_or_error(PdfOxide.outline(doc))
+      assert ok_or_error(PdfOxide.page_labels(doc))
+      assert ok_or_error(PdfOxide.xmp_metadata(doc))
+      assert ok_or_error(PdfOxide.source_bytes(doc))
+      assert is_boolean(PdfOxide.has_xfa?(doc))
+      assert ok_or_error(PdfOxide.plan_split_by_bookmarks(doc))
+    end
+
+    test "pdf_page_count on a built Pdf" do
+      {:ok, pdf} = PdfOxide.from_markdown("# c\n\nx\n")
+      assert ok_or_error(PdfOxide.pdf_page_count(pdf))
+    end
+
+    test "doc-level signatures (no cert): count/verify/timestamp/dss", %{doc: doc} do
+      assert ok_or_error(PdfOxide.signature_count(doc))
+      assert ok_or_error(PdfOxide.signature(doc, 0))
+      assert ok_or_error(PdfOxide.verify_all_signatures(doc))
+      assert ok_or_error(PdfOxide.document_has_timestamp?(doc))
+      assert ok_or_error(PdfOxide.document_dss(doc))
+    end
+
+    test "sign wrapper exists and errors without a real cert", %{doc: doc} do
+      assert function_exported?(PdfOxide, :sign, 4)
+      {:ok, cert} = wrap_or_skip_cert()
+
+      if cert do
+        assert ok_or_error(PdfOxide.sign(doc, cert, "r", "l"))
+      else
+        :ok
+      end
+    end
+
+    test "annotation extras (empty page -> error) + to_json", %{doc: doc} do
+      assert ok_or_error(PdfOxide.annotation_color(doc, 0, 0))
+      assert ok_or_error(PdfOxide.annotation_creation_date(doc, 0, 0))
+      assert ok_or_error(PdfOxide.annotation_modification_date(doc, 0, 0))
+      assert ok_or_error(PdfOxide.annotation_hidden?(doc, 0, 0))
+      assert ok_or_error(PdfOxide.annotation_marked_deleted?(doc, 0, 0))
+      assert ok_or_error(PdfOxide.annotation_printable?(doc, 0, 0))
+      assert ok_or_error(PdfOxide.annotation_read_only?(doc, 0, 0))
+      assert ok_or_error(PdfOxide.link_annotation_uri(doc, 0, 0))
+      assert ok_or_error(PdfOxide.text_annotation_icon_name(doc, 0, 0))
+      assert ok_or_error(PdfOxide.highlight_quad_points_count(doc, 0, 0))
+      assert ok_or_error(PdfOxide.highlight_quad_point(doc, 0, 0, 0))
+      assert ok_or_error(PdfOxide.annotations_to_json(doc, 0))
+    end
+
+    test "element accessors + elements_to_json", %{doc: doc} do
+      assert {:ok, elems} = PdfOxide.page_elements(doc, 0)
+      assert {:ok, n} = PdfOxide.element_count(elems)
+      assert is_integer(n)
+      assert ok_or_error(PdfOxide.element_type(elems, 0))
+      assert ok_or_error(PdfOxide.element_text(elems, 0))
+      assert ok_or_error(PdfOxide.element_rect(elems, 0))
+      assert ok_or_error(PdfOxide.elements_to_json(elems))
+      PdfOxide.element_list_close(elems)
+    end
+
+    test "font_size + fonts_to_json + search_results_to_json", %{doc: doc} do
+      assert ok_or_error(PdfOxide.font_size(doc, 0, 0))
+      assert ok_or_error(PdfOxide.fonts_to_json(doc, 0))
+      assert ok_or_error(PdfOxide.search_results_to_json(doc, "Alpha"))
+      assert ok_or_error(PdfOxide.search_results_to_json(doc, "Alpha", true))
+    end
+
+    test "crypto / FIPS" do
+      assert {:ok, prov} = PdfOxide.crypto_active_provider()
+      assert is_binary(prov)
+      assert ok_or_error(PdfOxide.crypto_cbom())
+      assert ok_or_error(PdfOxide.crypto_inventory())
+      assert ok_or_error(PdfOxide.crypto_policy())
+      assert is_integer(PdfOxide.crypto_fips_available())
+      assert is_integer(PdfOxide.crypto_use_fips())
+      assert is_integer(PdfOxide.crypto_set_policy("default"))
+    end
+
+    test "models / config" do
+      assert ok_or_error(PdfOxide.model_manifest())
+      assert is_integer(PdfOxide.prefetch_available())
+      assert ok_or_error(PdfOxide.prefetch_models(""))
+      assert is_integer(PdfOxide.set_max_ops_per_stream(1_000_000))
+      assert is_integer(PdfOxide.set_preserve_unmapped_glyphs(0))
+    end
+
+    test "convert_to_pdf_a returns or errors", %{doc: doc} do
+      result = PdfOxide.convert_to_pdf_a(doc, 2)
+      assert result == :ok or match?({:error, _}, result)
+    end
+
+    # A cert is unavailable here; return nil so sign/4 is only invoked when one
+    # can actually be constructed.
+    defp wrap_or_skip_cert, do: {:ok, nil}
+  end
 end

@@ -387,4 +387,101 @@ defmodule PdfOxide.Native do
   def elements_close(_elements), do: nif_error()
 
   def add_timestamp(_pdf_data, _sig_index, _tsa_url), do: nif_error()
+
+  # phase 8 — office I/O
+  def doc_open_from_docx_bytes(_bytes), do: nif_error()
+  def doc_open_from_pptx_bytes(_bytes), do: nif_error()
+  def doc_open_from_xlsx_bytes(_bytes), do: nif_error()
+  def doc_to_docx(_doc), do: nif_error()
+  def doc_to_pptx(_doc), do: nif_error()
+  def doc_to_xlsx(_doc), do: nif_error()
+
+  # phase 8 — in-rect extractors
+  def doc_extract_text_in_rect(_doc, _page, _x, _y, _w, _h), do: nif_error()
+  def doc_extract_words_in_rect(_doc, _page, _x, _y, _w, _h), do: nif_error()
+  def doc_extract_lines_in_rect(_doc, _page, _x, _y, _w, _h), do: nif_error()
+  def doc_extract_tables_in_rect(_doc, _page, _x, _y, _w, _h), do: nif_error()
+  def doc_extract_images_in_rect(_doc, _page, _x, _y, _w, _h), do: nif_error()
+
+  # phase 8 — auto extraction / classification
+  def doc_extract_text_auto(_doc, _page), do: nif_error()
+  def doc_extract_all_text(_doc), do: nif_error()
+  def doc_extract_page_auto(_doc, _page, _options_json), do: nif_error()
+  def doc_classify_page(_doc, _page), do: nif_error()
+  def doc_classify_document(_doc), do: nif_error()
+
+  # phase 8 — header / footer / artifact
+  def doc_erase_header(_doc, _page), do: nif_error()
+  def doc_erase_footer(_doc, _page), do: nif_error()
+  def doc_erase_artifacts(_doc, _page), do: nif_error()
+  def doc_remove_headers(_doc, _threshold), do: nif_error()
+  def doc_remove_footers(_doc, _threshold), do: nif_error()
+  def doc_remove_artifacts(_doc, _threshold), do: nif_error()
+
+  # phase 8 — forms
+  def doc_get_form_fields(_doc), do: nif_error()
+  def doc_export_form_data_to_bytes(_doc, _format_type), do: nif_error()
+  def doc_import_form_data(_doc, _data_path), do: nif_error()
+  def editor_import_fdf_bytes(_ed, _bytes), do: nif_error()
+  def editor_import_xfdf_bytes(_ed, _bytes), do: nif_error()
+  def form_import_from_file(_doc, _filename), do: nif_error()
+
+  # phase 8 — document structure / metadata
+  def doc_get_outline(_doc), do: nif_error()
+  def doc_get_page_labels(_doc), do: nif_error()
+  def doc_get_xmp_metadata(_doc), do: nif_error()
+  def doc_get_source_bytes(_doc), do: nif_error()
+  def doc_has_xfa(_doc), do: nif_error()
+  def doc_get_page_count(_pdf), do: nif_error()
+  def doc_plan_split_by_bookmarks(_doc, _options_json), do: nif_error()
+
+  # phase 8 — document-level signatures
+  def doc_sign(_doc, _cert, _reason, _location), do: nif_error()
+  def doc_get_signature_count(_doc), do: nif_error()
+  def doc_get_signature(_doc, _index), do: nif_error()
+  def doc_verify_all_signatures(_doc), do: nif_error()
+  def doc_has_timestamp(_doc), do: nif_error()
+  def doc_get_dss(_doc), do: nif_error()
+
+  # phase 8 — annotation extras
+  def annot_get_color(_doc, _page, _index), do: nif_error()
+  def annot_get_creation_date(_doc, _page, _index), do: nif_error()
+  def annot_get_modification_date(_doc, _page, _index), do: nif_error()
+  def annot_is_hidden(_doc, _page, _index), do: nif_error()
+  def annot_is_marked_deleted(_doc, _page, _index), do: nif_error()
+  def annot_is_printable(_doc, _page, _index), do: nif_error()
+  def annot_is_read_only(_doc, _page, _index), do: nif_error()
+  def annot_link_get_uri(_doc, _page, _index), do: nif_error()
+  def annot_text_get_icon_name(_doc, _page, _index), do: nif_error()
+  def annot_highlight_quad_points_count(_doc, _page, _index), do: nif_error()
+  def annot_highlight_quad_point(_doc, _page, _index, _quad_index), do: nif_error()
+  def annotations_to_json(_doc, _page), do: nif_error()
+
+  # phase 8 — element / font / search JSON accessors
+  def element_get_type(_elements, _index), do: nif_error()
+  def element_get_text(_elements, _index), do: nif_error()
+  def element_get_rect(_elements, _index), do: nif_error()
+  def elements_to_json(_elements), do: nif_error()
+  def font_get_size(_doc, _page, _index), do: nif_error()
+  def fonts_to_json(_doc, _page), do: nif_error()
+  def search_results_to_json(_doc, _term, _case_sensitive), do: nif_error()
+
+  # phase 8 — crypto / FIPS
+  def crypto_active_provider, do: nif_error()
+  def crypto_cbom, do: nif_error()
+  def crypto_inventory, do: nif_error()
+  def crypto_policy, do: nif_error()
+  def crypto_fips_available, do: nif_error()
+  def crypto_use_fips, do: nif_error()
+  def crypto_set_policy(_spec), do: nif_error()
+
+  # phase 8 — models / config
+  def model_manifest, do: nif_error()
+  def prefetch_available, do: nif_error()
+  def prefetch_models(_languages_csv), do: nif_error()
+  def set_max_ops_per_stream(_limit), do: nif_error()
+  def set_preserve_unmapped_glyphs(_preserve), do: nif_error()
+
+  # phase 8 — PDF/A conversion
+  def doc_convert_to_pdf_a(_doc, _level), do: nif_error()
 end

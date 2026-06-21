@@ -96,6 +96,11 @@ defmodule PdfOxide do
     defstruct [:bbox, :stroke_width, :has_stroke, :has_fill, :operation_count]
   end
 
+  defmodule FormField do
+    @moduledoc "An AcroForm field: its `name`, current `value`, `type`, and flags."
+    defstruct [:name, :value, :type, :read_only, :required]
+  end
+
   defmodule SearchResult do
     @moduledoc "A single search hit: its `text`, 0-based `page` and `bbox`."
     defstruct [:text, :page, :bbox]
@@ -671,9 +676,14 @@ defmodule PdfOxide do
   def merge_from_bytes(%DocumentEditor{ref: ref}, bytes),
     do: Native.editor_merge_from_bytes(ref, bytes)
 
-  @doc "Convert the document to PDF/A in place (`level` 0..7)."
+  @doc """
+  Convert to PDF/A in place (`level` 0..7). Works on a `DocumentEditor` or an
+  opened `Document`.
+  """
   def convert_to_pdf_a(%DocumentEditor{ref: ref}, level),
     do: Native.editor_convert_to_pdf_a(ref, level)
+
+  def convert_to_pdf_a(%Document{ref: ref}, level), do: Native.doc_convert_to_pdf_a(ref, level)
 
   @doc "Embed a file attachment `name` with `bytes` into the document."
   def embed_file(%DocumentEditor{ref: ref}, name, bytes),
@@ -1714,6 +1724,310 @@ defmodule PdfOxide do
   def add_timestamp(pdf_data, sig_index, tsa_url),
     do: Native.add_timestamp(pdf_data, sig_index, tsa_url)
 
+  # ── phase 8: office I/O ───────────────────────────────────────────────────────
+  @doc "Open a DOCX document from a binary as a `Document`."
+  def open_from_docx_bytes(bytes) when is_binary(bytes),
+    do: wrap_doc(Native.doc_open_from_docx_bytes(bytes))
+
+  @doc "Open a PPTX document from a binary as a `Document`."
+  def open_from_pptx_bytes(bytes) when is_binary(bytes),
+    do: wrap_doc(Native.doc_open_from_pptx_bytes(bytes))
+
+  @doc "Open an XLSX document from a binary as a `Document`."
+  def open_from_xlsx_bytes(bytes) when is_binary(bytes),
+    do: wrap_doc(Native.doc_open_from_xlsx_bytes(bytes))
+
+  @doc "Export the document to DOCX bytes (`{:ok, binary}` | `{:error, code}`)."
+  def to_docx(%Document{ref: ref}), do: Native.doc_to_docx(ref)
+  @doc "Export the document to PPTX bytes (`{:ok, binary}` | `{:error, code}`)."
+  def to_pptx(%Document{ref: ref}), do: Native.doc_to_pptx(ref)
+  @doc "Export the document to XLSX bytes (`{:ok, binary}` | `{:error, code}`)."
+  def to_xlsx(%Document{ref: ref}), do: Native.doc_to_xlsx(ref)
+
+  # ── phase 8: in-rect extractors ───────────────────────────────────────────────
+  @doc "Reading-order text inside the rect `(x, y, w, h)` on a (0-based) `page`."
+  def extract_text_in_rect(%Document{ref: ref}, page, x, y, w, h),
+    do: Native.doc_extract_text_in_rect(ref, page, x / 1, y / 1, w / 1, h / 1)
+
+  @doc "Words inside the rect `(x, y, w, h)` on a (0-based) `page` as `Word`s."
+  def extract_words_in_rect(%Document{ref: ref}, page, x, y, w, h) do
+    with {:ok, list} <- Native.doc_extract_words_in_rect(ref, page, x / 1, y / 1, w / 1, h / 1) do
+      {:ok,
+       Enum.map(list, fn {text, bx, by, bw, bh, font, size, bold} ->
+         %Word{
+           text: text,
+           bbox: %Bbox{x: bx, y: by, width: bw, height: bh},
+           font_name: font,
+           font_size: size,
+           bold: bold
+         }
+       end)}
+    end
+  end
+
+  @doc "Text lines inside the rect `(x, y, w, h)` on a (0-based) `page`."
+  def extract_lines_in_rect(%Document{ref: ref}, page, x, y, w, h) do
+    with {:ok, list} <- Native.doc_extract_lines_in_rect(ref, page, x / 1, y / 1, w / 1, h / 1) do
+      {:ok,
+       Enum.map(list, fn {text, bx, by, bw, bh, word_count} ->
+         %TextLine{
+           text: text,
+           bbox: %Bbox{x: bx, y: by, width: bw, height: bh},
+           word_count: word_count
+         }
+       end)}
+    end
+  end
+
+  @doc "Tables inside the rect `(x, y, w, h)` on a (0-based) `page`."
+  def extract_tables_in_rect(%Document{ref: ref}, page, x, y, w, h) do
+    with {:ok, list} <- Native.doc_extract_tables_in_rect(ref, page, x / 1, y / 1, w / 1, h / 1) do
+      {:ok,
+       Enum.map(list, fn {row_count, col_count, has_header, cells} ->
+         %Table{row_count: row_count, col_count: col_count, has_header: has_header, cells: cells}
+       end)}
+    end
+  end
+
+  @doc "Images inside the rect `(x, y, w, h)` on a (0-based) `page`."
+  def extract_images_in_rect(%Document{ref: ref}, page, x, y, w, h) do
+    with {:ok, list} <- Native.doc_extract_images_in_rect(ref, page, x / 1, y / 1, w / 1, h / 1) do
+      {:ok,
+       Enum.map(list, fn {width, height, bpc, format, colorspace, data} ->
+         %Image{
+           width: width,
+           height: height,
+           bits_per_component: bpc,
+           format: format,
+           colorspace: colorspace,
+           data: data
+         }
+       end)}
+    end
+  end
+
+  # ── phase 8: auto extraction / classification ─────────────────────────────────
+  @doc "Auto-mode (native + image-OCR) text for a (0-based) `page`."
+  def extract_text_auto(%Document{ref: ref}, page), do: Native.doc_extract_text_auto(ref, page)
+  @doc "Concatenated text of the whole document."
+  def extract_all_text(%Document{ref: ref}), do: Native.doc_extract_all_text(ref)
+
+  @doc """
+  Auto-mode page extraction as a JSON string. `options_json` may be an empty
+  string for defaults.
+  """
+  def extract_page_auto(%Document{ref: ref}, page, options_json \\ ""),
+    do: Native.doc_extract_page_auto(ref, page, options_json)
+
+  @doc "Classify a (0-based) `page` (returns a JSON classification string)."
+  def classify_page(%Document{ref: ref}, page), do: Native.doc_classify_page(ref, page)
+  @doc "Classify the whole document (returns a JSON classification string)."
+  def classify_document(%Document{ref: ref}), do: Native.doc_classify_document(ref)
+
+  # ── phase 8: header / footer / artifact ───────────────────────────────────────
+  @doc "Erase the detected header on a (0-based) `page`. Returns the erased count."
+  def erase_header(%Document{ref: ref}, page), do: Native.doc_erase_header(ref, page)
+  @doc "Erase the detected footer on a (0-based) `page`. Returns the erased count."
+  def erase_footer(%Document{ref: ref}, page), do: Native.doc_erase_footer(ref, page)
+  @doc "Erase detected artifacts on a (0-based) `page`. Returns the erased count."
+  def erase_artifacts(%Document{ref: ref}, page), do: Native.doc_erase_artifacts(ref, page)
+
+  @doc "Remove repeating headers across pages above `threshold`. Returns the count."
+  def remove_headers(%Document{ref: ref}, threshold \\ 0.5),
+    do: Native.doc_remove_headers(ref, threshold / 1)
+
+  @doc "Remove repeating footers across pages above `threshold`. Returns the count."
+  def remove_footers(%Document{ref: ref}, threshold \\ 0.5),
+    do: Native.doc_remove_footers(ref, threshold / 1)
+
+  @doc "Remove repeating artifacts across pages above `threshold`. Returns the count."
+  def remove_artifacts(%Document{ref: ref}, threshold \\ 0.5),
+    do: Native.doc_remove_artifacts(ref, threshold / 1)
+
+  # ── phase 8: forms ────────────────────────────────────────────────────────────
+  @doc """
+  The document's AcroForm fields as a list of `FormField` (an empty list when the
+  document has no form).
+  """
+  def form_fields(%Document{ref: ref}) do
+    with {:ok, list} <- Native.doc_get_form_fields(ref) do
+      {:ok,
+       Enum.map(list, fn {name, value, type, read_only, required} ->
+         %FormField{
+           name: name,
+           value: value,
+           type: type,
+           read_only: read_only,
+           required: required
+         }
+       end)}
+    end
+  end
+
+  @doc "Export the filled form data to bytes (`format_type` 0=FDF, 1=XFDF, …)."
+  def export_form_data_to_bytes(%Document{ref: ref}, format_type \\ 0),
+    do: Native.doc_export_form_data_to_bytes(ref, format_type)
+
+  @doc "Import form data from a file at `data_path` into the document."
+  def import_form_data(%Document{ref: ref}, data_path),
+    do: Native.doc_import_form_data(ref, data_path)
+
+  @doc "Import FDF form data bytes into a `DocumentEditor`."
+  def import_fdf_bytes(%DocumentEditor{ref: ref}, bytes) when is_binary(bytes),
+    do: Native.editor_import_fdf_bytes(ref, bytes)
+
+  @doc "Import XFDF form data bytes into a `DocumentEditor`."
+  def import_xfdf_bytes(%DocumentEditor{ref: ref}, bytes) when is_binary(bytes),
+    do: Native.editor_import_xfdf_bytes(ref, bytes)
+
+  @doc "Import form data from a file at `filename` into the document."
+  def form_import_from_file(%Document{ref: ref}, filename),
+    do: Native.form_import_from_file(ref, filename)
+
+  # ── phase 8: document structure / metadata ────────────────────────────────────
+  @doc "The document outline (bookmarks) as a JSON string."
+  def outline(%Document{ref: ref}), do: Native.doc_get_outline(ref)
+  @doc "The document page labels as a JSON string."
+  def page_labels(%Document{ref: ref}), do: Native.doc_get_page_labels(ref)
+  @doc "The document XMP metadata as an XML/JSON string."
+  def xmp_metadata(%Document{ref: ref}), do: Native.doc_get_xmp_metadata(ref)
+  @doc "The document's original source bytes."
+  def source_bytes(%Document{ref: ref}), do: Native.doc_get_source_bytes(ref)
+  @doc "Whether the document carries an XFA form."
+  def has_xfa?(%Document{ref: ref}), do: Native.doc_has_xfa(ref)
+  @doc "Page count of a built `Pdf` handle."
+  def pdf_page_count(%Pdf{ref: ref}), do: Native.doc_get_page_count(ref)
+
+  @doc "Plan splitting the document by bookmarks; returns a JSON plan string."
+  def plan_split_by_bookmarks(%Document{ref: ref}, options_json \\ ""),
+    do: Native.doc_plan_split_by_bookmarks(ref, options_json)
+
+  # ── phase 8: document-level signatures ────────────────────────────────────────
+  @doc "Sign the document in place with `certificate`; returns the signature index."
+  def sign(%Document{ref: ref}, %Certificate{ref: cert}, reason \\ "", location \\ ""),
+    do: Native.doc_sign(ref, cert, reason, location)
+
+  @doc "Number of signatures present in the document."
+  def signature_count(%Document{ref: ref}), do: Native.doc_get_signature_count(ref)
+
+  @doc "Get the `SignatureInfo` for the signature at (0-based) `index`."
+  def signature(%Document{ref: ref}, index),
+    do: wrap_signature(Native.doc_get_signature(ref, index))
+
+  @doc "Verify all signatures; returns an aggregate status code."
+  def verify_all_signatures(%Document{ref: ref}), do: Native.doc_verify_all_signatures(ref)
+  @doc "Whether the document carries a document-level timestamp."
+  def document_has_timestamp?(%Document{ref: ref}), do: Native.doc_has_timestamp(ref)
+  @doc "Get the document's `Dss` (Document Security Store) handle."
+  def document_dss(%Document{ref: ref}), do: wrap_dss(Native.doc_get_dss(ref))
+
+  # ── phase 8: annotation extras ────────────────────────────────────────────────
+  @doc "Packed RGBA color (uint32) of the annotation at `index` on a `page`."
+  def annotation_color(%Document{ref: ref}, page, index),
+    do: Native.annot_get_color(ref, page, index)
+
+  @doc "Creation date (unix seconds) of the annotation at `index` on a `page`."
+  def annotation_creation_date(%Document{ref: ref}, page, index),
+    do: Native.annot_get_creation_date(ref, page, index)
+
+  @doc "Modification date (unix seconds) of the annotation at `index` on a `page`."
+  def annotation_modification_date(%Document{ref: ref}, page, index),
+    do: Native.annot_get_modification_date(ref, page, index)
+
+  @doc "Whether the annotation at `index` on a `page` is hidden."
+  def annotation_hidden?(%Document{ref: ref}, page, index),
+    do: Native.annot_is_hidden(ref, page, index)
+
+  @doc "Whether the annotation at `index` on a `page` is marked deleted."
+  def annotation_marked_deleted?(%Document{ref: ref}, page, index),
+    do: Native.annot_is_marked_deleted(ref, page, index)
+
+  @doc "Whether the annotation at `index` on a `page` is printable."
+  def annotation_printable?(%Document{ref: ref}, page, index),
+    do: Native.annot_is_printable(ref, page, index)
+
+  @doc "Whether the annotation at `index` on a `page` is read-only."
+  def annotation_read_only?(%Document{ref: ref}, page, index),
+    do: Native.annot_is_read_only(ref, page, index)
+
+  @doc "URI of the link annotation at `index` on a `page`."
+  def link_annotation_uri(%Document{ref: ref}, page, index),
+    do: Native.annot_link_get_uri(ref, page, index)
+
+  @doc "Icon name of the text annotation at `index` on a `page`."
+  def text_annotation_icon_name(%Document{ref: ref}, page, index),
+    do: Native.annot_text_get_icon_name(ref, page, index)
+
+  @doc "Quad-point count of the highlight annotation at `index` on a `page`."
+  def highlight_quad_points_count(%Document{ref: ref}, page, index),
+    do: Native.annot_highlight_quad_points_count(ref, page, index)
+
+  @doc """
+  The `quad_index`-th quad of the highlight annotation at `index` on a `page` as
+  `{:ok, {x1, y1, x2, y2, x3, y3, x4, y4}}`.
+  """
+  def highlight_quad_point(%Document{ref: ref}, page, index, quad_index),
+    do: Native.annot_highlight_quad_point(ref, page, index, quad_index)
+
+  @doc "All annotations on a (0-based) `page` serialized as a JSON string."
+  def annotations_to_json(%Document{ref: ref}, page),
+    do: Native.annotations_to_json(ref, page)
+
+  # ── phase 8: element / font / search JSON accessors ────────────────────────────
+  @doc "Type string of the element at `index` in an `ElementList`."
+  def element_type(%ElementList{ref: ref}, index), do: Native.element_get_type(ref, index)
+  @doc "Text of the element at `index` in an `ElementList`."
+  def element_text(%ElementList{ref: ref}, index), do: Native.element_get_text(ref, index)
+
+  @doc "Bounding box of the element at `index` in an `ElementList` as a `Bbox`."
+  def element_rect(%ElementList{ref: ref}, index),
+    do: wrap_box(Native.element_get_rect(ref, index))
+
+  @doc "An `ElementList` serialized as a JSON string."
+  def elements_to_json(%ElementList{ref: ref}), do: Native.elements_to_json(ref)
+
+  @doc "Font size of the font at `index` on a (0-based) `page`."
+  def font_size(%Document{ref: ref}, page, index), do: Native.font_get_size(ref, page, index)
+  @doc "The fonts on a (0-based) `page` serialized as a JSON string."
+  def fonts_to_json(%Document{ref: ref}, page), do: Native.fonts_to_json(ref, page)
+
+  @doc "Search the whole document for `term` and serialize the hits as JSON."
+  def search_results_to_json(%Document{ref: ref}, term, case_sensitive \\ false),
+    do: Native.search_results_to_json(ref, term, if(case_sensitive, do: 1, else: 0))
+
+  # ── phase 8: crypto / FIPS ─────────────────────────────────────────────────────
+  @doc "The active crypto provider name."
+  def crypto_active_provider, do: Native.crypto_active_provider()
+  @doc "The crypto Bill of Materials (CBOM) as a JSON string."
+  def crypto_cbom, do: Native.crypto_cbom()
+  @doc "The crypto inventory as a JSON string."
+  def crypto_inventory, do: Native.crypto_inventory()
+  @doc "The active crypto policy as a string."
+  def crypto_policy, do: Native.crypto_policy()
+  @doc "Whether a FIPS-validated crypto provider is available (nonzero = yes)."
+  def crypto_fips_available, do: Native.crypto_fips_available()
+  @doc "Switch the process to the FIPS crypto provider; returns a status code."
+  def crypto_use_fips, do: Native.crypto_use_fips()
+  @doc "Set the crypto policy from `spec`; returns a status code."
+  def crypto_set_policy(spec) when is_binary(spec), do: Native.crypto_set_policy(spec)
+
+  # ── phase 8: models / config ───────────────────────────────────────────────────
+  @doc "The OCR/layout model manifest as a JSON string."
+  def model_manifest, do: Native.model_manifest()
+  @doc "Whether model prefetch is available (nonzero = yes)."
+  def prefetch_available, do: Native.prefetch_available()
+
+  @doc "Prefetch models for `languages_csv` (empty = defaults); returns JSON."
+  def prefetch_models(languages_csv \\ ""), do: Native.prefetch_models(languages_csv)
+
+  @doc "Set the per-content-stream operator cap; returns the previous limit."
+  def set_max_ops_per_stream(limit) when is_integer(limit),
+    do: Native.set_max_ops_per_stream(limit)
+
+  @doc "Toggle preserving unmapped glyphs (nonzero to enable); returns the previous value."
+  def set_preserve_unmapped_glyphs(preserve) when is_integer(preserve),
+    do: Native.set_preserve_unmapped_glyphs(preserve)
+
   defp wrap_doc({:ok, ref}), do: {:ok, %Document{ref: ref}}
   defp wrap_doc(other), do: other
   defp wrap_pdf({:ok, ref}), do: {:ok, %Pdf{ref: ref}}
@@ -1738,6 +2052,10 @@ defmodule PdfOxide do
 
   defp wrap_certificate({:ok, ref}), do: {:ok, %Certificate{ref: ref}}
   defp wrap_certificate(other), do: other
+  defp wrap_signature({:ok, ref}), do: {:ok, %SignatureInfo{ref: ref}}
+  defp wrap_signature(other), do: other
+  defp wrap_dss({:ok, ref}), do: {:ok, %Dss{ref: ref}}
+  defp wrap_dss(other), do: other
   defp wrap_timestamp({:ok, ref}), do: {:ok, %Timestamp{ref: ref}}
   defp wrap_timestamp(other), do: other
   defp wrap_tsa({:ok, ref}), do: {:ok, %TsaClient{ref: ref}}

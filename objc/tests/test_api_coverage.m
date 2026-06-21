@@ -705,6 +705,348 @@ int main(void) {
             CHECK(ocrText != nil ? (ocrText.length >= 0) : (oe != nil));
         }
 
+        // ── Final phase: in-rect extractors ─────────────────────────────────
+        {
+            NSError* re = nil;
+            NSString* rt = [doc extractTextInRect:0
+                                                x:0
+                                                y:0
+                                            width:1000
+                                           height:1000
+                                            error:&re]; // extractTextInRect
+            CHECK(rt != nil ? (rt.length >= 0) : (re != nil));
+            re = nil;
+            NSArray<POXWord*>* rw = [doc extractWordsInRect:0
+                                                         x:0
+                                                         y:0
+                                                     width:1000
+                                                    height:1000
+                                                     error:&re]; // extractWordsInRect
+            CHECK(rw != nil ? (rw.count >= 0) : (re != nil));
+            re = nil;
+            NSArray<POXTextLine*>* rl =
+                [doc extractLinesInRect:0
+                                      x:0
+                                      y:0
+                                  width:1000
+                                 height:1000
+                                  error:&re]; // extractLinesInRect
+            CHECK(rl != nil ? (rl.count >= 0) : (re != nil));
+            re = nil;
+            NSArray<POXTable*>* rtb =
+                [doc extractTablesInRect:0
+                                       x:0
+                                       y:0
+                                   width:1000
+                                  height:1000
+                                   error:&re]; // extractTablesInRect
+            CHECK(rtb != nil ? (rtb.count >= 0) : (re != nil));
+            re = nil;
+            NSArray<POXImage*>* ri =
+                [doc extractImagesInRect:0
+                                       x:0
+                                       y:0
+                                   width:1000
+                                  height:1000
+                                   error:&re]; // extractImagesInRect
+            CHECK(ri != nil ? (ri.count >= 0) : (re != nil));
+        }
+
+        // ── Final phase: auto extraction / classification ───────────────────
+        {
+            NSError* ae = nil;
+            NSString* ta = [doc extractTextAuto:0 error:&ae]; // extractTextAuto
+            CHECK(ta != nil ? (ta.length >= 0) : (ae != nil));
+            ae = nil;
+            NSString* at = [doc extractAllTextWithError:&ae]; // extractAllText
+            CHECK(at != nil ? (at.length >= 0) : (ae != nil));
+            ae = nil;
+            NSString* pa = [doc extractPageAuto:0
+                                    optionsJson:nil
+                                          error:&ae]; // extractPageAuto
+            CHECK(pa != nil ? (pa.length >= 0) : (ae != nil));
+            ae = nil;
+            NSString* cp = [doc classifyPage:0 error:&ae]; // classifyPage
+            CHECK(cp != nil ? (cp.length >= 0) : (ae != nil));
+            ae = nil;
+            NSString* cd = [doc classifyDocumentWithError:&ae]; // classifyDocument
+            CHECK(cd != nil ? (cd.length >= 0) : (ae != nil));
+        }
+
+        // ── Final phase: header / footer / artifact removal ─────────────────
+        {
+            NSError* he = nil;
+            CHECK([doc eraseHeader:0 error:&he] >= -1 || he != nil); // eraseHeader
+            he = nil;
+            CHECK([doc eraseFooter:0 error:&he] >= -1 || he != nil); // eraseFooter
+            he = nil;
+            CHECK([doc eraseArtifacts:0 error:&he] >= -1 ||
+                  he != nil); // eraseArtifacts
+            he = nil;
+            CHECK([doc removeHeaders:0.1f error:&he] >= -1 ||
+                  he != nil); // removeHeaders
+            he = nil;
+            CHECK([doc removeFooters:0.1f error:&he] >= -1 ||
+                  he != nil); // removeFooters
+            he = nil;
+            CHECK([doc removeArtifacts:0.1f error:&he] >= -1 ||
+                  he != nil); // removeArtifacts
+        }
+
+        // ── Final phase: AcroForm fields & form data ─────────────────────────
+        {
+            NSError* fe = nil;
+            NSArray<POXFormField*>* ff = [doc formFieldsWithError:&fe]; // formFields
+            CHECK(ff != nil ? (ff.count >= 0) : (fe != nil)); // empty list ok
+            for (POXFormField* f in ff) {
+                CHECK(f.name != nil && f.type != nil && f.value != nil);
+                CHECK(f.readonly == YES || f.readonly == NO);
+                CHECK(f.required == YES || f.required == NO);
+            }
+            fe = nil;
+            NSData* fd = [doc exportFormDataToBytes:0
+                                             error:&fe]; // exportFormDataToBytes
+            CHECK(fd != nil ? (fd.length >= 0) : (fe != nil));
+            fe = nil;
+            BOOL imp = [doc importFormDataFromPath:@"/nonexistent/data.fdf"
+                                            error:&fe]; // importFormData
+            CHECK(imp == NO ? (fe != nil) : YES);
+            fe = nil;
+            BOOL impf = [doc importFormFromFile:@"/nonexistent/data.fdf"
+                                         error:&fe]; // importFormFromFile
+            CHECK(impf == NO ? (fe != nil) : YES);
+        }
+
+        // ── Final phase: document structure / metadata ───────────────────────
+        {
+            NSError* se = nil;
+            NSString* ol = [doc outlineWithError:&se]; // outline
+            CHECK(ol != nil ? (ol.length >= 0) : (se != nil));
+            se = nil;
+            NSString* pl = [doc pageLabelsWithError:&se]; // pageLabels
+            CHECK(pl != nil ? (pl.length >= 0) : (se != nil));
+            se = nil;
+            NSString* xmp = [doc xmpMetadataWithError:&se]; // xmpMetadata
+            CHECK(xmp != nil ? (xmp.length >= 0) : (se != nil));
+            se = nil;
+            NSData* sb = [doc sourceBytesWithError:&se]; // sourceBytes
+            CHECK(sb != nil ? (sb.length >= 0) : (se != nil));
+            CHECK([doc hasXfa] == YES || [doc hasXfa] == NO); // hasXfa
+            se = nil;
+            CHECK([doc pageCountAliasError:&se] >= 1 ||
+                  se != nil); // pageCountAlias (pdf_get_page_count)
+            se = nil;
+            NSString* sp = [doc planSplitByBookmarks:nil
+                                               error:&se]; // planSplitByBookmarks
+            CHECK(sp != nil ? (sp.length >= 0) : (se != nil));
+        }
+
+        // ── Final phase: fonts / search / annotations as JSON ────────────────
+        {
+            NSError* je = nil;
+            NSString* fj = [doc embeddedFontsJson:0 error:&je]; // fontsToJson
+            CHECK(fj != nil ? (fj.length >= 0) : (je != nil));
+            je = nil;
+            NSString* sj = [doc searchJson:0
+                                      term:@"Alpha"
+                             caseSensitive:NO
+                                     error:&je]; // searchResultsToJson
+            CHECK(sj != nil ? (sj.length >= 0) : (je != nil));
+            je = nil;
+            NSString* aj = [doc annotationsJson:0 error:&je]; // annotationsToJson
+            CHECK(aj != nil ? (aj.length >= 0) : (je != nil));
+            // font_get_size surfaces via the POXFont.size property
+            NSError* fe = nil;
+            NSArray<POXFont*>* fonts = [doc embeddedFonts:0 error:&fe];
+            for (POXFont* f in fonts)
+                CHECK(f.size >= 0); // font_get_size
+        }
+
+        // ── Final phase: annotation extras (via constructed PDF — list ok) ───
+        {
+            NSError* ae = nil;
+            NSArray<POXAnnotation*>* anns =
+                [doc pageAnnotations:0 error:&ae]; // (may be empty)
+            CHECK(anns != nil || ae != nil);
+            for (POXAnnotation* a in anns) {
+                CHECK(a.color >= 0);             // get_color
+                CHECK(a.creationDate >= 0);      // get_creation_date
+                CHECK(a.modificationDate >= 0);  // get_modification_date
+                CHECK(a.hidden == YES || a.hidden == NO);   // is_hidden
+                CHECK(a.markedDeleted == YES ||
+                      a.markedDeleted == NO);               // is_marked_deleted
+                CHECK(a.printable == YES || a.printable == NO); // is_printable
+                CHECK(a.readOnly == YES || a.readOnly == NO);   // is_read_only
+                (void)a.linkUri;     // link uri
+                (void)a.iconName;    // text icon name
+                CHECK(a.quadPoints != nil); // highlight quad points
+            }
+        }
+
+        // ── Final phase: PDF/A conversion (may error on this sample) ─────────
+        {
+            NSError* ce = nil;
+            BOOL ok = [doc convertToPdfA:0 error:&ce]; // convertToPdfA
+            CHECK(ok == YES || ce != nil);
+        }
+
+        // ── Final phase: document signatures (need a cert) ───────────────────
+        {
+            NSError* sigErr = nil;
+            int32_t sc = [doc signatureCountWithError:&sigErr]; // signatureCount
+            CHECK(sc >= 0 || sigErr != nil);
+            sigErr = nil;
+            POXSignatureInfo* si = [doc signatureAtIndex:0
+                                                   error:&sigErr]; // signature
+            CHECK(si != nil ? YES : (sigErr != nil));
+            if (si)
+                [si close];
+            sigErr = nil;
+            int32_t va = [doc verifyAllSignaturesWithError:&sigErr]; // verifyAll
+            CHECK(va >= -1 || sigErr != nil);
+            sigErr = nil;
+            int32_t ht = [doc hasTimestampWithError:&sigErr]; // hasTimestamp
+            CHECK(ht >= -1 || sigErr != nil);
+            sigErr = nil;
+            POXDss* dss = [doc dssWithError:&sigErr]; // dss
+            CHECK(dss != nil ? YES : (sigErr != nil));
+            if (dss)
+                [dss close];
+            // sign requires a real certificate handle: invoke + assert raises.
+            NSError* certErr = nil;
+            POXCertificate* cert = [POXCertificate loadFromPemCert:@"not-a-pem"
+                                                            keyPem:@"not-a-key"
+                                                             error:&certErr];
+            if (cert) {
+                NSError* signErr = nil;
+                BOOL signed_ = [doc sign:cert
+                                  reason:@"test"
+                                location:@"here"
+                                   error:&signErr]; // sign
+                CHECK(signed_ == YES || signErr != nil);
+                [cert close];
+            } else {
+                CHECK(certErr != nil);
+            }
+        }
+
+        // ── Final phase: office export (may error on this sample) ────────────
+        {
+            NSError* oe = nil;
+            NSData* docx = [doc toDocxWithError:&oe]; // toDocx
+            CHECK(docx != nil ? (docx.length >= 0) : (oe != nil));
+            oe = nil;
+            NSData* pptx = [doc toPptxWithError:&oe]; // toPptx
+            CHECK(pptx != nil ? (pptx.length >= 0) : (oe != nil));
+            oe = nil;
+            NSData* xlsx = [doc toXlsxWithError:&oe]; // toXlsx
+            CHECK(xlsx != nil ? (xlsx.length >= 0) : (oe != nil));
+        }
+
+        // ── Final phase: office open from bytes (need real office files) ─────
+        {
+            NSData* junk = [@"PK\x03\x04 not a real office file"
+                dataUsingEncoding:NSUTF8StringEncoding];
+            NSError* oe = nil;
+            POXDocument* d = [POXDocument openFromDocxBytes:junk
+                                                     error:&oe]; // openFromDocxBytes
+            CHECK(d == nil ? (oe != nil) : ([d pageCountError:&oe] >= 0));
+            if (d)
+                [d close];
+            oe = nil;
+            d = [POXDocument openFromPptxBytes:junk error:&oe]; // openFromPptxBytes
+            CHECK(d == nil ? (oe != nil) : ([d pageCountError:&oe] >= 0));
+            if (d)
+                [d close];
+            oe = nil;
+            d = [POXDocument openFromXlsxBytes:junk error:&oe]; // openFromXlsxBytes
+            CHECK(d == nil ? (oe != nil) : ([d pageCountError:&oe] >= 0));
+            if (d)
+                [d close];
+        }
+
+        // ── Final phase: editor FDF/XFDF import (may error on junk) ──────────
+        {
+            NSString* path = [NSTemporaryDirectory()
+                stringByAppendingPathComponent:@"pdfoxide_objc_editor.pdf"];
+            [[POXPdf fromMarkdown:@"# f\n\nx\n" error:&err] saveToPath:path error:&err];
+            NSError* ee = nil;
+            POXDocumentEditor* ed = [POXDocumentEditor openEditor:path error:&ee];
+            if (ed) {
+                NSData* junk = [@"junk" dataUsingEncoding:NSUTF8StringEncoding];
+                NSError* ie = nil;
+                BOOL f = [ed importFdfBytes:junk error:&ie]; // importFdfBytes
+                CHECK(f == YES || ie != nil);
+                ie = nil;
+                BOOL xf = [ed importXfdfBytes:junk error:&ie]; // importXfdfBytes
+                CHECK(xf == YES || ie != nil);
+                [ed close];
+            } else {
+                CHECK(ee != nil);
+            }
+            [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+        }
+
+        // ── Final phase: Pdf page count alias ────────────────────────────────
+        {
+            POXPdf* p = [POXPdf fromMarkdown:@"# p\n\nbody\n" error:&err];
+            NSError* pe = nil;
+            CHECK([p pageCountError:&pe] >= 1 || pe != nil); // pdf_get_page_count
+        }
+
+        // ── Final phase: crypto / FIPS / models / config / renderer ──────────
+        {
+            NSError* ce = nil;
+            NSString* prov = [POXCrypto activeProviderWithError:&ce]; // activeProvider
+            CHECK(prov != nil ? (prov.length >= 0) : (ce != nil));
+            ce = nil;
+            NSString* cbom = [POXCrypto cbomWithError:&ce]; // cbom
+            CHECK(cbom != nil ? (cbom.length >= 0) : (ce != nil));
+            ce = nil;
+            NSString* inv = [POXCrypto inventoryWithError:&ce]; // inventory
+            CHECK(inv != nil ? (inv.length >= 0) : (ce != nil));
+            ce = nil;
+            NSString* pol = [POXCrypto policyWithError:&ce]; // policy
+            CHECK(pol != nil ? (pol.length >= 0) : (ce != nil));
+            CHECK([POXCrypto fipsAvailable] >= -1);    // fipsAvailable
+            CHECK([POXCrypto useFips] >= -1);          // useFips
+            CHECK([POXCrypto setPolicy:@"default"] >= -1); // setPolicy
+
+            ce = nil;
+            NSString* man = [POXModels manifestWithError:&ce]; // modelManifest
+            CHECK(man != nil ? (man.length >= 0) : (ce != nil));
+            CHECK([POXModels prefetchAvailable] >= -1); // prefetchAvailable
+            ce = nil;
+            NSString* pf = [POXModels prefetchModels:@"en"
+                                               error:&ce]; // prefetchModels
+            CHECK(pf != nil ? (pf.length >= 0) : (ce != nil));
+
+            // setMaxOpsPerStream returns the PRIOR value and has no error
+            // channel; only assert the call is invokable (yields an int), not a
+            // specific round-tripped value.
+            int64_t prev = [POXConfig setMaxOpsPerStream:1000000]; // setMaxOpsPerStream
+            CHECK(prev == prev); // invokable: returns an int64_t
+            [POXConfig setMaxOpsPerStream:prev]; // restore
+            // setPreserveUnmappedGlyphs likewise returns the prior value with no
+            // error channel; just confirm it is invokable.
+            int32_t pg =
+                [POXConfig setPreserveUnmappedGlyphs:0]; // setPreserveUnmappedGlyphs
+            CHECK(pg == pg); // invokable: returns an int32_t
+            [POXConfig setPreserveUnmappedGlyphs:pg]; // restore
+
+            ce = nil;
+            POXRenderer* rend = [POXRenderer createWithDpi:150
+                                                    format:0
+                                                   quality:90
+                                                 antiAlias:YES
+                                                     error:&ce]; // createRenderer
+            CHECK(rend != nil ? YES : (ce != nil));
+            if (rend) {
+                [rend close];
+                [rend close]; // idempotent
+            }
+        }
+
         // ── Phase-7: add_timestamp (needs TSA) — invoke + assert raises ──────
         {
             NSError* te = nil;

@@ -165,6 +165,21 @@ struct Element {
     Bbox rect;
 };
 
+/// A single interactive AcroForm field (PHASE-8 forms).
+struct FormField {
+    std::string name;
+    std::string value;
+    std::string type;
+    bool readonly;
+    bool required;
+};
+
+/// One QuadPoints quadrilateral of a highlight/markup annotation (8 floats,
+/// four (x,y) corners in page user-space).
+struct QuadPoint {
+    float x1, y1, x2, y2, x3, y3, x4, y4;
+};
+
 /// A rendered page image. Move-only; owns the native FfiRenderedImage handle and
 /// frees it on destruction. Width/height/data are read eagerly on construction;
 /// save(path) delegates to the still-live native handle.
@@ -895,6 +910,599 @@ class Document {
     /// extraction only). Declared inline after OcrEngine to borrow its handle.
     std::string ocr_extract_text(int page_index, const class OcrEngine* engine) const;
 
+    // ── PHASE-8: in-rect extraction ──────────────────────────────────────────
+
+    /// Reading-order text inside the rectangle (x,y,w,h) on `page_index`.
+    std::string extract_text_in_rect(int page_index, float x, float y, float w,
+                                     float h) const {
+        int32_t code = 0;
+        return detail::take_string(
+            pdf_document_extract_text_in_rect(ptr(), page_index, x, y, w, h, &code),
+            code, "Document::extract_text_in_rect");
+    }
+
+    /// Words inside the rectangle (x,y,w,h) on `page_index`.
+    std::vector<Word> extract_words_in_rect(int page_index, float x, float y, float w,
+                                            float h) const {
+        int32_t code = 0;
+        FfiWordList* list =
+            pdf_document_extract_words_in_rect(ptr(), page_index, x, y, w, h, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::extract_words_in_rect");
+        }
+        return collect_words(list, "Document::extract_words_in_rect");
+    }
+
+    /// Text lines inside the rectangle (x,y,w,h) on `page_index`.
+    std::vector<TextLine> extract_lines_in_rect(int page_index, float x, float y,
+                                                float w, float h) const {
+        int32_t code = 0;
+        FfiTextLineList* list =
+            pdf_document_extract_lines_in_rect(ptr(), page_index, x, y, w, h, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::extract_lines_in_rect");
+        }
+        return collect_lines(list, "Document::extract_lines_in_rect");
+    }
+
+    /// Tables inside the rectangle (x,y,w,h) on `page_index`.
+    std::vector<Table> extract_tables_in_rect(int page_index, float x, float y, float w,
+                                              float h) const {
+        int32_t code = 0;
+        FfiTableList* list =
+            pdf_document_extract_tables_in_rect(ptr(), page_index, x, y, w, h, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::extract_tables_in_rect");
+        }
+        return collect_tables(list, "Document::extract_tables_in_rect");
+    }
+
+    /// Images inside the rectangle (x,y,w,h) on `page_index`.
+    std::vector<Image> extract_images_in_rect(int page_index, float x, float y, float w,
+                                              float h) const {
+        int32_t code = 0;
+        FfiImageList* list =
+            pdf_document_extract_images_in_rect(ptr(), page_index, x, y, w, h, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::extract_images_in_rect");
+        }
+        return collect_images(list, "Document::extract_images_in_rect");
+    }
+
+    // ── PHASE-8: auto / classification extraction ────────────────────────────
+
+    /// Auto-mode text (native + image OCR superset) for one page (0-based).
+    std::string extract_text_auto(int page_index) const {
+        int32_t code = 0;
+        return detail::take_string(
+            pdf_document_extract_text_auto(ptr(), page_index, &code), code,
+            "Document::extract_text_auto");
+    }
+
+    /// Reading-order text for the whole document.
+    std::string extract_all_text() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_document_extract_all_text(ptr(), &code), code,
+                                   "Document::extract_all_text");
+    }
+
+    /// Auto-mode extraction for one page with JSON options (empty = defaults).
+    std::string extract_page_auto(int page_index,
+                                  const std::string& options_json = "") const {
+        int32_t code = 0;
+        return detail::take_string(
+            pdf_document_extract_page_auto(
+                ptr(), page_index,
+                options_json.empty() ? nullptr : options_json.c_str(), &code),
+            code, "Document::extract_page_auto");
+    }
+
+    /// Classify a single page (JSON description of detected content type).
+    std::string classify_page(int page_index) const {
+        int32_t code = 0;
+        return detail::take_string(pdf_document_classify_page(ptr(), page_index, &code),
+                                   code, "Document::classify_page");
+    }
+
+    /// Classify the whole document (JSON description).
+    std::string classify_document() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_document_classify_document(ptr(), &code), code,
+                                   "Document::classify_document");
+    }
+
+    // ── PHASE-8: header / footer / artifact removal ──────────────────────────
+
+    /// Erase the detected header region on `page_index`. Returns the C status.
+    int erase_header(int page_index) const {
+        int32_t code = 0;
+        int32_t r = pdf_document_erase_header(ptr(), page_index, &code);
+        if (code != 0) {
+            throw Error(code, "Document::erase_header");
+        }
+        return r;
+    }
+    /// Erase the detected footer region on `page_index`. Returns the C status.
+    int erase_footer(int page_index) const {
+        int32_t code = 0;
+        int32_t r = pdf_document_erase_footer(ptr(), page_index, &code);
+        if (code != 0) {
+            throw Error(code, "Document::erase_footer");
+        }
+        return r;
+    }
+    /// Erase detected artifacts on `page_index`. Returns the C status.
+    int erase_artifacts(int page_index) const {
+        int32_t code = 0;
+        int32_t r = pdf_document_erase_artifacts(ptr(), page_index, &code);
+        if (code != 0) {
+            throw Error(code, "Document::erase_artifacts");
+        }
+        return r;
+    }
+    /// Remove repeated headers across the document at `threshold` frequency.
+    int remove_headers(float threshold) const {
+        int32_t code = 0;
+        int32_t r = pdf_document_remove_headers(ptr(), threshold, &code);
+        if (code != 0) {
+            throw Error(code, "Document::remove_headers");
+        }
+        return r;
+    }
+    /// Remove repeated footers across the document at `threshold` frequency.
+    int remove_footers(float threshold) const {
+        int32_t code = 0;
+        int32_t r = pdf_document_remove_footers(ptr(), threshold, &code);
+        if (code != 0) {
+            throw Error(code, "Document::remove_footers");
+        }
+        return r;
+    }
+    /// Remove repeated artifacts across the document at `threshold` frequency.
+    int remove_artifacts(float threshold) const {
+        int32_t code = 0;
+        int32_t r = pdf_document_remove_artifacts(ptr(), threshold, &code);
+        if (code != 0) {
+            throw Error(code, "Document::remove_artifacts");
+        }
+        return r;
+    }
+
+    // ── PHASE-8: AcroForm fields ─────────────────────────────────────────────
+
+    /// All interactive form fields in the document (empty list when none).
+    std::vector<FormField> get_form_fields() const {
+        int32_t code = 0;
+        FfiFormFieldList* list = pdf_document_get_form_fields(ptr(), &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::get_form_fields");
+        }
+        std::vector<FormField> out;
+        int32_t n = pdf_oxide_form_field_count(list);
+        out.reserve(n < 0 ? 0 : static_cast<std::size_t>(n));
+        try {
+            for (int32_t i = 0; i < n; ++i) {
+                FormField fld;
+                code = 0;
+                fld.name =
+                    detail::take_string(pdf_oxide_form_field_get_name(list, i, &code),
+                                        code, "Document::get_form_fields");
+                fld.value =
+                    detail::take_string(pdf_oxide_form_field_get_value(list, i, &code),
+                                        code, "Document::get_form_fields");
+                fld.type =
+                    detail::take_string(pdf_oxide_form_field_get_type(list, i, &code),
+                                        code, "Document::get_form_fields");
+                fld.readonly = pdf_oxide_form_field_is_readonly(list, i, &code);
+                fld.required = pdf_oxide_form_field_is_required(list, i, &code);
+                out.push_back(std::move(fld));
+            }
+        } catch (...) {
+            pdf_oxide_form_field_list_free(list);
+            throw;
+        }
+        pdf_oxide_form_field_list_free(list);
+        return out;
+    }
+
+    /// Export the current AcroForm field values. `format_type` selects the wire
+    /// format (e.g. 0=FDF, 1=XFDF, 2=JSON per the core).
+    std::vector<std::uint8_t> export_form_data_to_bytes(int format_type) const {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        std::uint8_t* p =
+            pdf_document_export_form_data_to_bytes(ptr(), format_type, &out_len, &code);
+        return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                                  "Document::export_form_data_to_bytes");
+    }
+
+    /// Import AcroForm field values from the file at `data_path`. Returns status.
+    int import_form_data(const std::string& data_path) const {
+        int32_t code = 0;
+        int32_t r = pdf_document_import_form_data(ptr(), data_path.c_str(), &code);
+        if (code != 0) {
+            throw Error(code, "Document::import_form_data");
+        }
+        return r;
+    }
+
+    /// Import AcroForm field values from the file at `filename` (alternate entry
+    /// point). Returns true on success.
+    bool form_import_from_file(const std::string& filename) const {
+        int32_t code = 0;
+        bool ok = pdf_form_import_from_file(ptr(), filename.c_str(), &code);
+        if (!ok && code != 0) {
+            throw Error(code, "Document::form_import_from_file");
+        }
+        return ok;
+    }
+
+    // ── PHASE-8: document structure / metadata ───────────────────────────────
+
+    /// The document outline (bookmarks) as JSON.
+    std::string get_outline() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_document_get_outline(ptr(), &code), code,
+                                   "Document::get_outline");
+    }
+    /// Page labels (e.g. roman/decimal numbering ranges) as JSON.
+    std::string get_page_labels() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_document_get_page_labels(ptr(), &code), code,
+                                   "Document::get_page_labels");
+    }
+    /// The raw XMP metadata packet (XML string).
+    std::string get_xmp_metadata() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_document_get_xmp_metadata(ptr(), &code), code,
+                                   "Document::get_xmp_metadata");
+    }
+    /// The original source bytes the document was opened from.
+    std::vector<std::uint8_t> get_source_bytes() const {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        std::uint8_t* p = pdf_document_get_source_bytes(ptr(), &out_len, &code);
+        return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                                  "Document::get_source_bytes");
+    }
+    /// True if the document carries an XFA form.
+    bool has_xfa() const { return pdf_document_has_xfa(ptr()); }
+
+    /// Plan a split of the document by top-level bookmarks. `options_json` may be
+    /// empty for defaults. Returns the plan as JSON.
+    std::string plan_split_by_bookmarks(const std::string& options_json = "") const {
+        int32_t code = 0;
+        return detail::take_string(
+            pdf_document_plan_split_by_bookmarks(
+                ptr(), options_json.empty() ? nullptr : options_json.c_str(), &code),
+            code, "Document::plan_split_by_bookmarks");
+    }
+
+    // ── PHASE-8: signatures (document-level) ─────────────────────────────────
+
+    /// Sign the document in place with `cert`. Returns the C status. Defined
+    /// out-of-line below (needs the Certificate class).
+    int sign(const class Certificate& cert, const std::string& reason = "",
+             const std::string& location = "") const;
+
+    /// Number of signatures present in the document.
+    int get_signature_count() const {
+        int32_t code = 0;
+        int32_t n = pdf_document_get_signature_count(ptr(), &code);
+        if (n < 0 || code != 0) {
+            throw Error(code, "Document::get_signature_count");
+        }
+        return n;
+    }
+
+    /// The `index`-th signature as a SignatureInfo (takes ownership of the
+    /// returned handle). Defined out-of-line below (needs SignatureInfo).
+    class SignatureInfo get_signature(int index) const;
+
+    /// Verify every signature in the document. Returns the C status code.
+    int verify_all_signatures() const {
+        int32_t code = 0;
+        int32_t r = pdf_document_verify_all_signatures(ptr(), &code);
+        if (code != 0) {
+            throw Error(code, "Document::verify_all_signatures");
+        }
+        return r;
+    }
+
+    /// True (1) if the document carries a signature timestamp.
+    int has_timestamp() const {
+        int32_t code = 0;
+        int32_t r = pdf_document_has_timestamp(ptr(), &code);
+        if (code != 0) {
+            throw Error(code, "Document::has_timestamp");
+        }
+        return r;
+    }
+
+    // ── PHASE-8: annotation extras / to-JSON accessors ───────────────────────
+    //
+    // These fetch the page's FfiAnnotationList, query the new per-annotation
+    // accessors, then free it (mirroring page_annotations). Each returns the
+    // value for annotation `ann_index` on `page_index`.
+
+    /// 0xAARRGGBB color of annotation `ann_index` on `page_index`.
+    std::uint32_t annotation_get_color(int page_index, int ann_index) const {
+        return with_annotations<std::uint32_t>(
+            page_index, "Document::annotation_get_color",
+            [&](FfiAnnotationList* l, int32_t* c) {
+                return pdf_oxide_annotation_get_color(l, ann_index, c);
+            });
+    }
+    /// Creation date (epoch seconds) of annotation `ann_index`.
+    std::int64_t annotation_get_creation_date(int page_index, int ann_index) const {
+        return with_annotations<std::int64_t>(
+            page_index, "Document::annotation_get_creation_date",
+            [&](FfiAnnotationList* l, int32_t* c) {
+                return pdf_oxide_annotation_get_creation_date(l, ann_index, c);
+            });
+    }
+    /// Modification date (epoch seconds) of annotation `ann_index`.
+    std::int64_t annotation_get_modification_date(int page_index, int ann_index) const {
+        return with_annotations<std::int64_t>(
+            page_index, "Document::annotation_get_modification_date",
+            [&](FfiAnnotationList* l, int32_t* c) {
+                return pdf_oxide_annotation_get_modification_date(l, ann_index, c);
+            });
+    }
+    /// True if annotation `ann_index` is hidden.
+    bool annotation_is_hidden(int page_index, int ann_index) const {
+        return with_annotations<bool>(page_index, "Document::annotation_is_hidden",
+                                      [&](FfiAnnotationList* l, int32_t* c) {
+                                          return pdf_oxide_annotation_is_hidden(
+                                              l, ann_index, c);
+                                      });
+    }
+    /// True if annotation `ann_index` is marked deleted.
+    bool annotation_is_marked_deleted(int page_index, int ann_index) const {
+        return with_annotations<bool>(
+            page_index, "Document::annotation_is_marked_deleted",
+            [&](FfiAnnotationList* l, int32_t* c) {
+                return pdf_oxide_annotation_is_marked_deleted(l, ann_index, c);
+            });
+    }
+    /// True if annotation `ann_index` is printable.
+    bool annotation_is_printable(int page_index, int ann_index) const {
+        return with_annotations<bool>(page_index, "Document::annotation_is_printable",
+                                      [&](FfiAnnotationList* l, int32_t* c) {
+                                          return pdf_oxide_annotation_is_printable(
+                                              l, ann_index, c);
+                                      });
+    }
+    /// True if annotation `ann_index` is read-only.
+    bool annotation_is_read_only(int page_index, int ann_index) const {
+        return with_annotations<bool>(page_index, "Document::annotation_is_read_only",
+                                      [&](FfiAnnotationList* l, int32_t* c) {
+                                          return pdf_oxide_annotation_is_read_only(
+                                              l, ann_index, c);
+                                      });
+    }
+    /// QuadPoints count of highlight/markup annotation `ann_index`.
+    int highlight_annotation_get_quad_points_count(int page_index,
+                                                   int ann_index) const {
+        return with_annotations<int>(
+            page_index, "Document::highlight_annotation_get_quad_points_count",
+            [&](FfiAnnotationList* l, int32_t* c) {
+                return pdf_oxide_highlight_annotation_get_quad_points_count(
+                    l, ann_index, c);
+            });
+    }
+    /// The `quad_index`-th QuadPoint of highlight annotation `ann_index`.
+    QuadPoint highlight_annotation_get_quad_point(int page_index, int ann_index,
+                                                  int quad_index) const {
+        return with_annotations<QuadPoint>(
+            page_index, "Document::highlight_annotation_get_quad_point",
+            [&](FfiAnnotationList* l, int32_t* c) {
+                QuadPoint q{0, 0, 0, 0, 0, 0, 0, 0};
+                pdf_oxide_highlight_annotation_get_quad_point(
+                    l, ann_index, quad_index, &q.x1, &q.y1, &q.x2, &q.y2, &q.x3, &q.y3,
+                    &q.x4, &q.y4, c);
+                return q;
+            });
+    }
+    /// The destination URI of link annotation `ann_index`.
+    std::string link_annotation_get_uri(int page_index, int ann_index) const {
+        int32_t code = 0;
+        FfiAnnotationList* list =
+            pdf_document_get_page_annotations(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::link_annotation_get_uri");
+        }
+        try {
+            std::string out = detail::take_string(
+                pdf_oxide_link_annotation_get_uri(list, ann_index, &code), code,
+                "Document::link_annotation_get_uri");
+            pdf_oxide_annotation_list_free(list);
+            return out;
+        } catch (...) {
+            pdf_oxide_annotation_list_free(list);
+            throw;
+        }
+    }
+    /// The icon name of text/note annotation `ann_index`.
+    std::string text_annotation_get_icon_name(int page_index, int ann_index) const {
+        int32_t code = 0;
+        FfiAnnotationList* list =
+            pdf_document_get_page_annotations(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::text_annotation_get_icon_name");
+        }
+        try {
+            std::string out = detail::take_string(
+                pdf_oxide_text_annotation_get_icon_name(list, ann_index, &code), code,
+                "Document::text_annotation_get_icon_name");
+            pdf_oxide_annotation_list_free(list);
+            return out;
+        } catch (...) {
+            pdf_oxide_annotation_list_free(list);
+            throw;
+        }
+    }
+    /// All annotations on `page_index` serialized as JSON.
+    std::string annotations_to_json(int page_index) const {
+        int32_t code = 0;
+        FfiAnnotationList* list =
+            pdf_document_get_page_annotations(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::annotations_to_json");
+        }
+        try {
+            std::string out =
+                detail::take_string(pdf_oxide_annotations_to_json(list, &code), code,
+                                    "Document::annotations_to_json");
+            pdf_oxide_annotation_list_free(list);
+            return out;
+        } catch (...) {
+            pdf_oxide_annotation_list_free(list);
+            throw;
+        }
+    }
+    /// Laid-out page elements on `page_index` serialized as JSON.
+    std::string elements_to_json(int page_index) const {
+        int32_t code = 0;
+        FfiElementList* list = pdf_page_get_elements(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::elements_to_json");
+        }
+        try {
+            std::string out =
+                detail::take_string(pdf_oxide_elements_to_json(list, &code), code,
+                                    "Document::elements_to_json");
+            pdf_oxide_elements_free(list);
+            return out;
+        } catch (...) {
+            pdf_oxide_elements_free(list);
+            throw;
+        }
+    }
+    /// Embedded fonts on `page_index` serialized as JSON.
+    std::string fonts_to_json(int page_index) const {
+        int32_t code = 0;
+        FfiFontList* list = pdf_document_get_embedded_fonts(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::fonts_to_json");
+        }
+        try {
+            std::string out = detail::take_string(pdf_oxide_fonts_to_json(list, &code),
+                                                  code, "Document::fonts_to_json");
+            pdf_oxide_font_list_free(list);
+            return out;
+        } catch (...) {
+            pdf_oxide_font_list_free(list);
+            throw;
+        }
+    }
+    /// The font size of embedded font `font_index` on `page_index`.
+    float font_get_size(int page_index, int font_index) const {
+        int32_t code = 0;
+        FfiFontList* list = pdf_document_get_embedded_fonts(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::font_get_size");
+        }
+        float sz = pdf_oxide_font_get_size(list, font_index, &code);
+        int32_t saved = code;
+        pdf_oxide_font_list_free(list);
+        if (saved != 0) {
+            throw Error(saved, "Document::font_get_size");
+        }
+        return sz;
+    }
+    /// Search results for `term` on `page_index` serialized as JSON.
+    std::string search_results_to_json(int page_index, const std::string& term,
+                                       bool case_sensitive) const {
+        int32_t code = 0;
+        FfiSearchResults* list = pdf_document_search_page(
+            ptr(), page_index, term.c_str(), case_sensitive, &code);
+        if (list == nullptr) {
+            throw Error(code, "Document::search_results_to_json");
+        }
+        try {
+            std::string out =
+                detail::take_string(pdf_oxide_search_results_to_json(list, &code), code,
+                                    "Document::search_results_to_json");
+            pdf_oxide_search_result_free(list);
+            return out;
+        } catch (...) {
+            pdf_oxide_search_result_free(list);
+            throw;
+        }
+    }
+
+    // ── PHASE-8: office export / PDF-A conversion ────────────────────────────
+
+    /// Convert the document to a DOCX (Office Open XML) byte buffer.
+    std::vector<std::uint8_t> to_docx() const {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        std::uint8_t* p = pdf_document_to_docx(ptr(), &out_len, &code);
+        return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                                  "Document::to_docx");
+    }
+    /// Convert the document to a PPTX byte buffer.
+    std::vector<std::uint8_t> to_pptx() const {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        std::uint8_t* p = pdf_document_to_pptx(ptr(), &out_len, &code);
+        return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                                  "Document::to_pptx");
+    }
+    /// Convert the document to an XLSX byte buffer.
+    std::vector<std::uint8_t> to_xlsx() const {
+        int32_t code = 0;
+        std::uintptr_t out_len = 0;
+        std::uint8_t* p = pdf_document_to_xlsx(ptr(), &out_len, &code);
+        return detail::take_bytes(p, static_cast<std::size_t>(out_len), code,
+                                  "Document::to_xlsx");
+    }
+
+    /// Convert the document to PDF/A in place at `level`. Returns true on
+    /// success.
+    bool convert_to_pdf_a(int level) const {
+        int32_t code = 0;
+        bool ok = pdf_convert_to_pdf_a(ptr(), level, &code);
+        if (!ok && code != 0) {
+            throw Error(code, "Document::convert_to_pdf_a");
+        }
+        return ok;
+    }
+
+    // ── PHASE-8: office import (static constructors) ─────────────────────────
+
+    /// Open a Document from DOCX bytes.
+    static Document open_from_docx_bytes(const std::vector<std::uint8_t>& data) {
+        int32_t code = 0;
+        PdfDocument* h =
+            pdf_document_open_from_docx_bytes(data.data(), data.size(), &code);
+        if (h == nullptr) {
+            throw Error(code, "Document::open_from_docx_bytes");
+        }
+        return Document(h);
+    }
+    /// Open a Document from PPTX bytes.
+    static Document open_from_pptx_bytes(const std::vector<std::uint8_t>& data) {
+        int32_t code = 0;
+        PdfDocument* h =
+            pdf_document_open_from_pptx_bytes(data.data(), data.size(), &code);
+        if (h == nullptr) {
+            throw Error(code, "Document::open_from_pptx_bytes");
+        }
+        return Document(h);
+    }
+    /// Open a Document from XLSX bytes.
+    static Document open_from_xlsx_bytes(const std::vector<std::uint8_t>& data) {
+        int32_t code = 0;
+        PdfDocument* h =
+            pdf_document_open_from_xlsx_bytes(data.data(), data.size(), &code);
+        if (h == nullptr) {
+            throw Error(code, "Document::open_from_xlsx_bytes");
+        }
+        return Document(h);
+    }
+
     /// Free the native handle now (idempotent). RAII also frees at scope exit;
     /// this is the explicit close for API symmetry with the other bindings.
     void close() { handle_.reset(); }
@@ -935,6 +1543,152 @@ class Document {
         pdf_oxide_search_result_free(list);
         return out;
     }
+
+    // ── PHASE-8 shared list marshallers (consume + free the passed handle) ────
+    // Mirror the inline marshalling of extract_words/lines/tables/images so the
+    // in-rect variants reuse the exact same Word/TextLine/Table/Image shapes.
+    static std::vector<Word> collect_words(FfiWordList* list, const char* op) {
+        std::vector<Word> out;
+        int32_t code = 0;
+        int32_t n = pdf_oxide_word_count(list);
+        out.reserve(n < 0 ? 0 : static_cast<std::size_t>(n));
+        try {
+            for (int32_t i = 0; i < n; ++i) {
+                Word w;
+                code = 0;
+                w.text = detail::take_string(pdf_oxide_word_get_text(list, i, &code),
+                                             code, op);
+                Bbox b{0, 0, 0, 0};
+                pdf_oxide_word_get_bbox(list, i, &b.x, &b.y, &b.width, &b.height,
+                                        &code);
+                w.bbox = b;
+                w.font_name = detail::take_string(
+                    pdf_oxide_word_get_font_name(list, i, &code), code, op);
+                w.font_size = pdf_oxide_word_get_font_size(list, i, &code);
+                w.bold = pdf_oxide_word_is_bold(list, i, &code);
+                out.push_back(std::move(w));
+            }
+        } catch (...) {
+            pdf_oxide_word_list_free(list);
+            throw;
+        }
+        pdf_oxide_word_list_free(list);
+        return out;
+    }
+    static std::vector<TextLine> collect_lines(FfiTextLineList* list, const char* op) {
+        std::vector<TextLine> out;
+        int32_t code = 0;
+        int32_t n = pdf_oxide_line_count(list);
+        out.reserve(n < 0 ? 0 : static_cast<std::size_t>(n));
+        try {
+            for (int32_t i = 0; i < n; ++i) {
+                TextLine l;
+                code = 0;
+                l.text = detail::take_string(pdf_oxide_line_get_text(list, i, &code),
+                                             code, op);
+                Bbox b{0, 0, 0, 0};
+                pdf_oxide_line_get_bbox(list, i, &b.x, &b.y, &b.width, &b.height,
+                                        &code);
+                l.bbox = b;
+                l.word_count = pdf_oxide_line_get_word_count(list, i, &code);
+                out.push_back(std::move(l));
+            }
+        } catch (...) {
+            pdf_oxide_line_list_free(list);
+            throw;
+        }
+        pdf_oxide_line_list_free(list);
+        return out;
+    }
+    static std::vector<Table> collect_tables(FfiTableList* list, const char* op) {
+        std::vector<Table> out;
+        int32_t code = 0;
+        int32_t n = pdf_oxide_table_count(list);
+        out.reserve(n < 0 ? 0 : static_cast<std::size_t>(n));
+        try {
+            for (int32_t i = 0; i < n; ++i) {
+                Table t;
+                code = 0;
+                t.row_count = pdf_oxide_table_get_row_count(list, i, &code);
+                t.col_count = pdf_oxide_table_get_col_count(list, i, &code);
+                t.has_header = pdf_oxide_table_has_header(list, i, &code);
+                t.cells.reserve(
+                    static_cast<std::size_t>(t.row_count < 0 ? 0 : t.row_count) *
+                    static_cast<std::size_t>(t.col_count < 0 ? 0 : t.col_count));
+                for (int r = 0; r < t.row_count; ++r) {
+                    for (int c = 0; c < t.col_count; ++c) {
+                        t.cells.push_back(detail::take_string(
+                            pdf_oxide_table_get_cell_text(list, i, r, c, &code), code,
+                            op));
+                    }
+                }
+                out.push_back(std::move(t));
+            }
+        } catch (...) {
+            pdf_oxide_table_list_free(list);
+            throw;
+        }
+        pdf_oxide_table_list_free(list);
+        return out;
+    }
+    static std::vector<Image> collect_images(FfiImageList* list, const char* op) {
+        std::vector<Image> out;
+        int32_t code = 0;
+        int32_t n = pdf_oxide_image_count(list);
+        out.reserve(n < 0 ? 0 : static_cast<std::size_t>(n));
+        try {
+            for (int32_t i = 0; i < n; ++i) {
+                Image img;
+                code = 0;
+                img.width = pdf_oxide_image_get_width(list, i, &code);
+                img.height = pdf_oxide_image_get_height(list, i, &code);
+                img.bits_per_component =
+                    pdf_oxide_image_get_bits_per_component(list, i, &code);
+                img.format = detail::take_string(
+                    pdf_oxide_image_get_format(list, i, &code), code, op);
+                img.colorspace = detail::take_string(
+                    pdf_oxide_image_get_colorspace(list, i, &code), code, op);
+                int32_t data_len = 0;
+                std::uint8_t* p = pdf_oxide_image_get_data(list, i, &data_len, &code);
+                img.data = detail::take_bytes(
+                    p, static_cast<std::size_t>(data_len < 0 ? 0 : data_len), code, op);
+                out.push_back(std::move(img));
+            }
+        } catch (...) {
+            pdf_oxide_image_list_free(list);
+            throw;
+        }
+        pdf_oxide_image_list_free(list);
+        return out;
+    }
+
+    /// Fetch the page's FfiAnnotationList, run `fn(list, &code)`, free the list,
+    /// and rethrow as Error on a non-zero code. Used by the annotation-extras
+    /// accessors so their list lifetime/cleanup is identical everywhere.
+    template <typename T, typename Fn>
+    T with_annotations(int page_index, const char* op, Fn&& fn) const {
+        int32_t code = 0;
+        FfiAnnotationList* list =
+            pdf_document_get_page_annotations(ptr(), page_index, &code);
+        if (list == nullptr) {
+            throw Error(code, op);
+        }
+        code = 0;
+        T value;
+        try {
+            value = fn(list, &code);
+        } catch (...) {
+            pdf_oxide_annotation_list_free(list);
+            throw;
+        }
+        int32_t saved = code;
+        pdf_oxide_annotation_list_free(list);
+        if (saved != 0) {
+            throw Error(saved, op);
+        }
+        return value;
+    }
+
     PdfDocument* ptr() const {
         if (!handle_)
             throw Error(0, "Document is closed");
@@ -1087,6 +1841,16 @@ class Pdf {
         std::uint8_t* p = pdf_save_to_bytes(ptr(), &len, &code);
         return detail::take_bytes(p, static_cast<std::size_t>(len < 0 ? 0 : len), code,
                                   "Pdf::to_bytes");
+    }
+
+    /// Number of pages in the built PDF (legacy Pdf-handle accessor).
+    int page_count() const {
+        int32_t code = 0;
+        int32_t n = pdf_get_page_count(ptr(), &code);
+        if (n < 0 || code != 0) {
+            throw Error(code, "Pdf::page_count");
+        }
+        return n;
     }
 
     /// Free the native handle now (idempotent). RAII also frees at scope exit.
@@ -1599,6 +2363,30 @@ class DocumentEditor {
     /// in page user-space points. Declared inline after Barcode is defined.
     void add_barcode_to_page(int page_index, const class Barcode& barcode, float x,
                              float y, float width, float height);
+
+    /// Import AcroForm field values from FDF `data` bytes. Returns the C status.
+    int import_fdf_bytes(const std::vector<std::uint8_t>& data) const {
+        int32_t code = 0;
+        int32_t r = pdf_editor_import_fdf_bytes(
+            ptr(), data.empty() ? nullptr : data.data(),
+            static_cast<std::uintptr_t>(data.size()), &code);
+        if (code != 0) {
+            throw Error(code, "DocumentEditor::import_fdf_bytes");
+        }
+        return r;
+    }
+
+    /// Import AcroForm field values from XFDF `data` bytes. Returns the C status.
+    int import_xfdf_bytes(const std::vector<std::uint8_t>& data) const {
+        int32_t code = 0;
+        int32_t r = pdf_editor_import_xfdf_bytes(
+            ptr(), data.empty() ? nullptr : data.data(),
+            static_cast<std::uintptr_t>(data.size()), &code);
+        if (code != 0) {
+            throw Error(code, "DocumentEditor::import_xfdf_bytes");
+        }
+        return r;
+    }
 
     /// Free the native handle now (idempotent). RAII also frees at scope exit.
     void close() { handle_.reset(); }
@@ -3014,6 +3802,27 @@ inline Dss Document::get_dss() const {
     return Dss::from_handle(h);
 }
 
+inline int Document::sign(const Certificate& cert, const std::string& reason,
+                          const std::string& location) const {
+    int32_t code = 0;
+    int32_t r = pdf_document_sign(ptr(), cert.handle_get(),
+                                  reason.empty() ? nullptr : reason.c_str(),
+                                  location.empty() ? nullptr : location.c_str(), &code);
+    if (code != 0) {
+        throw Error(code, "Document::sign");
+    }
+    return r;
+}
+
+inline SignatureInfo Document::get_signature(int index) const {
+    int32_t code = 0;
+    void* h = pdf_document_get_signature(ptr(), index, &code);
+    if (h == nullptr) {
+        throw Error(code, "Document::get_signature");
+    }
+    return SignatureInfo::from_handle(static_cast<FfiSignatureInfo*>(h));
+}
+
 // ── Top-level PHASE-6 free functions ─────────────────────────────────────────
 
 /// Set the global library log level (0=Off 1=Error 2=Warn 3=Info 4=Debug
@@ -3328,6 +4137,61 @@ add_timestamp(const std::vector<std::uint8_t>& pdf_data, int sig_index,
     }
     return detail::take_bytes(out_data, static_cast<std::size_t>(out_len), code,
                               "add_timestamp");
+}
+
+// ── PHASE-8 top-level: crypto / FIPS provider ────────────────────────────────
+
+/// The name of the active crypto provider.
+inline std::string crypto_active_provider() {
+    return detail::take_string(pdf_oxide_crypto_active_provider(), 0,
+                               "crypto_active_provider");
+}
+/// The crypto bill-of-materials (CBOM) as JSON.
+inline std::string crypto_cbom() {
+    return detail::take_string(pdf_oxide_crypto_cbom(), 0, "crypto_cbom");
+}
+/// 1 if a FIPS-validated provider is available, 0 otherwise.
+inline int crypto_fips_available() { return pdf_oxide_crypto_fips_available(); }
+/// The crypto algorithm inventory as JSON.
+inline std::string crypto_inventory() {
+    return detail::take_string(pdf_oxide_crypto_inventory(), 0, "crypto_inventory");
+}
+/// The active crypto policy as a string.
+inline std::string crypto_policy() {
+    return detail::take_string(pdf_oxide_crypto_policy(), 0, "crypto_policy");
+}
+/// Set the crypto policy from `spec`. Returns the C status code.
+inline int crypto_set_policy(const std::string& spec) {
+    return pdf_oxide_crypto_set_policy(spec.c_str());
+}
+/// Switch to the FIPS crypto provider. Returns the C status code.
+inline int crypto_use_fips() { return pdf_oxide_crypto_use_fips(); }
+
+// ── PHASE-8 top-level: models / prefetch ─────────────────────────────────────
+
+/// The bundled/available model manifest as JSON.
+inline std::string model_manifest() {
+    return detail::take_string(pdf_oxide_model_manifest(), 0, "model_manifest");
+}
+/// 1 if model prefetch is available (network/feature enabled), 0 otherwise.
+inline int prefetch_available() { return pdf_oxide_prefetch_available(); }
+/// Prefetch OCR/layout models for the comma-separated `languages_csv`. Returns a
+/// JSON status. May legitimately error without network/models.
+inline std::string prefetch_models(const std::string& languages_csv) {
+    int32_t code = 0;
+    return detail::take_string(pdf_oxide_prefetch_models(languages_csv.c_str(), &code),
+                               code, "prefetch_models");
+}
+
+// ── PHASE-8 top-level: global config knobs ───────────────────────────────────
+
+/// Set the global max content-stream ops limit; returns the previous value.
+inline std::int64_t set_max_ops_per_stream(std::int64_t limit) {
+    return pdf_oxide_set_max_ops_per_stream(limit);
+}
+/// Toggle preservation of unmapped glyphs (1=on 0=off); returns the C status.
+inline int set_preserve_unmapped_glyphs(int preserve) {
+    return pdf_oxide_set_preserve_unmapped_glyphs(preserve);
 }
 
 } // namespace pdf_oxide

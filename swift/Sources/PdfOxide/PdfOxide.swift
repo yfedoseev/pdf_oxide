@@ -122,6 +122,23 @@ public struct SearchResult {
     public let bbox: Bbox
 }
 
+/// A single interactive form (AcroForm) field.
+public struct FormField {
+    public let name: String
+    public let value: String
+    public let type: String
+    public let readonly: Bool
+    public let required: Bool
+}
+
+/// A single quadrilateral of a highlight/markup annotation (4 corner points).
+public struct QuadPoint {
+    public let x1: Double, y1: Double
+    public let x2: Double, y2: Double
+    public let x3: Double, y3: Double
+    public let x4: Double, y4: Double
+}
+
 /// A rendered page image. Owns the native FfiRenderedImage handle so that
 /// `save(_:)` can delegate to the renderer's own encoder; `width`/`height`/`data`
 /// are read eagerly at construction. The handle is freed in `deinit`/`close()`.
@@ -178,6 +195,14 @@ private func takeString(_ ptr: UnsafeMutablePointer<CChar>?, _ code: Int32, _ op
     guard let ptr else { throw PdfOxideError(code: code, op: op) }
     defer { free_string(ptr) }
     return String(cString: ptr)
+}
+
+// Copy an owned C byte buffer into [UInt8] and free it via free_bytes; throws if NULL.
+private func takeOwnedBytes(_ p: UnsafeMutablePointer<UInt8>?, _ len: Int, _ code: Int32, _ op: String) throws -> [UInt8] {
+    guard let p else { throw PdfOxideError(code: code, op: op) }
+    defer { free_bytes(p) }
+    let n = len < 0 ? 0 : len
+    return Array(UnsafeBufferPointer(start: p, count: n))
 }
 
 /// An opened PDF for extraction/inspection.
@@ -750,10 +775,492 @@ public final class Document {
         return Dss(h)
     }
 
+    // ── Final phase: office import/export ────────────────────────────────────
+
+    /// Open a DOCX document from in-memory bytes (converted to a PDF Document).
+    public static func openFromDocxBytes(_ bytes: [UInt8]) throws -> Document {
+        var code: Int32 = 0
+        let h = bytes.withUnsafeBufferPointer { pdf_document_open_from_docx_bytes($0.baseAddress, $0.count, &code) }
+        guard let h else { throw PdfOxideError(code: code, op: "openFromDocxBytes") }
+        return Document(h)
+    }
+    /// Open a PPTX document from in-memory bytes (converted to a PDF Document).
+    public static func openFromPptxBytes(_ bytes: [UInt8]) throws -> Document {
+        var code: Int32 = 0
+        let h = bytes.withUnsafeBufferPointer { pdf_document_open_from_pptx_bytes($0.baseAddress, $0.count, &code) }
+        guard let h else { throw PdfOxideError(code: code, op: "openFromPptxBytes") }
+        return Document(h)
+    }
+    /// Open an XLSX document from in-memory bytes (converted to a PDF Document).
+    public static func openFromXlsxBytes(_ bytes: [UInt8]) throws -> Document {
+        var code: Int32 = 0
+        let h = bytes.withUnsafeBufferPointer { pdf_document_open_from_xlsx_bytes($0.baseAddress, $0.count, &code) }
+        guard let h else { throw PdfOxideError(code: code, op: "openFromXlsxBytes") }
+        return Document(h)
+    }
+
+    /// Export this document to DOCX bytes.
+    public func toDocx() throws -> [UInt8] {
+        var len = 0, code: Int32 = 0
+        let p = pdf_document_to_docx(try ptr(), &len, &code)
+        return try takeOwnedBytes(p, len, code, "toDocx")
+    }
+    /// Export this document to PPTX bytes.
+    public func toPptx() throws -> [UInt8] {
+        var len = 0, code: Int32 = 0
+        let p = pdf_document_to_pptx(try ptr(), &len, &code)
+        return try takeOwnedBytes(p, len, code, "toPptx")
+    }
+    /// Export this document to XLSX bytes.
+    public func toXlsx() throws -> [UInt8] {
+        var len = 0, code: Int32 = 0
+        let p = pdf_document_to_xlsx(try ptr(), &len, &code)
+        return try takeOwnedBytes(p, len, code, "toXlsx")
+    }
+
+    // ── Final phase: in-rect extraction ──────────────────────────────────────
+
+    /// Extract plain text inside a (x, y, w, h) rectangle on a (0-based) page.
+    public func extractTextInRect(_ pageIndex: Int, x: Float, y: Float, w: Float, h: Float) throws -> String {
+        var code: Int32 = 0
+        return try takeString(
+            pdf_document_extract_text_in_rect(try ptr(), Int32(pageIndex), x, y, w, h, &code),
+            code, "extractTextInRect"
+        )
+    }
+
+    /// Extract words inside a (x, y, w, h) rectangle on a (0-based) page.
+    public func extractWordsInRect(_ pageIndex: Int, x: Float, y: Float, w: Float, h: Float) throws -> [Word] {
+        var code: Int32 = 0
+        guard let list = pdf_document_extract_words_in_rect(try ptr(), Int32(pageIndex), x, y, w, h, &code) else {
+            throw PdfOxideError(code: code, op: "extractWordsInRect")
+        }
+        defer { pdf_oxide_word_list_free(list) }
+        let n = Int(pdf_oxide_word_count(list))
+        var result: [Word] = []
+        result.reserveCapacity(n)
+        for i in 0..<n {
+            let idx = Int32(i)
+            let text = try takeString(pdf_oxide_word_get_text(list, idx, &code), code, "extractWordsInRect.text")
+            let fontName = try takeString(pdf_oxide_word_get_font_name(list, idx, &code), code, "extractWordsInRect.fontName")
+            let fontSize = pdf_oxide_word_get_font_size(list, idx, &code)
+            let bold = pdf_oxide_word_is_bold(list, idx, &code)
+            var bx: Float = 0, by: Float = 0, bw: Float = 0, bh: Float = 0
+            pdf_oxide_word_get_bbox(list, idx, &bx, &by, &bw, &bh, &code)
+            result.append(Word(
+                text: text, bbox: Bbox(x: Double(bx), y: Double(by), width: Double(bw), height: Double(bh)),
+                fontName: fontName, fontSize: Double(fontSize), bold: bold
+            ))
+        }
+        return result
+    }
+
+    /// Extract text lines inside a (x, y, w, h) rectangle on a (0-based) page.
+    public func extractLinesInRect(_ pageIndex: Int, x: Float, y: Float, w: Float, h: Float) throws -> [TextLine] {
+        var code: Int32 = 0
+        guard let list = pdf_document_extract_lines_in_rect(try ptr(), Int32(pageIndex), x, y, w, h, &code) else {
+            throw PdfOxideError(code: code, op: "extractLinesInRect")
+        }
+        defer { pdf_oxide_line_list_free(list) }
+        let n = Int(pdf_oxide_line_count(list))
+        var result: [TextLine] = []
+        result.reserveCapacity(n)
+        for i in 0..<n {
+            let idx = Int32(i)
+            let text = try takeString(pdf_oxide_line_get_text(list, idx, &code), code, "extractLinesInRect.text")
+            let wordCount = Int(pdf_oxide_line_get_word_count(list, idx, &code))
+            var bx: Float = 0, by: Float = 0, bw: Float = 0, bh: Float = 0
+            pdf_oxide_line_get_bbox(list, idx, &bx, &by, &bw, &bh, &code)
+            result.append(TextLine(
+                text: text, bbox: Bbox(x: Double(bx), y: Double(by), width: Double(bw), height: Double(bh)),
+                wordCount: wordCount
+            ))
+        }
+        return result
+    }
+
+    /// Extract tables inside a (x, y, w, h) rectangle on a (0-based) page.
+    public func extractTablesInRect(_ pageIndex: Int, x: Float, y: Float, w: Float, h: Float) throws -> [Table] {
+        var code: Int32 = 0
+        guard let list = pdf_document_extract_tables_in_rect(try ptr(), Int32(pageIndex), x, y, w, h, &code) else {
+            throw PdfOxideError(code: code, op: "extractTablesInRect")
+        }
+        defer { pdf_oxide_table_list_free(list) }
+        let n = Int(pdf_oxide_table_count(list))
+        var result: [Table] = []
+        result.reserveCapacity(n)
+        for i in 0..<n {
+            let idx = Int32(i)
+            let rowCount = Int(pdf_oxide_table_get_row_count(list, idx, &code))
+            let colCount = Int(pdf_oxide_table_get_col_count(list, idx, &code))
+            let hasHeader = pdf_oxide_table_has_header(list, idx, &code)
+            var cells: [[String]] = []
+            cells.reserveCapacity(max(0, rowCount))
+            for r in 0..<max(0, rowCount) {
+                var row: [String] = []
+                row.reserveCapacity(max(0, colCount))
+                for c in 0..<max(0, colCount) {
+                    row.append(try takeString(
+                        pdf_oxide_table_get_cell_text(list, idx, Int32(r), Int32(c), &code),
+                        code, "extractTablesInRect.cell"
+                    ))
+                }
+                cells.append(row)
+            }
+            result.append(Table(rowCount: rowCount, colCount: colCount, hasHeader: hasHeader, cells: cells))
+        }
+        return result
+    }
+
+    /// Extract images inside a (x, y, w, h) rectangle on a (0-based) page.
+    public func extractImagesInRect(_ pageIndex: Int, x: Float, y: Float, w: Float, h: Float) throws -> [Image] {
+        var code: Int32 = 0
+        guard let list = pdf_document_extract_images_in_rect(try ptr(), Int32(pageIndex), x, y, w, h, &code) else {
+            throw PdfOxideError(code: code, op: "extractImagesInRect")
+        }
+        defer { pdf_oxide_image_list_free(list) }
+        let n = Int(pdf_oxide_image_count(list))
+        var result: [Image] = []
+        result.reserveCapacity(n)
+        for i in 0..<n {
+            let idx = Int32(i)
+            let width = Int(pdf_oxide_image_get_width(list, idx, &code))
+            let height = Int(pdf_oxide_image_get_height(list, idx, &code))
+            let bpc = Int(pdf_oxide_image_get_bits_per_component(list, idx, &code))
+            let format = try takeString(pdf_oxide_image_get_format(list, idx, &code), code, "extractImagesInRect.format")
+            let colorspace = try takeString(pdf_oxide_image_get_colorspace(list, idx, &code), code, "extractImagesInRect.colorspace")
+            var dataLen: Int32 = 0
+            let data: [UInt8]
+            if let p = pdf_oxide_image_get_data(list, idx, &dataLen, &code) {
+                defer { free_bytes(p) }
+                let len = dataLen < 0 ? 0 : Int(dataLen)
+                data = Array(UnsafeBufferPointer(start: p, count: len))
+            } else {
+                data = []
+            }
+            result.append(Image(
+                width: width, height: height, bitsPerComponent: bpc,
+                format: format, colorspace: colorspace, data: data
+            ))
+        }
+        return result
+    }
+
+    // ── Final phase: auto extraction & classification ────────────────────────
+
+    /// Auto-detect the best extraction path and return text for a (0-based) page.
+    public func extractTextAuto(_ pageIndex: Int) throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_document_extract_text_auto(try ptr(), Int32(pageIndex), &code), code, "extractTextAuto")
+    }
+    /// Extract text for every page concatenated.
+    public func extractAllText() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_document_extract_all_text(try ptr(), &code), code, "extractAllText")
+    }
+    /// Auto-extract a single (0-based) page with an options-JSON string.
+    public func extractPageAuto(_ pageIndex: Int, optionsJson: String = "{}") throws -> String {
+        var code: Int32 = 0
+        return try takeString(
+            pdf_document_extract_page_auto(try ptr(), Int32(pageIndex), optionsJson, &code),
+            code, "extractPageAuto"
+        )
+    }
+    /// Classify a single (0-based) page; returns a JSON classification.
+    public func classifyPage(_ pageIndex: Int) throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_document_classify_page(try ptr(), Int32(pageIndex), &code), code, "classifyPage")
+    }
+    /// Classify the whole document; returns a JSON classification.
+    public func classifyDocument() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_document_classify_document(try ptr(), &code), code, "classifyDocument")
+    }
+
+    // ── Final phase: header / footer / artifact removal ──────────────────────
+
+    /// Erase the detected header on a (0-based) page. Returns the status code.
+    @discardableResult public func eraseHeader(_ pageIndex: Int) throws -> Int32 {
+        var code: Int32 = 0
+        let r = pdf_document_erase_header(try ptr(), Int32(pageIndex), &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "eraseHeader") }
+        return r
+    }
+    /// Erase the detected footer on a (0-based) page. Returns the status code.
+    @discardableResult public func eraseFooter(_ pageIndex: Int) throws -> Int32 {
+        var code: Int32 = 0
+        let r = pdf_document_erase_footer(try ptr(), Int32(pageIndex), &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "eraseFooter") }
+        return r
+    }
+    /// Erase detected artifacts on a (0-based) page. Returns the status code.
+    @discardableResult public func eraseArtifacts(_ pageIndex: Int) throws -> Int32 {
+        var code: Int32 = 0
+        let r = pdf_document_erase_artifacts(try ptr(), Int32(pageIndex), &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "eraseArtifacts") }
+        return r
+    }
+    /// Remove repeated headers across the document above `threshold`. Returns the count.
+    @discardableResult public func removeHeaders(threshold: Float) throws -> Int32 {
+        var code: Int32 = 0
+        let r = pdf_document_remove_headers(try ptr(), threshold, &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "removeHeaders") }
+        return r
+    }
+    /// Remove repeated footers across the document above `threshold`. Returns the count.
+    @discardableResult public func removeFooters(threshold: Float) throws -> Int32 {
+        var code: Int32 = 0
+        let r = pdf_document_remove_footers(try ptr(), threshold, &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "removeFooters") }
+        return r
+    }
+    /// Remove repeated artifacts across the document above `threshold`. Returns the count.
+    @discardableResult public func removeArtifacts(threshold: Float) throws -> Int32 {
+        var code: Int32 = 0
+        let r = pdf_document_remove_artifacts(try ptr(), threshold, &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "removeArtifacts") }
+        return r
+    }
+
+    // ── Final phase: forms ───────────────────────────────────────────────────
+
+    /// Read the document's AcroForm fields (empty list if none).
+    public func formFields() throws -> [FormField] {
+        var code: Int32 = 0
+        guard let list = pdf_document_get_form_fields(try ptr(), &code) else {
+            throw PdfOxideError(code: code, op: "formFields")
+        }
+        defer { pdf_oxide_form_field_list_free(list) }
+        let n = Int(pdf_oxide_form_field_count(list))
+        var result: [FormField] = []
+        result.reserveCapacity(max(0, n))
+        for i in 0..<max(0, n) {
+            let idx = Int32(i)
+            let name = try takeString(pdf_oxide_form_field_get_name(list, idx, &code), code, "formFields.name")
+            let value = try takeString(pdf_oxide_form_field_get_value(list, idx, &code), code, "formFields.value")
+            let type = try takeString(pdf_oxide_form_field_get_type(list, idx, &code), code, "formFields.type")
+            let readonly = pdf_oxide_form_field_is_readonly(list, idx, &code)
+            let required = pdf_oxide_form_field_is_required(list, idx, &code)
+            result.append(FormField(name: name, value: value, type: type, readonly: readonly, required: required))
+        }
+        return result
+    }
+
+    /// Export the document's form data to bytes in `formatType` (e.g. 0=FDF, 1=XFDF).
+    public func exportFormData(formatType: Int32) throws -> [UInt8] {
+        var len = 0, code: Int32 = 0
+        let p = pdf_document_export_form_data_to_bytes(try ptr(), formatType, &len, &code)
+        return try takeOwnedBytes(p, len, code, "exportFormData")
+    }
+
+    /// Import form data from a file at `dataPath`. Returns the status code.
+    @discardableResult public func importFormData(_ dataPath: String) throws -> Int32 {
+        var code: Int32 = 0
+        let r = pdf_document_import_form_data(UnsafeRawPointer(try ptr()), dataPath, &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "importFormData") }
+        return r
+    }
+
+    /// Import form values from a file into this document. Returns true on success.
+    @discardableResult public func importFormFromFile(_ filename: String) throws -> Bool {
+        var code: Int32 = 0
+        let ok = pdf_form_import_from_file(UnsafeRawPointer(try ptr()), filename, &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "importFormFromFile") }
+        return ok
+    }
+
+    // ── Final phase: structure & metadata ────────────────────────────────────
+
+    /// The document outline (bookmarks) as a JSON string.
+    public func outline() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_document_get_outline(try ptr(), &code), code, "outline")
+    }
+    /// The document's page labels as a JSON string.
+    public func pageLabels() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_document_get_page_labels(try ptr(), &code), code, "pageLabels")
+    }
+    /// The document's XMP metadata as an XML string.
+    public func xmpMetadata() throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_document_get_xmp_metadata(try ptr(), &code), code, "xmpMetadata")
+    }
+    /// The original source bytes backing this document.
+    public func sourceBytes() throws -> [UInt8] {
+        var len = 0, code: Int32 = 0
+        let p = pdf_document_get_source_bytes(try ptr(), &len, &code)
+        return try takeOwnedBytes(p, len, code, "sourceBytes")
+    }
+    /// Whether the document carries an XFA form.
+    public func hasXfa() throws -> Bool { pdf_document_has_xfa(try ptr()) }
+
+    /// Plan a split-by-bookmarks operation; returns a JSON plan.
+    public func planSplitByBookmarks(optionsJson: String = "{}") throws -> String {
+        var code: Int32 = 0
+        return try takeString(
+            pdf_document_plan_split_by_bookmarks(try ptr(), optionsJson, &code),
+            code, "planSplitByBookmarks"
+        )
+    }
+
+    // ── Final phase: signatures ──────────────────────────────────────────────
+
+    /// Sign this document in place with `certificate`. Returns the status code.
+    @discardableResult
+    public func sign(_ certificate: Certificate, reason: String, location: String) throws -> Int32 {
+        var code: Int32 = 0
+        let r = pdf_document_sign(
+            UnsafeMutableRawPointer(try ptr()), try certificate.rawPtr(), reason, location, &code
+        )
+        if code != 0 { throw PdfOxideError(code: code, op: "sign") }
+        return r
+    }
+
+    /// The number of signatures present in the document.
+    public func signatureCount() throws -> Int {
+        var code: Int32 = 0
+        let n = pdf_document_get_signature_count(UnsafeRawPointer(try ptr()), &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "signatureCount") }
+        return Int(n)
+    }
+
+    /// The signature at `index`, or `nil` when none is present at that slot.
+    public func signature(_ index: Int) throws -> SignatureInfo? {
+        var code: Int32 = 0
+        guard let s = pdf_document_get_signature(UnsafeRawPointer(try ptr()), Int32(index), &code) else {
+            if code != 0 { throw PdfOxideError(code: code, op: "signature") }
+            return nil
+        }
+        return SignatureInfo(OpaquePointer(s))
+    }
+
+    /// Verify every signature; returns 1=all valid, 0=invalid, -1=unknown.
+    public func verifyAllSignatures() throws -> Int32 {
+        var code: Int32 = 0
+        return pdf_document_verify_all_signatures(UnsafeRawPointer(try ptr()), &code)
+    }
+
+    /// Whether the document carries a document-level timestamp (1=yes).
+    public func hasTimestamp() throws -> Bool {
+        var code: Int32 = 0
+        return pdf_document_has_timestamp(UnsafeRawPointer(try ptr()), &code) == 1
+    }
+
+    // ── Final phase: PDF/A conversion ────────────────────────────────────────
+
+    /// Convert this document to PDF/A at `level` in place. Returns true on success.
+    @discardableResult public func convertToPdfA(_ level: Int32) throws -> Bool {
+        var code: Int32 = 0
+        let ok = pdf_convert_to_pdf_a(try ptr(), level, &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "convertToPdfA") }
+        return ok
+    }
+
+    // ── Final phase: JSON serialisers over per-page element lists ─────────────
+
+    /// Serialise a (0-based) page's annotations to JSON.
+    public func annotationsToJson(_ pageIndex: Int) throws -> String {
+        var code: Int32 = 0
+        guard let list = pdf_document_get_page_annotations(try ptr(), Int32(pageIndex), &code) else {
+            throw PdfOxideError(code: code, op: "annotationsToJson")
+        }
+        defer { pdf_oxide_annotation_list_free(list) }
+        return try takeString(pdf_oxide_annotations_to_json(list, &code), code, "annotationsToJson")
+    }
+
+    /// Serialise a (0-based) page's embedded fonts to JSON.
+    public func fontsToJson(_ pageIndex: Int) throws -> String {
+        var code: Int32 = 0
+        guard let list = pdf_document_get_embedded_fonts(try ptr(), Int32(pageIndex), &code) else {
+            throw PdfOxideError(code: code, op: "fontsToJson")
+        }
+        defer { pdf_oxide_font_list_free(list) }
+        return try takeString(pdf_oxide_fonts_to_json(list, &code), code, "fontsToJson")
+    }
+
+    /// The font size of the font at `fontIndex` on a (0-based) page.
+    public func fontSize(_ pageIndex: Int, fontIndex: Int) throws -> Float {
+        var code: Int32 = 0
+        guard let list = pdf_document_get_embedded_fonts(try ptr(), Int32(pageIndex), &code) else {
+            throw PdfOxideError(code: code, op: "fontSize")
+        }
+        defer { pdf_oxide_font_list_free(list) }
+        let sz = pdf_oxide_font_get_size(list, Int32(fontIndex), &code)
+        if code != 0 { throw PdfOxideError(code: code, op: "fontSize") }
+        return sz
+    }
+
+    /// Serialise a page's search results for `term` to JSON.
+    public func searchResultsToJson(_ pageIndex: Int, _ term: String, caseSensitive: Bool) throws -> String {
+        var code: Int32 = 0
+        guard let list = pdf_document_search_page(try ptr(), Int32(pageIndex), term, caseSensitive, &code) else {
+            throw PdfOxideError(code: code, op: "searchResultsToJson")
+        }
+        defer { pdf_oxide_search_result_free(list) }
+        return try takeString(pdf_oxide_search_results_to_json(list, &code), code, "searchResultsToJson")
+    }
+
+    // ── Final phase: annotation extras (per-page annotation list) ────────────
+
+    /// Read extended attributes for the annotation at `index` on a (0-based) page.
+    public func annotationExtras(_ pageIndex: Int, index: Int) throws -> AnnotationExtras {
+        var code: Int32 = 0
+        guard let list = pdf_document_get_page_annotations(try ptr(), Int32(pageIndex), &code) else {
+            throw PdfOxideError(code: code, op: "annotationExtras")
+        }
+        defer { pdf_oxide_annotation_list_free(list) }
+        let idx = Int32(index)
+        let color = pdf_oxide_annotation_get_color(list, idx, &code)
+        let creationDate = pdf_oxide_annotation_get_creation_date(list, idx, &code)
+        let modificationDate = pdf_oxide_annotation_get_modification_date(list, idx, &code)
+        let hidden = pdf_oxide_annotation_is_hidden(list, idx, &code)
+        let markedDeleted = pdf_oxide_annotation_is_marked_deleted(list, idx, &code)
+        let printable = pdf_oxide_annotation_is_printable(list, idx, &code)
+        let readOnly = pdf_oxide_annotation_is_read_only(list, idx, &code)
+        let uri = (try? takeString(pdf_oxide_link_annotation_get_uri(list, idx, &code), code, "uri")) ?? ""
+        let iconName = (try? takeString(pdf_oxide_text_annotation_get_icon_name(list, idx, &code), code, "icon")) ?? ""
+        // Highlight quad points.
+        var quads: [QuadPoint] = []
+        let qn = pdf_oxide_highlight_annotation_get_quad_points_count(list, idx, &code)
+        if qn > 0 {
+            for q in 0..<qn {
+                var x1: Float = 0, y1: Float = 0, x2: Float = 0, y2: Float = 0
+                var x3: Float = 0, y3: Float = 0, x4: Float = 0, y4: Float = 0
+                pdf_oxide_highlight_annotation_get_quad_point(
+                    list, idx, q, &x1, &y1, &x2, &y2, &x3, &y3, &x4, &y4, &code
+                )
+                quads.append(QuadPoint(
+                    x1: Double(x1), y1: Double(y1), x2: Double(x2), y2: Double(y2),
+                    x3: Double(x3), y3: Double(y3), x4: Double(x4), y4: Double(y4)
+                ))
+            }
+        }
+        return AnnotationExtras(
+            color: color, creationDate: creationDate, modificationDate: modificationDate,
+            hidden: hidden, markedDeleted: markedDeleted, printable: printable, readOnly: readOnly,
+            uri: uri, iconName: iconName, quadPoints: quads
+        )
+    }
+
     /// Free the native handle now (idempotent).
     public func close() {
         if let h = handle { pdf_document_free(h); handle = nil }
     }
+}
+
+/// Extended attributes for a single page annotation (final-phase accessors).
+public struct AnnotationExtras {
+    public let color: UInt32
+    public let creationDate: Int64
+    public let modificationDate: Int64
+    public let hidden: Bool
+    public let markedDeleted: Bool
+    public let printable: Bool
+    public let readOnly: Bool
+    public let uri: String
+    public let iconName: String
+    public let quadPoints: [QuadPoint]
 }
 
 /// A single page of a Document. Keeps the owning Document alive via a strong
@@ -855,6 +1362,14 @@ public final class Pdf {
         defer { free_bytes(p) }
         let n = len < 0 ? 0 : Int(len)
         return Array(UnsafeBufferPointer(start: p, count: n))
+    }
+
+    /// The page count of this generated PDF (alias of `pdf_get_page_count`).
+    public func pageCount() throws -> Int {
+        var code: Int32 = 0
+        let n = pdf_get_page_count(try ptr(), &code)
+        if n < 0 { throw PdfOxideError(code: code, op: "pageCount") }
+        return Int(n)
     }
 
     /// Free the native handle now (idempotent).
@@ -1244,6 +1759,28 @@ public final class DocumentEditor {
             document_editor_embed_file(h, name, buf.baseAddress, buf.count, &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "embedFile") }
+    }
+
+    /// Import FDF form data from bytes. Returns the status code.
+    @discardableResult public func importFdfBytes(_ data: [UInt8]) throws -> Int32 {
+        let h = try ptr()
+        var code: Int32 = 0
+        let r = data.withUnsafeBufferPointer { buf in
+            pdf_editor_import_fdf_bytes(UnsafeRawPointer(h), buf.baseAddress, buf.count, &code)
+        }
+        if code != 0 { throw PdfOxideError(code: code, op: "importFdfBytes") }
+        return r
+    }
+
+    /// Import XFDF form data from bytes. Returns the status code.
+    @discardableResult public func importXfdfBytes(_ data: [UInt8]) throws -> Int32 {
+        let h = try ptr()
+        var code: Int32 = 0
+        let r = data.withUnsafeBufferPointer { buf in
+            pdf_editor_import_xfdf_bytes(UnsafeRawPointer(h), buf.baseAddress, buf.count, &code)
+        }
+        if code != 0 { throw PdfOxideError(code: code, op: "importXfdfBytes") }
+        return r
     }
 
     /// Extract a subset of (0-based) pages to a new in-memory PDF.
@@ -2747,5 +3284,74 @@ private func withCStringArray<R>(_ strings: [String], _ body: (UnsafePointer<Uns
         buf.baseAddress!.withMemoryRebound(to: UnsafePointer<CChar>?.self, capacity: buf.count) { rebased in
             body(rebased)
         }
+    }
+}
+
+// ── Final phase: process-global crypto / models / config namespace ───────────
+
+/// Library-global configuration, cryptographic policy, and model-prefetch
+/// utilities. These wrap the process-wide `pdf_oxide_*` C functions that take no
+/// document handle.
+public enum PdfOxide {
+    // Crypto / FIPS ──────────────────────────────────────────────────────────
+
+    /// The name of the active cryptographic provider.
+    public static func cryptoActiveProvider() -> String {
+        guard let p = pdf_oxide_crypto_active_provider() else { return "" }
+        defer { free_string(p) }
+        return String(cString: p)
+    }
+    /// The Cryptographic Bill of Materials (CBOM) as JSON.
+    public static func cryptoCbom() -> String {
+        guard let p = pdf_oxide_crypto_cbom() else { return "" }
+        defer { free_string(p) }
+        return String(cString: p)
+    }
+    /// Whether a FIPS-validated provider is available (1 == yes).
+    public static func cryptoFipsAvailable() -> Int32 { pdf_oxide_crypto_fips_available() }
+    /// A crypto inventory of available algorithms/providers as JSON.
+    public static func cryptoInventory() -> String {
+        guard let p = pdf_oxide_crypto_inventory() else { return "" }
+        defer { free_string(p) }
+        return String(cString: p)
+    }
+    /// The currently active crypto policy as JSON.
+    public static func cryptoPolicy() -> String {
+        guard let p = pdf_oxide_crypto_policy() else { return "" }
+        defer { free_string(p) }
+        return String(cString: p)
+    }
+    /// Set the crypto policy from a spec string. Returns the status code.
+    @discardableResult public static func cryptoSetPolicy(_ spec: String) -> Int32 {
+        pdf_oxide_crypto_set_policy(spec)
+    }
+    /// Switch to the FIPS provider. Returns the status code.
+    @discardableResult public static func cryptoUseFips() -> Int32 { pdf_oxide_crypto_use_fips() }
+
+    // Models / prefetch ───────────────────────────────────────────────────────
+
+    /// The bundled/available model manifest as JSON.
+    public static func modelManifest() -> String {
+        guard let p = pdf_oxide_model_manifest() else { return "" }
+        defer { free_string(p) }
+        return String(cString: p)
+    }
+    /// Whether model prefetch is available (1 == yes).
+    public static func prefetchAvailable() -> Int32 { pdf_oxide_prefetch_available() }
+    /// Prefetch models for the comma-separated language codes; returns a JSON result.
+    public static func prefetchModels(languagesCsv: String) throws -> String {
+        var code: Int32 = 0
+        return try takeString(pdf_oxide_prefetch_models(languagesCsv, &code), code, "prefetchModels")
+    }
+
+    // Engine config ───────────────────────────────────────────────────────────
+
+    /// Set the maximum number of content-stream operations per stream; returns the previous limit.
+    @discardableResult public static func setMaxOpsPerStream(_ limit: Int64) -> Int64 {
+        pdf_oxide_set_max_ops_per_stream(limit)
+    }
+    /// Toggle preservation of unmapped glyphs (non-zero == preserve); returns the previous setting.
+    @discardableResult public static func setPreserveUnmappedGlyphs(_ preserve: Int32) -> Int32 {
+        pdf_oxide_set_preserve_unmapped_glyphs(preserve)
     }
 }

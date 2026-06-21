@@ -1168,7 +1168,190 @@ class _Native {
         elementsToJson = lib.lookupFunction<_ElemJsonC, _ElemJsonD>(
             'pdf_oxide_elements_to_json'),
         addTimestamp = lib.lookupFunction<_AddTimestampC, _AddTimestampD>(
-            'pdf_add_timestamp');
+            'pdf_add_timestamp'),
+        // ── Phase 8 ───────────────────────────────────────────────────────────
+        // office I/O
+        openFromDocx = lib.lookupFunction<_OpenBytesC, _OpenBytesD>(
+            'pdf_document_open_from_docx_bytes'),
+        openFromPptx = lib.lookupFunction<_OpenBytesC, _OpenBytesD>(
+            'pdf_document_open_from_pptx_bytes'),
+        openFromXlsx = lib.lookupFunction<_OpenBytesC, _OpenBytesD>(
+            'pdf_document_open_from_xlsx_bytes'),
+        toDocx =
+            lib.lookupFunction<_DocBytesC, _DocBytesD>('pdf_document_to_docx'),
+        toPptx =
+            lib.lookupFunction<_DocBytesC, _DocBytesD>('pdf_document_to_pptx'),
+        toXlsx =
+            lib.lookupFunction<_DocBytesC, _DocBytesD>('pdf_document_to_xlsx'),
+        // in-rect extractors
+        extractTextInRect = lib.lookupFunction<_RectStrC, _RectStrD>(
+            'pdf_document_extract_text_in_rect'),
+        extractWordsInRect = lib.lookupFunction<_RectListC, _RectListD>(
+            'pdf_document_extract_words_in_rect'),
+        extractLinesInRect = lib.lookupFunction<_RectListC, _RectListD>(
+            'pdf_document_extract_lines_in_rect'),
+        extractTablesInRect = lib.lookupFunction<_RectListC, _RectListD>(
+            'pdf_document_extract_tables_in_rect'),
+        extractImagesInRect = lib.lookupFunction<_RectListC, _RectListD>(
+            'pdf_document_extract_images_in_rect'),
+        // auto / classify
+        extractTextAuto = lib
+            .lookupFunction<_TextC, _TextD>('pdf_document_extract_text_auto'),
+        extractAllText = lib.lookupFunction<_TextAllC, _TextAllD>(
+            'pdf_document_extract_all_text'),
+        extractPageAuto = lib.lookupFunction<_PageAutoC, _PageAutoD>(
+            'pdf_document_extract_page_auto'),
+        classifyPage =
+            lib.lookupFunction<_TextC, _TextD>('pdf_document_classify_page'),
+        classifyDocument = lib.lookupFunction<_TextAllC, _TextAllD>(
+            'pdf_document_classify_document'),
+        // furniture
+        eraseHeader = lib.lookupFunction<_DeI32I32C, _DeI32I32D>(
+            'pdf_document_erase_header'),
+        eraseFooter = lib.lookupFunction<_DeI32I32C, _DeI32I32D>(
+            'pdf_document_erase_footer'),
+        eraseArtifacts = lib.lookupFunction<_DeI32I32C, _DeI32I32D>(
+            'pdf_document_erase_artifacts'),
+        removeHeaders = lib
+            .lookupFunction<_RemoveC, _RemoveD>('pdf_document_remove_headers'),
+        removeFooters = lib
+            .lookupFunction<_RemoveC, _RemoveD>('pdf_document_remove_footers'),
+        removeArtifacts = lib.lookupFunction<_RemoveC, _RemoveD>(
+            'pdf_document_remove_artifacts'),
+        // forms
+        getFormFields = lib.lookupFunction<_FormFieldsC, _FormFieldsD>(
+            'pdf_document_get_form_fields'),
+        formFieldCount = lib
+            .lookupFunction<_FfCountC, _FfCountD>('pdf_oxide_form_field_count'),
+        formFieldGetName = lib
+            .lookupFunction<_FfStrC, _FfStrD>('pdf_oxide_form_field_get_name'),
+        formFieldGetValue = lib
+            .lookupFunction<_FfStrC, _FfStrD>('pdf_oxide_form_field_get_value'),
+        formFieldGetType = lib
+            .lookupFunction<_FfStrC, _FfStrD>('pdf_oxide_form_field_get_type'),
+        formFieldIsReadonly = lib.lookupFunction<_FfBoolC, _FfBoolD>(
+            'pdf_oxide_form_field_is_readonly'),
+        formFieldIsRequired = lib.lookupFunction<_FfBoolC, _FfBoolD>(
+            'pdf_oxide_form_field_is_required'),
+        formFieldListFree = lib.lookupFunction<_FfFreeC, _FfFreeD>(
+            'pdf_oxide_form_field_list_free'),
+        exportFormData = lib.lookupFunction<_ExportFormC, _ExportFormD>(
+            'pdf_document_export_form_data_to_bytes'),
+        importFormData = lib.lookupFunction<_ImportFormC, _ImportFormD>(
+            'pdf_document_import_form_data'),
+        importFdfBytes = lib.lookupFunction<_ImportFdfC, _ImportFdfD>(
+            'pdf_editor_import_fdf_bytes'),
+        importXfdfBytes = lib.lookupFunction<_ImportFdfC, _ImportFdfD>(
+            'pdf_editor_import_xfdf_bytes'),
+        formImportFromFile =
+            lib.lookupFunction<_FormImportFileC, _FormImportFileD>(
+                'pdf_form_import_from_file'),
+        // doc structure / metadata
+        getOutline = lib
+            .lookupFunction<_TextAllC, _TextAllD>('pdf_document_get_outline'),
+        getPageLabels = lib.lookupFunction<_TextAllC, _TextAllD>(
+            'pdf_document_get_page_labels'),
+        getXmpMetadata = lib.lookupFunction<_TextAllC, _TextAllD>(
+            'pdf_document_get_xmp_metadata'),
+        getSourceBytes = lib.lookupFunction<_DocBytesC, _DocBytesD>(
+            'pdf_document_get_source_bytes'),
+        hasXfa = lib.lookupFunction<_BoolC, _BoolD>('pdf_document_has_xfa'),
+        pdfGetPageCount =
+            lib.lookupFunction<_PageCountC, _PageCountD>('pdf_get_page_count'),
+        planSplitByBookmarks = lib.lookupFunction<_PlanSplitC, _PlanSplitD>(
+            'pdf_document_plan_split_by_bookmarks'),
+        // doc-level signatures
+        docSign = lib.lookupFunction<_DocSignC, _DocSignD>('pdf_document_sign'),
+        docGetSignature = lib.lookupFunction<_DocGetSigC, _DocGetSigD>(
+            'pdf_document_get_signature'),
+        docGetSignatureCount = lib.lookupFunction<_DocSigCountC, _DocSigCountD>(
+            'pdf_document_get_signature_count'),
+        docVerifyAllSignatures =
+            lib.lookupFunction<_DocSigCountC, _DocSigCountD>(
+                'pdf_document_verify_all_signatures'),
+        docHasTimestamp = lib.lookupFunction<_DocSigCountC, _DocSigCountD>(
+            'pdf_document_has_timestamp'),
+        docGetDss = lib
+            .lookupFunction<_DocGetDssC, _DocGetDssD>('pdf_document_get_dss'),
+        // annotation extras
+        annGetColor = lib.lookupFunction<_AnnU32C, _AnnU32D>(
+            'pdf_oxide_annotation_get_color'),
+        annGetCreationDate = lib.lookupFunction<_AnnI64C, _AnnI64D>(
+            'pdf_oxide_annotation_get_creation_date'),
+        annGetModificationDate = lib.lookupFunction<_AnnI64C, _AnnI64D>(
+            'pdf_oxide_annotation_get_modification_date'),
+        annIsHidden = lib.lookupFunction<_AnnBoolC, _AnnBoolD>(
+            'pdf_oxide_annotation_is_hidden'),
+        annIsMarkedDeleted = lib.lookupFunction<_AnnBoolC, _AnnBoolD>(
+            'pdf_oxide_annotation_is_marked_deleted'),
+        annIsPrintable = lib.lookupFunction<_AnnBoolC, _AnnBoolD>(
+            'pdf_oxide_annotation_is_printable'),
+        annIsReadOnly = lib.lookupFunction<_AnnBoolC, _AnnBoolD>(
+            'pdf_oxide_annotation_is_read_only'),
+        annotationsToJson = lib.lookupFunction<_AnnJsonC, _AnnJsonD>(
+            'pdf_oxide_annotations_to_json'),
+        highlightQuadCount = lib.lookupFunction<_QuadCountC, _QuadCountD>(
+            'pdf_oxide_highlight_annotation_get_quad_points_count'),
+        highlightQuadPoint = lib.lookupFunction<_QuadPointC, _QuadPointD>(
+            'pdf_oxide_highlight_annotation_get_quad_point'),
+        linkGetUri = lib.lookupFunction<_AnnStrC, _AnnStrD>(
+            'pdf_oxide_link_annotation_get_uri'),
+        textAnnotGetIcon = lib.lookupFunction<_AnnStrC, _AnnStrD>(
+            'pdf_oxide_text_annotation_get_icon_name'),
+        // list -> json / font size
+        fontsToJson = lib
+            .lookupFunction<_ListJsonC, _ListJsonD>('pdf_oxide_fonts_to_json'),
+        searchResultsToJson = lib.lookupFunction<_ListJsonC, _ListJsonD>(
+            'pdf_oxide_search_results_to_json'),
+        fontGetSize = lib
+            .lookupFunction<_FontSizeC, _FontSizeD>('pdf_oxide_font_get_size'),
+        // crypto / FIPS
+        cryptoActiveProvider = lib.lookupFunction<_NullStrC, _NullStrD>(
+            'pdf_oxide_crypto_active_provider'),
+        cryptoCbom =
+            lib.lookupFunction<_NullStrC, _NullStrD>('pdf_oxide_crypto_cbom'),
+        cryptoInventory = lib
+            .lookupFunction<_NullStrC, _NullStrD>('pdf_oxide_crypto_inventory'),
+        cryptoPolicy =
+            lib.lookupFunction<_NullStrC, _NullStrD>('pdf_oxide_crypto_policy'),
+        cryptoFipsAvailable = lib.lookupFunction<_NullI32C, _NullI32D>(
+            'pdf_oxide_crypto_fips_available'),
+        cryptoUseFips = lib
+            .lookupFunction<_NullI32C, _NullI32D>('pdf_oxide_crypto_use_fips'),
+        cryptoSetPolicy = lib.lookupFunction<_StrArgI32C, _StrArgI32D>(
+            'pdf_oxide_crypto_set_policy'),
+        // models / config
+        modelManifest = lib
+            .lookupFunction<_NullStrC, _NullStrD>('pdf_oxide_model_manifest'),
+        prefetchAvailable = lib.lookupFunction<_NullI32C, _NullI32D>(
+            'pdf_oxide_prefetch_available'),
+        prefetchModels = lib.lookupFunction<_PrefetchC, _PrefetchD>(
+            'pdf_oxide_prefetch_models'),
+        setMaxOpsPerStream = lib.lookupFunction<_SetI64C, _SetI64D>(
+            'pdf_oxide_set_max_ops_per_stream'),
+        setPreserveUnmappedGlyphs = lib.lookupFunction<_SetI32C, _SetI32D>(
+            'pdf_oxide_set_preserve_unmapped_glyphs'),
+        convertToPdfA =
+            lib.lookupFunction<_ConvPdfAC, _ConvPdfAD>('pdf_convert_to_pdf_a'),
+        // streaming tables
+        stBegin = lib.lookupFunction<_StBeginC, _StBeginD>(
+            'pdf_page_builder_streaming_table_begin'),
+        stBeginV2 = lib.lookupFunction<_StBeginV2C, _StBeginV2D>(
+            'pdf_page_builder_streaming_table_begin_v2'),
+        stPushRow = lib.lookupFunction<_StPushRowC, _StPushRowD>(
+            'pdf_page_builder_streaming_table_push_row'),
+        stPushRowV2 = lib.lookupFunction<_StPushRowV2C, _StPushRowV2D>(
+            'pdf_page_builder_streaming_table_push_row_v2'),
+        stFlush = lib.lookupFunction<_StStatusC, _StStatusD>(
+            'pdf_page_builder_streaming_table_flush'),
+        stFinish = lib.lookupFunction<_StStatusC, _StStatusD>(
+            'pdf_page_builder_streaming_table_finish'),
+        stSetBatchSize = lib.lookupFunction<_StSetBatchC, _StSetBatchD>(
+            'pdf_page_builder_streaming_table_set_batch_size'),
+        stBatchCount = lib.lookupFunction<_StUsizeC, _StUsizeD>(
+            'pdf_page_builder_streaming_table_batch_count'),
+        stPendingRowCount = lib.lookupFunction<_StUsizeC, _StUsizeD>(
+            'pdf_page_builder_streaming_table_pending_row_count');
 
   final DynamicLibrary lib;
   final _OpenD open;
@@ -1490,6 +1673,71 @@ class _Native {
   final _ListFreeD elementsFree;
   final _ElemJsonD elementsToJson;
   final _AddTimestampD addTimestamp;
+  // ── Phase 8 ─────────────────────────────────────────────────────────────────
+  final _OpenBytesD openFromDocx, openFromPptx, openFromXlsx;
+  final _DocBytesD toDocx, toPptx, toXlsx, getSourceBytes;
+  final _RectStrD extractTextInRect;
+  final _RectListD extractWordsInRect,
+      extractLinesInRect,
+      extractTablesInRect,
+      extractImagesInRect;
+  final _TextD extractTextAuto, classifyPage;
+  final _TextAllD extractAllText,
+      classifyDocument,
+      getOutline,
+      getPageLabels,
+      getXmpMetadata;
+  final _PageAutoD extractPageAuto;
+  final _DeI32I32D eraseHeader, eraseFooter, eraseArtifacts;
+  final _RemoveD removeHeaders, removeFooters, removeArtifacts;
+  final _FormFieldsD getFormFields;
+  final _FfCountD formFieldCount;
+  final _FfStrD formFieldGetName, formFieldGetValue, formFieldGetType;
+  final _FfBoolD formFieldIsReadonly, formFieldIsRequired;
+  final _FfFreeD formFieldListFree;
+  final _ExportFormD exportFormData;
+  final _ImportFormD importFormData;
+  final _ImportFdfD importFdfBytes, importXfdfBytes;
+  final _FormImportFileD formImportFromFile;
+  final _BoolD hasXfa;
+  final _PageCountD pdfGetPageCount;
+  final _PlanSplitD planSplitByBookmarks;
+  final _DocSignD docSign;
+  final _DocGetSigD docGetSignature;
+  final _DocSigCountD docGetSignatureCount,
+      docVerifyAllSignatures,
+      docHasTimestamp;
+  final _DocGetDssD docGetDss;
+  final _AnnU32D annGetColor;
+  final _AnnI64D annGetCreationDate, annGetModificationDate;
+  final _AnnBoolD annIsHidden,
+      annIsMarkedDeleted,
+      annIsPrintable,
+      annIsReadOnly;
+  final _AnnJsonD annotationsToJson;
+  final _QuadCountD highlightQuadCount;
+  final _QuadPointD highlightQuadPoint;
+  final _AnnStrD linkGetUri, textAnnotGetIcon;
+  final _ListJsonD fontsToJson, searchResultsToJson;
+  final _FontSizeD fontGetSize;
+  final _NullStrD cryptoActiveProvider,
+      cryptoCbom,
+      cryptoInventory,
+      cryptoPolicy,
+      modelManifest;
+  final _NullI32D cryptoFipsAvailable, cryptoUseFips, prefetchAvailable;
+  final _StrArgI32D cryptoSetPolicy;
+  final _PrefetchD prefetchModels;
+  final _SetI64D setMaxOpsPerStream;
+  final _SetI32D setPreserveUnmappedGlyphs;
+  final _ConvPdfAD convertToPdfA;
+  final _StBeginD stBegin;
+  final _StBeginV2D stBeginV2;
+  final _StPushRowD stPushRow;
+  final _StPushRowV2D stPushRowV2;
+  final _StStatusD stFlush, stFinish;
+  final _StSetBatchD stSetBatchSize;
+  final _StUsizeD stBatchCount, stPendingRowCount;
 }
 
 typedef _OpenD = Pointer<Void> Function(Pointer<Utf8>, Pointer<Int32>);
@@ -2022,6 +2270,82 @@ class SearchResult {
   final Bbox bbox;
 }
 
+/// An interactive form field (AcroForm) as returned by
+/// [PdfDocument.getFormFields].
+class FormField {
+  const FormField(
+      this.name, this.value, this.type, this.readonly, this.required);
+
+  /// The fully-qualified field name.
+  final String name;
+
+  /// The current field value (may be empty).
+  final String value;
+
+  /// The field type (e.g. `Tx`, `Btn`, `Ch`, `Sig`).
+  final String type;
+
+  /// Whether the field is read-only.
+  final bool readonly;
+
+  /// Whether the field is required.
+  final bool required;
+}
+
+/// A single highlight-annotation quad (four corner points, in PDF user space).
+class QuadPoint {
+  const QuadPoint(
+      this.x1, this.y1, this.x2, this.y2, this.x3, this.y3, this.x4, this.y4);
+  final double x1, y1, x2, y2, x3, y3, x4, y4;
+}
+
+/// Extended attributes of a page annotation (flags, dates, colour, and
+/// subtype-specific data) as returned by [PdfDocument.pageAnnotationDetails].
+class AnnotationDetails {
+  const AnnotationDetails(
+      this.type,
+      this.subtype,
+      this.content,
+      this.rect,
+      this.color,
+      this.creationDate,
+      this.modificationDate,
+      this.hidden,
+      this.markedDeleted,
+      this.printable,
+      this.readOnly,
+      this.linkUri,
+      this.iconName,
+      this.quadPoints);
+
+  final String type;
+  final String subtype;
+  final String content;
+  final Bbox rect;
+
+  /// Packed ARGB colour value.
+  final int color;
+
+  /// Creation timestamp (Unix epoch seconds; 0 if absent).
+  final int creationDate;
+
+  /// Modification timestamp (Unix epoch seconds; 0 if absent).
+  final int modificationDate;
+  final bool hidden;
+  final bool markedDeleted;
+  final bool printable;
+  final bool readOnly;
+
+  /// The target URI for link annotations (empty otherwise).
+  final String linkUri;
+
+  /// The icon name for text annotations (empty otherwise).
+  final String iconName;
+
+  /// Quad points for highlight annotations (empty otherwise).
+  final List<QuadPoint> quadPoints;
+}
+
 /// A rasterised page image produced by [PdfDocument.renderPage] (and friends).
 ///
 /// Owns the native `FfiRenderedImage` handle; [width], [height] and [data] are
@@ -2170,6 +2494,32 @@ class PdfDocument implements Finalizable {
       calloc.free(code);
     }
   }
+
+  static PdfDocument _openOffice(_OpenBytesD fn, Uint8List data, String op) {
+    final buf = calloc<Uint8>(data.isEmpty ? 1 : data.length);
+    if (data.isNotEmpty) buf.asTypedList(data.length).setAll(0, data);
+    final code = calloc<Int32>();
+    try {
+      final h = fn(buf, data.length, code);
+      if (h == nullptr) throw PdfOxideError(code.value, op);
+      return PdfDocument._(h);
+    } finally {
+      calloc.free(buf);
+      calloc.free(code);
+    }
+  }
+
+  /// Open a document from DOCX (Office Open XML) bytes.
+  static PdfDocument openFromDocxBytes(Uint8List data) =>
+      _openOffice(_n.openFromDocx, data, 'openFromDocxBytes');
+
+  /// Open a document from PPTX bytes.
+  static PdfDocument openFromPptxBytes(Uint8List data) =>
+      _openOffice(_n.openFromPptx, data, 'openFromPptxBytes');
+
+  /// Open a document from XLSX bytes.
+  static PdfDocument openFromXlsxBytes(Uint8List data) =>
+      _openOffice(_n.openFromXlsx, data, 'openFromXlsxBytes');
 
   void _check() {
     if (_handle == nullptr) throw StateError('PdfDocument is closed');
@@ -2398,6 +2748,40 @@ class PdfDocument implements Finalizable {
     }
   }
 
+  /// Embedded fonts on 0-based [page] serialized to JSON.
+  String embeddedFontsJson(int page) {
+    final list = _openList(_n.extractFonts, page, 'embeddedFontsJson');
+    final code = calloc<Int32>();
+    try {
+      return _takeString(
+          _n.fontsToJson(list, code), code.value, 'embeddedFontsJson');
+    } finally {
+      _n.fontListFree(list);
+      calloc.free(code);
+    }
+  }
+
+  /// The point size of each embedded font on 0-based [page].
+  List<double> embeddedFontSizes(int page) {
+    final list = _openList(_n.extractFonts, page, 'embeddedFontSizes');
+    final code = calloc<Int32>();
+    try {
+      final n = _n.fontCount(list);
+      final out = <double>[];
+      for (var i = 0; i < n; i++) {
+        final s = _n.fontGetSize(list, i, code);
+        if (code.value != 0) {
+          throw PdfOxideError(code.value, 'embeddedFontSizes');
+        }
+        out.add(s);
+      }
+      return out;
+    } finally {
+      _n.fontListFree(list);
+      calloc.free(code);
+    }
+  }
+
   /// Embedded images on 0-based [page].
   List<Image> embeddedImages(int page) {
     final list = _openList(_n.extractImages, page, 'embeddedImages');
@@ -2456,6 +2840,114 @@ class PdfDocument implements Finalizable {
         out.add(Annotation(type, subtype, content, author, rect, borderWidth));
       }
       return out;
+    } finally {
+      _n.annotationListFree(list);
+      calloc.free(code);
+    }
+  }
+
+  /// Read a single highlight-annotation quad [quadIndex] from annotation [i].
+  QuadPoint _quadPoint(Pointer<Void> list, int i, int quadIndex, String op) {
+    final x1 = calloc<Float>();
+    final y1 = calloc<Float>();
+    final x2 = calloc<Float>();
+    final y2 = calloc<Float>();
+    final x3 = calloc<Float>();
+    final y3 = calloc<Float>();
+    final x4 = calloc<Float>();
+    final y4 = calloc<Float>();
+    final code = calloc<Int32>();
+    try {
+      _n.highlightQuadPoint(
+          list, i, quadIndex, x1, y1, x2, y2, x3, y3, x4, y4, code);
+      if (code.value != 0) throw PdfOxideError(code.value, op);
+      return QuadPoint(x1.value, y1.value, x2.value, y2.value, x3.value,
+          y3.value, x4.value, y4.value);
+    } finally {
+      calloc.free(x1);
+      calloc.free(y1);
+      calloc.free(x2);
+      calloc.free(y2);
+      calloc.free(x3);
+      calloc.free(y3);
+      calloc.free(x4);
+      calloc.free(y4);
+      calloc.free(code);
+    }
+  }
+
+  /// Extended annotation attributes on 0-based [page] (flags, dates, colour,
+  /// link URIs, icon names and highlight quad points).
+  List<AnnotationDetails> pageAnnotationDetails(int page) {
+    final list =
+        _openList(_n.extractAnnotations, page, 'pageAnnotationDetails');
+    const op = 'pageAnnotationDetails';
+    final code = calloc<Int32>();
+    try {
+      final n = _n.annotationCount(list);
+      final out = <AnnotationDetails>[];
+      for (var i = 0; i < n; i++) {
+        final type =
+            _takeString(_n.annotationGetType(list, i, code), code.value, op);
+        final subtype =
+            _takeString(_n.annotationGetSubtype(list, i, code), code.value, op);
+        final content =
+            _takeString(_n.annotationGetContent(list, i, code), code.value, op);
+        final rect = _bbox(_n.annotationGetRect, list, i, op);
+        final color = _n.annGetColor(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, op);
+        final creationDate = _n.annGetCreationDate(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, op);
+        final modificationDate = _n.annGetModificationDate(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, op);
+        final hidden = _n.annIsHidden(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, op);
+        final markedDeleted = _n.annIsMarkedDeleted(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, op);
+        final printable = _n.annIsPrintable(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, op);
+        final readOnly = _n.annIsReadOnly(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, op);
+        final linkUri =
+            _takeString(_n.linkGetUri(list, i, code), code.value, op);
+        final iconName =
+            _takeString(_n.textAnnotGetIcon(list, i, code), code.value, op);
+        final quadCount = _n.highlightQuadCount(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, op);
+        final quads = <QuadPoint>[];
+        for (var q = 0; q < quadCount; q++) {
+          quads.add(_quadPoint(list, i, q, op));
+        }
+        out.add(AnnotationDetails(
+            type,
+            subtype,
+            content,
+            rect,
+            color,
+            creationDate,
+            modificationDate,
+            hidden,
+            markedDeleted,
+            printable,
+            readOnly,
+            linkUri,
+            iconName,
+            quads));
+      }
+      return out;
+    } finally {
+      _n.annotationListFree(list);
+      calloc.free(code);
+    }
+  }
+
+  /// Annotations on 0-based [page] serialized to JSON.
+  String annotationsToJson(int page) {
+    final list = _openList(_n.extractAnnotations, page, 'annotationsToJson');
+    final code = calloc<Int32>();
+    try {
+      return _takeString(
+          _n.annotationsToJson(list, code), code.value, 'annotationsToJson');
     } finally {
       _n.annotationListFree(list);
       calloc.free(code);
@@ -2535,6 +3027,25 @@ class PdfDocument implements Finalizable {
       if (list == nullptr) throw PdfOxideError(code.value, 'searchAll');
       return _readSearch(list, 'searchAll');
     } finally {
+      calloc.free(cTerm);
+      calloc.free(code);
+    }
+  }
+
+  /// Search a single 0-based [page] for [term] and serialize the hits to JSON.
+  String searchResultsToJson(int page, String term, bool caseSensitive) {
+    _check();
+    final cTerm = term.toNativeUtf8();
+    final code = calloc<Int32>();
+    Pointer<Void> list = nullptr;
+    try {
+      list = _n.searchPage(_handle, page, cTerm, caseSensitive, code);
+      if (list == nullptr)
+        throw PdfOxideError(code.value, 'searchResultsToJson');
+      return _takeString(_n.searchResultsToJson(list, code), code.value,
+          'searchResultsToJson');
+    } finally {
+      if (list != nullptr) _n.searchResultFree(list);
       calloc.free(cTerm);
       calloc.free(code);
     }
@@ -2929,6 +3440,522 @@ class PdfDocument implements Finalizable {
     }
   }
 
+  // ── Phase 8: PDF/A conversion ──────────────────────────────────────────────
+
+  /// Convert this document in place to PDF/A at the given [level] (an integer
+  /// conformance code). Returns whether conversion succeeded.
+  bool convertToPdfA(int level) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final ok = _n.convertToPdfA(_handle, level, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'convertToPdfA');
+      return ok;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  // ── Phase 8: office export ─────────────────────────────────────────────────
+
+  Uint8List _docBytes(_DocBytesD fn, String op) {
+    _check();
+    final len = calloc<IntPtr>();
+    final code = calloc<Int32>();
+    try {
+      final p = fn(_handle, len, code);
+      return _takeBytes(p, len.value, code.value, op);
+    } finally {
+      calloc.free(len);
+      calloc.free(code);
+    }
+  }
+
+  /// Convert this document to a DOCX (Office Open XML) byte buffer.
+  Uint8List toDocx() => _docBytes(_n.toDocx, 'toDocx');
+
+  /// Convert this document to a PPTX byte buffer.
+  Uint8List toPptx() => _docBytes(_n.toPptx, 'toPptx');
+
+  /// Convert this document to an XLSX byte buffer.
+  Uint8List toXlsx() => _docBytes(_n.toXlsx, 'toXlsx');
+
+  /// The original source bytes this document was loaded from.
+  Uint8List sourceBytes() => _docBytes(_n.getSourceBytes, 'sourceBytes');
+
+  // ── Phase 8: in-rect extraction ────────────────────────────────────────────
+
+  String _strRect(_RectStrD fn, int page, double x, double y, double w,
+      double h, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(fn(_handle, page, x, y, w, h, code), code.value, op);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  Pointer<Void> _openRectList(_RectListD fn, int page, double x, double y,
+      double w, double h, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final list = fn(_handle, page, x, y, w, h, code);
+      if (list == nullptr) throw PdfOxideError(code.value, op);
+      return list;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Extract plain text within rectangle [x],[y],[w],[h] on 0-based [page].
+  String extractTextInRect(int page, double x, double y, double w, double h) =>
+      _strRect(_n.extractTextInRect, page, x, y, w, h, 'extractTextInRect');
+
+  /// Extract [Word]s within rectangle [x],[y],[w],[h] on 0-based [page].
+  List<Word> extractWordsInRect(
+      int page, double x, double y, double w, double h) {
+    final list = _openRectList(
+        _n.extractWordsInRect, page, x, y, w, h, 'extractWordsInRect');
+    final code = calloc<Int32>();
+    try {
+      final n = _n.wordCount(list);
+      final out = <Word>[];
+      for (var i = 0; i < n; i++) {
+        final text = _takeString(
+            _n.wordGetText(list, i, code), code.value, 'extractWordsInRect');
+        final bbox = _bbox(_n.wordGetBbox, list, i, 'extractWordsInRect');
+        final fontName = _takeString(_n.wordGetFontName(list, i, code),
+            code.value, 'extractWordsInRect');
+        final fontSize = _n.wordGetFontSize(list, i, code);
+        if (code.value != 0) {
+          throw PdfOxideError(code.value, 'extractWordsInRect');
+        }
+        final bold = _n.wordIsBold(list, i, code);
+        if (code.value != 0) {
+          throw PdfOxideError(code.value, 'extractWordsInRect');
+        }
+        out.add(Word(text, bbox, fontName, fontSize, bold));
+      }
+      return out;
+    } finally {
+      _n.wordListFree(list);
+      calloc.free(code);
+    }
+  }
+
+  /// Extract [TextLine]s within rectangle [x],[y],[w],[h] on 0-based [page].
+  List<TextLine> extractLinesInRect(
+      int page, double x, double y, double w, double h) {
+    final list = _openRectList(
+        _n.extractLinesInRect, page, x, y, w, h, 'extractLinesInRect');
+    final code = calloc<Int32>();
+    try {
+      final n = _n.lineCount(list);
+      final out = <TextLine>[];
+      for (var i = 0; i < n; i++) {
+        final text = _takeString(
+            _n.lineGetText(list, i, code), code.value, 'extractLinesInRect');
+        final bbox = _bbox(_n.lineGetBbox, list, i, 'extractLinesInRect');
+        final wordCount = _n.lineGetWordCount(list, i, code);
+        if (code.value != 0) {
+          throw PdfOxideError(code.value, 'extractLinesInRect');
+        }
+        out.add(TextLine(text, bbox, wordCount));
+      }
+      return out;
+    } finally {
+      _n.lineListFree(list);
+      calloc.free(code);
+    }
+  }
+
+  /// Extract [Table]s within rectangle [x],[y],[w],[h] on 0-based [page].
+  List<Table> extractTablesInRect(
+      int page, double x, double y, double w, double h) {
+    final list = _openRectList(
+        _n.extractTablesInRect, page, x, y, w, h, 'extractTablesInRect');
+    final code = calloc<Int32>();
+    try {
+      final n = _n.tableCount(list);
+      final out = <Table>[];
+      for (var i = 0; i < n; i++) {
+        final rowCount = _n.tableGetRowCount(list, i, code);
+        if (code.value != 0) {
+          throw PdfOxideError(code.value, 'extractTablesInRect');
+        }
+        final colCount = _n.tableGetColCount(list, i, code);
+        if (code.value != 0) {
+          throw PdfOxideError(code.value, 'extractTablesInRect');
+        }
+        final hasHeader = _n.tableHasHeader(list, i, code);
+        if (code.value != 0) {
+          throw PdfOxideError(code.value, 'extractTablesInRect');
+        }
+        final cells = <String>[];
+        for (var r = 0; r < rowCount; r++) {
+          for (var c = 0; c < colCount; c++) {
+            cells.add(_takeString(_n.tableGetCellText(list, i, r, c, code),
+                code.value, 'extractTablesInRect'));
+          }
+        }
+        out.add(Table(
+            rowCount, colCount, hasHeader, (r, c) => cells[r * colCount + c]));
+      }
+      return out;
+    } finally {
+      _n.tableListFree(list);
+      calloc.free(code);
+    }
+  }
+
+  /// Extract [Image]s within rectangle [x],[y],[w],[h] on 0-based [page].
+  List<Image> extractImagesInRect(
+      int page, double x, double y, double w, double h) {
+    final list = _openRectList(
+        _n.extractImagesInRect, page, x, y, w, h, 'extractImagesInRect');
+    final code = calloc<Int32>();
+    final len = calloc<Int32>();
+    try {
+      final n = _n.imageCount(list);
+      final out = <Image>[];
+      for (var i = 0; i < n; i++) {
+        final width = _n.imageGetWidth(list, i, code);
+        if (code.value != 0) {
+          throw PdfOxideError(code.value, 'extractImagesInRect');
+        }
+        final height = _n.imageGetHeight(list, i, code);
+        if (code.value != 0) {
+          throw PdfOxideError(code.value, 'extractImagesInRect');
+        }
+        final bpc = _n.imageGetBitsPerComponent(list, i, code);
+        if (code.value != 0) {
+          throw PdfOxideError(code.value, 'extractImagesInRect');
+        }
+        final format = _takeString(_n.imageGetFormat(list, i, code), code.value,
+            'extractImagesInRect');
+        final colorspace = _takeString(_n.imageGetColorspace(list, i, code),
+            code.value, 'extractImagesInRect');
+        final p = _n.imageGetData(list, i, len, code);
+        if (p == nullptr)
+          throw PdfOxideError(code.value, 'extractImagesInRect');
+        final data =
+            Uint8List.fromList(p.asTypedList(len.value < 0 ? 0 : len.value));
+        _n.freeBytes(p);
+        out.add(Image(width, height, bpc, format, colorspace, data));
+      }
+      return out;
+    } finally {
+      _n.imageListFree(list);
+      calloc.free(code);
+      calloc.free(len);
+    }
+  }
+
+  // ── Phase 8: auto extraction / classification ──────────────────────────────
+
+  /// Auto-extract text from 0-based [page] (native + image OCR as needed).
+  String extractTextAuto(int page) =>
+      _strPage(_n.extractTextAuto, page, 'extractTextAuto');
+
+  /// Auto-extract a single 0-based [page] with optional [optionsJson].
+  String extractPageAuto(int page, [String optionsJson = '']) {
+    _check();
+    final c = optionsJson.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(_n.extractPageAuto(_handle, page, c, code), code.value,
+          'extractPageAuto');
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  /// Extract all pages' text as a single string.
+  String extractAllText() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(
+          _n.extractAllText(_handle, code), code.value, 'extractAllText');
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Classify a single 0-based [page]; returns a JSON description.
+  String classifyPage(int page) =>
+      _strPage(_n.classifyPage, page, 'classifyPage');
+
+  /// Classify the whole document; returns a JSON description.
+  String classifyDocument() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(
+          _n.classifyDocument(_handle, code), code.value, 'classifyDocument');
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  // ── Phase 8: header / footer / artifact removal ────────────────────────────
+
+  int _erasePage(_DeI32I32D fn, int page, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final n = fn(_handle, page, code);
+      if (code.value != 0) throw PdfOxideError(code.value, op);
+      return n;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  int _remove(_RemoveD fn, double threshold, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final n = fn(_handle, threshold, code);
+      if (code.value != 0) throw PdfOxideError(code.value, op);
+      return n;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Erase the header region of 0-based [page]; returns items erased.
+  int eraseHeader(int page) => _erasePage(_n.eraseHeader, page, 'eraseHeader');
+
+  /// Erase the footer region of 0-based [page]; returns items erased.
+  int eraseFooter(int page) => _erasePage(_n.eraseFooter, page, 'eraseFooter');
+
+  /// Erase marked artifacts on 0-based [page]; returns items erased.
+  int eraseArtifacts(int page) =>
+      _erasePage(_n.eraseArtifacts, page, 'eraseArtifacts');
+
+  /// Remove repeating headers document-wide using detection [threshold].
+  int removeHeaders([double threshold = 0.5]) =>
+      _remove(_n.removeHeaders, threshold, 'removeHeaders');
+
+  /// Remove repeating footers document-wide using detection [threshold].
+  int removeFooters([double threshold = 0.5]) =>
+      _remove(_n.removeFooters, threshold, 'removeFooters');
+
+  /// Remove artifacts document-wide using detection [threshold].
+  int removeArtifacts([double threshold = 0.5]) =>
+      _remove(_n.removeArtifacts, threshold, 'removeArtifacts');
+
+  // ── Phase 8: forms ─────────────────────────────────────────────────────────
+
+  /// The interactive (AcroForm) [FormField]s in this document (may be empty).
+  List<FormField> getFormFields() {
+    _check();
+    final code = calloc<Int32>();
+    final list = _n.getFormFields(_handle, code);
+    if (list == nullptr) throw PdfOxideError(code.value, 'getFormFields');
+    try {
+      final n = _n.formFieldCount(list);
+      final out = <FormField>[];
+      for (var i = 0; i < n; i++) {
+        final name = _takeString(
+            _n.formFieldGetName(list, i, code), code.value, 'getFormFields');
+        final value = _takeString(
+            _n.formFieldGetValue(list, i, code), code.value, 'getFormFields');
+        final type = _takeString(
+            _n.formFieldGetType(list, i, code), code.value, 'getFormFields');
+        final readonly = _n.formFieldIsReadonly(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, 'getFormFields');
+        final required = _n.formFieldIsRequired(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, 'getFormFields');
+        out.add(FormField(name, value, type, readonly, required));
+      }
+      return out;
+    } finally {
+      _n.formFieldListFree(list);
+      calloc.free(code);
+    }
+  }
+
+  /// Export AcroForm data in [formatType] (0=FDF, 1=XFDF, 2=JSON) as bytes.
+  Uint8List exportFormDataToBytes([int formatType = 0]) {
+    _check();
+    final len = calloc<IntPtr>();
+    final code = calloc<Int32>();
+    try {
+      final p = _n.exportFormData(_handle, formatType, len, code);
+      return _takeBytes(p, len.value, code.value, 'exportFormDataToBytes');
+    } finally {
+      calloc.free(len);
+      calloc.free(code);
+    }
+  }
+
+  /// Import AcroForm data from the FDF/XFDF/JSON file at [dataPath].
+  void importFormData(String dataPath) {
+    _check();
+    final c = dataPath.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      if (_n.importFormData(_handle, c, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'importFormData');
+      }
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  /// Import AcroForm field values from a file (FDF/XFDF) at [filename].
+  /// Returns whether anything was imported.
+  bool importFormFromFile(String filename) {
+    _check();
+    final c = filename.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      final ok = _n.formImportFromFile(_handle, c, code);
+      if (code.value != 0)
+        throw PdfOxideError(code.value, 'importFormFromFile');
+      return ok;
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  // ── Phase 8: document structure / metadata ─────────────────────────────────
+
+  String _docStr(_TextAllD fn, String op) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(fn(_handle, code), code.value, op);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The document outline (bookmarks) as JSON.
+  String getOutline() => _docStr(_n.getOutline, 'getOutline');
+
+  /// The document page labels as JSON.
+  String getPageLabels() => _docStr(_n.getPageLabels, 'getPageLabels');
+
+  /// The document XMP metadata (XML), if present.
+  String getXmpMetadata() => _docStr(_n.getXmpMetadata, 'getXmpMetadata');
+
+  /// Whether this document contains an XFA form.
+  bool hasXfa() {
+    _check();
+    return _n.hasXfa(_handle);
+  }
+
+  /// Plan a split-by-bookmarks operation, returning a JSON plan. [optionsJson]
+  /// configures bookmark level / naming.
+  String planSplitByBookmarks([String optionsJson = '']) {
+    _check();
+    final c = optionsJson.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(_n.planSplitByBookmarks(_handle, c, code), code.value,
+          'planSplitByBookmarks');
+    } finally {
+      calloc.free(c);
+      calloc.free(code);
+    }
+  }
+
+  // ── Phase 8: document-level signatures ─────────────────────────────────────
+
+  /// Digitally sign this document with [certificate], embedding [reason] and
+  /// [location]. Returns the C-ABI status code.
+  int sign(Certificate certificate,
+      {String reason = '', String location = ''}) {
+    _check();
+    final cReason = reason.toNativeUtf8();
+    final cLoc = location.toNativeUtf8();
+    final code = calloc<Int32>();
+    try {
+      final rc = _n.docSign(_handle, certificate.handle, cReason, cLoc, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'sign');
+      return rc;
+    } finally {
+      calloc.free(cReason);
+      calloc.free(cLoc);
+      calloc.free(code);
+    }
+  }
+
+  /// The number of signatures present in this document.
+  int getSignatureCount() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final n = _n.docGetSignatureCount(_handle, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'getSignatureCount');
+      return n;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The [SignatureInfo] at 0-based [index].
+  SignatureInfo getSignature(int index) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.docGetSignature(_handle, index, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'getSignature');
+      return SignatureInfo.fromHandle(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Verify all signatures; returns the aggregate C-ABI status.
+  int verifyAllSignatures() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final rc = _n.docVerifyAllSignatures(_handle, code);
+      if (code.value != 0) {
+        throw PdfOxideError(code.value, 'verifyAllSignatures');
+      }
+      return rc;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Whether any signature in this document carries a timestamp.
+  bool hasTimestamp() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final r = _n.docHasTimestamp(_handle, code);
+      if (code.value != 0) throw PdfOxideError(code.value, 'hasTimestamp');
+      return r != 0;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The document's [Dss] (document security store).
+  Dss getDss() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final h = _n.docGetDss(_handle, code);
+      if (h == nullptr) throw PdfOxideError(code.value, 'getDss');
+      return Dss.fromHandle(h);
+    } finally {
+      calloc.free(code);
+    }
+  }
+
   /// Free the native handle now (idempotent).
   void close() {
     if (_handle != nullptr) {
@@ -3066,6 +4093,20 @@ class Pdf implements Finalizable {
 
   void _check() {
     if (_handle == nullptr) throw StateError('Pdf is closed');
+  }
+
+  /// The page count of this builder-produced PDF via the `pdf_get_page_count`
+  /// entry point.
+  int get pageCount {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final n = _n.pdfGetPageCount(_handle, code);
+      if (n < 0) throw PdfOxideError(code.value, 'pageCount');
+      return n;
+    } finally {
+      calloc.free(code);
+    }
   }
 
   void save(String path) {
@@ -3784,6 +4825,31 @@ class DocumentEditor implements Finalizable {
       calloc.free(code);
     }
   }
+
+  // ── Phase 8: FDF / XFDF form-data import ───────────────────────────────────
+
+  void _importBytes(_ImportFdfD fn, Uint8List data, String op) {
+    _check();
+    final buf = calloc<Uint8>(data.isEmpty ? 1 : data.length);
+    if (data.isNotEmpty) buf.asTypedList(data.length).setAll(0, data);
+    final code = calloc<Int32>();
+    try {
+      if (fn(_handle, buf, data.length, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, op);
+      }
+    } finally {
+      calloc.free(buf);
+      calloc.free(code);
+    }
+  }
+
+  /// Import AcroForm field values from FDF [data] bytes.
+  void importFdfBytes(Uint8List data) =>
+      _importBytes(_n.importFdfBytes, data, 'importFdfBytes');
+
+  /// Import AcroForm field values from XFDF [data] bytes.
+  void importXfdfBytes(Uint8List data) =>
+      _importBytes(_n.importXfdfBytes, data, 'importXfdfBytes');
 
   /// Free the native handle now (idempotent).
   void close() {
@@ -4560,6 +5626,178 @@ class PageBuilder implements Finalizable {
     }
   }
 
+  // ── Phase 8: streaming tables ──────────────────────────────────────────────
+
+  /// Begin a streaming table with [headers] (one per column), per-column
+  /// [widths] and [aligns], repeating the header row across page breaks when
+  /// [repeatHeader] is set.
+  PageBuilder streamingTableBegin(List<String> headers, List<double> widths,
+      List<int> aligns, bool repeatHeader) {
+    _check();
+    final n = headers.length;
+    final hdrs = calloc<Pointer<Utf8>>(n == 0 ? 1 : n);
+    final pw = calloc<Float>(n == 0 ? 1 : n);
+    final pa = calloc<Int32>(n == 0 ? 1 : n);
+    final cStrings = <Pointer<Utf8>>[];
+    final code = calloc<Int32>();
+    try {
+      for (var i = 0; i < n; i++) {
+        final s = headers[i].toNativeUtf8();
+        cStrings.add(s);
+        hdrs[i] = s;
+        pw[i] = widths[i];
+        pa[i] = aligns[i];
+      }
+      if (_n.stBegin(_handle, n, hdrs, pw, pa, repeatHeader ? 1 : 0, code) !=
+              0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'streamingTableBegin');
+      }
+      return this;
+    } finally {
+      for (final s in cStrings) {
+        calloc.free(s);
+      }
+      calloc.free(hdrs);
+      calloc.free(pw);
+      calloc.free(pa);
+      calloc.free(code);
+    }
+  }
+
+  /// Begin a streaming table (v2) with layout tuning: column-width [mode],
+  /// [sampleRows] to auto-size from, [minColWidthPt]/[maxColWidthPt] bounds and
+  /// [maxRowspan].
+  PageBuilder streamingTableBeginV2(List<String> headers, List<double> widths,
+      List<int> aligns, bool repeatHeader,
+      {int mode = 0,
+      int sampleRows = 0,
+      double minColWidthPt = 0,
+      double maxColWidthPt = 0,
+      int maxRowspan = 1}) {
+    _check();
+    final n = headers.length;
+    final hdrs = calloc<Pointer<Utf8>>(n == 0 ? 1 : n);
+    final pw = calloc<Float>(n == 0 ? 1 : n);
+    final pa = calloc<Int32>(n == 0 ? 1 : n);
+    final cStrings = <Pointer<Utf8>>[];
+    final code = calloc<Int32>();
+    try {
+      for (var i = 0; i < n; i++) {
+        final s = headers[i].toNativeUtf8();
+        cStrings.add(s);
+        hdrs[i] = s;
+        pw[i] = widths[i];
+        pa[i] = aligns[i];
+      }
+      if (_n.stBeginV2(_handle, n, hdrs, pw, pa, repeatHeader ? 1 : 0, mode,
+                  sampleRows, minColWidthPt, maxColWidthPt, maxRowspan, code) !=
+              0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'streamingTableBeginV2');
+      }
+      return this;
+    } finally {
+      for (final s in cStrings) {
+        calloc.free(s);
+      }
+      calloc.free(hdrs);
+      calloc.free(pw);
+      calloc.free(pa);
+      calloc.free(code);
+    }
+  }
+
+  /// Push one row of [cells] into the open streaming table.
+  PageBuilder streamingTablePushRow(List<String> cells) {
+    _check();
+    final n = cells.length;
+    final arr = calloc<Pointer<Utf8>>(n == 0 ? 1 : n);
+    final cStrings = <Pointer<Utf8>>[];
+    final code = calloc<Int32>();
+    try {
+      for (var i = 0; i < n; i++) {
+        final s = cells[i].toNativeUtf8();
+        cStrings.add(s);
+        arr[i] = s;
+      }
+      if (_n.stPushRow(_handle, n, arr, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'streamingTablePushRow');
+      }
+      return this;
+    } finally {
+      for (final s in cStrings) {
+        calloc.free(s);
+      }
+      calloc.free(arr);
+      calloc.free(code);
+    }
+  }
+
+  /// Push one row of [cells] with per-cell [rowspans] into the streaming table.
+  PageBuilder streamingTablePushRowV2(List<String> cells, List<int> rowspans) {
+    _check();
+    final n = cells.length;
+    final arr = calloc<Pointer<Utf8>>(n == 0 ? 1 : n);
+    final spans = calloc<IntPtr>(n == 0 ? 1 : n);
+    final cStrings = <Pointer<Utf8>>[];
+    final code = calloc<Int32>();
+    try {
+      for (var i = 0; i < n; i++) {
+        final s = cells[i].toNativeUtf8();
+        cStrings.add(s);
+        arr[i] = s;
+        spans[i] = rowspans[i];
+      }
+      if (_n.stPushRowV2(_handle, n, arr, spans, code) != 0 ||
+          code.value != 0) {
+        throw PdfOxideError(code.value, 'streamingTablePushRowV2');
+      }
+      return this;
+    } finally {
+      for (final s in cStrings) {
+        calloc.free(s);
+      }
+      calloc.free(arr);
+      calloc.free(spans);
+      calloc.free(code);
+    }
+  }
+
+  /// Flush any buffered/pending rows of the streaming table.
+  PageBuilder streamingTableFlush() =>
+      _status0(_n.stFlush, 'streamingTableFlush');
+
+  /// Finish (close) the open streaming table.
+  PageBuilder streamingTableFinish() =>
+      _status0(_n.stFinish, 'streamingTableFinish');
+
+  /// Set the streaming-table flush [batchSize] (rows buffered before flush).
+  PageBuilder streamingTableSetBatchSize(int batchSize) {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      if (_n.stSetBatchSize(_handle, batchSize, code) != 0 || code.value != 0) {
+        throw PdfOxideError(code.value, 'streamingTableSetBatchSize');
+      }
+      return this;
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The number of batches flushed so far for the streaming table.
+  int streamingTableBatchCount() {
+    _check();
+    return _n.stBatchCount(_handle);
+  }
+
+  /// The number of rows pending (not yet flushed) in the streaming table.
+  int streamingTablePendingRowCount() {
+    _check();
+    return _n.stPendingRowCount(_handle);
+  }
+
   // ── lifecycle ──────────────────────────────────────────────────────────────
 
   /// Commit this page's buffered ops to the parent builder. **Consumes** the
@@ -4898,6 +6136,9 @@ class Certificate implements Finalizable {
   static final _finalizer = NativeFinalizer(
       _n.lib.lookup<NativeFunction<_PtrFreeC>>('pdf_certificate_free'));
   Pointer<Void> _handle;
+
+  /// The raw native handle (advanced/interop use).
+  Pointer<Void> get handle => _handle;
 
   void _check() {
     if (_handle == nullptr) throw StateError('Certificate is closed');
@@ -6161,6 +7402,204 @@ class Renderer implements Finalizable {
   }
 }
 
+// ── Phase 8: office I/O / in-rect / auto / classify / furniture / forms /
+//    doc structure / doc-level signatures / annotation extras / *_to_json /
+//    crypto / models / config / streaming tables ──────────────────────────────
+// Conventions match earlier phases: opaque handles are `Pointer<Void>`; owned
+// `char*` go through `_takeString` (+ `free_string`); owned `uint8*` buffers go
+// through `_takeBytes` (+ `free_bytes`); list handles are freed via their
+// `*_list_free` symbol; out-params are `calloc`'d and freed in `finally`.
+
+// office: open_from_{docx,pptx,xlsx}_bytes reuse _OpenBytesD; export reuse below.
+typedef _DocBytesC = Pointer<Uint8> Function(
+    Pointer<Void>, Pointer<IntPtr>, Pointer<Int32>);
+typedef _DocBytesD = Pointer<Uint8> Function(
+    Pointer<Void>, Pointer<IntPtr>, Pointer<Int32>);
+
+// in-rect: text returns char*, lists return a list handle.
+typedef _RectStrC = Pointer<Utf8> Function(
+    Pointer<Void>, Int32, Float, Float, Float, Float, Pointer<Int32>);
+typedef _RectStrD = Pointer<Utf8> Function(
+    Pointer<Void>, int, double, double, double, double, Pointer<Int32>);
+typedef _RectListC = Pointer<Void> Function(
+    Pointer<Void>, Int32, Float, Float, Float, Float, Pointer<Int32>);
+typedef _RectListD = Pointer<Void> Function(
+    Pointer<Void>, int, double, double, double, double, Pointer<Int32>);
+
+// auto / classify: text_auto reuses _TextD; all_text / classify_document /
+// outline / page_labels / xmp reuse _TextAllD; extract_page_auto needs options.
+typedef _PageAutoC = Pointer<Utf8> Function(
+    Pointer<Void>, Int32, Pointer<Utf8>, Pointer<Int32>);
+typedef _PageAutoD = Pointer<Utf8> Function(
+    Pointer<Void>, int, Pointer<Utf8>, Pointer<Int32>);
+
+// furniture: erase_{header,footer,artifacts} reuse _DeI32I32D (handle,page,err).
+typedef _RemoveC = Int32 Function(Pointer<Void>, Float, Pointer<Int32>);
+typedef _RemoveD = int Function(Pointer<Void>, double, Pointer<Int32>);
+
+// forms.
+typedef _ExportFormC = Pointer<Uint8> Function(
+    Pointer<Void>, Int32, Pointer<IntPtr>, Pointer<Int32>);
+typedef _ExportFormD = Pointer<Uint8> Function(
+    Pointer<Void>, int, Pointer<IntPtr>, Pointer<Int32>);
+typedef _ImportFormC = Int32 Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _ImportFormD = int Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _ImportFdfC = Int32 Function(
+    Pointer<Void>, Pointer<Uint8>, IntPtr, Pointer<Int32>);
+typedef _ImportFdfD = int Function(
+    Pointer<Void>, Pointer<Uint8>, int, Pointer<Int32>);
+typedef _FormImportFileC = Bool Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _FormImportFileD = bool Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _FormFieldsC = Pointer<Void> Function(Pointer<Void>, Pointer<Int32>);
+typedef _FormFieldsD = Pointer<Void> Function(Pointer<Void>, Pointer<Int32>);
+typedef _FfCountC = Int32 Function(Pointer<Void>);
+typedef _FfCountD = int Function(Pointer<Void>);
+typedef _FfStrC = Pointer<Utf8> Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _FfStrD = Pointer<Utf8> Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _FfBoolC = Bool Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _FfBoolD = bool Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _FfFreeC = Void Function(Pointer<Void>);
+typedef _FfFreeD = void Function(Pointer<Void>);
+
+// doc structure: outline/page_labels/xmp reuse _TextAllD; source_bytes reuse
+// _DocBytesD; has_xfa reuse _BoolD; plan_split_by_bookmarks needs options.
+typedef _PlanSplitC = Pointer<Utf8> Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+typedef _PlanSplitD = Pointer<Utf8> Function(
+    Pointer<Void>, Pointer<Utf8>, Pointer<Int32>);
+
+// doc-level signatures.
+typedef _DocSignC = Int32 Function(
+    Pointer<Void>, Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DocSignD = int Function(
+    Pointer<Void>, Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
+typedef _DocGetSigC = Pointer<Void> Function(
+    Pointer<Void>, Int32, Pointer<Int32>);
+typedef _DocGetSigD = Pointer<Void> Function(
+    Pointer<Void>, int, Pointer<Int32>);
+typedef _DocSigCountC = Int32 Function(Pointer<Void>, Pointer<Int32>);
+typedef _DocSigCountD = int Function(Pointer<Void>, Pointer<Int32>);
+typedef _DocGetDssC = Pointer<Void> Function(Pointer<Void>, Pointer<Int32>);
+typedef _DocGetDssD = Pointer<Void> Function(Pointer<Void>, Pointer<Int32>);
+
+// annotation extras (list, index, err).
+typedef _AnnU32C = Uint32 Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _AnnU32D = int Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _AnnI64C = Int64 Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _AnnI64D = int Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _AnnBoolC = Bool Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _AnnBoolD = bool Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _AnnStrC = Pointer<Utf8> Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _AnnStrD = Pointer<Utf8> Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _AnnJsonC = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _AnnJsonD = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _QuadCountC = Int32 Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _QuadCountD = int Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _QuadPointC = Void Function(
+    Pointer<Void>,
+    Int32,
+    Int32,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Int32>);
+typedef _QuadPointD = void Function(
+    Pointer<Void>,
+    int,
+    int,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Float>,
+    Pointer<Int32>);
+
+// list -> json + font size.
+typedef _ListJsonC = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _ListJsonD = Pointer<Utf8> Function(Pointer<Void>, Pointer<Int32>);
+typedef _FontSizeC = Float Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _FontSizeD = double Function(Pointer<Void>, int, Pointer<Int32>);
+
+// crypto / models / config: nullary-string / nullary-int / string-arg.
+typedef _NullStrC = Pointer<Utf8> Function();
+typedef _NullStrD = Pointer<Utf8> Function();
+typedef _NullI32C = Int32 Function();
+typedef _NullI32D = int Function();
+typedef _StrArgI32C = Int32 Function(Pointer<Utf8>);
+typedef _StrArgI32D = int Function(Pointer<Utf8>);
+typedef _PrefetchC = Pointer<Utf8> Function(Pointer<Utf8>, Pointer<Int32>);
+typedef _PrefetchD = Pointer<Utf8> Function(Pointer<Utf8>, Pointer<Int32>);
+typedef _SetI64C = Int64 Function(Int64);
+typedef _SetI64D = int Function(int);
+typedef _SetI32C = Int32 Function(Int32);
+typedef _SetI32D = int Function(int);
+typedef _ConvPdfAC = Bool Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _ConvPdfAD = bool Function(Pointer<Void>, int, Pointer<Int32>);
+
+// streaming tables (on FfiPageBuilder).
+typedef _StBeginC = Int32 Function(
+    Pointer<Void>,
+    IntPtr,
+    Pointer<Pointer<Utf8>>,
+    Pointer<Float>,
+    Pointer<Int32>,
+    Int32,
+    Pointer<Int32>);
+typedef _StBeginD = int Function(Pointer<Void>, int, Pointer<Pointer<Utf8>>,
+    Pointer<Float>, Pointer<Int32>, int, Pointer<Int32>);
+typedef _StBeginV2C = Int32 Function(
+    Pointer<Void>,
+    IntPtr,
+    Pointer<Pointer<Utf8>>,
+    Pointer<Float>,
+    Pointer<Int32>,
+    Int32,
+    Int32,
+    IntPtr,
+    Float,
+    Float,
+    IntPtr,
+    Pointer<Int32>);
+typedef _StBeginV2D = int Function(
+    Pointer<Void>,
+    int,
+    Pointer<Pointer<Utf8>>,
+    Pointer<Float>,
+    Pointer<Int32>,
+    int,
+    int,
+    int,
+    double,
+    double,
+    int,
+    Pointer<Int32>);
+typedef _StPushRowC = Int32 Function(
+    Pointer<Void>, IntPtr, Pointer<Pointer<Utf8>>, Pointer<Int32>);
+typedef _StPushRowD = int Function(
+    Pointer<Void>, int, Pointer<Pointer<Utf8>>, Pointer<Int32>);
+typedef _StPushRowV2C = Int32 Function(Pointer<Void>, IntPtr,
+    Pointer<Pointer<Utf8>>, Pointer<IntPtr>, Pointer<Int32>);
+typedef _StPushRowV2D = int Function(Pointer<Void>, int, Pointer<Pointer<Utf8>>,
+    Pointer<IntPtr>, Pointer<Int32>);
+typedef _StStatusC = Int32 Function(Pointer<Void>, Pointer<Int32>);
+typedef _StStatusD = int Function(Pointer<Void>, Pointer<Int32>);
+typedef _StSetBatchC = Int32 Function(Pointer<Void>, IntPtr, Pointer<Int32>);
+typedef _StSetBatchD = int Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _StUsizeC = IntPtr Function(Pointer<Void>);
+typedef _StUsizeD = int Function(Pointer<Void>);
+
 // ── top-level Phase 7 entry points ───────────────────────────────────────────
 
 /// Merge the PDFs at [paths] (in order) into a single PDF; returns its bytes.
@@ -6212,3 +7651,70 @@ Uint8List addTimestamp(Uint8List pdf, int sigIndex, String tsaUrl) {
     calloc.free(code);
   }
 }
+
+// ── Phase 8: crypto / FIPS, models / prefetch, global config ─────────────────
+
+String _nullStr(_NullStrD fn, String op) {
+  final p = fn();
+  if (p == nullptr) throw PdfOxideError(0, op);
+  final s = p.toDartString();
+  _n.freeString(p);
+  return s;
+}
+
+/// The name of the active cryptographic provider.
+String cryptoActiveProvider() =>
+    _nullStr(_n.cryptoActiveProvider, 'cryptoActiveProvider');
+
+/// The cryptographic bill of materials (CBOM) as JSON.
+String cryptoCbom() => _nullStr(_n.cryptoCbom, 'cryptoCbom');
+
+/// The cryptographic inventory as JSON.
+String cryptoInventory() => _nullStr(_n.cryptoInventory, 'cryptoInventory');
+
+/// The active cryptographic policy as JSON.
+String cryptoPolicy() => _nullStr(_n.cryptoPolicy, 'cryptoPolicy');
+
+/// Whether a FIPS-validated provider is available (non-zero = available).
+int cryptoFipsAvailable() => _n.cryptoFipsAvailable();
+
+/// Switch to a FIPS-validated provider; returns the C-ABI status.
+int cryptoUseFips() => _n.cryptoUseFips();
+
+/// Set the cryptographic policy from a [spec] string; returns the status.
+int cryptoSetPolicy(String spec) {
+  final c = spec.toNativeUtf8();
+  try {
+    return _n.cryptoSetPolicy(c);
+  } finally {
+    calloc.free(c);
+  }
+}
+
+/// The bundled model manifest as JSON.
+String modelManifest() => _nullStr(_n.modelManifest, 'modelManifest');
+
+/// Whether model prefetch is available in this build (non-zero = available).
+int prefetchAvailable() => _n.prefetchAvailable();
+
+/// Prefetch OCR/layout models for the comma-separated [languagesCsv]; returns a
+/// JSON report.
+String prefetchModels(String languagesCsv) {
+  final c = languagesCsv.toNativeUtf8();
+  final code = calloc<Int32>();
+  try {
+    return _takeString(
+        _n.prefetchModels(c, code), code.value, 'prefetchModels');
+  } finally {
+    calloc.free(c);
+    calloc.free(code);
+  }
+}
+
+/// Set the global per-content-stream operator [limit]; returns the prior value.
+int setMaxOpsPerStream(int limit) => _n.setMaxOpsPerStream(limit);
+
+/// Globally toggle preservation of unmapped glyphs ([preserve] != 0 = on);
+/// returns the prior value.
+int setPreserveUnmappedGlyphs(int preserve) =>
+    _n.setPreserveUnmappedGlyphs(preserve);

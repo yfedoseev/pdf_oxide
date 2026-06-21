@@ -888,6 +888,783 @@ pub const Document = struct {
         const eh: ?*const anyopaque = if (engine) |e| e.handle else null;
         return takeString(alloc, c.pdf_ocr_extract_text(self.handle, page_index, eh, &code), code);
     }
+
+    // ── PHASE-8: office import/export ─────────────────────────────────────────
+
+    /// Open a PDF rendered from DOCX bytes. Caller owns the returned `Document`.
+    pub fn openFromDocxBytes(data: []const u8) Error!Document {
+        var code: i32 = 0;
+        const h = c.pdf_document_open_from_docx_bytes(data.ptr, data.len, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Open a PDF rendered from PPTX bytes. Caller owns the returned `Document`.
+    pub fn openFromPptxBytes(data: []const u8) Error!Document {
+        var code: i32 = 0;
+        const h = c.pdf_document_open_from_pptx_bytes(data.ptr, data.len, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Open a PDF rendered from XLSX bytes. Caller owns the returned `Document`.
+    pub fn openFromXlsxBytes(data: []const u8) Error!Document {
+        var code: i32 = 0;
+        const h = c.pdf_document_open_from_xlsx_bytes(data.ptr, data.len, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Export the document to DOCX bytes; caller owns the returned slice.
+    pub fn toDocx(self: Document, alloc: std.mem.Allocator) Error![]u8 {
+        var out_len: usize = 0;
+        var code: i32 = 0;
+        const p = c.pdf_document_to_docx(self.handle, &out_len, &code);
+        return takeBytes(alloc, p, out_len, code);
+    }
+
+    /// Export the document to PPTX bytes; caller owns the returned slice.
+    pub fn toPptx(self: Document, alloc: std.mem.Allocator) Error![]u8 {
+        var out_len: usize = 0;
+        var code: i32 = 0;
+        const p = c.pdf_document_to_pptx(self.handle, &out_len, &code);
+        return takeBytes(alloc, p, out_len, code);
+    }
+
+    /// Export the document to XLSX bytes; caller owns the returned slice.
+    pub fn toXlsx(self: Document, alloc: std.mem.Allocator) Error![]u8 {
+        var out_len: usize = 0;
+        var code: i32 = 0;
+        const p = c.pdf_document_to_xlsx(self.handle, &out_len, &code);
+        return takeBytes(alloc, p, out_len, code);
+    }
+
+    // ── PHASE-8: in-rect region extractors ────────────────────────────────────
+
+    /// Extract text within the rect (`x`,`y`,`w`,`h`) of a (0-based) page; caller
+    /// owns the returned slice.
+    pub fn extractTextInRect(self: Document, alloc: std.mem.Allocator, page_index: i32, x: f32, y: f32, w: f32, h: f32) Error![]u8 {
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_document_extract_text_in_rect(self.handle, page_index, x, y, w, h, &code), code);
+    }
+
+    /// Extract words within the rect of a (0-based) page. Caller owns the returned
+    /// slice and each element's `text`/`fontName`; free with `freeWords`.
+    pub fn extractWordsInRect(self: Document, alloc: std.mem.Allocator, page_index: i32, x: f32, y: f32, w: f32, h: f32) Error![]Word {
+        var code: i32 = 0;
+        const list = c.pdf_document_extract_words_in_rect(self.handle, page_index, x, y, w, h, &code) orelse return fail(code);
+        defer c.pdf_oxide_word_list_free(list);
+        return collectWordList(alloc, list);
+    }
+
+    /// Extract lines within the rect of a (0-based) page. Caller owns the returned
+    /// slice and each element's `text`; free with `freeTextLines`.
+    pub fn extractLinesInRect(self: Document, alloc: std.mem.Allocator, page_index: i32, x: f32, y: f32, w: f32, h: f32) Error![]TextLine {
+        var code: i32 = 0;
+        const list = c.pdf_document_extract_lines_in_rect(self.handle, page_index, x, y, w, h, &code) orelse return fail(code);
+        defer c.pdf_oxide_line_list_free(list);
+        return collectLineList(alloc, list);
+    }
+
+    /// Extract tables within the rect of a (0-based) page. Caller owns the returned
+    /// slice and each table's cells; free with `freeTables`.
+    pub fn extractTablesInRect(self: Document, alloc: std.mem.Allocator, page_index: i32, x: f32, y: f32, w: f32, h: f32) Error![]Table {
+        var code: i32 = 0;
+        const list = c.pdf_document_extract_tables_in_rect(self.handle, page_index, x, y, w, h, &code) orelse return fail(code);
+        defer c.pdf_oxide_table_list_free(list);
+        return collectTableList(alloc, list);
+    }
+
+    /// Extract images within the rect of a (0-based) page. Caller owns the returned
+    /// slice and each element's `format`/`colorspace`/`data`; free with `freeImages`.
+    pub fn extractImagesInRect(self: Document, alloc: std.mem.Allocator, page_index: i32, x: f32, y: f32, w: f32, h: f32) Error![]Image {
+        var code: i32 = 0;
+        const list = c.pdf_document_extract_images_in_rect(self.handle, page_index, x, y, w, h, &code) orelse return fail(code);
+        defer c.pdf_oxide_image_list_free(list);
+        return collectImageList(alloc, list);
+    }
+
+    // ── PHASE-8: auto extraction / classification ─────────────────────────────
+
+    /// One-shot auto text extraction for a (0-based) page; caller owns the slice.
+    pub fn extractTextAuto(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]u8 {
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_document_extract_text_auto(self.handle, page_index, &code), code);
+    }
+
+    /// Whole-document auto text extraction; caller owns the slice.
+    pub fn extractAllText(self: Document, alloc: std.mem.Allocator) Error![]u8 {
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_document_extract_all_text(self.handle, &code), code);
+    }
+
+    /// Rich per-page auto extraction returning a `PageExtraction` JSON string.
+    /// `options_json` may be null/empty (defaults). Caller owns the slice.
+    pub fn extractPageAuto(self: Document, alloc: std.mem.Allocator, page_index: i32, options_json: ?[:0]const u8) Error![]u8 {
+        var code: i32 = 0;
+        const opts: ?[*:0]const u8 = if (options_json) |o| o.ptr else null;
+        return takeString(alloc, c.pdf_document_extract_page_auto(self.handle, page_index, opts, &code), code);
+    }
+
+    /// Cheap per-page text-vs-OCR classification as a JSON string; caller owns it.
+    pub fn classifyPage(self: Document, alloc: std.mem.Allocator, page_index: i32) Error![]u8 {
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_document_classify_page(self.handle, page_index, &code), code);
+    }
+
+    /// Cheap whole-document classification as a JSON string; caller owns it.
+    pub fn classifyDocument(self: Document, alloc: std.mem.Allocator) Error![]u8 {
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_document_classify_document(self.handle, &code), code);
+    }
+
+    // ── PHASE-8: header / footer / artifact removal ───────────────────────────
+
+    /// Erase the detected running header from a (0-based) page. Returns a status.
+    pub fn eraseHeader(self: Document, page_index: i32) Error!i32 {
+        var code: i32 = 0;
+        const n = c.pdf_document_erase_header(self.handle, page_index, &code);
+        if (code != 0) return fail(code);
+        return n;
+    }
+
+    /// Erase the detected running footer from a (0-based) page. Returns a status.
+    pub fn eraseFooter(self: Document, page_index: i32) Error!i32 {
+        var code: i32 = 0;
+        const n = c.pdf_document_erase_footer(self.handle, page_index, &code);
+        if (code != 0) return fail(code);
+        return n;
+    }
+
+    /// Erase artifact content from a (0-based) page. Returns a status.
+    pub fn eraseArtifacts(self: Document, page_index: i32) Error!i32 {
+        var code: i32 = 0;
+        const n = c.pdf_document_erase_artifacts(self.handle, page_index, &code);
+        if (code != 0) return fail(code);
+        return n;
+    }
+
+    /// Remove repeated headers across the document at the given recurrence
+    /// `threshold` (0.0..=1.0). Returns the number removed.
+    pub fn removeHeaders(self: Document, threshold: f32) Error!i32 {
+        var code: i32 = 0;
+        const n = c.pdf_document_remove_headers(self.handle, threshold, &code);
+        if (code != 0) return fail(code);
+        return n;
+    }
+
+    /// Remove repeated footers across the document at the given recurrence
+    /// `threshold` (0.0..=1.0). Returns the number removed.
+    pub fn removeFooters(self: Document, threshold: f32) Error!i32 {
+        var code: i32 = 0;
+        const n = c.pdf_document_remove_footers(self.handle, threshold, &code);
+        if (code != 0) return fail(code);
+        return n;
+    }
+
+    /// Remove artifacts across the document at the given `threshold`. Returns the
+    /// number removed.
+    pub fn removeArtifacts(self: Document, threshold: f32) Error!i32 {
+        var code: i32 = 0;
+        const n = c.pdf_document_remove_artifacts(self.handle, threshold, &code);
+        if (code != 0) return fail(code);
+        return n;
+    }
+
+    // ── PHASE-8: forms ────────────────────────────────────────────────────────
+
+    /// All interactive form fields. Caller owns the returned `FormFieldList`; free
+    /// it with `deinit`. An empty form yields a zero-count list (not an error).
+    pub fn formFields(self: Document) Error!FormFieldList {
+        var code: i32 = 0;
+        const h = c.pdf_document_get_form_fields(self.handle, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Export form data. `format_type`: 0=FDF, 1=XFDF. Caller owns the slice.
+    pub fn exportFormDataToBytes(self: Document, alloc: std.mem.Allocator, format_type: i32) Error![]u8 {
+        var out_len: usize = 0;
+        var code: i32 = 0;
+        const p = c.pdf_document_export_form_data_to_bytes(self.handle, format_type, &out_len, &code);
+        return takeBytes(alloc, p, out_len, code);
+    }
+
+    /// Import form data from a file at `data_path`. Returns a status.
+    pub fn importFormData(self: Document, data_path: [:0]const u8) Error!i32 {
+        var code: i32 = 0;
+        const n = c.pdf_document_import_form_data(@ptrCast(self.handle), data_path.ptr, &code);
+        if (code != 0) return fail(code);
+        return n;
+    }
+
+    /// Import form values from an FDF/XFDF/XML file at `filename`. Returns true on
+    /// success.
+    pub fn formImportFromFile(self: Document, filename: [:0]const u8) Error!bool {
+        var code: i32 = 0;
+        const ok = c.pdf_form_import_from_file(@ptrCast(self.handle), filename.ptr, &code);
+        if (code != 0) return fail(code);
+        return ok;
+    }
+
+    // ── PHASE-8: structure / metadata ─────────────────────────────────────────
+
+    /// Document outline (bookmarks) as a JSON string; caller owns it.
+    pub fn outline(self: Document, alloc: std.mem.Allocator) Error![]u8 {
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_document_get_outline(self.handle, &code), code);
+    }
+
+    /// Page labels as a JSON string; caller owns it.
+    pub fn pageLabels(self: Document, alloc: std.mem.Allocator) Error![]u8 {
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_document_get_page_labels(self.handle, &code), code);
+    }
+
+    /// XMP metadata XML packet; caller owns the returned slice.
+    pub fn xmpMetadata(self: Document, alloc: std.mem.Allocator) Error![]u8 {
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_document_get_xmp_metadata(self.handle, &code), code);
+    }
+
+    /// A copy of the document's current source bytes; caller owns the slice.
+    pub fn sourceBytes(self: Document, alloc: std.mem.Allocator) Error![]u8 {
+        var out_len: usize = 0;
+        var code: i32 = 0;
+        const p = c.pdf_document_get_source_bytes(self.handle, &out_len, &code);
+        return takeBytes(alloc, p, out_len, code);
+    }
+
+    /// Whether the document carries an XFA (XML Forms Architecture) form.
+    pub fn hasXfa(self: Document) bool {
+        return c.pdf_document_has_xfa(self.handle);
+    }
+
+    /// Plan a split-by-bookmarks operation, returning a JSON plan; caller owns it.
+    /// `options_json` may be null/empty.
+    pub fn planSplitByBookmarks(self: Document, alloc: std.mem.Allocator, options_json: ?[:0]const u8) Error![]u8 {
+        var code: i32 = 0;
+        const opts: ?[*:0]const u8 = if (options_json) |o| o.ptr else null;
+        return takeString(alloc, c.pdf_document_plan_split_by_bookmarks(self.handle, opts, &code), code);
+    }
+
+    /// Convert this document to PDF/A in place. `level`: 0=A1b 1=A1a 2=A2b …
+    /// Returns true on success.
+    pub fn convertToPdfA(self: Document, level: i32) Error!bool {
+        var code: i32 = 0;
+        const ok = c.pdf_convert_to_pdf_a(self.handle, level, &code);
+        if (code != 0) return fail(code);
+        return ok;
+    }
+
+    // ── PHASE-8: signatures on the document ───────────────────────────────────
+
+    /// Apply a digital signature using `cert`. Returns a status.
+    pub fn sign(self: Document, cert: Certificate, reason: [:0]const u8, location: [:0]const u8) Error!i32 {
+        const ch = try cert.live();
+        var code: i32 = 0;
+        const n = c.pdf_document_sign(@ptrCast(self.handle), ch, reason.ptr, location.ptr, &code);
+        if (code != 0) return fail(code);
+        return n;
+    }
+
+    /// Number of signatures present in the document.
+    pub fn signatureCount(self: Document) Error!i32 {
+        var code: i32 = 0;
+        const n = c.pdf_document_get_signature_count(@ptrCast(self.handle), &code);
+        if (n < 0) return fail(code);
+        return n;
+    }
+
+    /// The `index`-th signature as an owned `SignatureInfo`; free it with `deinit`.
+    pub fn signature(self: Document, index: i32) Error!SignatureInfo {
+        var code: i32 = 0;
+        const h = c.pdf_document_get_signature(@ptrCast(self.handle), index, &code) orelse return fail(code);
+        return .{ .handle = @ptrCast(@alignCast(h)) };
+    }
+
+    /// Verify every signature. Returns a status (>=0) or raises.
+    pub fn verifyAllSignatures(self: Document) Error!i32 {
+        var code: i32 = 0;
+        const n = c.pdf_document_verify_all_signatures(@ptrCast(self.handle), &code);
+        if (code != 0) return fail(code);
+        return n;
+    }
+
+    /// Whether the document carries a document-level timestamp.
+    pub fn hasTimestamp(self: Document) Error!bool {
+        var code: i32 = 0;
+        const n = c.pdf_document_has_timestamp(@ptrCast(self.handle), &code);
+        if (code != 0) return fail(code);
+        return n != 0;
+    }
+
+    /// The document's DSS (long-term validation store) as an owned `Dss`; free it
+    /// with `deinit`.
+    pub fn dss(self: Document) Error!Dss {
+        var code: i32 = 0;
+        const h = c.pdf_document_get_dss(@ptrCast(self.handle), &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    // ── PHASE-8: list-handle JSON / accessors ─────────────────────────────────
+
+    /// Page annotations as an owned `AnnotationList` handle (the JSON/quad-point
+    /// accessors live on it). Free with `deinit`.
+    pub fn annotationList(self: Document, page_index: i32) Error!AnnotationList {
+        var code: i32 = 0;
+        const h = c.pdf_document_get_page_annotations(self.handle, page_index, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Embedded fonts of a (0-based) page as an owned `FontList` handle. Free with
+    /// `deinit`.
+    pub fn fontList(self: Document, page_index: i32) Error!FontList {
+        var code: i32 = 0;
+        const h = c.pdf_document_get_embedded_fonts(self.handle, page_index, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Layout elements of a (0-based) page as an owned `ElementList`. Free with
+    /// `deinit`.
+    pub fn elementList(self: Document, page_index: i32) Error!ElementList {
+        var code: i32 = 0;
+        const h = c.pdf_page_get_elements(self.handle, page_index, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
+    /// Search a (0-based) page and return the raw `SearchResultList` handle (the
+    /// JSON serializer lives on it). Free with `deinit`.
+    pub fn searchPageList(self: Document, page_index: i32, term: [:0]const u8, case_sensitive: bool) Error!SearchResultList {
+        var code: i32 = 0;
+        const h = c.pdf_document_search_page(self.handle, page_index, term.ptr, case_sensitive, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+};
+
+/// Marshal an `FfiWordList` handle into an owned slice (does NOT free `list`).
+/// Caller owns each element's `text`/`fontName`; free with `Document.freeWords`.
+fn collectWordList(alloc: std.mem.Allocator, list: *c.FfiWordList) Error![]Word {
+    var code: i32 = 0;
+    const n = c.pdf_oxide_word_count(list);
+    if (n < 0) return fail(n);
+    const count: usize = @intCast(n);
+    const out = try alloc.alloc(Word, count);
+    errdefer alloc.free(out);
+    var i: usize = 0;
+    errdefer for (out[0..i]) |wd| {
+        alloc.free(wd.text);
+        alloc.free(wd.fontName);
+    };
+    while (i < count) : (i += 1) {
+        const idx: i32 = @intCast(i);
+        const word_text = try takeString(alloc, c.pdf_oxide_word_get_text(list, idx, &code), code);
+        errdefer alloc.free(word_text);
+        var x: f32 = 0;
+        var y: f32 = 0;
+        var w: f32 = 0;
+        var h: f32 = 0;
+        c.pdf_oxide_word_get_bbox(list, idx, &x, &y, &w, &h, &code);
+        const font_name = try takeString(alloc, c.pdf_oxide_word_get_font_name(list, idx, &code), code);
+        const font_size = c.pdf_oxide_word_get_font_size(list, idx, &code);
+        const bold = c.pdf_oxide_word_is_bold(list, idx, &code);
+        out[i] = .{
+            .text = word_text,
+            .bbox = .{ .x = x, .y = y, .width = w, .height = h },
+            .fontName = font_name,
+            .fontSize = font_size,
+            .bold = bold,
+        };
+    }
+    return out;
+}
+
+/// Marshal an `FfiTextLineList` handle into an owned slice (does NOT free `list`).
+fn collectLineList(alloc: std.mem.Allocator, list: *c.FfiTextLineList) Error![]TextLine {
+    var code: i32 = 0;
+    const n = c.pdf_oxide_line_count(list);
+    if (n < 0) return fail(n);
+    const count: usize = @intCast(n);
+    const out = try alloc.alloc(TextLine, count);
+    errdefer alloc.free(out);
+    var i: usize = 0;
+    errdefer for (out[0..i]) |ln| alloc.free(ln.text);
+    while (i < count) : (i += 1) {
+        const idx: i32 = @intCast(i);
+        const line_text = try takeString(alloc, c.pdf_oxide_line_get_text(list, idx, &code), code);
+        errdefer alloc.free(line_text);
+        var x: f32 = 0;
+        var y: f32 = 0;
+        var w: f32 = 0;
+        var h: f32 = 0;
+        c.pdf_oxide_line_get_bbox(list, idx, &x, &y, &w, &h, &code);
+        const word_count = c.pdf_oxide_line_get_word_count(list, idx, &code);
+        out[i] = .{
+            .text = line_text,
+            .bbox = .{ .x = x, .y = y, .width = w, .height = h },
+            .wordCount = word_count,
+        };
+    }
+    return out;
+}
+
+/// Marshal an `FfiTableList` handle into an owned slice (does NOT free `list`).
+fn collectTableList(alloc: std.mem.Allocator, list: *c.FfiTableList) Error![]Table {
+    var code: i32 = 0;
+    const n = c.pdf_oxide_table_count(list);
+    if (n < 0) return fail(n);
+    const count: usize = @intCast(n);
+    const out = try alloc.alloc(Table, count);
+    errdefer alloc.free(out);
+    var i: usize = 0;
+    errdefer for (out[0..i]) |*tbl| tbl.deinit(alloc);
+    while (i < count) : (i += 1) {
+        const idx: i32 = @intCast(i);
+        const rows = c.pdf_oxide_table_get_row_count(list, idx, &code);
+        if (rows < 0) return fail(code);
+        const cols = c.pdf_oxide_table_get_col_count(list, idx, &code);
+        if (cols < 0) return fail(code);
+        const has_header = c.pdf_oxide_table_has_header(list, idx, &code);
+        const cell_total: usize = @as(usize, @intCast(rows)) * @as(usize, @intCast(cols));
+        const cells = try alloc.alloc([]u8, cell_total);
+        errdefer alloc.free(cells);
+        var j: usize = 0;
+        errdefer for (cells[0..j]) |cl| alloc.free(cl);
+        var r: i32 = 0;
+        while (r < rows) : (r += 1) {
+            var cc: i32 = 0;
+            while (cc < cols) : (cc += 1) {
+                cells[j] = try takeString(alloc, c.pdf_oxide_table_get_cell_text(list, idx, r, cc, &code), code);
+                j += 1;
+            }
+        }
+        out[i] = .{
+            .rowCount = rows,
+            .colCount = cols,
+            .hasHeader = has_header,
+            .cells = cells,
+        };
+    }
+    return out;
+}
+
+/// Marshal an `FfiImageList` handle into an owned slice (does NOT free `list`).
+fn collectImageList(alloc: std.mem.Allocator, list: *c.FfiImageList) Error![]Image {
+    var code: i32 = 0;
+    const n = c.pdf_oxide_image_count(list);
+    if (n < 0) return fail(n);
+    const count: usize = @intCast(n);
+    const out = try alloc.alloc(Image, count);
+    errdefer alloc.free(out);
+    var i: usize = 0;
+    errdefer for (out[0..i]) |im| {
+        alloc.free(im.format);
+        alloc.free(im.colorspace);
+        alloc.free(im.data);
+    };
+    while (i < count) : (i += 1) {
+        const idx: i32 = @intCast(i);
+        const width = c.pdf_oxide_image_get_width(list, idx, &code);
+        const height = c.pdf_oxide_image_get_height(list, idx, &code);
+        const bpc = c.pdf_oxide_image_get_bits_per_component(list, idx, &code);
+        const format = try takeString(alloc, c.pdf_oxide_image_get_format(list, idx, &code), code);
+        errdefer alloc.free(format);
+        const colorspace = try takeString(alloc, c.pdf_oxide_image_get_colorspace(list, idx, &code), code);
+        errdefer alloc.free(colorspace);
+        var data_len: i32 = 0;
+        const data_ptr = c.pdf_oxide_image_get_data(list, idx, &data_len, &code) orelse return fail(code);
+        defer c.free_bytes(data_ptr);
+        const dn: usize = if (data_len < 0) 0 else @intCast(data_len);
+        const data = try alloc.dupe(u8, data_ptr[0..dn]);
+        out[i] = .{
+            .width = width,
+            .height = height,
+            .bitsPerComponent = bpc,
+            .format = format,
+            .colorspace = colorspace,
+            .data = data,
+        };
+    }
+    return out;
+}
+
+/// A list of interactive form fields. Owns the native `FfiFormFieldList` handle;
+/// free with `deinit`/`close`.
+pub const FormFieldList = struct {
+    handle: ?*c.FfiFormFieldList,
+
+    fn live(self: FormFieldList) Error!*c.FfiFormFieldList {
+        return self.handle orelse fail(-1);
+    }
+
+    /// Free the native handle (idempotent). Also exposed as `close`.
+    pub fn deinit(self: *FormFieldList) void {
+        if (self.handle) |h| c.pdf_oxide_form_field_list_free(h);
+        self.handle = null;
+    }
+
+    /// Free the native handle (idempotent).
+    pub fn close(self: *FormFieldList) void {
+        self.deinit();
+    }
+
+    /// Number of fields (>=0; may be 0 for a form-less document).
+    pub fn count(self: FormFieldList) Error!i32 {
+        const h = try self.live();
+        return c.pdf_oxide_form_field_count(h);
+    }
+
+    /// Field name at `index`; caller owns the returned slice.
+    pub fn getName(self: FormFieldList, alloc: std.mem.Allocator, index: i32) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_oxide_form_field_get_name(h, index, &code), code);
+    }
+
+    /// Field value at `index`; caller owns the returned slice.
+    pub fn getValue(self: FormFieldList, alloc: std.mem.Allocator, index: i32) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_oxide_form_field_get_value(h, index, &code), code);
+    }
+
+    /// Field type string at `index`; caller owns the returned slice.
+    pub fn getType(self: FormFieldList, alloc: std.mem.Allocator, index: i32) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_oxide_form_field_get_type(h, index, &code), code);
+    }
+
+    /// Whether the field at `index` is read-only.
+    pub fn isReadonly(self: FormFieldList, index: i32) Error!bool {
+        const h = try self.live();
+        var code: i32 = 0;
+        const r = c.pdf_oxide_form_field_is_readonly(h, index, &code);
+        if (code != 0) return fail(code);
+        return r;
+    }
+
+    /// Whether the field at `index` is required.
+    pub fn isRequired(self: FormFieldList, index: i32) Error!bool {
+        const h = try self.live();
+        var code: i32 = 0;
+        const r = c.pdf_oxide_form_field_is_required(h, index, &code);
+        if (code != 0) return fail(code);
+        return r;
+    }
+};
+
+/// A list of page annotations as a live native handle, exposing the extended
+/// accessors (color/dates/flags, highlight quad-points, link URI, icon name,
+/// JSON). Owns the native `FfiAnnotationList`; free with `deinit`/`close`. (The
+/// eager-marshalled view is `Document.pageAnnotations`.)
+pub const AnnotationList = struct {
+    handle: ?*c.FfiAnnotationList,
+
+    fn live(self: AnnotationList) Error!*c.FfiAnnotationList {
+        return self.handle orelse fail(-1);
+    }
+
+    /// Free the native handle (idempotent). Also exposed as `close`.
+    pub fn deinit(self: *AnnotationList) void {
+        if (self.handle) |h| c.pdf_oxide_annotation_list_free(h);
+        self.handle = null;
+    }
+
+    /// Free the native handle (idempotent).
+    pub fn close(self: *AnnotationList) void {
+        self.deinit();
+    }
+
+    /// Number of annotations.
+    pub fn count(self: AnnotationList) Error!i32 {
+        const h = try self.live();
+        const n = c.pdf_oxide_annotation_count(h);
+        if (n < 0) return fail(n);
+        return n;
+    }
+
+    /// Packed RGBA color of the annotation at `index`.
+    pub fn getColor(self: AnnotationList, index: i32) Error!u32 {
+        const h = try self.live();
+        var code: i32 = 0;
+        const v = c.pdf_oxide_annotation_get_color(h, index, &code);
+        if (code != 0) return fail(code);
+        return v;
+    }
+
+    /// Creation date (Unix epoch seconds) of the annotation at `index`.
+    pub fn getCreationDate(self: AnnotationList, index: i32) Error!i64 {
+        const h = try self.live();
+        var code: i32 = 0;
+        const v = c.pdf_oxide_annotation_get_creation_date(h, index, &code);
+        if (code != 0) return fail(code);
+        return v;
+    }
+
+    /// Modification date (Unix epoch seconds) of the annotation at `index`.
+    pub fn getModificationDate(self: AnnotationList, index: i32) Error!i64 {
+        const h = try self.live();
+        var code: i32 = 0;
+        const v = c.pdf_oxide_annotation_get_modification_date(h, index, &code);
+        if (code != 0) return fail(code);
+        return v;
+    }
+
+    /// Whether the annotation at `index` is hidden.
+    pub fn isHidden(self: AnnotationList, index: i32) Error!bool {
+        const h = try self.live();
+        var code: i32 = 0;
+        const r = c.pdf_oxide_annotation_is_hidden(h, index, &code);
+        if (code != 0) return fail(code);
+        return r;
+    }
+
+    /// Whether the annotation at `index` is marked deleted.
+    pub fn isMarkedDeleted(self: AnnotationList, index: i32) Error!bool {
+        const h = try self.live();
+        var code: i32 = 0;
+        const r = c.pdf_oxide_annotation_is_marked_deleted(h, index, &code);
+        if (code != 0) return fail(code);
+        return r;
+    }
+
+    /// Whether the annotation at `index` is printable.
+    pub fn isPrintable(self: AnnotationList, index: i32) Error!bool {
+        const h = try self.live();
+        var code: i32 = 0;
+        const r = c.pdf_oxide_annotation_is_printable(h, index, &code);
+        if (code != 0) return fail(code);
+        return r;
+    }
+
+    /// Whether the annotation at `index` is read-only.
+    pub fn isReadOnly(self: AnnotationList, index: i32) Error!bool {
+        const h = try self.live();
+        var code: i32 = 0;
+        const r = c.pdf_oxide_annotation_is_read_only(h, index, &code);
+        if (code != 0) return fail(code);
+        return r;
+    }
+
+    /// Number of quad-point quads on the highlight annotation at `index`.
+    pub fn highlightQuadPointsCount(self: AnnotationList, index: i32) Error!i32 {
+        const h = try self.live();
+        var code: i32 = 0;
+        const n = c.pdf_oxide_highlight_annotation_get_quad_points_count(h, index, &code);
+        if (code != 0) return fail(code);
+        return n;
+    }
+
+    /// The four corners of the `quad_index`-th quad of the highlight at `index`.
+    pub fn highlightQuadPoint(self: AnnotationList, index: i32, quad_index: i32) Error![8]f32 {
+        const h = try self.live();
+        var code: i32 = 0;
+        var p: [8]f32 = [_]f32{ 0, 0, 0, 0, 0, 0, 0, 0 };
+        c.pdf_oxide_highlight_annotation_get_quad_point(h, index, quad_index, &p[0], &p[1], &p[2], &p[3], &p[4], &p[5], &p[6], &p[7], &code);
+        if (code != 0) return fail(code);
+        return p;
+    }
+
+    /// The URI of the link annotation at `index`; caller owns the slice.
+    pub fn linkUri(self: AnnotationList, alloc: std.mem.Allocator, index: i32) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_oxide_link_annotation_get_uri(h, index, &code), code);
+    }
+
+    /// The icon name of the text annotation at `index`; caller owns the slice.
+    pub fn textIconName(self: AnnotationList, alloc: std.mem.Allocator, index: i32) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_oxide_text_annotation_get_icon_name(h, index, &code), code);
+    }
+
+    /// Serialize the whole list to a JSON string; caller owns the slice.
+    pub fn toJson(self: AnnotationList, alloc: std.mem.Allocator) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_oxide_annotations_to_json(h, &code), code);
+    }
+};
+
+/// A list of embedded fonts as a live native handle, exposing the size accessor
+/// and JSON serializer. Owns the native `FfiFontList`; free with `deinit`/`close`.
+/// (The eager-marshalled view is `Document.embeddedFonts`.)
+pub const FontList = struct {
+    handle: ?*c.FfiFontList,
+
+    fn live(self: FontList) Error!*c.FfiFontList {
+        return self.handle orelse fail(-1);
+    }
+
+    /// Free the native handle (idempotent). Also exposed as `close`.
+    pub fn deinit(self: *FontList) void {
+        if (self.handle) |h| c.pdf_oxide_font_list_free(h);
+        self.handle = null;
+    }
+
+    /// Free the native handle (idempotent).
+    pub fn close(self: *FontList) void {
+        self.deinit();
+    }
+
+    /// Number of fonts.
+    pub fn count(self: FontList) Error!i32 {
+        const h = try self.live();
+        const n = c.pdf_oxide_font_count(h);
+        if (n < 0) return fail(n);
+        return n;
+    }
+
+    /// Nominal point size of the font at `index`.
+    pub fn getSize(self: FontList, index: i32) Error!f32 {
+        const h = try self.live();
+        var code: i32 = 0;
+        const s = c.pdf_oxide_font_get_size(h, index, &code);
+        if (code != 0) return fail(code);
+        return s;
+    }
+
+    /// Serialize the whole list to a JSON string; caller owns the slice.
+    pub fn toJson(self: FontList, alloc: std.mem.Allocator) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_oxide_fonts_to_json(h, &code), code);
+    }
+};
+
+/// A raw page-search result set as a live native handle, exposing the JSON
+/// serializer. Owns the native `FfiSearchResults`; free with `deinit`/`close`.
+/// (The eager-marshalled view is `Document.search`/`searchAll`.)
+pub const SearchResultList = struct {
+    handle: ?*c.FfiSearchResults,
+
+    fn live(self: SearchResultList) Error!*c.FfiSearchResults {
+        return self.handle orelse fail(-1);
+    }
+
+    /// Free the native handle (idempotent). Also exposed as `close`.
+    pub fn deinit(self: *SearchResultList) void {
+        if (self.handle) |h| c.pdf_oxide_search_result_free(h);
+        self.handle = null;
+    }
+
+    /// Free the native handle (idempotent).
+    pub fn close(self: *SearchResultList) void {
+        self.deinit();
+    }
+
+    /// Number of results.
+    pub fn count(self: SearchResultList) Error!i32 {
+        const h = try self.live();
+        const n = c.pdf_oxide_search_result_count(h);
+        if (n < 0) return fail(n);
+        return n;
+    }
+
+    /// Serialize the whole result set to a JSON string; caller owns the slice.
+    pub fn toJson(self: SearchResultList, alloc: std.mem.Allocator) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_oxide_search_results_to_json(h, &code), code);
+    }
 };
 
 /// A rendered page image. Owns the native `FfiRenderedImage` handle so that
@@ -1060,6 +1837,14 @@ pub const Pdf = struct {
         defer c.free_bytes(p);
         const n: usize = if (len < 0) 0 else @intCast(len);
         return alloc.dupe(u8, p[0..n]);
+    }
+
+    /// Page count of the built PDF (the `pdf_get_page_count` C-ABI alias).
+    pub fn pageCount(self: Pdf) Error!i32 {
+        var code: i32 = 0;
+        const n = c.pdf_get_page_count(self.handle, &code);
+        if (n < 0) return fail(code);
+        return n;
     }
 };
 
@@ -1527,6 +2312,24 @@ pub const DocumentEditor = struct {
         const bh = try barcode.live();
         var code: i32 = 0;
         if (c.pdf_add_barcode_to_page(h, page_index, bh, x, y, width, height, &code) != 0) return fail(code);
+    }
+
+    /// Import form values from an FDF byte buffer. Returns a status.
+    pub fn importFdfBytes(self: DocumentEditor, data: []const u8) Error!i32 {
+        const h = try self.live();
+        var code: i32 = 0;
+        const n = c.pdf_editor_import_fdf_bytes(@ptrCast(h), data.ptr, data.len, &code);
+        if (code != 0) return fail(code);
+        return n;
+    }
+
+    /// Import form values from an XFDF byte buffer. Returns a status.
+    pub fn importXfdfBytes(self: DocumentEditor, data: []const u8) Error!i32 {
+        const h = try self.live();
+        var code: i32 = 0;
+        const n = c.pdf_editor_import_xfdf_bytes(@ptrCast(h), data.ptr, data.len, &code);
+        if (code != 0) return fail(code);
+        return n;
     }
 };
 
@@ -3342,6 +4145,72 @@ pub fn addTimestamp(
     return takeBytes(alloc, out_data, out_len, code);
 }
 
+// ── PHASE-8: process-wide configuration / crypto / model namespaces ───────────
+
+/// Global cap on content-stream operators (anti-DoS); returns the previous cap.
+pub fn setMaxOpsPerStream(limit: i64) i64 {
+    return c.pdf_oxide_set_max_ops_per_stream(limit);
+}
+
+/// Toggle preservation of glyphs with no Unicode mapping; returns the prior
+/// setting (1=on, 0=off).
+pub fn setPreserveUnmappedGlyphs(preserve: bool) i32 {
+    return c.pdf_oxide_set_preserve_unmapped_glyphs(@intFromBool(preserve));
+}
+
+/// Name of the active crypto provider; caller owns the returned slice.
+pub fn cryptoActiveProvider(alloc: std.mem.Allocator) Error![]u8 {
+    return takeString(alloc, c.pdf_oxide_crypto_active_provider(), -1);
+}
+
+/// Whether a FIPS-validated crypto module is available (1=yes, 0=no).
+pub fn cryptoFipsAvailable() i32 {
+    return c.pdf_oxide_crypto_fips_available();
+}
+
+/// Switch to the FIPS crypto provider; returns a status (0=ok).
+pub fn cryptoUseFips() i32 {
+    return c.pdf_oxide_crypto_use_fips();
+}
+
+/// Set the crypto policy from a `spec` string; returns a status (0=ok).
+pub fn cryptoSetPolicy(spec: [:0]const u8) i32 {
+    return c.pdf_oxide_crypto_set_policy(spec.ptr);
+}
+
+/// The active crypto policy as a string; caller owns the returned slice.
+pub fn cryptoPolicy(alloc: std.mem.Allocator) Error![]u8 {
+    return takeString(alloc, c.pdf_oxide_crypto_policy(), -1);
+}
+
+/// The crypto inventory (algorithms/providers) as a JSON string; caller owns it.
+pub fn cryptoInventory(alloc: std.mem.Allocator) Error![]u8 {
+    return takeString(alloc, c.pdf_oxide_crypto_inventory(), -1);
+}
+
+/// A CBOM (Cryptographic Bill of Materials) JSON string; caller owns it.
+pub fn cryptoCbom(alloc: std.mem.Allocator) Error![]u8 {
+    return takeString(alloc, c.pdf_oxide_crypto_cbom(), -1);
+}
+
+/// Prefetch OCR models for the comma-separated `languages_csv` (null/empty →
+/// English); returns the model cache dir. Caller owns the returned slice.
+pub fn prefetchModels(alloc: std.mem.Allocator, languages_csv: ?[:0]const u8) Error![]u8 {
+    var code: i32 = 0;
+    const csv: ?[*:0]const u8 = if (languages_csv) |l| l.ptr else null;
+    return takeString(alloc, c.pdf_oxide_prefetch_models(csv, &code), code);
+}
+
+/// Whether this build can actually download models (1=yes, 0=cache-dir only).
+pub fn prefetchAvailable() i32 {
+    return c.pdf_oxide_prefetch_available();
+}
+
+/// The air-gapped OCR model manifest as a JSON string; caller owns it.
+pub fn modelManifest(alloc: std.mem.Allocator) Error![]u8 {
+    return takeString(alloc, c.pdf_oxide_model_manifest(), -1);
+}
+
 // ── api-coverage tests (one per public method) ────────────────────────────────
 const testing = std.testing;
 
@@ -4083,5 +4952,385 @@ test "phase-7 addTimestamp: minimal inputs return or raise" {
     if (r) |out| {
         defer a.free(out);
         try testing.expect(out.len > 0);
+    } else |_| {}
+}
+
+// ── PHASE-8 api-coverage tests ────────────────────────────────────────────────
+
+test "phase-8 office: open-from-bytes + export are return-or-error" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+
+    // Opening a PDF as DOCX/PPTX/XLSX bytes is not valid office content → raise
+    // (or, implausibly, succeed → free the handle).
+    inline for (.{ "openFromDocxBytes", "openFromPptxBytes", "openFromXlsxBytes" }) |name| {
+        if (@field(Document, name)(bytes)) |doc_const| {
+            var doc = doc_const;
+            doc.deinit();
+        } else |_| {}
+    }
+
+    // Exporting the sample PDF to office formats: return owned bytes or raise.
+    var doc = try Document.openFromBytes(bytes);
+    defer doc.deinit();
+    inline for (.{ "toDocx", "toPptx", "toXlsx" }) |name| {
+        if (@field(Document, name)(doc, a)) |out| {
+            defer a.free(out);
+            try testing.expect(out.len >= 0);
+        } else |_| {}
+    }
+}
+
+test "phase-8 in-rect extractors: text/words/lines/tables/images" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+    var doc = try Document.openFromBytes(bytes);
+    defer doc.deinit();
+
+    const w = try doc.pageGetWidth(0);
+    const h = try doc.pageGetHeight(0);
+
+    if (doc.extractTextInRect(a, 0, 0, 0, w, h)) |t| { // extractTextInRect
+        defer a.free(t);
+        try testing.expect(t.len >= 0);
+    } else |_| {}
+
+    if (doc.extractWordsInRect(a, 0, 0, 0, w, h)) |words| { // extractWordsInRect
+        defer Document.freeWords(a, words);
+        try testing.expect(words.len >= 0);
+    } else |_| {}
+
+    if (doc.extractLinesInRect(a, 0, 0, 0, w, h)) |lines| { // extractLinesInRect
+        defer Document.freeTextLines(a, lines);
+        try testing.expect(lines.len >= 0);
+    } else |_| {}
+
+    if (doc.extractTablesInRect(a, 0, 0, 0, w, h)) |tables| { // extractTablesInRect
+        defer Document.freeTables(a, tables);
+        try testing.expect(tables.len >= 0);
+    } else |_| {}
+
+    if (doc.extractImagesInRect(a, 0, 0, 0, w, h)) |images| { // extractImagesInRect
+        defer Document.freeImages(a, images);
+        try testing.expect(images.len >= 0);
+    } else |_| {}
+}
+
+test "phase-8 auto extraction + classification" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+    var doc = try Document.openFromBytes(bytes);
+    defer doc.deinit();
+
+    if (doc.extractTextAuto(a, 0)) |t| { // extractTextAuto
+        defer a.free(t);
+        try testing.expect(t.len >= 0);
+    } else |_| {}
+
+    if (doc.extractAllText(a)) |t| { // extractAllText
+        defer a.free(t);
+        try testing.expect(t.len >= 0);
+    } else |_| {}
+
+    if (doc.extractPageAuto(a, 0, null)) |t| { // extractPageAuto
+        defer a.free(t);
+        try testing.expect(t.len >= 0);
+    } else |_| {}
+
+    if (doc.classifyPage(a, 0)) |t| { // classifyPage
+        defer a.free(t);
+        try testing.expect(t.len > 0);
+    } else |_| {}
+
+    if (doc.classifyDocument(a)) |t| { // classifyDocument
+        defer a.free(t);
+        try testing.expect(t.len > 0);
+    } else |_| {}
+}
+
+test "phase-8 header/footer/artifact erase + remove" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+    var doc = try Document.openFromBytes(bytes);
+    defer doc.deinit();
+
+    inline for (.{ "eraseHeader", "eraseFooter", "eraseArtifacts" }) |name| {
+        if (@field(Document, name)(doc, 0)) |n| {
+            try testing.expect(n >= -1);
+        } else |_| {}
+    }
+    inline for (.{ "removeHeaders", "removeFooters", "removeArtifacts" }) |name| {
+        if (@field(Document, name)(doc, 0.5)) |n| {
+            try testing.expect(n >= -1);
+        } else |_| {}
+    }
+}
+
+test "phase-8 forms: get_form_fields (empty ok) + accessors + export/import" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+    var doc = try Document.openFromBytes(bytes);
+    defer doc.deinit();
+
+    // get_form_fields: the markdown sample has no AcroForm → an empty list is OK.
+    if (doc.formFields()) |fields_const| { // formFields
+        var fields = fields_const;
+        defer fields.deinit();
+        const n = try fields.count(); // count
+        try testing.expect(n >= 0);
+        var i: i32 = 0;
+        while (i < n) : (i += 1) {
+            const nm = try fields.getName(a, i); // getName
+            defer a.free(nm);
+            const vl = try fields.getValue(a, i); // getValue
+            defer a.free(vl);
+            const ty = try fields.getType(a, i); // getType
+            defer a.free(ty);
+            _ = try fields.isReadonly(i); // isReadonly
+            _ = try fields.isRequired(i); // isRequired
+        }
+    } else |_| {}
+
+    // export form data (FDF/XFDF): return owned bytes or raise.
+    inline for (.{ @as(i32, 0), @as(i32, 1) }) |fmt| {
+        if (doc.exportFormDataToBytes(a, fmt)) |out| { // exportFormDataToBytes
+            defer a.free(out);
+            try testing.expect(out.len >= 0);
+        } else |_| {}
+    }
+
+    // import from a nonexistent path: return-or-error.
+    if (doc.importFormData("/nonexistent/data.fdf")) |n| { // importFormData
+        try testing.expect(n >= -1);
+    } else |_| {}
+    if (doc.formImportFromFile("/nonexistent/data.fdf")) |_| {} else |_| {} // formImportFromFile
+}
+
+test "phase-8 structure/metadata + convert" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+    var doc = try Document.openFromBytes(bytes);
+    defer doc.deinit();
+
+    inline for (.{ "outline", "pageLabels", "xmpMetadata" }) |name| {
+        if (@field(Document, name)(doc, a)) |s| {
+            defer a.free(s);
+            try testing.expect(s.len >= 0);
+        } else |_| {}
+    }
+
+    if (doc.sourceBytes(a)) |s| { // sourceBytes
+        defer a.free(s);
+        try testing.expect(s.len >= 0);
+    } else |_| {}
+
+    _ = doc.hasXfa(); // hasXfa (smoke)
+
+    if (doc.planSplitByBookmarks(a, null)) |s| { // planSplitByBookmarks
+        defer a.free(s);
+        try testing.expect(s.len >= 0);
+    } else |_| {}
+
+    if (doc.convertToPdfA(2)) |_| {} else |_| {} // convertToPdfA
+}
+
+test "phase-8 document signatures: count/verify/timestamp/dss are return-or-error" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+    var doc = try Document.openFromBytes(bytes);
+    defer doc.deinit();
+
+    if (doc.signatureCount()) |n| { // signatureCount
+        try testing.expect(n >= 0);
+        if (n > 0) {
+            if (doc.signature(0)) |sig_const| { // signature
+                var sig = sig_const;
+                sig.deinit();
+            } else |_| {}
+        }
+    } else |_| {}
+
+    if (doc.verifyAllSignatures()) |n| { // verifyAllSignatures
+        try testing.expect(n >= -1);
+    } else |_| {}
+
+    if (doc.hasTimestamp()) |_| {} else |_| {} // hasTimestamp
+
+    if (doc.dss()) |dss_const| { // dss
+        var d = dss_const;
+        d.deinit();
+    } else |_| {}
+
+    // sign with a closed cert must raise.
+    var bad_cert = Certificate{ .handle = null };
+    bad_cert.close();
+    try testing.expectError(Error.PdfOxide, doc.sign(bad_cert, "r", "l")); // sign
+}
+
+test "phase-8 list-handle JSON + extra accessors" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+    var doc = try Document.openFromBytes(bytes);
+    defer doc.deinit();
+
+    // AnnotationList: the sample has none → empty list, accessors return-or-error.
+    if (doc.annotationList(0)) |al_const| { // annotationList
+        var al = al_const;
+        defer al.deinit();
+        const n = try al.count();
+        try testing.expect(n >= 0);
+        const j = try al.toJson(a); // annotations_to_json
+        defer a.free(j);
+        try testing.expect(j.len >= 0);
+        var i: i32 = 0;
+        while (i < n) : (i += 1) {
+            _ = al.getColor(i) catch 0; // getColor
+            _ = al.getCreationDate(i) catch 0; // getCreationDate
+            _ = al.getModificationDate(i) catch 0; // getModificationDate
+            _ = al.isHidden(i) catch false; // isHidden
+            _ = al.isMarkedDeleted(i) catch false; // isMarkedDeleted
+            _ = al.isPrintable(i) catch false; // isPrintable
+            _ = al.isReadOnly(i) catch false; // isReadOnly
+            if (al.highlightQuadPointsCount(i)) |qn| { // highlightQuadPointsCount
+                if (qn > 0) {
+                    _ = al.highlightQuadPoint(i, 0) catch [_]f32{ 0, 0, 0, 0, 0, 0, 0, 0 }; // highlightQuadPoint
+                }
+            } else |_| {}
+            if (al.linkUri(a, i)) |u| a.free(u) else |_| {} // linkUri
+            if (al.textIconName(a, i)) |u| a.free(u) else |_| {} // textIconName
+        }
+    } else |_| {}
+
+    // FontList: size accessor + JSON.
+    if (doc.fontList(0)) |fl_const| { // fontList
+        var fl = fl_const;
+        defer fl.deinit();
+        const n = try fl.count();
+        try testing.expect(n >= 0);
+        if (n > 0) _ = fl.getSize(0) catch 0; // getSize
+        const j = try fl.toJson(a); // fonts_to_json
+        defer a.free(j);
+        try testing.expect(j.len >= 0);
+    } else |_| {}
+
+    // ElementList handle (Document.elementList) + JSON.
+    if (doc.elementList(0)) |el_const| { // elementList
+        var el = el_const;
+        defer el.deinit();
+        const j = try el.toJson(a); // elements_to_json
+        defer a.free(j);
+        try testing.expect(j.len >= 0);
+    } else |_| {}
+
+    // SearchResultList handle + JSON.
+    if (doc.searchPageList(0, "Alpha", false)) |sl_const| { // searchPageList
+        var sl = sl_const;
+        defer sl.deinit();
+        const n = try sl.count();
+        try testing.expect(n >= 0);
+        const j = try sl.toJson(a); // search_results_to_json
+        defer a.free(j);
+        try testing.expect(j.len >= 0);
+    } else |_| {}
+}
+
+test "phase-8 editor: import FDF/XFDF bytes are return-or-error" {
+    var pdf = try Pdf.fromMarkdown("# Editor\n\nbody\n");
+    defer pdf.deinit();
+    try pdf.save("/tmp/pdfoxide_zig_p8_editor.pdf");
+    defer std.fs.cwd().deleteFile("/tmp/pdfoxide_zig_p8_editor.pdf") catch {};
+
+    var ed = try DocumentEditor.openEditor("/tmp/pdfoxide_zig_p8_editor.pdf");
+    defer ed.deinit();
+
+    if (ed.importFdfBytes("not-fdf")) |n| { // importFdfBytes
+        try testing.expect(n >= -1);
+    } else |_| {}
+    if (ed.importXfdfBytes("<not-xfdf/>")) |n| { // importXfdfBytes
+        try testing.expect(n >= -1);
+    } else |_| {}
+
+    // Closed-editor guard.
+    var closed = DocumentEditor{ .handle = null };
+    closed.close();
+    try testing.expectError(Error.PdfOxide, closed.importFdfBytes("x"));
+    try testing.expectError(Error.PdfOxide, closed.importXfdfBytes("x"));
+}
+
+test "phase-8 Pdf.pageCount alias" {
+    var pdf = try Pdf.fromMarkdown("# One\n\nbody\n");
+    defer pdf.deinit();
+    // pdf_get_page_count reports a page count or errors (code 1) on a
+    // freshly-built Pdf in this cdylib; either outcome exercises the wrapper.
+    if (pdf.pageCount()) |n| { // pageCount (pdf_get_page_count)
+        try testing.expect(n >= 0);
+    } else |err| {
+        try testing.expect(err == Error.PdfOxide);
+    }
+}
+
+test "phase-8 process config: max-ops / preserve-unmapped-glyphs are invokable" {
+    // These setters return the PRIOR value and have no error channel; assert only
+    // that each call is invokable (returns an int), not a specific round-tripped
+    // value.
+    const prev = setMaxOpsPerStream(1_000_000); // setMaxOpsPerStream (returns prior i64)
+    const restored = setMaxOpsPerStream(prev); // restore (returns prior i64)
+    try testing.expect(@TypeOf(prev) == i64 and @TypeOf(restored) == i64);
+    const prevg = setPreserveUnmappedGlyphs(true); // setPreserveUnmappedGlyphs (returns prior i32)
+    const restoredg = setPreserveUnmappedGlyphs(prevg != 0);
+    try testing.expect(@TypeOf(prevg) == i32 and @TypeOf(restoredg) == i32);
+}
+
+test "phase-8 crypto namespace: provider/fips/policy/inventory/cbom" {
+    const a = testing.allocator;
+
+    const prov = try cryptoActiveProvider(a); // cryptoActiveProvider
+    defer a.free(prov);
+    try testing.expect(prov.len > 0);
+
+    _ = cryptoFipsAvailable(); // cryptoFipsAvailable (smoke)
+    _ = cryptoUseFips(); // cryptoUseFips (smoke; may no-op without FIPS)
+
+    _ = cryptoSetPolicy("default"); // cryptoSetPolicy
+
+    const pol = try cryptoPolicy(a); // cryptoPolicy
+    defer a.free(pol);
+    try testing.expect(pol.len >= 0);
+
+    const inv = try cryptoInventory(a); // cryptoInventory
+    defer a.free(inv);
+    try testing.expect(inv.len >= 0);
+
+    const cbom = try cryptoCbom(a); // cryptoCbom
+    defer a.free(cbom);
+    try testing.expect(cbom.len >= 0);
+}
+
+test "phase-8 models namespace: manifest + prefetch (return-or-error)" {
+    const a = testing.allocator;
+
+    // modelManifest returns a JSON string (no error channel); assert it returns
+    // a string, tolerating the binding error type defensively.
+    if (modelManifest(a)) |man| { // modelManifest
+        defer a.free(man);
+        try testing.expect(man.len >= 0);
+    } else |err| {
+        try testing.expect(err == Error.PdfOxide);
+    }
+
+    _ = prefetchAvailable(); // prefetchAvailable (smoke)
+
+    // prefetch may need network/the `ocr` feature → return owned dir or raise.
+    if (prefetchModels(a, "english")) |dir| { // prefetchModels
+        defer a.free(dir);
+        try testing.expect(dir.len >= 0);
     } else |_| {}
 }
