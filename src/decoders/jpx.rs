@@ -84,7 +84,10 @@ pub fn decode_jpx(bytes: &[u8]) -> Result<JpxImage> {
         }
     }
 
-    Ok(JpxImage { samples, num_components: num_components as u8 })
+    Ok(JpxImage {
+        samples,
+        num_components: num_components as u8,
+    })
 }
 
 #[cfg(all(test, feature = "jpeg2000"))]
