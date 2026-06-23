@@ -45,6 +45,7 @@ fn create_test_span(text: &str, x: f32, y: f32, width: f32, height: f32) -> Text
         rotation_degrees: 0.0,
         wmode: 0,
         text_rise: 0.0,
+        rtl_draw_logical: false,
     }
 }
 
