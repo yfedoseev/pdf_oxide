@@ -277,6 +277,12 @@ pdfium-render = { version = "0.9", optional = true }
 tiny-skia = { version = "0.12", optional = true }
 fast_image_resize = { version = "6", optional = true }                       # SIMD-accelerated image downscaling
 hayro-jbig2 = { version = "0.3", optional = true, default-features = false } # Pure-Rust JBIG2 decoder (Apache-2.0 OR MIT)
+# JPEG 2000 (/JPXDecode) decoder. Binds OpenJPEG (BSD-2), vendored and compiled
+# via `cc` (self-contained, no system library — same model as `brotli`). C
+# dependency, so it does not target wasm32; JPX stays unsupported there. Minimal
+# feature set: just the openjpeg-sys backend (we decode from bytes and read raw
+# component samples directly — no `image`/`file-io` integration needed).
+jpeg2k = { version = "0.9", optional = true, default-features = false, features = ["openjpeg-sys"] }
 fontdb = { version = "0.23", optional = true }
 rustybuzz = { version = "0.20", optional = true }
 
@@ -451,8 +457,13 @@ debug-span-merging = []
 # when the feature is off.
 test-support = []
 
+# JPEG 2000 (/JPXDecode) image decoding via OpenJPEG. Opt-in (C dependency,
+# not wasm32). Pulled in by `rendering`; can also be enabled standalone so
+# `extract_image_bytes` decodes JPX images without the full rendering stack.
+jpeg2000 = ["dep:jpeg2k"]
+
 # Page rendering to images (pure Rust via tiny-skia)
-rendering = ["dep:tiny-skia", "dep:fast_image_resize", "system-fonts", "dep:hayro-jbig2"]
+rendering = ["dep:tiny-skia", "dep:fast_image_resize", "system-fonts", "dep:hayro-jbig2", "jpeg2000"]
 
 # System font discovery (fontdb) + shaping (rustybuzz). v0.3.35 splits
 # this out of `rendering` so HTML+CSS→PDF can pick it up without pulling

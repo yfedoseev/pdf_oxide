@@ -22,6 +22,7 @@ pub(crate) mod ccitt;
 mod dct;
 mod flate;
 mod jbig2;
+pub(crate) mod jpx;
 mod lzw;
 mod predictor;
 mod runlength;
@@ -67,6 +68,8 @@ pub enum Filter {
     CCITTFaxDecode,
     /// JBIG2Decode (JBIG2 compression)
     JBIG2Decode,
+    /// JPXDecode (JPEG 2000 compression)
+    JPXDecode,
     /// BrotliDecode (Brotli compression, PDF 2.0)
     BrotliDecode,
 }
@@ -105,6 +108,7 @@ fn normalize_filter_name(name: &str) -> Result<&'static str> {
         "DCTDecode" => return Ok("DCTDecode"),
         "CCITTFaxDecode" => return Ok("CCITTFaxDecode"),
         "JBIG2Decode" => return Ok("JBIG2Decode"),
+        "JPXDecode" => return Ok("JPXDecode"),
         "BrotliDecode" => return Ok("BrotliDecode"),
         _ => {},
     }
@@ -132,6 +136,7 @@ fn normalize_filter_name(name: &str) -> Result<&'static str> {
         "dctdecode" => Ok("DCTDecode"),
         "ccittfaxdecode" => Ok("CCITTFaxDecode"),
         "jbig2decode" => Ok("JBIG2Decode"),
+        "jpxdecode" => Ok("JPXDecode"),
         "brotlidecode" => Ok("BrotliDecode"),
         _ => Err(Error::UnsupportedFilter(name.to_string())),
     }
@@ -148,6 +153,7 @@ fn create_decoder(filter_name: &str) -> Result<Box<dyn StreamDecoder>> {
         "DCTDecode" => Box::new(DctDecoder),
         "CCITTFaxDecode" => Box::new(CcittFaxDecoder),
         "JBIG2Decode" => Box::new(Jbig2Decoder),
+        "JPXDecode" => Box::new(jpx::JpxDecoder),
         "BrotliDecode" => Box::new(BrotliDecoder),
         // normalize_filter_name already returns Err for unknown filters
         _ => unreachable!(),
