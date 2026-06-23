@@ -116,8 +116,11 @@ impl OrtBackend {
                     });
                 return Err(OcrError::ModelLoadError(format!(
                     "ONNX Runtime initialisation panicked (typically: \
-                     libonnxruntime dylib failed to load — install onnxruntime \
-                     or set ORT_DYLIB_PATH). Detail: {}",
+                     libonnxruntime failed to load). Install onnxruntime, then set \
+                     ORT_DYLIB_PATH to the library FILE (e.g. \
+                     .../libonnxruntime.dylib) — not a directory — or add its \
+                     directory to DYLD_LIBRARY_PATH (macOS) / LD_LIBRARY_PATH \
+                     (Linux). Detail: {}",
                     detail
                 )));
             },
