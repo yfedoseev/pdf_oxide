@@ -161,7 +161,7 @@ taffy = { version = "0.11", default-features = false, features = [
 unicode-linebreak = "0.1" # UAX #14 line-break opportunities for the inline formatter (LAYOUT-3)
 # Block/flex/grid layout (Dioxus; MIT, no MPL). Used by Phase LAYOUT to position
 # box tree nodes; inline formatting is ours (Phase LAYOUT inline_formatting module).
-phf = { version = "0.13", features = ["macros"] } # Perfect hash maps for Adobe Glyph List
+phf = { version = "0.14", features = ["macros"] } # Perfect hash maps for Adobe Glyph List
 encoding_rs = "0.8"                               # Shift-JIS, EUC-JP, and other CJK encodings for predefined CMaps
 
 # Unicode bidirectional algorithm (UAX #9) — used by both the HTML+CSS
@@ -255,7 +255,7 @@ quick-xml = "0.40"
 
 # Python bindings (optional)
 # Using latest version to support Python 3.14+
-pyo3 = { version = "0.28", features = ["abi3-py38", "generate-import-lib"], optional = true }
+pyo3 = { version = "0.29", features = ["abi3-py38", "generate-import-lib"], optional = true }
 # Bridges Rust `log` macros to Python `logging` module (issue #280)
 pyo3-log = { version = "0.13", optional = true }
 
