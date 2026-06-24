@@ -4482,14 +4482,12 @@ impl FontInfo {
                     // "If a ToUnicode CMap is not available, conforming readers may fall back
                     // to predefined encodings and glyph name lookup."
 
-                    // The two fallbacks below are numeric *guesses*: they treat the GID
-                    // (via the standard glyph-name table → AGL) or the CID itself as if it
-                    // were a Unicode value. They are only sound when the font has no
-                    // authoritative /ToUnicode. With a usable ToUnicode present, a code that
-                    // reached here is genuinely unmapped (e.g. a ligature glyph with no
-                    // codepoint); guessing then emits a plausible-but-wrong char (a subset
-                    // slot read as Latin-1, e.g. ':' / 'D') — silent corruption. In that case
-                    // prefer U+FFFD so the gap is detectable.
+                    // The GID→AGL fallback below is a numeric *guess*: it treats the GID
+                    // (via the standard glyph-name table → AGL) as a Unicode value. It is
+                    // only sound when the font has no authoritative /ToUnicode; with one
+                    // present, a code reaching here is genuinely unmapped (e.g. a ligature
+                    // glyph with no codepoint), so guessing would emit a plausible-but-wrong
+                    // char — prefer U+FFFD so the gap is detectable.
                     let has_usable_tounicode =
                         self.to_unicode.as_ref().and_then(|c| c.get()).is_some();
 
@@ -4522,10 +4520,20 @@ impl FontInfo {
                                 }
                             }
                         }
+                    }
 
-                        // All standard fallbacks exhausted (no TrueType cmap, no Adobe Glyph
-                        // List match). CID-as-Unicode fallback: many PDF generators assign CID
-                        // values equal to Unicode code points (matches MuPDF behaviour).
+                    // CID-as-Unicode fallback: many PDF generators assign CID == Unicode
+                    // codepoint. Used when there is no /ToUnicode at all, and — for
+                    // Identity-ordered fonts — also when a CID is absent from /ToUnicode, since
+                    // Identity ordering conventionally maps CID→Unicode and this stays the best
+                    // available mapping. Non-Identity fonts fall through to U+FFFD rather than
+                    // guess a plausible-but-wrong character.
+                    let is_identity_ordered = self
+                        .cid_system_info
+                        .as_ref()
+                        .map(|info| info.ordering == "Identity")
+                        .unwrap_or(false);
+                    if !has_usable_tounicode || is_identity_ordered {
                         if let Some(unicode_char) = char::from_u32(char_code) {
                             if !unicode_char.is_control() || unicode_char == ' ' {
                                 log::debug!(
