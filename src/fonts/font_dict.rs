@@ -4533,7 +4533,14 @@ impl FontInfo {
                         .as_ref()
                         .map(|info| info.ordering == "Identity")
                         .unwrap_or(false);
-                    if !has_usable_tounicode || is_identity_ordered {
+                    // Identity ordering conventionally maps CID→Unicode, so CID-as-Unicode is the
+                    // best fallback there — but only for whitespace (CID 0x20 → space, which
+                    // producers routinely omit from /ToUnicode and is reliably U+0020; dropping it
+                    // would wreck word boundaries). Any other uncovered CID in a font that *has* a
+                    // /ToUnicode has no codepoint we can trust (e.g. a ligature subset slot), so it
+                    // decodes to U+FFFD instead of a plausible-but-wrong, per-file-varying guess.
+                    let identity_whitespace = is_identity_ordered && char_code == 0x20;
+                    if !has_usable_tounicode || identity_whitespace {
                         if let Some(unicode_char) = char::from_u32(char_code) {
                             if !unicode_char.is_control() || unicode_char == ' ' {
                                 log::debug!(
@@ -10707,6 +10714,31 @@ mod tests {
         let mut font = make_type0_font(None, "Identity-H", None);
         font.cid_to_gid_map = Some(CIDToGIDMap::Identity);
         assert_eq!(font.char_to_unicode(0x0100), Some("\u{0100}".to_string()));
+    }
+
+    /// For an Identity-ordered font with a present-but-incomplete `/ToUnicode`, an
+    /// uncovered CID decodes to U+FFFD (honest gap) rather than the CID-as-Unicode guess —
+    /// except whitespace (0x20 → space), which is retained so word boundaries survive.
+    #[test]
+    fn test_type0_identity_uncovered_cid_is_fffd_keeps_space() {
+        let csi = CIDSystemInfo {
+            registry: "Adobe".to_string(),
+            ordering: "Identity".to_string(),
+            supplement: 0,
+        };
+        let mut font = make_type0_font(Some(make_tounicode_single_z()), "Identity-H", Some(csi));
+        font.cid_to_gid_map = Some(CIDToGIDMap::Identity);
+
+        // Mapped code still resolves via ToUnicode.
+        assert_eq!(font.char_to_unicode(0x0041), Some("Z".to_string()), "ToUnicode hit");
+        // Whitespace is retained even when uncovered (word boundaries survive).
+        assert_eq!(font.char_to_unicode(0x0020), Some(" ".to_string()), "space retained");
+        // Any other uncovered CID → U+FFFD, not a CID-as-Unicode guess.
+        assert_eq!(
+            font.char_to_unicode(0x0043),
+            Some("\u{FFFD}".to_string()),
+            "uncovered non-space Identity CID must be U+FFFD"
+        );
     }
 
     /// #504: `make_type0_font` must mirror the real `parse_encoding`
