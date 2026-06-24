@@ -4306,7 +4306,10 @@ impl FontInfo {
                     && name == "StandardEncoding"
                 {
                     if let Some(tt_cmap) = self.truetype_cmap() {
-                        if let Some(unicode_char) = tt_cmap.get_unicode(char_code as u16) {
+                        let gid = tt_cmap
+                            .code_to_gid(char_code as u16)
+                            .unwrap_or(char_code as u16);
+                        if let Some(unicode_char) = tt_cmap.get_unicode(gid) {
                             return Some(unicode_char.to_string());
                         }
                     }
@@ -4558,7 +4561,13 @@ impl FontInfo {
         // doesn't cover. The cmap provides GID → Unicode mapping.
         if self.subtype != "Type0" {
             if let Some(tt_cmap) = self.truetype_cmap() {
-                if let Some(unicode_char) = tt_cmap.get_unicode(char_code as u16) {
+                // Symbolic TrueType fonts index glyphs by content byte through a
+                // (3,0)/(1,0) symbol cmap, so the byte is not the GID. Resolve
+                // byte→GID first; fall back to byte-as-GID when no symbol cmap.
+                let gid = tt_cmap
+                    .code_to_gid(char_code as u16)
+                    .unwrap_or(char_code as u16);
+                if let Some(unicode_char) = tt_cmap.get_unicode(gid) {
                     return Some(unicode_char.to_string());
                 }
             }

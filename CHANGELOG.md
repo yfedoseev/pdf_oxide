@@ -2,6 +2,13 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **Symbolic TrueType fonts without `/ToUnicode` no longer mis-decode characters (#760)** — a simple symbolic TrueType font (FontDescriptor `Flags` bit 3, no `/Encoding`, no `/ToUnicode`) decoded its content bytes by treating each byte directly as a glyph id and looking it up in the reversed Unicode `(3,1)` `cmap`. For a symbolic font the content byte indexes a glyph through the font's `(3,0)` symbol (or `(1,0)` Macintosh) `cmap` subtable — the byte is *not* the GID — so characters came out wrong-but-plausible (e.g. `Ç` → `Ê`, `SOLUÇÃO` → `SOLUÊÃO`) while pdftotext/PyMuPDF read the same files correctly. The embedded font's `(3,0)`/`(1,0)` subtable is now parsed into a byte→GID map (via `ttf-parser`) and the simple-font `cmap` fallback resolves byte→GID before GID→Unicode. Purely subtractive — a font without such a subtable still uses the byte as the GID, exactly as before.
+- **Same-row spans no longer reordered or split in plain-text output (#752)** — when a producer emits one logical line as several spans at the same Y in different reading-order groups whose boxes overlap by a fraction of a point, `to_plain_text` interleaved the overlapping group as if it were a vertical column (hoisting a fragment to the front) and forced a space between the overlapping fragments (splitting a word). A group whose spans share a Y row is now excluded from columnar detection, and the cross-group same-Y space special case is removed in favour of the standard `has_horizontal_gap` threshold the other converters already use — so overlapping fragments join. Fixes e.g. `ALPHA BETA GAMMA DELTA EPSILON` extracted as `A EPSILON ALPHA BETA GAMMA DELT`.
+
 ## [0.3.67] - 2026-06-20
 
 > Reading-order quality release for untagged scientific papers — manuscript-line-number rails lifted out of the body, dense two-column bodies kept apart at a measured gutter, comma-bearing statistic subscripts rejoined, repeated journal pagination footers suppressed, whole-page placed-PDF article bodies recovered, and single-column pages protected from false column detection.
