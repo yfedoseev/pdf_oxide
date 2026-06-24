@@ -4522,13 +4522,10 @@ impl FontInfo {
                                 }
                             }
                         }
-                    }
 
-                    // All standard fallbacks exhausted (no TrueType cmap, no Adobe Glyph List match).
-                    // Use CID-as-Unicode fallback: many PDF generators assign CID values equal
-                    // to Unicode code points. This matches MuPDF behavior — but only when there
-                    // is no usable /ToUnicode (see above); otherwise the code is unmapped.
-                    if !has_usable_tounicode {
+                        // All standard fallbacks exhausted (no TrueType cmap, no Adobe Glyph
+                        // List match). CID-as-Unicode fallback: many PDF generators assign CID
+                        // values equal to Unicode code points (matches MuPDF behaviour).
                         if let Some(unicode_char) = char::from_u32(char_code) {
                             if !unicode_char.is_control() || unicode_char == ' ' {
                                 log::debug!(
@@ -10669,8 +10666,8 @@ mod tests {
         .to_vec()
     }
 
-    /// #773: a present-but-incomplete `/ToUnicode` on an Identity-H Type0 font.
-    /// A drawn CID absent from it has no Unicode anywhere in the file, so it must
+    /// With a present-but-incomplete `/ToUnicode` on an Identity-H Type0 font, a
+    /// drawn CID absent from it has no Unicode anywhere in the file, so it must
     /// decode to U+FFFD rather than a numeric *guess* — the CID read as a code
     /// point, or the GID via the standard glyph-name table → AGL. Both guess
     /// paths are exercised: 0x0100 (CID-as-char) and 0x003A (gid 0x3A = "colon");
@@ -10695,8 +10692,8 @@ mod tests {
         );
     }
 
-    /// #773 (no regression): without a `/ToUnicode`, the CID-as-Unicode heuristic
-    /// still applies — many generators assign CID == Unicode.
+    /// Without a `/ToUnicode`, the CID-as-Unicode heuristic still applies — many
+    /// generators assign CID == Unicode — so this path must not regress to U+FFFD.
     #[test]
     fn test_type0_no_tounicode_keeps_cid_as_unicode() {
         let mut font = make_type0_font(None, "Identity-H", None);
