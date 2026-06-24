@@ -351,6 +351,91 @@ end
 }
 
 #[test]
+fn test_optimized_parser_mixed_large_cmap_identity_ordered() {
+    //! Identity-ordered sibling of `test_optimized_parser_mixed_large_cmap`.
+    //!
+    //! Same setup — Identity-H encoding, a /ToUnicode covering only some codes —
+    //! but with `CIDSystemInfo` `Ordering = Identity` (Adobe-Identity-0). For an
+    //! Identity-ordered font the CID-as-Unicode mapping is conventional, so a code
+    //! uncovered by /ToUnicode keeps that mapping instead of decoding to U+FFFD
+    //! (the other branch of the ordering guard from the non-Identity test above).
+
+    let cmap = String::from(
+        r#"
+/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo
+<< /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def
+/CMapName /Identity-H def
+/CMapType 2 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+2 beginbfchar
+<0041> <0041>
+<0050> <0050>
+endbfchar
+endcmap
+end
+end
+"#,
+    );
+
+    let font = FontInfo {
+        base_font: "MixedLargeCMapIdentity".to_string(),
+        subtype: "Type0".to_string(),
+        encoding: pdf_oxide::fonts::Encoding::Identity,
+        to_unicode: Some(LazyCMap::new(cmap.as_bytes().to_vec())),
+        font_weight: None,
+        flags: None,
+        stem_v: None,
+        ascent: 0.95,
+        descent: -0.35,
+        embedded_font_data: None,
+        truetype_cmap: std::sync::OnceLock::new(),
+        embedded_glyph_names: std::sync::OnceLock::new(),
+        is_truetype_font: false,
+        cid_to_gid_map: None,
+        cid_system_info: Some(pdf_oxide::fonts::CIDSystemInfo {
+            registry: "Adobe".to_string(),
+            ordering: "Identity".to_string(),
+            supplement: 0,
+        }),
+        cid_font_type: None,
+        cid_widths: None,
+        cid_default_width: 1000.0,
+        has_explicit_dw: false,
+        widths: None,
+        first_char: None,
+        last_char: None,
+        font_matrix_a: 0.001,
+        default_width: 500.0,
+        cff_gid_map: None,
+        multi_char_map: HashMap::new(),
+        byte_to_char_table: std::sync::OnceLock::new(),
+        byte_to_width_table: std::sync::OnceLock::new(),
+        diff_glyph_names: std::collections::HashMap::new(),
+        wmode: 0,
+        cid_vertical_metrics: None,
+        cid_default_vertical_metrics: pdf_oxide::fonts::VerticalMetrics::SPEC_DEFAULT,
+        cjk_substitution: None,
+        type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
+    };
+
+    // Covered code resolves via /ToUnicode.
+    assert_eq!(font.char_to_unicode(0x0041), Some("\u{0041}".to_string()), "bfchar entry");
+    // Uncovered code: Identity ordering keeps the CID-as-Unicode mapping (not U+FFFD).
+    assert_eq!(
+        font.char_to_unicode(0x5000),
+        Some("\u{5000}".to_string()),
+        "Identity-ordered uncovered code must keep the CID-as-Unicode mapping"
+    );
+}
+
+#[test]
 fn test_optimized_parser_whitespace_variations() {
     //! Test that optimized state machine handles whitespace robustly.
     //!
