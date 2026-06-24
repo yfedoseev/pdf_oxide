@@ -1785,6 +1785,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hayro-jpeg2000"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bab0c77d09c0d9b144d429d0bf0fcd4c63c01d5f6c33f9b8ed501283e0f1ef76"
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2146,18 +2152,6 @@ name = "jpeg-encoder"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b0b36cbb4e6704f12f5b5d7b01dac593982c6550859ebd5a66fb15c9ea27fd5"
-
-[[package]]
-name = "jpeg2k"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5b1c0ab2091b7044e98ec1910d63f68cc51358ec0dfde83f0b1d7aab654adb9"
-dependencies = [
- "anyhow",
- "log",
- "openjpeg-sys",
- "thiserror 1.0.69",
-]
 
 [[package]]
 name = "js-sys"
@@ -2881,16 +2875,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
-name = "openjpeg-sys"
-version = "1.0.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92682cb92e7b01e2c020cf8ec12f3374558924bb24621df1112d8a7c93d419ef"
-dependencies = [
- "cc",
- "libc",
-]
-
-[[package]]
 name = "order-stat"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3057,12 +3041,12 @@ dependencies = [
  "getrandom 0.3.4",
  "getrandom 0.4.3",
  "hayro-jbig2",
+ "hayro-jpeg2000",
  "hex-literal",
  "image",
  "imageproc",
  "jpeg-decoder",
  "jpeg-encoder",
- "jpeg2k",
  "js-sys",
  "lcms2",
  "libc",
