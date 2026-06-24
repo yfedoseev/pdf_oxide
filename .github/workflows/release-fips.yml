@@ -266,6 +266,15 @@ jobs:
       - name: Build FIPS wheel (macOS / Windows)
         if: runner.os != 'Linux'
         shell: bash
+        # maturin builds via `uv tool install maturin`, which runs in uv's own
+        # isolated interpreter rather than the setup-python 3.11 above. On the
+        # macOS-26-SDK (Tahoe) runner image that interpreter makes maturin tag
+        # wheels `macosx_26_0`, which then can't install on the macOS 15 host
+        # (smoke-test below) and would be unusable for any user on macOS < 26.
+        # Pin the deployment target so the tag is the portable arm64 floor
+        # (11.0), matching the non-FIPS wheels in release.yml.
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
         run: |
           uv tool install maturin
           # delocate/delvewheel bundle the aws-lc-fips shared library into the
